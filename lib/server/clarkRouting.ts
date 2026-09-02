@@ -3036,6 +3036,8 @@ export type TokenScanEvidence = {
     lpControllerType?: string | null;
     positionProofStatus?: string | null;
     positionProofReason?: string | null;
+    positionOwnershipFinalStatus?: string | null;
+    positionOwnershipFinalReason?: string | null;
   } | null;
   liquidity?: { pools?: number; topPoolLiquidity?: number | null } | null;
   warnings?: string[];

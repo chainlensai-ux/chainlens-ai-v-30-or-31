@@ -49,6 +49,10 @@ export type ClarkTokenAnalystSnapshot = {
   lpPositionProof: string | null
   lpConcentrated: boolean
   lpVerified: boolean
+  /** From concentratedLpPositionOwnershipAudit.finalStatus (lib/server/lpProof.ts) — the single
+   * source of truth for concentrated-pool ownership state, never re-derived here. */
+  lpPositionOwnershipFinalStatus: string | null
+  lpPositionOwnershipFinalReason: string | null
   honeypot: boolean | null
   buyTax: number | null
   sellTax: number | null
@@ -102,6 +106,22 @@ function fmtUsd(n: number | null): string {
 
 function fmtPct(n: number | null): string {
   return n == null || !Number.isFinite(n) ? "unverified" : `${n.toFixed(1)}%`
+}
+
+// LP-OWNERSHIP-AUDIT-WIRED, DISCLOSED: replaces the old snap.lpPositionProof === "confirmed"
+// ternary (which produced the same hardcoded "LP position ownership is not verified." with no
+// reason on every non-confirmed read) with the real finalStatus/finalReason from
+// concentratedLpPositionOwnershipAudit (see lib/server/lpProof.ts's
+// buildConcentratedLpPositionOwnershipAudit — the single mapping the Token Scanner UI also reads).
+// A non-verified state always carries a concrete reason now; falls back to the exact required
+// "not indexed" wording only when no audit reached Clark at all (older cached snapshot).
+function lpOwnershipCopy(snap: ClarkTokenAnalystSnapshot): { verified: boolean; text: string } {
+  const status = snap.lpPositionOwnershipFinalStatus
+  const reason = snap.lpPositionOwnershipFinalReason
+  if (status === "verified_position_owner" || status === "protocol_managed") {
+    return { verified: true, text: reason ? `Concentrated LP position ownership is verified — ${reason}` : "Concentrated LP position ownership is verified." }
+  }
+  return { verified: false, text: reason || "Position owner proof unavailable — active liquidity positions not indexed." }
 }
 
 function simSellLabel(snap: ClarkTokenAnalystSnapshot): "Sellable" | "Blocked" | "Unsupported" | "Unavailable" | "Not applicable" {
@@ -181,6 +201,8 @@ export function buildClarkTokenAnalystSnapshot(ev: TokenScanEvidence, chainLabel
     lpPositionProof: ev.lpControl?.positionProofStatus ?? null,
     lpConcentrated,
     lpVerified,
+    lpPositionOwnershipFinalStatus: ev.lpControl?.positionOwnershipFinalStatus ?? null,
+    lpPositionOwnershipFinalReason: ev.lpControl?.positionOwnershipFinalReason ?? null,
     honeypot: family === "solana" ? null : (ev.security?.honeypot ?? null),
     buyTax: family === "solana" ? null : (sim?.buyTax ?? ev.security?.buyTax ?? null),
     sellTax: family === "solana" ? null : (sim?.sellTax ?? ev.security?.sellTax ?? null),
@@ -262,12 +284,13 @@ function collect(snap: ClarkTokenAnalystSnapshot): Bucket {
     missing.push("Solana AMM LP lock/burn is not the same check as an EVM LP-token lock.")
   } else if (snap.lpConcentrated) {
     unsupported.push("Standard ERC-20 LP lock/burn is not applicable to this V3/V4 concentrated pool.")
-    if (snap.lpPositionProof === "confirmed") {
-      verified.push("Concentrated LP position ownership is verified.")
+    const ownership = lpOwnershipCopy(snap)
+    if (ownership.verified) {
+      verified.push(ownership.text)
       goods.push("LP position ownership verified.")
     } else {
-      missing.push("LP position ownership is not verified.")
-      risks.push("LP position ownership is not verified.")
+      missing.push(ownership.text)
+      risks.push(ownership.text)
     }
   } else if (snap.lpStatus === "locked" || snap.lpStatus === "burned") {
     verified.push(`LP is ${snap.lpStatus} on current proof.`)
@@ -377,7 +400,7 @@ function verdictLine(snap: ClarkTokenAnalystSnapshot, ev: TokenScanEvidence, top
   if (topic === "lp" || topic === "explain_lp") {
     if (snap.family === "solana") return "Verdict: Open Check. Solana pool liquidity is not an ERC-20 LP lock/burn. I would not call LP safe from that wording."
     if (snap.lpConcentrated) {
-      const owned = snap.lpPositionProof === "confirmed" ? "Position ownership is verified" : "LP position ownership is not verified"
+      const owned = lpOwnershipCopy(snap).text
       return `Verdict: Caution. ${owned}. Standard ERC-20 LP lock/burn is not applicable to this V3/V4 pool.`
     }
     if (snap.lpStatus === "locked" || snap.lpStatus === "burned") return `Verdict: Caution. LP is ${snap.lpStatus} on current proof — that is not the same as the token being safe.`
@@ -425,7 +448,7 @@ function verdictLine(snap: ClarkTokenAnalystSnapshot, ev: TokenScanEvidence, top
   const hold = snap.holdersVerified ? "Holder concentration is verified" : "holder concentration is not verified"
   const liq = snap.marketVerified && snap.liquidityUsd != null ? "liquidity exists" : "liquidity is unverified"
   const lpBit = snap.lpConcentrated
-    ? (snap.lpPositionProof === "confirmed" ? "LP position ownership is verified" : "LP position ownership is not verified")
+    ? lpOwnershipCopy(snap).text
     : (snap.lpVerified ? `LP is ${snap.lpStatus}` : "LP proof is not verified")
   const devBit = snap.deployerResolved ? "dev origin is resolved" : "dev origin is unresolved"
   return `Verdict: ${word}. ${hold} and ${liq}, but ${lpBit} and ${devBit}. I would not treat this as fully verified yet.`

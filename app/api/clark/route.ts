@@ -139,6 +139,19 @@ import {
   isDeployerCheckPrompt,
 } from "@/lib/server/clarkRouting";
 import {
+  classifyClarkMarketIntent,
+  extractClarkMarketSymbol,
+  isClarkMarketPronounReference,
+  resolveClarkMarketData,
+  formatClarkMarketAnswer,
+  formatClarkMarketAmbiguousAnswer,
+} from "@/lib/server/clarkMarketData";
+import {
+  createClarkMarketDataProviders,
+  tokenScannerQuoteFromApiJson,
+  sessionContextQuote,
+} from "@/lib/server/clarkMarketDataProviders";
+import {
   classifyClarkTokenAnalystTopic,
   renderClarkTokenAnalystFromEvidence,
   renderClarkTokenAnalystAnswer,
@@ -9097,6 +9110,82 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
+  // CLARK-LIVE-MARKET-DATA, DISCLOSED (new capability — "Clark should know live crypto basics").
+  // Previously a bare symbol question with no contract address ("What is ETH price?", "PEPE
+  // market cap?", "Show SOL volume") matched none of the existing address-focused routing below
+  // and fell all the way through to the generic "share a token symbol/contract" fallback — Clark
+  // had genuinely no path to answer it, majors included (fetchCoinGeckoMajors only ever covered
+  // ETH/BTC). Runs before every existing branch so a simple market question is caught here first;
+  // deliberately narrow (classifyClarkMarketIntent) and skips anything that also carries broader
+  // safety/report language so the existing, much richer token_scan/token_ape_risk/entity-routing
+  // paths keep owning full risk reads — this only replaces the "nothing to say" case for a pure
+  // market question, never a comprehensive one.
+  {
+    const marketIntent = classifyClarkMarketIntent(prompt);
+    const hijacksBroaderReport = /\b(safe|safety|\brug\b|honeypot|scam|holders?|\blp\b|liquidity\s+locked|sellable|can\s+i\s+sell|\btax\b|deployer|dev\s+rug|red\s+flags?|full\s+report|risk\s+breakdown)\b/i.test(prompt);
+    if (marketIntent && !hijacksBroaderReport) {
+      const inlineMarketAddr = extractAddress(prompt);
+      const pronounRef = isClarkMarketPronounReference(prompt);
+      const marketAddress = inlineMarketAddr ?? (pronounRef ? (sessionMem.lastToken?.address ?? null) : null);
+      const marketSymbol = marketAddress ? null : (extractClarkMarketSymbol(prompt) ?? (pronounRef ? (sessionMem.lastToken?.symbol ?? null) : null));
+      if (marketAddress || marketSymbol) {
+        const marketChainSlug: string | null = marketAddress
+          ? (marketAddress === sessionMem.lastToken?.address ? (sessionMem.lastToken?.chain ?? chainForClarkTools) : chainForClarkTools)
+          : null;
+        const marketChainId: number | null = marketChainSlug === 'ethereum' ? 1 : marketChainSlug === 'base' ? 8453
+          : marketChainSlug === 'bnb' ? 56 : marketChainSlug === 'polygon' ? 137 : marketChainSlug === 'robinhood' ? 4663 : null;
+        const isSameSubjectAsSession = Boolean(sessionMem.lastToken && (
+          (marketAddress && sessionMem.lastToken.address?.toLowerCase() === marketAddress.toLowerCase())
+          || (marketSymbol && sessionMem.lastToken.symbol?.toUpperCase() === marketSymbol.toUpperCase())
+        ));
+        const providers = createClarkMarketDataProviders({
+          sessionContext: isSameSubjectAsSession ? () => sessionContextQuote({
+            address: sessionMem!.lastToken!.address,
+            symbol: sessionMem!.lastToken!.symbol,
+            name: sessionMem!.lastToken!.name,
+            chain: sessionMem!.lastToken!.chain ?? null,
+            market: sessionMem!.lastToken!.normalizedEvidence?.market ?? null,
+          }) : undefined,
+          tokenScannerApi: async (addr, chainSlug) => {
+            const effectiveChain = chainSlug ?? String(chainForClarkTools);
+            const res = await callInternalApiCaught(origin, "/api/token", { contract: addr, chain: effectiveChain }, authHeader ?? undefined, verifiedPlan, 12000);
+            if (!res.ok || res.timedOut) return null;
+            return tokenScannerQuoteFromApiJson(res.json as Record<string, unknown>, addr, effectiveChain);
+          },
+        });
+        const marketResolution = await resolveClarkMarketData({
+          prompt, intent: marketIntent, address: marketAddress, symbol: marketSymbol,
+          chainId: marketChainId, chain: marketChainSlug,
+        }, providers);
+        if (marketResolution.quote) {
+          return {
+            feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: marketIntent,
+            toolsUsed: [marketResolution.audit.providerUsed ?? "market_data"],
+            analysis: formatClarkMarketAnswer(marketResolution.quote),
+            ui: { intentBadge: "Live Market", actions: [] },
+            clarkMarketDataAudit: marketResolution.audit,
+          };
+        }
+        if (marketResolution.audit.finalStatus === "ambiguous_symbol" && marketResolution.ambiguousMatches) {
+          return {
+            feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: marketIntent,
+            toolsUsed: marketResolution.audit.providersTried,
+            analysis: formatClarkMarketAmbiguousAnswer(marketAddress ?? marketSymbol ?? "", marketResolution.ambiguousMatches),
+            ui: { intentBadge: "Live Market — Ambiguous", actions: [] },
+            clarkMarketDataAudit: marketResolution.audit,
+          };
+        }
+        return {
+          feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: marketIntent,
+          toolsUsed: marketResolution.audit.providersTried,
+          analysis: `I couldn't get live market data for ${marketAddress ?? marketSymbol}. ${marketResolution.audit.finalReason}`,
+          ui: { intentBadge: "Live Market — Unavailable", actions: [] },
+          clarkMarketDataAudit: marketResolution.audit,
+        };
+      }
+    }
+  }
+
   // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED (reported live: token-specific questions — "Is 0x...
   // safe?", "Who deployed 0x...?", "Top holders for 0x...?" — sometimes answered with wallet
   // portfolio/PnL data). Required flow per the audit: parse intent (classifyClarkQuestionCategory,
@@ -12272,6 +12361,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         lpControllerType: typeof (t.lpControl as Record<string, unknown>).lpControllerType === "string" ? String((t.lpControl as Record<string, unknown>).lpControllerType) : null,
         positionProofStatus: typeof (t.lpControl as Record<string, unknown>).positionProofStatus === "string" ? String((t.lpControl as Record<string, unknown>).positionProofStatus) : null,
         positionProofReason: typeof (t.lpControl as Record<string, unknown>).positionProofReason === "string" ? String((t.lpControl as Record<string, unknown>).positionProofReason) : null,
+        // CONCENTRATED-OWNERSHIP-AUDIT-WIRED, DISCLOSED: t.concentratedLpPositionOwnershipAudit
+        // is the single finalStatus/finalReason mapping built by buildConcentratedLpPositionOwnershipAudit
+        // (lib/server/lpProof.ts) — always carries a concrete reason for a non-verified state, unlike
+        // the old lpPositionProof==="confirmed" boolean Clark used to derive its own vague text from.
+        positionOwnershipFinalStatus: (t.concentratedLpPositionOwnershipAudit && typeof t.concentratedLpPositionOwnershipAudit === "object" && typeof (t.concentratedLpPositionOwnershipAudit as Record<string, unknown>).finalStatus === "string")
+          ? String((t.concentratedLpPositionOwnershipAudit as Record<string, unknown>).finalStatus) : null,
+        positionOwnershipFinalReason: (t.concentratedLpPositionOwnershipAudit && typeof t.concentratedLpPositionOwnershipAudit === "object" && typeof (t.concentratedLpPositionOwnershipAudit as Record<string, unknown>).finalReason === "string")
+          ? String((t.concentratedLpPositionOwnershipAudit as Record<string, unknown>).finalReason) : null,
       } : null,
       liquidity: { pools: Array.isArray(t.pools) ? (t.pools as unknown[]).length : 0 },
       warnings: missingEvidence,

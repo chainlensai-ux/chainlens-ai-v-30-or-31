@@ -1850,6 +1850,156 @@ export async function attemptConcentratedPositionProof(
   }, "rpc_liquidity_probe", "pool_liquidity_confirmed_no_owner");
 }
 
+// ─── Concentrated LP position-ownership audit ──────────────────────────────────────────────
+// Single source of truth mapping a ConcentratedPositionProof (or its absence) onto the public
+// finalStatus/finalReason taxonomy required by Token Scanner LP Safety and Clark. Never invents
+// an owner or a lock/burn state — every branch below is derived from fields ConcentratedPositionProof
+// already computed from real RPC/subgraph evidence (see attemptConcentratedPositionProof above).
+// Concentrated pools have no ERC-20 LP token, so this taxonomy deliberately avoids "locked"/
+// "burned"/"unlocked" LP-token wording — those only ever describe the pool CONTROLLER address
+// classification for a genuine position owner (a locker/burn address can still legitimately hold
+// the top position), never a standalone lock/burn proof for the pool itself.
+export type ConcentratedLpOwnershipFinalStatus =
+  | "verified_position_owner"
+  | "protocol_managed"
+  | "contract_owner_unverified"
+  | "owner_unavailable"
+  | "unsupported_with_reason"
+  | "not_applicable";
+
+export const POSITION_PROOF_NOT_INDEXED_REASON =
+  "Position owner proof unavailable — active liquidity positions not indexed.";
+
+export interface ConcentratedLpPositionOwnershipAudit {
+  chainId: number | null;
+  tokenAddress: string | null;
+  poolAddress: string | null;
+  poolType: ConcentratedPoolModel | null;
+  positionManagerResolved: boolean;
+  positionManagerAddress: string | null;
+  positionOwnerProofAttempted: boolean;
+  indexedPositionsFound: number | null;
+  activePositionsFound: number | null;
+  topLiquidityOwner: string | null;
+  topLiquidityOwnerSharePct: number | null;
+  ownerIsContract: boolean | null;
+  ownerIsEOA: boolean | null;
+  proofSource: ConcentratedOwnershipDebug["source"] | null;
+  finalStatus: ConcentratedLpOwnershipFinalStatus;
+  finalReason: string;
+}
+
+/** Maps a proof's resolved owner type to a contract-vs-EOA read — never guesses when the type
+ * itself is unresolved (`null`/`"unknown"`), and locker/burn/multisig/protocol addresses are all
+ * real contracts, not EOAs. */
+function _ownerIsContractFlags(ownerType: ConcentratedOwnerType | null): { ownerIsContract: boolean | null; ownerIsEOA: boolean | null } {
+  if (ownerType == null || ownerType === "unknown") return { ownerIsContract: null, ownerIsEOA: null };
+  if (ownerType === "wallet") return { ownerIsContract: false, ownerIsEOA: true };
+  return { ownerIsContract: true, ownerIsEOA: false };
+}
+
+/** Pure, deterministic mapping from a ConcentratedPositionProof (or its absence) to the public
+ * finalStatus/finalReason pair. Never set directly anywhere else — every "not verified"/
+ * "unsupported" surface in Token Scanner and Clark must go through this so a reason always
+ * accompanies a non-verified state. */
+export function buildConcentratedLpPositionOwnershipAudit(
+  proof: ConcentratedPositionProof | null | undefined,
+  meta: { chainId: number | null; tokenAddress: string | null },
+): ConcentratedLpPositionOwnershipAudit {
+  if (!proof) {
+    return {
+      chainId: meta.chainId,
+      tokenAddress: meta.tokenAddress,
+      poolAddress: null,
+      poolType: null,
+      positionManagerResolved: false,
+      positionManagerAddress: null,
+      positionOwnerProofAttempted: false,
+      indexedPositionsFound: null,
+      activePositionsFound: null,
+      topLiquidityOwner: null,
+      topLiquidityOwnerSharePct: null,
+      ownerIsContract: null,
+      ownerIsEOA: null,
+      proofSource: null,
+      finalStatus: "not_applicable",
+      finalReason: "This pool is not a concentrated-liquidity pool — position-owner proof does not apply.",
+    };
+  }
+
+  const topOwner = proof.topPositionOwner ?? proof.topSampledOwner ?? null;
+  const topOwnerType = proof.topPositionOwner != null ? proof.topPositionOwnerType : proof.topSampledOwnerType;
+  const topSharePct = proof.topPositionOwner != null ? proof.topPositionSharePercent : proof.topSampledOwnerShareOfSamplePercent;
+  const { ownerIsContract, ownerIsEOA } = _ownerIsContractFlags(topOwnerType);
+  const base: Omit<ConcentratedLpPositionOwnershipAudit, "finalStatus" | "finalReason"> = {
+    chainId: meta.chainId,
+    tokenAddress: meta.tokenAddress,
+    poolAddress: proof.poolAddress ?? proof.poolId,
+    poolType: proof.poolModel,
+    positionManagerResolved: proof.positionManager != null,
+    positionManagerAddress: proof.positionManager,
+    positionOwnerProofAttempted: true,
+    indexedPositionsFound: proof.positionCount ?? proof.sampledPositionCount ?? null,
+    activePositionsFound: proof.positionCount ?? proof.sampledPositionCount ?? null,
+    topLiquidityOwner: topOwner,
+    topLiquidityOwnerSharePct: topSharePct ?? null,
+    ownerIsContract,
+    ownerIsEOA,
+    proofSource: proof.ownershipDebug.source,
+  };
+
+  if (proof.status === "verified") {
+    if (topOwnerType === "protocol") {
+      return { ...base, finalStatus: "protocol_managed", finalReason: proof.reason };
+    }
+    if (topOwnerType === "contract") {
+      return {
+        ...base,
+        finalStatus: "contract_owner_unverified",
+        finalReason: `Top liquidity position is held by a contract (${topOwner ?? "unknown address"}) — the contract's beneficial owner is not independently verified. ${proof.reason}`,
+      };
+    }
+    // wallet, multisig, locker, burn, or a resolved-but-unclassified owner: a concrete address
+    // was resolved from real position-manager evidence, so ownership is verified.
+    return { ...base, finalStatus: "verified_position_owner", finalReason: proof.reason };
+  }
+
+  if (proof.status === "partial") {
+    // A bounded sample still found a real top owner — surface it, but never as fully verified
+    // since a bounded sample never proves full-pool coverage.
+    if (proof.topSampledOwner) {
+      if (proof.topSampledOwnerType === "contract") {
+        return {
+          ...base,
+          finalStatus: "contract_owner_unverified",
+          finalReason: `${proof.samplingReason} The sampled top holder is a contract; full-pool position-owner coverage is not confirmed.`,
+        };
+      }
+      return {
+        ...base,
+        finalStatus: "unsupported_with_reason",
+        finalReason: `${proof.samplingReason} This is a bounded sample, not full-pool position-owner coverage, so ownership is not fully verified.`,
+      };
+    }
+    return { ...base, finalStatus: "owner_unavailable", finalReason: POSITION_PROOF_NOT_INDEXED_REASON };
+  }
+
+  if (proof.status === "not_supported") {
+    return { ...base, finalStatus: "owner_unavailable", finalReason: POSITION_PROOF_NOT_INDEXED_REASON };
+  }
+
+  if (proof.status === "not_found") {
+    return { ...base, finalStatus: "not_applicable", finalReason: proof.reason };
+  }
+
+  if (proof.status === "failed") {
+    return { ...base, finalStatus: "unsupported_with_reason", finalReason: proof.reason };
+  }
+
+  // "open_check" — no pool address/id was available to attempt a proof at all.
+  return { ...base, finalStatus: "not_applicable", finalReason: proof.reason };
+}
+
 // ─── Canonical pool identity — cross-scan stability for the same pool address ──────────────
 // A pool's model (concentrated vs constant-product) must not flip between scans of the same
 // token just because one scan only had generic/fallback market data while another had richer

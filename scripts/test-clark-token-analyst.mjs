@@ -79,7 +79,7 @@ assert.equal(classifyClarkPrompt(`What are the taxes? ${ADDR}`).intent, 'token_a
   assert.match(safe, /Verdict: Caution/)
   assert.match(safe, /Holder concentration is verified/)
   assert.match(safe, /liquidity exists/i)
-  assert.match(safe, /LP position ownership is not verified/)
+  assert.match(safe, /Position owner proof unavailable — active liquidity positions not indexed\./)
   assert.match(safe, /dev origin is unresolved/)
   assert.match(safe, /not financial advice/i)
   assert.equal(clarkTokenAnalystContainsFinancialAdvice(safe), false)
@@ -207,6 +207,35 @@ assert.equal(classifyClarkPrompt(`What are the taxes? ${ADDR}`).intent, 'token_a
   assert.match(safe, /Verdict: Avoid/)
   const sell = renderClarkTokenAnalystAnswer(bnb, 'sell', 'BNB')
   assert.match(sell, /Blocked/)
+}
+
+{
+  // concentratedLpPositionOwnershipAudit wired through: a real verified position owner must
+  // read as verified, not the old vague "not verified" text.
+  const verifiedOwner = evmEv({
+    lpControl: {
+      status: 'unverified', poolType: 'v3', proofApplicability: 'not_applicable', displayLpModel: 'concentrated_liquidity',
+      positionProofStatus: 'verified',
+      positionOwnershipFinalStatus: 'verified_position_owner',
+      positionOwnershipFinalReason: 'Position ownership resolved from 3 position record(s); top owner controls 62% of resolved concentrated liquidity.',
+    },
+  })
+  const lp = renderClarkTokenAnalystAnswer(verifiedOwner, 'lp', 'Base')
+  assert.match(lp, /Position ownership resolved from 3 position record\(s\)/)
+  assert.doesNotMatch(lp, /LP position ownership is not verified/)
+
+  // No indexed positions: exact required reason, never the old bare "not verified" phrasing.
+  const noIndex = evmEv({
+    lpControl: {
+      status: 'unverified', poolType: 'v3', proofApplicability: 'not_applicable', displayLpModel: 'concentrated_liquidity',
+      positionProofStatus: 'not_supported',
+      positionOwnershipFinalStatus: 'owner_unavailable',
+      positionOwnershipFinalReason: 'Position owner proof unavailable — active liquidity positions not indexed.',
+    },
+  })
+  const lp2 = renderClarkTokenAnalystAnswer(noIndex, 'lp', 'Base')
+  assert.match(lp2, /Position owner proof unavailable — active liquidity positions not indexed\./)
+  assert.doesNotMatch(lp2, /LP position ownership is not verified/)
 }
 
 const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')

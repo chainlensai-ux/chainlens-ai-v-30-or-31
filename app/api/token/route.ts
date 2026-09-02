@@ -49,6 +49,7 @@ import {
   buildConcentratedPositionProofRead,
   buildCanonicalPoolIdentity,
   reconcileCanonicalPoolIdentity,
+  buildConcentratedLpPositionOwnershipAudit,
   type ProofApplicability,
   type ConcentratedPositionProof,
   type CanonicalPoolIdentity,
@@ -8573,6 +8574,10 @@ export async function POST(req: Request) {
       lpControllerIntel,
       concentratedPositionProof,
       concentratedPositionProofRead,
+      concentratedLpPositionOwnershipAudit: buildConcentratedLpPositionOwnershipAudit(concentratedPositionProof, {
+        chainId: CHAIN_ID_MAP[chain] ?? null,
+        tokenAddress: contract,
+      }),
       lpMovementWatch,
       lpLockBurnIntel,
       lpUnlockTimeline,

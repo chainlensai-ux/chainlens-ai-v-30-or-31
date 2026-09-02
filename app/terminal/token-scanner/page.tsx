@@ -381,6 +381,24 @@ type ScanResult = {
     couldNotVerify?: string[]
     nextAction?: string
   } | null
+  concentratedLpPositionOwnershipAudit?: {
+    chainId?: number | null
+    tokenAddress?: string | null
+    poolAddress?: string | null
+    poolType?: string | null
+    positionManagerResolved?: boolean
+    positionManagerAddress?: string | null
+    positionOwnerProofAttempted?: boolean
+    indexedPositionsFound?: number | null
+    activePositionsFound?: number | null
+    topLiquidityOwner?: string | null
+    topLiquidityOwnerSharePct?: number | null
+    ownerIsContract?: boolean | null
+    ownerIsEOA?: boolean | null
+    proofSource?: string | null
+    finalStatus?: 'verified_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'owner_unavailable' | 'unsupported_with_reason' | 'not_applicable'
+    finalReason?: string
+  } | null
   lpMovementWatch?: {
     status?: string
     movementRisk?: string
@@ -5074,6 +5092,7 @@ export default function TerminalTokenScanner() {
           lpMeta: json.lpMeta ?? null,
           concentratedPositionProof: json.concentratedPositionProof ?? null,
           concentratedPositionProofRead: json.concentratedPositionProofRead ?? null,
+          concentratedLpPositionOwnershipAudit: json.concentratedLpPositionOwnershipAudit ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
@@ -8210,30 +8229,68 @@ export default function TerminalTokenScanner() {
                       { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: isV3Partial ? '#fbbf24' : lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : isV3Partial ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : protocolPosition ? protocolPositionSubtext('lock') : undefined },
-                      ...(protocolPosition && cpp ? [{
+                      // POSITION-OWNERSHIP-AUDIT-WIRED, DISCLOSED (fix for "LP position ownership is
+                      // not verified"/"Position ownership unsupported" showing with no reason): this row
+                      // now reads finalStatus/finalReason from concentratedLpPositionOwnershipAudit —
+                      // the single mapping in lib/server/lpProof.ts's buildConcentratedLpPositionOwnershipAudit
+                      // — instead of re-deriving ad hoc text from cpp.status here. Every non-verified
+                      // finalStatus always carries a concrete finalReason (never a bare "not verified"),
+                      // and the exact "active liquidity positions not indexed" wording is used only when
+                      // that specific mapping applies. Falls back to the pre-existing cpp-derived text
+                      // only if the audit itself is unavailable (older cached scan payload).
+                      ...(protocolPosition && cpp ? [(() => {
+                        const audit = result.concentratedLpPositionOwnershipAudit
+                        if (audit && audit.finalStatus) {
+                          const valueByStatus: Record<string, string> = {
+                            verified_position_owner: 'Verified — position owner confirmed',
+                            protocol_managed: 'Protocol Managed',
+                            contract_owner_unverified: 'Contract Owner — Unverified',
+                            owner_unavailable: 'Owner Unavailable',
+                            unsupported_with_reason: 'Unsupported',
+                            not_applicable: 'Not Applicable',
+                          }
+                          const colorByStatus: Record<string, string | undefined> = {
+                            verified_position_owner: '#34d399',
+                            protocol_managed: '#34d399',
+                            contract_owner_unverified: '#fbbf24',
+                            owner_unavailable: '#fbbf24',
+                            unsupported_with_reason: '#fbbf24',
+                            not_applicable: undefined,
+                          }
+                          return {
+                            label: 'Position Ownership',
+                            value: valueByStatus[audit.finalStatus] ?? 'Open Check',
+                            color: colorByStatus[audit.finalStatus],
+                            note: audit.finalReason || 'No reason returned for this position-ownership state.',
+                          }
+                        }
+                        return {
+                          label: 'Position Ownership',
+                          value: cpp.status === 'verified' ? 'Attempted — verified'
+                            : cpp.status === 'partial' ? 'Owner not verified — bounded sample unavailable'
+                            : cpp.status === 'not_supported' ? 'Attempted — unsupported'
+                            : cpp.status === 'not_found' ? 'Attempted — open check'
+                            : cpp.status === 'failed' ? 'Attempted — provider failed'
+                            : 'Attempted — open check',
+                          color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
+                          note: cpp.status === 'verified'
+                            ? `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} (${cpp.topPositionOwnerType ?? 'unknown'}) · Top share: ${cpp.topPositionSharePercent != null ? `${cpp.topPositionSharePercent.toFixed(2)}%` : 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
+                            : (() => {
+                              if (hasResolvedConcentratedManager(result) && cpp.status === 'partial') return cpp.samplingReason ?? 'No bounded position-candidate source is available yet for this pool.'
+                              const proofLines = [
+                                cpp.positionManager ? 'Position manager resolved' : null,
+                                cpp.status === 'partial' && cpp.positionManager ? 'Pool active/liquidity confirmed' : null,
+                                ...missingProofHuman,
+                              ].filter(Boolean)
+                              return proofLines.join(' · ')
+                            })(),
+                        }
+                      })()] : (protocolPosition ? [{
                         label: 'Position Ownership',
-                        value: cpp.status === 'verified' ? 'Attempted — verified'
-                          : cpp.status === 'partial' ? 'Owner not verified — bounded sample unavailable'
-                          : cpp.status === 'not_supported' ? 'Attempted — unsupported'
-                          : cpp.status === 'not_found' ? 'Attempted — open check'
-                          : cpp.status === 'failed' ? 'Attempted — provider failed'
-                          : 'Attempted — open check',
-                        color: cpp.status === 'verified' ? '#34d399' : cpp.status === 'partial' ? '#fbbf24' : undefined,
-                        note: cpp.status === 'verified'
-                          ? `Top position owner: ${cpp.topPositionOwner ?? 'unknown'} (${cpp.topPositionOwnerType ?? 'unknown'}) · Top share: ${cpp.topPositionSharePercent != null ? `${cpp.topPositionSharePercent.toFixed(2)}%` : 'unknown'} · Controller risk: ${cpp.controllerRisk ?? 'unknown'} · Confidence: ${cpp.confidence ?? 'low'}`
-                          : (() => {
-                            if (hasResolvedConcentratedManager(result) && cpp.status === 'partial') return cpp.samplingReason ?? 'No bounded position-candidate source is available yet for this pool.'
-                            const proofLines = [
-                              cpp.positionManager ? 'Position manager resolved' : null,
-                              cpp.status === 'partial' && cpp.positionManager ? 'Pool active/liquidity confirmed' : null,
-                              ...missingProofHuman,
-                            ].filter(Boolean)
-                            return proofLines.join(' · ')
-                          })(),
-                      }] : (protocolPosition ? [{
-                        label: 'Position Ownership',
-                        value: hasResolvedConcentratedManager(result) ? 'Owner not verified — bounded sample unavailable' : 'Open Check',
-                        note: hasResolvedConcentratedManager(result) ? 'No bounded position-candidate source is available yet for this pool.' : protocolPositionSubtext('control'),
+                        value: result.concentratedLpPositionOwnershipAudit?.finalStatus === 'owner_unavailable' ? 'Owner Unavailable'
+                          : hasResolvedConcentratedManager(result) ? 'Owner not verified — bounded sample unavailable' : 'Open Check',
+                        note: result.concentratedLpPositionOwnershipAudit?.finalReason
+                          || (hasResolvedConcentratedManager(result) ? 'No bounded position-candidate source is available yet for this pool.' : protocolPositionSubtext('control')),
                       }] : [])),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
