@@ -35,6 +35,7 @@ import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScan
 import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
+import { buildWalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -248,6 +249,21 @@ function buildCortexReadV2(
   )
   const { lastActiveMs } = deriveActivityWindow(report)
 
+  // SHARED PNL VIEW MODEL, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task):
+  // the SAME selector WalletScannerSummaryRowV3's own PnlStatusCard calls, with the SAME real report
+  // fields — see buildWalletPnlViewModel.ts's own header for the "one selector, no new PnL math"
+  // disclosure. This is what lets CORTEX's sidebar state the exact same combined status/reason as
+  // the main PnL Evidence card for this scan.
+  const pnlViewModel = buildWalletPnlViewModel({
+    pnlV2: report.pnlV2,
+    publicPnlStatus: report.finalSummary?.financialStatus?.officialPnlStatus,
+    unrealizedReconciliation: report.fifoAndPnl?.unrealizedReconciliation,
+    reconciliationSummary: report.reconciliationSummary,
+    canonicalSampleManifestAudit: report.canonicalSampleManifestAudit,
+    robinhoodResult,
+    chainsScanned: Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : [],
+  })
+
   return buildWalletReadV2({
     walletAddress: report.scanMetadata?.walletAddress,
     scanTimestamp: report.scanMetadata?.scanTimestamp,
@@ -267,6 +283,7 @@ function buildCortexReadV2(
     robinhoodDisplayState,
     robinhoodResult,
     pnlConfidence,
+    pnlViewModel,
   })
 }
 

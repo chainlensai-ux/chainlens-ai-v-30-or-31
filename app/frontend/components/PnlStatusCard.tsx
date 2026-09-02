@@ -37,10 +37,63 @@ import { selectEvmPnlLaneStatus as selectEvmPnlLaneStatusShared, type EvmPnlLane
 import { PARTIAL_TRUST_GATE_PUBLIC_LABEL } from '@/src/lib/pnlDiscrepancyAudit'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
-import { MetricCard, toneFromNumber } from './MetricCard'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
+import { buildWalletPnlViewModel, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus } from '@/app/frontend/lib/buildWalletPnlViewModel'
+
+// COMBINED-STATUS DISPLAY MAPS, DISCLOSED: presentation only — the underlying classification comes
+// entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here.
+const COMBINED_STATUS_LABEL: Record<WalletPnlCombinedStatus, string> = {
+  verified: 'Verified', partial: 'Partial', locked: 'Locked', unavailable: 'Unavailable',
+}
+const COMBINED_STATUS_TONE: Record<WalletPnlCombinedStatus, 'success' | 'warning' | 'danger' | 'neutral'> = {
+  verified: 'success', partial: 'warning', locked: 'warning', unavailable: 'neutral',
+}
+const COMBINED_REASON_COLOR: Record<WalletPnlCombinedStatus, string> = {
+  verified: '#4ade80', partial: '#fbbf24', locked: '#fbbf24', unavailable: 'rgba(226,232,240,0.75)',
+}
+const BOX_STATUS_TONE: Record<WalletPnlBoxStatus, 'success' | 'warning' | 'danger' | 'neutral'> = {
+  Verified: 'success', Partial: 'warning', Locked: 'danger', Unavailable: 'neutral',
+}
+const CHAIN_ROW_STATUS_TONE: Record<WalletPnlChainRow['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
+  Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning',
+}
+
+// PNL BOX TILE, DISCLOSED: one clean tile per top-row figure (Realized/Unrealized/ROI/Cost Basis) —
+// value (only when the box's own status says there's a real one to show), a status badge, and a
+// single reason line. Replaces the old 6-tile MetricCard grid + separate confidence-status row.
+function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
+  return (
+    <div style={{
+      flex: '1 1 150px', minWidth: '150px', padding: '13px 15px', borderRadius: '13px',
+      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '5px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{label}</span>
+        <StatusBadge label={box.status} tone={BOX_STATUS_TONE[box.status]} />
+      </div>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
+      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+    </div>
+  )
+}
+
+// PNL CHAIN ROW, DISCLOSED: one simple row per chain — label, status badge, value. Replaces the old
+// ChainBreakdownTable + separate RobinhoodPnlRow with ONE shared list every chain (EVM and
+// Robinhood) renders through identically.
+function PnlChainRowItem({ row }: { row: WalletPnlChainRow }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', borderRadius: '9px', background: 'rgba(255,255,255,0.015)' }}>
+      <span style={{ fontWeight: 700, color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>{row.label}</span>
+      <StatusBadge label={row.status} tone={CHAIN_ROW_STATUS_TONE[row.status]} />
+      <span style={{ fontSize: '12px', fontWeight: 700, marginLeft: 'auto', color: row.value == null ? 'rgba(148,163,184,0.55)' : row.value.startsWith('-') ? '#f87171' : '#4ade80' }}>
+        {row.value ?? '—'}
+      </span>
+    </div>
+  )
+}
 
 export { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, type RobinhoodPnlLaneStatus }
 
@@ -436,99 +489,11 @@ export function selectEvmPnlLaneStatus(params: {
 // this card, the Robinhood tab, and CORTEX share one function without a circular import. Re-exported
 // here so existing callers/tests that import from this file keep working.
 
-// ROBINHOOD PER-CHAIN PNL ROW, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up,
-// this task's own explicit requirement 5): rendered as a distinct row underneath ChainBreakdownTable
-// (never inside it — that table's numeric columns stay pnlV2/EVM-only, unmodified). Reads ONLY
-// robinhoodResult.pnl — the exact status/message/realizedPnlUsd
-// lib/server/robinhoodWalletScanner.ts's real PnL gate already computed server-side. 'verified' is
-// the ONLY status this ever shows a real number for; 'disabled'/'partial' show the exact server
-// message, never a number — the hard rule this task states twice ("Do NOT fake Robinhood PnL", "Do
-// NOT show unsupported PnL as verified").
-function RobinhoodPnlRow({ robinhoodResult }: { robinhoodResult: RobinhoodWalletScanResponse }) {
-  const pnl = robinhoodResult.pnl
-  const audit = robinhoodResult.robinhoodPnlVerificationAudit
-  const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '9px 10px', marginTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.10)', fontSize: '12px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 700, color: '#e2e8f0', minWidth: '90px' }}>Robinhood</span>
-        {isVerified ? (
-          <span style={{ fontWeight: 700, color: pnl.realizedPnlUsd! >= 0 ? '#4ade80' : '#f87171' }}>
-            {fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)
-          </span>
-        ) : (
-          <span style={{ color: 'rgba(148,163,184,0.65)' }}>
-            Robinhood: Not verified
-          </span>
-        )}
-      </div>
-      {isVerified && audit ? (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', paddingLeft: '90px', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
-          <span>Robinhood PnL: Verified</span>
-          <span>Source: Robinhood Phase 3 sidecar</span>
-          <span>Verified swaps: {audit.verifiedSwapCount}</span>
-          <span>Closed lots: {audit.fifoClosedLots}</span>
-          <span>Price evidence: both legs verified</span>
-        </div>
-      ) : (
-        <div style={{ paddingLeft: '90px', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
-          Reason: {ROBINHOOD_PNL_NOT_VERIFIED_REASON}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function ChainBreakdownTable({
-  chainBreakdown,
-  unreliable,
-  hasCanonicalUnrealizedSource,
-}: {
-  chainBreakdown: PnlV2['chainBreakdown']
-  unreliable: boolean
-  hasCanonicalUnrealizedSource: boolean
-}) {
-  if (chainBreakdown.length === 0) {
-    return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL breakdown from verified trade evidence.</p>
-  }
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', color: 'rgba(148,163,184,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-            <th style={{ padding: '6px 10px' }}>Chain ID</th>
-            <th style={{ padding: '6px 10px' }}>Realized PnL</th>
-            <th style={{ padding: '6px 10px' }}>Unrealized PnL</th>
-          </tr>
-        </thead>
-        <tbody>
-          {chainBreakdown.map((c) => {
-            // Same GUARDRAIL_ABS_LIMIT clamp applied per-chain-row, per task requirement — the
-            // per-chain breakdown must not leak an absurd number even if the aggregate is clamped.
-            // Only applied to realizedPnlUsd now (still a real, pnlV2-sourced figure) — the legacy
-            // unrealized figure is suppressed unconditionally below, never rendered as official.
-            const rowUnreliable = unreliable && Math.abs(c.realizedPnlUsd) > GUARDRAIL_ABS_LIMIT
-            return (
-              <tr key={c.chainId} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-                <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{c.chainId}</td>
-                {rowUnreliable ? (
-                  <td colSpan={2} style={{ padding: '9px 10px', fontWeight: 700, color: '#fbbf24' }}>Not reliable — sample too incomplete</td>
-                ) : (
-                  <>
-                    <td style={{ padding: '9px 10px', fontWeight: 700, color: c.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.realizedPnlUsd)}</td>
-                    <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.55)', fontStyle: 'italic' }}>
-                      {hasCanonicalUnrealizedSource ? 'See reconciled total above' : fmtSignedUsd(c.unrealizedPnlUsd)}
-                    </td>
-                  </>
-                )}
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+// ROBINHOOD ROW / CHAIN BREAKDOWN TABLE, REMOVED, DISCLOSED (Smart Money Score + PnL Evidence UI
+// simplification task): these two components (a distinct Robinhood row + a separate EVM chain
+// table) are now replaced by ONE shared chain-row list — buildWalletPnlViewModel.ts's chainRows —
+// rendered via PnlChainRowItem near the top of this file, with the SAME real gates (never a fake
+// "verified" Robinhood figure; pnlV2.chainBreakdown is still the only real per-chain source).
 
 // Pure, exported for direct testing — real backend classification only, no UI-only heuristic.
 // Returns null for 'ok' (no badge) or when publicPnlStatus wasn't supplied at all (no fabricated
@@ -920,7 +885,6 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   const effectivePublicPnlStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
   const pnl = selectVerifiedPnlData(pnlV2, effectivePublicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
-  const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
   const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
   const lastKnownSample = selectLastKnownSampleDisclosure(canonicalSampleManifestAudit)
   // CANONICAL DISPLAYED PNL, DISCLOSED (contradictory-tiles follow-up task): the ONE selector every
@@ -932,11 +896,6 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // unrelated source).
   const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
   const isBoundedSample = effectivePublicPnlStatus === 'limited_verified_sample'
-  // PER-CHAIN LANE STATUS, DISCLOSED: computed via the SAME shared, exported selectors CORTEX's
-  // buildCortexReadV2 (page.tsx) also calls — see those functions' own header for the full
-  // "never diverge from CORTEX" disclosure.
-  const evmPnlLaneStatus = selectEvmPnlLaneStatus({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
-  const robinhoodPnlLaneStatus = selectRobinhoodPnlLaneStatus(robinhoodResult)
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
@@ -954,18 +913,6 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // `unrealizedReconciliation.openPositionCoveragePercent` — currently-held open positions only
   // (FIFO leftovers with no canonical balance are not counted as a current coverage failure).
   // Has no bearing on realized PnL.
-  const unrealizedCoverageBadgeLabel = canonicalSampleUnavailable
-    ? null
-    : unrealizedReconciliation?.reconciliationStatus === 'partial'
-      ? `Open-position coverage: ${unrealizedReconciliation.openPositionCoveragePercent.toFixed(2)}% (currently held)`
-      : null
-  // EXACT-REASON MESSAGING, DISCLOSED (task 5 — "should not just say partial vaguely"): computed
-  // alongside the coverage badge above, from the SAME real unrealizedReconciliation prop — see each
-  // function's own header for exactly what it does and does not assert.
-  const unrealizedPartialReasonMessage = buildUnrealizedPartialReasonMessage(unrealizedReconciliation)
-  const realizedVerifiedMessage = buildRealizedVerifiedMessage(effectivePublicPnlStatus)
-  const confidenceStatus = selectPnlConfidenceStatus(effectivePublicPnlStatus, unrealizedReconciliation, reconciliationSummary)
-  const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(effectivePublicPnlStatus)
   const showSyntheticGlobal = shouldShowSyntheticGlobal(effectivePublicPnlStatus, syntheticPnl)
   const showSyntheticPerChain = shouldShowSyntheticPerChain(effectivePublicPnlStatus, syntheticPnl)
   // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
@@ -983,7 +930,12 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // PNL_UNAVAILABLE_MESSAGE per-tile below when `reconciliationSummary` itself wasn't wired.
   const blocked = isBoundedSample ? false : isActive && (pnl.unreliable || !pnl.stable)
   const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticGlobal, showSyntheticPerChain })
-  const showUnavailableBanner = displayMode === 'unavailable'
+
+  // SHARED VIEW MODEL, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): the ONE
+  // selector both this card and CORTEX's sidebar (walletReadBuilder.ts's buildCortexReadV2) call for
+  // combined status/box/chain-row wording — see buildWalletPnlViewModel.ts's own header. No new PnL
+  // math: it's built entirely from the same selectors already computed above.
+  const pnlViewModel = buildWalletPnlViewModel({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned })
 
   const headerIcon = displayed.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
@@ -996,91 +948,27 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           pushed the "Not Verified"/"Not Reliable" StatusBadge text (nowrap by design — see that
           component's own header) past the viewport edge instead of wrapping onto a second line.
           Presentational only — no badge label, tone, or underlying PnL value changes. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
         {/* RENAMED, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
             explicit requirement 3 — "PnL (Verified V2)" read as if EVERYTHING under this header,
-            including the Robinhood row below, carried the same V2-verified guarantee. "PnL Evidence"
-            makes no chain-scoped claim by itself — the per-chain lane badges immediately below it
-            (Base/ETH/Robinhood, each independently verified/partial/not-verified/unavailable) are
-            what actually tells the user which real evidence backs which chain. */}
+            including the Robinhood row below, carried the same V2-verified guarantee. */}
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL Evidence</h3>
-        <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
-        {/* BOUNDED-SAMPLE EXEMPT, DISCLOSED: these two badges are computed from `pnl` (pnlV2's own
-            magnitude/stability heuristics) — irrelevant once a bounded sample displays
-            `reconciliationSummary`'s numbers instead (see `displayed`/`isBoundedSample` above).
-            Suppressed here so the header never contradicts the real, canonical tiles below. */}
-        {!isBoundedSample && pnl.unreliable && <StatusBadge label="Not reliable (magnitude)" tone="warning" glow />}
-        {!isBoundedSample && !pnl.stable && isActive && <StatusBadge label="PnL unavailable" tone="warning" glow />}
-        {/* REAL backend classification (fifoEngine's publicPnlStatus, via
-            finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
-            magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
-        {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
-        {unrealizedCoverageBadgeLabel && <StatusBadge label={unrealizedCoverageBadgeLabel} tone="warning" />}
+        {/* ONE COMBINED BADGE, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task —
+            "remove noisy duplicate badges like PnL unavailable/Not verified/Active when they
+            conflict with per-chain states"): replaces the old "Active" + "Not reliable" + "PnL
+            unavailable" + limited-sample + coverage badge stack (up to 5 badges that could disagree
+            with the per-chain rows below) with the ONE combinedStatus every box/row below already
+            agrees with — see buildWalletPnlViewModel.ts's own header. */}
+        <StatusBadge
+          label={COMBINED_STATUS_LABEL[pnlViewModel.combinedStatus]}
+          tone={COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
+          glow={pnlViewModel.combinedStatus === 'verified'}
+        />
       </div>
-
-      {/* PER-CHAIN PNL LANE BADGES, DISCLOSED (this task's own explicit requirement 5): Base/ETH
-          each get their own badge (even though pnlV2 computes one combined EVM figure, never split
-          per chain — see ChainBreakdownTable's own header — so both real, scanned EVM chains
-          honestly share the SAME lane status) plus a distinct Robinhood badge from its own,
-          independently-gated PnL lane. Rendered only for chains this scan actually covered — never a
-          fabricated chain list. */}
-      {(chainsScanned && chainsScanned.length > 0) || robinhoodResult ? (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-          {(chainsScanned ?? [])
-            .filter((c) => c === 'base' || c === 'eth' || c === 'ethereum')
-            .map((c) => (
-              <StatusBadge
-                key={c}
-                label={`${c === 'ethereum' ? 'eth' : c}: ${evmPnlLaneStatus}`}
-                tone={evmPnlLaneStatus === 'verified' ? 'success' : evmPnlLaneStatus === 'partial' ? 'warning' : 'neutral'}
-              />
-            ))}
-          {robinhoodResult && (
-            <StatusBadge
-              label={`robinhood: ${robinhoodPnlLaneStatus === 'not_verified' ? 'not verified' : robinhoodPnlLaneStatus}`}
-              tone={robinhoodPnlLaneStatus === 'verified' ? 'success' : robinhoodPnlLaneStatus === 'not_verified' ? 'warning' : 'neutral'}
-            />
-          )}
-        </div>
-      ) : null}
-
-      {/* SPLIT PNL CONFIDENCE, DISCLOSED (task 4 — "do not mix realized and unrealized confidence").
-          Five short, real, independently-sourced status values — never a single blended "confidence"
-          label. Integrity is omitted entirely (not shown as a guessed "OK") when the backend hasn't
-          computed a real integrityTier for this scan. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', margin: '0 0 14px', fontSize: '11px', color: '#94a3b8' }}>
-        <span>Realized PnL: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.realized}</strong></span>
-        <span>Unrealized PnL: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.unrealized}</strong></span>
-        <span>Historical Coverage: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.historicalCoverage}</strong></span>
-        {confidenceStatus.openPositionCoveragePercent != null && (
-          <span>Open Position Coverage: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.openPositionCoveragePercent.toFixed(1)}%</strong></span>
-        )}
-        {confidenceStatus.integrity && (
-          <span>Integrity: <strong style={{ color: confidenceStatus.integrity === 'OK' ? '#4ade80' : confidenceStatus.integrity === 'Needs review' ? '#fbbf24' : '#f87171' }}>{confidenceStatus.integrity}</strong></span>
-        )}
-      </div>
-
-      {showUnavailableBanner && (
-        <p style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24', margin: '0 0 12px' }}>
-          {PNL_UNAVAILABLE_MESSAGE}
-        </p>
-      )}
-
-      {/* EXACT-REASON MESSAGING, DISCLOSED (task 5 — never just "partial" with no explanation). Shown
-          whenever there is something real to say: realizedVerifiedMessage only when the backend gate
-          itself says 'ok' (never fabricated for a blocked/unavailable scan), and
-          unrealizedPartialReasonMessage only when unrealizedReconciliation is genuinely 'partial'. */}
-      {(realizedVerifiedMessage || unrealizedPartialReasonMessage) && (
-        <div style={{ margin: '0 0 12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-          {realizedVerifiedMessage && (
-            <p style={{ fontSize: '12px', fontWeight: 600, color: '#4ade80', margin: 0 }}>{realizedVerifiedMessage}</p>
-          )}
-          {unrealizedPartialReasonMessage && (
-            <p style={{ fontSize: '12px', fontWeight: 600, color: '#fbbf24', margin: 0, lineHeight: 1.5 }}>{unrealizedPartialReasonMessage}</p>
-          )}
-        </div>
-      )}
+      <p style={{ fontSize: '12px', fontWeight: 600, color: COMBINED_REASON_COLOR[pnlViewModel.combinedStatus], margin: '0 0 14px', lineHeight: 1.5 }}>
+        {pnlViewModel.combinedReason}
+      </p>
 
       {/* RECONCILIATION COUNTS, DISCLOSED (task 2 UI requirement): reconciled/excluded/dead-spam
           counts are real fields already on unrealizedReconciliation — shown as plain counts here
@@ -1214,40 +1102,16 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <SyntheticPnlBlock syntheticPnl={syntheticPnl} />
       ) : displayMode === 'synthetic_per_chain' && syntheticPnl ? (
         <SyntheticPerChainPnlBlock perChain={syntheticPnl.perChain} />
-      ) : isBoundedSample ? (
-        // BOUNDED-SAMPLE TILES, DISCLOSED (contradictory-tiles follow-up task): every value here is
-        // `displayed.*` — the SAME `reconciliationSummary`-sourced numbers the disclosure block above
-        // shows, never `pnl.*` (pnlV2). `displayed.realizedPnlUsd == null` here means the caller
-        // hasn't wired `reconciliationSummary` at all — shown as PNL_UNAVAILABLE_MESSAGE, never a
-        // fabricated $0.00.
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          {/* TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): the headline
-              tile's own label switches away from "Realized PnL (Official)" — and the Integrity
-              badge switches from 'warning' to 'danger' — whenever
-              `displayed.trustGateTriggered` is true, so this exact state can never be styled as
-              official/locked. The number itself is never hidden (rule #5) — only the presentation. */}
-          <MetricCard label={displayed.realizedPnlTileLabel} value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
-          <MetricCard label={UNREALIZED_PNL_LABEL} value={displayed.unrealizedPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.unrealizedPnlUsd)} tone={toneFromNumber(displayed.unrealizedPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={1} />
-          <MetricCard label={TOTAL_PNL_LABEL} value={displayed.totalPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.totalPnlUsd)} tone={toneFromNumber(displayed.totalPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={2} />
-          <MetricCard label="ROI" value={displayed.roiLabel ?? 'Not calculated for bounded sample'} tone="neutral" index={3} />
-          <MetricCard label="Cost Basis" value={displayed.costBasisLabel ?? 'Not available for bounded sample'} index={4} />
-          <MetricCard label="Integrity" value={<StatusBadge label={displayed.integrityLabel} tone={displayed.trustGateTriggered ? 'danger' : 'warning'} />} index={5} />
-        </div>
       ) : (
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          <MetricCard label={REALIZED_PNL_LABEL} value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
-          <MetricCard
-            label={UNREALIZED_PNL_LABEL}
-            value={pnl.unrealizedPnlUsd == null ? 'Unavailable' : blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)}
-            tone={pnl.unrealizedPnlUsd == null || blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)}
-            sub={LIVE_PRICE_MOVEMENT_NOTE}
-            emphasis="muted"
-            index={1}
-          />
-          <MetricCard label={TOTAL_PNL_LABEL} value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={2} />
-          <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
-          <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
-          <MetricCard label="Integrity" value={<StatusBadge label="Not available" tone="neutral" />} index={5} />
+        // TOP ROW BOXES, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): ONE
+        // box grid for both the bounded-sample and normal cases — buildWalletPnlViewModel already
+        // resolves which real source (reconciliationSummary vs pnlV2) and which status/reason each
+        // box gets, so this render no longer needs its own separate bounded/normal branches.
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+          <PnlBoxTile label="Realized PnL" box={pnlViewModel.realizedBox} />
+          <PnlBoxTile label="Unrealized PnL" box={pnlViewModel.unrealizedBox} />
+          <PnlBoxTile label="ROI" box={pnlViewModel.roiBox} />
+          <PnlBoxTile label="Cost Basis" box={pnlViewModel.costBasisBox} />
         </div>
       )}
 
@@ -1261,27 +1125,25 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        {canonicalSampleUnavailable ? (
-          // FAIL-CLOSED, DISCLOSED (issue #2/#3 — "no $0 per-chain PnL"): never render pnlV2's own
-          // per-chain figures when the canonical sample is unavailable, regardless of
-          // `isBoundedSample` (which reads the raw `publicPnlStatus` prop and can disagree with the
-          // manifest audit) — pnlV2 is a completely separate engine with no awareness of manifest
-          // replay state, so its own numbers must never fill this gap with an unrelated $0.00 table.
-          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>{CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL}</p>
-        ) : isBoundedSample ? (
-          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>{PER_CHAIN_BOUNDED_SAMPLE_MESSAGE}</p>
+        {pnlViewModel.chainRows.length === 0 ? (
+          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL evidence for this scan.</p>
         ) : (
-          // hasCanonicalUnrealizedSource: `!== undefined`, NOT `!= null` — a caller that explicitly
-          // passes `null` (a real "checked, found nothing trustworthy" result) must still suppress
-          // the legacy per-chain figure; only a prop that was never supplied at all (a caller not
-          // yet migrated to this fix) falls back to it.
-          <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} hasCanonicalUnrealizedSource={unrealizedReconciliation !== undefined} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {pnlViewModel.chainRows.map((row) => <PnlChainRowItem key={row.chain} row={row} />)}
+          </div>
         )}
-        {/* ROBINHOOD ROW, DISCLOSED: rendered unconditionally whenever a real robinhoodResult exists,
-            independent of the EVM per-chain section's own state above (canonicalSampleUnavailable/
-            isBoundedSample/normal) — Robinhood's PnL gate is a completely separate real evaluation
-            from pnlV2's, so its own honest status is never blocked by an unrelated EVM-sample state. */}
-        {robinhoodResult && robinhoodResult.ok && <RobinhoodPnlRow robinhoodResult={robinhoodResult} />}
+        {/* ROBINHOOD PROOF, DISCLOSED: compact, real proof fields shown ONLY when
+            selectRobinhoodPnlLaneStatus itself says 'verified' (Phase 3 sidecar,
+            verifiedSwapCount > 0 — never loosened here) — the same gate the Robinhood row above
+            already reflects. */}
+        {pnlViewModel.robinhoodProof && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: '7px 10px 2px', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
+            <span>Source: {pnlViewModel.robinhoodProof.source}</span>
+            <span>Verified swaps: {pnlViewModel.robinhoodProof.verifiedSwaps}</span>
+            <span>Closed lots: {pnlViewModel.robinhoodProof.closedLots}</span>
+            <span>Price evidence: {pnlViewModel.robinhoodProof.priceEvidence}</span>
+          </div>
+        )}
       </div>
 
       {!isActive && (

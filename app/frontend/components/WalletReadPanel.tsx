@@ -144,6 +144,15 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
       {/* 6. PNL LANE SUMMARY — never merged */}
       <div>
         <SectionLabel>PnL Lanes</SectionLabel>
+        {/* SHARED WORDING, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task —
+            "CORTEX and UI use same PnL wording"): the SAME combinedReason string PnlStatusCard.tsx's
+            own header paragraph shows for this exact scan — both come from ONE call to
+            buildWalletPnlViewModel (page.tsx), never two independently-worded summaries. */}
+        {read.pnlEvidenceSummary && (
+          <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'rgba(203,213,225,0.8)', lineHeight: 1.5 }}>
+            {read.pnlEvidenceSummary.reason}
+          </p>
+        )}
         {read.pnlLanes.map((lane) => <PnlLaneRow key={lane.chainLabel} lane={lane} />)}
       </div>
 

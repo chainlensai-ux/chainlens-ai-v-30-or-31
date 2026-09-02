@@ -405,6 +405,11 @@ function run() {
     const holdingsViewSrc = read('app/frontend/components/HoldingsViewV2.tsx')
     const tabsSrc2 = read('app/frontend/components/WalletScannerTabsV3.tsx')
     const pnlStatusCardSrc = read('app/frontend/components/PnlStatusCard.tsx')
+    // SHARED VIEW MODEL, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): the
+    // Robinhood per-chain row/compact-proof moved out of a standalone RobinhoodPnlRow component into
+    // buildWalletPnlViewModel.ts's `chainRows`/`robinhoodProof` — read from there below instead of a
+    // dead JSX component name.
+    const viewModelSrc = read('app/frontend/lib/buildWalletPnlViewModel.ts')
     const summaryRowSrc2 = read('app/frontend/components/WalletScannerSummaryRowV3.tsx')
 
     // Requirement 1: no public "Holdings (V2)" label anywhere (the h3 JSX text, not disclosure prose
@@ -430,9 +435,9 @@ function run() {
 
     // Requirement 5: PnL per-chain breakdown shows Robinhood honestly, never a fake number.
     check('PnlStatusCard accepts a robinhoodResult prop', pnlStatusCardSrc.includes('robinhoodResult?: RobinhoodWalletScanResponse | null'))
-    check('a RobinhoodPnlRow is rendered under the Per-Chain Breakdown section whenever a real robinhoodResult exists', pnlStatusCardSrc.includes('{robinhoodResult && robinhoodResult.ok && <RobinhoodPnlRow robinhoodResult={robinhoodResult} />}'))
-    check('the exact required not-verified wording is used verbatim', pnlStatusCardSrc.includes('Robinhood: Not verified'))
-    check('a verified Robinhood PnL number is only rendered when isVerified is true — never for disabled/partial', pnlStatusCardSrc.includes('{fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)') && pnlStatusCardSrc.includes("const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'"))
+    check('a Robinhood row is added to chainRows under the Per-Chain Breakdown section whenever a real robinhoodResult exists', viewModelSrc.includes("chain: 'robinhood'"))
+    check('the not-verified Robinhood row status is the exact required label', viewModelSrc.includes("robinhoodLane === 'not_verified' ? 'Not verified'"))
+    check('a verified Robinhood PnL number is only rendered when robinhoodLane is verified — never for disabled/partial', viewModelSrc.includes("robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null"))
     check('WalletScannerSummaryRowV3 forwards robinhoodResult into PnlStatusCard', summaryRowSrc2.includes('robinhoodResult={robinhoodResult}\n        />') || /PnlStatusCard[\s\S]{0,400}robinhoodResult=\{robinhoodResult\}/.test(summaryRowSrc2))
 
     // Exercise mergeRobinhoodIntoPricedHoldings directly with real-shaped inputs.
@@ -486,6 +491,7 @@ function run() {
   //    Robinhood PnL gated strictly on Phase 3 verified evidence, CORTEX uses the same lane statuses ─
   {
     const pnlStatusCardSrc2 = read('app/frontend/components/PnlStatusCard.tsx')
+    const viewModelSrc2 = read('app/frontend/lib/buildWalletPnlViewModel.ts')
     const pageSrc2 = read('app/terminal/wallet-scanner/page.tsx')
     const workerSrc2 = read('workers/walletScanV2.ts')
 
@@ -548,19 +554,21 @@ function run() {
       }) === 'verified',
     )
 
-    // RobinhoodPnlRow reuses selectRobinhoodPnlLaneStatus — never a second, independent gate.
-    check('RobinhoodPnlRow computes isVerified via selectRobinhoodPnlLaneStatus, not a re-derived condition', pnlStatusCardSrc2.includes("const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'"))
-    check('verified compact proof names the Phase 3 sidecar as the source', pnlStatusCardSrc2.includes('Source: Robinhood Phase 3 sidecar'))
-    check('verified compact proof shows verified swap count from the audit, never an invented number', pnlStatusCardSrc2.includes('Verified swaps: {audit.verifiedSwapCount}'))
-    check('verified compact proof shows FIFO closed lots from the audit', pnlStatusCardSrc2.includes('Closed lots: {audit.fifoClosedLots}'))
-    check('verified compact proof states both-leg price evidence', pnlStatusCardSrc2.includes('Price evidence: both legs verified'))
+    // buildWalletPnlViewModel reuses selectRobinhoodPnlLaneStatus — never a second, independent gate.
+    check('buildWalletPnlViewModel computes robinhoodLane via selectRobinhoodPnlLaneStatus, not a re-derived condition', viewModelSrc2.includes('const robinhoodLane = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
+    check('verified compact proof names the Phase 3 sidecar as the source', viewModelSrc2.includes("source: 'Phase 3 sidecar'"))
+    check('verified compact proof shows verified swap count from the audit, never an invented number', viewModelSrc2.includes('verifiedSwaps: audit.verifiedSwapCount'))
+    check('verified compact proof shows FIFO closed lots from the audit', viewModelSrc2.includes('closedLots: audit.fifoClosedLots'))
+    check('verified compact proof states both-leg price evidence', viewModelSrc2.includes("priceEvidence: 'both legs verified'"))
     check('missing-proof copy uses the shared ROBINHOOD_PNL_NOT_VERIFIED_REASON', pnlStatusCardSrc2.includes('ROBINHOOD_PNL_NOT_VERIFIED_REASON'))
 
-    // Requirement 5: per-chain lane badges — Base/ETH share the EVM lane status, Robinhood gets its
-    // own distinct badge, and neither renders when its own input (chainsScanned/robinhoodResult) is
-    // absent — the "Base/ETH-only scan unchanged" acceptance test.
-    check('the per-chain lane badges are only ever built from real chainsScanned/robinhoodResult inputs — never a hardcoded chain list', pnlStatusCardSrc2.includes("(chainsScanned ?? [])") && pnlStatusCardSrc2.includes('.filter((c) => c === \'base\' || c === \'eth\' || c === \'ethereum\')'))
-    check('the Robinhood lane badge only renders when a real robinhoodResult exists — a Base/ETH-only scan never shows one', /\{robinhoodResult && \(\s*\n\s*<StatusBadge\s*\n\s*label=\{`robinhood: /.test(pnlStatusCardSrc2))
+    // Requirement 5: per-chain lane rows — Base/ETH share the EVM lane status, Robinhood gets its
+    // own distinct row, and neither renders when its own input (chainsScanned/robinhoodResult) is
+    // absent — the "Base/ETH-only scan unchanged" acceptance test. This now lives in
+    // buildWalletPnlViewModel.ts's chainRows (shared by PnlStatusCard and CORTEX), not a
+    // PnlStatusCard-local badge list.
+    check('the per-chain rows are only ever built from real chainsScanned inputs — never a hardcoded chain list', viewModelSrc2.includes("(chainsScanned ?? [])") && viewModelSrc2.includes('.filter((c) => c === \'base\' || c === \'eth\' || c === \'ethereum\')'))
+    check('the Robinhood row only renders when a real robinhoodResult exists — a Base/ETH-only scan never shows one', /if \(robinhoodResult\) \{[\s\S]{0,400}chain: 'robinhood'/.test(viewModelSrc2))
 
     // Requirement 1: robinhoodChainCallAudit's own robinhoodResultReceived/robinhoodHoldingsStatus
     // fields are read off the awaited result — re-confirmed here alongside the PnL lane checks since

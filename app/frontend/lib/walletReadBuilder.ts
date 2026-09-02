@@ -27,6 +27,13 @@ import type { ChainBreakdownRow } from '@/app/frontend/components/WalletProfileH
 import type { PnlConfidenceStatus, EvmPnlLaneStatus, RobinhoodPnlLaneStatus } from '@/app/frontend/components/PnlStatusCard'
 import type { RobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
+// TYPE-ONLY, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task — "CORTEX and UI
+// use same PnL wording"): a `import type` has zero runtime cost (erased at compile time), so this
+// does NOT pull PnlStatusCard.tsx/RobinhoodChainSection.tsx's React component code into this file —
+// this module stays exactly as "pure, no React/JSX dependency" as this file's own header requires.
+// The real buildWalletPnlViewModel(...) CALL happens at the page.tsx call site (a real React page,
+// no purity constraint) — this file only carries its already-computed plain-data result through.
+import type { WalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
 
 export type WalletReadConfidence = 'High' | 'Medium' | 'Low'
 
@@ -61,6 +68,12 @@ export type WalletReadV2 = {
   whyThisLabel: string[]
   evidence: WalletReadEvidence
   pnlLanes: WalletReadPnlLane[]
+  // SHARED PNL WORDING, DISCLOSED, ADDITIVE (Smart Money Score + PnL Evidence UI simplification
+  // task): the SAME combinedStatus/combinedReason PnlStatusCard.tsx's own header paragraph shows —
+  // both read from ONE call to buildWalletPnlViewModel, never two independently-worded summaries of
+  // the same evidence. `null` only when the caller (an older/unwired call site, or a test) didn't
+  // supply a pnlViewModel — never a fabricated summary.
+  pnlEvidenceSummary: { status: WalletPnlViewModel['combinedStatus']; reason: string } | null
   nextAction: string
 }
 
@@ -339,6 +352,10 @@ export function buildWalletReadV2(params: {
   robinhoodDisplayState: RobinhoodDisplayState
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined
   pnlConfidence: PnlConfidenceStatus
+  // OPTIONAL, ADDITIVE: omitted by any caller/test not yet wired to buildWalletPnlViewModel —
+  // pnlEvidenceSummary simply degrades to null (see WalletReadV2's own header), never a fabricated
+  // one built from a second, independent derivation.
+  pnlViewModel?: WalletPnlViewModel | null
 }): WalletReadV2 {
   const topChain = params.chainBreakdown.length > 0
     ? [...params.chainBreakdown].sort((a, b) => b.percent - a.percent)[0]
@@ -384,6 +401,7 @@ export function buildWalletReadV2(params: {
       matchedLotsCount: params.matchedLotsCount,
     }),
     pnlLanes: buildPnlLanes({ evmPnlLane: params.evmPnlLane, robinhoodPnlLane: params.robinhoodPnlLane, robinhoodResult: params.robinhoodResult }),
+    pnlEvidenceSummary: params.pnlViewModel ? { status: params.pnlViewModel.combinedStatus, reason: params.pnlViewModel.combinedReason } : null,
     nextAction: buildNextAction({
       evmPnlLane: params.evmPnlLane,
       robinhoodPnlLane: params.robinhoodPnlLane,

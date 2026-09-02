@@ -356,10 +356,22 @@ export function computeSmartMoneyScore(params: ComputeSmartMoneyScoreParams): Sm
 
   const status: SmartMoneyScoreStatus = meetsGate ? 'official' : 'not_yet_rated'
   const officialScore = meetsGate ? combineBreakdown(breakdown) : null
-  // PROVISIONAL, DISCLOSED: only behaviorQuality (the one category that needs no verified PnL
-  // evidence) is ever shown when not officially rated — never a blend with any performance
-  // category, and never labeled as the official score anywhere this value is consumed.
-  const provisionalBehaviorScore = !meetsGate ? breakdown.behaviorQuality : null
+  // PROVISIONAL, DISCLOSED, WIDENED (Wallet Scanner "Smart Money Score + PnL Evidence UI"
+  // simplification task — "show a provisional behaviour score using the current calculated score,
+  // not a big blank Not Yet Rated card"): previously this was ONLY breakdown.behaviorQuality (the
+  // one category that needs no verified PnL evidence at all) — deliberately never a blend with a
+  // performance category, so a wallet below the official gate could never show anything resembling
+  // a real performance read. That is now WIDER: this is combineBreakdown(breakdown) — the exact SAME
+  // weighted-average function (same weights, same "exclude null categories rather than treat them as
+  // 0" rule) the OFFICIAL score itself is built from, just computed BEFORE the verified-evidence gate
+  // is checked, over whatever categories this wallet's real evidence already supports (which, below
+  // the gate, is very often behaviorQuality alone anyway — verifiedProfitability/verifiedWinQuality/
+  // etc. all require verifiedLots.length > 0, and a wallet under MIN_VERIFIED_TRADES_FOR_OFFICIAL
+  // frequently has none). This NEVER changes officialScore's own gate or value (still null below the
+  // gate, still meetsGate-only above it) and is NEVER labeled or presented as the official score
+  // anywhere this value is consumed — see SmartMoneyScoreCard.tsx's own explicit "Not official"
+  // badge and reason line.
+  const provisionalBehaviorScore = !meetsGate ? combineBreakdown(breakdown) : null
 
   const reasonNotRated = meetsGate ? null
     : evidenceConfidence.totalMatchedLotCount == null

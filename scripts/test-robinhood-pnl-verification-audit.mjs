@@ -88,6 +88,13 @@ async function run() {
   const workerSrc = read('workers/walletScanV2.ts')
   const pnlCardSrc = read('app/frontend/components/PnlStatusCard.tsx')
   const rhSectionSrc = read('app/frontend/components/RobinhoodChainSection.tsx')
+  // SHARED VIEW MODEL, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): the
+  // Robinhood compact-proof gate/fields moved out of a standalone RobinhoodPnlRow component inside
+  // PnlStatusCard.tsx into buildWalletPnlViewModel.ts's `robinhoodProof` — the ONE selector both
+  // PnlStatusCard.tsx and CORTEX (walletReadBuilder.ts/page.tsx) now read for this exact data, so
+  // this file's own checks for "gated on verified", the audit field names, and the proof strings now
+  // read from there, not from a JSX literal.
+  const viewModelSrc = read('app/frontend/lib/buildWalletPnlViewModel.ts')
   const pageSrc = read('app/terminal/wallet-scanner/page.tsx')
   const holdingsSrc = read('lib/engine/modules/holdings/fetchHoldings.ts')
 
@@ -267,7 +274,7 @@ async function run() {
 
   // ── 9. If source marker missing, UI shows Robinhood not verified ─────────────────────────────
   {
-    check('PnlStatusCard compact-proof is gated on isVerified (missing proof cannot render it)', pnlCardSrc.includes('{isVerified && audit ?') || pnlCardSrc.includes('{isVerified && audit'))
+    check('buildWalletPnlViewModel\'s compact proof is gated on robinhoodLane === \'verified\' AND a real audit (missing proof cannot render it)', viewModelSrc.includes("robinhoodLane === 'verified' && audit"))
     check('PnlStatusCard not-verified copy uses the shared ROBINHOOD_PNL_NOT_VERIFIED_REASON', pnlCardSrc.includes('ROBINHOOD_PNL_NOT_VERIFIED_REASON'))
     check('Robinhood tab not-verified copy is the exact required sentence', rhSectionSrc.includes(ROBINHOOD_PNL_NOT_VERIFIED_REASON))
     check('Robinhood tab refuses verified without selectRobinhoodPnlLaneStatus', rhSectionSrc.includes('const robinhoodPnlVerified = selectRobinhoodPnlLaneStatus(result) === \'verified\''))
@@ -276,17 +283,17 @@ async function run() {
   // ── 10. CORTEX and UI use the same Robinhood lane status ─────────────────────────────────────
   {
     check('CORTEX (buildCortexReadV2) calls selectRobinhoodPnlLaneStatus with the real robinhoodResult', pageSrc.includes('const robinhoodPnlLane = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
-    check('PnlStatusCard badges also call selectRobinhoodPnlLaneStatus', pnlCardSrc.includes('const robinhoodPnlLaneStatus = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
+    check('buildWalletPnlViewModel (called by both PnlStatusCard and CORTEX) calls selectRobinhoodPnlLaneStatus', viewModelSrc.includes('const robinhoodLane = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
     check('the Robinhood tab calls the same selectRobinhoodPnlLaneStatus', rhSectionSrc.includes('selectRobinhoodPnlLaneStatus(result)'))
     check('the selector lives in one file (RobinhoodChainSection) and is re-exported from PnlStatusCard — no second independent gate', /export function selectRobinhoodPnlLaneStatus\(/.test(rhSectionSrc) && /export \{ selectRobinhoodPnlLaneStatus/.test(pnlCardSrc))
   }
 
   // ── 11. Compact proof only when verified; decoder/FIFO gates not loosened ────────────────────
   {
-    check('compact proof lists Verified swaps', pnlCardSrc.includes('Verified swaps: {audit.verifiedSwapCount}') && rhSectionSrc.includes('Verified swaps: {pnlAudit.verifiedSwapCount}'))
-    check('compact proof lists Closed lots', pnlCardSrc.includes('Closed lots: {audit.fifoClosedLots}') && rhSectionSrc.includes('Closed lots: {pnlAudit.fifoClosedLots}'))
-    check('compact proof states both-leg price evidence', pnlCardSrc.includes('Price evidence: both legs verified') && rhSectionSrc.includes('Price evidence: both legs verified'))
-    check('compact proof names Source: Robinhood Phase 3 sidecar', pnlCardSrc.includes('Source: Robinhood Phase 3 sidecar') && rhSectionSrc.includes('Source: Robinhood Phase 3 sidecar'))
+    check('compact proof lists Verified swaps', viewModelSrc.includes('verifiedSwaps: audit.verifiedSwapCount') && rhSectionSrc.includes('Verified swaps: {pnlAudit.verifiedSwapCount}'))
+    check('compact proof lists Closed lots', viewModelSrc.includes('closedLots: audit.fifoClosedLots') && rhSectionSrc.includes('Closed lots: {pnlAudit.fifoClosedLots}'))
+    check('compact proof states both-leg price evidence', viewModelSrc.includes("priceEvidence: 'both legs verified'") && rhSectionSrc.includes('Price evidence: both legs verified'))
+    check('compact proof names Source: Robinhood Phase 3 sidecar', viewModelSrc.includes("source: 'Phase 3 sidecar'") && rhSectionSrc.includes('Source: Robinhood Phase 3 sidecar'))
     check('resolveRobinhoodWalletPnl still starts from confidence === \'high\' only — gate not loosened', /const verified = activity\.swapDecodeAudits\.filter\(\(a\) => a\.confidence === 'high'\)/.test(scannerSrc))
     check('resolveRobinhoodWalletPnl still drops a swap when either re-checked price is missing', scannerSrc.includes('if (tokenInPriceUsd == null || tokenInPriceUsd <= 0 || tokenOutPriceUsd == null || tokenOutPriceUsd <= 0) continue'))
     check('scanRobinhoodWallet logs [robinhoodPnlVerificationAudit] on every sidecar scan', scannerSrc.includes("console.log('[robinhoodPnlVerificationAudit]', pnlVerificationAudit)"))

@@ -69,12 +69,22 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
   const displayedVerifiedCoveragePercent = canonicalSampleUnavailable ? null : evidenceConfidence.verifiedCoveragePercent
   const displayedFullyPricedTradeCount = canonicalSampleUnavailable ? null : evidenceConfidence.fullyPricedTradeCount
 
+  // PROVISIONAL HEADLINE, DISCLOSED (Wallet Scanner "Smart Money Score + PnL Evidence UI"
+  // simplification task — "do not show a big blank Not Yet Rated card when a provisional score
+  // exists"): computeSmartMoneyScore.ts now widens provisionalBehaviorScore to the same weighted
+  // combine the official score uses, computed over whatever categories this wallet's evidence
+  // already supports — so whenever it's non-null, THAT becomes the headline (title "Provisional
+  // Behaviour Score", badge "Not official"), not a bare "Not Yet Rated" string. "Not Yet Rated" is
+  // now reserved for the genuine blank case: no breakdown category has any real data at all yet.
+  const hasProvisionalScore = !isOfficial && !canonicalSampleUnavailable && provisionalBehaviorScore != null
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-      {/* HEADER: main score OR Not Yet Rated state, plus a separate Evidence Confidence badge. */}
+      {/* HEADER: official score, provisional score, Evidence Unavailable, or genuine Not Yet Rated —
+          plus a separate Evidence Confidence badge. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.70)' }}>
-          Smart Money Score
+          {canonicalSampleUnavailable || !hasProvisionalScore ? 'Smart Money Score' : 'Provisional Behaviour Score'}
         </span>
         {canonicalSampleUnavailable ? (
           <span style={{ fontSize: '15px', fontWeight: 800, color: '#f87171' }}>Evidence Unavailable</span>
@@ -85,8 +95,17 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
             </span>
             <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>/ 100</span>
           </>
+        ) : hasProvisionalScore ? (
+          <>
+            <span style={{ fontSize: '22px', fontWeight: 900, color: '#c4b5fd' }}>{provisionalBehaviorScore}</span>
+            <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>/ 100</span>
+            <StatusBadge label="Not official" tone="warning" />
+          </>
         ) : (
           <span style={{ fontSize: '15px', fontWeight: 800, color: '#fbbf24' }}>Not Yet Rated</span>
+        )}
+        {isOfficial && (
+          <StatusBadge label="Rated" tone="success" glow />
         )}
         {!canonicalSampleUnavailable && (
           <StatusBadge label={`${evidenceConfidence.level.toUpperCase()} EVIDENCE CONFIDENCE`} tone={confidenceTone(evidenceConfidence.level)} glow={evidenceConfidence.level === 'high'} />
@@ -97,6 +116,11 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
           The canonical verified sample for this wallet could not be reproduced this scan — no score,
           trade count, or coverage figure can be shown until it is.
+        </p>
+      ) : hasProvisionalScore ? (
+        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+          Official rating requires at least {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% verified closed-history coverage.
+          {reasonNotRated ? ` ${reasonNotRated}` : ''}
         </p>
       ) : !isOfficial && (
         <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
@@ -152,16 +176,11 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         </div>
       </div>
 
-      {/* PROVISIONAL BEHAVIOR READ, DISCLOSED: only ever shown when NOT officially rated, clearly
-          labeled as provisional/behavior-only — never presented as, or near, the official score. */}
-      {!isOfficial && provisionalBehaviorScore != null && (
-        <div style={{ padding: '8px 10px', borderRadius: '10px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.20)' }}>
-          <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#c4b5fd', marginBottom: '3px' }}>
-            Provisional Behavior Read (not an official score)
-          </div>
-          <div style={{ fontSize: '13px', fontWeight: 800, color: '#c4b5fd' }}>{provisionalBehaviorScore} / 100</div>
-        </div>
-      )}
+      {/* PROVISIONAL-SCORE BOX, REMOVED, DISCLOSED (Smart Money Score + PnL Evidence UI
+          simplification task — "PnL Evidence is too complicated and duplicated"): this used to repeat
+          provisionalBehaviorScore in a second box below the header — now that the header itself
+          shows the provisional score prominently (see hasProvisionalScore above), duplicating it here
+          added nothing. The full category breakdown right below still shows every real input. */}
 
       {/* PERFORMANCE VS BEHAVIOR BREAKDOWN, DISCLOSED: shown for BOTH official and not-yet-rated
           states (a not-yet-rated wallet can still show what evidence exists — just not the
