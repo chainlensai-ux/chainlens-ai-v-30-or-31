@@ -28,7 +28,7 @@ export const CLARK_DAILY_BY_PLAN: Record<string, number> = {
 }
 
 export const SCAN_DAILY_LIMITS: Record<UserPlan, number | null> = {
-  free: 1,
+  free: 3,
   pro: 30,
   elite: null,
 }
@@ -37,7 +37,7 @@ export const SCAN_HISTORY_LIMITS = { free: 5, pro: 30, elite: 100 } as const
 export type DeepScanQuotaPeriod = 'day' | 'month'
 
 export const SCAN_QUOTA_PERIOD: Record<UserPlan, DeepScanQuotaPeriod | null> = {
-  free: 'day',
+  free: 'month',
   pro: 'month',
   elite: null,
 }
@@ -209,6 +209,7 @@ export const pricingPlans: PricingPlan[] = [
     badge: 'START HERE',
     ctaClass: 'cta-free',
     features: [
+      'Unlimited normal scans',
       deepScanLimitLabel('free'),
       'Token Scanner — market, holders, LP Safety, Risk Engine, and dev checks',
       'Basic Wallet Scanner',
@@ -236,6 +237,7 @@ export const pricingPlans: PricingPlan[] = [
     badge: 'MOST POPULAR',
     ctaClass: 'cta-pro',
     features: [
+      'Unlimited normal scans',
       deepScanLimitLabel('pro'),
       'Full Token Scanner',
       'Full Wallet Scanner',
@@ -284,7 +286,8 @@ export const PRICING_PROOF = [
   'Wallet Scanner and Portfolio Intelligence',
   'Watchlist on every plan',
   'Clark AI — on-chain analysis, not trading signals',
-  'Deep scans: 1 / day on Free, 30 / month on Pro, unlimited on Elite',
+  'Unlimited normal scans on every plan',
+  'Deep scans: 3 / month on Free, 30 / month on Pro, unlimited on Elite',
 ] as const
 
 export type PlanToolNavItem = { icon: string; name: string; href: string; note: string }
@@ -305,7 +308,7 @@ export const PLAN_TOOL_NAV: Array<{
     border: 'rgba(103,232,249,0.20)',
     tools: [
       { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: 'Market, holders, LP Safety, Risk Engine, dev checks' },
-      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Basic wallet reads · 1 deep scan/day' },
+      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited normal scans · 3 deep scans/month' },
       { icon: '📊', name: 'Portfolio', href: '/terminal/portfolio', note: 'Portfolio Intelligence' },
       { icon: '☆', name: 'Watchlist', href: '/terminal/watchlist', note: 'Full access' },
       { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '3 prompts/day · 3 saved chats' },
@@ -319,7 +322,7 @@ export const PLAN_TOOL_NAV: Array<{
     border: 'rgba(139,92,246,0.20)',
     tools: [
       { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: 'Full token analysis' },
-      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Full wallet reads · 30 deep scans/month' },
+      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited normal scans · 30 deep scans/month' },
       { icon: '📡', name: 'Base Radar', href: '/terminal/base-radar', note: '' },
       { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '50 prompts/day · 10 saved chats' },
     ],
@@ -333,21 +336,21 @@ export const PLAN_TOOL_NAV: Array<{
     tools: [
       { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '300 prompts/day · unlimited history' },
       { icon: '🐋', name: 'Whale Alerts', href: '/terminal/whale-alerts', note: 'FOMO Board · most PnL 24H / 7D / 30D / ALL' },
-      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited deep scans' },
+      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited normal and deep scans' },
     ],
   },
 ]
 
 export function planFaqWhatIsIncluded(): string {
   return [
-    `Free: ${deepScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI at ${CLARK_DAILY_LIMITS.free} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.free} saved chats.`,
-    `Pro ($30/month): ${deepScanLimitLabel('pro')}, full Token Scanner, full Wallet Scanner, Portfolio Intelligence, Watchlist, Clark AI at ${CLARK_DAILY_LIMITS.pro} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved chats, Base Radar, and Whale Alerts.`,
+    `Free: unlimited normal scans and ${deepScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI at ${CLARK_DAILY_LIMITS.free} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.free} saved chats.`,
+    `Pro ($30/month): unlimited normal scans, ${deepScanLimitLabel('pro')}, full Token Scanner, full Wallet Scanner, Portfolio Intelligence, Watchlist, Clark AI at ${CLARK_DAILY_LIMITS.pro} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved chats, Base Radar, and Whale Alerts.`,
     `Elite ($60/month): everything in Pro, ${deepScanLimitLabel('elite').toLowerCase()}, Clark AI at ${CLARK_DAILY_LIMITS.elite} prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`,
   ].join(' ')
 }
 
 export function planFaqProVsElite(): string {
-  return `Pro and Elite share Token Scanner, Wallet Scanner, Portfolio, Watchlist, Base Radar, and Whale Alerts. Pro includes ${deepScanLimitLabel('pro')}, ${CLARK_DAILY_LIMITS.pro} Clark prompts per day, and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved Clark chats. Elite adds ${deepScanLimitLabel('elite').toLowerCase()}, ${CLARK_DAILY_LIMITS.elite} Clark prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`
+  return `Pro and Elite share Token Scanner, Wallet Scanner, Portfolio, Watchlist, Base Radar, and Whale Alerts. Every plan includes unlimited normal scans. Pro includes ${deepScanLimitLabel('pro')}, ${CLARK_DAILY_LIMITS.pro} Clark prompts per day, and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved Clark chats. Elite adds ${deepScanLimitLabel('elite').toLowerCase()}, ${CLARK_DAILY_LIMITS.elite} Clark prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`
 }
 
 export function planFaqClarkLimits(): string {

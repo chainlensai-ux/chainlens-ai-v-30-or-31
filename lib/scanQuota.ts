@@ -2,10 +2,11 @@ import { SCAN_DAILY_LIMITS, deepScanQuotaPeriod, type UserPlan } from './pricing
 
 // Deep-scan quota for Wallet Scanner deep mode only.
 // Token Scanner uses its own per-minute rate limit in /api/token and must not
-// call consumeDailyScan — otherwise Free's advertised 1 deep scan is burned
+// call consumeDailyScan — otherwise Free's advertised 3 deep scans are burned
 // by a token lookup. `null` limit = unlimited (Elite). Do not coalesce null
 // with `??` (that would treat Elite as Free).
-// Free resets daily (UTC midnight). Pro resets monthly (1st of next UTC month).
+// Free and Pro reset monthly (1st of next UTC month). Normal wallet scans never
+// consume this pool.
 
 const buckets = new Map<string, { count: number; resetAt: number }>()
 let nowFn = () => Date.now()
