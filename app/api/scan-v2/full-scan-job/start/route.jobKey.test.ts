@@ -10,7 +10,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { jobKey } from './route'
+import { fullScanJobKey as jobKey } from '@/lib/server/fullScanJobs'
 
 describe('jobKey — cache-version namespace bump', () => {
   it('uses the v2 key namespace, never the old v1 one', () => {

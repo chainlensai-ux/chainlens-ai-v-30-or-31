@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { clearWhaleFeedCache } from '@/app/api/whale-alerts/route'
+import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { logRpcCall } from '@/lib/server/rpcDebug'

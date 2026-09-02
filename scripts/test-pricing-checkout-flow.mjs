@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const pricing = readFileSync(new URL('../app/pricing/page.tsx', import.meta.url), 'utf8')
+const homepage = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8')
 const planConfig = readFileSync(new URL('../lib/pricingPlans.ts', import.meta.url), 'utf8')
 
 assert.match(planConfig, /export const pricingPlans: PricingPlan\[\] = \[/)
@@ -38,6 +39,10 @@ assert.match(pricing, /'Opening checkout…' : 'Crypto'/, 'crypto option must re
 assert.match(pricing, /USDC \/ ETH on Base/)
 assert.match(pricing, /'Opening checkout…' : 'Card'/, 'card option must read Card, not Pay with card')
 assert.match(pricing, /Secure card checkout/)
+assert.doesNotMatch(homepage, /cta: 'Pay with Crypto'/)
+assert.match(homepage, /cta: 'Get Started'/)
+assert.match(homepage, /cta: 'Upgrade to Pro'/)
+assert.match(homepage, /cta: 'Upgrade to Elite'/)
 
 assert.match(pricing, /startCheckout\(selectedPlanId, 'crypto'\)/)
 assert.match(pricing, /startCheckout\(selectedPlanId, 'card'\)/)

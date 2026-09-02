@@ -21,13 +21,7 @@ import { NextResponse, after } from 'next/server'
 import { redis } from '@/lib/server/cache/redisClient'
 import { router } from '@/src/deployment/index'
 import { markV1Triggered } from '@/app/api/_shared/v1Detector'
-
-export type JobErrorShape = { message: string; category: string; details?: string[] }
-
-export type FullScanJobResult =
-  | { status: 'pending' }
-  | { status: 'done'; success: true; data: unknown }
-  | { status: 'done'; success: false; error: JobErrorShape }
+import { fullScanJobKey, type FullScanJobResult, type JobErrorShape } from '@/lib/server/fullScanJobs'
 
 const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — enough headroom for reasonable polling
 
@@ -40,9 +34,6 @@ const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — enough headroom for reasonable
 // job started before this deploy simply reads as `not-found` after redeploy, forcing a clean re-scan
 // with the current, fixed reconciliation logic rather than ever serving a stale legacy-shaped
 // payload. Never affects TTL/expiry behavior — only which key namespace this deploy reads/writes.
-export function jobKey(jobId: string): string {
-  return `v2:full-scan-job:${jobId}`
-}
 
 // Never throws — a Redis write failure (including the protocol mismatch disclosed in
 // redisClient.ts's header) degrades to a logged warning, not a crashed request. Per this task's
@@ -87,14 +78,14 @@ export async function POST(req: Request): Promise<Response> {
     // Mark pending BEFORE returning, so an immediate poll never sees "not found" for a job that was
     // actually accepted. Always attempted, even if Redis is unreachable — see file header;
     // safeRedisSet degrades to a logged warning rather than throwing or falling back to sync mode.
-    await safeRedisSet(jobKey(jobId), { status: 'pending' })
+    await safeRedisSet(fullScanJobKey(jobId), { status: 'pending' })
 
     // Runs AFTER this response is sent — the real mechanism that decouples the client's request
     // lifetime from the scan's actual duration. Never throws: runScanToJobResult already catches
     // everything and always resolves to a valid FullScanJobResult; safeRedisSet never throws either.
     after(async () => {
       const job = await runScanToJobResult(rawBody, ip)
-      await safeRedisSet(jobKey(jobId), job)
+      await safeRedisSet(fullScanJobKey(jobId), job)
     })
 
     return NextResponse.json({ success: true, jobId, job: { status: 'pending' } })

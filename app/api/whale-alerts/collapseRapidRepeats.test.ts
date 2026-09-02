@@ -7,7 +7,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { collapseRapidRepeats } from './route'
+import { collapseRapidWhaleAlertRepeats as collapseRapidRepeats } from '@/lib/server/whaleAlertDedup'
 
 function row(overrides: Record<string, unknown>) {
   return {

@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolvePreservedResultOnScanStart } from './page'
+import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
 import type { WalletV2Report } from './page'
 
 function report(walletAddress: string, totalValueUsd: number): WalletV2Report {

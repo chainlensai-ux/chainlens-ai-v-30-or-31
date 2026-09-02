@@ -27,15 +27,15 @@ function envBool(name: string, fallback: boolean): boolean {
   return raw.trim().toLowerCase() === 'true'
 }
 
-export const PUMP_ALERT_MAX_CAP_USD = envNumber('PUMP_ALERT_MAX_CAP_USD', 30_000_000)
-export const PUMP_ALERT_MIN_LIQUIDITY_USD = envNumber('PUMP_ALERT_MIN_LIQUIDITY_USD', 5_000)
-export const PUMP_ALERT_MIN_VOLUME_24H_USD = envNumber('PUMP_ALERT_MIN_VOLUME_24H_USD', 5_000)
-export const PUMP_ALERT_MIN_24H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_24H_CHANGE_PCT', 5)
-export const PUMP_ALERT_MIN_6H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_6H_CHANGE_PCT', 3)
-export const PUMP_ALERT_MIN_1H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_1H_CHANGE_PCT', 1.5)
-export const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 20)
-export const PUMP_ALERT_MAX_RAW_CANDIDATES = envNumber('PUMP_ALERT_MAX_RAW_CANDIDATES', 500)
-export const PUMP_ALERT_REQUIRE_EXACT_7D = envBool('PUMP_ALERT_REQUIRE_EXACT_7D', false)
+const PUMP_ALERT_MAX_CAP_USD = envNumber('PUMP_ALERT_MAX_CAP_USD', 30_000_000)
+const PUMP_ALERT_MIN_LIQUIDITY_USD = envNumber('PUMP_ALERT_MIN_LIQUIDITY_USD', 5_000)
+const PUMP_ALERT_MIN_VOLUME_24H_USD = envNumber('PUMP_ALERT_MIN_VOLUME_24H_USD', 5_000)
+const PUMP_ALERT_MIN_24H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_24H_CHANGE_PCT', 5)
+const PUMP_ALERT_MIN_6H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_6H_CHANGE_PCT', 3)
+const PUMP_ALERT_MIN_1H_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_1H_CHANGE_PCT', 1.5)
+const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 20)
+const PUMP_ALERT_MAX_RAW_CANDIDATES = envNumber('PUMP_ALERT_MAX_RAW_CANDIDATES', 500)
+const PUMP_ALERT_REQUIRE_EXACT_7D = envBool('PUMP_ALERT_REQUIRE_EXACT_7D', false)
 const PUMP_ALERT_MIN_VOL_LIQ_RATIO = 0.3
 
 const STABLE_AND_WRAPPED_DENYLIST = new Set([
@@ -56,7 +56,7 @@ const EXCLUDED_SYMBOLS = new Set([...STABLE_AND_WRAPPED_DENYLIST, ...ESTABLISHED
 const ESTABLISHED_NAME_PATTERN = /\b(aerodrome|uniswap|velodrome|lp\s*token|liquidity\s*pool|bridged|wrapped|staked|yield\s*bearing|solana)\b/i
 const LP_SYMBOL_PATTERN = /(^|[-_/])lp($|[-_/])|vamm-|vlp-/i
 
-export function isMajorStableWrappedOrLp(symbol: string, name: string): boolean {
+function isMajorStableWrappedOrLp(symbol: string, name: string): boolean {
   const sym = symbol.toUpperCase()
   if (EXCLUDED_SYMBOLS.has(sym)) return true
   if (ESTABLISHED_NAME_PATTERN.test(name)) return true
@@ -135,7 +135,7 @@ export type PumpEvaluation =
   | { qualified: true; window: PumpMomentumWindow; changeValuePct: number; volumeLiquidityRatio: number | null }
   | { qualified: false; reason: PumpRejectionReason }
 
-export function parsePairCreatedAtMs(raw: unknown): number | null {
+function parsePairCreatedAtMs(raw: unknown): number | null {
   if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
     return raw < 1e12 ? Math.round(raw * 1000) : raw
   }
@@ -152,7 +152,7 @@ export function parsePairCreatedAtMs(raw: unknown): number | null {
   return null
 }
 
-export function tokenAgeDaysFromPairCreatedAtMs(pairCreatedAtMs: number | null, nowMs: number = Date.now()): number | null {
+function tokenAgeDaysFromPairCreatedAtMs(pairCreatedAtMs: number | null, nowMs: number = Date.now()): number | null {
   if (pairCreatedAtMs == null || !Number.isFinite(pairCreatedAtMs) || pairCreatedAtMs <= 0) return null
   const days = (nowMs - pairCreatedAtMs) / 86_400_000
   if (!Number.isFinite(days)) return null
@@ -171,12 +171,12 @@ export function tokenAgeDaysFromPairCreatedAtMs(pairCreatedAtMs: number | null, 
 // marketCapUsd is only ever assigned from pair.marketCap/attrs.market_cap_usd, never from fdvUsd),
 // so the collapse parameter is removed: a real, positive, provider-reported market cap is always
 // kept, whether or not it happens to equal FDV.
-export function sanitizeMarketCapUsd(marketCapUsd: number | null): number | null {
+function sanitizeMarketCapUsd(marketCapUsd: number | null): number | null {
   if (marketCapUsd == null || marketCapUsd <= 0) return null
   return marketCapUsd
 }
 
-export function mergeNormalizedCandidate(keep: NormalizedCandidate, incoming: NormalizedCandidate): NormalizedCandidate {
+function mergeNormalizedCandidate(keep: NormalizedCandidate, incoming: NormalizedCandidate): NormalizedCandidate {
   return {
     ...keep,
     marketCapUsd: keep.marketCapUsd ?? incoming.marketCapUsd,
@@ -192,7 +192,7 @@ export function mergeNormalizedCandidate(keep: NormalizedCandidate, incoming: No
   }
 }
 
-export function evaluatePumpCandidate(c: NormalizedCandidate): PumpEvaluation {
+function evaluatePumpCandidate(c: NormalizedCandidate): PumpEvaluation {
   const sym = c.symbol.toUpperCase()
   if (isMajorStableWrappedOrLp(sym, c.name)) return { qualified: false, reason: 'majorStableWrapped' }
   const marketCapUsd = sanitizeMarketCapUsd(c.marketCapUsd)
@@ -217,7 +217,7 @@ export function evaluatePumpCandidate(c: NormalizedCandidate): PumpEvaluation {
   return { qualified: false, reason: 'noMomentum' }
 }
 
-export function rankPumpCandidate(c: NormalizedCandidate, evaluation: Extract<PumpEvaluation, { qualified: true }>): number {
+function rankPumpCandidate(c: NormalizedCandidate, evaluation: Extract<PumpEvaluation, { qualified: true }>): number {
   let score = 0
   score += Math.min(Math.max(c.priceChange24hPct ?? 0, -100), 500) * 1.0
   score += Math.min(Math.max(c.priceChange6hPct ?? 0, -100), 300) * 0.6

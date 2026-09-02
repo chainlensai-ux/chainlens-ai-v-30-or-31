@@ -19,7 +19,7 @@
 
 import { NextResponse } from 'next/server'
 import { redis } from '@/lib/server/cache/redisClient'
-import { jobKey, type FullScanJobResult } from '../start/route'
+import { fullScanJobKey, type FullScanJobResult } from '@/lib/server/fullScanJobs'
 
 export async function GET(req: Request): Promise<Response> {
   try {
@@ -30,7 +30,7 @@ export async function GET(req: Request): Promise<Response> {
 
     let job: FullScanJobResult | null = null
     try {
-      job = await redis.get<FullScanJobResult>(jobKey(jobId))
+      job = await redis.get<FullScanJobResult>(fullScanJobKey(jobId))
     } catch (err) {
       // Redis unreachable/misconfigured (see redisClient.ts's header) — degrades to the same
       // honest "not-found" a genuinely missing job would produce, never a thrown error.

@@ -8,7 +8,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { NextRequest } from 'next/server'
-import { validatePoolProvenanceRequestBody, matchesKnownForensicCase, KNOWN_FORENSIC_CASE, GET, POST } from './route'
+import { GET, POST } from './route'
+import { validatePoolProvenanceRequestBody, matchesKnownForensicCase, KNOWN_FORENSIC_CASE } from '@/lib/server/poolProvenanceRequest'
 
 const VALID_BODY = { ...KNOWN_FORENSIC_CASE }
 

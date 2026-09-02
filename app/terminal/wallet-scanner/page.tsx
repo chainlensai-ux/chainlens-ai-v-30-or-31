@@ -31,6 +31,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
+import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
 import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
@@ -277,14 +278,6 @@ function buildCortexReadV2(
 // complete result, it never constructs a new partial one); a scan of a genuinely different wallet
 // (or no prior result at all) starts from null, so a wallet's total can never be shown while a
 // DIFFERENT wallet is being scanned.
-export function resolvePreservedResultOnScanStart(
-  prevResult: WalletV2Report | null,
-  newScanAddress: string,
-): WalletV2Report | null {
-  const prevAddress = prevResult?.scanMetadata?.walletAddress
-  if (typeof prevAddress === 'string' && prevAddress.toLowerCase() === newScanAddress.toLowerCase()) return prevResult
-  return null
-}
 
 // ATOMIC SCAN ENVELOPE, DISCLOSED (live-value staleness task): the report and the identity of the
 // scan that produced it are held in ONE state value, always replaced wholesale — see

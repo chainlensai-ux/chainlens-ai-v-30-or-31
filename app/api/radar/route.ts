@@ -480,7 +480,7 @@ const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
 // cached result instead of each re-triggering the full pipeline independently.
 const RADAR_FULL_CACHE_TTL_MS = 100 * 1000
 const RADAR_SHALLOW_CACHE_TTL_MS = 30 * 1000
-export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
+const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
 type RadarPayloadCacheEntry = { cachedAt: number; ttlMs: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; mode: 'shallow' | 'full'; _debug?: Record<string, unknown> } }
 const radarPayloadCache = new Map<string, RadarPayloadCacheEntry>()
 // CROSS-INSTANCE-PAYLOAD-FALLBACK, DISCLOSED (investigated: Robinhood Radar consistently showed

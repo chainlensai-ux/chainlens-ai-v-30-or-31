@@ -24,7 +24,7 @@ type PayPalWebhookBody = {
   }
 }
 
-export function planFromCustomId(customId: string | undefined): 'pro' | 'elite' {
+function planFromCustomId(customId: string | undefined): 'pro' | 'elite' {
   return customId?.startsWith('elite:') ? 'elite' : 'pro'
 }
 
@@ -35,13 +35,13 @@ export function planFromCustomId(customId: string | undefined): 'pro' | 'elite' 
 // create-subscription route (e.g. directly against the PayPal API) with a mismatched/forged
 // custom_id — never trust custom_id's plan claim alone when PayPal's own plan_id is available on
 // the same event to cross-check it against.
-export function planMatchesPlanId(plan: 'pro' | 'elite', planId: string | undefined): boolean {
+function planMatchesPlanId(plan: 'pro' | 'elite', planId: string | undefined): boolean {
   if (!planId) return true // event didn't include plan_id (not all event types do) — nothing to cross-check
   const expected = plan === 'elite' ? process.env.PAYPAL_ELITE_PLAN_ID : process.env.PAYPAL_PRO_PLAN_ID
   return !expected || expected === planId
 }
 
-export function userIdFromCustomId(customId: string | undefined): string | null {
+function userIdFromCustomId(customId: string | undefined): string | null {
   if (!customId) return null
   // custom_id is formatted as "<plan>:<userId>" by /api/paypal/create-subscription.
   const parts = customId.split(':')
@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
   return handlePayPalWebhook(request)
 }
 
-export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebhookDeps = {}) {
+async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebhookDeps = {}) {
   const getServiceClient = deps.getServiceClient ?? createServiceRoleClient
   const activatePlan = deps.activatePlan ?? activateUserPlanServerSide
   const verifySignature = deps.verifySignature ?? verifyPayPalWebhookSignature

@@ -346,7 +346,7 @@ export default function PricingPage() {
             </div>
             <p style={{ marginTop:11, color:'#94a3b8', lineHeight:1.5, fontSize:14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
             <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:11 }}>
-              {['Pay with crypto', 'Built for Base', 'Auto activation'].map((chip) => (
+              {['Built for Base', 'Secure checkout', 'Auto activation'].map((chip) => (
                 <span key={chip} style={{ borderRadius:999, border:'1px solid rgba(148,163,184,.20)', padding:'6px 10px', fontSize:11, color:'#cbd5e1', background:'rgba(15,23,42,.45)' }}>{chip}</span>
               ))}
             </div>
@@ -522,10 +522,10 @@ export default function PricingPage() {
           </div>
         )}
 
-        {/* Crypto payment disclosure */}
+        {/* Checkout disclosure */}
         {(!planReady || userPlan === 'free') && (
           <p style={{ marginTop:18, textAlign:'center', fontSize:11, color:'#3a5268', letterSpacing:'.04em' }}>
-            Pay with crypto. Recommended: USDC on Base, USDC on Ethereum, or ETH. Your plan activates automatically after payment confirmation.
+            Choose crypto or card at checkout. Your plan activates automatically after payment confirmation.
           </p>
         )}
 

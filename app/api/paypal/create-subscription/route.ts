@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
   return handleCreateSubscription(request)
 }
 
-export async function handleCreateSubscription(request: NextRequest, deps: CreateSubscriptionDeps = {}) {
+async function handleCreateSubscription(request: NextRequest, deps: CreateSubscriptionDeps = {}) {
   const audit = emptyPaypalPaymentAudit()
   if (!limiter.check(getClientIp(request))) {
     return NextResponse.json({ error: 'Too many requests.' }, { status: 429 })

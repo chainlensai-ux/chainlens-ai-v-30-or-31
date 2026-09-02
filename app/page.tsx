@@ -1,7 +1,6 @@
 
 'use client'
 
-import { useState } from 'react'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
 import Navbar from '@/components/Navbar'
@@ -11,6 +10,19 @@ import Reveal from '@/components/home/Reveal'
 import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
+
+type Testimonial = {
+  handle: string
+  name: string
+  initials: string
+  grad: string
+  avatar: string
+  date: string
+  verified: boolean
+  imgPos?: string
+  imgFilter?: string
+  quote: string
+}
 
 // ─── Bottom ticker tokens ──────────────────────────────────────────────────
 
@@ -1020,14 +1032,14 @@ export default function HomePage() {
 
           {/* 3 × 2 grid */}
           <div className="mob-grid-1" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
-            {[
+            {([
               { handle: '@_Foster_x',    name: 'Foster',          initials: 'F', grad: 'linear-gradient(135deg,#2DD4BF,#3b82f6)', avatar: '/testimonials/foster.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: 'This is going to change the game forever and for the next generation coming up.' },
               { handle: '@Vicrypt_01',   name: 'Vicrypt🔥',       initials: 'V', grad: 'linear-gradient(135deg,#f97316,#ec4899)', avatar: '/testimonials/vicrypt.png',    date: 'May 7, 2026',  verified: true,  imgPos: 'center center', imgFilter: 'brightness(1.5) contrast(1.05)', quote: 'Spot on\n\nAI + crypto is the ultimate combo turning that 24/7 data firehose into real alpha. Tools like ChainLens are exactly what the space needs.\n\nBullish AF' },
               { handle: '@Veeekthorr',  name: 'Victor xx',        initials: 'V', grad: 'linear-gradient(135deg,#8b5cf6,#ec4899)', avatar: '/testimonials/victor.png',     date: 'May 7, 2026',  verified: true,  imgPos: 'center center', quote: "Crypto's 24/7 firehose finally gets a brain. AI agents on-chain is the real alpha" },
               { handle: '@TyeSeen',     name: 'TYSON~OF~WEB3📊',  initials: 'T', grad: 'linear-gradient(135deg,#c0392b,#e74c3c)', avatar: '/testimonials/tyson.png',      date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'ChainLens Ai is an AI dashboard that analyzes wallets, tokens, and whale activity to give real-time crypto insights.' },
               { handle: '@Big_Wealthz', name: 'Big Wealth',        initials: 'B', grad: 'linear-gradient(135deg,#3b82f6,#8b5cf6)', avatar: '/testimonials/big-wealth.png', date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'know what whales are doing before Twitter even wakes up.' },
               { handle: '@StardomJnr',  name: 'Stardom',            initials: 'S', grad: 'linear-gradient(135deg,#0d0203,#1a0306)', avatar: '/testimonials/stardom.png',    date: 'Apr 29, 2026', verified: true,  imgPos: 'center center', quote: 'Chainlens AI is basically an onchain analytics copilot that turns wallet and token data into quick, readable insights for faster trading decisions.' },
-            ].map((t, i) => (
+            ] as Testimonial[]).map((t, i) => (
               <Reveal key={i} delayMs={i * 90}><div
                 className="mobile-static-card"
                 style={{
@@ -1050,7 +1062,7 @@ export default function HomePage() {
                 {/* Header row: avatar + name/handle */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                   {/* Avatar — image when file present, gradient initials fallback */}
-                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={(t as any).imgPos} imgFilter={(t as any).imgFilter} />
+                  <AvatarOrInitials src={t.avatar} initials={t.initials} grad={t.grad} name={t.name} imgPos={t.imgPos} imgFilter={t.imgFilter} />
                   {/* Name + handle */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
@@ -1471,8 +1483,8 @@ export default function HomePage() {
             {pricingPlans.map(src => {
               const visual = {
                 free: { labelColor: '#67e8f9', engineColor: 'rgba(103,232,249,0.75)', cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null as string | null, bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
-                pro: { labelColor: '#c4b5fd', engineColor: 'rgba(167,139,250,0.75)', cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR' as string | null, bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
-                elite: { labelColor: '#fbbf24', engineColor: 'rgba(251,191,36,0.75)', cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'POWER USERS' as string | null, bg: 'rgba(16,12,4,0.95)', radius: '16px', pad: '22px 18px 18px', mt: '0' },
+                pro: { labelColor: '#c4b5fd', engineColor: 'rgba(167,139,250,0.75)', cta: 'Upgrade to Pro', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR' as string | null, bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
+                elite: { labelColor: '#fbbf24', engineColor: 'rgba(251,191,36,0.75)', cta: 'Upgrade to Elite', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'POWER USERS' as string | null, bg: 'rgba(16,12,4,0.95)', radius: '16px', pad: '22px 18px 18px', mt: '0' },
               }[src.id]
               const plan = {
                 id: src.id,

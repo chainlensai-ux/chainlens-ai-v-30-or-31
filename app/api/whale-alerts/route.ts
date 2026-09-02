@@ -6,6 +6,8 @@ import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
+import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
+import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -110,8 +112,7 @@ const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens
 const ENRICHED_BY_COINGECKO = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'WBTC'])
 const MAX_RANDOM_TOKENS = 15
 const WHALE_CACHE_TTL_MS = 45_000
-const whaleCache = new Map<string, { exp: number; payload: unknown }>()
-export function clearWhaleFeedCache() { whaleCache.clear() }
+const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 
@@ -250,32 +251,7 @@ function applyHeadlineTokenFocus(row: RawRow): RawRow {
 // miscounted as a "repeat." Fixed by comparing the ABSOLUTE distance between timestamps — correct
 // whether the input is chronologically ordered or not, and unchanged for the already-correct
 // chronological case (where the difference was always non-negative anyway).
-export function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
-  const REPEAT_WINDOW_MS = 5 * 60 * 1000
-  const seen = new Map<string, { firstTime: number; idx: number; count: number }>()
-  const result: RawRow[] = []
-
-  for (const row of rows) {
-    const key = [
-      (row.wallet_address as string | null) ?? '',
-      (row.token_symbol as string | null) ?? '',
-      (row.side as string | null) ?? '',
-    ].join('::')
-    const ts = row.occurred_at ? new Date(row.occurred_at as string).getTime() : 0
-
-    const existing = seen.get(key)
-    if (existing && ts > 0 && existing.firstTime > 0 && Math.abs(existing.firstTime - ts) < REPEAT_WINDOW_MS) {
-      existing.count += 1
-      result[existing.idx] = { ...result[existing.idx], repeats: existing.count }
-    } else {
-      const idx = result.length
-      result.push({ ...row, repeats: 1 })
-      seen.set(key, { firstTime: ts, idx, count: 1 })
-    }
-  }
-
-  return result
-}
+const collapseRapidRepeats = collapseRapidWhaleAlertRepeats
 
 // Derive a signal quality score from token symbol, amount, and leg count.
 // HIGH: large USDC/WETH/cbBTC move or complex multi-leg transaction.

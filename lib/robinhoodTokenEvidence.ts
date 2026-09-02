@@ -163,7 +163,10 @@ function resolveSecurity(input: RobinhoodSecurityDataInput): { status: Robinhood
     return { status: 'not_returned', label: 'Security simulation not attempted this pass.' }
   }
   if (input.simulationStatus === 'not_supported') {
-    return { status: 'unsupported_on_robinhood', label: SECURITY_UNSUPPORTED_LABEL }
+    return {
+      status: 'unsupported_on_robinhood',
+      label: input.honeypotReason ? `Unsupported: ${input.honeypotReason}` : SECURITY_UNSUPPORTED_LABEL,
+    }
   }
   if (input.simulationStatus === 'confirmed') {
     return {
