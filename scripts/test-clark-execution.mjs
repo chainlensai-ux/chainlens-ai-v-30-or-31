@@ -1295,7 +1295,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   assert.ok(routeFile.includes('honeypotStatus: r.simulationStatus'), '/api/token resolveSimulation threads the real simulationStatus through, not a hardcoded value')
   assert.ok(routeFile.includes('honeypotReason: r.honeypotReason'), '/api/token resolveSimulation threads the provider honeypotReason through')
-  assert.ok(routeFile.includes('honeypotStatus: hpResult.ok ? hpResult.honeypotStatus : \'unavailable\''), 'sections.security exposes honeypotStatus distinct from tax status')
+  assert.ok(routeFile.includes('honeypotStatus: hpResult.honeypotStatus'), 'sections.security exposes honeypotStatus distinct from tax status')
   assert.ok(routeFile.includes("status: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null) ? 'confirmed' : 'unavailable',"), 'security.tax.status is confirmed independently of honeypot status')
 
   const clarkRouteFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')

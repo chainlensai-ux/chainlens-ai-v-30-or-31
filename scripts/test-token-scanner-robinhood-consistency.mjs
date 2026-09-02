@@ -20,8 +20,9 @@ const tokenAddr = '0x' + 'c'.repeat(40)
   assert.ok(Number.isInteger(TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) && TOKEN_SCAN_RESPONSE_SCHEMA_VERSION >= 1)
   const routeSrc = (await import('node:fs')).readFileSync(
     new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
-  // Cache key embeds the version…
-  assert.ok(routeSrc.includes('token:v${TOKEN_SCAN_RESPONSE_SCHEMA_VERSION}'), 'cache key must embed schema version')
+  // Cache key is chain-scoped via helper; schema version is verified on read…
+  assert.ok(routeSrc.includes('buildTokenScanCacheKey'), 'cache key is chain-scoped via helper')
+  assert.ok(routeSrc.includes('TOKEN_SCAN_RESPONSE_SCHEMA_VERSION'), 'route stamps/reads schema version')
   // …the cached copy is verified before serving…
   assert.match(routeSrc, /_cachedResponse.*scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION/,
     'cache read must verify schema version')

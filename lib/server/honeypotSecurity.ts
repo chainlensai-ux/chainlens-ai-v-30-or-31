@@ -170,7 +170,7 @@ export function honeypotSimulationUnsupportedReason(chainIdOrNetwork: string | n
   return null
 }
 
-export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "base", timeoutMs = 3500): Promise<HoneypotSecurityResult> {
+export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "", timeoutMs = 3500): Promise<HoneypotSecurityResult> {
   if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
     return { ...UNVERIFIED, honeypotProvider: "error", warnings: ["Invalid token address"], ok: false };
   }
@@ -186,7 +186,20 @@ export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwo
     }
   }
 
-  const chainID = chainIdOrNetwork === "base" ? "8453" : String(chainIdOrNetwork || "8453");
+  const chainID = chainIdOrNetwork === "base" ? "8453"
+    : chainIdOrNetwork === "eth" || chainIdOrNetwork === "ethereum" ? "1"
+    : chainIdOrNetwork === "bnb" || chainIdOrNetwork === "bsc" ? "56"
+    : chainIdOrNetwork === "polygon" ? "137"
+    : String(chainIdOrNetwork ?? "").trim()
+  if (!chainID || chainID === "undefined" || chainID === "null") {
+    return {
+      ...UNVERIFIED,
+      honeypotProvider: "error",
+      simulationStatus: "unavailable",
+      honeypotReason: "Trading simulation chain id was not provided",
+      warnings: ["Trading simulation chain id was not provided"],
+    }
+  }
   const endpoint = `/v2/IsHoneypot?address=${tokenAddress}&chainID=${chainID}`;
   const url = `https://api.honeypot.is${endpoint}`;
 

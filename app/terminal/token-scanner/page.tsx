@@ -29,6 +29,11 @@ import {
   type DevClusterDiagnosisAudit,
 } from '@/lib/devClusterDiagnosis'
 import {
+  buildTradingSimulationUi,
+  classifyTradingSimulation,
+  type TradingSimulationAudit,
+} from '@/lib/tradingSimulation'
+import {
   normalizeRiskScore,
   riskColorFromCanonicalLabel,
   riskGaugeFillPercent,
@@ -215,7 +220,10 @@ type ScanResult = {
     // failure, discarding the real reason. Optional so no existing reader of this type breaks.
     honeypotStatus?: 'confirmed' | 'unavailable' | 'failed' | 'not_supported' | 'timeout'
     honeypotReason?: string | null
+    finalStatus?: string | null
+    finalReason?: string | null
   } | null
+  tradingSimulationAudit?: TradingSimulationAudit | null
   noActivePools?: boolean
   primaryDexName?: string | null
   marketDataSource?: 'primary' | 'fallback' | 'none'
@@ -1657,10 +1665,11 @@ function deriveVerdictInput(result: ScanResult): VerdictInput {
     ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
     : null
   const hp = result.honeypot
+  const simUi = tradingSimUiFor(result)
   const baseChips: SecurityChip[] = [
-    { label: 'Honeypot', displayLabel: hp?.isHoneypot === null ? 'Open check' : hp?.isHoneypot ? 'YES' : 'NO', style: hp?.isHoneypot ? pillDanger() : pillSafe(), source: 'honeypot' },
-    { label: 'Buy Tax', displayLabel: hp?.buyTax == null ? 'N/A' : (!hp.simulationSuccess && hp.buyTax === 0) ? 'Open check' : `${hp.buyTax.toFixed(1)}%`, style: hp?.buyTax == null ? pillMuted() : (!hp.simulationSuccess && hp.buyTax === 0) ? pillMuted() : taxPct(hp.buyTax), source: 'honeypot' },
-    { label: 'Sell Tax', displayLabel: hp?.sellTax == null ? 'N/A' : (!hp.simulationSuccess && hp.sellTax === 0) ? 'Open check' : `${hp.sellTax.toFixed(1)}%`, style: hp?.sellTax == null ? pillMuted() : (!hp.simulationSuccess && hp.sellTax === 0) ? pillMuted() : taxPct(hp.sellTax), source: 'honeypot' },
+    { label: 'Honeypot', displayLabel: simUi.honeypotValue, style: simUi.honeypotValue === 'YES' ? pillDanger() : simUi.honeypotValue === 'NO' ? pillSafe() : pillMuted(), source: 'honeypot' },
+    { label: 'Buy Tax', displayLabel: simUi.showTaxRows ? simUi.buyTaxValue : simUi.statusLabel, style: hp?.buyTax != null && simUi.showTaxRows ? taxPct(hp.buyTax) : pillMuted(), source: 'honeypot' },
+    { label: 'Sell Tax', displayLabel: simUi.showTaxRows ? simUi.sellTaxValue : simUi.statusLabel, style: hp?.sellTax != null && simUi.showTaxRows ? taxPct(hp.sellTax) : pillMuted(), source: 'honeypot' },
     { label: 'Honeypot', displayLabel: String(gp?.is_honeypot ?? 'N/A'), style: String(gp?.is_honeypot ?? '') === '1' ? pillDanger() : pillSafe(), source: 'contract' },
     { label: 'Buy Tax', displayLabel: gp?.buy_tax != null ? `${(Number(gp.buy_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.buy_tax != null ? taxPct(Number(gp.buy_tax) * 100) : pillMuted(), source: 'contract' },
     { label: 'Sell Tax', displayLabel: gp?.sell_tax != null ? `${(Number(gp.sell_tax) * 100).toFixed(1)}%` : 'N/A', style: gp?.sell_tax != null ? taxPct(Number(gp.sell_tax) * 100) : pillMuted(), source: 'contract' },
@@ -1819,7 +1828,8 @@ function getSummaryReasons(result: ScanResult): string[] {
   } else if (hp?.isHoneypot === true) {
     reasons.push('Honeypot flagged — blocked sells detected in simulation.')
   } else {
-    reasons.push('Security simulation unavailable — treat as an open check.')
+    const simUi = tradingSimUiFor(result)
+    reasons.push(`${simUi.statusLabel}. ${simUi.reason}`)
   }
   if (holderState.kind === 'rowsWithPercent' && result.holderDistribution?.top10 != null) {
     const t = result.holderDistribution.top10
@@ -3484,6 +3494,31 @@ function isRobinhoodScan(result: ScanResult): boolean {
   return result.chain === 'robinhood'
 }
 
+function tradingSimUiFor(result: ScanResult) {
+  if (result.tradingSimulationAudit) return buildTradingSimulationUi(result.tradingSimulationAudit)
+  const chainSlug = result.chain ?? ''
+  const chainId = chainSlug === 'eth' ? 1
+    : chainSlug === 'bnb' ? 56
+    : chainSlug === 'robinhood' ? 4663
+    : chainSlug === 'polygon' ? 137
+    : chainSlug === 'base' ? 8453
+    : chainSlug === 'solana' ? null
+    : null
+  return buildTradingSimulationUi(classifyTradingSimulation({
+    chainSlug,
+    chainId,
+    tokenAddress: result.contract ?? '',
+    timedOut: result.honeypot?.honeypotStatus === 'timeout',
+    honeypotResult: result.honeypot?.isHoneypot ?? null,
+    buyTax: result.honeypot?.buyTax ?? null,
+    sellTax: result.honeypot?.sellTax ?? null,
+    simulationSuccess: result.honeypot?.simulationSuccess ?? null,
+    honeypotStatus: result.honeypot?.honeypotStatus ?? result.honeypot?.finalStatus ?? null,
+    honeypotReason: result.honeypot?.honeypotReason ?? result.honeypot?.finalReason ?? null,
+    requestAttempted: result.honeypot != null && chainSlug !== 'robinhood' && chainSlug !== 'solana',
+  }))
+}
+
 const ROBINHOOD_LP_EXPLAINER = 'Liquidity was detected, but ChainLens could not verify LP lock/burn/controller proof for this Robinhood pool. Treat exit risk as unverified.'
 
 function robinhoodProofCopy(result: ScanResult) {
@@ -4019,22 +4054,18 @@ function getMarketRead(result: ScanResult): string {
 
 function getSecurityRead(result: ScanResult): string {
   const hp = result.honeypot
+  const simUi = tradingSimUiFor(result)
   if (hp?.isHoneypot === true) return 'Honeypot flagged — sell simulation detected blocked transaction.'
-  if (!hp?.simulationSuccess) {
-    // ROBINHOOD-EVIDENCE FIX, DISCLOSED: was a single generic "open check this pass" fallback for
-    // every unsuccessful simulation, chain-agnostic — now uses the real, specific reason
-    // (unsupported/failed/timeout) the resolver already classified for Robinhood.
-    const robinhood = robinhoodEvidenceFor(result)
-    if (robinhood) return robinhood.securityLabel
-    return 'Security simulation did not complete — status is an open check this pass.'
+  if (simUi.statusLabel === 'Verified clear') {
+    const parts = [
+      'Honeypot: not flagged',
+      hp?.buyTax != null ? `buy tax ${hp.buyTax.toFixed(1)}%` : null,
+      hp?.sellTax != null ? `sell tax ${hp.sellTax.toFixed(1)}%` : null,
+      hp?.transferTax != null && hp.transferTax > 0 ? `transfer tax ${hp.transferTax.toFixed(1)}%` : null,
+    ].filter(Boolean)
+    return parts.join(', ') + '. Simulation verified.'
   }
-  const parts = [
-    'Honeypot: not flagged',
-    hp.buyTax != null ? `buy tax ${hp.buyTax.toFixed(1)}%` : null,
-    hp.sellTax != null ? `sell tax ${hp.sellTax.toFixed(1)}%` : null,
-    hp.transferTax != null && hp.transferTax > 0 ? `transfer tax ${hp.transferTax.toFixed(1)}%` : null,
-  ].filter(Boolean)
-  return parts.join(', ') + '. Simulation verified.'
+  return `${simUi.statusLabel}. ${simUi.reason}`
 }
 
 function getHolderRead(result: ScanResult): string {
@@ -4223,7 +4254,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         fontSize: '11px', color: '#3a5268',
         fontFamily: 'var(--font-plex-mono)',
       }}>
-        No security simulation data surfaced — status is an open check.
+        No security simulation data surfaced — {hp ? 'provider result was empty.' : 'simulation did not run.'}
       </div>
     </div>
   )
@@ -6949,14 +6980,15 @@ export default function TerminalTokenScanner() {
                 const holdersChipOk = holderState.kind === 'rowsWithPercent'
                 const holdersChipPartial = holderState.kind === 'rowsWithoutPercent'
                 const riskChipOk = result.honeypot?.isHoneypot === false && result.honeypot?.simulationSuccess === true
-                const simUnavailable = !result.honeypot?.simulationSuccess
+                const simUiOverview = tradingSimUiFor(result)
+                const simUnavailable = simUiOverview.treatAsOpenRisk && simUiOverview.statusLabel !== 'Risk detected'
                 const hp2 = result.honeypot
                 const liq2 = result.liquidity ?? 0
                 const buyTax2 = hp2?.buyTax ?? null
                 const sellTax2 = hp2?.sellTax ?? null
                 const taxesHigh2 = (buyTax2 != null && buyTax2 > 8) || (sellTax2 != null && sellTax2 > 8)
                 const goodSigns: string[] = [
-                  (hp2?.isHoneypot === false && hp2?.simulationSuccess) ? 'Security simulation passed — no honeypot flagged.' : '',
+                  simUiOverview.statusLabel === 'Verified clear' ? 'Security simulation passed — no honeypot flagged.' : '',
                   liq2 > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq2)} pool depth.` : liq2 > 200_000 ? `Moderate liquidity — ${fmtLarge(liq2)} pool depth.` : '',
                   holderState.kind === 'rowsWithPercent' ? 'Holder distribution confirmed with percentages.' : '',
                   result.marketCapUsd != null ? `Market cap verified — ${fmtLarge(result.marketCapUsd)}.` : '',
@@ -6969,7 +7001,7 @@ export default function TerminalTokenScanner() {
                   liq2 > 0 && liq2 < 10000 ? 'Very thin liquidity — extreme slippage and exit risk.' : liq2 > 0 && liq2 < 50000 ? `Thin liquidity — ${fmtLarge(liq2)} depth, slippage risk.` : '',
                   holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
                   result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
-                  !hp2?.simulationSuccess ? 'Tax simulation unavailable — status is an open check.' : '',
+                  simUnavailable ? `${simUiOverview.statusLabel} — ${simUiOverview.reason}` : '',
                   result.noActivePools ? `No active liquidity pool detected on ${chainDisplayName(result.chain)}.` : '',
                 ].filter(Boolean).slice(0, 4) as string[]
                 const missing2 = getMissingChecks(result)
@@ -6978,12 +7010,12 @@ export default function TerminalTokenScanner() {
                   { label: 'Market',      chipOk: marketChipOk,    chipPartial: false,              chipColor: marketChipOk ? '#34d399' : '#f87171' },
                   { label: 'Holders',     chipOk: holdersChipOk,   chipPartial: holdersChipPartial, chipColor: holdersChipOk ? '#34d399' : holdersChipPartial ? '#fbbf24' : '#f87171' },
                   { label: 'LP Control',  chipOk: lpVerified || lpMode === 'protocol', chipPartial: lpMode === 'unknown', chipColor: lpVerified || lpMode === 'protocol' ? '#34d399' : lpMode === 'unknown' ? '#fbbf24' : '#f87171' },
-                  { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUnavailable,     chipColor: riskChipOk ? '#34d399' : simUnavailable ? '#94a3b8' : '#f87171' },
+                  { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUiOverview.statusLabel === 'Risk detected',     chipColor: riskChipOk ? '#34d399' : simUiOverview.statusLabel === 'Risk detected' ? '#f87171' : '#94a3b8', chipLabel: simUiOverview.statusLabel },
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Open check' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Open check'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Open check' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = lpMode === 'protocol' ? 'Protocol-specific' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Wallet Controlled' : lpStatus === 'partial' ? 'Partial Evidence' : lpStatus === 'no_pool' ? 'Open check' : lpMode === 'unknown' ? 'Open check' : 'Open check'
-                const securityConfidenceLabel = result.honeypot?.simulationSuccess ? (result.honeypot?.isHoneypot === false ? 'Verified' : 'Partial') : 'Open check'
+                const securityConfidenceLabel = simUiOverview.statusLabel
                 const degradedBadges = [
                   (result.lpControl?.status === 'unavailable_with_reason' || result.lpControl?.status === 'insufficient_data') ? 'LP open check' : null,
                   result.holderDistributionStatus?.status === 'unavailable_with_reason' ? 'Holders open check' : null,
@@ -7154,12 +7186,12 @@ export default function TerminalTokenScanner() {
                         </div>
                       </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(102px,1fr))', gap: '8px' }}>
-                        {statusChips.map(({ label, chipOk, chipPartial, chipColor }) => (
+                        {statusChips.map(({ label, chipOk, chipPartial, chipColor, chipLabel }) => (
                           <div key={label} className="cortex-chip" style={{ padding: '9px 11px', borderRadius: '10px', background: `${chipColor}0a`, border: `1px solid ${chipColor}2a`, display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 7px ${chipColor}` }} />
                             <div>
                               <div style={{ fontSize: '9px', letterSpacing: '.12em', color: chipColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{label}</div>
-                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Open check'}</div>
+                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipLabel ?? (chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Open check')}</div>
                             </div>
                           </div>
                         ))}
@@ -7699,15 +7731,14 @@ export default function TerminalTokenScanner() {
                       const lpS = result.lpControl?.status
                       const lpV = lpS === 'locked' || lpS === 'burned'
                       const hpV = result.honeypot?.simulationSuccess === true
+                      const simUiHolders = tradingSimUiFor(result)
                       // ROBINHOOD-EVIDENCE FIX, DISCLOSED: Owner status / Security simulation chips
                       // used to fall back to the bare enum value / a binary "Open check" regardless
                       // of chain or real reason — Robinhood scans now show the resolver's specific
                       // classification instead.
                       const robinhoodEv = robinhoodEvidenceFor(result)
                       const ownerStatusValue = fallback.ownerStatus !== 'Open check' ? fallback.ownerStatus : (robinhoodEv?.ownershipLabel ?? fallback.ownerStatus)
-                      const securityValue = hpV
-                        ? 'Verified'
-                        : (robinhoodEv?.securityLabel ?? (isRobinhoodScan(result) ? ROBINHOOD_SECURITY_UNSUPPORTED_LABEL : 'Open check'))
+                      const securityValue = simUiHolders.statusLabel
                       const lpControlValue = lpV
                         ? 'Verified'
                         : (robinhoodEv?.lpControllerLabel ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open check'))
@@ -8638,6 +8669,7 @@ export default function TerminalTokenScanner() {
                   {!planLoading && isFullAccess && (() => {
                     const engine = result.riskEngine
                     const _secSim = result.security?.simulation
+                    const simAuditUi = tradingSimUiFor(result)
                     const sim = _secSim != null ? {
                       isHoneypot: _secSim.honeypot,
                       buyTax: _secSim.buyTax,
@@ -8645,8 +8677,8 @@ export default function TerminalTokenScanner() {
                       transferTax: _secSim.transferTax,
                       simulationSuccess: _secSim.simulationSuccess,
                     } : result.honeypot
-                    const simVerified = sim?.simulationSuccess === true
-                    const simUnavailable = sim == null
+                    const simVerified = simAuditUi.badge === 'VERIFIED CLEAR'
+                    const simRisk = simAuditUi.badge === 'RISK DETECTED'
                     const lpState = result.lpControl?.status ?? 'unavailable_with_reason'
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
                     const missing2 = getMissingChecks(result)
@@ -8822,21 +8854,27 @@ export default function TerminalTokenScanner() {
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px', alignItems:'stretch' }}>
                           {/* Trading Simulation */}
-                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simUnavailable?'rgba(100,116,139,0.18)':'rgba(251,191,36,0.20)'}` }}>
+                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simRisk?'rgba(248,113,113,0.28)':'rgba(148,163,184,0.18)'}` }}>
                             <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
                             <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
-                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simUnavailable?'#94a3b8':'#fbbf24',background:simVerified?'rgba(52,211,153,0.10)':simUnavailable?'rgba(148,163,184,0.08)':'rgba(251,191,36,0.10)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simUnavailable?'rgba(148,163,184,0.22)':'rgba(251,191,36,0.30)'}`,fontFamily:'var(--font-plex-mono)' }}>
-                                {simVerified?'VERIFIED':simUnavailable?'UNVERIFIED':'PARTIAL'}
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simRisk?'#f87171':'#94a3b8',background:simVerified?'rgba(52,211,153,0.10)':simRisk?'rgba(248,113,113,0.10)':'rgba(148,163,184,0.08)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simRisk?'rgba(248,113,113,0.30)':'rgba(148,163,184,0.22)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                                {simAuditUi.badge}
                               </span>
                               {sim?.isHoneypot === true && (
                                 <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
                               )}
                             </div>
+                            <p style={{ margin:'0 0 10px', fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.statusLabel}</p>
+                            <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.reason}</p>
+                            {simAuditUi.impact && (
+                              <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.impact}</p>
+                            )}
+                            {simAuditUi.showTaxRows ? (
                             <div style={{ display:'grid',gap:'6px' }}>
                               {([
-                                ['Honeypot', sim?.isHoneypot==null?'Open check':sim.isHoneypot?'YES':'NO', sim?.isHoneypot?'#f87171':sim?.isHoneypot===false?'#34d399':'#94a3b8'],
-                                ['Buy Tax', sim?.buyTax!=null?`${sim.buyTax.toFixed(1)}%`:'Open check', sim?.buyTax!=null?(sim.buyTax>8?'#f87171':sim.buyTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
-                                ['Sell Tax', sim?.sellTax!=null?`${sim.sellTax.toFixed(1)}%`:'Open check', sim?.sellTax!=null?(sim.sellTax>8?'#f87171':sim.sellTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ['Honeypot', simAuditUi.honeypotValue, sim?.isHoneypot?'#f87171':sim?.isHoneypot===false?'#34d399':'#94a3b8'],
+                                ['Buy Tax', simAuditUi.buyTaxValue, sim?.buyTax!=null?(sim.buyTax>8?'#f87171':sim.buyTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
+                                ['Sell Tax', simAuditUi.sellTaxValue, sim?.sellTax!=null?(sim.sellTax>8?'#f87171':sim.sellTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
                                 ...(sim?.transferTax!=null&&sim.transferTax>0 ? [['Transfer Tax',`${sim.transferTax.toFixed(1)}%`,'#fbbf24'] as [string,string,string]] : []),
                               ] as Array<[string,string,string]>).map(([label,val,col])=>(
                                 <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
@@ -8845,6 +8883,7 @@ export default function TerminalTokenScanner() {
                                 </div>
                               ))}
                             </div>
+                            ) : null}
                           </div>
 
                           {/* Contract Flags */}
@@ -9525,6 +9564,7 @@ export default function TerminalTokenScanner() {
           {!planLoading && isFullAccess && result && (() => {
             const d = deriveVerdictInput(result)
             const hp = result.honeypot
+            const simUi = tradingSimUiFor(result)
             const buyTax = hp?.buyTax ?? null
             const sellTax = hp?.sellTax ?? null
             const liq = result.liquidity ?? 0
@@ -9545,7 +9585,7 @@ export default function TerminalTokenScanner() {
             const bull = [
               liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
               d.hasMarketData ? 'Live market data confirmed.' : '',
-              hp?.isHoneypot === false && hp?.simulationSuccess ? 'No honeypot — sell simulation passed.' : '',
+              simUi.statusLabel === 'Verified clear' ? 'No honeypot — sell simulation passed.' : '',
               poolCount > 1 ? `${poolCount} active pools detected.` : poolCount === 1 ? 'Primary pool active.' : '',
               d.holderState.kind !== 'noRowsFallback' ? 'Holder distribution data is available.' : '',
             ].filter(Boolean).slice(0, 3)
@@ -9554,7 +9594,7 @@ export default function TerminalTokenScanner() {
               taxesHigh ? `Elevated taxes — buy ${buyTax?.toFixed(1)}% / sell ${sellTax?.toFixed(1)}%.` : '',
               liq > 0 && liq < 50000 ? `Thin liquidity — ${fmtLarge(liq)}, high slippage risk.` : '',
               result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
-              hp?.simulationSuccess === false ? 'Security simulation did not complete.' : '',
+              simUi.treatAsOpenRisk && simUi.statusLabel !== 'Risk detected' ? `${simUi.statusLabel}. ${simUi.reason}` : '',
             ].filter(Boolean).slice(0, 3)
             const missingChecks = [
               result.noActivePools ? 'Active pool' : '',
@@ -9573,7 +9613,7 @@ export default function TerminalTokenScanner() {
               result.noActivePools ? 'No active liquidity pool found.' : null,
               liq > 0 && liq < 10000 ? `Very thin liquidity — ${fmtLarge(liq)}.` : liq > 0 && liq < 50000 ? `Thin liquidity — ${fmtLarge(liq)}.` : null,
               d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed.' : null,
-              !hp?.simulationSuccess ? 'Tax simulation unavailable.' : null,
+              simUi.treatAsOpenRisk && hp?.isHoneypot !== true ? simUi.statusLabel : null,
             ].filter((x):x is string=>x!=null).slice(0,3)
             {/* RIGHT-RAIL-RESULT-POLISH, DISCLOSED (Token Scanner result-UI polish task,
                 explicitly requested: "summary cards slightly more readable"): same card
@@ -9617,6 +9657,11 @@ export default function TerminalTokenScanner() {
                     </div>
                   </div>
                 )}
+                <div style={ss}>
+                  <p style={stitle}>Trading Simulation</p>
+                  <p style={{...sbody,margin:0,color:'#e2e8f0',fontWeight:700}}>{simUi.statusLabel}</p>
+                  <p style={{...sbody,margin:'4px 0 0'}}>{simUi.reason}</p>
+                </div>
                 {/* Top 2 Positives */}
                 <div style={ss}>
                   <p style={stitle}>Top 2 Positives</p>

@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
+import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
+import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON } from "@/lib/tradingSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
@@ -2217,6 +2219,20 @@ async function resolveSimulation(chain: string, address: string): Promise<{
   source: string;
 } | null> {
   try {
+    if (chain === 'robinhood' || CHAIN_ID_MAP[chain as ChainKey] === ROBINHOOD_SIM_CHAIN_ID) {
+      return {
+        ok: false,
+        honeypot: null,
+        honeypotStatus: 'not_supported',
+        honeypotReason: ROBINHOOD_SIM_UNSUPPORTED_REASON,
+        buyTax: null,
+        sellTax: null,
+        transferTax: null,
+        transferOK: null,
+        simulationSuccess: null,
+        source: 'none',
+      }
+    }
     // TIMEOUT-EXTENDED, DISCLOSED (bug report: "Trading Simulation always shows Open check"): the
     // full scan already waits on several other slower calls, so it isn't bound by Base Radar
     // drawer's snappy-UI 3.5s budget — pass a longer timeout here so honeypot.is has a fair chance
@@ -4105,6 +4121,25 @@ export async function POST(req: Request) {
       honeypotProvider: _gpFallback != null ? 'partial' as const : _simResult?.ok ? 'ok' as const : 'partial' as const,
       honeypotSourceUsed: _gpFallback != null ? 'goplus' as const : _simResult?.ok ? 'honeypot_is' as const : 'none' as const,
     };
+    const tradingSimulationAudit = await resolveTradingSimulationAudit({
+      chainSlug: chain,
+      chainId: CHAIN_ID_MAP[chain] ?? null,
+      tokenAddress: contract,
+      providerSelected: hpResult.honeypotSourceUsed === 'goplus'
+        ? 'goplus'
+        : hpResult.honeypotSourceUsed === 'honeypot_is'
+          ? 'honeypot_is'
+          : 'none',
+      requestAttempted: chain !== 'robinhood' && _simResult != null,
+      requestChainId: chain === 'robinhood' ? null : (CHAIN_ID_MAP[chain] ?? null),
+      timedOut: hpResult.honeypotStatus === 'timeout',
+      honeypotResult: hpResult.honeypot,
+      buyTax: hpResult.buyTax,
+      sellTax: hpResult.sellTax,
+      simulationSuccess: hpResult.simulationSuccess,
+      honeypotStatus: hpResult.honeypotStatus,
+      honeypotReason: hpResult.honeypotReason,
+    })
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[1] }, 'latest'], 'ownerCheck.getOwner', false),
@@ -6318,13 +6353,7 @@ export async function POST(req: Request) {
       hpResult.ok ? "ok" : _simImpliedClean ? "partial" : "inferred";
     const simulationOpenReason = hpResult.ok
       ? null
-      : !fallbackPoolEvidencePresent && !observedPoolPresent
-        ? 'insufficient route/pool evidence'
-        : !(_dexFb?.pairAddress || lpPoolAddress)
-          ? 'missing pair address'
-          : lpModelProof.model === 'concentrated'
-            ? 'unsupported pool model'
-            : 'timeout'
+      : tradingSimulationAudit.finalReason
     const securityReason = hpResult.ok ? null : _simImpliedClean ? "simulation_implied_clean" : simulationOpenReason;
     const holdersStatus: CanonicalStatus =
       holderDistributionStatus.status === 'ok' ? 'verified' :
@@ -7711,7 +7740,7 @@ export async function POST(req: Request) {
       lpLockBurnConfirmed: lpProofStatus === 'verified' ? true : lpProofStatus === 'inferred' ? false : null,
       adminFunctionsDetected: [cortexContractFlags.mint.status, cortexContractFlags.pause.status, cortexContractFlags.blacklist.status].some((s) => s === 'verified' || s === 'possible') ? true : null,
       upgradeabilityDetected: cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible' ? true : null,
-      simulationStatus: hpResult.ok ? 'ok' : 'open_check',
+      simulationStatus: tradingSimulationAudit.finalStatus === 'verified_clear' || tradingSimulationAudit.finalStatus === 'risk_detected' ? 'ok' : tradingSimulationAudit.finalStatus,
     })
     if (clusterMap.summary.clusterSupplyPercent != null && clusterMap.summary.clusterSupplyPercent >= 20) {
       const driver = `Dev cluster supply is elevated at ${clusterMap.summary.clusterSupplyPercent.toFixed(1)}% from matched holder evidence.`
@@ -8116,8 +8145,10 @@ export async function POST(req: Request) {
       security: {
         // resolveSimulation result — null when simulation provider is unavailable
         simulation: _simResult ? { ..._simResult, source: publicSourceLabel(_simResult.source, debugMode) } : _simResult,
-        simulationStatus: hpResult.ok ? 'ok' : 'open_check',
-        simulationReason: hpResult.ok ? null : simulationOpenReason,
+        simulationStatus: tradingSimulationAudit.finalStatus === 'verified_clear' || tradingSimulationAudit.finalStatus === 'risk_detected'
+          ? 'ok'
+          : tradingSimulationAudit.finalStatus,
+        simulationReason: tradingSimulationAudit.finalReason,
         // Tax confirmation is independent of honeypot confirmation — 0%/0% tax never implies
         // the honeypot simulation itself succeeded or returned a verdict.
         tax: {
@@ -8142,8 +8173,8 @@ export async function POST(req: Request) {
             providerAttempted: true,
             mappedHoneypotValue: hpResult.ok ? hpResult.honeypot : null,
             taxMapped: hpResult.ok && (hpResult.buyTax != null || hpResult.sellTax != null),
-            simulationStatus: hpResult.ok ? hpResult.honeypotStatus : 'unavailable',
-            simulationReason: hpResult.ok ? hpResult.honeypotReason : simulationOpenReason,
+            simulationStatus: hpResult.honeypotStatus,
+            simulationReason: hpResult.honeypotReason ?? tradingSimulationAudit.finalReason,
           },
         } : {}),
       },
@@ -8386,6 +8417,8 @@ export async function POST(req: Request) {
         sellTax:           hpResult.sellTax,
         transferTax:       hpResult.transferTax,
         simulationSuccess: hpResult.simulationSuccess,
+        finalStatus:       tradingSimulationAudit.finalStatus,
+        finalReason:       tradingSimulationAudit.finalReason,
       },
       securityDiagnostics: {
         honeypotProvider: hpResult.ok ? "ok" : hpResult.honeypotProvider,
@@ -8492,14 +8525,14 @@ export async function POST(req: Request) {
           status: toCanonical(securityStatus),
           rawStatus: securityStatus,
           reason: securityReason,
-          simulationReason: hpResult.ok ? null : simulationOpenReason,
+          simulationReason: tradingSimulationAudit.finalReason,
           source: hpResult.ok ? "risk_layer" : "inferred",
-          honeypot: hpResult.ok ? hpResult.honeypot : null,
-          honeypotStatus: hpResult.ok ? hpResult.honeypotStatus : 'unavailable',
-          honeypotReason: hpResult.ok ? hpResult.honeypotReason : simulationOpenReason,
-          buyTax: hpResult.ok ? hpResult.buyTax : null,
-          sellTax: hpResult.ok ? hpResult.sellTax : null,
-          simulationSuccess: hpResult.ok ? hpResult.simulationSuccess : null,
+          honeypot: hpResult.honeypot,
+          honeypotStatus: hpResult.honeypotStatus,
+          honeypotReason: hpResult.honeypotReason ?? tradingSimulationAudit.finalReason,
+          buyTax: hpResult.buyTax,
+          sellTax: hpResult.sellTax,
+          simulationSuccess: hpResult.simulationSuccess,
         },
         holders: {
           status: holdersStatus,
@@ -9340,6 +9373,7 @@ export async function POST(req: Request) {
       ;(responsePayload as any).robinhoodLpResolutionAudit = _robinhoodLpProofResult.resolutionAudit
       ;(responsePayload as any).robinhoodLpProofAudit = _robinhoodLpProofResult.proofAudit
     }
+    ;(responsePayload as any).tradingSimulationAudit = tradingSimulationAudit
     if (devClusterDiagnosisAudit) {
       ;(responsePayload as any).devClusterDiagnosisAudit = devClusterDiagnosisAudit
     }

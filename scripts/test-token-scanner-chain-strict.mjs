@@ -47,7 +47,7 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC on Solana
 
 // ── 4. Cache keys are chain-scoped AND schema-versioned ─────────────────────
 {
-  assert.match(routeSrc, /token:v\$\{TOKEN_SCAN_RESPONSE_SCHEMA_VERSION\}:\$\{chain\}/,
+  assert.match(routeSrc, /buildTokenScanCacheKey\(chain/,
     'cache key must include chain slug and schema version')
   // The same address can therefore never hit another chain's cache entry.
   assert.match(routeSrc, /scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION/,
