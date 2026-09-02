@@ -194,6 +194,13 @@ export const pricingPlans: PricingPlan[] = [
       'Faster scan queue',
       'Advanced Wallet Scanner depth where available',
       'Priority access to new chains and scanners',
+      // FOMO-BOARD PRICING COPY, DISCLOSED (reported: Elite's own card never mentioned the FOMO
+      // PnL leaderboard, even after the FOMO Board itself became Elite-only — see
+      // canAccessFomoBoard() above). Deliberately says "FOMO PnL leaderboard" only, not "Whale
+      // Alerts" — base Whale Alerts (the Activity tab) stays a Pro+Elite feature
+      // (PLAN_FEATURES['whale-alerts'] is unchanged); only the FOMO Board tab within it is
+      // Elite-exclusive, so this bullet must not imply the whole page is Elite-only.
+      'FOMO PnL leaderboard',
       'Best limits for power users',
     ],
     note: 'Everything in Pro, plus the highest Clark and scan limits.',
