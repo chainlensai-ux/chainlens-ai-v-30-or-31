@@ -135,6 +135,25 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
   if (existingError) {
     audit.failureReason = 'duplicate_check_failed'
     logPaypalPaymentAudit(audit)
+    // DIAGNOSTIC LOGGING FIX, DISCLOSED (PayPal "Could not verify existing subscription state"
+    // investigation): the audit log above only ever recorded the generic tag
+    // 'duplicate_check_failed', with no trace of *why* the query failed — undistinguishable from
+    // the server logs whether this was a transient network blip, an RLS/permission problem, or
+    // (the actual root cause in practice) the paypal_subscriptions table not existing yet because
+    // docs/supabase-paypal-subscriptions.sql is a manual "run this in Supabase" doc, not an
+    // automatic migration. Logging the real Postgres error (code/message/hint) server-side only —
+    // never sent to the client — makes that diagnosable without guessing.
+    console.error('paypalCreateSubscription: existing-subscription lookup failed', {
+      code: existingError.code,
+      message: existingError.message,
+      hint: existingError.hint,
+    })
+    // Postgres 42P01 = undefined_table: the paypal_subscriptions table itself is missing, which
+    // means no PayPal subscription has ever been created OR reconciled successfully — a
+    // deployment/setup gap, not something the user can fix by retrying.
+    if (existingError.code === '42P01') {
+      return NextResponse.json({ error: 'PayPal subscriptions are not set up on this server yet. Contact support.' }, { status: 503 })
+    }
     return NextResponse.json({ error: 'Could not verify existing subscription state. Try again.' }, { status: 500 })
   }
   if (existingSubscription) {
