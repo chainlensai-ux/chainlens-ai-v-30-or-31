@@ -26,9 +26,17 @@ assert.match(pricing, /role='dialog'/)
 assert.match(pricing, /aria-modal='true'/)
 assert.match(pricing, /event\.key === 'Escape'/)
 assert.match(pricing, /event\.target === event\.currentTarget/)
-assert.match(pricing, /Pay with crypto/)
+// UPDATED, DISCLOSED (pricing card CTA task): the card CTA now commits to a plan
+// ("Upgrade to Pro"/"Upgrade to Elite", checked above) BEFORE this modal ever opens, so the modal
+// itself is scoped to choosing a payment method, not restating the plan — title "Choose payment
+// method", subtitle "Select how you want to complete checkout.", and the two option buttons read
+// "Crypto"/"Card" (their sub-copy, unchanged, already said what each involves).
+assert.match(pricing, /Choose payment method/, 'modal title must read Choose payment method')
+assert.match(pricing, /Select how you want to complete checkout\./, 'modal subtitle must read Select how you want to complete checkout.')
+assert.doesNotMatch(pricing, /Upgrade to \{selectedPlan\.name\}/, 'the modal title itself must not restate the plan choice')
+assert.match(pricing, /'Opening checkout…' : 'Crypto'/, 'crypto option must read Crypto, not Pay with crypto')
 assert.match(pricing, /USDC \/ ETH on Base/)
-assert.match(pricing, /Pay with card/)
+assert.match(pricing, /'Opening checkout…' : 'Card'/, 'card option must read Card, not Pay with card')
 assert.match(pricing, /Secure card checkout/)
 
 assert.match(pricing, /startCheckout\(selectedPlanId, 'crypto'\)/)

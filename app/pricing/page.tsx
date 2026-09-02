@@ -557,7 +557,7 @@ export default function PricingPage() {
             role='dialog'
             aria-modal='true'
             aria-labelledby='payment-modal-title'
-            aria-describedby='payment-modal-price'
+            aria-describedby='payment-modal-subtitle'
             onClick={(event) => event.stopPropagation()}
             style={{ position:'relative' }}
           >
@@ -571,12 +571,20 @@ export default function PricingPage() {
             >
               ×
             </button>
+            {/* CARD-CHOOSES-PLAN / MODAL-CHOOSES-PAYMENT-METHOD, DISCLOSED (pricing card CTA
+                task): the card CTA ("Upgrade to Pro"/"Upgrade to Elite") already commits to a
+                plan before this modal ever opens — this modal's own copy must be about picking a
+                payment method, not restate the plan choice. Plan/price still shown, one step
+                down, so context isn't lost. */}
             <div style={{ color:'#53f3c3', fontSize:10, fontWeight:800, letterSpacing:'.16em' }}>CHAINLENS CHECKOUT</div>
             <h2 id='payment-modal-title' style={{ margin:'9px 46px 0 0', color:'#f8fafc', fontSize:'clamp(23px,5vw,30px)', lineHeight:1.15, letterSpacing:'-.02em' }}>
-              Upgrade to {selectedPlan.name}
+              Choose payment method
             </h2>
-            <p id='payment-modal-price' style={{ margin:'7px 0 0', color:'#7a8a9e', fontSize:14 }}>
-              ${selectedPlan.priceMonthly}/month
+            <p id='payment-modal-subtitle' style={{ margin:'7px 0 0', color:'#7a8a9e', fontSize:14 }}>
+              Select how you want to complete checkout.
+            </p>
+            <p id='payment-modal-price' style={{ margin:'3px 0 0', color:'#526073', fontSize:12 }}>
+              {selectedPlan.name} · ${selectedPlan.priceMonthly}/month
             </p>
 
             <div className='payment-options'>
@@ -594,7 +602,7 @@ export default function PricingPage() {
                   </svg>
                 </span>
                 <span className='payment-option-title'>
-                  {checkoutLoading && selectedPaymentMethod === 'crypto' ? 'Opening checkout…' : 'Pay with crypto'}
+                  {checkoutLoading && selectedPaymentMethod === 'crypto' ? 'Opening checkout…' : 'Crypto'}
                 </span>
                 <span className='payment-option-copy'>USDC / ETH on Base</span>
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
@@ -614,7 +622,7 @@ export default function PricingPage() {
                   </svg>
                 </span>
                 <span className='payment-option-title'>
-                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Pay with card'}
+                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Card'}
                 </span>
                 <span className='payment-option-copy'>Secure card checkout</span>
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
