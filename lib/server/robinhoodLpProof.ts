@@ -13,6 +13,12 @@
 
 import { fetchOnchainTotalSupply } from './lpProof'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL, ROBINHOOD_CHAIN_ID } from './robinhoodChainConfig'
+import { isRobinhoodBlockscoutConfigured } from './robinhoodBlockscoutEvidence'
+import {
+  createBlockscoutFallbackDecisionAudit,
+  logBlockscoutFallbackDecisionAudit,
+  type BlockscoutFallbackDecisionAudit,
+} from './robinhoodBlockscoutFallbackDecision'
 import {
   ROBINHOOD_BURN_ADDRESSES,
   buildRobinhoodLpCopy,
@@ -47,6 +53,7 @@ export interface RobinhoodBlockscoutHolderFetch {
   used: boolean
   error: string | null
   source: 'holders' | 'transfers' | 'none'
+  endpointsTried: string[]
 }
 
 export interface ResolveRobinhoodLpProofInput {
@@ -78,6 +85,7 @@ export interface RobinhoodLpProofResult {
   lpHolderRows: RobinhoodLpHolderRow[]
   tokenHolderRows: RobinhoodLpHolderRow[]
   lpControlOverlay: ReturnType<typeof mapRobinhoodClassificationToLpControl> | null
+  blockscoutFallbackDecisionAudit: BlockscoutFallbackDecisionAudit
 }
 
 function blockscoutBase(): string {
@@ -227,13 +235,15 @@ export async function fetchRobinhoodBlockscoutHolders(
 ): Promise<RobinhoodBlockscoutHolderFetch> {
   const hash = normalizeRobinhoodAddress(tokenAddress)
   if (!hash) {
-    return { rows: [], totalSupplyRaw: null, tokenType: null, attempted: false, used: false, error: 'invalid_address', source: 'none' }
+    return { rows: [], totalSupplyRaw: null, tokenType: null, attempted: false, used: false, error: 'invalid_address', source: 'none', endpointsTried: [] }
   }
 
+  const endpointsTried = [BLOCKSCOUT_TOKEN_PATH(hash)]
   const meta = await blockscoutGet(BLOCKSCOUT_TOKEN_PATH(hash), fetchImpl)
   const parsedMeta = parseBlockscoutTokenMeta(meta.json)
   let totalSupplyRaw = parsedMeta.totalSupplyRaw
 
+  endpointsTried.push(BLOCKSCOUT_HOLDERS_PATH(hash))
   const holders = await blockscoutGet(BLOCKSCOUT_HOLDERS_PATH(hash), fetchImpl)
   const holderRows = holders.ok ? parseBlockscoutHolderItems(holders.json, totalSupplyRaw) : []
   if (holderRows.length > 0) {
@@ -245,9 +255,11 @@ export async function fetchRobinhoodBlockscoutHolders(
       used: true,
       error: null,
       source: 'holders',
+      endpointsTried,
     }
   }
 
+  endpointsTried.push(BLOCKSCOUT_TRANSFERS_PATH(hash))
   const transfers = await blockscoutGet(BLOCKSCOUT_TRANSFERS_PATH(hash), fetchImpl)
   const transferAddresses = transfers.ok ? parseBlockscoutTransferAddresses(transfers.json) : []
   if (transferAddresses.length === 0) {
@@ -259,6 +271,7 @@ export async function fetchRobinhoodBlockscoutHolders(
       used: holders.ok || transfers.ok,
       error: holders.error ?? transfers.error ?? 'no_holder_rows',
       source: 'none',
+      endpointsTried,
     }
   }
 
@@ -288,6 +301,7 @@ export async function fetchRobinhoodBlockscoutHolders(
     used: true,
     error: rows.length === 0 ? 'transfers_fallback_no_balances' : null,
     source: 'transfers',
+    endpointsTried,
   }
 }
 
@@ -352,12 +366,22 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
     concentratedProofAttempted: Boolean(input.concentratedProofAttempted) || concentrated,
   }
 
+  const makeDecision = (values: Omit<BlockscoutFallbackDecisionAudit, 'chainId' | 'feature'>) =>
+    logBlockscoutFallbackDecisionAudit(createBlockscoutFallbackDecisionAudit({ feature: 'lp_safety', ...values }))
+
   if (!chainOk) {
     proofAudit.status = 'unavailable_with_reason'
     proofAudit.reason = resolutionAudit.rejectedReason === 'selected_pool_rejected_wrong_chain'
       ? 'Selected pool is not chainId 4663 — Base/ETH LP data cannot populate Robinhood LP proof.'
       : 'Selected Robinhood pool chainId could not be confirmed as 4663.'
     const copy = buildRobinhoodLpCopy({ concentrated, classification: proofAudit.status, reason: proofAudit.reason, positionOwnerProof: input.positionOwnerProof ?? (concentrated ? 'unavailable' : null) })
+    const decision = makeDecision({
+      primaryAttempted: false, primarySucceeded: false, primaryRowsReturned: 0,
+      primaryMissingFields: ['selected_pool_chain'], shouldUseBlockscout: false,
+      blockscoutConfigured: isRobinhoodBlockscoutConfigured(), blockscoutAttempted: false,
+      blockscoutEndpointsTried: [], blockscoutRowsReturned: 0, blockscoutSuccess: false,
+      blockscoutFailureReason: proofAudit.reason, finalStatus: 'not_applicable',
+    })
     return {
       classification: proofAudit.status,
       reason: proofAudit.reason,
@@ -367,6 +391,7 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
       lpHolderRows: [],
       tokenHolderRows: [],
       lpControlOverlay: null,
+      blockscoutFallbackDecisionAudit: decision,
     }
   }
 
@@ -385,6 +410,14 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
       reason: classified.reason,
       positionOwnerProof: input.positionOwnerProof ?? 'unavailable',
     })
+    const decision = makeDecision({
+      primaryAttempted: true, primarySucceeded: true, primaryRowsReturned: 0,
+      primaryMissingFields: [], shouldUseBlockscout: false,
+      blockscoutConfigured: isRobinhoodBlockscoutConfigured(), blockscoutAttempted: false,
+      blockscoutEndpointsTried: [], blockscoutRowsReturned: 0, blockscoutSuccess: false,
+      blockscoutFailureReason: 'Concentrated LP model — ERC-20 LP holder proof is not applicable.',
+      finalStatus: 'not_applicable',
+    })
     return {
       classification: classified.classification,
       reason: classified.reason,
@@ -394,6 +427,7 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
       lpHolderRows: [],
       tokenHolderRows: [],
       lpControlOverlay: null,
+      blockscoutFallbackDecisionAudit: decision,
     }
   }
 
@@ -401,6 +435,13 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
     proofAudit.status = 'unavailable_with_reason'
     proofAudit.reason = 'LP token address was not resolved for this Robinhood pool. LP lock not confirmed.'
     const copy = buildRobinhoodLpCopy({ concentrated: false, classification: proofAudit.status, reason: proofAudit.reason })
+    const decision = makeDecision({
+      primaryAttempted: true, primarySucceeded: false, primaryRowsReturned: 0,
+      primaryMissingFields: ['lp_token_address'], shouldUseBlockscout: false,
+      blockscoutConfigured: isRobinhoodBlockscoutConfigured(), blockscoutAttempted: false,
+      blockscoutEndpointsTried: [], blockscoutRowsReturned: 0, blockscoutSuccess: false,
+      blockscoutFailureReason: proofAudit.reason, finalStatus: 'not_applicable',
+    })
     return {
       classification: proofAudit.status,
       reason: proofAudit.reason,
@@ -410,6 +451,7 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
       lpHolderRows: [],
       tokenHolderRows: [],
       lpControlOverlay: mapRobinhoodClassificationToLpControl(proofAudit.status, proofAudit.reason, [`pool=${poolAddress ?? 'none'}`]),
+      blockscoutFallbackDecisionAudit: decision,
     }
   }
 
@@ -423,19 +465,51 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
   let blockscoutUsed = false
   let holderRowsAttempted = rows.length > 0
   let holderFetchError: string | null = null
+  let blockscoutEndpointsTried: string[] = []
+  let blockscoutRowsReturned = 0
 
-  if (!input.skipNetwork && rows.length === 0) {
-    const fetched = await fetchRobinhoodBlockscoutHolders(lpTokenAddress, fetchImpl)
-    holderRowsAttempted = fetched.attempted
-    blockscoutUsed = fetched.used
-    holderFetchError = fetched.rows.length === 0 ? (fetched.error ?? 'no_holder_rows') : null
-    rows = fetched.rows
-    if (!totalSupplyRaw) totalSupplyRaw = fetched.totalSupplyRaw
-  }
-
+  // Primary RPC enrichment must run before deciding whether explorer fallback is necessary.
   if (!totalSupplyRaw && !input.skipNetwork) {
     const supply = await fetchOnchainTotalSupply('robinhood', lpTokenAddress)
     if (supply != null && supply > BigInt(0)) totalSupplyRaw = supply.toString()
+  }
+  if (rows.length > 0 && !input.skipNetwork) rows = await enrichContractFlags(rows)
+
+  const primaryRowsReturned = rows.length
+  const primaryMissingFields: string[] = []
+  if (rows.length === 0) primaryMissingFields.push('lp_token_holder_rows')
+  if (!totalSupplyRaw && !rows.some((row) => row.pct != null)) primaryMissingFields.push('lp_total_supply_or_holder_share')
+  const rankedPrimary = [...rows].filter((row) => row.pct != null).sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0))
+  const primaryBurnShare = rankedPrimary
+    .filter((row) => BURN_ADDRESSES_SET.has(row.address))
+    .reduce((sum, row) => sum + (row.pct ?? 0), 0)
+  const primaryController = rankedPrimary.find((row) => !BURN_ADDRESSES_SET.has(row.address))
+  if (primaryBurnShare < 99 && (!primaryController || primaryController.isContract == null)) primaryMissingFields.push('lp_controller')
+  const shouldUseBlockscout = primaryMissingFields.length > 0
+
+  if (!input.skipNetwork && shouldUseBlockscout && isRobinhoodBlockscoutConfigured()) {
+    const fetched = await fetchRobinhoodBlockscoutHolders(lpTokenAddress, fetchImpl)
+    holderRowsAttempted = fetched.attempted
+    blockscoutUsed = fetched.used
+    blockscoutEndpointsTried = fetched.endpointsTried
+    blockscoutRowsReturned = fetched.rows.length
+    holderFetchError = fetched.rows.length === 0 ? (fetched.error ?? 'no_holder_rows') : null
+    const merged = new Map(rows.map((row) => [row.address, row]))
+    for (const row of fetched.rows) {
+      const existing = merged.get(row.address)
+      merged.set(row.address, existing ? {
+        ...existing,
+        balanceRaw: row.balanceRaw ?? existing.balanceRaw,
+        pct: row.pct ?? existing.pct,
+        isContract: row.isContract ?? existing.isContract,
+      } : row)
+    }
+    rows = [...merged.values()]
+    if (!totalSupplyRaw) totalSupplyRaw = fetched.totalSupplyRaw
+  } else if (shouldUseBlockscout && !isRobinhoodBlockscoutConfigured()) {
+    holderFetchError = 'Blockscout unavailable: BLOCKSCOUT_API_KEY not configured or Robinhood feature disabled'
+  } else if (shouldUseBlockscout && input.skipNetwork) {
+    holderFetchError = 'Blockscout fallback disabled for this request'
   }
 
   if (rows.length > 0 && !input.skipNetwork) {
@@ -477,6 +551,28 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
     classification: classified.classification,
     reason: classified.reason,
   })
+  const blockscoutSuccess = blockscoutUsed && blockscoutRowsReturned > 0
+  const decision = makeDecision({
+    primaryAttempted: true,
+    primarySucceeded: primaryRowsReturned > 0 && primaryMissingFields.length === 0,
+    primaryRowsReturned,
+    primaryMissingFields,
+    shouldUseBlockscout,
+    blockscoutConfigured: isRobinhoodBlockscoutConfigured(),
+    blockscoutAttempted: blockscoutEndpointsTried.length > 0,
+    blockscoutEndpointsTried,
+    blockscoutRowsReturned,
+    blockscoutSuccess,
+    blockscoutFailureReason: shouldUseBlockscout && !blockscoutSuccess
+      ? (holderFetchError ?? 'Blockscout returned no rows')
+      : null,
+    finalStatus: !shouldUseBlockscout ? 'skipped_primary_succeeded'
+      : blockscoutSuccess ? 'fallback_succeeded'
+        : !isRobinhoodBlockscoutConfigured() ? 'not_configured'
+          : holderFetchError && holderFetchError !== 'no_holder_rows' && holderFetchError !== 'transfers_fallback_no_balances'
+            ? 'fallback_unavailable'
+            : 'fallback_returned_no_rows',
+  })
 
   return {
     classification: classified.classification,
@@ -487,6 +583,7 @@ export async function resolveRobinhoodLpProof(input: ResolveRobinhoodLpProofInpu
     lpHolderRows: rows,
     tokenHolderRows: [],
     lpControlOverlay: mapRobinhoodClassificationToLpControl(classified.classification, classified.reason, evidence),
+    blockscoutFallbackDecisionAudit: decision,
   }
 }
 

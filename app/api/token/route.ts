@@ -9494,6 +9494,7 @@ export async function POST(req: Request) {
     if (chain === 'robinhood' && _robinhoodLpProofResult) {
       ;(responsePayload as any).robinhoodLpResolutionAudit = _robinhoodLpProofResult.resolutionAudit
       ;(responsePayload as any).robinhoodLpProofAudit = _robinhoodLpProofResult.proofAudit
+      ;(responsePayload as any).blockscoutFallbackDecisionAudit = _robinhoodLpProofResult.blockscoutFallbackDecisionAudit
     }
     ;(responsePayload as any).tradingSimulationAudit = tradingSimulationAudit
     if (chain === 'robinhood' && robinhoodTradingSimulationAudit) {

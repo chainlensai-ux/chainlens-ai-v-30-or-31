@@ -71,6 +71,10 @@ export type RobinhoodWalletScanResponse = {
       blockscoutError: string | null
       blockscoutVerifiedSwap: boolean
     }
+    blockscoutFallbackDecisionAudit?: {
+      finalStatus: 'skipped_primary_succeeded' | 'fallback_succeeded' | 'fallback_returned_no_rows' | 'fallback_unavailable' | 'not_configured' | 'not_applicable'
+      blockscoutFailureReason: string | null
+    } | null
     reason: string | null
   }
   pnl: {

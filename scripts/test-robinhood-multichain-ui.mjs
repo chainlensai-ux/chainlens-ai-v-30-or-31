@@ -21,13 +21,15 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
 
 const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
 const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
+const canonicalSelectorsSrc = fs.readFileSync(new URL('../lib/walletScan/canonicalWalletSelectors.ts', import.meta.url), 'utf8')
 
 function run() {
   // ── 1. Robinhood chain metadata matches the task's exact spec ───────────────────────────────
   {
-    check('chainSlug is the literal "robinhood"', /ROBINHOOD_CHAIN_META\s*=\s*\{\s*chainSlug:\s*'robinhood'/.test(robinhoodUiSrc))
-    check('chainId is the real 4663', /ROBINHOOD_CHAIN_META[\s\S]{0,80}chainId:\s*4663/.test(robinhoodUiSrc))
-    check('label is "Robinhood Chain"', /ROBINHOOD_CHAIN_META[\s\S]{0,120}label:\s*'Robinhood Chain'/.test(robinhoodUiSrc))
+    check('the UI imports the shared canonical Robinhood chain metadata', robinhoodUiSrc.includes('ROBINHOOD_CHAIN_META as ROBINHOOD_CHAIN_META_SHARED'))
+    check('chainSlug is the literal "robinhood"', /ROBINHOOD_CHAIN_META\s*=\s*\{\s*chainSlug:\s*'robinhood'/.test(canonicalSelectorsSrc))
+    check('chainId is the real 4663', /ROBINHOOD_CHAIN_META[\s\S]{0,80}chainId:\s*4663/.test(canonicalSelectorsSrc))
+    check('label is "Robinhood Chain"', /ROBINHOOD_CHAIN_META[\s\S]{0,120}label:\s*'Robinhood Chain'/.test(canonicalSelectorsSrc))
   }
 
   // ── 2. Robinhood appears in multi-chain scan results / chain=auto includes it ───────────────
@@ -152,7 +154,7 @@ function run() {
   {
     check('WalletScannerTabsV3 renders RobinhoodChainSection as one more tab, not a separate scanner', fs.readFileSync(new URL('../app/frontend/components/WalletScannerTabsV3.tsx', import.meta.url), 'utf8').includes("activeTab === 'robinhood' && robinhoodResult"))
     check('page.tsx no longer renders RobinhoodChainSection unconditionally whenever robinhoodResult exists', !/\{robinhoodResult && \(\s*<RobinhoodChainSection/.test(pageSrc))
-    check('the standalone fallback card only renders when there is no main result, or in debug mode', pageSrc.includes('{robinhoodResult && (!result || debugMode) && ('))
+    check('the standalone fallback card only renders when there is no main result, or in debug mode', pageSrc.includes('{robinhoodResult && (!result || debugMode) && !partialSnapshot && ('))
     check('the merged total helper sums the V2 total and Robinhood total when Robinhood was included', fs.readFileSync(new URL('../app/frontend/lib/mergedWalletView.ts', import.meta.url), 'utf8').includes('(v2Total ?? 0) + (valueUsd ?? 0)'))
     check('the old unconditional "are not included" wording is gone from PortfolioIntelligenceCard', !fs.readFileSync(new URL('../app/frontend/components/PortfolioIntelligenceCard.tsx', import.meta.url), 'utf8').includes('Custodial/exchange holdings (e.g. Robinhood) are not included'))
     check('the exact required "Includes Robinhood Chain..." wording exists for when Robinhood was scanned', fs.readFileSync(new URL('../app/frontend/lib/mergedWalletView.ts', import.meta.url), 'utf8').includes('Includes Robinhood Chain when enabled and successfully scanned.'))

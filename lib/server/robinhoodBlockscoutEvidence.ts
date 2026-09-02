@@ -21,9 +21,9 @@
 // response, never a hard failure; the key exists here to raise this deployment's own rate/credit
 // ceiling, not to unlock otherwise-inaccessible data.
 //
-// GATING, DISCLOSED: isRobinhoodBlockscoutConfigured() requires BOTH Robinhood Chain being enabled
-// (isRobinhoodChainAvailable — same flag/RPC gate every other Robinhood provider call in this
-// codebase already uses) AND a real BLOCKSCOUT_API_KEY being present. Blockscout's public API would
+// GATING, DISCLOSED: isRobinhoodBlockscoutConfigured() requires the Robinhood Chain feature to be
+// enabled AND a real BLOCKSCOUT_API_KEY to be present. It deliberately does not require the primary
+// Robinhood RPC: an unavailable RPC is one of the conditions this fallback exists to cover. The API would
 // technically still answer without a key, but gating on the key's presence keeps this deployment's
 // Blockscout usage explicit and intentional (matches the task's own "BLOCKSCOUT_API_KEY missing ->
 // clean degraded status" requirement) rather than silently on-by-default the moment Robinhood Chain
@@ -44,7 +44,7 @@
 // verified contract metadata).
 
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
-import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_EXPLORER_URL } from './robinhoodChainConfig'
+import { isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_EXPLORER_URL } from './robinhoodChainConfig'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -76,7 +76,9 @@ function checkBlockscoutRateLimit(): boolean {
 }
 
 export function isRobinhoodBlockscoutConfigured(): boolean {
-  return isRobinhoodChainAvailable() && Boolean(process.env.BLOCKSCOUT_API_KEY)
+  // Blockscout is the fallback when the primary RPC is unavailable, so its configuration must not
+  // depend on that RPC. Keep the feature flag + key gates, but make the evidence layer independent.
+  return isRobinhoodChainFeatureEnabled() && Boolean(process.env.BLOCKSCOUT_API_KEY)
 }
 
 // ── Audit shape, DISCLOSED: exactly the field set this task's spec requires — every field is either
@@ -180,7 +182,7 @@ async function fetchBlockscout<T>(
 
   if (!isRobinhoodBlockscoutConfigured()) {
     audit.blockscoutStatus = 'not_configured'
-    audit.blockscoutRejectedReason = 'BLOCKSCOUT_API_KEY not configured, or Robinhood Chain is not enabled'
+    audit.blockscoutRejectedReason = 'BLOCKSCOUT_API_KEY not configured, or Robinhood Chain feature is not enabled'
     return { data: null, audit }
   }
 

@@ -72,7 +72,7 @@ function baseInput(overrides = {}) {
     securityData: { attempted: true, simulationStatus: 'not_supported', honeypotReason: 'Security provider does not support this token/chain pair', isHoneypot: null },
   }))
   check('honeypot.is 403 -> unsupported_on_robinhood', unsupported.securityStatus === 'unsupported_on_robinhood')
-  check('exact required security wording', unsupported.securityLabel === 'Security simulation unsupported on Robinhood')
+  check('unsupported security includes the exact provider reason', unsupported.securityLabel === 'Unsupported: Security provider does not support this token/chain pair')
   check('never the literal "Open check"', !/open check/i.test(unsupported.securityLabel))
 
   const failed = resolveRobinhoodTokenEvidence(baseInput({

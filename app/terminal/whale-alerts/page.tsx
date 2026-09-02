@@ -345,6 +345,14 @@ export default function WhaleAlertsPage() {
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') !== 'fomo') return
+    queueMicrotask(() => {
+      setActiveTab('fomo')
+      setFomoBoardMounted(true)
+    })
+  }, [])
   const [feedSettled, setFeedSettled] = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
   const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
@@ -603,7 +611,7 @@ export default function WhaleAlertsPage() {
         const label  = a.wallet_label || 'Tracked Wallet'
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)}` : 'USD unverified'
+        const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)} verified` : 'USD value unavailable'
         const sig    = a.signal_score ?? 'LOW SIGNAL'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)

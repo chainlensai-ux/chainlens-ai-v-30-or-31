@@ -64,6 +64,19 @@ export function RobinhoodChainSection({
   const pnlTone: StatusTone = robinhoodPnlVerified ? 'success' : 'neutral'
   const pnlAudit = result.robinhoodPnlVerificationAudit
   const blockscout = activity.blockscoutEvidence
+  const blockscoutDecision = activity.blockscoutFallbackDecisionAudit
+  const blockscoutLabel = blockscoutDecision?.finalStatus === 'fallback_succeeded'
+    ? 'Blockscout fallback used'
+    : blockscoutDecision?.finalStatus === 'skipped_primary_succeeded'
+      ? 'Blockscout skipped — primary succeeded'
+      : blockscoutDecision?.finalStatus === 'fallback_returned_no_rows'
+        ? 'Blockscout returned no rows'
+        : blockscoutDecision?.finalStatus === 'fallback_unavailable' || blockscoutDecision?.finalStatus === 'not_configured'
+          ? `Blockscout unavailable${blockscoutDecision.blockscoutFailureReason ? `: ${blockscoutDecision.blockscoutFailureReason}` : ''}`
+          : blockscout?.blockscoutVerifiedSwap ? 'Swap logs verified by explorer'
+            : blockscout?.blockscoutFallbackUsed ? 'Blockscout fallback used'
+              : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'Blockscout unavailable'
+                : 'Blockscout: not used'
   const providerErrors = [
     holdings.reason ? `Holdings: ${holdings.reason}` : null,
     activity.reason ? `Activity: ${activity.reason}` : null,
@@ -219,12 +232,7 @@ export function RobinhoodChainSection({
                   verified by explorer" are the fixed wordings the Blockscout integration task
                   required — kept verbatim here as the badge label rather than invented anew. */}
               <StatusBadge
-                label={
-                  blockscout?.blockscoutVerifiedSwap ? 'Swap logs verified by explorer'
-                    : blockscout?.blockscoutFallbackUsed ? 'Explorer fallback used'
-                      : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'Blockscout unavailable'
-                        : 'Blockscout: not used'
-                }
+                label={blockscoutLabel}
                 tone={blockscout?.blockscoutVerifiedSwap ? 'success' : blockscout?.blockscoutFallbackUsed ? 'info' : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'warning' : 'neutral'}
               />
             </div>

@@ -10,6 +10,9 @@ const require = createRequire(import.meta.url)
 const tsx = require('tsx/cjs/api')
 const here = fileURLToPath(new URL('.', import.meta.url))
 
+process.env.ENABLE_ROBINHOOD_CHAIN = 'true'
+process.env.BLOCKSCOUT_API_KEY = 'test-blockscout-key'
+
 const {
   classifyRobinhoodLpHolders,
   buildRobinhoodLpCopy,
@@ -235,6 +238,56 @@ const POOL = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 
 // ── 7. Blockscout holder parser (mocked fetch) ───────────────────────────────
 {
+  const proof = await resolveRobinhoodLpProof({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    pairAddress: POOL,
+    lpTokenAddress: POOL,
+    dex: 'uniswap',
+    poolType: 'v2',
+    liquidityUsd: 12_000,
+    createdAt: null,
+    poolChainHint: 4663,
+    concentrated: false,
+    existingTotalSupplyRaw: '1000',
+    existingHolderRows: [{ address: WALLET, balanceRaw: '900', pct: 90, isContract: false }],
+    fetchImpl: async () => { throw new Error('Blockscout must be skipped when primary LP proof is complete') },
+  })
+  check('complete primary LP holders skip Blockscout', proof.blockscoutFallbackDecisionAudit.finalStatus === 'skipped_primary_succeeded')
+  check('complete primary LP holder proof resolves controller without explorer', proof.classification === 'wallet_controlled' && proof.proofAudit.blockscoutUsed === false)
+}
+
+{
+  const previousRpc = process.env.ALCHEMY_ROBINHOOD_RPC_URL
+  delete process.env.ALCHEMY_ROBINHOOD_RPC_URL
+  const fetchImpl = async (url) => {
+    const value = String(url)
+    if (value.includes('/holders')) return { ok: true, status: 200, json: async () => ({ items: [{ address: { hash: CONTRACT, is_contract: true }, value: '900', percentage: 90 }] }) }
+    if (value.includes('/api/v2/tokens/') && !value.includes('/transfers')) return { ok: true, status: 200, json: async () => ({ total_supply: '1000', type: 'ERC-20' }) }
+    return { ok: true, status: 200, json: async () => ({ items: [] }) }
+  }
+  const proof = await resolveRobinhoodLpProof({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    pairAddress: POOL,
+    lpTokenAddress: POOL,
+    dex: 'uniswap',
+    poolType: 'v2',
+    liquidityUsd: 12_000,
+    createdAt: null,
+    poolChainHint: 4663,
+    concentrated: false,
+    existingTotalSupplyRaw: '1000',
+    existingHolderRows: [{ address: CONTRACT, balanceRaw: '900', pct: 90, isContract: null }],
+    fetchImpl,
+  })
+  check('unresolved primary LP controller triggers Blockscout', proof.blockscoutFallbackDecisionAudit.primaryMissingFields.includes('lp_controller') && proof.blockscoutFallbackDecisionAudit.blockscoutAttempted)
+  check('Blockscout controller metadata completes contract classification', proof.classification === 'contract_controlled_unverified')
+  if (previousRpc == null) delete process.env.ALCHEMY_ROBINHOOD_RPC_URL
+  else process.env.ALCHEMY_ROBINHOOD_RPC_URL = previousRpc
+}
+
+{
   const fetchImpl = async (url) => {
     if (String(url).includes('/holders')) {
       return {
@@ -271,6 +324,7 @@ const POOL = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   check('holder rows returned', proof.proofAudit.holderRowsReturned === 2)
   check('totalSupply read', proof.proofAudit.totalSupplyRead === true)
   check('overlay status is burned', proof.lpControlOverlay?.status === 'burned')
+  check('LP decision audit proves fallback ran and returned rows', proof.blockscoutFallbackDecisionAudit.blockscoutAttempted === true && proof.blockscoutFallbackDecisionAudit.finalStatus === 'fallback_succeeded')
 }
 
 {
@@ -290,6 +344,7 @@ const POOL = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
   })
   check('empty Blockscout is unavailable, not Open Check', proof.classification === 'unavailable_with_reason')
   check('empty Blockscout overlay is partial with reason', proof.lpControlOverlay?.status === 'partial')
+  check('empty Blockscout has an exact decision status', proof.blockscoutFallbackDecisionAudit.finalStatus === 'fallback_returned_no_rows' && /no_holder_rows/i.test(proof.blockscoutFallbackDecisionAudit.blockscoutFailureReason ?? ''))
 }
 
 console.log(`ok - ${passed} robinhood LP proof checks passed`)
