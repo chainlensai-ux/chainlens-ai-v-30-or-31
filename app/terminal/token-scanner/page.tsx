@@ -98,6 +98,25 @@ function cleanStatusLabel(value: string | null | undefined): string {
   }
 }
 
+// MIGRATION-RISK FINAL-STATE HELPER, DISCLOSED (Base Token Scanner state/copy consistency
+// task): Migration Risk must never final-render the literal "Open Check" — it is the one
+// field left with an unresolved/pending connotation that reads as "the scan never finished".
+// This is the single shared mapping used everywhere Migration Risk is displayed (compact
+// detail rows, LP Controller Intel, LP History Timeline) so all three surfaces agree. Risk
+// math itself is untouched — this only renames the final label for states that previously
+// fell through to "Open Check": no pool at all becomes "Not detected"; a pool exists but the
+// migration-proof pipeline never returned a confirmed status becomes "Unavailable: reason"
+// (or plain "Unavailable" when no machine-readable reason was attached).
+function migrationRiskFinalLabel(raw: string | null | undefined, opts?: { hasPool?: boolean; reason?: string | null }): string {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (v === 'low') return 'Low'
+  if (v === 'watch' || v === 'medium') return 'Watch'
+  if (v === 'flagged' || v === 'high') return 'Elevated'
+  if (opts?.hasPool === true) return 'Pool detected'
+  if (opts?.hasPool === false) return 'Not detected'
+  return opts?.reason ? `Unavailable: ${opts.reason}` : 'Unavailable'
+}
+
 function isProtocolPositionModel(result: ScanResult): boolean {
   const dm = result.lpControl?.displayLpModel
   return dm === 'concentrated_liquidity'
@@ -7110,7 +7129,25 @@ export default function TerminalTokenScanner() {
                 // produced no liquidity read, say so plainly with the reason — a missing section
                 // must never render as silent blank space. Data comes from the response's own
                 // scanAudit receipt; nothing is inferred or fabricated client-side.
-                const liquidityWarnings = (result.scanAudit?.responseWarnings ?? []).filter(w => /liquidity/i.test(w))
+                //
+                // LIQUIDITY-VS-LP-PROOF WORDING FIX, DISCLOSED (Base Token Scanner state/copy
+                // consistency task): the raw scanAudit warning says "Liquidity unavailable" for
+                // ANY reason the resolver didn't return a liquidityUsd figure — including when
+                // this scan already has real market-liquidity evidence elsewhere (a detected
+                // pool, a positive liquidity read) and the actual gap is LP *proof* (lock/burn/
+                // controller), not liquidity itself. Showing "Liquidity unavailable" next to a
+                // verified pool read contradicts it. When that evidence exists, the same warning
+                // is rephrased to name the real gap; when there truly is no liquidity evidence
+                // anywhere, the original wording stands.
+                const hasVerifiedLiquidityElsewhere = (result.liquidity ?? 0) > 0
+                  || Boolean(result.lpControl?.poolAddressPresent)
+                  || (result.pools?.length ?? 0) > 0
+                const liquidityWarnings = (result.scanAudit?.responseWarnings ?? [])
+                  .filter(w => /liquidity/i.test(w))
+                  .map(w => {
+                    const match = hasVerifiedLiquidityElsewhere ? w.match(/^Liquidity unavailable on .+?:\s*(.+)$/) : null
+                    return match ? `Liquidity market data available; LP proof unavailable: ${match[1]}` : w
+                  })
                 return (
                   <>
                     {liquidityWarnings.length > 0 && (
@@ -8015,16 +8052,16 @@ export default function TerminalTokenScanner() {
                     // never inferred from pool count alone.
                     const migProofStatus = result.lpMigrationProof?.status
                     const migEngineRisk = result.riskEngine?.lpIntelligence?.migrationRisk
+                    const migrationRiskRawStatus = (migProofStatus === 'low' || migEngineRisk === 'low') ? 'low'
+                      : (migProofStatus === 'flagged' || migEngineRisk === 'high') ? 'flagged'
+                      : (migProofStatus === 'watch' || migEngineRisk === 'medium') ? 'watch'
+                      : null
                     const migrationRisk = isV3PartialPositionProof ? 'Low'
                       : isUniswapV3ConcentratedPartial(result) ? 'Low'
-                      : (migProofStatus === 'low' || migEngineRisk === 'low') ? 'Low'
-                      : (migProofStatus === 'flagged' || migEngineRisk === 'high') ? 'Elevated'
-                      : (migProofStatus === 'watch' || migEngineRisk === 'medium') ? 'Monitor'
-                      : (migProofStatus === 'unknown' || migEngineRisk === 'inferred') ? 'Open Check'
-                      : hasPool ? 'Pool detected' : 'Open Check'
+                      : migrationRiskFinalLabel(migrationRiskRawStatus, { hasPool, reason: result.lpMigrationProof?.reason })
                     const migrationRiskColor = migrationRisk === 'Low' ? '#34d399'
                       : migrationRisk === 'Elevated' ? '#f87171'
-                      : migrationRisk === 'Monitor' ? '#fbbf24'
+                      : migrationRisk === 'Watch' ? '#fbbf24'
                       : undefined
                     const cpp = result.concentratedPositionProof
                     const poolModelLabel = cpp?.poolModel === 'uniswap_v4' ? 'Uniswap V4'
@@ -8247,7 +8284,7 @@ export default function TerminalTokenScanner() {
                           ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
                           ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
-                          ['Migration Risk', cleanStatusLabel(result.lpControllerIntel.migrationRisk)],
+                          ['Migration Risk', migrationRiskFinalLabel(result.lpControllerIntel.migrationRisk)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)' }}>
                             <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
@@ -8336,7 +8373,7 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Migration Risk', cleanStatusLabel(result.lpHistoryTimeline.migrationRisk)],
+                          ['Migration Risk', migrationRiskFinalLabel(result.lpHistoryTimeline.migrationRisk)],
                           ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Open check'],
                           ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Open check' : String(result.lpHistoryTimeline.poolCount)],
                           ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Open check' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
