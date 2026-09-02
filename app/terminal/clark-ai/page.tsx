@@ -46,6 +46,7 @@ import {
   ClarkHistoryError, type ClarkChatFolder, type ClarkChatSummary, type ClarkHistoryErrorCode,
 } from '@/lib/client/clarkHistoryClient'
 import { generateChatTitle } from '@/lib/server/clarkHistory'
+import { clarkChatHistoryLimit, clarkChatHistoryLimitCopy, isClarkChatHistoryAtLimit, type UserPlan } from '@/lib/pricingPlans'
 
 const ACTIVE_CHAT_ID_KEY = 'chainlens:clark:active-chat-id'
 
@@ -56,6 +57,7 @@ const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
   rls_blocked: 'History save blocked by permissions',
   insert_failed: 'History temporarily unavailable',
   select_failed: 'History temporarily unavailable',
+  history_limit: 'Chat history limit reached. Delete a chat or upgrade to Elite for unlimited history.',
   network_error: 'History temporarily unavailable',
 }
 
@@ -116,6 +118,7 @@ function ClarkAiContent() {
 
   const [folders, setFolders] = useState<ClarkChatFolder[]>([])
   const [chats, setChats] = useState<ClarkChatSummary[]>([])
+  const [savedChatCount, setSavedChatCount] = useState(0)
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [historySaveFailed, setHistorySaveFailed] = useState(false)
   const [historyErrorCode, setHistoryErrorCode] = useState<ClarkHistoryErrorCode | null>(null)
@@ -123,6 +126,12 @@ function ClarkAiContent() {
   activeChatIdRef.current = activeChatId
   const chatSessionTokenRef = useRef(0)
   const requestGateRef = useRef(createClarkRequestGate())
+
+  const signedIn = typeof account.email === 'string'
+  const historyPlan: UserPlan = account.plan === 'pro' || account.plan === 'elite' ? account.plan : 'free'
+  const historyLimit = signedIn ? clarkChatHistoryLimit(historyPlan) : null
+  const historyAtLimit = signedIn && isClarkChatHistoryAtLimit(historyPlan, savedChatCount)
+  const historyLimitCopy = signedIn && historyLimit != null ? clarkChatHistoryLimitCopy(historyPlan, historyLimit) : null
 
   function reportHistoryFailure(err: unknown) {
     const code = err instanceof ClarkHistoryError ? err.code : 'network_error'
@@ -136,8 +145,8 @@ function ClarkAiContent() {
 
   async function refreshHistory(query?: string) {
     try {
-      const { folders: f, chats: c } = await fetchClarkHistory(query)
-      setFolders(f); setChats(c); reportHistoryOk()
+      const { folders: f, chats: c, chatCount } = await fetchClarkHistory(query)
+      setFolders(f); setChats(c); setSavedChatCount(chatCount); reportHistoryOk()
     } catch (err) { reportHistoryFailure(err) }
   }
 
@@ -160,7 +169,8 @@ function ClarkAiContent() {
     } catch (err) { reportHistoryFailure(err) }
   }
 
-  function handleNewChat() {
+  function handleNewChat(opts?: { ignoreLimit?: boolean }) {
+    if (historyAtLimit && !opts?.ignoreLimit) return
     chatSessionTokenRef.current += 1
     requestGateRef.current.bumpSession()
     setLoading(false)
@@ -171,6 +181,11 @@ function ClarkAiContent() {
 
   async function ensureActiveChat(firstPrompt: string): Promise<string | null> {
     if (activeChatIdRef.current) return activeChatIdRef.current
+    if (historyAtLimit) {
+      setHistorySaveFailed(true)
+      setHistoryErrorCode('history_limit')
+      return null
+    }
     try {
       const title = generateChatTitle(firstPrompt)
       const chat = await createClarkChat(title)
@@ -178,6 +193,7 @@ function ClarkAiContent() {
       activeChatIdRef.current = chat.id
       if (typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chat.id)
       setChats((prev) => [chat, ...prev])
+      setSavedChatCount((n) => n + 1)
       return chat.id
     } catch (err) {
       reportHistoryFailure(err)
@@ -751,6 +767,10 @@ function ClarkAiContent() {
               activeChatId={activeChatId}
               historySaveFailed={historySaveFailed}
               historyStatusMessage={historyErrorCode ? HISTORY_STATUS_MESSAGE[historyErrorCode] : null}
+              historyLimit={historyLimit}
+              historyChatCount={savedChatCount}
+              historyAtLimit={historyAtLimit}
+              historyLimitCopy={historyLimitCopy}
               onNewChat={handleNewChat}
               onSelectChat={(id) => { void loadChat(id) }}
               onSearch={(q) => { void refreshHistory(q || undefined) }}
@@ -758,7 +778,7 @@ function ClarkAiContent() {
               onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(reportHistoryFailure) }}
               onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(reportHistoryFailure) }}
               onDeleteChat={(id) => {
-                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat(); return refreshHistory() }).catch(reportHistoryFailure)
+                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat({ ignoreLimit: true }); return refreshHistory() }).catch(reportHistoryFailure)
               }}
               onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
             />

@@ -58,7 +58,8 @@ export type ClarkHistoryErrorCode =
   | "table_missing"
   | "rls_blocked"
   | "insert_failed"
-  | "select_failed";
+  | "select_failed"
+  | "history_limit";
 
 /**
  * Classifies a Postgres/Supabase error into a stable error code so the frontend can show a

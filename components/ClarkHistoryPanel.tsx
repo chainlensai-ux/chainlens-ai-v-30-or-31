@@ -9,6 +9,10 @@ export type ClarkHistoryPanelProps = {
   activeChatId: string | null
   historySaveFailed: boolean
   historyStatusMessage?: string | null
+  historyLimit?: number | null
+  historyChatCount?: number
+  historyAtLimit?: boolean
+  historyLimitCopy?: string | null
   onNewChat: () => void
   onSelectChat: (id: string) => void
   onSearch: (query: string) => void
@@ -31,6 +35,7 @@ function isGenericChatTitle(title: string): boolean {
 
 export default function ClarkHistoryPanel({
   folders, chats, activeChatId, historySaveFailed, historyStatusMessage,
+  historyLimit = null, historyChatCount = 0, historyAtLimit = false, historyLimitCopy = null,
   onNewChat, onSelectChat, onSearch, onCreateFolder, onRenameChat, onMoveChat, onDeleteChat, onDeleteFolder,
 }: ClarkHistoryPanelProps) {
   const [query, setQuery] = useState('')
@@ -46,6 +51,9 @@ export default function ClarkHistoryPanel({
         .clk-histpanel { display:flex; flex-direction:column; gap:13px; }
         .clk-histpanel-new { border:1px solid rgba(34,211,238,.28); border-radius:10px; background:rgba(34,211,238,.06); color:#67e8f9; font-weight:750; font-size:13.5px; padding:10px 14px; cursor:pointer; transition:background .15s, border-color .15s; }
         .clk-histpanel-new:hover { background:rgba(34,211,238,.11); border-color:rgba(34,211,238,.42); }
+        .clk-histpanel-new:disabled { opacity:.45; cursor:not-allowed; }
+        .clk-histpanel-new:disabled:hover { background:rgba(34,211,238,.06); border-color:rgba(34,211,238,.28); }
+        .clk-histpanel-meta { color:#71809a; font-size:11px; font-weight:650; letter-spacing:.04em; }
         .clk-histpanel-search { border:1px solid rgba(148,163,184,.16); border-radius:10px; background:rgba(2,6,14,.6); color:#e2e8f0; font-size:13.5px; padding:9px 12px; }
         .clk-histpanel-fail { color:#fbbf24; font-size:11.5px; font-weight:700; }
         .clk-histpanel-folders { display:flex; flex-wrap:wrap; gap:7px; }
@@ -73,7 +81,13 @@ export default function ClarkHistoryPanel({
         .clk-histpanel-rename-input { width:100%; font-size:13.5px; border:1px solid rgba(34,211,238,.4); border-radius:9px; background:rgba(2,6,14,.8); color:#e5edf8; padding:7px 9px; }
       `}</style>
 
-      <button type='button' className='clk-histpanel-new' onClick={onNewChat}>+ New Chat</button>
+      <button type='button' className='clk-histpanel-new' onClick={onNewChat} disabled={historyAtLimit}>+ New Chat</button>
+      {historyLimit != null && (
+        <span className='clk-histpanel-meta'>{historyChatCount}/{historyLimit} saved chats</span>
+      )}
+      {historyAtLimit && historyLimitCopy && (
+        <span className='clk-histpanel-fail'>{historyLimitCopy}</span>
+      )}
       {historySaveFailed && (
         <span className='clk-histpanel-fail'>
           {historyStatusMessage ?? 'History not saved — Clark still works, but this chat won’t persist.'}

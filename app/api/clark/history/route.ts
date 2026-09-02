@@ -1,6 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { sanitizeMessageMetadata, buildMessagePreview, classifyDbError, type ClarkHistoryErrorCode } from '@/lib/server/clarkHistory'
+import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
+import { clarkChatHistoryLimit, clarkChatHistoryLimitCopy, type UserPlan } from '@/lib/pricingPlans'
 
 // Persists Clark chat history (folders, chats, messages) for the signed-in user only.
 // Does not touch Clark's intelligence/routing pipeline in app/api/clark/route.ts — this is a
@@ -13,6 +15,7 @@ const HISTORY_ACTION: Record<ClarkHistoryErrorCode, string> = {
   rls_blocked: 'check_permissions',
   insert_failed: 'retry',
   select_failed: 'retry',
+  history_limit: 'upgrade',
 }
 
 function errorResponse(code: ClarkHistoryErrorCode, message: string, status: number) {
@@ -47,6 +50,35 @@ async function authenticate(req: NextRequest): Promise<AuthResult> {
   const { data, error } = await anon.auth.getUser(token)
   if (error || !data.user?.id) return { errorCode: 'auth_invalid' }
   return { userId: data.user.id }
+}
+
+async function countUserChats(db: NonNullable<ReturnType<typeof getServiceClient>>, userId: string): Promise<{ count: number } | { error: { code?: string | null; message?: string | null } }> {
+  const { count, error } = await db
+    .from('clark_chats')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+  if (error) return { error }
+  return { count: count ?? 0 }
+}
+
+async function historyMeta(req: NextRequest, db: NonNullable<ReturnType<typeof getServiceClient>>, userId: string) {
+  const plan = await getVerifiedUserPlan(req)
+  const counted = await countUserChats(db, userId)
+  const chatCount = 'error' in counted ? 0 : counted.count
+  return { historyLimit: clarkChatHistoryLimit(plan), chatCount }
+}
+
+async function rejectIfHistoryLimitReached(req: NextRequest, db: NonNullable<ReturnType<typeof getServiceClient>>, userId: string) {
+  const plan = await getVerifiedUserPlan(req)
+  const limit = clarkChatHistoryLimit(plan)
+  if (limit == null) return null
+  const counted = await countUserChats(db, userId)
+  if ('error' in counted) return errorResponse(classifyDbError(counted.error, 'select_failed'), counted.error.message ?? 'Could not count saved chats.', 500)
+  if (counted.count >= limit) {
+    const copyPlan: UserPlan = plan === 'pro' || plan === 'elite' ? plan : 'free'
+    return errorResponse('history_limit', clarkChatHistoryLimitCopy(copyPlan, limit), 403)
+  }
+  return null
 }
 
 export async function GET(req: NextRequest) {
@@ -99,7 +131,7 @@ export async function GET(req: NextRequest) {
       if (error) return errorResponse(classifyDbError(error, 'select_failed'), error.message, 500)
       extraChats = data ?? []
     }
-    return NextResponse.json({ folders: folders ?? [], chats: [...(byTitle.data ?? []), ...extraChats] })
+    return NextResponse.json({ folders: folders ?? [], chats: [...(byTitle.data ?? []), ...extraChats], ...(await historyMeta(req, db, userId)) })
   }
 
   const { data: chats, error: chatsError } = await db
@@ -110,7 +142,7 @@ export async function GET(req: NextRequest) {
     .order('updated_at', { ascending: false })
   if (chatsError) return errorResponse(classifyDbError(chatsError, 'select_failed'), chatsError.message, 500)
 
-  return NextResponse.json({ folders: folders ?? [], chats: chats ?? [] })
+  return NextResponse.json({ folders: folders ?? [], chats: chats ?? [], ...(await historyMeta(req, db, userId)) })
 }
 
 export async function POST(req: NextRequest) {
@@ -138,6 +170,8 @@ export async function POST(req: NextRequest) {
   }
 
   if (type === 'chat') {
+    const blocked = await rejectIfHistoryLimitReached(req, db, userId)
+    if (blocked) return blocked
     const title = typeof body?.title === 'string' && body.title.trim() ? body.title.trim() : 'New Clark Chat'
     const folderId = typeof body?.folderId === 'string' ? body.folderId : null
     const { data, error } = await db

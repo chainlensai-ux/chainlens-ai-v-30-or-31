@@ -190,6 +190,7 @@ export const pricingPlans: PricingPlan[] = [
       'Portfolio Intelligence',
       'Watchlist — full access',
       'Clark AI — 3 prompts per day',
+      'Clark chat history — 3 saved chats',
     ],
   },
   {
@@ -216,6 +217,7 @@ export const pricingPlans: PricingPlan[] = [
       'Portfolio Intelligence',
       'Watchlist — full access',
       'Clark AI — 50 prompts per day',
+      'Clark chat history — 10 saved chats',
       'Base Radar',
       'Whale Alerts',
     ],
@@ -241,9 +243,10 @@ export const pricingPlans: PricingPlan[] = [
       'Everything in Pro',
       deepScanLimitLabel('elite'),
       'Clark AI — 300 prompts per day',
+      'Unlimited Clark chat history',
       'FOMO PnL leaderboard — 24H / 7D / 30D / ALL',
     ],
-    note: 'Everything in Pro, plus unlimited deep scans, 300 Clark prompts per day, and the FOMO PnL leaderboard.',
+    note: 'Everything in Pro, plus unlimited deep scans, unlimited Clark chat history, 300 Clark prompts per day, and the FOMO PnL leaderboard.',
   },
 ]
 
@@ -280,7 +283,7 @@ export const PLAN_TOOL_NAV: Array<{
       { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Basic wallet reads · 1 deep scan/day' },
       { icon: '📊', name: 'Portfolio', href: '/terminal/portfolio', note: 'Portfolio Intelligence' },
       { icon: '☆', name: 'Watchlist', href: '/terminal/watchlist', note: 'Full access' },
-      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '3 prompts/day' },
+      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '3 prompts/day · 3 saved chats' },
     ],
   },
   {
@@ -293,7 +296,7 @@ export const PLAN_TOOL_NAV: Array<{
       { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: 'Full token analysis' },
       { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Full wallet reads · 30 deep scans/day' },
       { icon: '📡', name: 'Base Radar', href: '/terminal/base-radar', note: '' },
-      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '50 prompts/day' },
+      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '50 prompts/day · 10 saved chats' },
     ],
   },
   {
@@ -303,7 +306,7 @@ export const PLAN_TOOL_NAV: Array<{
     bg: 'rgba(212,160,23,0.08)',
     border: 'rgba(212,160,23,0.22)',
     tools: [
-      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '300 prompts/day' },
+      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '300 prompts/day · unlimited history' },
       { icon: '🐋', name: 'Whale Alerts', href: '/terminal/whale-alerts', note: 'FOMO Board · most PnL 24H / 7D / 30D / ALL' },
       { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited deep scans' },
     ],
@@ -312,16 +315,16 @@ export const PLAN_TOOL_NAV: Array<{
 
 export function planFaqWhatIsIncluded(): string {
   return [
-    `Free: ${deepScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI at ${CLARK_DAILY_LIMITS.free} prompts per day.`,
-    `Pro ($30/month): ${deepScanLimitLabel('pro')}, full Token Scanner, full Wallet Scanner, Portfolio Intelligence, Watchlist, Clark AI at ${CLARK_DAILY_LIMITS.pro} prompts per day, Base Radar, and Whale Alerts.`,
-    `Elite ($60/month): everything in Pro, ${deepScanLimitLabel('elite').toLowerCase()}, Clark AI at ${CLARK_DAILY_LIMITS.elite} prompts per day, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`,
+    `Free: ${deepScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI at ${CLARK_DAILY_LIMITS.free} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.free} saved chats.`,
+    `Pro ($30/month): ${deepScanLimitLabel('pro')}, full Token Scanner, full Wallet Scanner, Portfolio Intelligence, Watchlist, Clark AI at ${CLARK_DAILY_LIMITS.pro} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved chats, Base Radar, and Whale Alerts.`,
+    `Elite ($60/month): everything in Pro, ${deepScanLimitLabel('elite').toLowerCase()}, Clark AI at ${CLARK_DAILY_LIMITS.elite} prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`,
   ].join(' ')
 }
 
 export function planFaqProVsElite(): string {
-  return `Pro and Elite share Token Scanner, Wallet Scanner, Portfolio, Watchlist, Base Radar, and Whale Alerts. Pro includes ${deepScanLimitLabel('pro')} and ${CLARK_DAILY_LIMITS.pro} Clark prompts per day. Elite adds ${deepScanLimitLabel('elite').toLowerCase()}, ${CLARK_DAILY_LIMITS.elite} Clark prompts per day, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`
+  return `Pro and Elite share Token Scanner, Wallet Scanner, Portfolio, Watchlist, Base Radar, and Whale Alerts. Pro includes ${deepScanLimitLabel('pro')}, ${CLARK_DAILY_LIMITS.pro} Clark prompts per day, and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved Clark chats. Elite adds ${deepScanLimitLabel('elite').toLowerCase()}, ${CLARK_DAILY_LIMITS.elite} Clark prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`
 }
 
 export function planFaqClarkLimits(): string {
-  return `Signed-out visitors get ${CLARK_DAILY_UNAUTH} per day. Free gets ${CLARK_DAILY_LIMITS.free}. Pro gets ${CLARK_DAILY_LIMITS.pro}. Elite gets ${CLARK_DAILY_LIMITS.elite}. Unused prompts do not roll over. Free prompts accept normal Clark commands (token, wallet, LP, holders, deployer) and stop when the daily limit is reached.`
+  return `Signed-out visitors get ${CLARK_DAILY_UNAUTH} per day. Free gets ${CLARK_DAILY_LIMITS.free}. Pro gets ${CLARK_DAILY_LIMITS.pro}. Elite gets ${CLARK_DAILY_LIMITS.elite}. Unused prompts do not roll over. Free keeps ${CLARK_CHAT_HISTORY_LIMITS.free} saved Clark chats, Pro keeps ${CLARK_CHAT_HISTORY_LIMITS.pro}, and Elite is unlimited. Free prompts accept normal Clark commands (token, wallet, LP, holders, deployer) and stop when the daily limit is reached.`
 }

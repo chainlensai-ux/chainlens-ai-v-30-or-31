@@ -153,4 +153,17 @@ assert.ok(/onSearch/.test(panelSrc) && /onSearch=\{.*refreshHistory/.test(pageSr
   assert.ok(/historyStatusMessage/.test(panelSrc), 'panel renders the specific status message, not just a fixed string')
 }
 
+assert.ok(/history_limit/.test(apiSrc), 'history route enforces a saved-chat limit')
+assert.ok(/rejectIfHistoryLimitReached/.test(apiSrc), 'new chats are blocked at the plan history cap')
+assert.ok(/clarkChatHistoryLimit/.test(apiSrc), 'history cap is read from the canonical plan matrix')
+assert.match(pageSrc, /historyAtLimit/, 'Clark AI page tracks when saved-chat history is full')
+assert.match(pageSrc, /if \(historyAtLimit && !opts\?\.ignoreLimit\) return/, 'New Chat is a no-op at the Pro/Free history cap')
+assert.match(panelSrc, /disabled=\{historyAtLimit\}/, 'New Chat button is disabled at the history cap')
+assert.match(panelSrc, /historyChatCount/)
+assert.match(pageSrc, /savedChatCount/)
+assert.match(apiSrc, /historyMeta/)
+assert.match(clientSrc, /chatCount/)
+assert.equal((await import('../lib/pricingPlans.ts')).clarkChatHistoryLimit('pro'), 10)
+assert.equal((await import('../lib/pricingPlans.ts')).clarkChatHistoryLimit('elite'), null)
+
 console.log('clark chat history checks passed')

@@ -12,7 +12,7 @@ export type ClarkChatSummary = {
 }
 export type ClarkChatMessageRow = { id: string; chat_id: string; role: 'user' | 'assistant' | 'system'; content: string; metadata: unknown; created_at: string }
 
-export type ClarkHistoryErrorCode = 'auth_missing' | 'auth_invalid' | 'table_missing' | 'rls_blocked' | 'insert_failed' | 'select_failed' | 'network_error'
+export type ClarkHistoryErrorCode = 'auth_missing' | 'auth_invalid' | 'table_missing' | 'rls_blocked' | 'insert_failed' | 'select_failed' | 'history_limit' | 'network_error'
 
 export class ClarkHistoryError extends Error {
   code: ClarkHistoryErrorCode
@@ -41,13 +41,18 @@ async function readJsonError(res: Response, fallbackMessage: string): Promise<Cl
   return new ClarkHistoryError(code, message)
 }
 
-export async function fetchClarkHistory(query?: string): Promise<{ folders: ClarkChatFolder[]; chats: ClarkChatSummary[] }> {
+export async function fetchClarkHistory(query?: string): Promise<{ folders: ClarkChatFolder[]; chats: ClarkChatSummary[]; historyLimit: number | null; chatCount: number }> {
   const headers = await authHeaders()
   const url = query ? `/api/clark/history?q=${encodeURIComponent(query)}` : '/api/clark/history'
   const res = await fetch(url, { headers })
   if (!res.ok) throw await readJsonError(res, 'history fetch failed')
   const json = await res.json()
-  return { folders: json.folders ?? [], chats: json.chats ?? [] }
+  return {
+    folders: json.folders ?? [],
+    chats: json.chats ?? [],
+    historyLimit: typeof json.historyLimit === 'number' || json.historyLimit === null ? json.historyLimit : null,
+    chatCount: typeof json.chatCount === 'number' ? json.chatCount : (json.chats ?? []).length,
+  }
 }
 
 export async function fetchClarkChatMessages(chatId: string): Promise<ClarkChatMessageRow[]> {
