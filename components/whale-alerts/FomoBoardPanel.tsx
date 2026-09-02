@@ -428,7 +428,7 @@ export default function FomoBoardPanel() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ borderBottom: bdrInner }}>
-                  {['Rank', 'Handle', '24h PnL', 'Volume', 'Trades', 'Followers', 'SOL wallet', 'EVM wallet', 'Add'].map((h) => (
+                  {['Rank', 'Handle', `${WINDOWS.find((w) => w.value === window_)?.label ?? '24H'} PnL`, 'Volume', 'Trades', 'Followers', 'SOL wallet', 'EVM wallet', 'Add'].map((h) => (
                     <th key={h} style={{ textAlign: h === 'Handle' ? 'left' : 'right', padding: '10px 12px', fontSize: 9.5, fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', color: '#55647d', whiteSpace: 'nowrap' }}>
                       {h}
                     </th>

@@ -6,7 +6,7 @@ import fs from 'node:fs'
 
 const { canAccessFomoBoard } = await import('../lib/planFeatures.ts')
 const { authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } = await import('../app/api/fomo/leaderboard/route.ts')
-const { fetchFomoLeaderboard, clearFomoLeaderboardCache, normalizeFomoTrader } = await import('../lib/server/fomoApi.ts')
+const { fetchFomoLeaderboard, clearFomoLeaderboardCache, normalizeFomoTrader, rankFomoTradersByPnl } = await import('../lib/server/fomoApi.ts')
 
 const panelSrc = fs.readFileSync(new URL('../components/whale-alerts/FomoBoardPanel.tsx', import.meta.url), 'utf8')
 const pageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.tsx', import.meta.url), 'utf8')
@@ -82,6 +82,10 @@ check('locked extra copy is exact', panelSrc.includes('FOMO Board is an Elite-on
 check('locked CTA is Upgrade to Elite', panelSrc.includes('Upgrade to Elite'))
 check('locked CTA links to pricing', /href="\/pricing"/.test(panelSrc))
 check('page shows locked card when FOMO access is denied', /!hasFomoAccess && <FomoBoardLockedCard \/>/.test(pageSrc) || pageSrc.includes('!hasFomoAccess && <FomoBoardLockedCard'))
+check('page does not full-page lock Free/Pro before FOMO tab', !/if \(!betaEliteActive && !canAccessFeature\(plan, 'whale-alerts'\)\) return <LockedPanel/.test(pageSrc))
+check('Activity lock stays inside the Activity tab', /!hasWhaleAccess \? <LockedPanel feature="whale-alerts" \/>/.test(pageSrc))
+check('FOMO tab still mounts locked card for Free and Pro', /activeTab === 'fomo' && !hasFomoAccess && <FomoBoardLockedCard \/>/.test(pageSrc))
+check('loadAlerts does not fetch Activity data without whale access', /if \(!hasWhaleAccess\) \{/.test(pageSrc))
 
 // ── Frontend does not fetch FOMO for non-Elite ─────────────────────────────
 check('panel data fetches require hasAccess', /if \(!hasAccess\) return/.test(panelSrc))
@@ -102,5 +106,19 @@ check('panel skeleton has no Loading plan text', /planLoading/.test(panelSrc) &&
 check('locked card wraps and has minWidth 0', /flexWrap: 'wrap'/.test(panelSrc) && /minWidth: 0/.test(panelSrc))
 check('CTA is full width on small screens', /width: '100%'/.test(panelSrc) && /maxWidth: 320/.test(panelSrc) && /minHeight: 44/.test(panelSrc))
 check('whale-alerts page prevents horizontal overflow', /overflow-x-hidden|overflowX: 'hidden'/.test(pageSrc))
+check('PnL column follows the selected window', /WINDOWS\.find\(\(w\) => w\.value === window_\)\?\.label/.test(panelSrc))
+
+// ── Rank by most PnL ───────────────────────────────────────────────────────
+{
+  const ranked = rankFomoTradersByPnl([
+    { rank: 1, handle: 'low', displayName: null, pnlUsd: 10, volumeUsd: null, trades: null, followers: null, holdingsCount: null, solanaWallet: null, evmWallet: null, walletStatus: 'unresolved', verified: false, topTokens: [], canAddToBaseTracker: false },
+    { rank: 2, handle: 'high', displayName: null, pnlUsd: 90, volumeUsd: null, trades: null, followers: null, holdingsCount: null, solanaWallet: null, evmWallet: null, walletStatus: 'unresolved', verified: false, topTokens: [], canAddToBaseTracker: false },
+    { rank: 3, handle: 'none', displayName: null, pnlUsd: null, volumeUsd: null, trades: null, followers: null, holdingsCount: null, solanaWallet: null, evmWallet: null, walletStatus: 'unresolved', verified: false, topTokens: [], canAddToBaseTracker: false },
+  ])
+  check('highest PnL is rank 1', ranked[0].handle === 'high' && ranked[0].rank === 1)
+  check('lower PnL is rank 2', ranked[1].handle === 'low' && ranked[1].rank === 2)
+  check('null PnL sorts last', ranked[2].handle === 'none' && ranked[2].rank === 3)
+}
+check('fetchFomoLeaderboard ranks by PnL', /rankFomoTradersByPnl\(rawList/.test(fs.readFileSync(new URL('../lib/server/fomoApi.ts', import.meta.url), 'utf8')))
 
 console.log(`test-fomo-board-elite: ${passed} checks passed`)

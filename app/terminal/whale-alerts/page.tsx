@@ -316,6 +316,8 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading, betaEliteActive, elitePass } = usePlanWithLoading()
+  const hasWhaleAccess = betaEliteActive || canAccessFeature(plan, 'whale-alerts')
+  const hasFomoAccess = canAccessFomoBoard(plan) || betaEliteActive || Boolean(elitePass.active && elitePass.unlocks.includes('whale-alerts'))
   // FOMO BOARD TAB, DISCLOSED: a second, separate section on this page ("Activity" vs "FOMO
   // board"), switched with a tab control — the existing Activity content (KPI row, controls, sync
   // module, alert feed) is untouched below, just wrapped in `activeTab === 'activity'` so none of
@@ -378,6 +380,11 @@ export default function WhaleAlertsPage() {
   }, [baseCooldownMs])
 
   const loadAlerts = useCallback(async (opts?: { enrich?: boolean }) => {
+    if (!hasWhaleAccess) {
+      setLoading(false)
+      setFeedSettled(true)
+      return
+    }
     if (opts?.enrich) setEnrichLoading(true)
     else setLoading(true)
     setFeedError(false)
@@ -421,7 +428,7 @@ export default function WhaleAlertsPage() {
       setEnrichLoading(false)
       setFeedSettled(true)
     }
-  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter])
+  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess])
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
@@ -662,8 +669,6 @@ export default function WhaleAlertsPage() {
   // page's real rhythm so nothing jumps when content replaces it, and the shared account store now
   // only reports loading:true when there is genuinely no cached plan to trust.
   if (planLoading) return <PlanGateSkeleton />
-  if (!betaEliteActive && !canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
-  const hasFomoAccess = canAccessFomoBoard(plan) || betaEliteActive || Boolean(elitePass.active && elitePass.unlocks.includes('whale-alerts'))
 
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
@@ -819,6 +824,7 @@ export default function WhaleAlertsPage() {
         )}
 
         {activeTab === 'activity' && (<>
+        {!hasWhaleAccess ? <LockedPanel feature="whale-alerts" /> : (<>
 
         {/* ═══ 2. KPI ROW ════════════════════════════════════════════════════
             Flat surfaces, no per-card icon tile, no bottom accent bar, no gradient spark fill.
@@ -1505,6 +1511,7 @@ export default function WhaleAlertsPage() {
 
         </section>
 
+        </>)}
         </>)}
 
       </div>

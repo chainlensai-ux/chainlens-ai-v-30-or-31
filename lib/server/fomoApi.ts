@@ -35,6 +35,13 @@ export type FomoTraderRow = {
   canAddToBaseTracker: boolean;
 };
 
+/** Rank FOMO traders by most PnL (desc). Null PnL sorts last. Ranks are rewritten 1..N. */
+export function rankFomoTradersByPnl(traders: FomoTraderRow[]): FomoTraderRow[] {
+  return [...traders]
+    .sort((a, b) => (b.pnlUsd ?? Number.NEGATIVE_INFINITY) - (a.pnlUsd ?? Number.NEGATIVE_INFINITY))
+    .map((row, i) => ({ ...row, rank: i + 1 }));
+}
+
 const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 // Raw wallet field values that mean "still being resolved" rather than "known to be absent" — the
 // FOMO API's own wording for this isn't documented here, so this is deliberately permissive: any of
@@ -227,7 +234,7 @@ async function fetchFomoLeaderboardUncached(
       : Array.isArray(j.leaderboard) ? j.leaderboard
       : Array.isArray(json) ? json as unknown[]
       : [];
-    const traders = rawList.slice(0, limit).map((row, i) => normalizeFomoTrader(row, i));
+    const traders = rankFomoTradersByPnl(rawList.slice(0, limit).map((row, i) => normalizeFomoTrader(row, i)));
 
     const result: FomoLeaderboardFetchResult = {
       ok: true, traders, cacheHit: false, cacheAgeMs: 0, apiCalled: true, status: res.status,
