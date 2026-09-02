@@ -533,7 +533,7 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
   return {
     riskScore,
     safetyScore,
-    riskLabel: normalized.riskLabel ?? 'Medium Risk',
+    riskLabel: normalized.riskLabel ?? 'Moderate Risk',
     rawScoreType: 'safety_score',
     scoreDirection: 'higher_is_riskier',
     riskScoreDirectionAudit: normalized.audit,

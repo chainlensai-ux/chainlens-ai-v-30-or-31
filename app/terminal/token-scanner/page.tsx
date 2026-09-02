@@ -37,6 +37,8 @@ import {
   normalizeRiskScore,
   riskColorFromCanonicalLabel,
   riskGaugeFillPercent,
+  riskLabelCopy,
+  coerceCanonicalRiskLabel,
   type RiskScoreDirectionAudit,
 } from '@/lib/riskScoreDirection'
 
@@ -3969,16 +3971,23 @@ function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResu
 
 // ─── Token Safety Score helpers ────────────────────────────────────────────
 const RISK_LABEL_MAP: Record<string, string> = {
-  extreme: 'Critical Risk',
+  extreme: 'Extreme Risk',
+  critical: 'Extreme Risk',
   high: 'High Risk',
-  moderate: 'Medium Risk',
+  moderate: 'Moderate Risk',
+  medium: 'Moderate Risk',
+  caution: 'Caution',
+  elevated: 'Caution',
   low: 'Low Risk',
   very_low: 'Low Risk',
+  'Medium Risk': 'Moderate Risk',
+  'Critical Risk': 'Extreme Risk',
+  'Elevated Risk': 'Caution',
 }
 
 function getRiskLabelDisplay(riskLabel?: string | null): string {
   if (!riskLabel) return 'Unrated'
-  return RISK_LABEL_MAP[riskLabel] ?? riskLabel
+  return coerceCanonicalRiskLabel(riskLabel) ?? RISK_LABEL_MAP[riskLabel] ?? riskLabel
 }
 
 const RISK_REASON_MAP: Record<string, string> = {
@@ -7080,11 +7089,15 @@ export default function TerminalTokenScanner() {
                               <span style={{ fontSize: '16px', color: `${riskLabelColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
                             </div>
                             <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
+                            <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                           </div>
+                          {riskLabelCopy(normalizedRisk.riskLabel) && (
+                            <div style={{ fontSize: '12px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', marginTop: '10px', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel)}</div>
+                          )}
                           <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
                             <div style={{ height: '100%', width: `${riskGaugeFillPercent(riskScoreVal)}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
                           </div>
-                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Derived once from the evidence-weighted safety model.</div>
+                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</div>
                         </>
                       ) : (
                         <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
@@ -7153,8 +7166,12 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline', marginBottom: '6px' }}>
                         <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX SAFETY READ</div>
                         <div style={{ fontSize: '15px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)' }}>{legacyCortexScore != null ? `Safety Score: ${legacyCortexScore}/100` : 'Unavailable'}</div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Safety verdict: <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span></div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk label: <span style={{ color: riskLabelColor, fontWeight: 700 }}>{riskLabelDisplay}</span></div>
+                        <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                       </div>
+                      {riskLabelCopy(normalizedRisk.riskLabel) && (
+                        <p style={{ margin: '0 0 6px', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel)}</p>
+                      )}
                       <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>This secondary model is explicitly a Safety Score: higher means safer. The Risk Score above is the canonical product score.</p>
                     </div>
 
@@ -8723,7 +8740,10 @@ export default function TerminalTokenScanner() {
                                   {displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
-                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence.</p>
+                              {riskLabelCopy(displayCortexVerdict) && (
+                                <p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>{riskLabelCopy(displayCortexVerdict)}</p>
+                              )}
+                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
                               {engine?.cortexRead ? (
                                 <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
                                   <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
@@ -9637,6 +9657,10 @@ export default function TerminalTokenScanner() {
                     </div>
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
+                      <div style={{display:'inline-flex',marginLeft:'6px',padding:'4px 9px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:sidebarRisk.confidence === 'high' ? '#34d399' : sidebarRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8',background:'rgba(148,163,184,0.08)',border:'1px solid rgba(148,163,184,0.22)',fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{sidebarRisk.confidence.toUpperCase()} CONFIDENCE</div>
+                      {riskLabelCopy(sidebarRisk.riskLabel) && (
+                        <div style={{fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5,marginBottom:'6px'}}>{riskLabelCopy(sidebarRisk.riskLabel)}</div>
+                      )}
                       <div style={{height:'4px',borderRadius:'999px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
                         <div style={{height:'100%',width:`${riskGaugeFillPercent(sidebarScore)}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
                       </div>

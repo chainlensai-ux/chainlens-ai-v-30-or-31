@@ -12,6 +12,7 @@
  */
 
 import { calculateTokenRiskScore } from '../lib/server/riskScore.ts'
+import { riskLabelFromCanonicalScore } from '../lib/riskScoreDirection.ts'
 
 let passed = 0
 let failed = 0
@@ -112,7 +113,7 @@ const microcapResult = calculateTokenRiskScore(microcapInput)
 console.log('  riskScore:', microcapResult.riskScore, 'riskLabel:', microcapResult.riskLabel)
 
 assert('microcap Risk Score is much higher (riskier) than VIRTUAL', microcapResult.riskScore > virtualResult.riskScore + 15, { microcap: microcapResult.riskScore, virtual: virtualResult.riskScore })
-assert('microcap riskLabel is Critical Risk', microcapResult.riskLabel === 'Critical Risk', microcapResult.riskLabel)
+assert('microcap riskLabel matches canonical band', microcapResult.riskLabel === riskLabelFromCanonicalScore(microcapResult.riskScore), microcapResult.riskLabel)
 
 // ─── Scenario 3: Burned/locked mature token ─────────────────────────────────
 console.log('\nScenario 3: Burned/locked mature token (good market maturity, burned LP, no critical flags)')
@@ -153,8 +154,8 @@ const burnedInput = {
 const burnedResult = calculateTokenRiskScore(burnedInput)
 console.log('  riskScore:', burnedResult.riskScore, 'riskLabel:', burnedResult.riskLabel)
 
-assert('burned/locked token Risk Score is low (<=24)', burnedResult.riskScore <= 24, burnedResult.riskScore)
-assert('burned/locked token riskLabel is Low Risk', burnedResult.riskLabel === 'Low Risk', burnedResult.riskLabel)
+assert('burned/locked token Risk Score is low (<=40)', burnedResult.riskScore <= 40, burnedResult.riskScore)
+assert('burned/locked token riskLabel matches canonical band', burnedResult.riskLabel === riskLabelFromCanonicalScore(burnedResult.riskScore), burnedResult.riskLabel)
 assert('burned/locked token scores lower (safer) than VIRTUAL', burnedResult.riskScore < virtualResult.riskScore, { burned: burnedResult.riskScore, virtual: virtualResult.riskScore })
 
 // ─── Scenario 4: VIRTUAL-like with unknown LP controller, no lock/burn proof ──

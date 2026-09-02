@@ -5,16 +5,18 @@ import {
   CANONICAL_RISK_THRESHOLD,
   normalizeRiskScore,
   riskGaugeFillPercent,
+  riskLabelFromCanonicalScore,
+  riskLabelCopy,
 } from '../lib/riskScoreDirection'
 import { calculateTokenRiskScore } from '../lib/server/riskScore'
 import { renderClarkTokenVerdictForEvm, type TokenScanEvidence } from '../lib/server/clarkRouting'
 
 describe('canonical Risk Score direction', () => {
-  it('maps raw risk 80 to Critical Risk and raw risk 20 to Low Risk', () => {
+  it('maps raw risk 80 to Extreme Risk and raw risk 20 to Low Risk', () => {
     const high = normalizeRiskScore({ rawScore: 80, rawScoreType: 'risk_score', source: 'test' })
     const low = normalizeRiskScore({ rawScore: 20, rawScoreType: 'risk_score', source: 'test' })
     assert.equal(high.riskScore0To100, 80)
-    assert.equal(high.riskLabel, 'Critical Risk')
+    assert.equal(high.riskLabel, 'Extreme Risk')
     assert.equal(low.riskScore0To100, 20)
     assert.equal(low.riskLabel, 'Low Risk')
     assert.equal(high.audit.inverted, false)
@@ -30,7 +32,7 @@ describe('canonical Risk Score direction', () => {
       displayLocation: 'risk_engine',
     })
     assert.equal(result.riskScore0To100, 75)
-    assert.equal(result.riskLabel, 'Critical Risk')
+    assert.equal(result.riskLabel, 'High Risk')
     assert.equal(result.audit.inverted, true)
     assert.equal(result.audit.rawScore, 25)
     assert.equal(result.audit.convertedRiskScore, 75)
@@ -77,18 +79,31 @@ describe('canonical Risk Score direction', () => {
       ok: true,
       token: { name: 'Test', symbol: 'TEST', address: '0x0000000000000000000000000000000000000001' },
       riskScore: 75,
-      riskLabel: 'Critical Risk',
+      riskLabel: 'High Risk',
       riskScoreType: 'risk_score',
       market: { liquidity: 100_000 },
     }
     const answer = renderClarkTokenVerdictForEvm(evidence, evidence.token!.address!, 'Base', true)
-    assert.match(answer, /Risk Score: 75\/100 — Critical Risk \(higher = riskier\)/)
+    assert.match(answer, /Risk Score: 75\/100 — High Risk \(higher = riskier\)/)
   })
 
   it('increases gauge fill as risk increases', () => {
     assert.ok(riskGaugeFillPercent(80) > riskGaugeFillPercent(20))
     assert.equal(riskGaugeFillPercent(110), 100)
     assert.equal(riskGaugeFillPercent(-5), 0)
+  })
+
+  it('maps mid-range 58 to Caution, not High Risk', () => {
+    const mid = normalizeRiskScore({ rawScore: 58, rawScoreType: 'risk_score', confidence: 'high', source: 'test' })
+    assert.equal(riskLabelFromCanonicalScore(20), 'Low Risk')
+    assert.equal(riskLabelFromCanonicalScore(40), 'Moderate Risk')
+    assert.equal(riskLabelFromCanonicalScore(58), 'Caution')
+    assert.equal(riskLabelFromCanonicalScore(61), 'High Risk')
+    assert.equal(riskLabelFromCanonicalScore(76), 'Extreme Risk')
+    assert.equal(mid.riskLabel, 'Caution')
+    assert.equal(mid.confidence, 'high')
+    assert.equal(riskLabelCopy(mid.riskLabel), 'Elevated risk — missing LP/dev verification')
+    assert.notEqual(mid.riskLabel, 'High Risk')
   })
 
   it('keeps Token Scanner and watchlist wired to canonical direction metadata', () => {
