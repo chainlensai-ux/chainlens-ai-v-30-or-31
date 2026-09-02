@@ -8,6 +8,7 @@ import { scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -69,6 +70,13 @@ export async function POST(req: Request): Promise<Response> {
   if (!walletScanRedisConfigured()) {
     return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
   }
+
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task): a wallet scan previously ran for any
+  // caller, authenticated or not, silently downgraded to the Free plan's quota/rate limit. Checked
+  // after the infra-availability check above (a KV outage is independent of who's asking, per this
+  // route's own pre-existing ordering disclosure) but before plan/quota resolution — an anonymous
+  // caller is rejected before any job is enqueued.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
 
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {

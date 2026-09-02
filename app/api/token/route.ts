@@ -29,6 +29,7 @@ import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
@@ -3647,6 +3648,12 @@ function _buildDeterministicSummary(
 // POST handler
 // ------------------------------
 export async function POST(req: Request) {
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task — "Nobody should be able to use
+  // ChainLens without an account"): token scans previously ran for ANY caller, authenticated or
+  // not, silently downgraded to the Free plan's rate limit. Every scan now requires a real, verified
+  // Supabase session — checked before rate limiting or any scan work begins, so an anonymous caller
+  // never reaches (or costs) any of the provider calls below.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
 

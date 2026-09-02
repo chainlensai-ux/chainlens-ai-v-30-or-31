@@ -211,6 +211,27 @@ export function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, emai
 
 export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
 
+// SIGNED-IN MARKER COOKIE, DISCLOSED (account-required task — "server-side auth guard for all
+// /terminal routes"). WHY A COOKIE AT ALL: this app's Supabase session lives ONLY in
+// localStorage (lib/supabaseClient.ts uses the plain @supabase/supabase-js client, not a
+// cookie-syncing helper), which a server-side proxy/middleware genuinely cannot read — there is no
+// session data available to it. Per Next.js's own Proxy docs ("helpful for optimistic checks...
+// should not be used as a full session management or authorization solution"), this cookie is
+// exactly that: a non-sensitive presence FLAG (never the token itself, never anything an attacker
+// could use to forge access) that lets proxy.ts make a fast, good-enough redirect decision before
+// any page code runs. It is NOT a trust boundary — every protected API route independently verifies
+// the real bearer token server-side (see lib/server/requireAuth.ts) regardless of this cookie's
+// value, so a forged/stale cookie can get a signed-out visitor PAST the redirect but can never get
+// them a real scan, wallet read, or Clark answer — those all 401 without a verified session.
+// SameSite=Lax (not Strict) so it still applies on a top-level OAuth-callback redirect.
+const SIGNED_IN_COOKIE = 'cl_signed_in'
+function setSignedInCookie(signedIn: boolean): void {
+  try {
+    if (signedIn) document.cookie = `${SIGNED_IN_COOKIE}=1; Max-Age=${60 * 60 * 24 * 30}; Path=/; SameSite=Lax`
+    else document.cookie = `${SIGNED_IN_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax`
+  } catch {}
+}
+
 function resolvePlan(json: Record<string, unknown>): UserPlan {
   const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
   return p === 'pro' || p === 'elite' ? p : 'free'
@@ -250,10 +271,16 @@ function refresh(session: SessionLike, opts: { force?: boolean } = {}): Promise<
 
       if (!token) {
         clearPlanCache()
+        setSignedInCookie(false)
         store.lastFetchedAt = Date.now()
         setSnapshot({ plan: 'free', email: null, betaEliteActive: false, elitePass: EMPTY_ELITE_PASS, profile: EMPTY_PROFILE, error: null, loading: false, resolved: true })
         return
       }
+
+      // OPTIMISTIC COOKIE, DISCLOSED: set as soon as a real Supabase session token is present —
+      // never waits on the /api/user-settings round trip below. See setSignedInCookie's own header
+      // for why this is safe (it only ever gates a redirect, never real authorization).
+      setSignedInCookie(true)
 
       // CACHED-FIRST, DISCLOSED: surface the verified cached plan for THIS user before the network
       // call resolves, so an Elite user never sees Free (or a spinner) while we re-confirm.
@@ -343,6 +370,7 @@ function start(): void {
     const s: SessionLike = session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null
     if (event === 'SIGNED_OUT') {
       clearPlanCache()
+      setSignedInCookie(false)
       setSnapshot({ plan: 'free', email: null, betaEliteActive: false, elitePass: EMPTY_ELITE_PASS, profile: EMPTY_PROFILE, error: null, loading: false, resolved: true })
       return
     }

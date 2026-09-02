@@ -34,6 +34,7 @@ import {
   type ClarkLiquidityMatch,
 } from "@/lib/server/clarkLiquidityCheck";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { CLARK_DAILY_BY_PLAN, clarkPlanAllows } from '@/lib/pricingPlans'
 import {
@@ -15145,10 +15146,19 @@ export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  const authenticated = Boolean(token)
-  const rawPlan: 'free' | 'pro' | 'elite' = authenticated
-    ? await getCurrentUserPlanFromBearerToken(token).then(x => x.plan).catch(() => 'free')
-    : 'free'
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task — "Nobody should be able to use
+  // ChainLens without an account"): Clark previously allowed anonymous prompts on their own
+  // (`CLARK_DAILY_UNAUTH` daily allowance below, and `authenticated` used to mean only "a bearer
+  // token STRING was present", never that it was actually verified). Both are now overridden by
+  // this hard, real-identity gate — a genuinely invalid/expired token is rejected here exactly like
+  // a missing one, never silently treated as "authenticated" with a garbage token string. The
+  // now-unreachable `unauth`/`CLARK_DAILY_UNAUTH` branches further down are left in place rather
+  // than deleted, since removing them would touch unrelated Clark routing/quota code this task's own
+  // "do not touch Clark intelligence" rule asks to leave alone — they simply never execute now.
+  const verifiedIdentity = token ? await getCurrentUserPlanFromBearerToken(token) : null
+  if (!verifiedIdentity?.userId) return unauthorizedResponse('Sign in required to use Clark AI.')
+  const authenticated = true
+  const rawPlan: 'free' | 'pro' | 'elite' = verifiedIdentity.plan
   const betaAllElite = process.env.BETA_ALL_ELITE === 'true'
   const betaEliteActive = betaAllElite && authenticated
   const effectivePlan: 'free' | 'pro' | 'elite' = betaEliteActive ? 'elite' : rawPlan

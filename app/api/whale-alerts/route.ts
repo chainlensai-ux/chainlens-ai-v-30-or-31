@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
@@ -677,6 +678,10 @@ function buildWalletBehavior(address: string, h24Rows: RawRow[], d7Rows: RawRow[
 export async function GET(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task): Whale Alerts / FOMO Board are
+  // Pro/Elite features, but a genuinely signed-out caller must get 401 ("sign in"), never the same
+  // 403 ("upgrade") an authenticated Free-plan account gets for the exact same response shape.
+  if (!token) return unauthorizedResponse()
   let plan: 'free' | 'pro' | 'elite' = 'free'
   let settingsRowFound = false
   if (token) {

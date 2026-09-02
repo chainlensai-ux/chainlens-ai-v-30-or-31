@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { getPortfolioLite } from '@/lib/server/walletLite'
 import { getPortfolioFromV2 } from '@/lib/server/v2Adapters'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 // PLAN GATE, FIXED (audit: plan-entitlement double-check): portfolio is Pro/Elite-only per
 // lib/planFeatures.ts and the pricing page, but this route had zero auth/plan check — only the
@@ -33,6 +34,9 @@ function ipOf(req: Request): string {
 }
 
 export async function POST(req: Request) {
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task): Portfolio Intelligence previously ran
+  // for any caller, authenticated or not — only the frontend page hid the UI for signed-out users.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   try {
     const plan = await getPlan(req)
     void plan
@@ -79,6 +83,7 @@ export async function POST(req: Request) {
 // real, working response instead, without touching or replacing POST's real logic. Same
 // validation/rate-limit/cache/fallback behavior, just query-string input instead of a body.
 export async function GET(req: Request) {
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   try {
     const plan = await getPlan(req)
     void plan

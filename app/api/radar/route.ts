@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
@@ -715,6 +716,12 @@ export async function GET(req: NextRequest) {
   const isCronTrigger = isTrustedCronTrigger(req)
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  // ACCOUNT-REQUIRED GATE, DISCLOSED (account-required task): distinct from the Pro/Elite plan gate
+  // below — a genuinely signed-out caller (no token at all) gets 401 ("sign in"), never the same 403
+  // ("upgrade") a real, authenticated Free-plan account gets. The trusted internal cron trigger is
+  // still exempt (it never carries a user bearer token by design — see isTrustedCronTrigger's own
+  // header).
+  if (!token && !isCronTrigger) return unauthorizedResponse()
   let plan: 'free' | 'pro' | 'elite' = 'free'
   if (token) {
     try { plan = (await getCurrentUserPlanFromBearerToken(token)).plan } catch { plan = 'free' }

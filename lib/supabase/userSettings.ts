@@ -234,7 +234,29 @@ export async function getOrCreateUserSettings(
 ): Promise<{ settings: UserSettings; error: string | null }> {
   const fetched = await getUserSettings(client, userId);
   if (fetched.error) return { settings: fetched.settings, error: fetched.error };
-  if (fetched.found) return { settings: fetched.settings, error: null };
+  if (fetched.found) {
+    // NULL-PLAN REPAIR, DISCLOSED (account-required task — "if profile exists but plan is
+    // null/missing, repair to Free"): resolveEffectivePlan already treats a null/missing plan as
+    // 'free' at READ time (so this is not a correctness fix — every caller already behaved
+    // correctly), but the stored row itself could stay permanently null (e.g. a row created before
+    // the `plan` column existed, or written by a path that omitted it). Writing 'free' back once
+    // makes the row match what every reader already assumes, and is a plain, narrow UPDATE scoped
+    // to this exact user_id — never touches any other field, never runs for a row that already has
+    // a real plan value. Best-effort: a write failure here is logged, not surfaced as this call's
+    // own error (the caller already has a usable settings object either way).
+    if (fetched.settings.plan == null) {
+      const { error: repairError } = await client
+        .from('user_settings')
+        .update({ plan: 'free' })
+        .eq('user_id', userId);
+      if (repairError) {
+        console.error('[user_settings] null-plan repair failed', { userId, reason: repairError.message });
+      } else {
+        return { settings: { ...fetched.settings, plan: 'free' }, error: null };
+      }
+    }
+    return { settings: fetched.settings, error: null };
+  }
 
   const payload = { user_id: userId, ...USER_SETTINGS_DEFAULTS };
   const { data, error } = await client
