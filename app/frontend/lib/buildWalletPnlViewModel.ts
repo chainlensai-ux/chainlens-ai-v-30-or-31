@@ -20,9 +20,9 @@ import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
-import { fmtSignedUsd, fmtUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
+import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
-import { selectRobinhoodPnlLaneStatus } from '@/app/frontend/components/RobinhoodChainSection'
+import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
 import {
   selectVerifiedPnlData,
   selectDisplayedPnl,
@@ -59,25 +59,45 @@ export type WalletRobinhoodPnlProof = {
   priceEvidence: string
 }
 
+// DEDICATED ROBINHOOD BOX, DISCLOSED (PnL Evidence UI cleanup follow-up — this task's own explicit
+// requirement: a distinct "Robinhood Realized PnL" box among the main 4, never a number that could
+// be read as part of the combined figure). Same status vocabulary as a chain row (never fabricates a
+// "Locked" state for Robinhood — it is either Verified, genuinely not verified, or has no scan at
+// all) plus the compact proof fields shown inline in the box itself.
+export type WalletPnlRobinhoodBox = {
+  status: WalletPnlChainRowStatus
+  value: string | null
+  reason: string
+  proof: WalletRobinhoodPnlProof | null
+}
+
 export type WalletPnlCombinedStatus = 'verified' | 'partial' | 'locked' | 'unavailable'
 
 export type WalletPnlViewModel = {
   combinedStatus: WalletPnlCombinedStatus
   combinedReason: string
-  realizedBox: WalletPnlBox
+  // COMBINED REALIZED BOX, DISCLOSED: status is ALWAYS the same as combinedStatus (Title Case) —
+  // structurally impossible to disagree with the header badge, closing the reported bug where this
+  // box showed a big "verified" number while the header said "Combined Locked". Only ever carries a
+  // real Base/ETH-only value (never Robinhood's) for 'Verified'/'Partial'; null for 'Locked'/
+  // 'Unavailable' — a locked/unavailable combined figure never pretends to have a number.
+  combinedRealizedBox: WalletPnlBox
+  robinhoodBox: WalletPnlRobinhoodBox
   unrealizedBox: WalletPnlBox
   roiBox: WalletPnlBox
-  costBasisBox: WalletPnlBox
   chainRows: WalletPnlChainRow[]
+  // Kept for backward compatibility with existing callers/tests — identical to robinhoodBox.proof.
   robinhoodProof: WalletRobinhoodPnlProof | null
 }
 
-// EXACT COPY, DISCLOSED (this task's own required replacement text): shown whenever the official
-// combined (Base/ETH) PnL is not fully verified but Robinhood's own, independently-gated realized
-// PnL IS verified — replaces the old generic "PnL unavailable due to missing evidence" wording for
-// exactly this case, never for a wallet with no verified evidence anywhere.
+// EXACT COPY, DISCLOSED, UPDATED (PnL Evidence UI cleanup follow-up — this task's own required exact
+// subtext, replacing the earlier task's near-identical "Official combined PnL is locked..." wording):
+// shown whenever the combined (Base/ETH) PnL is not fully verified but Robinhood's own,
+// independently-gated realized PnL IS verified — replaces the old generic "PnL unavailable due to
+// missing evidence" wording for exactly this case, never for a wallet with no verified evidence
+// anywhere.
 export const COMBINED_PNL_LOCKED_ROBINHOOD_VERIFIED_MESSAGE =
-  'Official combined PnL is locked because Base/ETH history is partial. Robinhood realized PnL is verified separately.'
+  'Combined PnL is locked because Base/ETH history is partial. Robinhood realized PnL is verified separately.'
 
 export type BuildWalletPnlViewModelParams = {
   pnlV2: PnlV2 | null | undefined
@@ -115,31 +135,78 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   const confidenceToBoxStatus = (v: 'Verified' | 'Partial' | 'Locked' | 'Full' | 'Unavailable'): WalletPnlBoxStatus =>
     v === 'Full' ? 'Verified' : v
 
-  // REALIZED, DISCLOSED: same precedence as the card's own header icon/badges — canonical-
-  // unavailable fails closed first, then the magnitude/stability guard, then the real backend
-  // classification (selectPnlConfidenceStatus.realized), never a new heuristic.
-  const realizedStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
-    ? 'Unavailable'
-    : blocked
-      ? 'Locked'
-      : confidenceToBoxStatus(confidence.realized)
-  const realizedBox = box(
-    displayed.realizedPnlUsd == null || realizedStatus === 'Unavailable' || realizedStatus === 'Locked' ? null : fmtSignedUsd(displayed.realizedPnlUsd),
-    realizedStatus,
-    canonicalSampleUnavailable
+  // COMBINED, DISCLOSED, MOVED EARLIER (PnL Evidence UI cleanup follow-up — this task's own explicit
+  // requirement: "Combined Realized PnL" box status must ALWAYS match the header badge): describes
+  // the OFFICIAL combined (pnlV2/Base+ETH) figure only — Robinhood's realized PnL is never summed
+  // into it (per "do not loosen Robinhood verified PnL gates" and the pre-existing "Realized/ROI stay
+  // pnlV2-only" rule) — but when Base/ETH is not fully verified WHILE Robinhood's own separate lane
+  // is verified, this says so explicitly instead of a blanket "unavailable", so a real verified
+  // Robinhood figure is never buried behind a combined-PnL failure message that reads as if nothing
+  // were verified at all.
+  const baseCombinedStatus: WalletPnlCombinedStatus = canonicalSampleUnavailable
+    ? 'unavailable'
+    : (effectiveStatus === 'ok' && !blocked)
+      ? 'verified'
+      : isBoundedSample
+        ? 'partial'
+        : 'unavailable'
+
+  let combinedStatus: WalletPnlCombinedStatus = baseCombinedStatus
+  let combinedReason: string
+  if (baseCombinedStatus !== 'verified' && robinhoodLane === 'verified') {
+    combinedStatus = 'locked'
+    combinedReason = COMBINED_PNL_LOCKED_ROBINHOOD_VERIFIED_MESSAGE
+  } else if (canonicalSampleUnavailable) {
+    combinedReason = CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
+  } else if (baseCombinedStatus === 'verified') {
+    combinedReason = buildRealizedVerifiedMessage(effectiveStatus) ?? 'Realized PnL: Verified — closed-lot coverage confirmed.'
+  } else if (baseCombinedStatus === 'partial') {
+    combinedReason = boundedSample?.label ?? 'Verified bounded sample.'
+  } else {
+    combinedReason = PNL_UNAVAILABLE_MESSAGE
+  }
+
+  // COMBINED REALIZED BOX, DISCLOSED (this task's own root-cause fix — confirmed reported bug: the
+  // old "Realized PnL" tile computed its OWN status from confidence.realized/blocked independently of
+  // combinedStatus above, so it could show "Verified" with a big number while the header badge said
+  // "Combined Locked" for the exact same scan). This box's status is now a DIRECT, structural mirror
+  // of combinedStatus (Title Case) — there is no code path where they can disagree. A 'Locked' or
+  // 'Unavailable' combined figure NEVER shows a number here, even though the underlying Base/ETH data
+  // may technically have one — showing it would read as "this locked figure is actually verified",
+  // exactly the contradiction this task asks to close. 'Verified'/'Partial' still show the real,
+  // already-computed Base/ETH-only figure (never Robinhood's).
+  const combinedRealizedBoxStatus: WalletPnlBoxStatus =
+    combinedStatus === 'verified' ? 'Verified' : combinedStatus === 'partial' ? 'Partial' : combinedStatus === 'locked' ? 'Locked' : 'Unavailable'
+  const combinedRealizedValue = combinedRealizedBoxStatus === 'Verified'
+    ? (displayed.realizedPnlUsd != null ? fmtSignedUsd(displayed.realizedPnlUsd) : null)
+    : combinedRealizedBoxStatus === 'Partial'
+      ? (boundedSample?.realizedPnlUsd != null ? fmtSignedUsd(boundedSample.realizedPnlUsd) : (displayed.realizedPnlUsd != null ? fmtSignedUsd(displayed.realizedPnlUsd) : null))
+      : null
+  const combinedRealizedBox = box(
+    combinedRealizedValue,
+    combinedRealizedBoxStatus,
+    combinedRealizedBoxStatus === 'Unavailable' && canonicalSampleUnavailable
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-      : realizedStatus === 'Locked'
-        ? 'Magnitude/stability guard blocked this figure.'
-        : realizedStatus === 'Partial'
-          ? (boundedSample?.label ?? 'Bounded verified sample.')
-          : realizedStatus === 'Verified'
+      : combinedRealizedBoxStatus === 'Locked'
+        ? (baseCombinedStatus === 'partial' ? 'Base/ETH history is partial.' : 'Base/ETH PnL is not yet verified.')
+        : combinedRealizedBoxStatus === 'Partial'
+          ? (boundedSample?.label ?? 'Base/ETH history is a bounded, verified sample.')
+          : combinedRealizedBoxStatus === 'Verified'
             ? (buildRealizedVerifiedMessage(effectiveStatus) ?? 'Closed-lot coverage confirmed.')
             : PNL_UNAVAILABLE_MESSAGE,
   )
 
+  // ROBINHOOD BOX, DISCLOSED: a distinct top-row box (never folded into the combined figure above) —
+  // 'Verified' shows the real gated figure + compact proof; a genuinely not-verified or absent scan
+  // never shows a number, matching the exact same selectRobinhoodPnlLaneStatus gate the chain row and
+  // CORTEX both already use.
+  const robinhoodBoxStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified' : robinhoodLane === 'not_verified' ? 'Not verified' : 'Unavailable'
+
   // UNREALIZED, DISCLOSED: reuses confidence.unrealized ('Full'/'Partial'/'Unavailable' — mapped to
   // 'Verified'/'Partial'/'Unavailable') — the SAME reconciliation-status-derived classification the
-  // card's own confidence row already shows, never a new derivation.
+  // card's own confidence row already shows, never a new derivation. A genuinely separate concern
+  // from combinedStatus — an open-position estimate can be partial even when realized PnL is fully
+  // verified, and vice versa.
   const unrealizedStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
     ? 'Unavailable'
     : blocked
@@ -159,51 +226,25 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
             : 'No reconciled open-position evidence.',
   )
 
-  // ROI, DISCLOSED: same displayed.roiPercent/roiLabel this card's own ROI tile already reads —
-  // status derived from the same canonical/bounded/blocked precedence as the other boxes.
+  // ROI, DISCLOSED, SIMPLIFIED (this task's own explicit spec — "ROI: Locked until combined PnL is
+  // verified"): ROI is a derivative of the COMBINED realized figure, so it is now gated on
+  // combinedStatus directly rather than its own bounded/blocked nuance — 'Verified' only when the
+  // combined figure itself is fully verified, 'Locked' otherwise (including the bounded-sample case,
+  // which previously showed as its own real ROI number even though the headline combined PnL was not
+  // fully verified — the same class of contradiction this task's box-1 fix closes).
   const roiStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
     ? 'Unavailable'
-    : blocked
-      ? 'Locked'
-      : isBoundedSample
-        ? 'Partial'
-        : displayed.roiPercent != null
-          ? 'Verified'
-          : 'Unavailable'
+    : combinedStatus === 'verified'
+      ? 'Verified'
+      : 'Locked'
   const roiBox = box(
-    roiStatus === 'Verified' || (roiStatus === 'Partial' && displayed.roiPercent != null) ? displayed.roiLabel : null,
+    roiStatus === 'Verified' && displayed.roiPercent != null ? displayed.roiLabel : null,
     roiStatus,
     canonicalSampleUnavailable
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-      : roiStatus === 'Locked'
-        ? 'Magnitude/stability guard blocked this figure.'
-        : roiStatus === 'Verified'
-          ? 'Realized PnL vs verified cost basis.'
-          : displayed.roiLabel ?? 'Not available.',
-  )
-
-  // COST BASIS, DISCLOSED: pnl.totalCostBasisUsd (pnlV2's own summed cost basis) — 'Unavailable' for
-  // a bounded sample per selectDisplayedPnl's own costBasisLabel (no canonical per-wallet cost-basis
-  // figure exists for that source, see that function's own header).
-  const costBasisStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
-    ? 'Unavailable'
-    : isBoundedSample
-      ? 'Unavailable'
-      : pnl.unreliable
-        ? 'Locked'
-        : pnl.totalCostBasisUsd != null
-          ? 'Verified'
-          : 'Unavailable'
-  const costBasisBox = box(
-    costBasisStatus === 'Verified' ? fmtUsd(pnl.totalCostBasisUsd) : null,
-    costBasisStatus,
-    canonicalSampleUnavailable
-      ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-      : costBasisStatus === 'Locked'
-        ? 'Magnitude guard blocked this figure.'
-        : costBasisStatus === 'Verified'
-          ? 'Sum of verified per-token cost basis.'
-          : displayed.costBasisLabel ?? 'Not available.',
+      : roiStatus === 'Verified'
+        ? 'Realized PnL vs verified cost basis.'
+        : 'Locked until combined PnL is verified.',
   )
 
   // CHAIN ROWS, DISCLOSED: Base/ETH share pnlV2's ONE combined EVM lane status (pnlV2 has never
@@ -229,11 +270,10 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   let robinhoodProof: WalletRobinhoodPnlProof | null = null
   if (robinhoodResult) {
     const audit = robinhoodResult.robinhoodPnlVerificationAudit
-    const rowStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified' : robinhoodLane === 'not_verified' ? 'Not verified' : 'Unavailable'
     chainRows.push({
       chain: 'robinhood',
       label: fmtChainLabel('robinhood'),
-      status: rowStatus,
+      status: robinhoodBoxStatus,
       value: robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
     })
     if (robinhoodLane === 'verified' && audit) {
@@ -246,42 +286,24 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     }
   }
 
-  // COMBINED, DISCLOSED: describes the OFFICIAL combined (pnlV2/Base+ETH) figure only — Robinhood's
-  // realized PnL is never summed into it (per this task's own "do not loosen Robinhood verified PnL
-  // gates" and the pre-existing "Realized/ROI/cost basis stay pnlV2-only" rule) — but when Base/ETH
-  // is not fully verified WHILE Robinhood's own separate lane is verified, this says so explicitly
-  // instead of a blanket "unavailable", so a real verified Robinhood figure is never buried behind a
-  // combined-PnL failure message that reads as if nothing were verified at all.
-  const baseCombinedStatus: WalletPnlCombinedStatus = canonicalSampleUnavailable
-    ? 'unavailable'
-    : (effectiveStatus === 'ok' && !blocked)
-      ? 'verified'
-      : isBoundedSample
-        ? 'partial'
-        : 'unavailable'
-
-  let combinedStatus: WalletPnlCombinedStatus = baseCombinedStatus
-  let combinedReason: string
-  if (baseCombinedStatus !== 'verified' && robinhoodLane === 'verified') {
-    combinedStatus = 'locked'
-    combinedReason = COMBINED_PNL_LOCKED_ROBINHOOD_VERIFIED_MESSAGE
-  } else if (canonicalSampleUnavailable) {
-    combinedReason = CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-  } else if (baseCombinedStatus === 'verified') {
-    combinedReason = buildRealizedVerifiedMessage(effectiveStatus) ?? 'Realized PnL: Verified — closed-lot coverage confirmed.'
-  } else if (baseCombinedStatus === 'partial') {
-    combinedReason = boundedSample?.label ?? 'Verified bounded sample.'
-  } else {
-    combinedReason = PNL_UNAVAILABLE_MESSAGE
+  const robinhoodBox: WalletPnlRobinhoodBox = {
+    status: robinhoodBoxStatus,
+    value: robinhoodLane === 'verified' && robinhoodResult ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
+    reason: robinhoodBoxStatus === 'Verified'
+      ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL.`
+      : robinhoodBoxStatus === 'Not verified'
+        ? ROBINHOOD_PNL_NOT_VERIFIED_REASON
+        : 'No Robinhood scan for this wallet.',
+    proof: robinhoodProof,
   }
 
   return {
     combinedStatus,
     combinedReason,
-    realizedBox,
+    combinedRealizedBox,
+    robinhoodBox,
     unrealizedBox,
     roiBox,
-    costBasisBox,
     chainRows,
     robinhoodProof,
   }

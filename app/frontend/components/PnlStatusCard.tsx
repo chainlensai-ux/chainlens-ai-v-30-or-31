@@ -40,12 +40,15 @@ import { StatusBadge } from './StatusBadge'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
-import { buildWalletPnlViewModel, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus } from '@/app/frontend/lib/buildWalletPnlViewModel'
+import { buildWalletPnlViewModel, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
 
 // COMBINED-STATUS DISPLAY MAPS, DISCLOSED: presentation only — the underlying classification comes
-// entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here.
+// entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here. "Combined "
+// PREFIX, DISCLOSED (PnL Evidence UI cleanup follow-up, this task's own explicit spec — "Badge:
+// Combined Locked"): makes explicit that this badge describes the COMBINED (Base/ETH) figure only,
+// never Robinhood's separately-verified one — see the Robinhood box below for that.
 const COMBINED_STATUS_LABEL: Record<WalletPnlCombinedStatus, string> = {
-  verified: 'Verified', partial: 'Partial', locked: 'Locked', unavailable: 'Unavailable',
+  verified: 'Combined Verified', partial: 'Combined Partial', locked: 'Combined Locked', unavailable: 'Combined Unavailable',
 }
 const COMBINED_STATUS_TONE: Record<WalletPnlCombinedStatus, 'success' | 'warning' | 'danger' | 'neutral'> = {
   verified: 'success', partial: 'warning', locked: 'warning', unavailable: 'neutral',
@@ -76,6 +79,38 @@ function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
       </div>
       <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
       <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+    </div>
+  )
+}
+
+// ROBINHOOD BOX TILE, DISCLOSED (PnL Evidence UI cleanup follow-up, this task's own explicit spec —
+// "Robinhood Realized PnL" as its own top-row box with proof inline): a distinct tile from the
+// generic PnlBoxTile — shows the real gated value/reason plus the compact swaps/closed-lots/price-
+// evidence proof lines directly in the box, never merged with the Combined Realized PnL tile.
+const ROBINHOOD_BOX_STATUS_TONE: Record<WalletPnlRobinhoodBox['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
+  Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning',
+}
+function PnlRobinhoodBoxTile({ box }: { box: WalletPnlRobinhoodBox }) {
+  return (
+    <div style={{
+      flex: '1 1 150px', minWidth: '150px', padding: '13px 15px', borderRadius: '13px',
+      background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '5px',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+        <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Robinhood Realized PnL</span>
+        <StatusBadge label={box.status} tone={ROBINHOOD_BOX_STATUS_TONE[box.status]} />
+      </div>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
+      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+      {box.proof && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', marginTop: '2px', fontSize: '10px', color: 'rgba(148,163,184,0.85)' }}>
+          <span>Source: {box.proof.source}</span>
+          <span>Verified swaps: {box.proof.verifiedSwaps}</span>
+          <span>Closed lots: {box.proof.closedLots}</span>
+          <span>Price evidence: {box.proof.priceEvidence}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -1012,8 +1047,18 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           backend-computed values only (src/lib/pnlReconciliation.ts's publicPnlGateAudit/warning) —
           shown ONLY for the real 'limited_verified_sample' status, never for 'ok'/'unavailable'.
           Deliberately never labeled "Complete PnL"/"All-time PnL"/"Fully verified" — this IS a
-          bounded, disclosed sample, and every string here says so explicitly. */}
-      {boundedSample && (
+          bounded, disclosed sample, and every string here says so explicitly.
+          LOCKED-STATE SUPPRESSION, DISCLOSED (PnL Evidence UI cleanup follow-up — confirmed reported
+          bug: this block's own bold "Verified N-day sample" headline + a big green "Realized PnL: $X"
+          line rendered directly below a header badge that said "Combined Locked" for the exact same
+          scan, reading as if the combined figure WERE verified after all — exactly the class of
+          contradictory copy this task asks to remove). Never shown at all when
+          pnlViewModel.combinedStatus is 'locked' (the Robinhood-override case) — its real content
+          (label, verified lot counts, trust-gate detail) is already folded into
+          combinedRealizedBox's own reason line above, so no evidence is lost, only the duplicate,
+          contradictory presentation. Still shown unmodified for a genuine bounded sample with no
+          Robinhood override (combinedStatus === 'partial'). */}
+      {boundedSample && pnlViewModel.combinedStatus !== 'locked' && (
         <div style={{
           background: boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.08)' : 'rgba(251,191,36,0.06)',
           border: `1px solid ${boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.35)' : 'rgba(251,191,36,0.25)'}`,
@@ -1108,10 +1153,10 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         // resolves which real source (reconciliationSummary vs pnlV2) and which status/reason each
         // box gets, so this render no longer needs its own separate bounded/normal branches.
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
-          <PnlBoxTile label="Realized PnL" box={pnlViewModel.realizedBox} />
+          <PnlBoxTile label="Combined Realized PnL" box={pnlViewModel.combinedRealizedBox} />
+          <PnlRobinhoodBoxTile box={pnlViewModel.robinhoodBox} />
           <PnlBoxTile label="Unrealized PnL" box={pnlViewModel.unrealizedBox} />
           <PnlBoxTile label="ROI" box={pnlViewModel.roiBox} />
-          <PnlBoxTile label="Cost Basis" box={pnlViewModel.costBasisBox} />
         </div>
       )}
 
@@ -1132,18 +1177,11 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             {pnlViewModel.chainRows.map((row) => <PnlChainRowItem key={row.chain} row={row} />)}
           </div>
         )}
-        {/* ROBINHOOD PROOF, DISCLOSED: compact, real proof fields shown ONLY when
-            selectRobinhoodPnlLaneStatus itself says 'verified' (Phase 3 sidecar,
-            verifiedSwapCount > 0 — never loosened here) — the same gate the Robinhood row above
-            already reflects. */}
-        {pnlViewModel.robinhoodProof && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: '7px 10px 2px', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
-            <span>Source: {pnlViewModel.robinhoodProof.source}</span>
-            <span>Verified swaps: {pnlViewModel.robinhoodProof.verifiedSwaps}</span>
-            <span>Closed lots: {pnlViewModel.robinhoodProof.closedLots}</span>
-            <span>Price evidence: {pnlViewModel.robinhoodProof.priceEvidence}</span>
-          </div>
-        )}
+        {/* ROBINHOOD PROOF, REMOVED FROM HERE, DISCLOSED (PnL Evidence UI cleanup follow-up): the
+            compact proof fields now render inline inside the dedicated "Robinhood Realized PnL" box
+            above (PnlRobinhoodBoxTile) — showing them a second time here duplicated the exact same
+            evidence right below it. pnlViewModel.robinhoodProof itself is unchanged/still exported —
+            only this second render site was removed. */}
       </div>
 
       {!isActive && (
