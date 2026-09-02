@@ -136,7 +136,7 @@ function jsonResponse(body, status = 200) {
   audit.linkedWalletGraph.walletsMapped = null
   const labels = buildDevMapUiLabels(audit)
   check('graph not run does not say 0 mapped', !labels.linkedLabel.includes('0 mapped'))
-  check('graph not run explains why', labels.linkedLabel.includes('Graph not run'))
+  check('graph not run explains why', labels.linkedLabel.includes('Linked wallet graph not run'))
 
   audit.linkedWalletGraph.graphStatus = 'ran_none'
   audit.linkedWalletGraph.walletsMapped = 0

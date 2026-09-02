@@ -29,6 +29,10 @@ import {
   type DevClusterDiagnosisAudit,
 } from '@/lib/devClusterDiagnosis'
 import {
+  classifyTokenScannerEvidence,
+  tokenScannerEvidenceChainId,
+} from '@/lib/tokenScannerEvidence'
+import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
   type TradingSimulationAudit,
@@ -1593,6 +1597,30 @@ function deriveHolderState(result: ScanResult): DerivedHolderState {
   }
 }
 
+function scanEvidenceFor(result: ScanResult, selectedWallet?: string | null) {
+  const holderState = deriveHolderState(result)
+  const clusterAudit = result.devClusterDiagnosisAudit ?? result.devIntel?.devClusterDiagnosisAudit ?? null
+  const deployer = clusterAudit?.deployerResolution.originWallet
+    ?? result.devIntel?.originAddress
+    ?? result.devIntel?.deployerAddress
+    ?? null
+  const lpStatus = result.lpControl?.proofStatus ?? result.lpControl?.status ?? null
+  return classifyTokenScannerEvidence({
+    holdersVerified: holderState.kind === 'rowsWithPercent',
+    holderRows: holderState.rows,
+    deployerAddress: typeof deployer === 'string' ? deployer : null,
+    selectedWallet: selectedWallet ?? (typeof deployer === 'string' ? deployer : null),
+    graphStatus: clusterAudit?.linkedWalletGraph.graphStatus ?? null,
+    graphFailureReason: clusterAudit?.linkedWalletGraph.failureReason ?? null,
+    walletsMapped: clusterAudit?.linkedWalletGraph.walletsMapped ?? null,
+    lpProofComplete: lpStatus === 'verified' || lpStatus === 'locked' || lpStatus === 'burned',
+    lpProofStatus: typeof lpStatus === 'string' ? lpStatus : null,
+    chainId: tokenScannerEvidenceChainId(result.chain, null),
+    chainSlug: result.chain ?? null,
+    marketVerified: result.price != null || result.liquidity != null,
+  })
+}
+
 // DEV-CONTROL-WIRING-FIX, DISCLOSED (bug report: "Dev Control shouldn't be Open check when it's
 // working" — LP Control correctly reads live owner-check data, but Dev Control always showed Open
 // check). Root cause: this used to read `gp = result.contractSecurity[contract]`, but the API
@@ -1929,7 +1957,7 @@ function deriveClusterEdgeColor(edge: ClusterEdge): string {
   return edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
 }
 
-function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null }) {
+function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName, clusterAudit, holdersVerified }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null; clusterAudit?: DevClusterDiagnosisAudit | null; holdersVerified?: boolean }) {
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
   const map = clusterMap
   // PERF FIX, DISCLOSED (audit: Cluster Map tab pegged a CPU core / froze the page): nodes/edges
@@ -2031,6 +2059,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const deployer = nodes.find((node) => node.type === 'deployer')
   const ordered = deployer ? [deployer, ...linked, ...cluster, ...holders] : [...linked, ...cluster, ...holders]
   const holderRows = holderDistribution?.topHolders ?? devIntel?.holderDistribution?.topHolders ?? []
+  const holdersAreVerified = holdersVerified === true || holderRows.some((row) => row.percent != null)
   // PERF FIX, DISCLOSED: memoized for the same reason nodes/edges are above — graphEdges is the
   // other dependency of the physics-simulation effect below and must be reference-stable across
   // renders where `edges`/`nodes` haven't actually changed.
@@ -2347,11 +2376,22 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   ].find((reason) => /fund|transfer|deployer|source/i.test(reason)) : null
   const supplyPercent = supplyFor(selectedClusterNode)
   const holderRank = holderRankFor(selectedClusterNode)
+  const walletEvidence = classifyTokenScannerEvidence({
+    holdersVerified: holdersAreVerified,
+    holderRows,
+    deployerAddress: devIntel?.originAddress ?? devIntel?.deployerAddress ?? selectedClusterNode?.address ?? null,
+    selectedWallet: selectedClusterNode?.address ?? null,
+    graphStatus: clusterAudit?.linkedWalletGraph.graphStatus ?? null,
+    graphFailureReason: clusterAudit?.linkedWalletGraph.failureReason ?? null,
+    walletsMapped: clusterAudit?.linkedWalletGraph.walletsMapped ?? null,
+    chainId: tokenScannerEvidenceChainId(chain, null),
+    chainSlug: chain ?? null,
+  })
   const openChecks = selectedClusterNode && selectedClusterNode.type !== 'deployer' ? [
-    ...(supplyPercent == null ? ['Wallet not indexed in this pass.'] : []),
+    ...(supplyPercent == null ? [holdersAreVerified ? walletEvidence.labels.walletSupply : 'Wallet not indexed in this pass.'] : []),
     ...(map.status === 'partial' ? ['Some wallet data may be incomplete.'] : []),
-    ...(selectedClusterNode.confidence === 'open_check' ? ['CORTEX needs more holder or transfer evidence before confirming cluster influence.'] : []),
-    ...(relatedEdges.length === 0 ? ['No transfer edge confirmed for this wallet.'] : []),
+    ...(selectedClusterNode.confidence === 'open_check' && !holdersAreVerified ? ['CORTEX needs more holder or transfer evidence before confirming cluster influence.'] : []),
+    ...(relatedEdges.length === 0 ? [walletEvidence.labels.linkedWallets.includes('Linked wallet graph not run') ? walletEvidence.labels.linkedWallets : 'No transfer edge confirmed for this wallet.'] : []),
   ] : []
 
   // DEPLOYER-WALLET-DETAIL FIX, DISCLOSED: the deployer/origin node is the one node type this task
@@ -2362,6 +2402,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const isDeployerSelected = selectedClusterNode?.type === 'deployer'
   const deployerIntelResult = isDeployerSelected && selectedClusterNode ? resolveDeployerWalletIntel({
     chainSlug: chain ?? 'base',
+    chainId: tokenScannerEvidenceChainId(chain, null),
     tokenAddress: tokenAddress ?? '',
     tokenSymbol: tokenSymbol ?? null,
     tokenName: tokenName ?? null,
@@ -2380,6 +2421,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
     } : null,
     cheapBalance: deployerCheapBalance,
+    holdersVerified: holdersAreVerified,
+    linkedWalletGraph: clusterAudit?.linkedWalletGraph ?? null,
   }) : null
   const deployerIntel = deployerIntelResult?.intel ?? null
 
@@ -2389,6 +2432,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const lineageDeployerNode = deployerLineage.deployer
   const lineageDeployerIntel = lineageDeployerNode ? resolveDeployerWalletIntel({
     chainSlug: chain ?? 'base',
+    chainId: tokenScannerEvidenceChainId(chain, null),
     tokenAddress: tokenAddress ?? '',
     tokenSymbol: tokenSymbol ?? null,
     tokenName: tokenName ?? null,
@@ -2407,6 +2451,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
     } : null,
     cheapBalance: isDeployerSelected ? deployerCheapBalance : null,
+    holdersVerified: holdersAreVerified,
+    linkedWalletGraph: clusterAudit?.linkedWalletGraph ?? null,
   }).intel : null
 
   return (
@@ -2539,7 +2585,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
           <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(9,15,29,.86)', border:`1px solid ${riskColor}55` }}>
             <p style={{ margin:'0 0 8px', fontSize:'9px', letterSpacing:'.14em', color:riskColor, fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER SUMMARY</p>
             {[
-              ['Cluster supply', summary?.clusterSupplyPercent != null ? `${summary.clusterSupplyPercent.toFixed(1)}%` : 'Needs holder evidence'],
+              ['Cluster supply', summary?.clusterSupplyPercent != null ? `${summary.clusterSupplyPercent.toFixed(1)}%` : (holdersAreVerified ? 'Dev supply not checked — deployer not resolved' : 'Needs holder evidence')],
               ['Dominance', summary?.clusterDominance ?? 'unknown'],
               ['Risk score', summary?.clusterRiskScore != null ? `${summary.clusterRiskScore}/100` : 'Not verified'],
               ['Nodes / Edges', `${summary?.totalNodes ?? nodes.length} / ${graphEdges.length}`],
@@ -2564,7 +2610,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                     <p style={{ margin:'0 0 7px', color:'#e2e8f0', fontSize:'14px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Wallet Detail</p>
                     <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
                       <span style={{ padding:'4px 7px', borderRadius:'999px', background:nodeBg(selectedClusterNode), border:`1px solid ${nodeColor(selectedClusterNode)}66`, color:nodeColor(selectedClusterNode), fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{roleLabel(selectedClusterNode)}</span>
-                      <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(148,163,184,.08)', border:'1px solid rgba(148,163,184,.16)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{selectedClusterNode.confidence ?? 'open_check'}</span>
+                      <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(148,163,184,.08)', border:'1px solid rgba(148,163,184,.16)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{selectedClusterNode.confidence === 'open_check' && holdersAreVerified ? walletEvidence.labels.confidence : (selectedClusterNode.confidence ?? walletEvidence.labels.confidence)}</span>
                     </div>
                   </div>
                   <button type="button" onClick={() => setSelectedClusterNodeId(null)} aria-label="Close wallet detail" style={{ width:28, height:28, borderRadius:'999px', border:'1px solid rgba(148,163,184,.2)', background:'rgba(15,23,42,.78)', color:'#94a3b8', cursor:'pointer' }}>×</button>
@@ -2597,19 +2643,19 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 <section style={{ display:'grid', gap:'7px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SUPPLY POSITION</p>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Supply</p><p style={{ margin:0, color:(isDeployerSelected ? supplyPercent == null : supplyPercent == null) ? '#94a3b8' : '#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.supplyLabel : (supplyPercent == null ? 'Outside indexed holder sample' : `${supplyPercent.toFixed(1)}% of supply`)}</p></div>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Holder rank</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.holderRankLabel : (holderRank != null ? `#${holderRank}` : 'Not in indexed top holders')}</p></div>
+                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Supply</p><p style={{ margin:0, color:(isDeployerSelected ? supplyPercent == null : supplyPercent == null) ? '#94a3b8' : '#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.supplyLabel : (supplyPercent == null ? walletEvidence.labels.walletSupply : `${supplyPercent.toFixed(1)}% of supply`)}</p></div>
+                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Holder rank</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.holderRankLabel : (holderRank != null ? `#${holderRank}` : walletEvidence.labels.walletHolderRank)}</p></div>
                   </div>
                   {isDeployerSelected && deployerIntel && (
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Is current holder?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.isCurrentHolder}</p></div>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Is current holder?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.isCurrentHolderLabel}</p></div>
                       <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Native balance</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.deployerNativeBalance.available && deployerIntel.deployerNativeBalance.amount != null ? `${deployerIntel.deployerNativeBalance.amount.toFixed(4)} ${deployerIntel.deployerNativeBalance.asset ?? ''}` : 'Not checked'}</p></div>
                     </div>
                   )}
                   {isDeployerSelected && deployerIntel && (
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Received supply at launch?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.receivedSupplyAtLaunch}</p></div>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Transferred/sold tokens?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.transferredOrSold}</p></div>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Received supply at launch?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.receivedSupplyAtLaunchLabel}</p></div>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Transferred/sold tokens?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.transferredOrSoldLabel}</p></div>
                     </div>
                   )}
                 </section>
@@ -6982,6 +7028,7 @@ export default function TerminalTokenScanner() {
                 const confidence = cx.confidence
                 const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
                 const holderState = deriveHolderState(result)
+                const scanEvidence = scanEvidenceFor(result)
                 const lpStatus = result.lpControl?.status
                 const lpMode = getLpMode(result)
                 const lpVerified = lpStatus === 'locked' || lpStatus === 'burned'
@@ -7047,6 +7094,7 @@ export default function TerminalTokenScanner() {
                   confidence: result.riskEngine?.confidence,
                   source: 'token_scanner',
                   displayLocation: 'overview',
+                  holdersVerified: scanEvidence.holdersVerified,
                 })
                 const riskScoreVal = normalizedRisk.riskScore0To100
                 const riskLabelColor = riskColorFromCanonicalLabel(normalizedRisk.riskLabel)
@@ -7091,8 +7139,8 @@ export default function TerminalTokenScanner() {
                             <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
                             <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                           </div>
-                          {riskLabelCopy(normalizedRisk.riskLabel) && (
-                            <div style={{ fontSize: '12px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', marginTop: '10px', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel)}</div>
+                          {riskLabelCopy(normalizedRisk.riskLabel, scanEvidence) && (
+                            <div style={{ fontSize: '12px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', marginTop: '10px', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel, scanEvidence)}</div>
                           )}
                           <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
                             <div style={{ height: '100%', width: `${riskGaugeFillPercent(riskScoreVal)}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
@@ -7169,8 +7217,8 @@ export default function TerminalTokenScanner() {
                         <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk label: <span style={{ color: riskLabelColor, fontWeight: 700 }}>{riskLabelDisplay}</span></div>
                         <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                       </div>
-                      {riskLabelCopy(normalizedRisk.riskLabel) && (
-                        <p style={{ margin: '0 0 6px', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel)}</p>
+                      {riskLabelCopy(normalizedRisk.riskLabel, scanEvidence) && (
+                        <p style={{ margin: '0 0 6px', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel, scanEvidence)}</p>
                       )}
                       <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>This secondary model is explicitly a Safety Score: higher means safer. The Risk Score above is the canonical product score.</p>
                     </div>
@@ -8701,6 +8749,7 @@ export default function TerminalTokenScanner() {
                     const missing2 = getMissingChecks(result)
                     const next2 = getNextAction(result)
                     const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
+                    const scanEvidence = scanEvidenceFor(result)
                     const normalizedEngineRisk = normalizeRiskScore({
                       rawScore: engine?.riskScore ?? result.riskScore,
                       rawScoreType: 'risk_score',
@@ -8708,6 +8757,7 @@ export default function TerminalTokenScanner() {
                       confidence: engine?.confidence,
                       source: 'token_scanner',
                       displayLocation: 'risk_engine_tab',
+                      holdersVerified: scanEvidence.holdersVerified,
                     })
                     const displayCortexScore = normalizedEngineRisk.riskScore0To100
                     const displayCortexVerdict = normalizedEngineRisk.riskLabel
@@ -8740,8 +8790,8 @@ export default function TerminalTokenScanner() {
                                   {displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
-                              {riskLabelCopy(displayCortexVerdict) && (
-                                <p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>{riskLabelCopy(displayCortexVerdict)}</p>
+                              {riskLabelCopy(displayCortexVerdict, scanEvidence) && (
+                                <p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>{riskLabelCopy(displayCortexVerdict, scanEvidence)}</p>
                               )}
                               <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
                               {engine?.cortexRead ? (
@@ -8988,9 +9038,19 @@ export default function TerminalTokenScanner() {
               {/* ── DEV CONTROL ─────────────────────────────────────── */}
               {activeSection === 'deployer-intel' && (() => {
                 const holderState = deriveHolderState(result)
+                const scanEvidence = scanEvidenceFor(result)
                 const activeDevIntel = devIntel ?? result.devIntel ?? null
                 const clusterAudit = result.devClusterDiagnosisAudit ?? activeDevIntel?.devClusterDiagnosisAudit ?? null
-                const clusterUi = clusterAudit ? buildDevMapUiLabels(clusterAudit) : null
+                const top1Early = activeDevIntel?.holderDistribution?.top1 ?? result.holderDistribution?.top1 ?? null
+                const top10Early = activeDevIntel?.holderDistribution?.top10 ?? result.holderDistribution?.top10 ?? null
+                const top20Early = activeDevIntel?.holderDistribution?.top20 ?? result.holderDistribution?.top20 ?? null
+                const clusterUi = clusterAudit ? buildDevMapUiLabels(clusterAudit, {
+                  holdersVerified: holderState.kind === 'rowsWithPercent',
+                  holderRowsReturned: holderState.rows.length,
+                  top1Pct: top1Early,
+                  top10Pct: top10Early,
+                  top20Pct: top20Early,
+                }) : null
                 const _safeActorAddr = (a: unknown): string | null => typeof a === 'string' && /^0x[a-f0-9]{40}$/i.test(a) && a.toLowerCase() !== '0x0000000000000000000000000000000000000000' ? a : null
                 const creatorAddress = _safeActorAddr(activeDevIntel?.originAddress) ?? _safeActorAddr(clusterAudit?.deployerResolution.originWallet) ?? _safeActorAddr(activeDevIntel?.deployerAddress) ?? _safeActorAddr(result.security?.devOwnership?.ownerAddress) ?? _safeActorAddr(result.security?.devOwnership?.adminAddress) ?? null
                 const factoryAddress = _safeActorAddr(activeDevIntel?.factoryAddress) ?? _safeActorAddr(clusterAudit?.deployerResolution.factoryAddress) ?? null
@@ -9068,8 +9128,8 @@ export default function TerminalTokenScanner() {
                   <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:'10px',marginBottom:'14px' }}>
                     {[
                       { k:'Deployer', v: clusterUi?.deployerLabel ?? (creatorStatus === 'confirmed' ? 'Confirmed' : creatorStatus === 'likely' ? 'Likely matched' : 'Origin wallet not verified') },
-                      { k:'Linked Wallets', v: clusterUi?.linkedLabel ?? (graphRan ? (linkedWalletCount > 0 ? `${linkedWalletCount} mapped` : '0 confirmed') : 'Cluster wallets not verified') },
-                      { k:'Supply Control', v: clusterUi?.supplyControlLabel ?? (clusterSupplyPercent != null ? `${clusterSupplyPercent.toFixed(1)}% cluster` : 'Needs holder evidence') },
+                      { k:'Linked Wallets', v: clusterUi?.linkedLabel ?? (graphRan ? (linkedWalletCount > 0 ? `${linkedWalletCount} mapped` : '0 confirmed') : scanEvidence.labels.linkedWallets) },
+                      { k:'Supply Control', v: clusterUi?.supplyControlLabel ?? (clusterSupplyPercent != null ? `${clusterSupplyPercent.toFixed(1)}% cluster` : scanEvidence.labels.supplyControl) },
                       { k:'Patterns', v: suspiciousTransferPattern ? 'Suspicious transfers seen' : 'No major pattern flagged' },
                     ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
@@ -9233,12 +9293,12 @@ export default function TerminalTokenScanner() {
                       <div style={{ display:'grid', gap:'10px' }}>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:'8px' }}>
                           {[
-                            { label:'Creator in top holders', value: clusterUi?.creatorInTopLabel ?? (creatorInTop==null ? 'Needs holder evidence' : creatorInTop ? 'Yes' : 'No'), accent: creatorInTop==null ? '#64748b' : creatorInTop ? '#fbbf24' : '#34d399' },
-                            { label:'Top 1 concentration',   value: clusterUi?.top1Label ?? (top1!=null ? `${top1.toFixed(1)}%` : 'Needs holder evidence'), accent: top1!=null && top1>20 ? '#f87171' : '#94a3b8' },
-                            { label:'Top 10 concentration',  value: clusterUi?.top10Label ?? (top10!=null ? `${top10.toFixed(1)}%` : 'Needs holder evidence'), accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#94a3b8' },
-                            { label:'Top 20 concentration',  value: clusterUi?.top20Label ?? (top20!=null ? `${top20.toFixed(1)}%` : 'Needs holder evidence'), accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Creator in top holders', value: clusterUi?.creatorInTopLabel ?? (creatorInTop==null ? scanEvidence.labels.creatorInTop : creatorInTop ? 'Yes' : 'No'), accent: creatorInTop==null ? '#64748b' : creatorInTop ? '#fbbf24' : '#34d399' },
+                            { label:'Top 1 concentration',   value: clusterUi?.top1Label ?? (top1!=null ? `${top1.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top1!=null && top1>20 ? '#f87171' : '#94a3b8' },
+                            { label:'Top 10 concentration',  value: clusterUi?.top10Label ?? (top10!=null ? `${top10.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#94a3b8' },
+                            { label:'Top 20 concentration',  value: clusterUi?.top20Label ?? (top20!=null ? `${top20.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#94a3b8' },
                             { label:'Linked-wallet supply',  value: clusterUi?.linkedWalletSupplyLabel ?? (linkedWalletSupply!=null ? `${linkedWalletSupply.toFixed(1)}%` : 'Needs transfer evidence'), accent:'#2dd4bf' },
-                            { label:'Dev cluster supply',    value: clusterUi?.clusterSupplyLabel ?? (devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : 'Waiting on provider'), accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#64748b' },
+                            { label:'Dev cluster supply',    value: clusterUi?.clusterSupplyLabel ?? (devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : scanEvidence.labels.clusterSupply), accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#64748b' },
                           ].map(({ label, value, accent }) => (
                             <div key={label} style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
                               <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'5px', textTransform:'uppercase' }}>{label}</div>
@@ -9251,9 +9311,9 @@ export default function TerminalTokenScanner() {
                             <div>
                               <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
                               <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
-                                {clusterSupplyPercent == null ? (clusterUi?.supplyControlLabel ?? robinhoodDevControl?.devControlLabel ?? 'Needs holder evidence') : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
+                                {clusterSupplyPercent == null ? (clusterUi?.supplyControlLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.supplyControl) : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
                                 {' · '}
-                                {clusterSupplyPercent == null ? (clusterUi?.watchPlanSummary ?? robinhoodDevControl?.devControlLabel ?? 'Needs holder evidence before confirming cluster influence.') : clusterInfluence?.reason ?? clusterDominanceLabel}
+                                {clusterSupplyPercent == null ? (clusterUi?.watchPlanSummary ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.supplyControl) : clusterInfluence?.reason ?? clusterDominanceLabel}
                               </p>
                             </div>
                             <div style={{ textAlign:'right', flexShrink:0 }}>
@@ -9264,7 +9324,7 @@ export default function TerminalTokenScanner() {
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
                             <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
                               <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
-                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? (clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? 'Needs holder evidence') : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? (clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.clusterSupply) : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
                             </div>
                             <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
                               <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
@@ -9272,7 +9332,7 @@ export default function TerminalTokenScanner() {
                             </div>
                           </div>
                           <div style={{ display:'grid', gap:'5px' }}>
-                            {(clusterSupplyPercent == null ? [clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? 'Needs holder evidence before confirming cluster influence.'] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
+                            {(clusterSupplyPercent == null ? [clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.clusterSupply] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
                               <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
                                 <span style={{ color:clusterRiskAccent, flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
                                 <p style={{ margin:0, fontSize:'10px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>
@@ -9282,12 +9342,12 @@ export default function TerminalTokenScanner() {
                         </div>
                         {devClusterSupply == null && (
                           <div style={{ padding:'11px 14px', borderRadius:'10px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.14)' }}>
-                            <p style={{ margin:0, fontSize:'11px', color:'#78716c', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Supply influence still needs confirmation. CORTEX needs more holder evidence before confirming cluster control.</p>
+                            <p style={{ margin:0, fontSize:'11px', color:'#78716c', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{scanEvidence.labels.supplyControl}. Cluster supply is not confirmed from current evidence.</p>
                           </div>
                         )}
                       </div>
                     )}
-                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} />}
+                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} clusterAudit={clusterAudit} holdersVerified={holderState.kind === 'rowsWithPercent'} />}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
@@ -9334,7 +9394,7 @@ export default function TerminalTokenScanner() {
                         <div style={{ padding:'13px 16px', borderRadius:'12px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.2)' }}>
                           <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
                           <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>
-                            {`Deployer ${creatorStatus === 'confirmed' ? 'confirmed' : creatorStatus === 'likely' ? 'likely matched' : 'not verified'}. ${clusterUi?.linkedLabel ?? (linkedWalletCount > 0 ? `${linkedWalletCount} linked wallet${linkedWalletCount !== 1 ? 's' : ''} mapped.` : 'Cluster wallets not verified')}. Dev cluster supply ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% of circulating.` : (clusterUi?.clusterSupplyLabel ?? 'Waiting on provider')}`}
+                            {`Deployer ${creatorStatus === 'confirmed' ? 'confirmed' : creatorStatus === 'likely' ? 'likely matched' : 'not verified'}. ${clusterUi?.linkedLabel ?? (linkedWalletCount > 0 ? `${linkedWalletCount} linked wallet${linkedWalletCount !== 1 ? 's' : ''} mapped.` : 'Cluster wallets not verified')}. Dev cluster supply ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% of circulating.` : (clusterUi?.clusterSupplyLabel ?? scanEvidence.labels.clusterSupply)}`}
                           </p>
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
@@ -9592,6 +9652,7 @@ export default function TerminalTokenScanner() {
             const top10 = result.holderDistribution?.top10
             const top20 = result.holderDistribution?.top20
             const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
+            const scanEvidence = scanEvidenceFor(result)
             const sidebarRisk = normalizeRiskScore({
               rawScore: result.riskScore,
               rawScoreType: result.riskScoreType ?? 'risk_score',
@@ -9599,6 +9660,7 @@ export default function TerminalTokenScanner() {
               confidence: result.riskEngine?.confidence,
               source: 'token_scanner',
               displayLocation: 'right_rail',
+              holdersVerified: scanEvidence.holdersVerified,
             })
             const verdict = sidebarRisk.riskLabel ?? 'Open Check'
             const verdictColor = riskColorFromCanonicalLabel(sidebarRisk.riskLabel)
@@ -9658,8 +9720,8 @@ export default function TerminalTokenScanner() {
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
                       <div style={{display:'inline-flex',marginLeft:'6px',padding:'4px 9px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:sidebarRisk.confidence === 'high' ? '#34d399' : sidebarRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8',background:'rgba(148,163,184,0.08)',border:'1px solid rgba(148,163,184,0.22)',fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{sidebarRisk.confidence.toUpperCase()} CONFIDENCE</div>
-                      {riskLabelCopy(sidebarRisk.riskLabel) && (
-                        <div style={{fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5,marginBottom:'6px'}}>{riskLabelCopy(sidebarRisk.riskLabel)}</div>
+                      {riskLabelCopy(sidebarRisk.riskLabel, scanEvidence) && (
+                        <div style={{fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5,marginBottom:'6px'}}>{riskLabelCopy(sidebarRisk.riskLabel, scanEvidence)}</div>
                       )}
                       <div style={{height:'4px',borderRadius:'999px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
                         <div style={{height:'100%',width:`${riskGaugeFillPercent(sidebarScore)}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />

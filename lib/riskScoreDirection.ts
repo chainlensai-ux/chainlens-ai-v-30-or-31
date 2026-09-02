@@ -1,8 +1,10 @@
+import { cautionRiskCopy, CAUTION_ELEVATED_COPY as SHARED_CAUTION_ELEVATED_COPY } from './tokenScannerEvidence'
+
 export type RiskScoreType = 'risk_score' | 'safety_score' | 'unknown'
 export type CanonicalRiskLabel = 'Low Risk' | 'Moderate Risk' | 'Caution' | 'High Risk' | 'Extreme Risk'
 
 export const CANONICAL_RISK_THRESHOLD = '0-20 low; 21-40 moderate; 41-60 caution; 61-75 high; 76-100 extreme' as const
-export const CAUTION_ELEVATED_COPY = 'Elevated risk — missing LP/dev verification'
+export const CAUTION_ELEVATED_COPY = SHARED_CAUTION_ELEVATED_COPY
 export const RISK_SCORE_CONFIDENCE_NOTE =
   'Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.'
 
@@ -54,8 +56,11 @@ export function coerceCanonicalRiskLabel(label: string | null | undefined): Cano
   return null
 }
 
-export function riskLabelCopy(label: CanonicalRiskLabel | string | null | undefined): string | null {
-  return coerceCanonicalRiskLabel(label) === 'Caution' ? CAUTION_ELEVATED_COPY : null
+export function riskLabelCopy(
+  label: CanonicalRiskLabel | string | null | undefined,
+  evidence?: { holdersVerified?: boolean } | null,
+): string | null {
+  return coerceCanonicalRiskLabel(label) === 'Caution' ? cautionRiskCopy(evidence) : null
 }
 
 export function riskGaugeFillPercent(score: number | null): number {
@@ -79,6 +84,7 @@ export function normalizeRiskScore(input: {
   confidence?: 'high' | 'medium' | 'low' | string | null
   source: string
   displayLocation?: string
+  holdersVerified?: boolean
 }): NormalizedRiskScore {
   const rawScore = boundedScore(input.rawScore)
   const inverted = rawScore != null && input.rawScoreType === 'safety_score'
@@ -87,7 +93,7 @@ export function normalizeRiskScore(input: {
   const riskScore0To100 = rawScore == null || input.rawScoreType === 'unknown' ? null : inverted ? 100 - rawScore : rawScore
   const riskLabel = riskLabelFromCanonicalScore(riskScore0To100)
   const confidence = input.confidence === 'high' || input.confidence === 'medium' || input.confidence === 'low' ? input.confidence : 'low'
-  const copy = riskLabelCopy(riskLabel)
+  const copy = riskLabelCopy(riskLabel, { holdersVerified: input.holdersVerified === true })
   const topDriver = input.riskDrivers?.find((driver) => typeof driver === 'string' && driver.trim())?.trim() ?? null
   const explanation = riskScore0To100 == null
     ? input.rawScoreType === 'unknown' && rawScore != null

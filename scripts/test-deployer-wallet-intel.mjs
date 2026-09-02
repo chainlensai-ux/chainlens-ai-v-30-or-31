@@ -38,8 +38,8 @@ const DEPLOYER = '0xdeployer000000000000000000000000000001'
     holderSnapshot: { available: true, topHolders: [{ address: '0xother', rank: 1, percent: 40 }] },
     devControlResult: null,
   })
-  check('not in indexed holders -> holder rank label', intel.holderRankLabel === 'Not in indexed top holders')
-  check('not in indexed holders -> supply label', intel.supplyLabel === 'Outside indexed holder sample')
+  check('not in indexed holders -> holder rank label', intel.holderRankLabel === 'Not in indexed holder rows')
+  check('not in indexed holders -> supply label', intel.supplyLabel === 'Not in indexed holder rows')
   check('audit deployerFoundInHolders false', audit.deployerFoundInHolders === false)
 }
 

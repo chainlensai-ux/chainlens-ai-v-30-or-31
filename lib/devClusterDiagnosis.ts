@@ -4,6 +4,13 @@
 // No network. Missing holders are NEVER treated as 0%. Factory is NEVER the origin wallet.
 // "0 mapped" is only valid after the linked-wallet graph actually ran.
 
+import {
+  classifyTokenScannerEvidence,
+  DEV_SUPPLY_DEPLOYER_UNRESOLVED,
+  linkedWalletGraphLabel,
+  NOT_IN_INDEXED_HOLDER_ROWS,
+} from './tokenScannerEvidence'
+
 export const DEV_CLUSTER_CHAIN_IDS = {
   eth: 1,
   base: 8453,
@@ -639,23 +646,44 @@ function statusLabel(status: DevMapStatus, reason?: string | null): string {
 }
 
 export function linkedWalletDisplayLabel(graph: LinkedWalletGraphAudit): string {
-  if (graph.graphStatus === 'ran_found' && (graph.walletsMapped ?? 0) > 0) {
-    const n = graph.walletsMapped ?? 0
-    return `${n} mapped`
-  }
-  if (graph.graphStatus === 'ran_none') return '0 confirmed'
-  if (graph.graphStatus === 'not_run' || graph.graphStatus === 'unavailable') {
-    return graph.failureReason ? `Graph not run: ${graph.failureReason}` : 'Cluster wallets not verified'
-  }
-  return 'Cluster wallets not verified'
+  return linkedWalletGraphLabel(graph.graphStatus, graph.failureReason, graph.walletsMapped)
 }
 
-export function buildDevMapUiLabels(audit: DevClusterDiagnosisAudit): DevMapUiLabels {
+export interface DevMapHolderOverlay {
+  holdersVerified?: boolean
+  holderRowsReturned?: number
+  top1Pct?: number | null
+  top10Pct?: number | null
+  top20Pct?: number | null
+}
+
+export function buildDevMapUiLabels(audit: DevClusterDiagnosisAudit, overlay?: DevMapHolderOverlay): DevMapUiLabels {
   const d = audit.deployerResolution
   const h = audit.holderResolution
   const g = audit.linkedWalletGraph
   const originVerified = Boolean(d.originWallet) && d.confidence === 'high' && d.contractCreatorFound
   const originPartial = Boolean(d.originWallet) && !originVerified
+  const holdersVerified = overlay?.holdersVerified === true
+    || ((overlay?.holderRowsReturned ?? h.holderRowsReturned) > 0 && (
+      (overlay?.top1Pct ?? h.top1Pct) != null
+      || (overlay?.top10Pct ?? h.top10Pct) != null
+      || (overlay?.top20Pct ?? h.top20Pct) != null
+    ))
+  const holderRowsReturned = overlay?.holderRowsReturned ?? h.holderRowsReturned
+  const top1Pct = overlay?.top1Pct ?? h.top1Pct
+  const top10Pct = overlay?.top10Pct ?? h.top10Pct
+  const top20Pct = overlay?.top20Pct ?? h.top20Pct
+
+  const evidence = classifyTokenScannerEvidence({
+    holdersVerified,
+    holderRows: [],
+    deployerAddress: d.originWallet,
+    graphStatus: g.graphStatus,
+    graphFailureReason: g.failureReason,
+    walletsMapped: g.walletsMapped,
+    chainId: audit.chainId,
+    chainSlug: audit.chainSlug,
+  })
 
   const deployerLabel = originVerified
     ? 'Confirmed'
@@ -667,28 +695,28 @@ export function buildDevMapUiLabels(audit: DevClusterDiagnosisAudit): DevMapUiLa
 
   const deployerChip = originVerified ? 'Confirmed' : originPartial ? 'Partial' : 'Origin wallet not verified'
 
-  const needsHolders = h.holderRowsReturned === 0
+  const needsHolders = !holdersVerified && holderRowsReturned === 0
   const needsCreator = !d.originWallet
   const evidenceGap = needsHolders
     ? 'Needs holder evidence'
     : needsCreator
-      ? 'Needs creator tx evidence'
+      ? (holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Needs creator tx evidence')
       : g.graphStatus === 'not_run' || g.graphStatus === 'unavailable'
-        ? 'Needs transfer evidence'
+        ? evidence.labels.linkedWallets
         : null
 
   const supplyControlLabel = h.top1Pct != null || audit.linkedWalletGraph.linkedWalletSupplyPct != null || (g.walletsMapped != null && d.originWallet && !needsHolders)
     ? (audit.linkedWalletGraph.linkedWalletSupplyPct != null
       ? `${audit.linkedWalletGraph.linkedWalletSupplyPct.toFixed(1)}% cluster`
-      : clusterSupplyLabelFromAudit(audit))
-    : evidenceGap ?? `Not verified: ${audit.finalReason}`
+      : clusterSupplyLabelFromAudit(audit, holdersVerified))
+    : evidenceGap ?? evidence.labels.supplyControl
 
   const creatorInTopLabel = h.creatorInTopHolders == null
-    ? (needsHolders ? 'Needs holder evidence' : needsCreator ? 'Needs creator tx evidence' : 'Not verified')
+    ? (needsHolders ? 'Needs holder evidence' : needsCreator ? (holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Needs creator tx evidence') : 'Not verified')
     : h.creatorInTopHolders ? 'Yes' : 'No'
 
   const pctOrDash = (v: number | null, missing: string) => v != null ? `${v.toFixed(1)}%` : missing
-  const holderMissing = needsHolders ? 'Needs holder evidence' : 'Not verified'
+  const holderMissing = needsHolders ? 'Needs holder evidence' : (needsCreator && holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Not verified')
   const clusterSupply = audit.linkedWalletGraph.linkedWalletSupplyPct
   const dominance = dominanceFromClusterSupply(clusterSupply)
   const dominanceLabel = dominance === 'unknown'
@@ -697,7 +725,7 @@ export function buildDevMapUiLabels(audit: DevClusterDiagnosisAudit): DevMapUiLa
       ? 'No dominance'
       : `${dominance.charAt(0).toUpperCase()}${dominance.slice(1)} dominance`
 
-  const linkedLabel = linkedWalletDisplayLabel(g)
+  const linkedLabel = evidence.labels.linkedWallets
   const graphNotRun = g.graphStatus === 'not_run' || g.graphStatus === 'unavailable'
 
   return {
@@ -711,36 +739,34 @@ export function buildDevMapUiLabels(audit: DevClusterDiagnosisAudit): DevMapUiLa
         : '—',
     supplyControlLabel,
     creatorInTopLabel,
-    top1Label: pctOrDash(h.top1Pct, holderMissing),
-    top10Label: pctOrDash(h.top10Pct, holderMissing),
-    top20Label: pctOrDash(h.top20Pct, holderMissing),
+    top1Label: pctOrDash(top1Pct, holderMissing),
+    top10Label: pctOrDash(top10Pct, holderMissing),
+    top20Label: pctOrDash(top20Pct, holderMissing),
     linkedWalletSupplyLabel: pctOrDash(g.linkedWalletSupplyPct, graphNotRun ? linkedLabel : holderMissing),
-    clusterSupplyLabel: pctOrDash(clusterSupply, evidenceGap ?? 'Waiting on provider'),
+    clusterSupplyLabel: pctOrDash(clusterSupply, evidenceGap ?? evidence.labels.clusterSupply),
     dominanceLabel,
     originChip: deployerChip,
     originPendingText: d.originWallet
       ? ''
       : (d.failureReason ? `Origin wallet not verified. ${d.failureReason}` : 'Origin wallet not verified'),
-    linkedEmptyTitle: graphNotRun ? linkedLabel : g.graphStatus === 'ran_none' ? '0 confirmed linked wallets' : 'Cluster wallets not verified',
-    linkedEmptyBody: graphNotRun
-      ? (g.failureReason ? `Graph not run: ${g.failureReason}` : 'Cluster wallets not verified — transfer graph did not run.')
-      : 'Graph ran and found no qualifying linked wallets.',
+    linkedEmptyTitle: evidence.labels.linkedWalletsEmptyTitle,
+    linkedEmptyBody: evidence.labels.linkedWalletsEmptyBody,
     clusterRiskScoreLabel: clusterSupply == null ? (evidenceGap ?? 'Not verified') : '—',
     watchPlanSummary: [
       originVerified ? 'Deployer confirmed' : originPartial ? 'Deployer partial' : 'Origin wallet not verified',
       linkedLabel,
-      clusterSupply != null ? `Dev cluster supply ${clusterSupply.toFixed(1)}%` : (evidenceGap ?? 'Waiting on provider'),
+      clusterSupply != null ? `Dev cluster supply ${clusterSupply.toFixed(1)}%` : (evidenceGap ?? evidence.labels.clusterSupply),
     ].join('. ') + '.',
     statusLabel: statusLabel(audit.finalDevMapStatus, audit.finalReason),
   }
 }
 
-function clusterSupplyLabelFromAudit(audit: DevClusterDiagnosisAudit): string {
+function clusterSupplyLabelFromAudit(audit: DevClusterDiagnosisAudit, holdersVerified = false): string {
   const pct = audit.linkedWalletGraph.linkedWalletSupplyPct
   if (pct != null) return `${pct.toFixed(1)}% cluster`
-  if (audit.holderResolution.holderRowsReturned === 0) return 'Needs holder evidence'
-  if (!audit.deployerResolution.originWallet) return 'Needs creator tx evidence'
-  return 'Not verified'
+  if (audit.holderResolution.holderRowsReturned === 0 && !holdersVerified) return 'Needs holder evidence'
+  if (!audit.deployerResolution.originWallet) return holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Needs creator tx evidence'
+  return holdersVerified ? NOT_IN_INDEXED_HOLDER_ROWS : 'Not verified'
 }
 
 export function finalizeDevClusterStatuses(audit: DevClusterDiagnosisAudit): Pick<DevClusterDiagnosisAudit, 'finalDevMapStatus' | 'finalClusterStatus' | 'finalReason'> {

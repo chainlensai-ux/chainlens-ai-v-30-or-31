@@ -14,6 +14,15 @@
 // via `cheapBalance`/`nativeBalance` once resolved — so this resolver itself never triggers network
 // I/O and can never accidentally trigger the full, expensive Wallet Scanner.
 
+import {
+  classifyTokenScannerEvidence,
+  DEV_SUPPLY_DEPLOYER_UNRESOLVED,
+  displayYesNoUnknown,
+  NOT_IN_INDEXED_HOLDER_ROWS,
+  type TokenScannerEvidence,
+} from './tokenScannerEvidence'
+import type { LinkedWalletGraphStatus } from './devClusterDiagnosis'
+
 export type YesNoUnknown = 'yes' | 'no' | 'unknown'
 export type DeployerIntelConfidence = 'high' | 'medium' | 'low' | 'open_check'
 
@@ -107,6 +116,12 @@ export interface ResolveDeployerWalletIntelInput {
   devControlResult?: DeployerIntelDevControlResult | null
   cheapBalance?: DeployerIntelCheapBalanceResult | null
   nativeBalance?: DeployerIntelNativeBalanceResult | null
+  holdersVerified?: boolean | null
+  linkedWalletGraph?: {
+    graphStatus?: LinkedWalletGraphStatus | null
+    failureReason?: string | null
+    walletsMapped?: number | null
+  } | null
 }
 
 export interface DeployerWalletIntel {
@@ -114,11 +129,14 @@ export interface DeployerWalletIntel {
   chain: string
   tokenDeployed: string
   isCurrentHolder: YesNoUnknown
+  isCurrentHolderLabel: string
   currentTokenBalance: number | null
   currentSupplyPercent: number | null
   supplyLabel: string
   holderRank: number | null
   holderRankLabel: string
+  receivedSupplyAtLaunchLabel: string
+  transferredOrSoldLabel: string
   deployerNativeBalance: { amount: number | null; asset: string | null; available: boolean }
   receivedSupplyAtLaunch: YesNoUnknown
   transferredOrSold: YesNoUnknown
@@ -176,17 +194,34 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
   const evidenceSource: string[] = []
   const deployerAddress = input.deployerAddress ?? input.existingScannerResult?.deployerAddress ?? null
 
+  const holdersVerified = input.holdersVerified === true || Boolean(input.holderSnapshot?.available && chainMatches(input.holderSnapshot.chain, input.chainSlug) && (input.holderSnapshot.topHolders?.length ?? 0) > 0)
+  const evidenceFor = (wallet: string | null): TokenScannerEvidence => classifyTokenScannerEvidence({
+    holdersVerified,
+    holderRows: input.holderSnapshot?.topHolders ?? [],
+    deployerAddress: wallet,
+    selectedWallet: wallet,
+    graphStatus: input.linkedWalletGraph?.graphStatus ?? null,
+    graphFailureReason: input.linkedWalletGraph?.failureReason ?? null,
+    walletsMapped: input.linkedWalletGraph?.walletsMapped ?? null,
+    chainId: typeof input.chainId === 'number' ? input.chainId : null,
+    chainSlug: input.chainSlug,
+  })
+
   if (!deployerAddress) {
+    const evidence = evidenceFor(null)
     const emptyIntel: DeployerWalletIntel = {
       deployerAddress: '',
       chain: input.chainSlug,
       tokenDeployed: input.tokenSymbol ?? input.tokenName ?? input.tokenAddress,
       isCurrentHolder: 'unknown',
+      isCurrentHolderLabel: evidence.labels.currentHolder,
       currentTokenBalance: null,
       currentSupplyPercent: null,
-      supplyLabel: 'Holder data unavailable',
+      supplyLabel: holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Holder data unavailable',
       holderRank: null,
-      holderRankLabel: 'Holder list unavailable',
+      holderRankLabel: holdersVerified ? DEV_SUPPLY_DEPLOYER_UNRESOLVED : 'Holder list unavailable',
+      receivedSupplyAtLaunchLabel: evidence.labels.receivedSupplyAtLaunch,
+      transferredOrSoldLabel: evidence.labels.transferredOrSold,
       deployerNativeBalance: { amount: null, asset: null, available: false },
       receivedSupplyAtLaunch: 'unknown',
       transferredOrSold: 'unknown',
@@ -194,10 +229,10 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
       relatedDeployments: [],
       relatedDeploymentsLabel: 'Deployer address unresolved — related deployments unavailable.',
       behaviorPatternLabel: 'No wallet behavior pattern confirmed in this pass.',
-      transferLinksLabel: 'No transfer links found in current cluster map.',
+      transferLinksLabel: evidence.labels.linkedWallets,
       riskSignals: [],
       evidenceSource: [],
-      confidence: 'open_check',
+      confidence: holdersVerified ? 'low' : 'open_check',
       nextActions: ['Deployer address not resolved for this token.'],
     }
     return {
@@ -274,14 +309,18 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
     evidenceSource.push('live_balance_call')
   }
 
+  const evidence = evidenceFor(deployerAddress)
+
   // Supply/holder-rank labels — exact wording variants required by this fix.
   let supplyLabel: string
   if (deployerFoundInHolders && supplyPercent != null) {
     supplyLabel = `Holds ${supplyPercent.toFixed(2)}% of supply`
-  } else if (!holderSnapshotAvailable && !devControl?.supplyControl) {
+  } else if (!holderSnapshotAvailable && !devControl?.supplyControl && !holdersVerified) {
     supplyLabel = 'Holder data unavailable'
   } else if (deployerFoundInHolders) {
     supplyLabel = 'No indexed balance found'
+  } else if (holdersVerified) {
+    supplyLabel = NOT_IN_INDEXED_HOLDER_ROWS
   } else {
     supplyLabel = 'Outside indexed holder sample'
   }
@@ -289,10 +328,12 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
   let holderRankLabel: string
   if (holderRank != null) {
     holderRankLabel = `Rank #${holderRank} in indexed holders`
-  } else if (!holderSnapshotAvailable && !devControl?.supplyControl) {
+  } else if (!holderSnapshotAvailable && !devControl?.supplyControl && !holdersVerified) {
     holderRankLabel = 'Holder list unavailable'
   } else if (deployerFoundInHolders) {
     holderRankLabel = 'Not checked — run deployer wallet scan'
+  } else if (holdersVerified) {
+    holderRankLabel = NOT_IN_INDEXED_HOLDER_ROWS
   } else {
     holderRankLabel = 'Not in indexed top holders'
   }
@@ -309,6 +350,8 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
   if (deployerEdges.length > 0) {
     transferLinksLabel = `${deployerEdges.length} transfer link${deployerEdges.length === 1 ? '' : 's'} found — see linked wallets below.`
     evidenceSource.push('cluster_transfer_edges')
+  } else if (input.linkedWalletGraph?.graphStatus) {
+    transferLinksLabel = evidence.labels.linkedWallets
   } else {
     transferLinksLabel = 'No transfer links found in current cluster map.'
   }
@@ -374,11 +417,11 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
 
   // Confidence: 'high' only when both holder position AND transfer-edge evidence are resolved from
   // real data; 'open_check' only when we have neither snapshot nor Dev Control evidence at all.
-  const hasAnyHolderEvidence = deployerFoundInHolders || holderSnapshotAvailable || Boolean(devControl?.supplyControl)
+  const hasAnyHolderEvidence = deployerFoundInHolders || holderSnapshotAvailable || holdersVerified || Boolean(devControl?.supplyControl)
   const hasAnyTransferEvidence = edges.length > 0 || devLinkedWallets.length > 0
   const confidence: DeployerIntelConfidence =
     !hasAnyHolderEvidence && !hasAnyTransferEvidence
-      ? 'open_check'
+      ? (holdersVerified ? 'low' : 'open_check')
       : deployerFoundInHolders && hasAnyTransferEvidence
         ? 'high'
         : hasAnyHolderEvidence || hasAnyTransferEvidence
@@ -419,11 +462,14 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
     chain: input.chainSlug,
     tokenDeployed: input.tokenSymbol ?? input.tokenName ?? input.tokenAddress,
     isCurrentHolder,
+    isCurrentHolderLabel: displayYesNoUnknown(isCurrentHolder, evidence),
     currentTokenBalance,
     currentSupplyPercent: supplyPercent,
     supplyLabel,
     holderRank,
     holderRankLabel,
+    receivedSupplyAtLaunchLabel: displayYesNoUnknown(receivedSupplyAtLaunch, evidence),
+    transferredOrSoldLabel: displayYesNoUnknown(transferredOrSold, evidence, evidence.labels.transferredOrSold),
     deployerNativeBalance: {
       amount: input.nativeBalance?.succeeded ? (input.nativeBalance.amount ?? null) : null,
       asset: input.nativeBalance?.asset ?? null,
