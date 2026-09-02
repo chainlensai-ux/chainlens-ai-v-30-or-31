@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
@@ -8,6 +8,9 @@ import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 import { pricingPlans, PRICING_PROOF } from '@/lib/pricingPlans'
+
+type PaidPlanId = Exclude<UserPlan, 'free'>
+type PaymentMethod = 'crypto' | 'card'
 
 const NAV_LINKS = [
   { label: 'Terminal', href: '/terminal' },
@@ -22,12 +25,18 @@ export default function PricingPage() {
   // a guessed Free. Static plan cards render immediately regardless of plan state; only the
   // per-user "Current plan" badge waits for confirmation.
   const [userPlan, setUserPlan] = useState<UserPlan | null>(() => peekCachedPlan())
-  const [, setSessionReady] = useState(false)
   const [planReady, setPlanReady] = useState(() => peekCachedPlan() != null)
   const [checkoutLoading, setCheckoutLoading] = useState<UserPlan | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
+  const [selectedPlanId, setSelectedPlanId] = useState<PaidPlanId | null>(null)
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod | null>(null)
+  const [freeCtaLoading, setFreeCtaLoading] = useState(false)
   const [awaitingPayPalActivation, setAwaitingPayPalActivation] = useState(false)
   const [awaitingCryptoActivation, setAwaitingCryptoActivation] = useState(false)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const selectedPlan = selectedPlanId
+    ? pricingPlans.find((plan) => plan.id === selectedPlanId) ?? null
+    : null
 
   async function fetchCurrentPlan(token: string): Promise<UserPlan | null> {
     try {
@@ -45,7 +54,6 @@ export default function PricingPage() {
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
-      setSessionReady(true)
       const token = data.session?.access_token
       if (!token) { setUserPlan('free'); setPlanReady(true); return }
       const p = await fetchCurrentPlan(token)
@@ -56,6 +64,25 @@ export default function PricingPage() {
       setPlanReady(true)
     })
   }, [])
+
+  useEffect(() => {
+    if (!selectedPlanId) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeButtonRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !checkoutLoading) {
+        setSelectedPlanId(null)
+        setSelectedPaymentMethod(null)
+        setCheckoutError(null)
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [checkoutLoading, selectedPlanId])
 
   // After PayPal redirects back from the subscription approval flow (return_url set by
   // /api/paypal/create-subscription), the plan hasn't been granted yet — that only happens once
@@ -134,10 +161,42 @@ export default function PricingPage() {
     window.location.href = `/auth?next=${encodeURIComponent(returnPath)}`
   }
 
-  // Real, connected crypto flow: creates a NOWPayments invoice, confirmed by
-  // app/api/webhooks/crypto, which calls activateUserPlanServerSide.
-  async function handleCryptoPay(planId: 'pro' | 'elite') {
+  function closePaymentModal() {
+    if (checkoutLoading) return
+    setSelectedPlanId(null)
+    setSelectedPaymentMethod(null)
     setCheckoutError(null)
+  }
+
+  function openPaymentModal(planId: PaidPlanId) {
+    if (userPlan === planId) return
+    setCheckoutError(null)
+    setSelectedPaymentMethod(null)
+    setSelectedPlanId(planId)
+  }
+
+  async function handleFreeCta() {
+    if (freeCtaLoading) return
+    setFreeCtaLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        redirectToAuth('/terminal/token-scanner')
+        return
+      }
+      window.location.href = '/terminal/token-scanner'
+    } finally {
+      setFreeCtaLoading(false)
+    }
+  }
+
+  // Both options create checkout server-side. Plan activation remains exclusively webhook-driven.
+  async function startCheckout(planId: PaidPlanId, paymentMethod: PaymentMethod) {
+    const plan = pricingPlans.find((candidate) => candidate.id === planId)
+    const checkoutEndpoint = paymentMethod === 'crypto' ? plan?.cryptoCheckoutUrl : plan?.cardCheckoutUrl
+    if (!plan || !checkoutEndpoint || userPlan === planId) return
+    setCheckoutError(null)
+    setSelectedPaymentMethod(paymentMethod)
     setCheckoutLoading(planId)
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -151,56 +210,28 @@ export default function PricingPage() {
         redirectToAuth(referralCode ? `/pricing?ref=${encodeURIComponent(referralCode)}` : '/pricing')
         return
       }
-      const res = await fetch('/api/checkout/crypto', {
+      const res = await fetch(checkoutEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ plan: planId, referralCode }),
+        body: JSON.stringify(paymentMethod === 'crypto' ? { plan: planId, referralCode } : { plan: planId }),
       })
-      const json = await res.json() as Record<string, unknown>
-      if (!res.ok || !json.checkoutUrl) {
-        setCheckoutError((json.error as string) ?? 'Checkout creation failed. Try again.')
+      const json = await res.json() as { checkoutUrl?: string; approvalUrl?: string; error?: string }
+      const redirectUrl = paymentMethod === 'crypto' ? json.checkoutUrl : json.approvalUrl
+      if (!res.ok || !redirectUrl) {
+        setCheckoutError(json.error ?? 'Checkout creation failed. Try again.')
         return
       }
-      window.location.href = json.checkoutUrl as string
+      const parsedRedirect = new URL(redirectUrl)
+      if (parsedRedirect.protocol !== 'https:') {
+        setCheckoutError('Checkout returned an invalid redirect. Try again.')
+        return
+      }
+      window.location.href = parsedRedirect.toString()
     } catch {
       setCheckoutError('Checkout creation failed. Try again.')
-    } finally {
-      setCheckoutLoading(null)
-    }
-  }
-
-  // Real, connected PayPal Subscriptions flow: creates a recurring subscription against the live
-  // PAYPAL_PRO_PLAN_ID/PAYPAL_ELITE_PLAN_ID Billing Plan via /api/paypal/create-subscription, then
-  // redirects to PayPal's own approval URL. Once the user approves, PayPal fires
-  // BILLING.SUBSCRIPTION.ACTIVATED at /api/paypal/webhook, which is what actually grants the plan
-  // (see docs/paypal-verification.md's "Subscriptions" section) — there is no manual verification
-  // step in this flow at all.
-  async function handlePayPalPay(planId: 'pro' | 'elite') {
-    setCheckoutError(null)
-    setCheckoutLoading(planId)
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
-      if (!token) {
-        redirectToAuth('/pricing')
-        return
-      }
-      const res = await fetch('/api/paypal/create-subscription', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ plan: planId }),
-      })
-      const json = await res.json() as { approvalUrl?: string; error?: string }
-      if (!res.ok || !json.approvalUrl) {
-        setCheckoutError(json.error ?? 'Could not start PayPal subscription. Try again.')
-        return
-      }
-      window.location.href = json.approvalUrl
-    } catch {
-      setCheckoutError('Could not start PayPal subscription. Try again.')
     } finally {
       setCheckoutLoading(null)
     }
@@ -209,6 +240,7 @@ export default function PricingPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflowX: 'hidden', overflowY: 'auto', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
       <style>{`
+        html,body{max-width:100%;overflow-x:hidden}body{margin:0}
         /* PROFESSIONAL POLISH PASS, DISCLOSED (pricing page task): calmer glass cards, static
            (never animated) shadows, softer badge capsules instead of floating glowing ribbons, and
            a toned-down Elite treatment (dark glass + a restrained gold accent, not a bright yellow
@@ -252,20 +284,23 @@ export default function PricingPage() {
         @media(max-width:960px){.pf-footer-grid{grid-template-columns:1fr 1fr !important;gap:36px !important}}
         @media(max-width:560px){.pf-footer-grid{grid-template-columns:1fr !important}}
 
-        /* Split crypto/card payment boxes — static hover only, no glow-pulse animation. A touch
-           more vertical room than before (padding 10→12) so the two options read as clean payment
-           choices rather than a cramped strip. */
-        .cta-split-row{display:flex;gap:9px}
-        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:12px 8px;font-weight:700;font-size:13px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0;font-family:var(--font-inter, Inter, sans-serif)}
-        .cta-box small{font-weight:600;font-size:11px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
-        .cta-box-crypto{border-color:rgba(45,212,191,.32);background:rgba(45,212,191,.03)}
-        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.06) !important;transform:translateY(-1px)}
-        .cta-box-card{border-color:rgba(148,163,184,.18)}
-        .cta-box-card:hover{border-color:rgba(148,163,184,.32) !important;background:rgba(148,163,184,.04) !important;transform:translateY(-1px)}
-        .cta-box-tag{position:absolute;top:-8px;right:8px;background:#0a1420;border:1px solid rgba(45,212,191,.40);color:#5eead4;font-size:11px;font-weight:800;letter-spacing:.04em;border-radius:999px;padding:2px 7px;white-space:nowrap}
+        .payment-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,4,11,.76);backdrop-filter:blur(8px)}
+        .payment-modal{width:min(620px,100%);max-height:calc(100dvh - 48px);overflow:auto;border-radius:18px;border:1px solid rgba(148,163,184,.18);background:#080d17;box-shadow:0 24px 80px rgba(0,0,0,.52);padding:26px}
+        .payment-close{position:absolute;top:18px;right:18px;width:34px;height:34px;border-radius:9px;border:1px solid rgba(148,163,184,.16);background:rgba(255,255,255,.025);color:#94a3b8;font-size:21px;line-height:1;cursor:pointer;transition:.16s border-color,.16s color,.16s background}
+        .payment-close:hover:not(:disabled){color:#f8fafc;border-color:rgba(148,163,184,.34);background:rgba(255,255,255,.05)}
+        .payment-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:22px}
+        .payment-option{min-width:0;min-height:172px;display:flex;flex-direction:column;align-items:flex-start;text-align:left;border-radius:14px;padding:18px;border:1px solid rgba(148,163,184,.15);background:rgba(255,255,255,.022);color:#e2e8f0;cursor:pointer;transition:.16s transform,.16s border-color,.16s background,.16s opacity}
+        .payment-option:hover:not(:disabled){transform:translateY(-1px);border-color:rgba(83,243,195,.38);background:rgba(83,243,195,.045)}
+        .payment-option:focus-visible,.payment-close:focus-visible,.cta:focus-visible{outline:2px solid #53f3c3;outline-offset:2px}
+        .payment-option-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:11px;color:#53f3c3;background:rgba(83,243,195,.07);border:1px solid rgba(83,243,195,.18)}
+        .payment-option-title{font-size:15px;font-weight:800;margin-top:14px;color:#f8fafc}
+        .payment-option-copy{font-size:12px;color:#7a8a9e;margin-top:5px;line-height:1.5}
+        .payment-option-price{margin-top:auto;padding-top:16px;font-size:13px;font-weight:750;color:#cbd5e1}
+        .payment-error{margin-top:14px;border-radius:10px;padding:10px 12px;border:1px solid rgba(248,113,113,.28);background:rgba(248,113,113,.08);color:#fca5a5;font-size:12px;line-height:1.45}
+        @media(max-width:560px){.payment-overlay{padding:16px}.payment-modal{padding:22px 18px;max-height:calc(100dvh - 32px)}.payment-options{grid-template-columns:1fr}.payment-option{min-height:142px}.payment-close{top:14px;right:14px}}
 
         @media (prefers-reduced-motion: reduce) {
-          .pricing-card, .cta, .cta-box { transition: none !important; }
+          .pricing-card, .cta, .payment-option, .payment-close { transition: none !important; }
         }
       `}</style>
 
@@ -365,7 +400,7 @@ export default function PricingPage() {
                       <span className={`plan-badge plan-badge-${plan.id}`}>{plan.badge}</span>
                     )}
                   </div>
-                  <div style={{ fontSize:40, fontWeight:800, marginTop:8, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>{plan.price}</div>
+                  <div style={{ fontSize:40, fontWeight:800, marginTop:8, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>${plan.priceMonthly}</div>
                   <div style={{ color:'#94a3b8', marginTop:3, fontSize:13 }}>{plan.subtext}</div>
                   {plan.note && <div style={{ marginTop:6, fontSize:11.5, color:'#64748b', lineHeight:1.4 }}>{plan.note}</div>}
                   <div style={{ marginTop:12, paddingTop:9, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
@@ -415,41 +450,34 @@ export default function PricingPage() {
                       them (paid plans only), so Crypto/PayPal read as "how to unlock what's above"
                       rather than a separate, detached block. DISCLOSED (final pricing polish task). */}
                   <div style={{ marginTop:10, paddingTop: isPaid ? 10 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
-                    {isCurrent ? (
-                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.85, cursor:'default', pointerEvents:'none', display:'block' }}>
-                        ✓ Current plan
-                      </span>
-                    ) : plan.id === 'free' ? (
-                      <Link href='/terminal' className={`cta ${plan.ctaClass}`} style={{ display:'block' }}>
-                        GET STARTED
-                      </Link>
+                    {plan.id === 'free' ? (
+                      <button
+                        type='button'
+                        className={`cta ${plan.ctaClass}`}
+                        disabled={freeCtaLoading}
+                        onClick={handleFreeCta}
+                        aria-label='Get Started'
+                      >
+                        {freeCtaLoading ? 'Opening…' : 'Get Started'}
+                      </button>
+                    ) : isCurrent ? (
+                      <button type='button' className={`cta ${plan.ctaClass}`} disabled aria-disabled='true' style={{ opacity:0.72, cursor:'default' }}>
+                        ✓ Current Plan
+                      </button>
                     ) : (
-                      <div className='cta-split-row'>
-                        <button
-                          className='cta-box cta-box-crypto'
-                          disabled={isLoading || checkoutLoading !== null}
-                          onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
-                          style={{ opacity: isLoading ? 0.7 : 1 }}
-                        >
-                          <span className='cta-box-tag'>Recommended</span>
-                          {isLoading ? 'Opening…' : 'Crypto'}
-                          <small>USDC · Base</small>
-                        </button>
-                        <button
-                          className='cta-box cta-box-card'
-                          disabled={isLoading || checkoutLoading !== null}
-                          onClick={() => handlePayPalPay(plan.id as 'pro' | 'elite')}
-                          style={{ opacity: isLoading ? 0.7 : 1 }}
-                        >
-                          {isLoading ? 'Redirecting…' : 'PayPal'}
-                          <small>Subscription</small>
-                        </button>
-                      </div>
+                      <button
+                        type='button'
+                        className={`cta ${plan.ctaClass}`}
+                        disabled={isLoading || checkoutLoading !== null}
+                        onClick={() => openPaymentModal(plan.id as PaidPlanId)}
+                      >
+                        Upgrade to {plan.name}
+                      </button>
                     )}
 
                     {planReady && isPaid && !isCurrent && (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
-                        Crypto (USDC/ETH on Base) or a recurring PayPal subscription
+                        Choose crypto or card in secure checkout
                       </p>
                     )}
                   </div>
@@ -487,7 +515,7 @@ export default function PricingPage() {
         )}
 
         {/* Global checkout error */}
-        {checkoutError && (
+        {checkoutError && !selectedPlan && (
           <div style={{ marginTop:16, maxWidth:480, marginLeft:'auto', marginRight:'auto', background:'rgba(248,113,113,0.10)', border:'1px solid rgba(248,113,113,0.30)', borderRadius:10, padding:'10px 16px', color:'#fca5a5', fontSize:13, textAlign:'center' }}>
             {checkoutError}
             <button onClick={() => setCheckoutError(null)} style={{ marginLeft:10, background:'none', border:'none', color:'#fca5a5', cursor:'pointer', fontSize:14, lineHeight:1 }}>×</button>
@@ -507,7 +535,7 @@ export default function PricingPage() {
             subscription can always be cancelled from PayPal; a crypto payment is a single period
             with no auto-renewal to begin with). Purely a compact restatement, not new promises. */}
         <div style={{ marginTop:22, display:'flex', flexWrap:'wrap', justifyContent:'center', alignItems:'center', gap:'8px 14px', padding:'14px 12px', borderTop:'1px solid rgba(148,163,184,.08)' }}>
-          {['Cancel anytime', 'Crypto or PayPal subscription', 'Base-native intelligence', 'No regional pricing', 'Your data stays yours'].map((item, i) => (
+          {['Cancel anytime', 'Crypto or card checkout', 'Base-native intelligence', 'No regional pricing', 'Your data stays yours'].map((item, i) => (
             <span key={item} style={{ display:'inline-flex', alignItems:'center', gap:14 }}>
               {i > 0 && <span style={{ color:'rgba(148,163,184,.18)', fontSize:11 }}>·</span>}
               <span style={{ fontSize:11, color:'#526073', letterSpacing:'.03em' }}>{item}</span>
@@ -515,6 +543,91 @@ export default function PricingPage() {
           ))}
         </div>
       </div>
+
+      {selectedPlan && selectedPlanId && (
+        <div
+          className='payment-overlay'
+          role='presentation'
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePaymentModal()
+          }}
+        >
+          <section
+            className='payment-modal'
+            role='dialog'
+            aria-modal='true'
+            aria-labelledby='payment-modal-title'
+            aria-describedby='payment-modal-price'
+            onClick={(event) => event.stopPropagation()}
+            style={{ position:'relative' }}
+          >
+            <button
+              ref={closeButtonRef}
+              type='button'
+              className='payment-close'
+              onClick={closePaymentModal}
+              disabled={checkoutLoading !== null}
+              aria-label='Close payment options'
+            >
+              ×
+            </button>
+            <div style={{ color:'#53f3c3', fontSize:10, fontWeight:800, letterSpacing:'.16em' }}>CHAINLENS CHECKOUT</div>
+            <h2 id='payment-modal-title' style={{ margin:'9px 46px 0 0', color:'#f8fafc', fontSize:'clamp(23px,5vw,30px)', lineHeight:1.15, letterSpacing:'-.02em' }}>
+              Upgrade to {selectedPlan.name}
+            </h2>
+            <p id='payment-modal-price' style={{ margin:'7px 0 0', color:'#7a8a9e', fontSize:14 }}>
+              ${selectedPlan.priceMonthly}/month
+            </p>
+
+            <div className='payment-options'>
+              <button
+                type='button'
+                className='payment-option'
+                disabled={checkoutLoading !== null}
+                aria-pressed={selectedPaymentMethod === 'crypto'}
+                onClick={() => startCheckout(selectedPlanId, 'crypto')}
+              >
+                <span className='payment-option-icon' aria-hidden='true'>
+                  <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
+                    <circle cx='12' cy='12' r='8' />
+                    <path d='M9.5 8.5h3.6a2.1 2.1 0 0 1 0 4.2H9.5m0 0h4a2.15 2.15 0 0 1 0 4.3h-4m1.2-10v2m0 8.5v-1m2-9v2m0 8.5v-1' />
+                  </svg>
+                </span>
+                <span className='payment-option-title'>
+                  {checkoutLoading && selectedPaymentMethod === 'crypto' ? 'Opening checkout…' : 'Pay with crypto'}
+                </span>
+                <span className='payment-option-copy'>USDC / ETH on Base</span>
+                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
+              </button>
+
+              <button
+                type='button'
+                className='payment-option'
+                disabled={checkoutLoading !== null}
+                aria-pressed={selectedPaymentMethod === 'card'}
+                onClick={() => startCheckout(selectedPlanId, 'card')}
+              >
+                <span className='payment-option-icon' aria-hidden='true'>
+                  <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
+                    <rect x='3' y='5' width='18' height='14' rx='2.5' />
+                    <path d='M3 10h18M7 15h3' />
+                  </svg>
+                </span>
+                <span className='payment-option-title'>
+                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Pay with card'}
+                </span>
+                <span className='payment-option-copy'>Secure card checkout</span>
+                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
+              </button>
+            </div>
+
+            {checkoutError && <div className='payment-error' role='alert'>{checkoutError}</div>}
+            <p style={{ margin:'15px 2px 0', color:'#526073', fontSize:10.5, lineHeight:1.5 }}>
+              Your plan activates only after the payment provider confirms the subscription.
+            </p>
+          </section>
+        </div>
+      )}
 
       {/* ══════════════════════════════════════
           PREMIUM FOOTER

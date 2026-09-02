@@ -90,9 +90,17 @@ export function clarkPlanAllows(plan: string | undefined, feature: ClarkPlanFeat
 
 export type PricingPlan = {
   id: UserPlan
+  name: string
   label: string
   price: string
   priceMonthly: number
+  cryptoCheckoutUrl: string | null
+  cardCheckoutUrl: string | null
+  limits: {
+    clarkPromptsPerDay: number
+    scansPerDay: number
+    scanHistory: number
+  }
   subtext: string
   sectionTitle: string
   badge?: string
@@ -104,9 +112,17 @@ export type PricingPlan = {
 export const pricingPlans: PricingPlan[] = [
   {
     id: 'free',
+    name: 'Free',
     label: 'FREE',
     price: '$0',
     priceMonthly: 0,
+    cryptoCheckoutUrl: null,
+    cardCheckoutUrl: null,
+    limits: {
+      clarkPromptsPerDay: CLARK_DAILY_LIMITS.free,
+      scansPerDay: SCAN_DAILY_LIMITS.free,
+      scanHistory: SCAN_HISTORY_LIMITS.free,
+    },
     subtext: 'forever free · no card required',
     sectionTitle: "WHAT'S INCLUDED",
     badge: 'START HERE',
@@ -123,9 +139,17 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: 'pro',
+    name: 'Pro',
     label: 'PRO',
     price: '$30',
     priceMonthly: 30,
+    cryptoCheckoutUrl: '/api/checkout/crypto',
+    cardCheckoutUrl: '/api/paypal/create-subscription',
+    limits: {
+      clarkPromptsPerDay: CLARK_DAILY_LIMITS.pro,
+      scansPerDay: SCAN_DAILY_LIMITS.pro,
+      scanHistory: SCAN_HISTORY_LIMITS.pro,
+    },
     subtext: 'per month',
     sectionTitle: "WHAT'S INCLUDED",
     badge: 'MOST POPULAR',
@@ -144,9 +168,17 @@ export const pricingPlans: PricingPlan[] = [
   },
   {
     id: 'elite',
+    name: 'Elite',
     label: 'ELITE',
     price: '$60',
     priceMonthly: 60,
+    cryptoCheckoutUrl: '/api/checkout/crypto',
+    cardCheckoutUrl: '/api/paypal/create-subscription',
+    limits: {
+      clarkPromptsPerDay: CLARK_DAILY_LIMITS.elite,
+      scansPerDay: SCAN_DAILY_LIMITS.elite,
+      scanHistory: SCAN_HISTORY_LIMITS.elite,
+    },
     subtext: 'per month',
     sectionTitle: 'ELITE ADDITIONS',
     badge: 'POWER USERS',
