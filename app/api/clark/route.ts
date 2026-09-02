@@ -139,6 +139,13 @@ import {
   isDeployerCheckPrompt,
 } from "@/lib/server/clarkRouting";
 import {
+  classifyClarkTokenAnalystTopic,
+  renderClarkTokenAnalystFromEvidence,
+  renderClarkTokenAnalystAnswer,
+  clarkTokenAnalystIntentBadge,
+  tokenScanEvidenceFromSolanaScan,
+} from "@/lib/server/clarkTokenAnalyst";
+import {
   normalizeClarkRequestId,
   resolveClarkCommandIdentity,
   clarkSingleflightKey,
@@ -10060,7 +10067,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let analysis: string;
     let intentBadge: string;
     const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools));
-    if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
+    const analystTopic = classifyClarkTokenAnalystTopic(prompt);
+    if (analystTopic && followupKind !== "lp_lock" && followupKind !== "deployer") {
+      analysis = renderClarkTokenAnalystAnswer(ev, analystTopic, followupChainLabel);
+      intentBadge = clarkTokenAnalystIntentBadge(analystTopic);
+    } else if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
     else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, followupChainLabel); intentBadge = "lp_lock_check"; }
     else if (followupKind === "holders") { analysis = formatHoldersCheck(ev, followupChainLabel); intentBadge = "holders_check"; }
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }
@@ -11011,6 +11022,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // EVM vocabulary (see renderClarkTokenVerdictForSolana's own vocab wiring). A deployer-specific
     // question ("who deployed this") keeps the narrower, existing creator/authority-only read below
     // — same split EVM already has between its full verdict and its narrower "who deployed" answer.
+    const solanaAnalystTopic = !wantsDeployer ? classifyClarkTokenAnalystTopic(prompt) : null
     const lines: string[] = wantsDeployer
       ? (() => {
           const l: string[] = ["SOLANA CREATOR READ", ""];
@@ -11029,6 +11041,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           l.push("- CTA: Open Token Scanner → Solana for the full read.");
           return l;
         })()
+      : solanaAnalystTopic
+        ? renderClarkTokenAnalystAnswer(tokenScanEvidenceFromSolanaScan({
+            tokenAddress,
+            tokenName: marketData?.tokenName ?? null,
+            tokenSymbol: marketData?.tokenSymbol ?? null,
+            mintAuthority,
+            mintAuthorityResolved: authorityReadSucceeded,
+            freezeAuthority,
+            freezeAuthorityResolved: authorityReadSucceeded,
+            marketCap: marketData?.marketCapUsd ?? null,
+            fdv: marketData?.fdvUsd ?? null,
+            liquidityUsd: marketData?.liquidityUsd ?? null,
+            volume24h: marketData?.volume24hUsd ?? null,
+            top1Pct: topAccountConcentration?.top1Percent ?? null,
+            top10Pct: topAccountConcentration?.top10Percent ?? null,
+            accountsSampled: topAccountConcentration?.accountsSampled ?? null,
+            likelyCreator,
+            rugHistoryCount: typeof rugHistoryRaw === "number" ? rugHistoryRaw : null,
+            usable: hasUsableData,
+          }), solanaAnalystTopic, "Solana").split("\n")
       : renderClarkTokenVerdictForSolana({
           tokenAddress,
           tokenName: marketData?.tokenName ?? null,
@@ -12252,6 +12284,34 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       deployerAddress: typeof t.deployerAddress === "string" ? t.deployerAddress : (typeof tDevIntel.deployerAddress === "string" ? String(tDevIntel.deployerAddress) : (typeof tDeployerProfile.deployer === "string" ? String(tDeployerProfile.deployer) : null)),
       ownerAddress: typeof t.ownerAddress === "string" ? t.ownerAddress : (typeof tOwnership.ownerAddress === "string" ? String(tOwnership.ownerAddress) : (typeof tOwnership.owner === "string" ? String(tOwnership.owner) : null)),
       linkedWallets: Array.isArray(t.linkedWallets) ? t.linkedWallets as Array<Record<string, unknown>> : (Array.isArray(tDevIntel.linkedWallets) ? tDevIntel.linkedWallets as Array<Record<string, unknown>> : []),
+      tradingSimulation: (() => {
+        const simAudit = t.tradingSimulationAudit && typeof t.tradingSimulationAudit === "object" ? t.tradingSimulationAudit as Record<string, unknown> : null;
+        const rhAudit = t.robinhoodTradingSimulationAudit && typeof t.robinhoodTradingSimulationAudit === "object" ? t.robinhoodTradingSimulationAudit as Record<string, unknown> : null;
+        const hpObj = t.honeypot && typeof t.honeypot === "object" ? t.honeypot as Record<string, unknown> : null;
+        const status = typeof rhAudit?.finalStatus === "string" ? String(rhAudit.finalStatus)
+          : typeof simAudit?.finalStatus === "string" ? String(simAudit.finalStatus)
+          : typeof hpObj?.honeypotStatus === "string" ? String(hpObj.honeypotStatus)
+          : null;
+        const sellable = typeof rhAudit?.sellable === "boolean" ? rhAudit.sellable
+          : typeof simAudit?.sellable === "boolean" ? simAudit.sellable
+          : null;
+        const buyTax = typeof simAudit?.buyTax === "number" ? simAudit.buyTax
+          : typeof rhAudit?.buyTaxPct === "number" ? rhAudit.buyTaxPct
+          : typeof hpObj?.buyTax === "number" ? hpObj.buyTax
+          : mappedSecurityBuyTax;
+        const sellTax = typeof simAudit?.sellTax === "number" ? simAudit.sellTax
+          : typeof rhAudit?.sellTaxPct === "number" ? rhAudit.sellTaxPct
+          : typeof hpObj?.sellTax === "number" ? hpObj.sellTax
+          : mappedSecuritySellTax;
+        if (status == null && sellable == null && buyTax == null && sellTax == null) return null;
+        return {
+          sellable,
+          status,
+          buyTax,
+          sellTax,
+          reason: typeof simAudit?.finalReason === "string" ? String(simAudit.finalReason) : (typeof rhAudit?.finalReason === "string" ? String(rhAudit.finalReason) : null),
+        };
+      })(),
       _tokenApiStatus: finalTokenRouteStatus,
       _tokenApiHttpStatus: tokenApiHttpStatus,
       _tokenScanFailureReason: tokenScanFailureReason,
@@ -13272,7 +13332,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
     const tokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools));
-    const analysis = formatTokenApeRiskRead(r.ev, tokenChainLabel);
+    const analysis = renderClarkTokenAnalystFromEvidence(r.ev, prompt, tokenChainLabel, "safe");
     updateMemIntent(sessionMem, "token_ape_risk");
     const usableApeEvidence = hasUsableTokenEvidence(r.ev);
     const apeMeta = tokenScanVerdictMeta(r.ev, usableApeEvidence);
@@ -13438,7 +13498,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // CLARK-TOKEN-VERDICT FIX, DISCLOSED: "is it safe" now renders the same shared TOKEN READ
     // verdict as a fresh scan, instead of formatTokenSafetyAnswer's own separate, narrower wording
     // — the two questions ask for the same thing and must never disagree on the verdict.
-    const analysis = renderClarkTokenVerdictForEvm(r.ev, r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)), hasUsableTokenEvidence(r.ev));
+    const analysis = renderClarkTokenAnalystFromEvidence(r.ev, prompt, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)), "safe");
     if (!r.fromMemory) {
       updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
         confidence: tokenCoreConfidence(r.ev, ((r.ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((r.ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], hasUsableTokenEvidence(r.ev)),
@@ -13642,7 +13702,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatRiskExplanation(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
+    const analysis = renderClarkTokenAnalystFromEvidence(r.ev, prompt, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)), "risk");
     updateMemIntent(sessionMem, "risk_explanation");
     const riskVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {

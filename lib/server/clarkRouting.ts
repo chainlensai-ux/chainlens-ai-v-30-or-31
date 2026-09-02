@@ -96,12 +96,12 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
 // phrasing worked fine for the same address. Reuses the same base58 candidate shape as
 // SOLANA_MINT_CANDIDATE_RE below (structural match only; the real isValidSolanaMintAddress check
 // still gates the actual Solana routing downstream).
-const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44}\s+safe\??$|^safe\??\s+[1-9A-HJ-NP-Za-km-z]{32,44}|^safe\??$/i;
+const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit|is\s+lp\s+safe)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44}\s+safe\??$|^safe\??\s+[1-9A-HJ-NP-Za-km-z]{32,44}|^safe\??$/i;
 const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+(?:rug|dump)|can\s+deployer\s+(?:rug|dump)|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
 
 // "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.
 // Kept separate from TOKEN_SAFETY_RE so the existing token_safety formatting/behavior is untouched.
-const TOKEN_APE_RISK_RE = /\b(safe\s+to\s+ape|ape\s+(?:this|it)(?:\s+right\s+now)?|full\s+risk\s+breakdown|risk\s+breakdown(?:\s+for\s+this\s+(?:contract|token|ca))?|is\s+this\s+ca\s+safe)\b/i;
+const TOKEN_APE_RISK_RE = /\b(safe\s+to\s+ape|ape\s+(?:this|it)(?:\s+right\s+now)?|full\s+risk\s+breakdown|risk\s+breakdown(?:\s+for\s+this\s+(?:contract|token|ca))?|is\s+this\s+ca\s+safe|can\s+i\s+sell(?:\s+this(?:\s+token)?)?|is\s+(?:it|this)\s+sellable|what\s+are\s+the\s+taxes)\b/i;
 const TOKEN_FULL_REPORT_RE = /\b(full\s+(?:analyst\s+)?report|full\s+breakdown|scan\s+everything|full\s+risk|complete\s+report|run\s+all\s+checks|is\s+this\s+safe|safe\s+to\s+ape)\b/i;
 
 // "Has this dev rugged before" / "check this wallet/dev history" — rug-HISTORY questions, distinct
@@ -129,7 +129,7 @@ export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet"
 // not get reclassified as an LP request.
 const LIQUIDITY_WORD = "liqu(?:i)?dity";
 const LP_LOCK_RE = new RegExp(`\\b(is\\s+lp\\s+locked|lp\\s+locked|run\\s+lp\\s+check|check\\s+lp|lp\\s+check|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled|is\\s+${LIQUIDITY_WORD}\\s+safe|who\\s+controls\\s+(?:the\\s+)?(?:lp|${LIQUIDITY_WORD})|lp\\s+(?:burned|burn)|burned\\s+lp|explain\\s+(?:the\\s+)?(?:lp|${LIQUIDITY_WORD})|what\\s+about\\s+lp|lp\\s+(?:lock|control|safety)|${LIQUIDITY_WORD}\\s+(?:lock|locked|safety|control|pulled))\\b`, "i");
-const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?(?:risk|lp\s+risk|holder\s+risk|contract\s+risk|risk\s+score)|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+concentration|contract\s+risk|risk\s+score)\b/i;
+const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?(?:risk|lp\s+risk|holder\s+risk|contract\s+risk|risk\s+score)|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+concentration|contract\s+risk|risk\s+score)\b/i;
 const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+\$?([a-z][a-z0-9]{1,10})\b/i;
 const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED", "FOR", "ON", "THE", "POOL", "EXIT"]);
 const LP_CHAIN_WORDS = new Set(["BASE", "ETH", "ETHEREUM", "SOL", "SOLANA", "ROBINHOOD", "BNB", "BSC", "POLYGON"]);
@@ -338,7 +338,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|explain\s+lp|explain\s+holders|what\s+about\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risks?|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|should\s+i\s+watch\s+(?:it|this|that)|who\s+deployed\s+(?:it|this|that)|what\s+does\s+(?:lp|liquidity)\s+mean|check\s+holders?|top\s+holders?)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+lp\s+safe|is\s+liquidity\s+locked|is\s+it\s+locked|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|explain\s+lp|explain\s+holders|explain\s+dev|explain\s+risk|explain\s+market|what\s+about\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+(?:the\s+)?(?:biggest\s+)?red\s+flags|explain\s+(?:the\s+)?risks?|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|should\s+i\s+watch\s+(?:it|this|that)|who\s+deployed\s+(?:it|this|that)|what\s+does\s+(?:lp|liquidity)\s+mean|check\s+holders?|top\s+holders?|can\s+i\s+sell|is\s+(?:it|this)\s+sellable|what\s+are\s+the\s+taxes|buy\s+tax|sell\s+tax|why\s+is\s+(?:this|it)(?:\s+token)?\s+pumping|good\s+signs?|what\s+should\s+i\s+check\s+next)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -733,7 +733,7 @@ export function classifyClarkPrompt(prompt: string): {
     // the gate that runs before it. Added the same vocabulary here, verbatim in spirit, so the two
     // classifiers agree instead of the routing layer contradicting the entity layer.
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|check\s+liquidity|how\s+much\s+liquidity|pool\s+check|check\s+pool|is\s+liquidity|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|\bholders?\b|buy\s*tax|sell\s*tax|is\s+lp\s+locked|lp\s+locked|liquidity\s+locked)\b/i.test(t)
+      /\b(lp\s+check|liquidity\s+check|check\s+liquidity|how\s+much\s+liquidity|pool\s+check|check\s+pool|is\s+liquidity|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|\bholders?\b|buy\s*tax|sell\s*tax|is\s+lp\s+locked|lp\s+locked|liquidity\s+locked|can\s+i\s+sell|sellable|good\s+signs?|why\s+risk|risk\s+score)\b/i.test(t)
       || (/\bscan\s+0x[a-f0-9]{40}/i.test(t) && !/\bwallet\b/i.test(t));
     if (!hasOtherStrongIntent) {
       // SOLANA-BARE-ADDRESS-DEFAULT FIX, DISCLOSED (caught by a test added in another session's
@@ -3049,6 +3049,13 @@ export type TokenScanEvidence = {
   deployerAddress?: string | null;
   ownerAddress?: string | null;
   linkedWallets?: Array<Record<string, unknown>>;
+  tradingSimulation?: {
+    sellable?: boolean | null;
+    status?: string | null;
+    buyTax?: number | null;
+    sellTax?: number | null;
+    reason?: string | null;
+  } | null;
 };
 
 // Returns true only if at least one useful evidence section is present —
