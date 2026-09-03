@@ -5,21 +5,21 @@ const pricing = readFileSync(new URL('../app/pricing/page.tsx', import.meta.url)
 const homepage = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8')
 const planConfig = readFileSync(new URL('../lib/pricingPlans.ts', import.meta.url), 'utf8')
 
-// CARD/PAYPAL FIX, DISCLOSED (checkout audit): cardCheckoutUrl and paypalCheckoutUrl are now
-// genuinely distinct endpoints — previously both fields pointed at the same PayPal Subscriptions
-// route, which is why clicking "Card" silently ran the PayPal flow and redirected to PayPal's
-// hosted login page. This file's old assertions locked in that exact bug (asserting
-// cardCheckoutUrl === '/api/paypal/create-subscription' and a "Card" option labelled "Secure card
-// checkout") and are rewritten below to assert the fix instead.
+// CARD/PAYPAL, DISCLOSED (checkout audit, updated per explicit instruction to use PayPal's own card
+// option): Card and PayPal intentionally hit the same real PayPal Subscriptions endpoint — PayPal's
+// hosted checkout page can present a real card-entry form to a guest payer instead of forcing login,
+// but only once Guest Checkout is enabled on the live PayPal Business account (an account-level
+// setting this code cannot control — see CARD_CHECKOUT_AVAILABLE's own comment in
+// lib/pricingPlans.ts). This file previously asserted an intermediate design (Card pointed at its
+// own always-503 route) that was reverted per that explicit instruction.
 assert.match(planConfig, /export const pricingPlans: PricingPlan\[\] = \[/)
 for (const field of ['id', 'name', 'priceMonthly', 'cryptoCheckoutUrl', 'paypalCheckoutUrl', 'cardCheckoutUrl', 'features', 'limits']) {
   assert.match(planConfig, new RegExp(`\\b${field}:`), `pricingPlans must include ${field}`)
 }
 assert.match(planConfig, /cryptoCheckoutUrl: '\/api\/checkout\/crypto'/)
 assert.match(planConfig, /paypalCheckoutUrl: '\/api\/paypal\/create-subscription'/, 'PayPal must use the real PayPal Subscriptions endpoint')
-assert.match(planConfig, /cardCheckoutUrl: '\/api\/checkout\/card'/, 'Card must use its own distinct endpoint, never the PayPal one')
-assert.doesNotMatch(planConfig, /cardCheckoutUrl: '\/api\/paypal\/create-subscription'/, 'Card must never alias the PayPal endpoint again')
-assert.match(planConfig, /export const CARD_CHECKOUT_AVAILABLE = false/, 'Card must not claim to be available until a real provider is wired')
+assert.match(planConfig, /cardCheckoutUrl: '\/api\/paypal\/create-subscription'/, 'Card must run the same real PayPal Subscriptions flow, per explicit instruction')
+assert.match(planConfig, /export const CARD_CHECKOUT_AVAILABLE = true/, 'Card routing must be marked available now that it runs the real PayPal flow')
 assert.match(pricing, /import \{ pricingPlans, PRICING_PROOF, CARD_CHECKOUT_AVAILABLE \} from '@\/lib\/pricingPlans'/)
 
 assert.match(pricing, /async function handleFreeCta\(\)/)
@@ -40,21 +40,24 @@ assert.match(pricing, /Choose payment method/, 'modal title must read Choose pay
 assert.match(pricing, /Select how you want to complete checkout\./, 'modal subtitle must read Select how you want to complete checkout.')
 assert.doesNotMatch(pricing, /Upgrade to \{selectedPlan\.name\}/, 'the modal title itself must not restate the plan choice')
 
-console.log('\nSection: three genuinely distinct payment options — PayPal, Crypto, Card (disabled)')
-assert.match(pricing, /'Opening checkout…' : 'PayPal'/, 'PayPal option must read PayPal, not Card')
+console.log('\nSection: three real payment options — PayPal, Crypto, and Card (via PayPal checkout)')
+assert.match(pricing, /'Opening checkout…' : 'PayPal'/, 'PayPal option must read PayPal')
 assert.match(pricing, /Pay monthly with PayPal/)
 assert.match(pricing, /'Opening checkout…' : 'Crypto'/, 'crypto option must read Crypto')
 assert.match(pricing, /Pay with USDC\/ETH on Base/)
-assert.match(pricing, />Card<\/span>/, 'a disabled Card option must still be visible, not hidden')
-assert.match(pricing, /Card checkout coming soon/, 'Card must show a clear "coming soon" reason, never pretend to work')
-assert.doesNotMatch(pricing, /Secure card checkout/, 'must not claim Card is a working secure checkout')
+assert.match(pricing, /'Opening checkout…' : 'Card'/, 'Card option must read Card and be a real, clickable option')
+assert.match(pricing, /Pay by card via PayPal checkout/, 'Card copy must honestly say it runs through PayPal checkout')
+assert.doesNotMatch(pricing, /Secure card checkout/, 'must not claim Card is an independent secure checkout provider')
+assert.doesNotMatch(pricing, /Card checkout coming soon/, 'Card must not be shown as unavailable now that it is wired to the real flow')
 
-console.log('\nSection: checkout routing — PayPal and Crypto are real, Card never fires a request')
+console.log('\nSection: checkout routing — all three options can fire a real checkout request')
 assert.match(pricing, /startCheckout\(selectedPlanId, 'paypal'\)/)
 assert.match(pricing, /startCheckout\(selectedPlanId, 'crypto'\)/)
-assert.doesNotMatch(pricing, /startCheckout\(selectedPlanId, 'card'\)/, 'the disabled Card button must not even wire an onClick that fires a checkout request')
-assert.match(pricing, /if \(paymentMethod === 'card' && !CARD_CHECKOUT_AVAILABLE\) return/, 'startCheckout must refuse to run for card while unavailable — defense in depth')
+assert.match(pricing, /startCheckout\(selectedPlanId, 'card'\)/, 'the Card button must be wired to fire a real checkout request')
+assert.match(pricing, /if \(paymentMethod === 'card' && !CARD_CHECKOUT_AVAILABLE\) return/, 'startCheckout keeps a defense-in-depth guard in case CARD_CHECKOUT_AVAILABLE is ever flipped back off')
+assert.match(pricing, /disabled=\{checkoutLoading !== null \|\| !CARD_CHECKOUT_AVAILABLE\}/, 'Card is only disabled by the shared availability flag, never hardcoded')
 assert.match(pricing, /paymentMethod === 'crypto' \? plan\?\.cryptoCheckoutUrl\s*\n\s*: paymentMethod === 'paypal' \? plan\?\.paypalCheckoutUrl\s*\n\s*: plan\?\.cardCheckoutUrl/)
+assert.match(pricing, /method: paymentMethod/, 'an audit-only method field must be sent so the server can tell Card and PayPal clicks apart')
 assert.match(pricing, /parsedRedirect\.protocol !== 'https:'/)
 assert.match(pricing, /Your plan activates only after the payment provider confirms the subscription\./)
 

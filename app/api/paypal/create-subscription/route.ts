@@ -47,6 +47,13 @@ export async function POST(request: NextRequest) {
 export async function handleCreateSubscription(request: NextRequest, deps: CreateSubscriptionDeps = {}) {
   const audit = emptyPaypalPaymentAudit()
 
+  // CARD-VIA-PAYPAL, DISCLOSED: Card and PayPal on /pricing hit this exact same endpoint/payload
+  // now (see lib/pricingPlans.ts's CARD_CHECKOUT_AVAILABLE comment for why) — the server otherwise
+  // can't tell which button the user clicked. `method` in the body is audit-only (defaults to
+  // 'paypal' if absent/invalid, e.g. an older client) and never changes what this route actually
+  // does — same plan lookup, same createPayPalSubscription() call, same response shape either way.
+  let uiMethod: 'card' | 'paypal' = 'paypal'
+
   // CHECKOUT FLOW AUDIT, DISCLOSED (card/PayPal checkout fix task): a second, provider-agnostic
   // audit alongside the existing PayPal-specific one — see lib/server/checkoutFlowAudit.ts's own
   // header for why. redirectsToPaypalLogin/cardProviderConfigured are fixed for this route (it only
@@ -57,7 +64,9 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
       ...emptyCheckoutFlowAudit(),
       userIdPresent: Boolean(audit.userId),
       selectedPlan: audit.requestedPlan,
-      selectedPaymentMethod: 'paypal',
+      selectedPaymentMethod: uiMethod,
+      // Always the real backend provider — PayPal processes the payment either way, uiMethod only
+      // distinguishes which button the user saw/clicked.
       provider: 'paypal',
       checkoutUrlCreated: audit.checkoutCreated,
       isSubscription: true,
@@ -108,8 +117,9 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
   // never client-supplied at all (it lives entirely in the PayPal-side Billing Plan).
   let requestedPlan: string | undefined
   try {
-    const body = await request.json() as { plan?: unknown }
+    const body = await request.json() as { plan?: unknown; method?: unknown }
     requestedPlan = typeof body.plan === 'string' ? body.plan : undefined
+    if (body.method === 'card') uiMethod = 'card'
   } catch {
     requestedPlan = undefined
   }

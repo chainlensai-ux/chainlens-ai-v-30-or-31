@@ -4,18 +4,28 @@ ChainLens offers PayPal as a payment option next to crypto (NowPayments) and Car
 recurring **PayPal Subscriptions** integration — full Subscriptions API + signature-verified
 webhook. This is the only PayPal payment flow in the app.
 
-**CARD/PAYPAL FIX, DISCLOSED (checkout audit):** `lib/pricingPlans.ts`'s `cardCheckoutUrl` used to
-be set to this exact same endpoint (`/api/paypal/create-subscription`) — there was no distinct card
-checkout, "Card" on `/pricing` silently ran this PayPal Subscriptions flow underneath. That's why
-clicking "Card" redirected to PayPal's own hosted approval page, which — since no distinct card
-checkout has ever existed and no guest/card option is enabled on the PayPal business account — falls
-back to "log in to your PayPal account" (the "Use Face ID or Touch ID" prompt). Fixed:
-`paypalCheckoutUrl` and `cardCheckoutUrl` are now genuinely different fields/endpoints. PayPal keeps
-this exact flow, unchanged. Card now points at `app/api/checkout/card/route.ts`, which requires a
-signed-in user like every other checkout route but always responds `503` until a real card
-processor (Stripe or similar) is actually wired in — `CARD_CHECKOUT_AVAILABLE` in
-`lib/pricingPlans.ts` is the single source of truth both the route and the `/pricing` UI read, so
-Card is shown visibly disabled ("Card checkout coming soon") rather than pretending to work.
+**CARD/PAYPAL, DISCLOSED (checkout audit):** "Card" and "PayPal" on `/pricing` intentionally hit the
+identical endpoint (`/api/paypal/create-subscription`) and identical PayPal Subscriptions flow —
+`lib/pricingPlans.ts`'s `cardCheckoutUrl` and `paypalCheckoutUrl` are the same URL by design. This is
+correct **only** because PayPal's own hosted checkout page can present a real "Pay with Debit or
+Credit Card" form to a guest payer instead of forcing a PayPal login — but **only once Guest
+Checkout / "Advanced Credit and Debit Card Payments" is turned on in the live PayPal Business
+account** (Account Settings → Website payments). That is an account-level PayPal setting; nothing in
+this codebase can enable it. `CARD_CHECKOUT_AVAILABLE` in `lib/pricingPlans.ts` reflects that the
+*routing* is correct, not that guest/card checkout is actually turned on for this merchant account —
+if it is not, every payer (Card included) still lands on PayPal's login page. The request body
+carries an audit-only `method: 'card' | 'paypal'` field so `checkoutFlowAudit`'s
+`selectedPaymentMethod` reflects which button was actually clicked, even though the server can't
+otherwise distinguish the two (same endpoint, same payload otherwise, same real provider — PayPal —
+either way).
+
+**History, DISCLOSED:** this exact "same URL" shape was originally a bug — `cardCheckoutUrl` was
+copy-pasted to the PayPal endpoint with no card option ever available on the PayPal side, so Card
+always forced a login. It was first fixed by pointing Card at its own route that honestly 503'd
+("not configured") until a real card processor (e.g. Stripe) was wired in. That was reverted per
+explicit instruction to use PayPal's own guest/card checkout instead of adding a second provider —
+see this section's first paragraph for why that reversal is only correct with Guest Checkout enabled
+on the account.
 
 **REMOVED, DISCLOSED:** an earlier one-time-payment flow (a static PayPal checkout link + manual
 "paste your transaction ID" entry, verified via the Transaction Search/Reporting API) has been
@@ -27,10 +37,12 @@ don't need the historical rows.
 
 ## Flow
 
-1. User clicks "PayPal" on `/pricing` (`startCheckout(planId, 'paypal')` in `app/pricing/page.tsx`). If they're not
-   signed in, they're redirected to auth first.
+1. User clicks "PayPal" or "Card" on `/pricing` (`startCheckout(planId, 'paypal' | 'card')` in
+   `app/pricing/page.tsx`) — both run this exact same flow. If they're not signed in, they're
+   redirected to auth first.
 2. The frontend calls `POST /api/paypal/create-subscription` with the user's Supabase session
-   Bearer token and `{ plan: 'pro' | 'elite' }`.
+   Bearer token and `{ plan: 'pro' | 'elite', method: 'paypal' | 'card' }` (`method` is audit-only —
+   see the disclosure above).
 3. The route (`app/api/paypal/create-subscription/route.ts`):
    - Rate-limits the request, derives `userId` from the authenticated session (never trusts a
      client-supplied user id).

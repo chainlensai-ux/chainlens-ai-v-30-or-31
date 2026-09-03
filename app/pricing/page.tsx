@@ -200,9 +200,11 @@ export default function PricingPage() {
   // this function only ever navigates the browser to a provider's real checkout/approval URL, it
   // never sets userPlan itself.
   async function startCheckout(planId: PaidPlanId, paymentMethod: PaymentMethod) {
-    // CARD/PAYPAL FIX, DISCLOSED: card has no real checkout provider configured yet — the option is
-    // rendered disabled in the modal below, but this guard is defense-in-depth against it firing
-    // (e.g. a stale click) regardless. Never sends a request, never redirects anywhere for Card.
+    // CARD/PAYPAL, DISCLOSED: Card runs through the same PayPal Subscriptions checkout as PayPal —
+    // see CARD_CHECKOUT_AVAILABLE's own comment in lib/pricingPlans.ts for why that's correct (guest
+    // card checkout on PayPal's hosted page, contingent on an account-level PayPal setting). This
+    // guard stays as defense-in-depth: if CARD_CHECKOUT_AVAILABLE is ever flipped back to false
+    // (provider misconfigured/disabled), Card never sends a request or redirects anywhere.
     if (paymentMethod === 'card' && !CARD_CHECKOUT_AVAILABLE) return
     const plan = pricingPlans.find((candidate) => candidate.id === planId)
     const checkoutEndpoint = paymentMethod === 'crypto' ? plan?.cryptoCheckoutUrl
@@ -230,7 +232,11 @@ export default function PricingPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify(paymentMethod === 'crypto' ? { plan: planId, referralCode } : { plan: planId }),
+        // `method` is audit-only, DISCLOSED: Card and PayPal hit the identical endpoint/payload
+        // otherwise (same PayPal Subscriptions flow) — the server can't otherwise tell which button
+        // the user clicked, so this lets checkoutFlowAudit's selectedPaymentMethod stay accurate
+        // instead of defaulting to 'paypal' for both. Never changes what the server actually does.
+        body: JSON.stringify(paymentMethod === 'crypto' ? { plan: planId, referralCode } : { plan: planId, method: paymentMethod }),
       })
       const json = await res.json() as { checkoutUrl?: string; approvalUrl?: string; error?: string }
       const redirectUrl = paymentMethod === 'crypto' ? json.checkoutUrl : json.approvalUrl
@@ -648,16 +654,18 @@ export default function PricingPage() {
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
               </button>
 
-              {/* CARD UNAVAILABLE, DISCLOSED (checkout audit): no real card payment provider is
-                  wired into this codebase yet (see app/api/checkout/card/route.ts). This option is
-                  shown — not hidden — but genuinely disabled with a clear reason, per explicit
-                  instruction to never pretend Card works when it only opens PayPal login. */}
+              {/* CARD VIA PAYPAL, DISCLOSED (checkout audit, updated per explicit instruction):
+                  Card runs the same PayPal Subscriptions checkout as the PayPal option above —
+                  PayPal's hosted page can present a real card-entry form for a guest payer instead
+                  of forcing login, once Guest Checkout is enabled on the PayPal Business account
+                  (see CARD_CHECKOUT_AVAILABLE's comment in lib/pricingPlans.ts). Never disabled
+                  while CARD_CHECKOUT_AVAILABLE is true. */}
               <button
                 type='button'
                 className='payment-option'
-                disabled
-                aria-disabled='true'
-                title='Card checkout coming soon'
+                disabled={checkoutLoading !== null || !CARD_CHECKOUT_AVAILABLE}
+                aria-pressed={selectedPaymentMethod === 'card'}
+                onClick={() => startCheckout(selectedPlanId, 'card')}
               >
                 <span className='payment-option-icon' aria-hidden='true'>
                   <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
@@ -665,9 +673,11 @@ export default function PricingPage() {
                     <path d='M3 10h18M7 15h3' />
                   </svg>
                 </span>
-                <span className='payment-option-title'>Card</span>
-                <span className='payment-option-copy'>Card checkout coming soon</span>
-                <span className='payment-option-price' style={{ color:'#526073' }}>Not available yet</span>
+                <span className='payment-option-title'>
+                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Card'}
+                </span>
+                <span className='payment-option-copy'>Pay by card via PayPal checkout</span>
+                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
               </button>
             </div>
 
