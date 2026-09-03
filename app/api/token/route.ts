@@ -29,6 +29,8 @@ import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { consumeTokenScan, snapshotTokenScan } from '@/lib/tokenScanQuota'
+import { tokenScanLimitReachedMessage } from '@/lib/pricingPlans'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
@@ -3657,6 +3659,15 @@ export async function POST(req: Request) {
   if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
+  const _tokenScanIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+  const _tokenScanQuota = consumeTokenScan(_requestPlan, _tokenScanIp)
+  if (!_tokenScanQuota.allowed) {
+    return NextResponse.json({
+      error: tokenScanLimitReachedMessage(_requestPlan, _tokenScanQuota.limit),
+      category: 'token_scan_limit',
+      tokenScanQuota: snapshotTokenScan(_requestPlan, _tokenScanIp),
+    }, { status: 429 })
+  }
 
   // Hoisted outside the main try block so the fatal-error handler can still
   // report accurate resolver diagnostics for address-based scans.
