@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from "@/lib/clark/commandFormats";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseLowCapMemes, fetchCoinGeckoBaseTrending, LOW_CAP_MEME_MAX_MARKET_CAP_USD } from "@/lib/server/coingeckoBaseTrending";
@@ -1176,6 +1177,8 @@ const KNOWN_BASE_TOKEN_ALIASES: Record<string, string> = {
 };
 
 function extractTokenLookupQuery(prompt: string): string | null {
+  const slashToken = parseClarkTokenCommand(prompt);
+  if (slashToken?.ticker) return slashToken.ticker.toLowerCase();
   const t = prompt.trim().toLowerCase();
   const blockedQueries = new Set([
     "holder", "holders", "holder count", "holder distribution", "holder concentration",
@@ -15855,6 +15858,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
   }
   if (body.message && !body.prompt) body.prompt = body.message
+  const explicitTokenCommand = parseClarkTokenCommand(body.prompt ?? '')
+  if (explicitTokenCommand) {
+    // The entity in this message has precedence over all restored page/session
+    // context. This is the server-side half of the stale-token guard.
+    body.tokenAddress = explicitTokenCommand.address ?? undefined
+    body.addressOrToken = explicitTokenCommand.input
+    body.appContext = { ...(body.appContext ?? {}), selectedToken: null, currentTokenAddress: null, tokenSummary: null }
+    if (body.clientContext) body.clientContext = { ...body.clientContext, lastToken: undefined }
+  }
   const requestId = normalizeClarkRequestId(body.requestId)
   const messageId = typeof body.messageId === "string" && body.messageId.trim() ? body.messageId.trim().slice(0, 80) : requestId
   body.requestId = requestId
@@ -15866,13 +15878,17 @@ export async function POST(req: NextRequest) {
   const sessionKey = makeSessionKey(req, authenticated)
   const memoryKeySource = getSessionKeySource(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
+  const previousActiveTokenAddress = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
     updateMemMomentum(sessionMem, body.clientContext!.lastMomentumList!.slice(0, 20));
   }
   if (typeof body.clientContext?.lastMomentumShownCount === "number" && body.clientContext.lastMomentumShownCount >= 0) {
     sessionMem.lastMomentumShownCount = Math.min(body.clientContext.lastMomentumShownCount, sessionMem.lastMomentumList.length);
   }
-  if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
+  if (!explicitTokenCommand) {
+    if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
+  }
+  if (explicitTokenCommand) sessionMem.lastTickerMatches = undefined;
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   // Restore the deployer and Radar list the same way token/wallet already were — see the
   // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
@@ -15943,6 +15959,10 @@ export async function POST(req: NextRequest) {
   // cache key carries no session/memory state, so a cached miss from before a scan (or a cached
   // answer from a different memory state) would otherwise replay regardless of current memory.
   const memorySensitivePrompt = Boolean(earlyPrompt) && (
+    // `/token` is an explicit live subject selection. Replaying a short-lived
+    // cached resolver result would violate the "resolve fresh" contract for
+    // tickers and can reintroduce stale token context.
+    Boolean(explicitTokenCommand) ||
     earlyToolIntent.intent.startsWith("whale_alerts_") ||
     /\bwhales?|\bfomo\b|\bsmart\s+money\b/i.test(earlyPrompt) ||
     isWalletFollowupPrompt(earlyPrompt) ||
@@ -16195,7 +16215,14 @@ export async function POST(req: NextRequest) {
           ...(echoedWalletProfile ? { cachedEvidence: { walletProfile: echoedWalletProfile } } : {}),
         }
       }
-      if (sessionMem.lastToken?.address) {
+      const explicitResponseAddress = sessionMem.lastToken?.address ?? null
+      const explicitPickerRequired = (result as Record<string, unknown>)?.clarkTokenPickerRequired === true
+      const explicitResponseMatches = !explicitTokenCommand || doesClarkTokenResponseMatch(
+        explicitTokenCommand, previousActiveTokenAddress, explicitResponseAddress, explicitPickerRequired,
+      )
+      // Do not echo a prior token when the explicit token command did not
+      // resolve a new matching subject (for example, a ticker picker).
+      if (sessionMem.lastToken?.address && explicitResponseMatches) {
         genericMemoryEcho.lastToken = {
           address: sessionMem.lastToken.address,
           symbol: sessionMem.lastToken.symbol ?? null,
@@ -16254,6 +16281,18 @@ export async function POST(req: NextRequest) {
       if (Object.keys(genericMemoryEcho).length > 0) {
         const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}
         normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }
+      }
+      if (explicitTokenCommand) {
+        normData.clarkTokenCommandAudit = {
+          message: body.prompt ?? '', parsedCommand: 'token', requestedInput: explicitTokenCommand.input,
+          requestedTokenAddress: explicitTokenCommand.address, requestedTicker: explicitTokenCommand.ticker,
+          previousActiveTokenAddress, newRequestId: requestId,
+          scannerPayloadTokenAddress: body.tokenAddress ?? null, scannerPayloadChain: body.chain ?? sessionMem.selectedChain ?? null,
+          responseTokenAddress: explicitResponseAddress, responseMatchesRequest: explicitResponseMatches,
+          pickerRequired: explicitPickerRequired,
+          staleResponseIgnored: !explicitResponseMatches, activeTokenAfterScan: explicitResponseMatches ? explicitResponseAddress : null,
+          finalStatus: explicitResponseMatches ? 'applied' : 'discarded', failureReason: explicitResponseMatches ? null : 'response_token_did_not_match_current_token_command',
+        }
       }
       // Per-message context audit — records the memory that was available BEFORE resolution
       // alongside what was chosen and why, so "Clark answered about the wrong token" is
