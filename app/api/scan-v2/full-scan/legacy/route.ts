@@ -60,9 +60,14 @@ export const maxDuration = 300
 import { handleApiError } from '@/src/deployment/api'
 import { runWalletScanV2Worker, logDirectFailure } from '@/workers/walletScanV2'
 import { resetAlchemyAudit, printAlchemyAuditSummary } from '@/lib/server/alchemyAudit'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export async function POST(req: Request): Promise<Response> {
   const routeStart = Date.now()
+  // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+  // sign-in): this route previously had no auth check at all. Checked before any worker/Alchemy
+  // work starts so an unauthenticated caller never triggers real provider calls or CU spend.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   // eslint-disable-next-line no-console
   console.log('[SCAN-V2] route start')
   // ALCHEMY-AUDIT WIRING, DISCLOSED: reset here (a route file, not the worker/pipeline this task

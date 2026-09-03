@@ -18,11 +18,15 @@
 import { NextResponse } from "next/server";
 import { getWalletFromV2 } from "@/lib/server/v2Adapters";
 import { buildTradeLedger, type SwapEvent } from "@/src/modules/tradeLedger";
+import { requireAuthenticatedUser, unauthorizedResponse } from "@/lib/server/requireAuth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   try {
+    // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+    // sign-in): this route previously had no auth check at all.
+    if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse();
     const { searchParams } = new URL(req.url);
     const address = searchParams.get("address");
 

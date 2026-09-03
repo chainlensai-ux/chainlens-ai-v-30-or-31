@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { getVerifiedUserPlan } from "@/lib/supabase/userSettings";
+import { requireAuthenticatedUser, unauthorizedResponse } from "@/lib/server/requireAuth";
 
 // TRACKED-WALLETS ADD ROUTE, DISCLOSED (FOMO board integration). Whale Alerts' tracked_wallets
 // table (docs/supabase-whale-alerts.sql) previously had no write path anywhere in the app — every
@@ -49,7 +50,11 @@ async function activeWalletCount(db: NonNullable<ServiceClient>): Promise<number
 // internal detail this endpoint has no reason to expose) so the FOMO board can mark rows "Tracked"
 // without a separate per-row lookup. Also returns the count directly so the UI never has to trust
 // addresses.length as a proxy for "how many wallets are tracked" if that ever diverges.
-export async function GET() {
+export async function GET(request: Request) {
+  // AUTH-GUARD, DISCLOSED (auth hardening audit — "fomo/whale elite endpoints" must require
+  // sign-in): this route previously had no auth check at all — Whale Alerts is a Pro/Elite feature
+  // (PLAN_FEATURES), so its tracked-wallet set should not be readable by a signed-out caller.
+  if (!(await requireAuthenticatedUser(request))) return unauthorizedResponse();
   const db = getServiceClient();
   if (!db) return NextResponse.json({ ok: true, addresses: [], count: 0 });
   const { data, error } = await db

@@ -6,6 +6,7 @@ import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRad
 import { fetchGoldRushHolderCount, fetchGoldRushConcentration, type ConcentrationResult } from '@/lib/server/goldrushHolderCount'
 import { buildBaseRadarHolderEvidence } from '@/lib/baseRadarHolderEvidence'
 import { resolveBaseRadarOwnershipFallback, type BaseRadarOwnershipFallback } from '@/lib/server/baseRadarOwnership'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
 // robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
@@ -750,6 +751,13 @@ async function enrich(req: Request, chain: ChainKey, contract: string, dedupeHit
 }
 
 export async function GET(req: Request) {
+  // AUTH-GUARD, DISCLOSED (auth hardening audit — "/api/base-radar" is explicitly named): this
+  // route previously had no auth check of its own — scanToken() below already forwards the
+  // caller's Authorization header into the guarded /api/token POST handler, so an unauthenticated
+  // caller would eventually get limited_evidence from that internal call, but only after this
+  // route had already spent real GoldRush/LP-reconciliation calls. Failing fast here avoids that
+  // wasted provider spend and matches every other protected route's behavior.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   const url = new URL(req.url)
   const contract = String(url.searchParams.get('contract') ?? url.searchParams.get('address') ?? '').trim()
   const chain = normalizeChain(url.searchParams.get('chain'))

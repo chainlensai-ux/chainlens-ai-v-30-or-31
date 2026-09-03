@@ -20,9 +20,13 @@
 import { NextResponse } from 'next/server'
 import { redis } from '@/lib/server/cache/redisClient'
 import { fullScanJobKey, type FullScanJobResult } from '@/lib/server/fullScanJobs'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export async function GET(req: Request): Promise<Response> {
   try {
+    // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+    // sign-in): this route previously had no auth check at all.
+    if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
     const jobId = new URL(req.url).searchParams.get('jobId')
     if (!jobId) {
       return NextResponse.json({ status: 'not-found', error: { message: 'jobId is required', category: 'validation' } }, { status: 400 })

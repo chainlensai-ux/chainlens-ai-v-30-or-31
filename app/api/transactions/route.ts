@@ -24,6 +24,7 @@ import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
 import { buildTradeTimelineForChain, type TradeTimelineForChainResult } from '@/app/api/_shared/walletChainPipeline'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 // CU REDUCTION, DISCLOSED (see app/api/wallet-profile/route.ts's own header for the full
 // disclosure): cached at THIS route's own call site, not inside buildTradeTimelineForChain/
@@ -55,6 +56,10 @@ function isSupportedChain(chain: string): chain is SupportedChain {
 }
 
 export async function POST(req: Request) {
+  // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+  // sign-in): this route previously had no auth check and returned real wallet transaction data
+  // for any walletAddress passed in the request body.
+  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
   let body: TransactionsRequestBody
   try {
     body = await req.json()

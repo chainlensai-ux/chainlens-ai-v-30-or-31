@@ -6,9 +6,13 @@
 
 import { router } from '@/src/deployment/index'
 import { handleApiError } from '@/src/deployment/api'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export async function POST(req: Request): Promise<Response> {
   try {
+    // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+    // sign-in): this route previously had no auth check at all.
+    if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
     const rawBody = await req.json().catch(() => null)
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
 

@@ -22,6 +22,7 @@ import { redis } from '@/lib/server/cache/redisClient'
 import { router } from '@/src/deployment/index'
 import { markV1Triggered } from '@/app/api/_shared/v1Detector'
 import { fullScanJobKey, type FullScanJobResult, type JobErrorShape } from '@/lib/server/fullScanJobs'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — enough headroom for reasonable polling
 
@@ -67,6 +68,9 @@ async function runScanToJobResult(rawBody: unknown, ip: string): Promise<FullSca
 
 export async function POST(req: Request): Promise<Response> {
   try {
+    // AUTH-GUARD, DISCLOSED (auth hardening audit — "any scan/history/save endpoints" must require
+    // sign-in): this route previously had no auth check at all.
+    if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
     // V1-DETECTOR, DISCLOSED: see v1Detector.ts's own header for what "V1" means here — reaching
     // this route at all means app/frontend/api/scanWallet.ts's direct /api/scan-v2/full-scan attempt
     // failed and fell back to this older job/poll path. Diagnostic-only, never changes behavior.

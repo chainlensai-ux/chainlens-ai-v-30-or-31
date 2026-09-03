@@ -23,9 +23,16 @@ function buildForwardedHeaders(req: Request): Headers {
   const headers = new Headers({ 'Content-Type': 'application/json' })
   const forwardedFor = req.headers.get('x-forwarded-for')
   const realIp = req.headers.get('x-real-ip')
+  // AUTH-HEADER-FORWARDING, DISCLOSED (auth hardening audit): the upstream route this proxies to
+  // (/api/scan-v2/full-scan/legacy) now requires a real bearer token — this proxy stayed
+  // deliberately import-free/isolated (see file header), so the fix here is to forward the
+  // caller's own Authorization header through unchanged rather than duplicate auth-verification
+  // logic in this edge route. A missing/invalid token still ends up 401, just from upstream.
+  const authorization = req.headers.get('authorization')
 
   if (forwardedFor) headers.set('x-forwarded-for', forwardedFor)
   if (realIp) headers.set('x-real-ip', realIp)
+  if (authorization) headers.set('authorization', authorization)
 
   return headers
 }
