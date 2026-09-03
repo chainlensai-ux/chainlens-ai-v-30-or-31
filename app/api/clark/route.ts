@@ -9557,7 +9557,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   {
     const marketIntent = classifyClarkMarketIntent(prompt);
     const hijacksBroaderReport = /\b(safe|safety|\brug\b|honeypot|scam|holders?|\blp\b|liquidity\s+locked|sellable|can\s+i\s+sell|\btax\b|deployer|dev\s+rug|red\s+flags?|full\s+report|risk\s+breakdown)\b/i.test(prompt);
-    if (marketIntent && !hijacksBroaderReport) {
+    // A broad "what's pumping/running/moving on Base" question is chain-wide market discovery,
+    // not a lookup of a token whose ticker happens to spell a chain name ("BASE", "ETH", ...) —
+    // isBaseMomentumPrompt already owns this phrasing further down with a real token-list
+    // response (getBaseMarketUniverse); never let the single-symbol gate hijack it first.
+    if (marketIntent && !hijacksBroaderReport && !isBaseMomentumPrompt(prompt)) {
       const inlineMarketAddr = extractAddress(prompt);
       const pronounRef = isClarkMarketPronounReference(prompt);
       const marketAddress = inlineMarketAddr ?? (pronounRef ? (sessionMem.lastToken?.address ?? null) : null);
