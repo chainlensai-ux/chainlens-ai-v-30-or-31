@@ -3,6 +3,7 @@ import { createPayPalSubscription } from '@/lib/paypal'
 import { createAnonSupabaseClient, createServiceRoleClient } from '@/lib/supabase/userSettings'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { emptyPaypalPaymentAudit, logPaypalPaymentAudit } from '@/lib/server/paypalAudit'
+import { emptyCheckoutFlowAudit, logCheckoutFlowAudit } from '@/lib/server/checkoutFlowAudit'
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 10 })
 
@@ -43,29 +44,55 @@ export async function POST(request: NextRequest) {
   return handleCreateSubscription(request)
 }
 
-async function handleCreateSubscription(request: NextRequest, deps: CreateSubscriptionDeps = {}) {
+export async function handleCreateSubscription(request: NextRequest, deps: CreateSubscriptionDeps = {}) {
   const audit = emptyPaypalPaymentAudit()
+
+  // CHECKOUT FLOW AUDIT, DISCLOSED (card/PayPal checkout fix task): a second, provider-agnostic
+  // audit alongside the existing PayPal-specific one — see lib/server/checkoutFlowAudit.ts's own
+  // header for why. redirectsToPaypalLogin/cardProviderConfigured are fixed for this route (it only
+  // ever runs the real PayPal Subscriptions flow); everything else is filled in as it becomes known.
+  function finalizeAudit(finalStatus: 'created' | 'failed' | 'blocked', failureReason: string | null) {
+    logPaypalPaymentAudit(audit)
+    logCheckoutFlowAudit({
+      ...emptyCheckoutFlowAudit(),
+      userIdPresent: Boolean(audit.userId),
+      selectedPlan: audit.requestedPlan,
+      selectedPaymentMethod: 'paypal',
+      provider: 'paypal',
+      checkoutUrlCreated: audit.checkoutCreated,
+      isSubscription: true,
+      billingInterval: 'monthly',
+      paypalPlanId: audit.paypalPlanId,
+      cardProviderConfigured: false,
+      redirectsToPaypalLogin: true,
+      webhookExpected: true,
+      finalStatus,
+      failureReason,
+    })
+  }
+
   if (!limiter.check(getClientIp(request))) {
+    finalizeAudit('blocked', 'rate_limited')
     return NextResponse.json({ error: 'Too many requests.' }, { status: 429 })
   }
 
   const authHeader = request.headers.get('authorization')
   if (!authHeader?.toLowerCase().startsWith('bearer ')) {
     audit.failureReason = 'unauthenticated'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('blocked', 'unauthenticated')
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
   }
   const token = authHeader.slice(7).trim()
   const authSupabase = (deps.getAnonClient ?? createAnonSupabaseClient)()
   if (!token || !authSupabase) {
     audit.failureReason = 'unauthenticated'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('blocked', 'unauthenticated')
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
   }
   const { data: userData, error: authErr } = await authSupabase.auth.getUser(token)
   if (authErr || !userData.user) {
     audit.failureReason = 'unauthenticated'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('blocked', 'unauthenticated')
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 })
   }
   const userId = userData.user.id
@@ -89,7 +116,7 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
   if (requestedPlan !== 'pro' && requestedPlan !== 'elite') {
     audit.requestedPlan = null
     audit.failureReason = 'invalid_plan'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('failed', 'invalid_plan')
     return NextResponse.json({ error: 'Invalid plan requested. Must be "pro" or "elite".' }, { status: 400 })
   }
   const plan: 'pro' | 'elite' = requestedPlan
@@ -99,7 +126,7 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
   audit.paypalPlanId = planId ?? null
   if (!planId) {
     audit.failureReason = 'plan_not_configured'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('failed', 'plan_not_configured')
     return NextResponse.json({ error: `PayPal Billing Plan for "${plan}" is not configured (missing PAYPAL_${plan.toUpperCase()}_PLAN_ID).` }, { status: 503 })
   }
 
@@ -122,7 +149,7 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
   const serviceClient = (deps.getServiceClient ?? createServiceRoleClient)()
   if (!serviceClient) {
     audit.failureReason = 'service_client_unavailable'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('failed', 'service_client_unavailable')
     return NextResponse.json({ error: 'Service temporarily unavailable.' }, { status: 500 })
   }
   const { data: existingSubscription, error: existingError } = await serviceClient
@@ -134,7 +161,7 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
     .maybeSingle()
   if (existingError) {
     audit.failureReason = 'duplicate_check_failed'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('failed', 'duplicate_check_failed')
     // DIAGNOSTIC LOGGING FIX, DISCLOSED (PayPal "Could not verify existing subscription state"
     // investigation): the audit log above only ever recorded the generic tag
     // 'duplicate_check_failed', with no trace of *why* the query failed — undistinguishable from
@@ -158,7 +185,7 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
   }
   if (existingSubscription) {
     audit.failureReason = 'duplicate_subscription'
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('blocked', 'duplicate_subscription')
     return NextResponse.json(
       { error: `You already have a ${existingSubscription.status} PayPal subscription. Cancel it in your PayPal account before starting a new one.` },
       { status: 409 },
@@ -179,13 +206,13 @@ async function handleCreateSubscription(request: NextRequest, deps: CreateSubscr
 
   if (!result.ok) {
     audit.failureReason = `checkout_${result.reason}`
-    logPaypalPaymentAudit(audit)
+    finalizeAudit('failed', `checkout_${result.reason}`)
     const status = result.reason === 'not_configured' ? 503 : result.reason === 'auth_failed' ? 502 : 502
     return NextResponse.json({ error: `PayPal subscription creation failed (${result.reason}).` }, { status })
   }
 
   audit.checkoutCreated = true
   audit.subscriptionId = result.subscriptionId
-  logPaypalPaymentAudit(audit)
+  finalizeAudit('created', null)
   return NextResponse.json({ approvalUrl: result.approvalUrl, subscriptionId: result.subscriptionId }, { status: 200 })
 }

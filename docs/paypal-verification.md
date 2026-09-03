@@ -1,8 +1,21 @@
 # PayPal payments — recurring Subscriptions
 
-ChainLens offers PayPal as a second payment option next to crypto (NowPayments), as a real
+ChainLens offers PayPal as a payment option next to crypto (NowPayments) and Card, as a real
 recurring **PayPal Subscriptions** integration — full Subscriptions API + signature-verified
 webhook. This is the only PayPal payment flow in the app.
+
+**CARD/PAYPAL FIX, DISCLOSED (checkout audit):** `lib/pricingPlans.ts`'s `cardCheckoutUrl` used to
+be set to this exact same endpoint (`/api/paypal/create-subscription`) — there was no distinct card
+checkout, "Card" on `/pricing` silently ran this PayPal Subscriptions flow underneath. That's why
+clicking "Card" redirected to PayPal's own hosted approval page, which — since no distinct card
+checkout has ever existed and no guest/card option is enabled on the PayPal business account — falls
+back to "log in to your PayPal account" (the "Use Face ID or Touch ID" prompt). Fixed:
+`paypalCheckoutUrl` and `cardCheckoutUrl` are now genuinely different fields/endpoints. PayPal keeps
+this exact flow, unchanged. Card now points at `app/api/checkout/card/route.ts`, which requires a
+signed-in user like every other checkout route but always responds `503` until a real card
+processor (Stripe or similar) is actually wired in — `CARD_CHECKOUT_AVAILABLE` in
+`lib/pricingPlans.ts` is the single source of truth both the route and the `/pricing` UI read, so
+Card is shown visibly disabled ("Card checkout coming soon") rather than pretending to work.
 
 **REMOVED, DISCLOSED:** an earlier one-time-payment flow (a static PayPal checkout link + manual
 "paste your transaction ID" entry, verified via the Transaction Search/Reporting API) has been
@@ -14,7 +27,7 @@ don't need the historical rows.
 
 ## Flow
 
-1. User clicks "PayPal" on `/pricing` (`handlePayPalPay` in `app/pricing/page.tsx`). If they're not
+1. User clicks "PayPal" on `/pricing` (`startCheckout(planId, 'paypal')` in `app/pricing/page.tsx`). If they're not
    signed in, they're redirected to auth first.
 2. The frontend calls `POST /api/paypal/create-subscription` with the user's Supabase session
    Bearer token and `{ plan: 'pro' | 'elite' }`.

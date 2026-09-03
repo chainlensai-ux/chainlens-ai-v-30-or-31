@@ -6,6 +6,13 @@
 
 export type UserPlan = 'free' | 'pro' | 'elite'
 
+// CARD CHECKOUT AVAILABILITY, DISCLOSED (checkout audit): single source of truth for whether a real
+// card payment provider is wired up — read by both the client (to disable the Card option and show
+// "Card checkout coming soon" instead of pretending it works) and app/api/checkout/card/route.ts
+// (which always 503s while this is false, as defense-in-depth against a bypassed/direct request).
+// Flip this to true only once a real card provider is actually called from that route.
+export const CARD_CHECKOUT_AVAILABLE = false
+
 export const PLAN_RANK: Record<UserPlan, number> = { free: 0, pro: 1, elite: 2 }
 
 export const PLAN_LABEL: Record<UserPlan, string> = {
@@ -203,6 +210,15 @@ export type PricingPlan = {
   price: string
   priceMonthly: number
   cryptoCheckoutUrl: string | null
+  // CARD/PAYPAL FIX, DISCLOSED (checkout audit): these used to be the same endpoint
+  // ('/api/paypal/create-subscription' under both fields) — clicking "Card" silently ran the real
+  // PayPal Subscriptions flow and redirected to PayPal's hosted approval page, which forces a
+  // PayPal login (no distinct card checkout ever existed). Now genuinely separate: paypalCheckoutUrl
+  // is the real, working PayPal Subscriptions endpoint; cardCheckoutUrl points at a real route
+  // (/api/checkout/card) that honestly 503s until an actual card provider is wired in — see
+  // app/api/checkout/card/route.ts's CARD_CHECKOUT_PROVIDER_CONFIGURED. The UI never claims Card
+  // works while that flag is false.
+  paypalCheckoutUrl: string | null
   cardCheckoutUrl: string | null
   limits: {
     clarkPromptsPerDay: number
@@ -225,6 +241,7 @@ export const pricingPlans: PricingPlan[] = [
     price: '$0',
     priceMonthly: 0,
     cryptoCheckoutUrl: null,
+    paypalCheckoutUrl: null,
     cardCheckoutUrl: null,
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.free,
@@ -254,7 +271,8 @@ export const pricingPlans: PricingPlan[] = [
     price: '$30',
     priceMonthly: 30,
     cryptoCheckoutUrl: '/api/checkout/crypto',
-    cardCheckoutUrl: '/api/paypal/create-subscription',
+    paypalCheckoutUrl: '/api/paypal/create-subscription',
+    cardCheckoutUrl: '/api/checkout/card',
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.pro,
       scansPerDay: SCAN_DAILY_LIMITS.pro,
@@ -284,7 +302,8 @@ export const pricingPlans: PricingPlan[] = [
     price: '$60',
     priceMonthly: 60,
     cryptoCheckoutUrl: '/api/checkout/crypto',
-    cardCheckoutUrl: '/api/paypal/create-subscription',
+    paypalCheckoutUrl: '/api/paypal/create-subscription',
+    cardCheckoutUrl: '/api/checkout/card',
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.elite,
       scansPerDay: SCAN_DAILY_LIMITS.elite,

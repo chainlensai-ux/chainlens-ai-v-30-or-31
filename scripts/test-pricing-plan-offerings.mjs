@@ -116,7 +116,14 @@ assert.doesNotMatch(pricing, /Upgrade to continue/)
 assert.doesNotMatch(pricing, /Loading plan/)
 assert.match(pricing, /overflowX: 'hidden'/)
 assert.match(pricing, /auto-fit,minmax\(280px,1fr\)/)
-assert.doesNotMatch(pricing, /repeat\(3,minmax\(0,1fr\)\)/)
+// SCOPED, DISCLOSED (card/PayPal checkout fix task): this used to be a bare file-wide check that
+// the string 'repeat(3,minmax(0,1fr))' never appeared anywhere, guarding .plan-grid against a fixed
+// 3-column layout. The checkout fix intentionally adds a third payment option (Card, shown disabled
+// — see scripts/test-card-paypal-checkout-fix.mjs) whose OWN .payment-options grid legitimately
+// needs repeat(3,minmax(0,1fr)) — a different CSS rule for a different element. Scoped to
+// .plan-grid{...} specifically so the original intent (pricing cards stay auto-fit) still holds.
+const planGridRule = pricing.match(/\.plan-grid\{[^}]*\}/)?.[0] ?? ''
+assert.doesNotMatch(planGridRule, /repeat\(3,minmax\(0,1fr\)\)/, '.plan-grid must stay auto-fit, not a fixed 3-column layout')
 assert.match(pricing, /useState<UserPlan \| null>\(\(\) => peekCachedPlan\(\)\)/)
 assert.match(pricing, /useState\(\(\) => peekCachedPlan\(\) != null\)/)
 assert.doesNotMatch(pricing, /!planReady \? \(/)

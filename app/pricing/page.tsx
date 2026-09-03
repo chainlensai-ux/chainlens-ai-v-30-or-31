@@ -7,10 +7,16 @@ import { supabase } from '@/lib/supabaseClient'
 import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
-import { pricingPlans, PRICING_PROOF } from '@/lib/pricingPlans'
+import { pricingPlans, PRICING_PROOF, CARD_CHECKOUT_AVAILABLE } from '@/lib/pricingPlans'
 
 type PaidPlanId = Exclude<UserPlan, 'free'>
-type PaymentMethod = 'crypto' | 'card'
+// CARD/PAYPAL FIX, DISCLOSED (checkout audit): PayPal and Card are now genuinely distinct options
+// — previously 'card' was the only non-crypto choice and silently ran the PayPal Subscriptions flow
+// (cardCheckoutUrl === paypalCheckoutUrl), which is why clicking "Card" redirected to PayPal's
+// hosted login page. 'card' stays a selectable method so its disabled/"coming soon" state can be
+// shown honestly, but startCheckout never fires a real request for it while CARD_CHECKOUT_AVAILABLE
+// is false.
+type PaymentMethod = 'paypal' | 'crypto' | 'card'
 
 const NAV_LINKS = [
   { label: 'Terminal', href: '/terminal' },
@@ -190,10 +196,18 @@ export default function PricingPage() {
     }
   }
 
-  // Both options create checkout server-side. Plan activation remains exclusively webhook-driven.
+  // Every option creates checkout server-side. Plan activation remains exclusively webhook-driven —
+  // this function only ever navigates the browser to a provider's real checkout/approval URL, it
+  // never sets userPlan itself.
   async function startCheckout(planId: PaidPlanId, paymentMethod: PaymentMethod) {
+    // CARD/PAYPAL FIX, DISCLOSED: card has no real checkout provider configured yet — the option is
+    // rendered disabled in the modal below, but this guard is defense-in-depth against it firing
+    // (e.g. a stale click) regardless. Never sends a request, never redirects anywhere for Card.
+    if (paymentMethod === 'card' && !CARD_CHECKOUT_AVAILABLE) return
     const plan = pricingPlans.find((candidate) => candidate.id === planId)
-    const checkoutEndpoint = paymentMethod === 'crypto' ? plan?.cryptoCheckoutUrl : plan?.cardCheckoutUrl
+    const checkoutEndpoint = paymentMethod === 'crypto' ? plan?.cryptoCheckoutUrl
+      : paymentMethod === 'paypal' ? plan?.paypalCheckoutUrl
+      : plan?.cardCheckoutUrl
     if (!plan || !checkoutEndpoint || userPlan === planId) return
     setCheckoutError(null)
     setSelectedPaymentMethod(paymentMethod)
@@ -288,15 +302,17 @@ export default function PricingPage() {
         .payment-modal{width:min(620px,100%);max-height:calc(100dvh - 48px);overflow:auto;border-radius:18px;border:1px solid rgba(148,163,184,.18);background:#080d17;box-shadow:0 24px 80px rgba(0,0,0,.52);padding:26px}
         .payment-close{position:absolute;top:18px;right:18px;width:44px;height:44px;border-radius:9px;border:1px solid rgba(148,163,184,.16);background:rgba(255,255,255,.025);color:#94a3b8;font-size:21px;line-height:1;cursor:pointer;transition:.16s border-color,.16s color,.16s background}
         .payment-close:hover:not(:disabled){color:#f8fafc;border-color:rgba(148,163,184,.34);background:rgba(255,255,255,.05)}
-        .payment-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:22px}
+        .payment-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:22px}
         .payment-option{min-width:0;min-height:172px;display:flex;flex-direction:column;align-items:flex-start;text-align:left;border-radius:14px;padding:18px;border:1px solid rgba(148,163,184,.15);background:rgba(255,255,255,.022);color:#e2e8f0;cursor:pointer;transition:.16s transform,.16s border-color,.16s background,.16s opacity}
         .payment-option:hover:not(:disabled){transform:translateY(-1px);border-color:rgba(83,243,195,.38);background:rgba(83,243,195,.045)}
+        .payment-option:disabled{cursor:not-allowed;opacity:.5}
         .payment-option:focus-visible,.payment-close:focus-visible,.cta:focus-visible{outline:2px solid #53f3c3;outline-offset:2px}
         .payment-option-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:11px;color:#53f3c3;background:rgba(83,243,195,.07);border:1px solid rgba(83,243,195,.18)}
         .payment-option-title{font-size:15px;font-weight:800;margin-top:14px;color:#f8fafc}
         .payment-option-copy{font-size:12px;color:#7a8a9e;margin-top:5px;line-height:1.5}
         .payment-option-price{margin-top:auto;padding-top:16px;font-size:13px;font-weight:750;color:#cbd5e1}
         .payment-error{margin-top:14px;border-radius:10px;padding:10px 12px;border:1px solid rgba(248,113,113,.28);background:rgba(248,113,113,.08);color:#fca5a5;font-size:12px;line-height:1.45}
+        @media(max-width:900px){.payment-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
         @media(max-width:640px){.payment-overlay{padding:16px;align-items:flex-end}.payment-modal{padding:22px 18px;max-height:calc(100dvh - 24px);width:100%}.payment-options{grid-template-columns:1fr}.payment-option{min-height:142px}.payment-close{top:14px;right:14px}}
 
         @media (prefers-reduced-motion: reduce) {
@@ -588,6 +604,30 @@ export default function PricingPage() {
             </p>
 
             <div className='payment-options'>
+              {/* CARD/PAYPAL FIX, DISCLOSED (checkout audit): PayPal is now its own real option —
+                  previously the only non-crypto choice was mislabeled "Card" while silently running
+                  the PayPal Subscriptions flow underneath, which is why clicking it redirected to
+                  PayPal's hosted login page instead of a card form. */}
+              <button
+                type='button'
+                className='payment-option'
+                disabled={checkoutLoading !== null}
+                aria-pressed={selectedPaymentMethod === 'paypal'}
+                onClick={() => startCheckout(selectedPlanId, 'paypal')}
+              >
+                <span className='payment-option-icon' aria-hidden='true'>
+                  <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
+                    <path d='M7 16.5 8.6 5.8c.1-.7.7-1.3 1.5-1.3h3.9c2.4 0 4 1.5 3.7 3.8-.4 2.7-2.4 4.3-5 4.3H10l-.9 6.4H6.5z' />
+                    <path d='M9.6 10.6h3.5c2.4 0 4 1.5 3.7 3.8-.4 2.7-2.4 4.3-5 4.3H9.4' />
+                  </svg>
+                </span>
+                <span className='payment-option-title'>
+                  {checkoutLoading && selectedPaymentMethod === 'paypal' ? 'Opening checkout…' : 'PayPal'}
+                </span>
+                <span className='payment-option-copy'>Pay monthly with PayPal</span>
+                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
+              </button>
+
               <button
                 type='button'
                 className='payment-option'
@@ -604,16 +644,20 @@ export default function PricingPage() {
                 <span className='payment-option-title'>
                   {checkoutLoading && selectedPaymentMethod === 'crypto' ? 'Opening checkout…' : 'Crypto'}
                 </span>
-                <span className='payment-option-copy'>USDC / ETH on Base</span>
+                <span className='payment-option-copy'>Pay with USDC/ETH on Base</span>
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
               </button>
 
+              {/* CARD UNAVAILABLE, DISCLOSED (checkout audit): no real card payment provider is
+                  wired into this codebase yet (see app/api/checkout/card/route.ts). This option is
+                  shown — not hidden — but genuinely disabled with a clear reason, per explicit
+                  instruction to never pretend Card works when it only opens PayPal login. */}
               <button
                 type='button'
                 className='payment-option'
-                disabled={checkoutLoading !== null}
-                aria-pressed={selectedPaymentMethod === 'card'}
-                onClick={() => startCheckout(selectedPlanId, 'card')}
+                disabled
+                aria-disabled='true'
+                title='Card checkout coming soon'
               >
                 <span className='payment-option-icon' aria-hidden='true'>
                   <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
@@ -621,11 +665,9 @@ export default function PricingPage() {
                     <path d='M3 10h18M7 15h3' />
                   </svg>
                 </span>
-                <span className='payment-option-title'>
-                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Card'}
-                </span>
-                <span className='payment-option-copy'>Secure card checkout</span>
-                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
+                <span className='payment-option-title'>Card</span>
+                <span className='payment-option-copy'>Card checkout coming soon</span>
+                <span className='payment-option-price' style={{ color:'#526073' }}>Not available yet</span>
               </button>
             </div>
 
