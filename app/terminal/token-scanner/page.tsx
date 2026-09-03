@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
+import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -4900,12 +4900,35 @@ export default function TerminalTokenScanner() {
     setSolanaClusterError(null)
     // ────────────────────────────────────────────────────────────────────────
 
+    // Resolve a symbol before choosing the chain-specific scan path. The resolved chain/address
+    // pair is kept together for the whole request so stale UI state cannot switch token identity.
+    let scanContract = q
+    let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' | 'solana' = effectiveChain
+    if (!override && !isContractAddress(q)) {
+      setResolving(true)
+      try {
+        const resolved = await resolveTokenQuery(q, effectiveChain)
+        setResolverResult(resolved)
+        if (resolved.needsUserChoice || !resolved.selectedMatch) {
+          if (!resolved.matches.length) setError(resolved.failureReason ?? 'No matching token found. Try pasting the contract address.')
+          return
+        }
+        scanContract = resolved.selectedMatch.tokenAddress
+        scanChain = resolved.selectedMatch.chainSlug
+      } catch {
+        setError("Couldn't resolve that ticker. Try pasting the contract address.")
+        return
+      } finally {
+        setResolving(false)
+      }
+    }
+
     // ── SOLANA BETA PATH, DISCLOSED (Token Scanner Solana Beta task) ─────────
     // Returns before the ticker resolver and before any EVM scan wiring below. Validation is the
     // same shared implementation the API enforces (lib/solanaAddress.ts), so an EVM 0x address is
     // rejected here with a specific message rather than being sent to a Solana RPC.
-    if (effectiveChain === 'solana') {
-      const rejection = classifySolanaMintInput(q)
+    if (scanChain === 'solana') {
+      const rejection = classifySolanaMintInput(scanContract)
       if (rejection) { setError(SOLANA_MINT_REJECTION_MESSAGE[rejection]); return }
       setLoading(true)
       try {
@@ -4918,7 +4941,7 @@ export default function TerminalTokenScanner() {
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-          body: JSON.stringify({ contract: q, chain: 'solana' }),
+          body: JSON.stringify({ contract: scanContract, chain: 'solana' }),
         })
         const json = await res.json().catch(() => null)
         if (!res.ok || !json || 'status' in (json ?? {})) {
@@ -4937,40 +4960,14 @@ export default function TerminalTokenScanner() {
 
     // ── Ticker resolver ─────────────────────────────────────────────────────
     // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
-    let scanContract = q
-    let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = effectiveChain
+    const evmScanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = scanChain
     // CHAIN-STRICT INPUT GUARD (chain-correctness audit): a well-formed Solana mint pasted while
     // an EVM chain is selected is rejected client-side with the switch-chain message — it must
     // never silently resolve-fail or reach the EVM scanner.
     {
       const looksSolanaMint = q.trim().length >= 32 && q.trim().length <= 44 && !isContractAddress(q) && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q.trim())
       if (looksSolanaMint && isValidSolanaMintAddress(q)) {
-        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
-        return
-      }
-    }
-    if (!override && !isContractAddress(q)) {
-      // Ticker/name search (resolveTokenQuery) only covers base/eth today — BNB and Robinhood
-      // Chain scans require a pasted contract address for now rather than silently searching the
-      // wrong chain for a matching symbol.
-      if (effectiveChain === 'bnb' || effectiveChain === 'robinhood') {
-        setError(`Ticker search isn't available for ${effectiveChain === 'bnb' ? 'BNB Chain' : 'Robinhood Chain'} yet — paste the contract address instead.`)
-        return
-      }
-      setResolving(true)
-      try {
-        const resolved = await resolveTokenQuery(q, effectiveChain)
-        setResolverResult(resolved)
-        setResolving(false)
-        if (resolved.status === 'not_found' || !resolved.contractAddress) {
-          setError(resolved.reason || 'No matching token found. Try pasting the contract address.')
-          return
-        }
-        scanContract = resolved.contractAddress
-        scanChain    = resolved.chain === 'eth' ? 'eth' : 'base'
-      } catch {
-        setResolving(false)
-        setError("Couldn't resolve that ticker. Try pasting the contract address.")
+        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(evmScanChain)}. Switch chain or scan with Auto Detect.`)
         return
       }
     }
@@ -4980,7 +4977,7 @@ export default function TerminalTokenScanner() {
       console.log('[scanner] scan start', {
         originalInput: q,
         resolvedAddress: scanContract,
-        resolvedChain: scanChain,
+        resolvedChain: evmScanChain,
         isCA: isContractAddress(q),
         hasOverride: !!override,
       })
@@ -5001,7 +4998,7 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: scanContract, chain: scanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       // NON-JSON-RESPONSE FIX, DISCLOSED (audit: a gateway/proxy error page for a server-side
       // failure produced the misleading generic "Network error — check your connection" message,
@@ -5013,10 +5010,15 @@ export default function TerminalTokenScanner() {
         setClarkLoading(false)
         return
       }
+      if (res.ok && !json.error && (typeof json.contract !== 'string' || json.contract.toLowerCase() !== scanContract.toLowerCase())) {
+        setError('The scanner returned a different token identity. Nothing was displayed; choose the token again.')
+        setClarkLoading(false)
+        return
+      }
       if (process.env.NODE_ENV !== 'production') {
         console.log('[scanner] /api/token response', {
           scanRequestAddress: scanContract,
-          scanRequestChain: scanChain,
+          scanRequestChain: evmScanChain,
           returnedContract: json.contract,
           hasDevIntel: !!json.devIntel,
           deployerAddress: (json.devIntel as Record<string, unknown> | undefined)?.deployerAddress ?? null,
@@ -5033,7 +5035,7 @@ export default function TerminalTokenScanner() {
           // verbatim instead of the old generic "switch chain or Auto Detect" message. The optional
           // "Switch to X and scan" CTA below only ever appears from this candidate; it is never
           // auto-applied.
-          setError(json.error ?? `This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+          setError(json.error ?? `This token was not found on ${chainDisplayName(evmScanChain)}. Switch chain or scan with Auto Detect.`)
           setCrossChainSwitchCandidate(
             json?.crossChainCandidateFound && json?.crossChainCandidateChain
               ? { chain: json.crossChainCandidateChain as 'base' | 'eth' | 'bnb' | 'robinhood', address: scanContract }
@@ -5041,7 +5043,7 @@ export default function TerminalTokenScanner() {
           )
         }
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(evmScanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         if (process.env.NODE_ENV !== 'production') {
@@ -5617,32 +5619,36 @@ export default function TerminalTokenScanner() {
                   {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
                     <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
                   )}
-                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainLabel}</span>
+                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainSlug.toUpperCase()}</span>
                   {resolverResult.bestCandidate.liquidityUsd != null && (
                     <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
                   )}
-                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.contractAddress?.slice(0,8)}…{resolverResult.contractAddress?.slice(-4)}</span>
+                  <span style={{ color:'#64748b', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.bestCandidate.tokenAddress.slice(0,8)}…{resolverResult.bestCandidate.tokenAddress.slice(-4)}</span>
                 </div>
               </div>
 
               {/* Alternates picker */}
-              {resolverResult.alternates.length > 0 && (
-                <div style={{ marginTop:'6px', display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'var(--font-plex-mono)', alignSelf:'center' }}>Other matches:</span>
-                  {resolverResult.alternates.slice(0, 4).map((alt: ResolverCandidate) => (
+              {resolverResult.needsUserChoice && resolverResult.matches.length > 0 && (
+                <div style={{ marginTop:'8px', display:'grid', gap:'7px' }}>
+                  <span style={{ color:'#94a3b8', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>Multiple tokens found for {resolverResult.normalizedQuery}. Choose one to scan.</span>
+                  {resolverResult.matches.slice(0, 6).map((alt: ResolverCandidate) => (
                     <button
-                      key={alt.contractAddress + alt.chainId}
+                      key={alt.tokenAddress + alt.chainSlug}
                       disabled={loading || resolving}
                       onClick={() => {
-                        const altChain: 'base' | 'eth' | 'bnb' | 'robinhood' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'bnb' ? 'bnb' : alt.chainId === 'robinhood' ? 'robinhood' : 'base'
+                        const altChain = alt.chainSlug
                         setChain(altChain)
-                        handleScan(alt.contractAddress, altChain)
+                        setInput(alt.tokenAddress)
+                        void handleScan(alt.tokenAddress, altChain)
                       }}
-                      style={{ padding:'4px 10px', borderRadius:'999px', background:'rgba(100,116,139,0.12)', border:'1px solid rgba(100,116,139,0.25)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'flex', alignItems:'center', gap:'5px' }}
+                      style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(100,116,139,0.10)', border:'1px solid rgba(100,116,139,0.28)', color:'#cbd5e1', fontSize:'10px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'grid', gridTemplateColumns:'minmax(120px,1fr) auto auto auto', alignItems:'center', gap:'10px', textAlign:'left', overflow:'hidden' }}
                     >
-                      <span style={{ fontWeight:700 }}>{alt.symbol ?? alt.name ?? alt.contractAddress.slice(0,6)}</span>
-                      <span style={{ opacity:0.6 }}>{alt.chainLabel}</span>
-                      {alt.liquidityUsd != null && <span style={{ opacity:0.5 }}>{fmtLiquidity(alt.liquidityUsd)}</span>}
+                      <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}><b>{alt.symbol ?? 'TOKEN'}</b> · {alt.name ?? alt.tokenAddress.slice(0,8)}</span>
+                      <span>{alt.chainSlug.toUpperCase()}</span>
+                      <span>Liq {fmtLiquidity(alt.liquidityUsd)}</span>
+                      <span>MC {fmtResolverUsd(alt.marketCapUsd ?? alt.fdvUsd)}</span>
+                      <span style={{ gridColumn:'1 / 4', color:'#64748b' }}>{alt.tokenAddress.slice(0,10)}…{alt.tokenAddress.slice(-6)} · Vol {fmtResolverUsd(alt.volume24hUsd)}</span>
+                      <span style={{ color:'#53f3c3', fontWeight:800 }}>SCAN →</span>
                     </button>
                   ))}
                 </div>
