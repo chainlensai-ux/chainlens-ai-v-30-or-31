@@ -52,7 +52,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { CLARK_DAILY_BY_PLAN, clarkPlanAllows } from '@/lib/pricingPlans'
-import { buildClarkWhaleIntelligenceUi, type ClarkWhaleFlowRow, type ClarkWhaleIntelligenceUi, type ClarkWhaleWalletRow } from '@/lib/clarkWhaleUi'
+import { buildClarkWhaleIntelligenceUi, rankClarkWhaleFlowRows, type ClarkWhaleFlowRow, type ClarkWhaleIntelligenceUi, type ClarkWhaleWalletRow } from '@/lib/clarkWhaleUi'
 import { whaleUsdUnavailableCopy, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 import {
   resolveClarkIntent,
@@ -7873,6 +7873,8 @@ type WhaleAlertRow = {
   token_address?: string | null
   whaleUsdPricingAudit?: WhaleUsdPricingAudit | null
   whaleUsdPricingAudits?: WhaleUsdPricingAudit[] | null
+  whaleAlertUsdAudit?: WhaleUsdPricingAudit | null
+  whaleAlertUsdAudits?: WhaleUsdPricingAudit[] | null
   walletContext?: {
     shortAddress: string; behaviorType: string; behaviorScore: number; confidence: string
     repeatedTokens: string[]; alertCount24h: number; alertCount7d: number
@@ -7997,9 +7999,9 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
         "Next watch:\n" +
         "No trade call.\n\n" +
         "WORDING RULES:\n" +
-        "- Prefer: activity, rotation, repeat movement, value unverified, direction unverified.\n" +
+        "- Prefer: activity, rotation, repeat movement, USD unavailable: price missing, direction unverified.\n" +
         "- If buy direction is not verified, say: 'Buy-side direction is not fully verified. Here is the strongest tracked activity instead.'\n" +
-        "- Replace 'ChainLens pricing rules' with 'current value filters' or 'unverified USD value'.\n" +
+        "- Replace 'ChainLens pricing rules' with 'current value filters' or 'USD unavailable: price missing'.\n" +
         "- Treat wallet labels as internal tracking only (tracked wallet / repeat activity wallet / large wallet).\n\n" +
         "LENGTH: keep concise and mobile-readable (5-6 short sections).",
       messages: [{ role: "user", content: userContent }],
@@ -8220,13 +8222,13 @@ async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody,
             const concentrationLine = agg.nonStableCount < 5
               ? "Flow is concentrated — not much variety in the latest stored alerts."
               : (agg.clustered ? "Flow is clustered around a few repeated names." : "Flow is broader across multiple non-stable names.")
-            const confidenceLine = agg.usdCoverage < 30 ? "value unverified on many rows." : "verified values are partial."
+            const confidenceLine = agg.usdCoverage < 30 ? "USD unavailable: price missing on many rows." : "verified values are partial."
             const title = pickWhaleTitle(prompt)
             if (title === "TOP WHALE ALERTS TO WATCH") {
               return { feature: "clark-ai", chain, mode: "analysis", intent: "whale_alert", toolsUsed: ["whale_feed_stored"], analysis: [
                 "TOP WHALE ALERTS TO WATCH",
                 `- strongest repeat: ${strongest.key} (${strongest.count} repeats).`,
-                `- highest confidence value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()} verified)` : "value unverified on most rows."}`,
+                `- highest confidence value: ${highestValue ? `${highestValue.key} (~$${Math.round(highestValue.totalUsd).toLocaleString()} verified)` : "USD unavailable: price missing on most rows."}`,
                 `- freshest unique activity: ${freshestAlt ? freshestAlt.key : "no clear secondary token yet."}`,
                 `- noisy / ignore: base or stable routing plus tiny one-off moves.`,
                 `- next watch: ${stale ? "latest stored flow is stale; run a refresh." : "check if the same repeat token still leads after refresh."}`,
@@ -8254,7 +8256,7 @@ async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody,
               `Market read: ${concentrationLine} ${confidenceLine} Direction unverified on some rows.`,
               ...(isBuyQuery ? ["Buy-side direction is not fully verified. Here is the strongest tracked activity instead."] : []),
               "Top movements:",
-              ...([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0, 3).map((g, i) => `${i + 1}. ${g.key} — repeat activity (${g.count}). ${g.totalUsd > 0 ? "partly verified value." : "value unverified."}`)),
+              ...([strongest, secondary, freshestAlt].filter((g): g is WhaleGroup => Boolean(g)).slice(0, 3).map((g, i) => `${i + 1}. ${g.key} — repeat activity (${g.count}). ${g.totalUsd > 0 ? "partly verified value." : "USD unavailable: price missing."}`)),
               `4. ${agg.repeatLeaders[3]?.key ?? "Secondary names"} — lower-confidence activity.`,
               `Repeating tokens: ${agg.repeatLeaders.slice(0, 6).map(g => g.key).join(', ')}.`,
               "Noise / caveats: stablecoin and routing flow can dominate sections of this feed, so treat this as activity flow, not confirmed buying.",
@@ -8815,6 +8817,8 @@ function formatClarkWhaleLastSync(value: string | null): string {
 }
 
 function whaleAuditsForRow(row: WhaleAlertRow): WhaleUsdPricingAudit[] {
+  if (Array.isArray(row.whaleAlertUsdAudits) && row.whaleAlertUsdAudits.length > 0) return row.whaleAlertUsdAudits
+  if (row.whaleAlertUsdAudit) return [row.whaleAlertUsdAudit]
   if (Array.isArray(row.whaleUsdPricingAudits) && row.whaleUsdPricingAudits.length > 0) return row.whaleUsdPricingAudits
   return row.whaleUsdPricingAudit ? [row.whaleUsdPricingAudit] : []
 }
@@ -8829,9 +8833,8 @@ function primaryWhaleAudit(row: WhaleAlertRow): WhaleUsdPricingAudit | null {
 }
 
 function buildClarkWhaleFlowRows(alerts: readonly WhaleAlertRow[], side?: 'buy' | 'sell'): ClarkWhaleFlowRow[] {
-  return alerts
+  const rows = alerts
     .filter(alert => !side || normalizeClarkWhaleSide(alert.side) === side)
-    .slice(0, 8)
     .map((alert, index) => {
       const audit = primaryWhaleAudit(alert)
       const priced = audit?.finalUsdStatus === 'verified' || audit?.finalUsdStatus === 'estimated' || audit?.finalUsdStatus === 'zero'
@@ -8847,11 +8850,12 @@ function buildClarkWhaleFlowRows(alerts: readonly WhaleAlertRow[], side?: 'buy' 
         txCount: Math.max(1, alert.repeats ?? 1),
         usdValue: alert.amount_usd ?? audit?.estimatedUsdValue ?? null,
         usdStatus: audit?.finalUsdStatus ?? (alert.amount_usd != null ? 'verified' : 'unavailable'),
-        usdReason: priced ? null : (audit?.failureReason ?? 'price unavailable'),
+        usdReason: priced ? null : (audit?.failureReason ?? 'price missing'),
         confidence,
         lastSeen: alert.occurred_at ?? null,
       }
     })
+  return rankClarkWhaleFlowRows(rows).slice(0, 8)
 }
 
 function buildClarkWhaleUi(params: {

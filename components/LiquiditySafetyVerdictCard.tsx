@@ -561,7 +561,8 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
         {result.pool_breakdown.length > 0 && (
           <div>
             <SectionLabel>Pool Breakdown · {result.pool_breakdown.length}</SectionLabel>
-
+            <div className="cl-table-scroll">
+            <div style={{ minWidth: 480 }}>
             {/* Table header */}
             <div style={{
               display: "grid",
@@ -620,6 +621,8 @@ export default function LiquiditySafetyVerdictCard({ result, loading, error }: P
                   </span>
                 </div>
               ))}
+            </div>
+            </div>
             </div>
           </div>
         )}

@@ -40,7 +40,7 @@ export default function FAQAccordion() {
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 440px), 1fr))',
       gap: '10px',
     }}>
       {FAQS.map((faq, i) => (

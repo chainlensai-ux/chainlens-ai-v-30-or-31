@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { isSafeInternalPath } from '@/lib/safeNextPath';
-import { resolveSupabaseAuthCallback } from '@/lib/authFlow';
+import { resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -60,6 +60,8 @@ export default function AuthCallbackPage() {
         router.replace('/reset-password');
         return;
       }
+      // Set presence cookie BEFORE /terminal navigation — proxy.ts bounces without it.
+      setSignedInPresenceCookie(true);
       router.replace(isSafeInternalPath(nextPath) ? nextPath : '/terminal');
     }
 

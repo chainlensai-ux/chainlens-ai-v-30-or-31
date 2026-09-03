@@ -160,11 +160,11 @@ function AxisRow({ label, axis, accent }: { label: string; axis: AxisScore; acce
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <div style={{ width: '86px', fontSize: '10px', fontWeight: 700, color: SLATE, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
           {label}
         </div>
-        <div style={{ flex: 1, height: '7px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
+        <div style={{ flex: '1 1 120px', minWidth: '80px', height: '7px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
           {hasEvidence && (
             <div
               style={{
@@ -192,7 +192,7 @@ function AxisRow({ label, axis, accent }: { label: string; axis: AxisScore; acce
         </button>
       </div>
       {expanded && (
-        <div style={{ marginTop: '8px', marginLeft: '96px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div style={{ marginTop: '8px', marginLeft: 0, padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
           <div style={{ fontSize: '10px', color: SLATE, marginBottom: '7px' }}>
             Evidence confidence: <strong style={{ color: WHITE }}>{Math.round(axis.evidenceConfidence * 100)}%</strong> ({confidenceWord(axis.evidenceConfidence)})
           </div>

@@ -773,7 +773,7 @@ function ActionButton({
       title={hint}
       disabled={disabled}
       style={{
-        minHeight: '27px',
+        minHeight: '44px',
         padding: '5px 9px',
         borderRadius: '8px',
         fontSize: '9px',

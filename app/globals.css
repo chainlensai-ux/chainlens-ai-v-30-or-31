@@ -217,8 +217,8 @@ html, body {
     position: absolute;
     top: 14px;
     right: 14px;
-    width: 30px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
     border-radius: 6px;
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.12);
@@ -231,16 +231,21 @@ html, body {
   .mob-sidebar-close-btn { touch-action: manipulation; }
 
   /* Terminal content wrapper — enables full-page scroll on mobile */
-  .mob-content-wrap { overflow-x: hidden !important; overflow-y: auto !important; height: 100% !important; -webkit-overflow-scrolling: touch; }
+  .mob-content-wrap { overflow-x: hidden !important; overflow-y: hidden !important; height: 100% !important; }
+  .term-page-scroll { -webkit-overflow-scrolling: touch; }
 
-  /* Terminal: hide ClarkRadar right panel */
+  /* Token scanner: top padding no longer has to clear the hamburger — layout spacer does that */
+  .mob-scan-main { padding: 16px 16px 96px !important; }
+
+  /* Terminal: hide ClarkRadar right panel — phone uses MobileClarkDrawer instead */
   .mob-radar { display: none !important; }
 
-  /* Terminal: hide right verdict panels on feature pages */
-  .mob-verdict-panel { display: none !important; }
+  /* CORTEX / verdict side panels stack below on phones (see 1023px + page CSS). Do NOT hide them —
+     Token Scanner and Wallet Scanner were dropping the entire read on mobile. */
+  .mob-verdict-panel { display: flex !important; }
 
-  /* Ensure terminal main fills viewport when sidebar is hidden */
-  .mob-terminal-main { min-height: 100dvh !important; overflow-y: auto !important; }
+  /* Ensure terminal main fills remaining viewport when sidebar is hidden */
+  .mob-terminal-main { min-height: 0 !important; height: 100% !important; overflow-y: auto !important; }
 
   /* Homepage: single-column grids */
   .mob-grid-1         { grid-template-columns: 1fr !important; }
@@ -276,7 +281,7 @@ html, body {
 
   /* General: prevent horizontal overflow on all pages */
   body { overflow-x: hidden !important; }
-  main, section, footer, header { max-width: 100vw !important; overflow-x: hidden !important; }
+  main, section, footer, header { max-width: 100% !important; overflow-x: hidden !important; }
 }
 
 @media (max-width: 1023px) {
@@ -286,6 +291,63 @@ html, body {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
   }
+
+  /* MOBILE AUDIT: collapse the 240px FeatureBar on tablet as well as phone so Token/Wallet
+     Scanner keep a usable main column. Overlay drawer when .mob-sidebar-open. */
+  .mob-featurebar { display: none !important; }
+  .mob-sidebar-open .mob-featurebar {
+    display: flex !important;
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    z-index: 300 !important;
+    overflow-y: auto !important;
+    width: min(280px, 86vw) !important;
+  }
+  .mob-sidebar-overlay {
+    display: block !important;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.65);
+    z-index: 299;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .mob-sidebar-btn {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: max(8px, env(safe-area-inset-top, 8px));
+    left: max(12px, env(safe-area-inset-left, 12px));
+    z-index: 200;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: rgba(6,6,10,0.92);
+    border: 1px solid rgba(255,255,255,0.12);
+    cursor: pointer;
+    color: #2DD4BF;
+    padding: 0;
+    touch-action: manipulation;
+  }
+  .mob-sidebar-close-btn { display: flex !important; }
+  .mob-top-spacer {
+    display: block;
+    height: 52px;
+    flex-shrink: 0;
+    pointer-events: none;
+  }
+  .term-page-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Dashboard Clark panel becomes the floating drawer on tablet/phone */
+  .mob-radar { display: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce), (max-width: 767px) {
@@ -604,7 +666,7 @@ button, [role="button"], a {
 
 /* ── iPhone SE (375px) and narrow phones ──────────────────────────────────── */
 @media (max-width: 390px) {
-  .mob-scan-main { padding: 62px 12px 80px !important; }
+  .mob-scan-main { padding: 12px 12px 96px !important; }
   .nav-outer { padding: 8px 10px !important; }
 }
 
@@ -694,4 +756,133 @@ button, [role="button"], a {
     min-height: 44px !important;
     height: auto !important;
   }
+}
+
+/* ── Mobile audit 2026 ─────────────────────────────────────────────────────
+   Layout-only pass. Scanner math / Clark intelligence / pricing / auth rules
+   are untouched. These rules stack side panels, kill page-level overflow, and
+   make tap targets usable on 360–430 phones and 768 tablets. */
+
+.term-page-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+.mob-top-spacer { display: none; }
+
+html, body, #__next, [data-nextjs-scroll-focus-boundary] {
+  max-width: 100%;
+}
+img, svg, video, canvas { max-width: 100%; }
+
+.cl-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+
+@media (max-width: 1279px) {
+  .wallet-shell {
+    flex-direction: column !important;
+    overflow: auto !important;
+    height: auto !important;
+    min-height: 100%;
+  }
+  .wallet-shell .mob-verdict-panel {
+    display: flex !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    flex-shrink: 0 !important;
+    border-left: none !important;
+    border-top: 1px solid rgba(255,255,255,0.08) !important;
+  }
+  .token-shell .mob-verdict-panel {
+    display: flex !important;
+  }
+}
+
+@media (max-width: 1023px) {
+  .clk-shell { grid-template-columns: 1fr !important; padding: 12px 14px 96px !important; }
+  .clk-send-btn, .clk-send-btn svg { min-width: 44px; min-height: 44px; }
+  .clk-thinking { min-width: 0 !important; flex-wrap: wrap; }
+  .clk-msg { max-width: 100% !important; }
+  .clk-upgrade-note { flex-wrap: wrap !important; }
+  .clk-side { display: flex !important; flex-direction: column !important; grid-template-columns: none !important; }
+  .clk-histpanel-item-actions { opacity: 1 !important; }
+  .clk-histpanel-item-btn { min-height: 44px; padding: 8px 10px !important; }
+  .clk-input-row { grid-template-columns: 40px minmax(0,1fr) 48px !important; }
+  .clk-helper { display: none !important; }
+  .clk-thread { max-height: min(560px, calc(100dvh - 280px)) !important; }
+
+  .wa-row-main { flex-wrap: wrap !important; }
+  .wa-row-actions {
+    width: 100%;
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    margin-top: 8px;
+  }
+  .wa-ask-clark { min-height: 44px !important; padding: 10px 14px !important; }
+  .wa-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+
+  .chain-seg {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chain-seg-btn { min-height: 36px; }
+
+  .preview-module-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+
+  .watchlist-page { padding: 12px 14px 120px !important; }
+  .watchlist-metrics { grid-template-columns: 1fr 1fr !important; }
+  .settings-container { padding: 16px 14px 96px !important; }
+  .settings-row { flex-wrap: wrap !important; }
+  .settings-row > :last-child { margin-left: auto; }
+
+  .radar-main { padding: 12px 12px 120px !important; }
+  .radar-grid { grid-template-columns: 1fr !important; }
+  .token-card-actions { flex-wrap: wrap !important; width: 100%; }
+  .token-card-actions button, .token-card-actions a { min-height: 44px !important; }
+
+  .lp-shell { flex-direction: column !important; height: auto !important; }
+  .lp-main { padding: 16px 14px 120px !important; }
+
+  .pf-main-grid { grid-template-columns: 1fr !important; }
+  .hts-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .hts-row { grid-template-columns: 2fr 1fr 1fr !important; }
+  .hts-col-chain, .hts-col-vol { display: none !important; }
+
+  button, [role="button"], a.wa-btn, .scan-btn-live, .scan-btn-off, .ws-scan-btn {
+    touch-action: manipulation;
+  }
+  button:not(:disabled):active, a:active, [role="button"]:active {
+    opacity: 0.88;
+  }
+}
+
+@media (max-width: 480px) {
+  .preview-module-grid,
+  .stat-grid,
+  .clk-actions-row,
+  .clk-intel-grid,
+  .watchlist-metrics,
+  .wa-metrics {
+    grid-template-columns: 1fr !important;
+  }
+  .clk-title { font-size: 28px !important; }
+  .auth-card { padding: 28px 18px 24px !important; }
+  .payment-close { width: 44px !important; height: 44px !important; }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .clk-histpanel-item-actions { opacity: 1 !important; }
 }

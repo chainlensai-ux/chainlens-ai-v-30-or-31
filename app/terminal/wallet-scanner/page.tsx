@@ -842,20 +842,21 @@ export default function WalletScannerPage() {
         }
         .ws-content-col { max-width: 1180px; margin: 0 auto; }
         @media (max-width: 768px) {
-          .wallet-main { padding: 52px 16px 100px !important; }
+          .wallet-main { padding: 16px 16px 100px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
-          .wallet-input-row button { width: 100%; justify-content: center; }
+          .wallet-input-row button { width: 100%; justify-content: center; min-height: 44px; }
+          .wallet-title-row { flex-wrap: wrap; }
         }
       `}</style>
 
-      <div className="flex h-full overflow-hidden" style={{ color: '#e2e8f0' }}>
+      <div className="flex h-full overflow-hidden wallet-shell" style={{ color: '#e2e8f0' }}>
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
         <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '36px 40px 120px', background: 'radial-gradient(ellipse 80% 35% at 50% 0%, rgba(45,212,191,0.035) 0%, transparent 65%)' }}>
           <div className="ws-content-col">
 
           {/* Header */}
           <div style={{ marginBottom: '36px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px' }}>
+            <div className="wallet-title-row" style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px', flexWrap: 'wrap' }}>
               <h1 style={{
                 fontSize: '32px', fontWeight: 900, lineHeight: 1.05,
                 margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)',
@@ -1224,7 +1225,7 @@ export default function WalletScannerPage() {
         </div>
 
         {/* ── Right: CORTEX Wallet Read + Watchlist ─────────────────────────── */}
-        <aside className="mob-verdict-panel hidden md:flex" style={{
+        <aside className="mob-verdict-panel" style={{
           width: '360px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.07)',
           background: 'linear-gradient(180deg, #070b14 0%, #060a12 100%)',

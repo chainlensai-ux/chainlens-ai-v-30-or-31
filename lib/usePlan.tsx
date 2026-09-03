@@ -36,6 +36,7 @@ import { useCallback, useSyncExternalStore } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, canAccessFomoBoard, type UserPlan } from '@/lib/planFeatures'
 import ClaimTrialButton from '@/components/ClaimTrialButton'
+import { setSignedInPresenceCookie } from '@/lib/authFlow'
 
 export { canAccessFeature, canAccessFomoBoard }
 export const PLAN_CACHE_KEY = 'chainlens_cached_plan'
@@ -224,13 +225,8 @@ export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CAC
 // value, so a forged/stale cookie can get a signed-out visitor PAST the redirect but can never get
 // them a real scan, wallet read, or Clark answer — those all 401 without a verified session.
 // SameSite=Lax (not Strict) so it still applies on a top-level OAuth-callback redirect.
-const SIGNED_IN_COOKIE = 'cl_signed_in'
-function setSignedInCookie(signedIn: boolean): void {
-  try {
-    if (signedIn) document.cookie = `${SIGNED_IN_COOKIE}=1; Max-Age=${60 * 60 * 24 * 30}; Path=/; SameSite=Lax`
-    else document.cookie = `${SIGNED_IN_COOKIE}=; Max-Age=0; Path=/; SameSite=Lax`
-  } catch {}
-}
+// Presence cookie lives in lib/authFlow (shared with /auth so proxy does not bounce post-login).
+
 
 function resolvePlan(json: Record<string, unknown>): UserPlan {
   const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
@@ -271,16 +267,16 @@ function refresh(session: SessionLike, opts: { force?: boolean } = {}): Promise<
 
       if (!token) {
         clearPlanCache()
-        setSignedInCookie(false)
+        setSignedInPresenceCookie(false)
         store.lastFetchedAt = Date.now()
         setSnapshot({ plan: 'free', email: null, betaEliteActive: false, elitePass: EMPTY_ELITE_PASS, profile: EMPTY_PROFILE, error: null, loading: false, resolved: true })
         return
       }
 
       // OPTIMISTIC COOKIE, DISCLOSED: set as soon as a real Supabase session token is present —
-      // never waits on the /api/user-settings round trip below. See setSignedInCookie's own header
+      // never waits on the /api/user-settings round trip below. See setSignedInPresenceCookie in lib/authFlow
       // for why this is safe (it only ever gates a redirect, never real authorization).
-      setSignedInCookie(true)
+      setSignedInPresenceCookie(true)
 
       // CACHED-FIRST, DISCLOSED: surface the verified cached plan for THIS user before the network
       // call resolves, so an Elite user never sees Free (or a spinner) while we re-confirm.
@@ -370,7 +366,7 @@ function start(): void {
     const s: SessionLike = session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null
     if (event === 'SIGNED_OUT') {
       clearPlanCache()
-      setSignedInCookie(false)
+      setSignedInPresenceCookie(false)
       setSnapshot({ plan: 'free', email: null, betaEliteActive: false, elitePass: EMPTY_ELITE_PASS, profile: EMPTY_PROFILE, error: null, loading: false, resolved: true })
       return
     }

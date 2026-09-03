@@ -493,7 +493,8 @@ function pillStyle(color: string, bg: string, border: string): React.CSSProperti
 }
 
 const addBtnStyle: React.CSSProperties = {
-  padding: '5px 12px',
+  padding: '10px 12px',
+  minHeight: 44,
   borderRadius: 7,
   border: '1px solid rgba(45,212,191,0.35)',
   background: 'rgba(45,212,191,0.09)',

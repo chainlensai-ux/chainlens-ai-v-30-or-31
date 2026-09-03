@@ -75,6 +75,10 @@ export default function ClarkHistoryPanel({
         .clk-histpanel-item-actions { display:flex; gap:9px; flex-shrink:0; opacity:0; transition:opacity .15s; }
         .clk-histpanel-item:hover .clk-histpanel-item-actions,
         .clk-histpanel-item:focus-within .clk-histpanel-item-actions { opacity:1; }
+        @media (hover: none) {
+          .clk-histpanel-item-actions { opacity:1; }
+          .clk-histpanel-item-btn { min-height:44px; padding:8px 10px; }
+        }
         .clk-histpanel-item-btn { border:0; background:transparent; color:#5b6b84; cursor:pointer; font-size:11px; font-weight:600; padding:0; }
         .clk-histpanel-item-btn:hover { color:#94a3b8; }
         .clk-histpanel-empty { color:#7c8aa1; font-size:13px; line-height:1.55; padding:12px 2px; }

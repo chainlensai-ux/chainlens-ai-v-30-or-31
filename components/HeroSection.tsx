@@ -413,9 +413,11 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
 
                 {/* Chips — 2 centered */}
                 <div
+                  className="clark-chip-row"
                   style={{
                     display: 'flex',
                     justifyContent: 'center',
+                    flexWrap: 'wrap',
                     gap: '5px',
                     marginBottom: '14px',
                   }}

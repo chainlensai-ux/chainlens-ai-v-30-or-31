@@ -64,7 +64,10 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
 
       <FeatureBar active={active} onWalletOpen={() => setSidebarOpen(false)} onClose={() => setSidebarOpen(false)} />
 
-      <div className="flex-1 min-w-0 overflow-hidden relative mob-content-wrap">
+      <div className="flex-1 min-w-0 overflow-hidden relative mob-content-wrap flex flex-col">
+        {/* MOBILE CHROME, DISCLOSED (mobile audit): a non-scrolling 52px spacer so the fixed
+            hamburger never covers page titles. Hidden on desktop. */}
+        <div className="mob-top-spacer" aria-hidden="true" />
         {/* Mobile sidebar toggle button */}
         <button
           type="button"
@@ -78,7 +81,9 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
             <line x1="3" y1="18" x2="21" y2="18"/>
           </svg>
         </button>
-        {children}
+        <div className="term-page-scroll">
+          {children}
+        </div>
       </div>
     </div>
   )

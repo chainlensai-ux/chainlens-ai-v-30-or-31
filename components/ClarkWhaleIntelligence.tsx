@@ -8,7 +8,7 @@ function shortAddress(address: string): string {
 }
 
 function formatUsd(value: number | null, status: string, reason: string | null): string {
-  if (status === 'unavailable' || value == null) return `USD unavailable: ${reason ?? 'price unavailable'}`
+  if (status === 'unavailable' || value == null) return `USD unavailable: ${reason ?? 'price missing'}`
   if (status === 'zero') return '$0 (zero movement)'
   return `${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value)} ${status}`
 }

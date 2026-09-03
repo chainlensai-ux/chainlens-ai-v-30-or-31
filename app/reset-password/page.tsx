@@ -96,8 +96,9 @@ export default function ResetPasswordPage() {
 
   const containerStyle: React.CSSProperties = {
     minHeight: '100vh', width: '100%', background: '#06060a',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
     padding: '24px 16px', fontFamily: 'var(--font-inter), Inter, sans-serif',
+    overflowX: 'hidden', overflowY: 'auto',
   };
 
   const cardStyle: React.CSSProperties = {
@@ -112,7 +113,7 @@ export default function ResetPasswordPage() {
   if (status === 'loading') {
     return (
       <div style={containerStyle}>
-        <div style={{ ...cardStyle, textAlign: 'center', color: 'rgba(226,232,240,0.70)', fontSize: '13px' }}>
+        <div className="auth-card" style={{ ...cardStyle, textAlign: 'center', color: 'rgba(226,232,240,0.70)', fontSize: '13px' }}>
           Verifying reset link…
         </div>
       </div>

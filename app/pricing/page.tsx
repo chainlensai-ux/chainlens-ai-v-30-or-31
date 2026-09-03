@@ -286,7 +286,7 @@ export default function PricingPage() {
 
         .payment-overlay{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(1,4,11,.76);backdrop-filter:blur(8px)}
         .payment-modal{width:min(620px,100%);max-height:calc(100dvh - 48px);overflow:auto;border-radius:18px;border:1px solid rgba(148,163,184,.18);background:#080d17;box-shadow:0 24px 80px rgba(0,0,0,.52);padding:26px}
-        .payment-close{position:absolute;top:18px;right:18px;width:34px;height:34px;border-radius:9px;border:1px solid rgba(148,163,184,.16);background:rgba(255,255,255,.025);color:#94a3b8;font-size:21px;line-height:1;cursor:pointer;transition:.16s border-color,.16s color,.16s background}
+        .payment-close{position:absolute;top:18px;right:18px;width:44px;height:44px;border-radius:9px;border:1px solid rgba(148,163,184,.16);background:rgba(255,255,255,.025);color:#94a3b8;font-size:21px;line-height:1;cursor:pointer;transition:.16s border-color,.16s color,.16s background}
         .payment-close:hover:not(:disabled){color:#f8fafc;border-color:rgba(148,163,184,.34);background:rgba(255,255,255,.05)}
         .payment-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:22px}
         .payment-option{min-width:0;min-height:172px;display:flex;flex-direction:column;align-items:flex-start;text-align:left;border-radius:14px;padding:18px;border:1px solid rgba(148,163,184,.15);background:rgba(255,255,255,.022);color:#e2e8f0;cursor:pointer;transition:.16s transform,.16s border-color,.16s background,.16s opacity}
@@ -297,7 +297,7 @@ export default function PricingPage() {
         .payment-option-copy{font-size:12px;color:#7a8a9e;margin-top:5px;line-height:1.5}
         .payment-option-price{margin-top:auto;padding-top:16px;font-size:13px;font-weight:750;color:#cbd5e1}
         .payment-error{margin-top:14px;border-radius:10px;padding:10px 12px;border:1px solid rgba(248,113,113,.28);background:rgba(248,113,113,.08);color:#fca5a5;font-size:12px;line-height:1.45}
-        @media(max-width:560px){.payment-overlay{padding:16px}.payment-modal{padding:22px 18px;max-height:calc(100dvh - 32px)}.payment-options{grid-template-columns:1fr}.payment-option{min-height:142px}.payment-close{top:14px;right:14px}}
+        @media(max-width:640px){.payment-overlay{padding:16px;align-items:flex-end}.payment-modal{padding:22px 18px;max-height:calc(100dvh - 24px);width:100%}.payment-options{grid-template-columns:1fr}.payment-option{min-height:142px}.payment-close{top:14px;right:14px}}
 
         @media (prefers-reduced-motion: reduce) {
           .pricing-card, .cta, .payment-option, .payment-close { transition: none !important; }
