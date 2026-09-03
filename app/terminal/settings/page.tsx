@@ -121,8 +121,8 @@ function Toggle({ on, onChange, color = '#2DD4BF' }: { on: boolean; onChange: ()
 
 function Row({ label, sub, right }: { label: string; sub?: string; right: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-      <div>
+    <div className="settings-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.05)', flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 0, flex: '1 1 180px' }}>
         <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.80)', fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 500 }}>{label}</div>
         {sub && <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-inter, Inter, sans-serif)', marginTop: '2px' }}>{sub}</div>}
       </div>

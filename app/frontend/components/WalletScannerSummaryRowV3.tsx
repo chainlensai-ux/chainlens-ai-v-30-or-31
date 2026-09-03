@@ -25,7 +25,7 @@ export type WalletScannerSummaryRowV3Props = {
 }
 
 const cardStyle: React.CSSProperties = {
-  flex: '1 1 300px', minWidth: '280px', background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(255,255,255,0.08)',
+  flex: '1 1 300px', minWidth: 'min(280px, 100%)', background: 'rgba(6,10,18,0.95)', border: '1px solid rgba(255,255,255,0.08)',
   borderRadius: '16px', padding: '18px 20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18)',
 }
 
@@ -35,7 +35,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
       {/* PortfolioIntelligenceCard already renders its OWN complete card chrome (padding/border/
           background — see that file's own JSX) — not wrapped in `cardStyle` here to avoid a
           doubled/nested border, only a flex-basis wrapper so it sizes like its siblings. */}
-      <div style={{ flex: '1 1 300px', minWidth: '280px' }}>
+      <div style={{ flex: '1 1 300px', minWidth: 'min(280px, 100%)' }}>
         <PortfolioIntelligenceCard
           portfolio={report.portfolio}
           portfolioV2={report.portfolioV2}

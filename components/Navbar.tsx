@@ -290,10 +290,11 @@ export default function Navbar() {
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 8px 12px !important; }
-          .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; }
+          .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; overflow: visible !important; }
+          .nav-logo { width: 36px !important; height: 36px !important; margin: 0 !important; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
-          .btn-access { padding: 7px 12px !important; font-size: 10px !important; }
-          .mob-nav-overlay { top: 48px !important; }
+          .btn-access { padding: 8px 12px !important; font-size: 11px !important; min-height: 44px !important; }
+          .mob-nav-overlay { top: 64px !important; }
         }
         @media (prefers-reduced-motion: reduce) {
           .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
@@ -338,7 +339,7 @@ export default function Navbar() {
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', flexShrink: 0 }}>
-            <span style={{ position: 'relative', width: 56, height: 56, margin: '-10px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span className="nav-logo" style={{ position: 'relative', width: 56, height: 56, margin: '-10px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Image src="/cl-logo.png" alt="ChainLens AI" width={56} height={56} priority style={{ objectFit: 'contain' }} />
             </span>
             <div>

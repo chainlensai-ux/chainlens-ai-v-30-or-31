@@ -53,7 +53,7 @@ export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan
 
   return (
     <div className="ws-card" style={{ padding: 0, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', gap: '2px', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '10px 12px 0' }}>
+      <div style={{ display: 'flex', gap: '2px', borderBottom: '1px solid rgba(255,255,255,0.08)', padding: '10px 12px 0', overflowX: 'auto', WebkitOverflowScrolling: 'touch', flexWrap: 'nowrap' }}>
         {TABS.map((tab) => {
           const active = activeTab === tab.key
           return (
@@ -66,6 +66,7 @@ export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan
                 background: 'transparent', color: active ? '#e2e8f0' : 'rgba(148,163,184,0.55)',
                 fontSize: '12px', fontWeight: 800, letterSpacing: '0.04em', cursor: 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                whiteSpace: 'nowrap', flexShrink: 0, minHeight: '44px',
               }}
             >
               {tab.label}

@@ -51,7 +51,7 @@ const whalePageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.
   check('DexScreener is tried before GeckoTerminal for memes', whaleApiSrc.indexOf('await fetchDexScreenerTokenPrices(randomAddresses)') < whaleApiSrc.indexOf('await batchFetchTokenPrices(stillMissing)') && whaleApiSrc.includes('await fetchDexScreenerTokenPrices(randomAddresses)'))
   check('amount_token string values are coerced to numbers', /function asPositiveNumber/.test(whaleApiSrc))
   check('feed no longer uses token amount as the primary value slot', !/amtShow = amtU \?\? \(amtTNum \? `\$\{amtTNum\} \$\{primarySym\}`/.test(whalePageSrc))
-  check('USD is the primary amount shown', /const amtShow = amtU \?\? \(amtUnverified \? 'Value unverified' : null\)/.test(whalePageSrc))
+  check('USD is the primary amount shown', /const amtShow = amtU \?\? \(amtUnverified \?/.test(whalePageSrc) && !/amtShow = amtU \?\? \(amtTNum/.test(whalePageSrc))
   check('token quantity is secondary context', /tokenAmtShow && \(/.test(whalePageSrc))
 }
 

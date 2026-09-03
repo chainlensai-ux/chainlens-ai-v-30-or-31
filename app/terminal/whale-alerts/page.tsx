@@ -1498,7 +1498,7 @@ export default function WhaleAlertsPage() {
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
                 className={`wa-row wa-row--${tier}`}
                 style={{ borderBottom: bdrInner, borderLeft: `${accentWidth}px solid ${accentColor}`, opacity: tier === 'quiet' ? 0.88 : 1 }}>
-                <div className="flex items-start" style={{ gap: 12, padding: '14px 18px' }}>
+                <div className="wa-row-main flex items-start" style={{ gap: 12, padding: '14px 18px' }}>
 
                   <TokenAvatar tok={tok} logoUrl={logoUrl} avatarBg={sideStyle.avatarBg} line={sideStyle.line} />
 
@@ -1561,7 +1561,7 @@ export default function WhaleAlertsPage() {
                   </div>
 
                   {/* Right column */}
-                  <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
+                  <div className="wa-row-actions shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
                     {/* SIGNAL BADGE, DISCLOSED (feed polish): unchanged severity/signal value and
                         colour — a small filled dot is added only for HIGH SIGNAL/WATCH so the
                         badges that actually matter carry one extra, immediate visual cue, matching
@@ -1588,7 +1588,7 @@ export default function WhaleAlertsPage() {
                           just no longer the most saturated colour on the row. Same handler, same
                           per-row prompt, unchanged. */}
                       <button onClick={goRowClark}
-                        className="flex items-center rounded-[8px] hover:opacity-90"
+                        className="wa-ask-clark flex items-center rounded-[8px] hover:opacity-90"
                         style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.20)', color: '#99f6e4' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>

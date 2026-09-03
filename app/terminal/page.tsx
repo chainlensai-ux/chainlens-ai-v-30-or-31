@@ -34,7 +34,7 @@ function TerminalPageContent() {
           animation: terminalAmbient 5s ease-in-out infinite;
           pointer-events: none;
         }
-        @media (max-width: 900px) {
+        @media (max-width: 1279px) {
           .terminal-shell { flex-direction: column; }
           .terminal-ambient { display: none !important; }
           .mob-radar {

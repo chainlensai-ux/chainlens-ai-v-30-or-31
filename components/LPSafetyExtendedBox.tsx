@@ -430,6 +430,8 @@ export default function LPSafetyExtendedBox({ data }: Props) {
         {data.pool_breakdown.length > 0 && (
           <div>
             <SectionLabel>Pool Activity · {data.pool_breakdown.length}</SectionLabel>
+            <div className="cl-table-scroll">
+            <div style={{ minWidth: 640 }}>
             <div style={{
               display: "grid",
               gridTemplateColumns: "1fr 70px 90px 100px 70px 60px 70px",
@@ -508,6 +510,8 @@ export default function LPSafetyExtendedBox({ data }: Props) {
                   </div>
                 )
               })}
+            </div>
+            </div>
             </div>
           </div>
         )}

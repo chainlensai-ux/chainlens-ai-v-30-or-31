@@ -430,13 +430,15 @@ export default function ClarkChat({
           }
         }
         @media (max-width: 768px) {
-          .clark-chat-shell { padding-bottom: 96px; }
+          .clark-chat-shell { padding-bottom: 0; }
           .clark-chat-input-row {
-            position: sticky !important;
-            bottom: 0 !important;
-            z-index: 15 !important;
+            position: relative !important;
+            bottom: auto !important;
+            z-index: 5 !important;
+            flex-shrink: 0 !important;
             background: linear-gradient(180deg, rgba(5,8,22,0.65), rgba(5,8,22,0.95)) !important;
           }
+          .clark-chat-send { min-width: 44px !important; min-height: 44px !important; }
           .chat-bg-orb { display: none !important; }
           .chat-hdr-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
           .chat-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
@@ -702,10 +704,11 @@ export default function ClarkChat({
                   {clarkUsed}/{planLimit ?? '...'}
                 </span>
                 <button
+                  className="clark-chat-send"
                   onClick={handleSend}
                   disabled={loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)}
                   style={{
-                    width: '30px', height: '30px',
+                    width: '44px', height: '44px',
                     borderRadius: '50%',
                     border: 'none',
                     background: loading || !input.trim() || (planLimit !== null && clarkUsed >= planLimit)

@@ -36,7 +36,7 @@ function MiniWatchChart({ contract }: { contract: string }) {
 
 function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOpen: (token: WatchlistToken) => void; onRemove: (token: WatchlistToken) => void }) {
   const contract = addressOf(token)
-  const { preload, registerPreloadTarget, state } = useDrawerPreload(contract)
+  const { preload, registerPreloadTarget } = useDrawerPreload(contract)
   const symbol = token.symbol || token.name || 'Saved token'
   const embeddedRiskType = token.risk_label?.startsWith('risk_score:') === true
   const effectiveScoreType = token.score_type ?? (embeddedRiskType ? 'risk_score' : null)
@@ -56,8 +56,8 @@ function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOp
       <div style={{ display: 'grid', gridTemplateColumns: '1fr minmax(180px, 280px)', gap: 14, alignItems: 'center' }}>
         <div style={{ minWidth: 0 }}>
           <p style={{ margin: '0 0 5px', color: '#f8fafc', fontSize: 18, fontWeight: 850 }}>{symbol}</p>
-          <p style={{ margin: '0 0 12px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: 11 }}>{shortAddr(contract)} · {state === 'cached' ? 'drawer cache ready' : 'hover or scroll to preload'}</p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+          <p style={{ margin: '0 0 12px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: 11 }}>{shortAddr(contract)}</p>
+          <div className="watchlist-metrics" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
             {[
               ['Risk Score', score != null ? `${score}/100` : 'Rescan required'],
               ['Risk Verdict', riskLabel ?? 'Unrated'],
@@ -107,8 +107,8 @@ export default function WatchlistPage() {
     setOpen(true)
   }
 
-  return <main style={{ minHeight: '100%', overflowY: 'auto', padding: '28px 32px 120px', color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.11), transparent 32%), #030712' }}>
-    <style>{`@media (max-width: 820px) { article > div { grid-template-columns: 1fr !important; } } @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }`}</style>
+  return <main className="watchlist-page" style={{ minHeight: '100%', overflowY: 'auto', padding: '28px 32px 120px', color: '#e2e8f0', background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.11), transparent 32%), #030712' }}>
+    <style>{`@media (max-width: 820px) { article > div { grid-template-columns: 1fr !important; } .watchlist-metrics { grid-template-columns: 1fr 1fr !important; } } @media (max-width: 480px) { .watchlist-metrics { grid-template-columns: 1fr !important; } } @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }`}</style>
     <h1 style={{ margin: '0 0 6px', color: '#f8fafc', fontSize: 24 }}>Watchlist</h1>
     <p style={{ margin: '0 0 18px', color: '#94a3b8', fontSize: 13 }}>Saved tokens with mini metrics, premium mini charts, instant drawer preload, and remove controls.</p>
     {loading ? <p style={{ color: '#64748b' }}>Loading watchlist…</p> : tokens.length === 0 ? <p style={{ color: '#64748b' }}>No saved tokens yet. Add tokens from Base Radar or Token Scanner.</p> : <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>{tokens.map((token, i) => <WatchlistRow key={token.id ?? addressOf(token) ?? i} token={token} onOpen={openToken} onRemove={removeToken} />)}</div>}

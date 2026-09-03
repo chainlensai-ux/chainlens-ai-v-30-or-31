@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
@@ -44,6 +45,7 @@ const INITIAL_ASSISTANT_MESSAGE = 'Ask me about Base tokens, wallets, whale aler
 const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 
 export default function MobileClarkDrawer() {
+  const pathname = usePathname()
   const [expanded, setExpanded] = useState(false)
   const [showDock, setShowDock] = useState(false)
   const [miniInput, setMiniInput] = useState('')
@@ -63,8 +65,8 @@ export default function MobileClarkDrawer() {
     const detect = () => {
       const touchCapable = navigator.maxTouchPoints > 0 || 'ontouchstart' in window
       const mobileUA = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')
-      const mobileishWidth = window.innerWidth <= 1200
-      const shouldShow = Boolean(debugClark || touchCapable || mobileUA || mobileishWidth)
+      const mobileishWidth = window.innerWidth <= 1023
+      const shouldShow = Boolean(debugClark || ((touchCapable || mobileUA || mobileishWidth) && window.innerWidth <= 1023))
       setShowDock(shouldShow)
     }
 
@@ -183,6 +185,7 @@ export default function MobileClarkDrawer() {
   }, [messages, expanded])
 
   if (!showDock) return null
+  if (pathname === '/terminal/clark-ai' || pathname === '/auth' || pathname === '/sign-in' || pathname === '/sign-up' || pathname === '/reset-password' || pathname === '/login' || pathname === '/pricing') return null
 
   return (
     <>
@@ -201,8 +204,8 @@ export default function MobileClarkDrawer() {
       )}
 
       {!expanded && (
-        <div className="fixed bottom-4 right-4 z-[99999] flex h-12 w-[180px] items-center gap-2 rounded-2xl border border-white/10 bg-[#080c14] px-2 text-white shadow-2xl" style={{ boxShadow: '0 0 0 1px rgba(255,255,255,0.06), 0 12px 28px rgba(0,0,0,0.55), 0 0 24px rgba(139,92,246,0.28)' }}>
-          <button type="button" className="shrink-0 rounded-lg bg-gradient-to-r from-[#2DD4BF] via-[#8b5cf6] to-[#ec4899] px-2 py-1 text-[10px] font-semibold" onClick={expandOnly}>Clark AI</button>
+        <div className="fixed z-[99999] flex h-12 w-[min(180px,calc(100vw-24px))] items-center gap-2 rounded-2xl border border-white/10 bg-[#080c14] px-2 text-white shadow-2xl" style={{ right: 16, bottom: 'max(16px, env(safe-area-inset-bottom))', boxShadow: '0 0 0 1px rgba(255,255,255,0.06), 0 12px 28px rgba(0,0,0,0.55), 0 0 24px rgba(139,92,246,0.28)' }}>
+          <button type="button" className="shrink-0 min-h-11 rounded-lg bg-gradient-to-r from-[#2DD4BF] via-[#8b5cf6] to-[#ec4899] px-2 py-2 text-[10px] font-semibold" onClick={expandOnly}>Clark AI</button>
           <input
             value={miniInput}
             onChange={(e) => setMiniInput(e.target.value)}
@@ -259,7 +262,7 @@ export default function MobileClarkDrawer() {
                   }
                 }}
               />
-              <button type="button" disabled={loading} onClick={() => void sendText(input)} className="self-end rounded-xl border border-white/10 bg-cyan-500/20 px-3 py-2 text-sm text-white disabled:opacity-60">Send</button>
+              <button type="button" disabled={loading} onClick={() => void sendText(input)} className="self-end min-h-11 min-w-11 rounded-xl border border-white/10 bg-cyan-500/20 px-3 py-2 text-sm text-white disabled:opacity-60">Send</button>
             </div>
           </section>
         </div>

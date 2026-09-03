@@ -65,6 +65,7 @@ const TokenCard = memo(function TokenCard({
 
   return (
     <div
+      className="hts-row"
       style={{
         display: 'grid',
         gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr',
@@ -77,7 +78,7 @@ const TokenCard = memo(function TokenCard({
       <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {symbol ?? pairAddress.slice(0, 8)}
       </span>
-      <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>
+      <span className="hts-col-chain" style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>
         {chainId}
       </span>
       <span style={{ fontSize: '11px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
@@ -86,7 +87,7 @@ const TokenCard = memo(function TokenCard({
       <span style={{ fontSize: '11px', color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
         {change !== 0 ? `${change > 0 ? '+' : ''}${change.toFixed(2)}%` : '—'}
       </span>
-      <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="hts-col-vol" style={{ fontSize: '11px', color: 'rgba(255,255,255,0.55)', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {vol}
       </span>
     </div>
@@ -201,9 +202,9 @@ export default function HomeTokenScreener() {
           </div>
 
           {/* Column headers */}
-          <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '34px', alignItems: 'center' }}>
+          <div className="hts-row" style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '34px', alignItems: 'center' }}>
             {COLS.map(col => (
-              <span key={col} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#3e5c78', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <span key={col} className={col === 'CHAIN' ? 'hts-col-chain' : col === 'VOLUME' ? 'hts-col-vol' : undefined} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#3e5c78', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 {col}
               </span>
             ))}

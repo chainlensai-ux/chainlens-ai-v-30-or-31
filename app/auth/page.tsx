@@ -346,12 +346,13 @@ export default function AuthPage() {
       width: '100%',
       background: '#06060a',
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-start',
       justifyContent: 'center',
       padding: '24px 16px',
       fontFamily: 'var(--font-inter), Inter, sans-serif',
       position: 'relative',
-      overflow: 'hidden',
+      overflowX: 'hidden',
+      overflowY: 'auto',
     }}>
       <style>{`
         @keyframes auth-grid-drift {
@@ -444,7 +445,7 @@ export default function AuthPage() {
       </Link>
 
       {/* Card */}
-      <div style={{
+      <div className="auth-card" style={{
         position: 'relative',
         zIndex: 1,
         width: '100%',
