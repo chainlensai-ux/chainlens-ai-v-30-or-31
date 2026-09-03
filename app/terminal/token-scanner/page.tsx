@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef, type MouseEvent } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
@@ -4466,8 +4466,29 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function TerminalTokenScanner() {
-  const { loading: planLoading } = usePlanWithLoading()
+  const { plan, loading: planLoading } = usePlanWithLoading()
   const isFullAccess = true
+
+  // WEEKLY SCAN QUOTA VISIBILITY, DISCLOSED ("on free plan should show much u have like scans and
+  // limit u have"): Free is capped at 3 token scans/week (lib/tokenScanQuota.ts, enforced server-side
+  // in /api/token's POST handler) — Pro/Elite are unlimited. Peeked read-only from /api/token/quota
+  // (same plan+IP actor key the POST handler consumes against, so this can never drift from what a
+  // scan is actually charged) and refreshed after every scan completes so the count stays live.
+  const [tokenScanQuota, setTokenScanQuota] = useState<{ limit: number | null; remaining: number | null; used: number } | null>(null)
+  const refreshTokenScanQuota = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const authToken = session?.access_token
+      const res = await fetch('/api/token/quota', {
+        headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+        cache: 'no-store',
+      })
+      const json = await res.json().catch(() => null)
+      if (res.ok && json && typeof json === 'object') {
+        setTokenScanQuota({ limit: json.limit ?? null, remaining: json.remaining ?? null, used: json.used ?? 0 })
+      }
+    } catch { /* quota display is best-effort — never blocks scanning */ }
+  }, [])
 
   // SOLANA BETA, DISCLOSED (Token Scanner Solana Beta task): 'solana' is additive to the existing
   // four EVM chains — every existing branch that compares against 'base'/'eth'/'bnb'/'robinhood'
@@ -4491,6 +4512,15 @@ export default function TerminalTokenScanner() {
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
+
+  // Load the real weekly quota on mount, then keep it live: refetch whenever a scan finishes
+  // (loading goes true → false) since that's exactly when the server-side count may have moved.
+  const wasLoadingRef = useRef(false)
+  useEffect(() => { refreshTokenScanQuota() }, [refreshTokenScanQuota])
+  useEffect(() => {
+    if (wasLoadingRef.current && !loading) refreshTokenScanQuota()
+    wasLoadingRef.current = loading
+  }, [loading, refreshTokenScanQuota])
   // CHAIN-STRICTNESS FIX, DISCLOSED: populated only from a backend-confirmed cross-chain candidate
   // on a blocked scan (see handleScan's wrong_chain branch) — the "Switch to X and scan" CTA this
   // powers below never fires a scan on its own; it only pre-fills the chain switch + rescan for the
@@ -5387,6 +5417,20 @@ export default function TerminalTokenScanner() {
                   {p.label}
                 </span>
               ))}
+              {!planLoading && tokenScanQuota && tokenScanQuota.limit != null ? (() => {
+                const atLimit = (tokenScanQuota.remaining ?? 0) <= 0
+                return (
+                  <span style={{
+                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.09em', padding: '4px 11px', borderRadius: '99px',
+                    color: atLimit ? '#f87171' : '#67e8f9',
+                    background: atLimit ? 'rgba(248,113,113,0.08)' : 'rgba(103,232,249,0.06)',
+                    border: `1px solid ${atLimit ? 'rgba(248,113,113,0.28)' : 'rgba(103,232,249,0.20)'}`,
+                    fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+                  }}>
+                    {tokenScanQuota.used} / {tokenScanQuota.limit} scans this week ({plan.toUpperCase()})
+                  </span>
+                )
+              })() : null}
               <span style={{ fontSize: '10px', color: '#253340', fontFamily: 'var(--font-plex-mono)', marginLeft: '2px' }}>
                 {planLoading ? 'Checking access…' : ''}
               </span>
