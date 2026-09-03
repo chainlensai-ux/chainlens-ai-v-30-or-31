@@ -64,7 +64,9 @@ export async function POST(req: NextRequest) {
   // every save silently stored null regardless of the real scanned value. Reads both spellings so
   // any other caller sending the camelCase form (there is none today) keeps working too.
   const { address, label, portfolio_value, portfolioValue: portfolioValueCamel, chain_mode, chainMode: chainModeCamel, source } = body ?? {}
-  const portfolioValue = portfolio_value ?? portfolioValueCamel
+  const portfolioValue = typeof (portfolio_value ?? portfolioValueCamel) === 'number' && Number.isFinite(portfolio_value ?? portfolioValueCamel)
+    ? Number(portfolio_value ?? portfolioValueCamel)
+    : null
   const chainMode = chain_mode ?? chainModeCamel
   if (!isValidAddress(address)) {
     return NextResponse.json({ error: 'A valid wallet address is required.' }, { status: 400 })
@@ -80,7 +82,7 @@ export async function POST(req: NextRequest) {
 
   const { data: existing, error: lookupError } = await db
     .from('watchlist_wallets')
-    .select('id')
+    .select('id, portfolio_value')
     .eq('user_id', userId)
     .eq('address', normalizedAddress)
     .maybeSingle()
@@ -88,6 +90,19 @@ export async function POST(req: NextRequest) {
   if (lookupError) return NextResponse.json({ error: lookupError.message }, { status: 500 })
 
   if (existing) {
+    // RE-SAVE UPDATES USD, DISCLOSED (reported live: a ~$150k wallet stayed stored as ~$20k
+    // because alreadyExists returned the stale row and never wrote the new merged total). A
+    // re-save of the same wallet refreshes portfolio_value in USD — never a token count.
+    if (portfolioValue != null && portfolioValue !== existing.portfolio_value) {
+      const { data, error } = await db
+        .from('watchlist_wallets')
+        .update({ portfolio_value: portfolioValue })
+        .eq('id', existing.id)
+        .select()
+        .single()
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ wallet: data, alreadyExists: true, updated: true })
+    }
     return NextResponse.json({ wallet: existing, alreadyExists: true })
   }
 
@@ -97,7 +112,7 @@ export async function POST(req: NextRequest) {
       user_id: userId,
       address: normalizedAddress,
       label: label ?? null,
-      portfolio_value: typeof portfolioValue === 'number' && Number.isFinite(portfolioValue) ? portfolioValue : null,
+      portfolio_value: portfolioValue,
       chain_mode: chainMode ?? null,
       source: source ?? 'wallet-scanner',
       saved_at: new Date().toISOString(),

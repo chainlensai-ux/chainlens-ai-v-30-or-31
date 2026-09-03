@@ -615,6 +615,17 @@ export function classifyClarkPrompt(prompt: string): {
     };
   }
 
+  // Whale-alert row Ask Clark: scan the bought/sold token, never the trader wallet.
+  if (/\[chainlens whale alert\s*[—\-]+\s*row context\]/i.test(raw)) {
+    const tokenMatch = raw.match(/\/token\s+(0x[a-fA-F0-9]{40})/i)
+      ?? raw.match(/token contract:\s*(0x[a-fA-F0-9]{40})/i)
+      ?? raw.match(/scan this token\s+(0x[a-fA-F0-9]{40})/i);
+    if (tokenMatch) {
+      return { intent: "token_scan", address: tokenMatch[1], addresses: [tokenMatch[1]], deep: false, symbol: null };
+    }
+    return { intent: "whale_alert", address: null, addresses: [], deep: false, symbol: null };
+  }
+
   // Canonical major-asset market questions (ETH/BTC/SOL price, market cap, volume) never become
   // a DexScreener token search — that is how "what is eth price" used to return random Solana
   // tokens named ETH. Slash commands above still win for /token /lp /wallet.
@@ -991,6 +1002,22 @@ export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined |
 export function formatBaseMarketReadFromCandidates(candidates: MarketLikeRow[] | undefined | null): string | null {
   if (!candidates || candidates.length === 0) return null;
   return formatBaseMarketReadFromRows(candidates);
+}
+
+export function formatBaseLowCapMemeReadFromRows(rows: MarketLikeRow[], window: '24h' | '7d', maxMarketCapUsd: number): string | null {
+  const verified = rows
+    .filter(row => row.marketCapUsd != null && row.marketCapUsd > 0 && row.marketCapUsd <= maxMarketCapUsd)
+    .slice(0, 8)
+  if (verified.length === 0) return null
+  const lines = [`TRENDING BASE LOW-CAP MEMECOINS — ${window}`, `Verified category: CoinGecko Base Meme · Market cap ≤${fmtUsdShort(maxMarketCapUsd)}`]
+  verified.forEach((row, index) => {
+    const symbol = String(row.symbol ?? '?').toUpperCase()
+    const label = row.name && row.name !== row.symbol ? `${symbol} (${row.name})` : symbol
+    lines.push(`${index + 1}. ${label} — ${fmtPct(row.change24h)} ${window} | volume ${fmtUsdShort(row.volume24hUsd)} | market cap ${fmtUsdShort(row.marketCapUsd)}`)
+    lines.push('   Evidence: CoinGecko Base Meme category; low-cap threshold passed.')
+  })
+  lines.push('', 'Risk: low-cap memecoins can have thin exits. Scan liquidity, holders, LP control, and contract safety before acting.', 'CTA: Scan top token / Open Base Radar / Refresh Market Data')
+  return lines.join('\n')
 }
 
 export function formatNewBasePoolReadFromCandidates(candidates: MarketLikeRow[] | undefined | null, maxAgeHours = 72): string | null {
@@ -4880,6 +4907,15 @@ const WHALE_SELLING_RE = /\bwhales?\s+(?:are\s+)?sell(?:ing|s)?\b|\bwhale\s+sell
 export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
   const t = String(prompt ?? "").trim();
   if (!t) return { intent: "none" };
+
+  // Slash commands and whale-row token scans must never be swallowed by whale_alerts_summary.
+  // Reported live: Ask Clark on a whale-alert row included "Whale Alert" plus a wallet 0x, so
+  // this classifier stole the request and Clark never ran Token Scanner on the bought token.
+  if (/^\/(lp|token|wallet|base|deployer|holders)\b/i.test(t)) return { intent: "none" };
+  if (/^\/deep\s+wallet\b/i.test(t)) return { intent: "none" };
+  if (/\[chainlens whale alert\s*[—\-]+\s*row context\]/i.test(t) && /(?:\/token\s+|token contract:\s*|scan this token\s+)0x[a-fA-F0-9]{40}/i.test(t)) {
+    return { intent: "none" };
+  }
 
   if (WHALE_EXPLAIN_SIGNAL_RE.test(t)) return { intent: "whale_alerts_explain_signal" };
   if (WHALE_OPEN_FOMO_RE.test(t)) return { intent: "whale_alerts_open_fomo" };

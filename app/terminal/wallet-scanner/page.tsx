@@ -191,6 +191,21 @@ function fmtUSD(v: number): string {
   return `$${v.toFixed(2)}`
 }
 
+// WATCHLIST USD, DISCLOSED (reported live: saving a ~$150k wallet stored ~$20k). Root cause: the
+// Save button persisted `portfolioV2.totalValueUsd` (EVM-only) while the hero total the user sees
+// is computeMergedTotalValueUsd (EVM + Robinhood, plus the worker canonical override). Watchlist
+// value must be that same merged USD figure — never a token count, never a single-chain subset.
+function watchlistPortfolioValueUsd(
+  report: WalletV2Report | null | undefined,
+  robinhood: RobinhoodWalletScanResponse | null | undefined,
+): number | null {
+  if (!report) return null
+  const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhood, deriveCanonicalMergeOverride(report))
+  const v = merged.totalValueUsd
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
 // WALLET READ BUILDER CALL SITE, DISCLOSED (Wallet Read / CORTEX sidebar redesign task): replaces
 // the old flat {verdict, read, keySignals, risks, nextAction} shape with the structured WalletReadV2
 // object walletReadBuilder.ts's buildWalletReadV2 produces — see that file's own header for the
@@ -499,9 +514,9 @@ export default function WalletScannerPage() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           address: result.scanMetadata.walletAddress,
-          // Same canonical-total fix as PortfolioSnapshot/buildCortexReadV2 above — never persist
-          // the stale V1 total to the watchlist.
-          portfolio_value: result.portfolioV2?.totalValueUsd ?? result.portfolio?.totalValueUsd ?? null,
+          // Same merged USD the hero / CORTEX read show — never the EVM-only V2 field, never a
+          // token quantity. Re-saving an already-watchlisted wallet updates this number.
+          portfolio_value: watchlistPortfolioValueUsd(result, robinhoodResult),
         }),
       })
       const json = await res.json().catch(() => null)

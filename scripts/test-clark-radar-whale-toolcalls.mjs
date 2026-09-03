@@ -77,6 +77,8 @@ assert.equal(classifyClarkToolIntent('Show the latest whale alerts').intent, 'wh
 assert.equal(classifyClarkToolIntent('sync whale alerts').intent, 'whale_alerts_sync')
 assert.equal(classifyClarkToolIntent('explain that whale alert').intent, 'whale_alerts_explain_signal')
 assert.equal(classifyClarkToolIntent('Any big buys/sells?').intent, 'whale_alerts_recent')
+// Slash /token (Ask Clark on a whale-alert row) must not be swallowed as whale_alerts_summary.
+assert.equal(classifyClarkToolIntent(`/token 0xabcdef1234567890abcdef1234567890abcdef12\n\n[ChainLens Whale Alert — Row Context]\nScan this token.`).intent, 'none')
 // Non-whale buying questions must NOT be captured by the new directional matchers.
 assert.equal(classifyClarkToolIntent('should i buy this token').intent, 'none')
 assert.equal(classifyClarkToolIntent('what are people buying').intent, 'none')

@@ -26,7 +26,7 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
 
 // ─── 1. "What's pumping" now sources from CoinGecko, independently of Base Radar's own feed ───
 {
-  const importIdx = routeFile.indexOf('import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending"')
+  const importIdx = routeFile.indexOf('fetchCoinGeckoBaseTrending')
   const baseMarketDiscoveryIdx = routeFile.indexOf('if (routed.intent === "base_market_discovery")')
   const cgCallIdx = routeFile.indexOf('await fetchCoinGeckoBaseTrending()')
   const baseRadarIdx = routeFile.indexOf('if (routed.intent === "base_radar")')
@@ -40,6 +40,17 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
   check('CoinGecko is tried BEFORE the pre-existing getBaseMarketUniverse fallback (real independent source first, not just relabeled)', cgCallIdx < universeCallIdx)
   check('base_radar branch is untouched — still reads its own internal feed, never CoinGecko', baseRadarIdx > -1 && !routeFile.slice(baseRadarIdx, baseMarketDiscoveryIdx).includes('fetchCoinGeckoBaseTrending'))
   check('CoinGecko fallback path still returns the pre-existing dashboardRows/universe behavior unchanged when CoinGecko has nothing (never a regression)', routeFile.slice(baseMarketDiscoveryIdx).indexOf('dashboardMarketRows') > routeFile.slice(baseMarketDiscoveryIdx).indexOf('fetchCoinGeckoBaseTrending'))
+}
+
+// ─── Meme discovery is category-strict and never falls back to broad ecosystem large caps ─────
+{
+  const memeIdx = routeFile.indexOf('const wantsMemecoins =')
+  const memeFetchIdx = routeFile.indexOf('fetchCoinGeckoBaseLowCapMemes', memeIdx)
+  const broadFetchIdx = routeFile.indexOf('fetchCoinGeckoBaseTrending()', memeIdx)
+  check('meme prompt branch exists', memeIdx > -1)
+  check('meme branch uses the Base Meme category source', memeFetchIdx > memeIdx)
+  check('meme branch returns before broad Base ecosystem lookup', broadFetchIdx > memeFetchIdx)
+  check('meme empty state explicitly excludes large and unverified-cap tokens', routeFile.includes('I excluded large caps and tokens without meme-category proof'))
 }
 
 // ─── 2. Volume / pump-over-timeframe routing exists, mirroring the proven _HOLDER_RE pattern ───
