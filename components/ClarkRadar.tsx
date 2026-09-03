@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
 import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
 import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
+import ClarkWhaleIntelligence from '@/components/ClarkWhaleIntelligence'
+import { parseClarkWhaleIntelligenceUi, type ClarkWhaleIntelligenceUi } from '@/lib/clarkWhaleUi'
 
 const HINT_CHIPS = [
   'Scan BRETT',
@@ -37,6 +39,8 @@ interface Message {
   // into clarkContextRef for follow-up-prompt memory — never fabricated, never re-fetched. Attached
   // to the specific message that produced it so mover rows render against the right response.
   movers?: MoverItem[]
+  whaleIntelligence?: ClarkWhaleIntelligenceUi
+  actions?: Array<{ label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt' }>
 }
 
 type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
@@ -666,12 +670,17 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       // marketContext.items this function computed above — attached here only for display, never
       // altering the reply text or any of the existing memory/context wiring above.
       const movers = json.ok && nextItems && nextItems.length > 0 ? (nextItems as MoverItem[]) : undefined
+      const ui = payload.ui && typeof payload.ui === 'object' ? payload.ui as { whaleIntelligence?: unknown; actions?: unknown } : null
+      const whaleIntelligence = parseClarkWhaleIntelligenceUi(ui?.whaleIntelligence)
+      const actions = Array.isArray(ui?.actions)
+        ? ui.actions.filter((action): action is { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt' } => Boolean(action && typeof action === 'object' && typeof (action as { label?: unknown }).label === 'string'))
+        : undefined
 
       setMessages(prev => {
         const next = [...prev]
         const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
         if (idx < 0) return prev
-        next[idx] = { role: 'clark', text: reply, movers, requestId }
+        next[idx] = { role: 'clark', text: reply, movers, whaleIntelligence, actions, requestId }
         return next
       })
     } catch {
@@ -1011,6 +1020,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           .clark-radar-panel-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
           .clark-radar-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
+        .clark-response-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+        .clark-response-actions button, .clark-response-actions a { padding:6px 9px; border:1px solid rgba(83,243,195,.18); border-radius:7px; background:rgba(83,243,195,.06); color:#9de8d3; font:600 10px/1.2 var(--font-inter); text-decoration:none; cursor:pointer; }
+        .clark-response-actions button:hover, .clark-response-actions a:hover { border-color:rgba(83,243,195,.42); background:rgba(83,243,195,.1); }
       `}</style>
 
       <div
@@ -1232,12 +1244,24 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     {msg.text === 'Clark is thinking...' ? (
                       <ClarkLoadingTrace kind={loadingKind} />
                     ) : msg.role === 'clark' ? (
-                      <ClarkMessage
-                        text={msg.text}
-                        movers={msg.movers}
-                        onScan={handleScanMover}
-                        onReplyPrompt={() => inputRef.current?.focus()}
-                      />
+                      <>
+                        <ClarkMessage
+                          text={msg.text}
+                          movers={msg.movers}
+                          onScan={handleScanMover}
+                          onReplyPrompt={() => inputRef.current?.focus()}
+                        />
+                        {msg.whaleIntelligence && <ClarkWhaleIntelligence data={msg.whaleIntelligence} />}
+                        {msg.actions && msg.actions.length > 0 && (
+                          <div className="clark-response-actions">
+                            {msg.actions.map(action => action.prompt ? (
+                              <button key={`${action.label}:${action.prompt}`} type="button" onClick={() => sendToClark(action.prompt!)}>{action.label}</button>
+                            ) : action.href ? (
+                              <a key={`${action.label}:${action.href}`} href={action.href}>{action.label}</a>
+                            ) : null)}
+                          </div>
+                        )}
+                      </>
                     ) : msg.text}
                   </div>
                 </div>

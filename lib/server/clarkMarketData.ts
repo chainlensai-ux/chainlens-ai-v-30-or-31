@@ -15,6 +15,8 @@
 // a field the provider didn't return stays `null`, which the formatter renders as "unverified",
 // never "$0" (USD unavailable is not the same fact as USD = 0).
 
+import { isCanonicalMajorAsset, isExplicitCanonicalPairSearch } from "./clarkMarketIntent.ts"
+
 export type ClarkMarketIntent =
   | "live_price"
   | "market_cap"
@@ -241,7 +243,11 @@ export async function resolveClarkMarketData(
 
   // 3. DexScreener / GeckoTerminal — token/pair/address data, and a symbol search that may be
   // ambiguous (multiple real projects share a ticker) rather than a single confident match.
-  if (providers.dexScreener) {
+  // Canonical majors (ETH/BTC/SOL/BNB/XRP/DOGE/PEPE) skip DexScreener *symbol* search: /search?q=ETH
+  // returns random Solana tickers named ETH. Those assets go to CoinGecko unless the user pasted a
+  // contract or asked for an explicit chain/pair search.
+  const skipDexSymbolSearch = !input.address && isCanonicalMajorAsset(input.symbol) && !isExplicitCanonicalPairSearch(input.prompt)
+  if (providers.dexScreener && !skipDexSymbolSearch) {
     providersTried.push("dexscreener");
     const result = await providers.dexScreener(subject, input.chain).catch(() => null);
     if (result && result.matches.length > 1) {
