@@ -4796,6 +4796,8 @@ export type ClarkToolIntent =
   | "whale_alerts_recent"
   | "whale_alerts_buying"
   | "whale_alerts_selling"
+  | "whale_alerts_wallets"
+  | "whale_alerts_open_fomo"
   | "whale_alerts_explain_signal"
   | "none";
 
@@ -4823,7 +4825,9 @@ const MARKET_DISCOVERY_TOOL_RE = /\b(what'?s\s+pumping|whats\s+pumping|base\s+mo
 // Whale explain-signal checked first so "explain that alert/signal" never gets swallowed by the
 // broader summary/recent/sync matchers below.
 const WHALE_EXPLAIN_SIGNAL_RE = /\bexplain\s+(?:this\s+|that\s+)?(?:whale\s+)?(?:signal|alert|movement|move)\b|\bwhy\s+is\s+(?:this|that)\s+(?:whale\s+)?(?:signal|alert)\b/i;
-const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refresh|re[\s-]?check\s+whale)\b/i;
+const WHALE_OPEN_FOMO_RE = /\bopen\s+(?:the\s+)?fomo\s+board\b/i;
+const WHALE_WALLETS_RE = /\b(?:give|show|list)\s+(?:me\s+)?(?:the\s+)?whale\s+wallets?\b|\bwho\s+is\s+accumulating\b/i;
+const WHALE_SYNC_RE = /\b(sync\s+(?:more\s+)?(?:whale\s+alerts?|wallets?)|refresh\s+whale|whale\s+sync|whale\s+refresh|re[\s-]?check\s+whale)\b/i;
 // DIRECTIONAL WHALE INTENTS, DISCLOSED (reported live: "What are whales buying" returned the same
 // dead-end "no alerts matched the current filters" text as the plain feed question). Root cause:
 // these phrasings matched NO tool intent at all (verified by running classifyClarkToolIntent over
@@ -4851,7 +4855,7 @@ const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refr
 // `any\s+big\s+(?:buys?|sells?)` handling.
 const WHALE_BOTH_SIDES_RE = /\bbuy(?:ing|s)?\s*(?:\/|or|and)\s*sell(?:ing|s)?\b|\bsell(?:ing|s)?\s*(?:\/|or|and)\s*buy(?:ing|s)?\b/i;
 const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|latest\s+whale\s+alerts?|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|what\s+did\s+whales?\s+buy\s*\/\s*sell|which\s+wallets?\s+are\s+accumulating|wallets?\s+accumulating|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
-const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+(?:me\s+)?(?:the\s+)?(?:latest\s+)?whale\s+(?:movement|alerts?|feed|activity)|show\s+(?:me\s+)?(?:the\s+)?(?:base\s+)?whales?|base\s+whales?|whale\s+alerts?|whale\s+movement|whale\s+activity|whale\s+feed|whale\s+flows?|base\s+whale\s+flows?|smart\s+money\s+on\s+base|open\s+whale\s+alerts?|which\s+(?:whale\s+)?alerts?\s+matter\s+most)\b/i;
+const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+(?:me\s+)?(?:the\s+)?(?:latest\s+)?whale\s+(?:movement|alerts?|feed|activity)|show\s+(?:me\s+)?(?:the\s+)?(?:base\s+)?whales?|base\s+whales?|whale\s+alerts?|whale\s+movement|whale\s+activity|whale\s+feed|whale\s+flows?|base\s+whale\s+flows?|smart\s+money\s+on\s+base|open\s+whale\s+alerts?|which\s+(?:whale\s+)?alerts?\s+matter(?:\s+most)?)\b/i;
 const WHALE_BUYING_RE = /\bwhales?\s+(?:are\s+)?buy(?:ing|s)?\b|\bwhale\s+buys?\b|\bwhat\s+(?:are|did)\s+(?:base\s+)?whales?\s+buy(?:ing)?\b|\bwhat\s+are\s+smart\s+(?:money|wallets?)\s+buying\b|\bwhales?\s+(?:rotating|accumulating)\s+into\b|\bwhat\s+are\s+whales?\s+accumulating\b/i;
 const WHALE_SELLING_RE = /\bwhales?\s+(?:are\s+)?sell(?:ing|s)?\b|\bwhale\s+sells?\b|\bwhat\s+(?:are|did)\s+whales?\s+sell(?:ing)?\b|\bsell[\s-]?side\s+whale\b|\bwhat\s+are\s+whales?\s+dumping\b|\bwhales?\s+dumping\b/i;
 
@@ -4866,6 +4870,8 @@ export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
   if (!t) return { intent: "none" };
 
   if (WHALE_EXPLAIN_SIGNAL_RE.test(t)) return { intent: "whale_alerts_explain_signal" };
+  if (WHALE_OPEN_FOMO_RE.test(t)) return { intent: "whale_alerts_open_fomo" };
+  if (WHALE_WALLETS_RE.test(t)) return { intent: "whale_alerts_wallets" };
   if (WHALE_SYNC_RE.test(t)) return { intent: "whale_alerts_sync" };
   if (WHALE_RECENT_RE.test(t)) return { intent: "whale_alerts_recent" };
   // BOTH-SIDES GUARD, DISCLOSED: checked before either single-direction matcher — see

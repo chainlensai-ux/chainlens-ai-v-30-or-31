@@ -321,6 +321,10 @@ type ScanResult = {
   liquidityDepthRisk?: 'low' | 'medium' | 'high' | 'open_check'
   robinhoodLpProofAudit?: RobinhoodLpProofAudit | null
   robinhoodLpResolutionAudit?: RobinhoodLpResolutionAudit | null
+  blockscoutFallbackDecisionAudit?: {
+    finalStatus: 'skipped_primary_succeeded' | 'fallback_succeeded' | 'fallback_returned_no_rows' | 'fallback_unavailable' | 'not_configured' | 'not_applicable'
+    blockscoutFailureReason: string | null
+  } | null
   devClusterDiagnosisAudit?: DevClusterDiagnosisAudit | null
   lpExitRiskReason?: string
   lpEvidenceSummary?: string
@@ -1093,6 +1097,7 @@ function pctColor(v: number | null | undefined): string {
 }
 
 function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   if (points.length < 2) return null
   const w = 960
   const h = 360
@@ -1103,7 +1108,6 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
   const spread = Math.max(max - min, 1e-12)
   const yFor = (v: number) => h - padY - ((v - min) / spread) * (h - padY * 2)
   const xFor = (i: number) => padX + (i / (points.length - 1)) * (w - padX * 2)
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const d = points.map((p, i) => {
     const x = xFor(i)
     const y = yFor(p.priceUsd)
@@ -8085,6 +8089,19 @@ export default function TerminalTokenScanner() {
                     return (
                       <div style={{ marginBottom: '16px', padding: '14px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(125,211,252,.16)', borderRadius: '14px' }}>
                         <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Robinhood LP evidence</p>
+                        {isFullAccess && result.debugHolderStatus && result.blockscoutFallbackDecisionAudit && (() => {
+                          const decision = result.blockscoutFallbackDecisionAudit!
+                          const label = decision.finalStatus === 'fallback_succeeded'
+                            ? 'Blockscout fallback used'
+                            : decision.finalStatus === 'skipped_primary_succeeded'
+                              ? 'Blockscout skipped — primary succeeded'
+                              : decision.finalStatus === 'fallback_returned_no_rows'
+                                ? 'Blockscout returned no rows'
+                                : decision.finalStatus === 'fallback_unavailable' || decision.finalStatus === 'not_configured'
+                                  ? `Blockscout unavailable${decision.blockscoutFailureReason ? `: ${decision.blockscoutFailureReason}` : ''}`
+                                  : 'Blockscout not applicable for this LP model'
+                          return <div style={{ marginBottom: '9px', fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', overflowWrap: 'anywhere' }}>Provider Evidence: {label}</div>
+                        })()}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '8px' }}>
                           {sections.map(({ key, title, color, border }) => (
                             <div key={key} style={{ padding: '10px 11px', borderRadius: '10px', background: 'rgba(10,18,32,0.55)', border: `1px solid ${border}` }}>

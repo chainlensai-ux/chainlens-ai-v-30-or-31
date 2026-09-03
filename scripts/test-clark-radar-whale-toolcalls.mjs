@@ -40,6 +40,10 @@ assert.equal(classifyClarkToolIntent('smart money on base').intent, 'whale_alert
 assert.equal(classifyClarkToolIntent('whale activity').intent, 'whale_alerts_summary')
 assert.equal(classifyClarkToolIntent('Sync whale alerts').intent, 'whale_alerts_sync')
 assert.equal(classifyClarkToolIntent('Refresh whale alerts').intent, 'whale_alerts_sync')
+assert.equal(classifyClarkToolIntent('sync more wallets').intent, 'whale_alerts_sync')
+assert.equal(classifyClarkToolIntent('give me whale wallets').intent, 'whale_alerts_wallets')
+assert.equal(classifyClarkToolIntent('who is accumulating').intent, 'whale_alerts_wallets')
+assert.equal(classifyClarkToolIntent('open FOMO Board').intent, 'whale_alerts_open_fomo')
 assert.equal(classifyClarkToolIntent('What wallets moved recently?').intent, 'whale_alerts_recent')
 assert.equal(classifyClarkToolIntent('Any big buys/sells?').intent, 'whale_alerts_recent')
 assert.equal(classifyClarkToolIntent('What happened in whale alerts today?').intent, 'whale_alerts_recent')
@@ -59,6 +63,9 @@ assert.equal(classifyClarkToolIntent('what are whales accumulating').intent, 'wh
 assert.equal(classifyClarkToolIntent('are whales selling').intent, 'whale_alerts_selling')
 assert.equal(classifyClarkToolIntent('whales dumping').intent, 'whale_alerts_selling')
 assert.equal(classifyClarkToolIntent('sell-side whale pressure').intent, 'whale_alerts_selling')
+assert.equal(classifyClarkToolIntent('show biggest whale buys today').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('show biggest whale sells today').intent, 'whale_alerts_selling')
+assert.equal(classifyClarkToolIntent('which whale alerts matter').intent, 'whale_alerts_summary')
 // The reported feed question must keep its existing routing, unchanged.
 // MERGE NOTE, DISCLOSED: a concurrent fix independently added "latest whale alerts" to
 // WHALE_RECENT_RE, so this now classifies as whale_alerts_recent rather than _summary — both
@@ -80,6 +87,7 @@ for (const p of [
   'Open the radar', 'Base radar', 'Any whale alerts?', 'Sync whale alerts', 'Show whale movement',
   'Show Base whales', 'Show me Base whales', 'base whales', 'smart money on base',
   'What wallets moved recently?', 'Any big buys/sells?', 'Refresh whale alerts', 'What happened in whale alerts today?',
+  'give me whale wallets', 'who is accumulating', 'sync more wallets', 'open FOMO Board',
 ]) {
   assert.notEqual(classifyClarkToolIntent(p).intent, 'none', `"${p}" must not fall through to generic chat`)
 }
@@ -100,9 +108,17 @@ assert.equal(classifyClarkToolIntent('is this token safe').intent, 'none')
 assert.equal(classifyClarkToolIntent('hello').intent, 'none')
 
 const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
-assert.match(routeSrc, /lines\.push\("", "Wallets:"\)/, 'whale summary must list wallets from the Whale Alerts feed')
-assert.match(routeSrc, /lines\.push\("", "Buying:"\)/, 'whale summary must group verified buys from the same feed rows')
+const whalePageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.tsx', import.meta.url), 'utf8')
+assert.match(routeSrc, /Wallet \| Address \| Side \| Token \| USD evidence \| Signal/, 'whale summary must render a data-first table from the Whale Alerts feed')
+assert.match(routeSrc, /Token \| Chain \| Whale count \| Tx count/, 'directional whale answers must render the requested analyst table')
 assert.match(routeSrc, /groupClarkWhaleFlow\(rawAlerts, "buy"\)/, 'buy grouping must use the real feed, never invented sides')
+assert.match(routeSrc, /No verified sell-side whale flow found in the current feed\./, 'empty sell-side answers must be explicit')
+assert.match(routeSrc, /USD value unavailable/, 'missing whale USD must never render as zero verified')
+assert.doesNotMatch(routeSrc, /\$0 verified/, 'Clark must not present missing USD as $0 verified')
+assert.match(routeSrc, /effectivePlan !== "elite"/, 'Clark whale/FOMO data must be Elite-gated before loading the feed')
+assert.match(routeSrc, /clarkWhaleRoutingAudit/, 'every whale route must expose the requested routing audit')
+assert.match(routeSrc, /href: "\/terminal\/whale-alerts\?tab=fomo"/, 'FOMO CTA must open the FOMO Board directly')
+assert.match(whalePageSrc, /get\('tab'\) !== 'fomo'/, 'Whale Alerts page must honor Clark\'s direct FOMO Board CTA')
 
 // ─── Watchlist add command ─────────────────────────────────────────────────
 assert.equal(isClarkWatchlistAddCommand('add that to watchlist'), true)

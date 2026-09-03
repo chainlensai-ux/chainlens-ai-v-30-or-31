@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
+const pricingPlansFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'pricingPlans.ts'), 'utf8')
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -83,7 +84,8 @@ for (const prompt of ['scan BRETT', 'is AERO safe', 'who are the top holders of 
 
 // ─── 3. Deployer question — confirmed already working, no change made ───────────────────────────
 {
-  check('dev_wallet feature gating exists and is plan-based, not a silent no-op', routeFile.includes("case 'dev_wallet': return false;"))
+  check('dev_wallet feature gating exists and is plan-based, not a silent no-op', pricingPlansFile.includes("dev_wallet: 'token-scanner-full'"))
+  check('Clark delegates feature access to the canonical pricing plan helper', routeFile.includes('return clarkPlanAllows(plan, feature)'))
   check('a locked-feature message is built for free-plan users asking about the deployer (not a silent failure)', routeFile.includes("'dev_wallet': 'Dev Wallet Detector'"))
 }
 

@@ -137,6 +137,7 @@ async function run() {
     check('the resulting swap audit carries the real token identities decoded from the Blockscout log', result.swapDecodeAudits.some((a) => a.tokenIn === V4_NATIVE_CURRENCY_ADDRESS && a.tokenOut === TOKEN_A && a.confidence === 'high'))
     check('blockscoutEvidence honestly reports the fallback was used and contributed a verified swap', result.blockscoutEvidence.blockscoutFallbackUsed === true && result.blockscoutEvidence.blockscoutVerifiedSwap === true)
     check('blockscoutEvidence reports a real success status', result.blockscoutEvidence.blockscoutSucceeded === true && result.blockscoutEvidence.blockscoutStatus === 'ok')
+    check('wallet decision audit proves missing logs caused fallback', result.blockscoutFallbackDecisionAudit.shouldUseBlockscout === true && result.blockscoutFallbackDecisionAudit.finalStatus === 'fallback_succeeded')
   }
 
   // ── 4. Unknown logs -> skippedSwapLogs increases, never PnL ─────────────────────────────────
@@ -217,6 +218,7 @@ async function run() {
     check('GoldRush failing entirely triggers the Blockscout full-activity fallback', result.status === 'ok' && result.items.length === 2)
     check('the fallback is honestly recorded as such', result.blockscoutEvidence.blockscoutFallbackUsed === true && result.blockscoutEvidence.blockscoutSucceeded === true)
     check('transfer-only activity sourced entirely from Blockscout still has zero verified swaps', result.verifiedSwapCount === 0)
+    check('empty/failed primary wallet activity deterministically attempts Blockscout', result.blockscoutFallbackDecisionAudit.primarySucceeded === false && result.blockscoutFallbackDecisionAudit.blockscoutAttempted === true)
     const pnl = await resolveRobinhoodWalletPnl(wallet, result, { fetchImpl: async () => { throw new Error('should not be called') } })
     check('Blockscout-sourced transfer-only activity never enables PnL — same gate as GoldRush-sourced activity', pnl.status === 'disabled' && pnl.realizedPnlUsd === null)
   }
@@ -316,13 +318,25 @@ async function run() {
     const goldrushOnlyFetch = async (url) => {
       const u = String(url)
       if (u.includes('/transactions_v3/')) {
-        return { ok: true, json: async () => ({ data: { items: [] } }) }
+        return { ok: true, json: async () => ({ data: { items: [{
+          tx_hash: '0xprimarycomplete',
+          from_address: walletSkipped,
+          log_events: [{
+            decoded: { name: 'Transfer', params: [
+              { name: 'from', value: walletSkipped },
+              { name: 'to', value: walletFor(99) },
+              { name: 'value', value: '1' },
+            ] },
+            sender_address: walletFor(98),
+          }],
+        }] } }) }
       }
       throw new Error(`unexpected fetch in test 11a: ${u}`)
     }
     const skippedResult = await resolveRobinhoodWalletActivity(walletSkipped, { fetchImpl: goldrushOnlyFetch })
     check('GoldRush succeeding means Blockscout is never attempted at all', skippedResult.blockscoutAudits.length === 0 && skippedResult.blockscoutEvidence.blockscoutAttempted === false)
-    check('a real, honest skipped reason is recorded — never silence', typeof skippedResult.blockscoutSkippedReason === 'string' && skippedResult.blockscoutSkippedReason.includes('GoldRush'))
+    check('a real, honest skipped reason is recorded — never silence', skippedResult.blockscoutSkippedReason === 'Blockscout skipped — primary succeeded.')
+    check('decision audit records a successful primary skip', skippedResult.blockscoutFallbackDecisionAudit.finalStatus === 'skipped_primary_succeeded' && skippedResult.blockscoutFallbackDecisionAudit.shouldUseBlockscout === false)
     const auditSkipped = buildRobinhoodBlockscoutUsageAudit({ walletAddress: walletSkipped, robinhoodSelected: true, audits: skippedResult.blockscoutAudits, skippedReason: skippedResult.blockscoutSkippedReason })
     check('envHasBlockscout is true (key IS configured) while blockscoutAttempted is false — proves "configured" != "called"', auditSkipped.envHasBlockscout === true && auditSkipped.blockscoutAttempted === false)
     check('blockscoutFailureReason surfaces the real skipped reason, not a generic message', auditSkipped.blockscoutFailureReason === skippedResult.blockscoutSkippedReason)
@@ -332,7 +346,7 @@ async function run() {
     // explicit required field): blockscoutSkippedReason is its own distinct field now — "configured
     // but skipped" must log a real skipped reason as its own field, separate from
     // blockscoutFailureReason (which still also carries it for backward compatibility, per check above).
-    check('blockscoutSkippedReason carries the real skipped reason as its own field when nothing was attempted', typeof auditSkipped.blockscoutSkippedReason === 'string' && auditSkipped.blockscoutSkippedReason.includes('GoldRush'))
+    check('blockscoutSkippedReason carries the real skipped reason as its own field when nothing was attempted', auditSkipped.blockscoutSkippedReason === 'Blockscout skipped — primary succeeded.')
     check('blockscoutUsedForHoldings is honestly false — Blockscout is never used for holdings/pricing anywhere in this codebase', auditSkipped.blockscoutUsedForHoldings === false)
 
     // 11b. Blockscout genuinely attempted and succeeds for a per-tx logs call -> real endpoint/status/count logged.
@@ -403,7 +417,13 @@ async function run() {
     // Acceptance scenario 3: Blockscout intentionally skipped (GoldRush already succeeded) with a real reason.
     __resetRobinhoodBlockscoutRateLimitForTest()
     const skipWallet = walletFor(27)
-    const skipFetch = async (url) => (String(url).includes('/transactions_v3/') ? { ok: true, json: async () => ({ data: { items: [] } }) } : (() => { throw new Error('unexpected fetch') })())
+    const skipFetch = async (url) => (String(url).includes('/transactions_v3/') ? { ok: true, json: async () => ({ data: { items: [{
+      tx_hash: '0xcompleteprimary2',
+      from_address: skipWallet,
+      log_events: [{ decoded: { name: 'Transfer', params: [
+        { name: 'from', value: skipWallet }, { name: 'to', value: walletFor(97) }, { name: 'value', value: '1' },
+      ] }, sender_address: walletFor(96) }],
+    }] } }) } : (() => { throw new Error('unexpected fetch') })())
     const skipActivity = await resolveRobinhoodWalletActivity(skipWallet, { fetchImpl: skipFetch })
     const skipAudit = buildRobinhoodBlockscoutUsageAudit({ walletAddress: skipWallet, robinhoodSelected: true, audits: skipActivity.blockscoutAudits, skippedReason: skipActivity.blockscoutSkippedReason })
     check('scenario 3 (intentionally skipped): blockscoutAttempted false with a real, non-generic skipped reason', skipAudit.blockscoutAttempted === false && typeof skipAudit.blockscoutSkippedReason === 'string' && skipAudit.blockscoutSkippedReason.length > 0)

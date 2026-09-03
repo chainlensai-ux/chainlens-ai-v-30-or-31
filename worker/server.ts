@@ -27,15 +27,16 @@
 // opportunistically for local development convenience only (identical pattern to
 // walletEngineTest.js elsewhere in this repo) and is a no-op if the package isn't installed.
 
+import { createRequire } from 'node:module'
+import express, { type Request, type Response } from 'express'
+import { router } from '../src/deployment/index'
+
+const requireOptional = createRequire(import.meta.url)
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  require('dotenv').config()
+  requireOptional('dotenv').config()
 } catch {
   // dotenv not installed — fine; Railway (and any real deployment) injects env vars directly.
 }
-
-import express, { type Request, type Response } from 'express'
-import { router } from '../src/deployment/index'
 import { handleApiError } from '../src/deployment/api'
 
 const app = express()

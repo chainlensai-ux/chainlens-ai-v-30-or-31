@@ -40,7 +40,7 @@
 //     this requires and why it's safe). pnlStatus stays 'disabled' whenever verifiedSwapCount is 0;
 //     never enabled from transfer volume or activity alone.
 
-import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
+import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import {
   decodeRobinhoodSwapLog, resolvePoolCurrenciesViaRpc, fetchTokenDecimalsViaRpc, buildRobinhoodMatchedLotsFromSwaps,
@@ -52,6 +52,11 @@ import {
   buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
   type BlockscoutEvidenceAudit,
 } from './robinhoodBlockscoutEvidence'
+import {
+  createBlockscoutFallbackDecisionAudit,
+  logBlockscoutFallbackDecisionAudit,
+  type BlockscoutFallbackDecisionAudit,
+} from './robinhoodBlockscoutFallbackDecision'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -179,6 +184,7 @@ export type RobinhoodWalletActivityResult = {
   // WAS attempted (a real per-call failure reason takes priority in that case) or when Robinhood
   // Chain/Blockscout simply aren't configured (already distinguishable via envHasBlockscout).
   blockscoutSkippedReason: string | null
+  blockscoutFallbackDecisionAudit: BlockscoutFallbackDecisionAudit
   reason: string | null
   fromCache: boolean
 }
@@ -374,6 +380,7 @@ export type RobinhoodWalletScannerAudit = {
   // caller with that context (workers/walletScanV2.ts) overrides those three fields when logging its
   // own copy, reusing everything else here unchanged.
   robinhoodBlockscoutUsageAudit: RobinhoodBlockscoutUsageAudit
+  blockscoutFallbackDecisionAudit: BlockscoutFallbackDecisionAudit | null
 }
 
 // KEPT FOR BACKWARD COMPATIBILITY, DISCLOSED: Phase 2's own test pins this exact wording, and no
@@ -506,6 +513,7 @@ export function buildRobinhoodWalletScannerAudit(input: {
     blockscoutRejectedReason: blockscout.blockscoutRejectedReason,
     blockscoutVerifiedSwap: blockscout.blockscoutVerifiedSwap,
     robinhoodBlockscoutUsageAudit,
+    blockscoutFallbackDecisionAudit: input.activity?.blockscoutFallbackDecisionAudit ?? null,
   }
 }
 
@@ -765,8 +773,8 @@ async function fetchRobinhoodTransactionsViaBlockscout(
   // FALLBACK-USED, DISCLOSED: marked true only once real data was actually obtained — an attempt
   // that itself failed is still recorded in the merged audit's status/error, but never claimed as
   // "fallback used" (that would misrepresent a failed attempt as a successful substitution).
-  if (txResult.data != null) txResult.audit.blockscoutFallbackUsed = true
-  if (transfersResult.data != null) transfersResult.audit.blockscoutFallbackUsed = true
+  if ((txResult.data?.items?.length ?? 0) > 0) txResult.audit.blockscoutFallbackUsed = true
+  if ((transfersResult.data?.items?.length ?? 0) > 0) transfersResult.audit.blockscoutFallbackUsed = true
   // REAL ITEM COUNTS, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): the actual
   // number of rows this specific response carried — 0 for a real, successful, genuinely-empty
   // response, null when the call never received a usable response at all (attempt failed/skipped).
@@ -856,39 +864,79 @@ export type ResolveRobinhoodActivityDeps = {
 }
 
 export async function resolveRobinhoodWalletActivity(wallet: string, deps: ResolveRobinhoodActivityDeps): Promise<RobinhoodWalletActivityResult> {
-  if (deps.cached && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
+  if (deps.cached && deps.cached.blockscoutFallbackDecisionAudit && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
+    logBlockscoutFallbackDecisionAudit(deps.cached.blockscoutFallbackDecisionAudit)
     return { ...deps.cached, fromCache: true }
   }
-  if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, blockscoutEvidence: emptyBlockscoutEvidenceAudit(), blockscoutAudits: [], blockscoutSkippedReason: null, reason: 'Robinhood Chain is not configured.', fromCache: false }
+  if (!isRobinhoodChainFeatureEnabled()) {
+    const decision = logBlockscoutFallbackDecisionAudit(createBlockscoutFallbackDecisionAudit({
+      feature: 'wallet_scanner', primaryAttempted: false, primarySucceeded: false, primaryRowsReturned: 0,
+      primaryMissingFields: ['wallet_activity', 'tx_logs'], shouldUseBlockscout: false,
+      blockscoutConfigured: false, blockscoutAttempted: false, blockscoutEndpointsTried: [],
+      blockscoutRowsReturned: 0, blockscoutSuccess: false,
+      blockscoutFailureReason: 'Robinhood Chain feature is not enabled', finalStatus: 'not_configured',
+    }))
+    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, blockscoutEvidence: emptyBlockscoutEvidenceAudit(), blockscoutAudits: [], blockscoutSkippedReason: null, blockscoutFallbackDecisionAudit: decision, reason: 'Robinhood Chain is not configured.', fromCache: false }
   }
   const blockscoutAudits: BlockscoutEvidenceAudit[] = []
   let blockscoutSkippedReason: string | null = null
   let { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
-  // BLOCKSCOUT FALLBACK (Case A), DISCLOSED: only reached when GoldRush's transactions_v3 has
-  // already failed entirely — never a substitute for a real GoldRush success, and never attempted
-  // when Blockscout itself isn't configured (isRobinhoodBlockscoutConfigured gates every real call
-  // inside fetchRobinhoodTransactionsViaBlockscout too, so this is a cheap no-op otherwise).
-  if (txs) {
+  const primaryRowsReturned = txs?.length ?? 0
+  const primaryMissingFields = new Set<string>()
+  const primaryTxHashesMissingLogs = new Set(
+    (txs ?? []).filter((tx) => tx.tx_hash && (!Array.isArray(tx.log_events) || tx.log_events.length === 0)).map((tx) => tx.tx_hash!),
+  )
+  if (!txs || txs.length === 0) primaryMissingFields.add('wallet_activity')
+  if (txs?.some((tx) => !Array.isArray(tx.log_events) || tx.log_events.length === 0)) primaryMissingFields.add('tx_logs')
+  if (txs?.some((tx) => (tx.log_events ?? []).some((log) => log.decoded?.name !== ERC20_TRANSFER_EVENT_NAME && (!Array.isArray(log.raw_log_topics) || log.raw_log_topics.length === 0)))) primaryMissingFields.add('tx_logs')
+  const primarySucceeded = primaryRowsReturned > 0 && primaryMissingFields.size === 0
+  const shouldUseBlockscout = primaryMissingFields.size > 0
+  // BLOCKSCOUT FALLBACK (Case A), DISCLOSED: reached when GoldRush returns no activity OR activity
+  // that is incomplete for decoding because transaction logs are missing. A complete primary
+  // response always skips it; a missing field deterministically enables it.
+  if (!shouldUseBlockscout) {
     // SKIPPED, WITH REASON, DISCLOSED (requirement 2's explicit "skipped, with reason" case): GoldRush
     // already returned usable data — Blockscout is never even attempted for this call.
-    blockscoutSkippedReason = 'GoldRush transactions_v3 already returned usable data — Blockscout fallback was not needed.'
+    blockscoutSkippedReason = 'Blockscout skipped — primary succeeded.'
   } else if (!isRobinhoodBlockscoutConfigured()) {
     blockscoutSkippedReason = 'BLOCKSCOUT_API_KEY not configured (or Robinhood Chain unavailable) — Blockscout fallback could not be attempted.'
   } else {
     const fallback = await fetchRobinhoodTransactionsViaBlockscout(wallet, deps.fetchImpl)
     blockscoutAudits.push(...fallback.audits)
-    if (fallback.items) {
-      txs = fallback.items
+    if (fallback.items && fallback.items.length > 0) {
+      const byHash = new Map((txs ?? []).filter((tx) => tx.tx_hash).map((tx) => [tx.tx_hash!, tx]))
+      for (const fallbackTx of fallback.items) {
+        if (!fallbackTx.tx_hash) continue
+        const primaryTx = byHash.get(fallbackTx.tx_hash)
+        byHash.set(fallbackTx.tx_hash, primaryTx ? {
+          ...fallbackTx,
+          ...primaryTx,
+          log_events: [...(primaryTx.log_events ?? []), ...(fallbackTx.log_events ?? [])],
+        } : fallbackTx)
+      }
+      txs = [...byHash.values()]
       reason = null
     }
   }
   if (!txs) {
+    const merged = mergeBlockscoutEvidenceAudits(blockscoutAudits)
+    const decision = logBlockscoutFallbackDecisionAudit(createBlockscoutFallbackDecisionAudit({
+      feature: 'wallet_scanner', primaryAttempted: true, primarySucceeded, primaryRowsReturned,
+      primaryMissingFields: [...primaryMissingFields], shouldUseBlockscout,
+      blockscoutConfigured: isRobinhoodBlockscoutConfigured(), blockscoutAttempted: merged.blockscoutAttempted,
+      blockscoutEndpointsTried: [...new Set(blockscoutAudits.map((a) => a.blockscoutEndpoint).filter((v): v is string => Boolean(v)))],
+      blockscoutRowsReturned: blockscoutAudits.reduce((sum, a) => sum + (a.itemCount ?? 0), 0),
+      blockscoutSuccess: false,
+      blockscoutFailureReason: merged.blockscoutRejectedReason ?? merged.blockscoutError ?? reason ?? 'Blockscout returned no rows',
+      finalStatus: !isRobinhoodBlockscoutConfigured() ? 'not_configured'
+        : (merged.blockscoutError || merged.blockscoutRejectedReason) ? 'fallback_unavailable'
+          : 'fallback_returned_no_rows',
+    }))
     return {
       status: reason === 'no_api_key' ? 'not_configured' : 'unavailable',
       wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0,
       blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
-      blockscoutAudits, blockscoutSkippedReason,
+      blockscoutAudits, blockscoutSkippedReason, blockscoutFallbackDecisionAudit: decision,
       reason: reason ?? 'no_data', fromCache: false,
     }
   }
@@ -920,7 +968,20 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     // Token transfers — decoded ERC-20 Transfer log events only. NO buy/sell/swap classification is
     // ever applied here, per this phase's own hard rule — every row is either an incoming or
     // outgoing token movement, nothing more is claimed.
-    for (const log of tx.log_events ?? []) {
+    let txLogs = tx.log_events ?? []
+    if ((txLogs.length === 0 || primaryTxHashesMissingLogs.has(tx.tx_hash)) && isRobinhoodBlockscoutConfigured()) {
+      const fetched = await fetchBlockscoutLogsForTx(tx.tx_hash, deps.fetchImpl, blockscoutLogsByTx)
+      blockscoutAudits.push(fetched.audit)
+      if ((fetched.logs?.length ?? 0) > 0) {
+        fetched.audit.blockscoutFallbackUsed = true
+        txLogs = [...txLogs, ...fetched.logs!.map((log) => ({
+          sender_address: log.address ?? undefined,
+          raw_log_topics: (log.topics ?? []).filter((topic): topic is string => typeof topic === 'string'),
+          raw_log_data: log.data ?? undefined,
+        }))]
+      }
+    }
+    for (const log of txLogs) {
       if (log.decoded?.name !== ERC20_TRANSFER_EVENT_NAME) {
         // PHASE 3, DISCLOSED: attempt a real, verified swap decode before falling back to the
         // Phase 2 "skipped" count. Only a log from the one verified Robinhood pool contract, whose
@@ -937,7 +998,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
         // transaction; decodeRobinhoodSwapLog independently re-verifies the address/topic0/pool
         // before ever claiming a decoded swap, so a wrong correlation only yields another honest
         // rejection below, never a false "verified" result.
-        if (logTopics === undefined && isRobinhoodBlockscoutConfigured()) {
+        if ((!Array.isArray(logTopics) || logTopics.length === 0) && isRobinhoodBlockscoutConfigured()) {
           const fetched = await fetchBlockscoutLogsForTx(tx.tx_hash, deps.fetchImpl, blockscoutLogsByTx)
           blockscoutAudits.push(fetched.audit)
           const match = fetched.logs?.find((l) => l.address && logAddress && l.address.toLowerCase() === String(logAddress).toLowerCase())
@@ -986,11 +1047,29 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     }
   }
   const verifiedSwapCount = swapDecodeAudits.filter((a) => a.confidence === 'high').length
+  const mergedBlockscout = mergeBlockscoutEvidenceAudits(blockscoutAudits)
+  const blockscoutRowsReturned = blockscoutAudits.reduce((sum, audit) => sum + (audit.itemCount ?? 0), 0)
+  const blockscoutSuccess = blockscoutAudits.some((audit) => audit.blockscoutFallbackUsed && (audit.itemCount ?? 0) > 0)
+  const decision = logBlockscoutFallbackDecisionAudit(createBlockscoutFallbackDecisionAudit({
+    feature: 'wallet_scanner', primaryAttempted: true, primarySucceeded, primaryRowsReturned,
+    primaryMissingFields: [...primaryMissingFields], shouldUseBlockscout,
+    blockscoutConfigured: isRobinhoodBlockscoutConfigured(), blockscoutAttempted: mergedBlockscout.blockscoutAttempted,
+    blockscoutEndpointsTried: [...new Set(blockscoutAudits.map((a) => a.blockscoutEndpoint).filter((v): v is string => Boolean(v)))],
+    blockscoutRowsReturned, blockscoutSuccess,
+    blockscoutFailureReason: shouldUseBlockscout && !blockscoutSuccess
+      ? (mergedBlockscout.blockscoutRejectedReason ?? mergedBlockscout.blockscoutError ?? 'Blockscout returned no rows')
+      : null,
+    finalStatus: !shouldUseBlockscout ? 'skipped_primary_succeeded'
+      : blockscoutSuccess ? 'fallback_succeeded'
+        : !isRobinhoodBlockscoutConfigured() ? 'not_configured'
+          : (mergedBlockscout.blockscoutError || mergedBlockscout.blockscoutRejectedReason) ? 'fallback_unavailable'
+            : 'fallback_returned_no_rows',
+  }))
   return {
     status: items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
     wallet, chainSlug: 'robinhood', items, skippedSwapLogs, swapDecodeAudits, verifiedSwapCount,
-    blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
-    blockscoutAudits, blockscoutSkippedReason,
+    blockscoutEvidence: mergedBlockscout,
+    blockscoutAudits, blockscoutSkippedReason, blockscoutFallbackDecisionAudit: decision,
     reason: items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
     fromCache: false,
   }
