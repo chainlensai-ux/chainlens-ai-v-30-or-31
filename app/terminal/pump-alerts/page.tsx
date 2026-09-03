@@ -331,6 +331,17 @@ export default function PumpAlertsPage() {
           .pump-card-grid   { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
           .pump-card-actions { flex-wrap: wrap !important; }
         }
+        /* CLARK PREVIEW, MOBILE FIX, DISCLOSED (requested: "each box doesn't fit, can't see
+           everything like the report"): .pump-clark-preview is a hover-reveal affordance
+           (max-height:0 by default, expanded only by .pump-card:hover) — a real interaction on
+           desktop, but on a touch device there's no real hover: some mobile browsers never trigger
+           it at all (text stays fully invisible), others trigger a "sticky" hover on tap that then
+           gets stuck at the fixed 74px cap, clipping the two-line copy mid-sentence exactly as
+           reported. A coarse pointer (no mouse) never gets a meaningful hover state, so show the
+           full block plainly there instead of gating it behind one. */
+        @media (pointer: coarse) {
+          .pump-clark-preview { max-height: none !important; opacity: 1 !important; overflow: visible !important; transform: none !important; }
+        }
       `}</style>
 
       <div className="pump-main" style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>

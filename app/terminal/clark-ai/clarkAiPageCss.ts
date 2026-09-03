@@ -107,5 +107,17 @@ export const CLARK_AI_PAGE_CSS = `
         .clk-empty { margin:0; color:#7c8aa1; font-size:13px; line-height:1.55; padding:12px; border:1px dashed rgba(148,163,184,.16); border-radius:11px; background:rgba(148,163,184,.03); }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { display:flex; flex-direction:column; } }
         @media (max-width: 780px) { .clk-shell { padding:12px 14px 96px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; flex-direction:column; } .clk-thread { min-height:0; padding:18px 16px 12px; } .clk-input-row { grid-template-columns:40px minmax(0,1fr) 48px; min-height:66px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } .clk-msg { max-width:100%; } }
+        /* MOBILE SECTION SEPARATION, DISCLOSED (requested: "make sure it all fits and is sized well
+           for mobile"): .clk-intel (Recent Intelligence, end of .clk-main) and .clk-side's own cards
+           (Context, Chat History) are translucent (rgba backgrounds around 60% opacity) and stack
+           with only the shell's own row-gap between them once the layout collapses to one column —
+           on a narrow, short mobile viewport that reads as one card bleeding into the next instead of
+           two clearly separate sections. More opaque backgrounds + explicit top spacing keep every
+           section legibly boundaried at small sizes without changing the desktop layout at all. */
+        @media (max-width: 1100px) {
+          .clk-intel { margin-top:18px; }
+          .clk-side { margin-top:8px; gap:18px; }
+          .clk-side-card, .clk-intel-card, .clk-intel-empty-row { background-color:rgba(6,11,22,.92) !important; }
+        }
         @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:28px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } }
       `

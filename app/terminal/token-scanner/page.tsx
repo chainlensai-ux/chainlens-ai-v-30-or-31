@@ -4909,9 +4909,15 @@ export default function TerminalTokenScanner() {
       if (rejection) { setError(SOLANA_MINT_REJECTION_MESSAGE[rejection]); return }
       setLoading(true)
       try {
+        // AUTH FIX, DISCLOSED: this branch never attached the session token, unlike the EVM scan
+        // path below it — /api/token requires a real, verified Supabase session for every scan
+        // (account-required gate), so a Solana scan always failed with "unauthorized" no matter
+        // what was typed. Same session lookup + Authorization header as the EVM path.
+        const { data: _sd } = await supabase.auth.getSession()
+        const _tok = _sd.session?.access_token
         const res = await fetch('/api/token', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
           body: JSON.stringify({ contract: q, chain: 'solana' }),
         })
         const json = await res.json().catch(() => null)
@@ -5187,9 +5193,13 @@ export default function TerminalTokenScanner() {
     setSolanaDeepLoading(true)
     setSolanaDeepError(null)
     try {
+      // AUTH FIX, DISCLOSED: same missing-Authorization-header bug as the main Solana scan path —
+      // this call always failed "unauthorized" without the session token attached.
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
       const res = await fetch('/api/token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
         body: JSON.stringify({ contract: solanaResult.mintAddress, chain: 'solana', deepDev: true }),
       })
       const json = await res.json().catch(() => null)
@@ -5212,9 +5222,13 @@ export default function TerminalTokenScanner() {
     setSolanaClusterLoading(true)
     setSolanaClusterError(null)
     try {
+      // AUTH FIX, DISCLOSED: same missing-Authorization-header bug as the main Solana scan path —
+      // this call always failed "unauthorized" without the session token attached.
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
       const res = await fetch('/api/token', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
         body: JSON.stringify({ contract: solanaResult.mintAddress, chain: 'solana', deepCluster: true }),
       })
       const json = await res.json().catch(() => null)

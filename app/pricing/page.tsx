@@ -257,8 +257,16 @@ export default function PricingPage() {
     }
   }
 
+  // MOBILE SCROLL FIX, DISCLOSED: the root element below previously set its own overflowY:'auto' —
+  // a second, nested scroll container competing with the page's natural body scroll for no reason
+  // (nothing here scrolls to a ref/anchor inside it). On mobile Safari a nested overflow:auto region
+  // like this is the classic cause of "scroll stops partway, can't reach the plan buttons below" —
+  // the browser's dynamic toolbar resizing the viewport mid-scroll can leave the inner container's
+  // height stale. Only overflowX stays (needed to clip the decorative background arcs/blobs);
+  // vertical scrolling is left entirely to the document, and 100dvh replaces 100vh so the min height
+  // tracks the real visible viewport instead of the address-bar-inclusive one.
   return (
-    <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflowX: 'hidden', overflowY: 'auto', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+    <div style={{ minHeight: '100dvh', background: '#03060f', color: '#f8fafc', position: 'relative', overflowX: 'hidden', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
       <style>{`
         html,body{max-width:100%;overflow-x:hidden}body{margin:0}
         /* PROFESSIONAL POLISH PASS, DISCLOSED (pricing page task): calmer glass cards, static
