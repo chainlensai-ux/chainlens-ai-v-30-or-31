@@ -4,9 +4,13 @@ import Image from 'next/image'
 import Link from 'next/link'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
+import { usePathname } from 'next/navigation'
 import ConnectWallet from '@/components/ConnectWallet'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
 import { useAccount } from '@/lib/usePlan'
+import { CLARK_DAILY_LIMITS } from '@/lib/pricingPlans'
+import { readClarkUsage } from '@/app/terminal/clark-ai/clarkAiPageConfig'
 
 
 
@@ -336,6 +340,16 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
   const { plan: storePlan, email: accountEmail, betaEliteActive: betaElite } = useAccount()
   const plan = (storePlan ?? 'free') as UserPlan
 
+  // USAGE VISIBILITY, DISCLOSED (Token Scanner "show how much you have" fix): the account row only
+  // ever showed the plan badge, with no way to tell how much of today's Clark AI allowance (the one
+  // real daily cap on Free — Token Scanner scans themselves are unlimited on every plan, see
+  // lib/pricingPlans.ts) is left. Reuses the exact same local counter the Clark AI page itself
+  // already reads/bumps (clarkAiPageConfig.ts) — no new source of truth, just surfaced here too.
+  const pathname = usePathname()
+  const [clarkUsed, setClarkUsed] = useState(0)
+  useEffect(() => { setClarkUsed(readClarkUsage()) }, [pathname])
+  const clarkLimit = CLARK_DAILY_LIMITS[plan] ?? CLARK_DAILY_LIMITS.free
+
   const initials = (accountEmail?.[0] ?? 'A').toUpperCase()
   const shortEmail = accountEmail
     ? accountEmail.length > 18
@@ -614,7 +628,22 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
               </span>
             )}
           </Link>
-        ) : accountEmail === undefined ? (
+        ) : null}
+        {accountEmail && !betaElite ? (
+          <div
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '3px 7px 1px', fontSize: '10px', fontFamily: 'var(--font-plex-mono, monospace)',
+              color: 'rgba(148,163,184,0.75)',
+            }}
+          >
+            <span>Clark AI today</span>
+            <span style={{ color: clarkUsed >= clarkLimit ? '#f87171' : 'rgba(203,213,225,0.9)', fontWeight: 600 }}>
+              {clarkUsed} / {clarkLimit}
+            </span>
+          </div>
+        ) : null}
+        {accountEmail === undefined ? (
           /* UNKNOWN SESSION, DISCLOSED (performance + UX optimization task): `undefined` means the
              session has not resolved yet — distinct from `null`, which means resolved-and-signed-out.
              Rendering "Sign In / Sign Up" here would flash a confident signed-out state at a user who
@@ -625,7 +654,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
             className="cl-skeleton"
             style={{ height: '32px', borderRadius: '7px', marginTop: '2px', width: '100%' }}
           />
-        ) : (
+        ) : !accountEmail ? (
           <div className="flex" style={{ gap: '6px' }}>
             <Link
               href="/sign-in"
@@ -673,7 +702,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
               Sign Up
             </Link>
           </div>
-        )}
+        ) : null}
             </div>
     </aside>
   )
