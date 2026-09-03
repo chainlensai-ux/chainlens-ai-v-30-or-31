@@ -13,6 +13,21 @@ import { getWalletFromV2 } from "@/lib/server/v2Adapters";
 import { runWalletScan } from "@/lib/server/walletScanOrchestrator";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import {
+  classifyClarkMarketIntent as classifyClarkCanonicalMarketIntent,
+  fetchClarkCanonicalMarket,
+  fetchDexScreenerContractMarket,
+  formatClarkLiveMarketAnswer,
+  formatClarkLiveMarketUnavailable,
+  formatClarkPumpingAnswer,
+  formatClarkPumpingNeedToken,
+  formatClarkCanonicalScanAsk,
+  pumpingSnapshotFromTokenEvidence,
+  shouldShowCanonicalAmbiguity,
+  matchCanonicalAsset,
+  isClarkCanonicalMarketPrompt,
+  type ClarkIntentAudit,
+} from "@/lib/server/clarkMarketIntent";
+import {
   runClarkLiquidityCheck,
   formatClarkLiquidityCheck,
   formatClarkLiquidityFollowup,
@@ -9282,6 +9297,101 @@ async function handleClarkTrackWallet(origin: string, authHeader: string | null,
   }
 }
 
+function clarkMarketReply(input: {
+  chain: SupportedChain | "robinhood";
+  intent: string;
+  analysis: string;
+  audit: ClarkIntentAudit;
+  toolsUsed?: string[];
+}): Record<string, unknown> {
+  return {
+    feature: "clark-ai",
+    chain: input.chain,
+    mode: "analysis",
+    intent: input.intent,
+    toolsUsed: input.toolsUsed ?? [],
+    analysis: input.analysis,
+    clarkIntentAudit: input.audit,
+    quotaConsumed: false,
+    ui: { intentBadge: input.intent === "pumping" ? "Pump Read" : "Live Market", actions: [] },
+  };
+}
+
+async function answerClarkMarketOrPumping(input: {
+  prompt: string;
+  chain: SupportedChain | "robinhood";
+  sessionMem: ClarkSessionMemory;
+  body: ClarkRequestBody;
+}): Promise<Record<string, unknown> | null> {
+  const lastTok = input.sessionMem.lastToken;
+  const appTok = input.body.appContext?.tokenSummary;
+  const selectedToken = typeof input.body.appContext?.selectedToken === "string"
+    ? input.body.appContext.selectedToken
+    : input.body.appContext?.selectedToken?.address ?? input.body.appContext?.selectedToken?.contract ?? null;
+  const activeAddress = lastTok?.address ?? appTok?.address ?? input.body.appContext?.currentTokenAddress ?? selectedToken ?? null;
+  const classified = classifyClarkCanonicalMarketIntent(input.prompt, {
+    hasActiveToken: Boolean(activeAddress),
+    chainHint: extractRequestedChainFromPrompt(input.prompt),
+  });
+
+  if (classified.detectedIntent === "live_price" || classified.detectedIntent === "market_cap" || classified.detectedIntent === "volume") {
+    const asset = classified.canonicalAsset;
+    if (!asset) return null;
+    const fetched = await fetchClarkCanonicalMarket(asset);
+    if (!fetched.ok) {
+      const audit = { ...classified.audit, providerRoute: "coingecko", providerUsed: null, failureReason: fetched.reason, finalAnswerType: "live_market_unavailable" };
+      return clarkMarketReply({ chain: input.chain, intent: "live_market", analysis: formatClarkLiveMarketUnavailable(asset, fetched.reason), audit, toolsUsed: ["coingecko_markets"] });
+    }
+    const audit = { ...classified.audit, providerRoute: "coingecko", providerUsed: "coingecko", finalAnswerType: classified.detectedIntent };
+    return clarkMarketReply({
+      chain: input.chain,
+      intent: "live_market",
+      analysis: formatClarkLiveMarketAnswer(fetched.snapshot, classified.detectedIntent),
+      audit,
+      toolsUsed: ["coingecko_markets"],
+    });
+  }
+
+  if (classified.detectedIntent === "pumping") {
+    const target = classified.address
+      ?? activeAddress
+      ?? null;
+    if (!target) {
+      const audit = { ...classified.audit, providerRoute: "need_token", finalAnswerType: "need_token", failureReason: "no_active_token" };
+      return clarkMarketReply({ chain: input.chain, intent: "pumping", analysis: formatClarkPumpingNeedToken(), audit });
+    }
+    const sameMemory = lastTok && lastTok.address.toLowerCase() === String(target).toLowerCase();
+    const ev = sameMemory ? (lastTok.cachedEvidence ?? lastTok.normalizedEvidence ?? null) : null;
+    if (ev?.market && (ev.market.change24h != null || ev.market.volume24h != null || ev.market.price != null || ev.market.liquidity != null)) {
+      const snap = pumpingSnapshotFromTokenEvidence({
+        symbol: ev.token?.symbol ?? lastTok?.symbol ?? appTok?.symbol,
+        address: target,
+        chain: ev.chain ?? lastTok?.chain ?? appTok?.chain ?? null,
+        market: ev.market,
+        holders: ev.holders,
+        source: "active token context (Token Scanner state)",
+      });
+      const audit = { ...classified.audit, activeContextUsed: true, addressDetected: Boolean(classified.address), providerRoute: "active_token_context", providerUsed: "token_scanner_state", finalAnswerType: "pumping" };
+      return clarkMarketReply({ chain: input.chain, intent: "pumping", analysis: formatClarkPumpingAnswer(snap), audit, toolsUsed: ["active_token_context"] });
+    }
+    const ds = await fetchDexScreenerContractMarket(target);
+    if (ds.ok) {
+      const audit = { ...classified.audit, activeContextUsed: Boolean(sameMemory), addressDetected: true, providerRoute: "dexscreener_contract", providerUsed: "dexscreener", finalAnswerType: "pumping" };
+      return clarkMarketReply({ chain: input.chain, intent: "pumping", analysis: formatClarkPumpingAnswer(ds.snapshot), audit, toolsUsed: ["dexscreener_token"] });
+    }
+    const audit = { ...classified.audit, providerRoute: "dexscreener_contract", providerUsed: null, failureReason: ds.reason, finalAnswerType: "pumping_unavailable" };
+    return clarkMarketReply({
+      chain: input.chain,
+      intent: "pumping",
+      analysis: `I have the token, but live pump/market fields did not return (${ds.reason}). I will not fill n/a scores. Paste the contract again or run Token Scanner.`,
+      audit,
+      toolsUsed: ["dexscreener_token"],
+    });
+  }
+
+  return null;
+}
+
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory): Promise<Record<string, unknown>> {
   // Ensure we always have a session memory object even for recursive calls
   if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
@@ -9331,6 +9441,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
+
+  {
+    const marketReply = await answerClarkMarketOrPumping({ prompt, chain, sessionMem, body });
+    if (marketReply) return marketReply;
+  }
 
   // CLARK-LIVE-MARKET-DATA, DISCLOSED (new capability — "Clark should know live crypto basics").
   // Previously a bare symbol question with no contract address ("What is ETH price?", "PEPE
@@ -9389,10 +9504,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           };
         }
         if (marketResolution.audit.finalStatus === "ambiguous_symbol" && marketResolution.ambiguousMatches) {
+          const ambigSubject = marketAddress ?? marketSymbol ?? "";
+          if (!shouldShowCanonicalAmbiguity(ambigSubject, prompt)) {
+            const asset = matchCanonicalAsset(ambigSubject) ?? matchCanonicalAsset(prompt);
+            return {
+              feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: marketIntent,
+              toolsUsed: marketResolution.audit.providersTried,
+              analysis: asset ? formatClarkCanonicalScanAsk(asset) : `That's a major asset ticker. Paste a contract to scan a specific token, or ask for the live price.`,
+              ui: { intentBadge: "Live Market", actions: [] },
+              clarkMarketDataAudit: marketResolution.audit,
+            };
+          }
           return {
             feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: marketIntent,
             toolsUsed: marketResolution.audit.providersTried,
-            analysis: formatClarkMarketAmbiguousAnswer(marketAddress ?? marketSymbol ?? "", marketResolution.ambiguousMatches),
+            analysis: formatClarkMarketAmbiguousAnswer(ambigSubject, marketResolution.ambiguousMatches),
             ui: { intentBadge: "Live Market — Ambiguous", actions: [] },
             clarkMarketDataAudit: marketResolution.audit,
           };
@@ -9600,7 +9726,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       || isHoldersCheckPrompt(prompt)
       || isDeployerCheckPrompt(prompt)
       || Boolean(slashEarly)
-      || (isTokenFollowupPrompt(prompt) && hasAnalystContext);
+      || (isTokenFollowupPrompt(prompt) && hasAnalystContext)
+      || isClarkCanonicalMarketPrompt(prompt)
+      || classifyClarkCanonicalMarketIntent(prompt, { hasActiveToken: hasAnalystContext }).detectedIntent === "pumping";
     const directAnswer = skipDirectAnswer ? null : buildClarkDirectAnswer(basicIntent, prompt);
     if (directAnswer) {
       return {
@@ -14655,6 +14783,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: buildLockedResponse('token_full_report', 'ask about token concepts or request a basic preview.') };
     }
     if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
+      const q = evidence.tokenResolve.query;
+      if (!shouldShowCanonicalAmbiguity(q, prompt)) {
+        const asset = matchCanonicalAsset(q) ?? matchCanonicalAsset(prompt);
+        return {
+          feature: "clark-ai",
+          chain,
+          mode: "analysis",
+          analysis: asset ? formatClarkCanonicalScanAsk(asset) : `That's a major asset ticker. Paste a contract address to scan a specific token, or ask for the live price.`,
+          intent: plan.intent,
+          toolsUsed,
+        };
+      }
       const options = evidence.tokenResolve.matches.slice(0, 4).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
       return {
         feature: "clark-ai",
@@ -15238,6 +15378,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   if (plan.intent === "token_analysis") {
     if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
+      const q = evidence.tokenResolve.query;
+      if (!shouldShowCanonicalAmbiguity(q, prompt)) {
+        const asset = matchCanonicalAsset(q) ?? matchCanonicalAsset(prompt);
+        return {
+          feature: "clark-ai",
+          chain,
+          mode: "analysis",
+          analysis: asset ? formatClarkCanonicalScanAsk(asset) : `That's a major asset ticker. Paste a contract address to scan a specific token, or ask for the live price.`,
+          intent: plan.intent,
+          toolsUsed,
+        };
+      }
       const options = evidence.tokenResolve.matches.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
       return {
         feature: "clark-ai",

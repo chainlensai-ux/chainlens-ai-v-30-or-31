@@ -3,6 +3,7 @@
 
 export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent } from "../clarkIntent.ts";
 import { isValidSolanaMintAddress } from "../solanaAddress.ts";
+import { classifyClarkMarketIntent } from "./clarkMarketIntent.ts";
 import { normalizeRiskScore } from "../riskScoreDirection.ts";
 
 export type DashboardMarketRow = {
@@ -53,6 +54,7 @@ export type ClarkRoutedIntent =
   | "risk_explanation"
   | "deployer_check"
   | "holders_check"
+  | "live_market"
   | "none";
 
 const WALLET_DEEP_RE = /\b(deep\s+scan|deep|full\s+scan|full\s+wallet\s+scan|scan\s+all\s+chains|pnl|p&l|trades?|historical|dig\s+deeper|recover\s+(?:more\s+)?history|history\s+recovery|why\s+(?:is|are|no|the)\s+pnl|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+no\s+pnl|cost\s+basis|analyze\s+(?:this\s+)?wallet)\b/i;
@@ -611,6 +613,16 @@ export function classifyClarkPrompt(prompt: string): {
       deep: slash.command === "wallet" ? deep : false,
       symbol: slash.address ? null : slash.symbol,
     };
+  }
+
+  // Canonical major-asset market questions (ETH/BTC/SOL price, market cap, volume) never become
+  // a DexScreener token search — that is how "what is eth price" used to return random Solana
+  // tokens named ETH. Slash commands above still win for /token /lp /wallet.
+  {
+    const market = classifyClarkMarketIntent(raw);
+    if (market.detectedIntent === "live_price" || market.detectedIntent === "market_cap" || market.detectedIntent === "volume") {
+      return { intent: "live_market", address, addresses, deep: false, symbol: market.canonicalAssetMatched };
+    }
   }
 
   // ---- Wallet compare (must run before generic wallet_scan) ----

@@ -6,6 +6,7 @@
 
 import { isValidSolanaMintAddress } from '../solanaAddress'
 import { extractAddressForRouting } from './clarkRouting'
+import { isClarkCanonicalMarketPrompt } from './clarkMarketIntent'
 
 export type ClarkBasicIntent =
   | 'greeting'
@@ -107,6 +108,9 @@ export function classifyClarkBasicIntent(message: string): ClarkBasicIntent {
   if (wantsToken) return 'token_scan_request'
   if (wantsWallet) return 'wallet_scan_request'
   if (hasAddress) return 'unsupported_request' // has address + no explicit scan word — let existing routing decide
+
+  // ETH/BTC/SOL price (and the other canonical tickers) must not be answered as generic chat.
+  if (isClarkCanonicalMarketPrompt(raw)) return 'unsupported_request'
 
   // Exact ChainLens glossary questions are education, not live-feed commands. This must precede
   // the broad whale/radar keyword routes so "Explain Whale Alerts" and "Explain Base Radar"
