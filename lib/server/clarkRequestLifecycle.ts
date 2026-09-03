@@ -25,8 +25,21 @@ import {
 } from "./clarkRouting.ts";
 
 export const CLARK_SINGLEFLIGHT_TTL_MS = 4_000;
-export const CLARK_DEPLOYER_SOURCE_TIMEOUT_MS = 12_000;
-export const CLARK_HOLDERS_SOURCE_TIMEOUT_MS = 12_000;
+// TIMEOUT-MISMATCH FIX, DISCLOSED (reported live: "/holders 0x...4a01" reliably returned "Holder
+// source timed out" — reproduced). Root cause: app/api/clark/route.ts's /holders handler races
+// resolveTokenForFollowup() against this constant, but resolveTokenForFollowup() internally calls
+// fetchTokenEvidence(), which itself waits up to TOKEN_CORE_TIMEOUT_MS (18_000ms, app/api/clark/
+// route.ts) for the real /api/token call — the ONE place in this file using Promise.race() to
+// wrap an operation with its own longer internal timeout. At the old 12_000ms value, the outer
+// race timer fired before the inner 18s token-evidence timeout ever had a chance to resolve on
+// its own, so a normal, still-succeeding scan (12s–18s) was reported as "timed out" every time —
+// never a genuinely broken source. Raised to comfortably exceed TOKEN_CORE_TIMEOUT_MS with margin
+// for the (fast, ~3.5s-capped) honeypot call this same fetchTokenEvidence() call runs in parallel.
+// /api/dev-wallet (used by /deployer) is provisioned for up to 60s (vercel.json's own
+// maxDuration:60 for that route) — the same class of premature-timeout risk applied there at the
+// old 12s value, just less consistently reproduced; raised to the same value for consistency.
+export const CLARK_DEPLOYER_SOURCE_TIMEOUT_MS = 20_000;
+export const CLARK_HOLDERS_SOURCE_TIMEOUT_MS = 20_000;
 
 export {
   formatCommandTimeoutPartial,

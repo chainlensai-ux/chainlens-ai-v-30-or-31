@@ -12928,6 +12928,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: tokRes.ok,
       };
     }
+    // HONEST-CHAIN-CHECK, DISCLOSED (same pattern token_scan already uses at line ~13353): say so
+    // directly when the current chain context isn't one Token Core can scan, instead of silently
+    // attempting a scan that can only ever fail/time out for a chain that was never supported.
+    if (toTokenApiChain(chainForClarkTools) === null) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
+        analysis: `Holder data on ${chainDisplayLabel(chainForClarkTools)} isn't available yet — I can run this on Base, Ethereum, BNB, or Robinhood Chain. Name the chain ("holders on base/eth/bnb/robinhood") to continue.`,
+        intentBadge: "holders_check",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
     const r = await Promise.race([
       resolveTokenForFollowup(),
       new Promise<{ timedOut: true }>((resolve) => {
