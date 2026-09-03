@@ -236,40 +236,54 @@ async function run() {
   restore()
   console.log('lib/server/fomoApi.ts + /api/fomo/leaderboard: all fetch-level assertions passed')
 
-  // ── Route source: tracked-wallets add route validates and dedupes without leaking secrets ──
+  // ── Route source: FOMO adds are validated, authenticated, and user-scoped ──────────────────
   const trackedWalletsSrc = fs.readFileSync(new URL('../app/api/whale-alerts/tracked-wallets/route.ts', import.meta.url), 'utf8')
   assert.match(trackedWalletsSrc, /EVM_ADDRESS_RE = \/\^0x\[a-fA-F0-9\]\{40\}\$\//, 'must validate address as a real 0x EVM address before writing')
-  assert.match(trackedWalletsSrc, /status: "duplicate"/, 'an already-tracked wallet must report duplicate, not silently succeed as new')
-  assert.match(trackedWalletsSrc, /status: "added"/, 'a genuinely new wallet must report added')
+  assert.match(trackedWalletsSrc, /status: 'duplicate'/, 'an already-tracked wallet must report duplicate, not silently succeed as new')
+  assert.match(trackedWalletsSrc, /status: 'added'/, 'a genuinely new wallet must report added')
   assert.match(trackedWalletsSrc, /SUPABASE_SERVICE_ROLE_KEY/, 'writes must go through the service-role client, matching tracked_wallets\' service-role-only RLS')
   // NEXT_PUBLIC_SUPABASE_URL itself is not a secret (a public project URL, used the same way
   // throughout this codebase, e.g. app/api/watchlist/tokens/route.ts) — the actual credential must
   // come from the service-role key, never a NEXT_PUBLIC_-prefixed key variable.
   assert.doesNotMatch(trackedWalletsSrc, /NEXT_PUBLIC_.*KEY/, 'no privileged write here may authenticate with a NEXT_PUBLIC_-prefixed key')
 
-  // fomoAddTrackerAudit must carry every field the spec requires, and address validation must
+  // fomoAddWalletAudit must carry every field the spec requires, and address validation must
   // happen before the plan/DB round trip (so an obviously-bad request never even touches the DB).
   for (const field of [
-    'handle:', 'rank:', 'evmWallet:', 'evmWalletValid,', 'source,', 'alreadyTracked:', 'mutationRouteCalled:',
-    'mutationStatus:', 'supabaseInsertAttempted:', 'supabaseInsertSucceeded:', 'rlsBlocked:', 'planBlocked:',
-    'trackedWalletCountBefore:', 'trackedWalletCountAfter:', 'syncWillIncludeWallet:', 'errorReason:',
+    'userIdPresent:', 'sourceHandle:', 'rank:', 'solWallet:', 'evmWallet:', 'chainId:', 'walletValid:',
+    'duplicateForUser:', 'insertAttempted:', 'supabaseErrorCode:', 'finalStatus:', 'failureReason:',
+    'trackedWalletCountBefore:', 'trackedWalletCountAfter:',
   ]) {
-    assert.ok(trackedWalletsSrc.includes(field), `fomoAddTrackerAudit must include ${field.replace(/[:,]$/, '')}`)
+    assert.ok(trackedWalletsSrc.includes(field), `fomoAddWalletAudit must include ${field.replace(/[:,]$/, '')}`)
   }
-  assert.match(trackedWalletsSrc, /if \(!evmWalletValid\) \{/, 'address validation must run before plan/DB checks')
-  assert.match(trackedWalletsSrc, /const verifiedPlan = await getVerifiedUserPlan\(request\);/, 'must still gate writes on plan')
-  // Metadata columns must be additive-safe: a missing-migration DB must never make Add hard-fail.
-  assert.match(trackedWalletsSrc, /PG_UNDEFINED_COLUMN = "42703"/, 'must detect a genuine undefined-column error by Postgres error code, never by message text')
-  assert.match(trackedWalletsSrc, /if \(writeError && writeError\.code === PG_UNDEFINED_COLUMN\)/, 'a missing metadata column must fall back to the base row shape instead of failing the whole Add')
-  assert.match(trackedWalletsSrc, /chain_slug: chainSlug/, 'must write chain_slug so a tracked wallet is provably scoped to Base')
-  assert.match(trackedWalletsSrc, /fomo_handle: fomoHandle/, 'must record which FOMO handle this wallet was discovered from')
-  assert.match(trackedWalletsSrc, /fomo_rank: fomoRank/, 'must record the FOMO rank this wallet was discovered at')
-  assert.match(trackedWalletsSrc, /fomo_window: fomoWindow/, 'must record which FOMO window this wallet was discovered from')
+  assert.match(trackedWalletsSrc, /const auth = await requireAuthenticatedUser\(request\)/, 'Add must require a verified session')
+  assert.match(trackedWalletsSrc, /if \(!normalizedAddress\) \{/, 'address validation must run before plan/DB checks')
+  assert.match(trackedWalletsSrc, /\.eq\('user_id', auth\.userId\)/, 'wallet lookup and reads must be scoped to the signed-in user')
+  assert.match(trackedWalletsSrc, /\.eq\('chain_id', BASE_CHAIN_ID\)/, 'wallet lookup must be chain scoped')
+  assert.match(trackedWalletsSrc, /wallet_address: normalizedAddress/, 'must persist the canonical EVM wallet field')
+  assert.match(trackedWalletsSrc, /source: 'fomo_board'/, 'must persist FOMO Board provenance')
+  assert.match(trackedWalletsSrc, /source_handle: sourceHandle/, 'must record which FOMO handle this wallet was discovered from')
+  assert.match(trackedWalletsSrc, /source_rank: sourceRank/, 'must record the FOMO rank this wallet was discovered at')
+  assert.match(trackedWalletsSrc, /added_at: now/, 'must record when the user added the wallet')
   // trackedWalletCountBefore/After must come from a real count query, not the length of some
   // already-loaded array (which would be wrong under concurrent adds).
-  assert.match(trackedWalletsSrc, /select\("id", \{ count: "exact", head: true \}\)/, 'wallet counts must come from a real exact count query')
+  assert.match(trackedWalletsSrc, /select\('id', \{ count: 'exact', head: true \}\)/, 'wallet counts must come from a real exact count query')
 
-  console.log('app/api/whale-alerts/tracked-wallets/route.ts: source assertions passed')
+  console.log('app/api/whale-alerts/tracked-wallets/route.ts: user-scoped source assertions passed')
+
+  // User-scoped FOMO tracking must stay user-scoped through sync, feed reads, and schema. The
+  // same address is intentionally valid for two accounts; only a same-user/same-chain duplicate
+  // is rejected by the database index.
+  const syncSrc = fs.readFileSync(new URL('../app/api/whale-alerts/sync/route.ts', import.meta.url), 'utf8')
+  const whaleFeedSrc = fs.readFileSync(new URL('../app/api/whale-alerts/route.ts', import.meta.url), 'utf8')
+  const whaleSchema = fs.readFileSync(new URL('../docs/supabase-whale-alerts.sql', import.meta.url), 'utf8')
+  assert.match(syncSrc, /\.eq\('user_id', authenticatedUser\.userId\)/, 'a user sync must fetch only that user\'s tracked wallets')
+  assert.match(syncSrc, /owner_user_id: authenticatedUser\.userId/, 'sync-created alerts must retain user ownership')
+  assert.match(whaleFeedSrc, /const ownerScope = `owner_user_id\.is\.null,owner_user_id\.eq\.\$\{userId\}`/, 'the feed must not return another user\'s FOMO alerts')
+  assert.match(whaleSchema, /unique index if not exists uq_tracked_wallets_user_chain_wallet[\s\S]*?\(user_id, chain_id, wallet_address\)/, 'tracked-wallet uniqueness must be user + chain + address, not global address')
+  assert.match(whaleSchema, /unique nulls not distinct \(tx_hash, wallet_address, token_address, alert_type, owner_user_id\)/, 'private alert rows must dedupe per owner without leaking across accounts')
+
+  console.log('FOMO user isolation: sync, feed, and schema assertions passed')
 
   // ── getVerifiedUserPlan: the shared plan-gate bug behind invisible Add failures ─────────────
   const userSettingsSrc = fs.readFileSync(new URL('../lib/supabase/userSettings.ts', import.meta.url), 'utf8')
@@ -327,7 +341,7 @@ async function run() {
   assert.match(panelSrc, /const addr = row\.evmWallet/, 'the address sent must be sourced from row.evmWallet')
   assert.match(panelSrc, /address: addr,/, 'the POST body\'s address field must be the EVM wallet, never the handle')
   assert.doesNotMatch(panelSrc, /address: row\.handle/, 'must never send the FOMO handle as if it were a wallet address')
-  for (const field of ['chainSlug: \'base\',', 'source: \'fomo\',', 'fomoHandle: row.handle,', 'fomoRank: row.rank,', 'fomoWindow: window_,', 'tags: [\'fomo\', \'social_trader\'],']) {
+  for (const field of ['chainSlug: \'base\',', 'source: \'fomo_board\',', 'sourceHandle: row.handle,', 'sourceRank: row.rank,', 'fomoWindow: window_,', 'tags: [\'fomo\', \'social_trader\'],']) {
     assert.ok(panelSrc.includes(field), `Add request body must include ${field}`)
   }
 
@@ -340,7 +354,9 @@ async function run() {
   // Solana-only / pending / SOL-only rows must never be addable.
   assert.match(panelSrc, /row\.walletStatus === 'sol_only'/, 'a Solana-only row must be specially handled, never offered an Add button')
   assert.match(panelSrc, />SOL only</, 'must show the exact "SOL only" label')
-  assert.match(panelSrc, />Wallet pending</, 'must show the exact "Wallet pending" label for a null/resolving wallet')
+  assert.match(panelSrc, /Retry resolve/, 'a missing EVM wallet must offer a resolution retry, not an inert state')
+  assert.match(panelSrc, /lastGoodByWindow/, 'failed refreshes must preserve the last successful board state')
+  assert.match(panelSrc, /fomoBoardLoadAudit/, 'board loading must emit the required load audit')
 
   console.log('components/whale-alerts/FomoBoardPanel.tsx: isolation + disclosure + add-flow assertions passed')
 }

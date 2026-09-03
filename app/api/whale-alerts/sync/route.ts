@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server'
 import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
-import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 type TrackedWallet = {
   address: string
+  user_id: string | null
   label: string | null
   category: string | null
   confidence: number | null
@@ -46,7 +47,6 @@ const PROVIDER_PAGE_SIZE = 100
 const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}&with-logs=true`
 const DEFAULT_LIMIT = 10
 const MAX_LIMIT = 10
-const AUTO_BATCH_MAX_TOTAL = 25
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 const PER_WALLET_TIMEOUT_MS = 6_000
@@ -512,6 +512,8 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
 }
 
 export async function POST(request: Request) {
+  const authenticatedUser = await requireAuthenticatedUser(request)
+  if (!authenticatedUser) return unauthorizedResponse()
   const requestUrl = new URL(request.url)
   const mode = requestUrl.searchParams.get('mode') === 'full' ? 'full' : 'batch'
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
@@ -553,7 +555,7 @@ export async function POST(request: Request) {
   const isFullContinuation = mode === 'full' && offset > 0
   const isBatchContinuation = mode === 'batch' && offset > 0
   const isContinuation = isFullContinuation || isBatchContinuation
-  const verifiedPlan = await getVerifiedUserPlan(request)
+  const verifiedPlan = authenticatedUser.plan
   if (process.env.NODE_ENV !== 'production') {
     console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
   }
@@ -575,7 +577,9 @@ export async function POST(request: Request) {
   // progress math never depends on Supabase's count field (which can be null).
   const { data: allWalletData, error: walletError } = await supabase
     .from('tracked_wallets')
-    .select('address,label,category,confidence,source,is_active')
+    .select('address,user_id,label,category,confidence,source,is_active')
+    .eq('user_id', authenticatedUser.userId)
+    .eq('chain_id', 8453)
     .eq('is_active', true)
     .order('created_at', { ascending: true })
 
@@ -791,7 +795,7 @@ export async function POST(request: Request) {
       }
 
       const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
-      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity })
+      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity, owner_user_id: authenticatedUser.userId })
       if (timeToFirstAlertMs == null) timeToFirstAlertMs = Date.now() - syncStartedAtMs
     }
   }
@@ -832,7 +836,7 @@ export async function POST(request: Request) {
     const { data, error } = await supabase
       .from('whale_alerts')
       .upsert(allFilteredAlerts, {
-        onConflict: 'tx_hash,wallet_address,token_address,alert_type',
+        onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id',
         ignoreDuplicates: true,
       })
       .select('id')
