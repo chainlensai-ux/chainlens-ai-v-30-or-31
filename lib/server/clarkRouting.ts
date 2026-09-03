@@ -615,6 +615,17 @@ export function classifyClarkPrompt(prompt: string): {
     };
   }
 
+  // Whale-alert row Ask Clark: scan the bought/sold token, never the trader wallet.
+  if (/\[chainlens whale alert\s*[—\-]+\s*row context\]/i.test(raw)) {
+    const tokenMatch = raw.match(/\/token\s+(0x[a-fA-F0-9]{40})/i)
+      ?? raw.match(/token contract:\s*(0x[a-fA-F0-9]{40})/i)
+      ?? raw.match(/scan this token\s+(0x[a-fA-F0-9]{40})/i);
+    if (tokenMatch) {
+      return { intent: "token_scan", address: tokenMatch[1], addresses: [tokenMatch[1]], deep: false, symbol: null };
+    }
+    return { intent: "whale_alert", address: null, addresses: [], deep: false, symbol: null };
+  }
+
   // Canonical major-asset market questions (ETH/BTC/SOL price, market cap, volume) never become
   // a DexScreener token search — that is how "what is eth price" used to return random Solana
   // tokens named ETH. Slash commands above still win for /token /lp /wallet.
@@ -4896,6 +4907,15 @@ const WHALE_SELLING_RE = /\bwhales?\s+(?:are\s+)?sell(?:ing|s)?\b|\bwhale\s+sell
 export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
   const t = String(prompt ?? "").trim();
   if (!t) return { intent: "none" };
+
+  // Slash commands and whale-row token scans must never be swallowed by whale_alerts_summary.
+  // Reported live: Ask Clark on a whale-alert row included "Whale Alert" plus a wallet 0x, so
+  // this classifier stole the request and Clark never ran Token Scanner on the bought token.
+  if (/^\/(lp|token|wallet|base|deployer|holders)\b/i.test(t)) return { intent: "none" };
+  if (/^\/deep\s+wallet\b/i.test(t)) return { intent: "none" };
+  if (/\[chainlens whale alert\s*[—\-]+\s*row context\]/i.test(t) && /(?:\/token\s+|token contract:\s*|scan this token\s+)0x[a-fA-F0-9]{40}/i.test(t)) {
+    return { intent: "none" };
+  }
 
   if (WHALE_EXPLAIN_SIGNAL_RE.test(t)) return { intent: "whale_alerts_explain_signal" };
   if (WHALE_OPEN_FOMO_RE.test(t)) return { intent: "whale_alerts_open_fomo" };

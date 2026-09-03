@@ -9,6 +9,7 @@ assert.doesNotMatch(ui, /Set Alert/, 'Set Alert button and copy are removed from
 
 // Add To Watchlist actually calls the wallet watchlist API and is disabled without a scanned wallet.
 assert.match(ui, /function handleAddWalletToWatchlist\(/, 'handleAddWalletToWatchlist handler exists')
+assert.match(ui, /portfolio_value:\s*watchlistPortfolioValueUsd\(result,\s*robinhoodResult\)/, 'Add To Watchlist posts the merged USD portfolio value, not the EVM-only V2 total')
 assert.match(ui, /fetch\('\/api\/watchlist\/wallets', \{/, 'Add To Watchlist posts to the wallet watchlist API')
 // STALE-SELECTOR FIX, DISCLOSED: this asserted the pre-V2-migration selector
 // (`result?.address`) — the page has read the wallet address from

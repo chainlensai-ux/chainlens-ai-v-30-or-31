@@ -117,7 +117,8 @@ const GT_BASE_URL     = 'https://api.geckoterminal.com/api/v2'
 const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens.ai' }
 // Tokens already priced by enrichRowUsd — skip for random GeckoTerminal lookups
 const ENRICHED_BY_COINGECKO = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'WBTC'])
-const MAX_RANDOM_TOKENS = 15
+const MAX_RANDOM_TOKENS = 30
+const DEXSCREENER_TOKEN_URL = 'https://api.dexscreener.com/latest/dex/tokens'
 const WHALE_CACHE_TTL_MS = 45_000
 const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
@@ -374,6 +375,15 @@ function countStatsFiltered(
   return txHashes.size
 }
 
+function asPositiveNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number(v)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return null
+}
+
 // Fetch the USD price for an arbitrary Base token via GeckoTerminal pools endpoint.
 // Sorts pools by liquidity and reads base_token_price_usd from the deepest pool.
 // Returns null on any failure so callers never throw.
@@ -382,17 +392,18 @@ async function fetchBaseTokenPrice(tokenAddress: string): Promise<WhalePriceQuot
   let providerResponded = false
   try {
     sourcesTried.push('dexscreener_current')
-    const dex = await getOrFetchCached<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number } }> }>({
+    const dex = await getOrFetchCached<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number }; baseToken?: { address?: string } }> }>({
       key: `dexscreener:base:token-price:${tokenAddress.toLowerCase()}`,
       ttlMs: 120_000,
       fetcher: async () => {
         const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
         if (!res.ok) throw new Error(`DexScreener ${res.status}`)
-        return res.json() as Promise<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number } }> }>
+        return res.json() as Promise<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number }; baseToken?: { address?: string } }> }>
       },
     })
+    const want = tokenAddress.toLowerCase()
     const pair = (dex.data?.pairs ?? [])
-      .filter(p => p.chainId === 'base' && Number(p.priceUsd) > 0)
+      .filter(p => p.chainId === 'base' && Number(p.priceUsd) > 0 && p.baseToken?.address?.toLowerCase() === want)
       .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))[0]
     providerResponded = true
     if (pair) return { priceUsd: Number(pair.priceUsd), sourceUsed: 'dexscreener_current', sourcesTried }
@@ -458,6 +469,44 @@ async function batchFetchTokenPrices(
   return { prices, quotes, hits, misses }
 }
 
+// DexScreener first for Base memes — GeckoTerminal often has no pool for fresh tickers, which
+// is why the feed showed "10.00 UMIA" instead of a USD value. Only pairs where the token is
+// the Base-chain baseToken are used, so we never invert a quote-token price.
+async function fetchDexScreenerTokenPrices(addresses: string[]): Promise<Map<string, number>> {
+  const prices = new Map<string, number>()
+  if (addresses.length === 0) return prices
+  const chunks: string[][] = []
+  for (let i = 0; i < addresses.length; i += 30) chunks.push(addresses.slice(i, i + 30))
+  for (const chunk of chunks) {
+    try {
+      const res = await fetch(`${DEXSCREENER_TOKEN_URL}/${chunk.join(',')}`, {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!res.ok) continue
+      const json = await res.json().catch(() => null) as { pairs?: Array<Record<string, unknown>> } | null
+      const pairs = Array.isArray(json?.pairs) ? json.pairs : []
+      const best = new Map<string, { price: number; liq: number }>()
+      for (const pair of pairs) {
+        const chainId = typeof pair.chainId === 'string' ? pair.chainId.toLowerCase() : ''
+        if (chainId !== 'base') continue
+        const baseAddr = (pair.baseToken as { address?: string } | undefined)?.address?.toLowerCase()
+        if (!baseAddr) continue
+        const price = Number.parseFloat(String(pair.priceUsd ?? ''))
+        if (!Number.isFinite(price) || price <= 0) continue
+        const liq = Number((pair.liquidity as { usd?: number } | undefined)?.usd ?? 0)
+        const prev = best.get(baseAddr)
+        if (!prev || liq >= prev.liq) best.set(baseAddr, { price, liq: Number.isFinite(liq) ? liq : 0 })
+      }
+      for (const [addr, v] of best) prices.set(addr, v.price)
+    } catch {
+      // Misses fall through to GeckoTerminal.
+    }
+  }
+  return prices
+}
+
 // Second enrichment pass: price rows that still have amount_usd=null
 // using a pre-fetched token-price map keyed by token_address (lowercased).
 // Also normalizes amount_usd=0 → null (same as enrichRowUsd).
@@ -467,8 +516,8 @@ function enrichRowWithTokenPrice(row: RawRow, tokenPrices: Map<string, number>):
   if ((base.amount_usd as number | null) !== null) return base
   const addr = (base.token_address as string | null)?.toLowerCase()
   if (!addr) return base
-  const amt = base.amount_token as number | null
-  if (amt === null || amt <= 0) return base
+  const amt = asPositiveNumber(base.amount_token)
+  if (amt == null) return base
   const price = tokenPrices.get(addr)
   if (price === undefined) return base
   const usd = Math.round(amt * price * 100) / 100
@@ -514,8 +563,8 @@ function enrichRowUsd(row: RawRow, prices: MajorPrices): RawRow {
   const base: RawRow = existingUsd !== null && existingUsd <= 0 ? { ...row, amount_usd: null } : row
   if ((base.amount_usd as number | null) !== null) return base  // already has positive USD
   const sym = ((base.token_symbol as string | null) ?? '').toUpperCase().trim()
-  const amt = base.amount_token as number | null
-  if (amt === null || amt <= 0) return base
+  const amt = asPositiveNumber(base.amount_token)
+  if (amt == null) return base
 
   let usd: number | null = null
   if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC') {
@@ -815,7 +864,7 @@ export async function GET(req: NextRequest) {
 
     // Pipeline:
     //   1a. Enrich USD JS-side (stablecoins 1:1, WETH×ETH, cbBTC×BTC)
-    //   1b. Collect unknown token addresses → batch-fetch GT prices → second enrich pass
+    //   1b. Collect unknown token addresses → DexScreener (Base memes) then GeckoTerminal → USD
     //   2.  Group by (tx_hash, wallet_address) — sums enriched USD across legs
     //   3.  Score signal quality
     //   4.  Apply value floor / minUsd filter (JS-side, after enrichment)
@@ -841,10 +890,23 @@ export async function GET(req: NextRequest) {
       ),
     ].slice(0, MAX_RANDOM_TOKENS)
 
-    const { prices: tokenPrices, quotes: tokenPriceQuotes, hits: randomTokenPriceHits, misses: randomTokenPriceMisses } =
-      randomAddresses.length > 0
-        ? await batchFetchTokenPrices(randomAddresses)
-        : { prices: new Map<string, number>(), quotes: new Map<string, WhalePriceQuote>(), hits: 0, misses: 0 }
+    const dexPrices = randomAddresses.length > 0
+      ? await fetchDexScreenerTokenPrices(randomAddresses)
+      : new Map<string, number>()
+    const stillMissing = randomAddresses.filter((addr) => !dexPrices.has(addr))
+    const batched = stillMissing.length > 0
+      ? await batchFetchTokenPrices(stillMissing)
+      : { prices: new Map<string, number>(), quotes: new Map<string, WhalePriceQuote>(), hits: 0, misses: 0 }
+    const tokenPrices = new Map<string, number>(dexPrices)
+    for (const [k, v] of batched.prices) tokenPrices.set(k, v)
+    const tokenPriceQuotes = new Map<string, WhalePriceQuote>(batched.quotes)
+    for (const [addr, price] of dexPrices) {
+      if (!tokenPriceQuotes.has(addr)) {
+        tokenPriceQuotes.set(addr, { priceUsd: price, sourceUsed: 'dexscreener_current', sourcesTried: ['dexscreener_current'] })
+      }
+    }
+    const randomTokenPriceHits = tokenPrices.size
+    const randomTokenPriceMisses = Math.max(0, randomAddresses.length - tokenPrices.size)
 
     const quoteForRow = (row: RawRow): WhalePriceQuote | null => {
       const sym = String(row.token_symbol ?? '').toUpperCase().trim()

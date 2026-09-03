@@ -55,9 +55,15 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
   assert.equal(r.intent, 'wallet_scan', 'bare address => wallet_scan fallback')
 }
 {
-  // address + "on base" signals token, not wallet
   const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 on base')
   assert.notEqual(r.intent, 'wallet_scan', 'address + on base must not be wallet_scan')
+}
+{
+  const token = '0xabcdef1234567890abcdef1234567890abcdef12'
+  const r = classifyClarkPrompt(`/token ${token}\n\n[ChainLens Whale Alert — Row Context]\nTrader: Cross-Chain Grinder (0x566bd9…db60dc)\nScan this token. Do not scan the trader wallet.`)
+  assert.equal(r.intent, 'token_scan', 'Ask Clark on a whale-alert row with a token contract => token_scan')
+  assert.equal(r.address?.toLowerCase(), token)
+  assert.notEqual(r.intent, 'wallet_scan')
 }
 
 // ─── wallet_scan ──────────────────────────────────────────────────────────────

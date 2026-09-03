@@ -160,6 +160,67 @@ const fmtAmtNum = (n?: number | null) => {
   return n.toFixed(2)
 }
 
+function shortWallet(addr: string | null | undefined): string | null {
+  if (!addr || addr.length < 12) return addr ?? null
+  return `${addr.slice(0, 8)}…${addr.slice(-6)}`
+}
+
+// ASK CLARK ROW, DISCLOSED (reported live: Ask Clark ran Wallet Scanner because the prompt led
+// with the whale's full 0x address). When a token contract is present, the prompt is a `/token`
+// slash command so Clark token-scans that contract. The trader address is truncated so it cannot
+// be extracted as a scan target.
+function buildWhaleRowClarkPrompt(alert: {
+  token_address?: string | null
+  token_symbol?: string | null
+  focus_token_symbol?: string | null
+  token_name?: string | null
+  wallet_label?: string | null
+  wallet_address?: string | null
+  amount_usd?: number | null
+  amount_token?: number | null
+  side?: string | null
+  tx_hash?: string | null
+  occurred_at?: string | null
+  legs?: number | null
+}): string {
+  const tokenAddr = typeof alert.token_address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(alert.token_address)
+    ? alert.token_address
+    : null
+  const tok = alert.focus_token_symbol || alert.token_symbol || alert.token_name || 'Unknown token'
+  const walletName = alert.wallet_label || 'Tracked Wallet'
+  const walletShort = shortWallet(alert.wallet_address)
+  const usd = (alert.amount_usd != null && alert.amount_usd > 0) ? `$${alert.amount_usd.toFixed(2)}` : 'unverified'
+  const tokenAmt = alert.amount_token != null ? `${alert.amount_token} ${tok}` : null
+  const s = (alert.side ?? '').toLowerCase()
+  const isMultiTok = (alert.token_symbol || '').includes(' / ')
+  const alertType = isMultiTok ? 'swap' : s === 'buy' ? 'buy' : s === 'sell' ? 'sell' : 'transfer'
+  const context = [
+    `[ChainLens Whale Alert — Row Context]`,
+    `Chain: Base`,
+    `Trader: ${walletName}${walletShort ? ` (${walletShort})` : ''}`,
+    `Action: ${alertType} · Token: ${tok}`,
+    `Value (USD): ${usd}`,
+    tokenAmt ? `Amount (token): ${tokenAmt}` : null,
+    alert.tx_hash ? `TX: ${alert.tx_hash}` : null,
+    `Timestamp: ${alert.occurred_at ?? 'unknown'}`,
+  ].filter((line): line is string => Boolean(line))
+
+  if (tokenAddr) {
+    return [
+      `/token ${tokenAddr}`,
+      ``,
+      ...context,
+      `Scan this token. Do not scan the trader wallet.`,
+    ].join('\n')
+  }
+  return [
+    `Explain this whale alert.`,
+    ``,
+    ...context,
+    `No token contract on this row — do not scan the trader wallet.`,
+  ].join('\n')
+}
+
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
   if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'BUY'      }
@@ -1308,12 +1369,13 @@ export default function WhaleAlertsPage() {
             const s          = alert.side?.toLowerCase() ?? ''
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
-            // Amount: prefer USD; fall back to token number; never render $0 for unpriced rows.
-            // amount_usd=0 means the DB did not have a verified price — treat it as null.
+            // Amount: USD is the primary value. Token quantity is secondary context, never the
+            // dollar figure. amount_usd=0 means no verified price — treat as null.
             const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
             const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU ?? (amtTNum ? `${amtTNum} ${primarySym}` : (amtUnverified ? 'Value unverified' : null))
+            const amtShow = amtU ?? (amtUnverified ? 'Value unverified' : null)
+            const tokenAmtShow = !isMultiTok && amtTNum ? `${amtTNum} ${primarySym}` : null
 
             // Verb and preposition split so amount fits between them for swaps
             const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
@@ -1368,40 +1430,8 @@ export default function WhaleAlertsPage() {
               ...(ctx && (ctx.verifiedUsdFlow7d ?? 0) > 0 ? [{ label: `${fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow` }] : []),
             ]
 
-            // Per-row Clark prompt — full structured context
-            const alertAge = ageStr(alert.occurred_at)
-            const alertType = isSwap ? 'swap' : s === 'buy' ? 'buy' : s === 'sell' ? 'sell' : 'transfer'
-            const rowPrompt = [
-              `[ChainLens Whale Alert — Row Context]`,
-              `Feature: whale_alerts | Chain: Base Mainnet`,
-              `Alert type: ${alertType}`,
-              `Wallet label: ${walletName}`,
-              alert.wallet_address ? `Wallet address: ${alert.wallet_address}` : null,
-              `Token: ${tok}`,
-              alert.token_symbol && tok !== alert.token_symbol ? `Raw token symbol: ${alert.token_symbol}` : null,
-              `Side: ${alert.side ?? 'unknown'}`,
-              (alert.amount_usd != null && alert.amount_usd > 0)
-                ? `Value (USD): $${alert.amount_usd.toFixed(2)}`
-                : 'Value (USD): unverified',
-              alert.amount_token != null
-                ? `Amount (token): ${alert.amount_token} ${alert.token_symbol ?? ''}`.trim()
-                : null,
-              `Legs: ${alert.legs ?? 1}${(alert.legs ?? 1) > 1 ? ' (multi-leg swap)' : ''}`,
-              (alert.repeats ?? 1) > 1 ? `Repeated: ${alert.repeats} times within 5 minutes` : null,
-              `Signal score: ${signal}`,
-              alert.severity ? `Severity: ${alert.severity}` : null,
-              alert.summary ? `Summary: ${alert.summary}` : null,
-              alert.tx_hash ? `TX hash: ${alert.tx_hash}` : null,
-              `Timestamp: ${alert.occurred_at ?? 'unknown'} (${alertAge})`,
-              ``,
-              `Answer these questions about this alert:`,
-              `1. What happened on-chain?`,
-              `2. Why might this matter — what does this wallet's action suggest?`,
-              `3. Is this worth monitoring and why?`,
-              `4. What should I check next (token, wallet pattern, or related activity)?`,
-              ``,
-              `Do not invent data. Do not suggest copy-trading. Say "worth monitoring" not "buy". Do not give financial advice.`,
-            ].filter(Boolean).join('\n')
+            // Per-row Ask Clark — token scan when a contract is present, never wallet scan.
+            const rowPrompt = buildWhaleRowClarkPrompt(alert)
             const goRowClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(rowPrompt)}&autosend=1` }
 
             const scanHref = alert.tx_hash ? `https://basescan.org/tx/${alert.tx_hash}` : null
@@ -1447,6 +1477,9 @@ export default function WhaleAlertsPage() {
                       )}
                       {isSwap && <span style={{ fontSize: 12.5, color: '#55647d' }}>into</span>}
                       <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f5f9' }}>{tok}</span>
+                      {tokenAmtShow && (
+                        <span className="tabular-nums" style={{ fontSize: 11.5, color: '#55647d' }}>{tokenAmtShow}</span>
+                      )}
                     </div>
 
                     {/* Time + signal reason — the two quiet descriptive facts stay as one readable
