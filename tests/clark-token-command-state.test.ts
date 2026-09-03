@@ -48,4 +48,8 @@ test('Clark client and API keep explicit /token state isolated from stale contex
   assert.match(route, /parseClarkTokenCommand\(body\.prompt \?\? ''\)/)
   assert.match(route, /response_token_did_not_match_current_token_command/)
   assert.match(route, /Boolean\(explicitTokenCommand\) \|\|/)
+  assert.match(route, /slashCmd\.bare && slashFill\.address/)
+  assert.match(route, /clarkTokenPickerRequired: true/)
+  assert.match(route, /clarkTokenScanFailed: true/)
+  assert.match(route, /responseTokenChain/)
 })

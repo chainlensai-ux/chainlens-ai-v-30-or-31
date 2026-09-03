@@ -393,12 +393,17 @@ function ClarkAiContent() {
         return
       }
       const tokenAudit = payload.clarkTokenCommandAudit as Record<string, unknown> | undefined
-      const responseTokenAddress = typeof tokenAudit?.responseTokenAddress === 'string' ? tokenAudit.responseTokenAddress : null
+      const echoedToken = payload.memoryEcho && typeof payload.memoryEcho === 'object'
+        ? (payload.memoryEcho as Record<string, unknown>).lastToken as Record<string, unknown> | undefined : undefined
+      const responseTokenAddress = typeof tokenAudit?.responseTokenAddress === 'string' ? tokenAudit.responseTokenAddress
+        : (typeof echoedToken?.address === 'string' ? echoedToken.address : null)
       const previousTokenAddress = typeof tokenAudit?.previousActiveTokenAddress === 'string' ? tokenAudit.previousActiveTokenAddress : null
       const responseMatchesRequest = tokenCommand
         ? doesClarkTokenResponseMatch(tokenCommand, previousTokenAddress, responseTokenAddress, tokenAudit?.pickerRequired === true) && tokenAudit?.responseMatchesRequest === true
         : true
-      if (tokenCommand && !responseMatchesRequest) {
+      const tokenPickerRequired = tokenAudit?.pickerRequired === true
+      const tokenScanFailed = tokenAudit?.finalStatus === 'scan_failed'
+      if (tokenCommand && !responseMatchesRequest && !tokenPickerRequired && !tokenScanFailed) {
         // Do not render or persist a previous token under a fresh `/token` command.
         applyIfCurrent((prev) => {
           const next = [...prev]
@@ -446,7 +451,8 @@ function ClarkAiContent() {
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
       persistClarkMemoryEcho(payload)
-      if (tokenCommand) setActiveTokenPending(null)
+      if (tokenCommand && !tokenPickerRequired) setActiveTokenPending(null)
+      if (!tokenCommand && activeTokenPending && responseTokenAddress) setActiveTokenPending(null)
       setMemoryEpoch((n) => n + 1)
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
