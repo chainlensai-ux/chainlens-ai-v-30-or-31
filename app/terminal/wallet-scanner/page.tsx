@@ -33,6 +33,7 @@ import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAu
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
+import { savePortfolioScanResult } from '@/app/frontend/lib/portfolioSharedCache'
 import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
@@ -716,6 +717,11 @@ export default function WalletScannerPage() {
       const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
       setResultEnvelope(envelope)
       setPartialSnapshot(null)
+      // PORTFOLIO-SHARED-CACHE, DISCLOSED (Portfolio-page-empty-data audit): hands this completed,
+      // real scan result to the shared sessionStorage cache so /terminal/portfolio can use it
+      // immediately for the same wallet instead of re-scanning or showing empty — see
+      // app/frontend/lib/portfolioSharedCache.ts's own header.
+      savePortfolioScanResult(address, report, robinhoodResult)
       const workerPerf = (report as { walletScanPerformanceAudit?: { providerCalls?: number; cacheHits?: number; slowestStage?: { name: string; ms: number } | null; stageDurations?: Record<string, number>; totalDurationMs?: number; evmWorkerDurationMs?: number } }).walletScanPerformanceAudit
       // eslint-disable-next-line no-console
       console.warn('[walletScanPerformanceAudit]', {
@@ -767,6 +773,10 @@ export default function WalletScannerPage() {
         return
       }
       setRobinhoodResult(json)
+      // PORTFOLIO-SHARED-CACHE, DISCLOSED: same hand-off as the main EVM scan above — a Robinhood
+      // result scanned after the EVM report is already cached should not be lost; re-saves with
+      // whatever EVM report is currently on screen (null if none yet, unchanged either way).
+      if (result) savePortfolioScanResult(address, result, json)
     } catch (err: unknown) {
       setRobinhoodResult(null)
       setRobinhoodError(err instanceof Error ? err.message : 'Robinhood scan failed — try again later')
