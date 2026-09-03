@@ -47,6 +47,8 @@ import {
 } from '@/lib/client/clarkHistoryClient'
 import { generateChatTitle } from '@/lib/server/clarkHistory'
 import { clarkChatHistoryLimit, clarkChatHistoryLimitCopy, isClarkChatHistoryAtLimit, type UserPlan } from '@/lib/pricingPlans'
+import ClarkWhaleIntelligence from '@/components/ClarkWhaleIntelligence'
+import { parseClarkWhaleIntelligenceUi, type ClarkWhaleIntelligenceUi } from '@/lib/clarkWhaleUi'
 
 const ACTIVE_CHAT_ID_KEY = 'chainlens:clark:active-chat-id'
 
@@ -62,7 +64,7 @@ const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
 }
 
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
-type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[]; requestId?: string }
+type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[]; whaleIntelligence?: ClarkWhaleIntelligenceUi; requestId?: string }
 type UiTab   = 'analyst' | 'chat'
 
 type ClarkContextState = {
@@ -424,7 +426,7 @@ function ClarkAiContent() {
       const reply = json.ok
         ? (payload?.reply ?? payload?.analysis ?? payload?.response ?? json.reply ?? json.analysis ?? 'No response from Clark.')
         : (json.error ?? 'Something went wrong.')
-      const ui = payload.ui && typeof payload.ui === 'object' ? payload.ui as { intentBadge?: unknown; actions?: unknown } : null
+      const ui = payload.ui && typeof payload.ui === 'object' ? payload.ui as { intentBadge?: unknown; actions?: unknown; whaleIntelligence?: unknown } : null
       const actions = Array.isArray(ui?.actions) ? ui.actions.filter((a): a is ClarkAction => {
         if (!a || typeof a !== 'object' || typeof (a as ClarkAction).label !== 'string') return false
         const href = (a as ClarkAction).href
@@ -436,7 +438,7 @@ function ClarkAiContent() {
         const next = [...prev]
         const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
         if (idx < 0) return prev
-        const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions, requestId }
+        const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions, whaleIntelligence: parseClarkWhaleIntelligenceUi(ui?.whaleIntelligence), requestId }
         if (statusMessage) {
           next[idx] = { role: 'clark', text: statusMessage, requestId }
           next.splice(idx + 1, 0, finalMsg)
@@ -617,6 +619,7 @@ function ClarkAiContent() {
                       <>
                         {msg.intentBadge && <span className='clk-intent-badge'>{msg.intentBadge}</span>}
                         <p className='clk-msg-text'>{msg.text}</p>
+                        {msg.whaleIntelligence && <ClarkWhaleIntelligence data={msg.whaleIntelligence} />}
                         {msg.actions && msg.actions.length > 0 && (
                           <div className='clk-actions'>
                             {msg.actions.map((action) => action.kind === 'prompt' && action.prompt ? (

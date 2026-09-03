@@ -5,6 +5,7 @@ import { usePlanWithLoading, LockedPanel, canAccessFeature, canAccessFomoBoard, 
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
 import FomoBoardPanel, { FomoBoardLockedCard } from '@/components/whale-alerts/FomoBoardPanel'
+import type { WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 
 type WalletCtx = {
   shortAddress: string
@@ -50,6 +51,8 @@ type AlertItem = {
     verifiedUsdFlow7d: number | null; monitorReason: string; nextWatch: string
     tags: string[]; isContract: boolean | null
   } | null
+  whaleUsdPricingAudit?: WhaleUsdPricingAudit | null
+  whaleUsdPricingAudits?: WhaleUsdPricingAudit[] | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
@@ -611,7 +614,13 @@ export default function WhaleAlertsPage() {
         const label  = a.wallet_label || 'Tracked Wallet'
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const usd    = (a.amount_usd != null && a.amount_usd > 0) ? `$${a.amount_usd.toFixed(0)} verified` : 'USD value unavailable'
+        const pricingAudit = a.whaleUsdPricingAudit ?? a.whaleUsdPricingAudits?.[0] ?? null
+        const usdStatus = pricingAudit?.finalUsdStatus === 'estimated' ? 'estimated' : 'verified'
+        const usd = (a.amount_usd != null && a.amount_usd > 0)
+          ? `$${a.amount_usd.toFixed(0)} ${usdStatus}`
+          : a.amount_usd === 0 && pricingAudit?.finalUsdStatus === 'zero'
+            ? '$0 (zero movement)'
+            : `USD unavailable: ${pricingAudit?.failureReason ?? 'price unavailable'}`
         const sig    = a.signal_score ?? 'LOW SIGNAL'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)

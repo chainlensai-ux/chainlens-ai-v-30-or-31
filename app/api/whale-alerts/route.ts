@@ -9,6 +9,7 @@ import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
+import { priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -82,6 +83,11 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
       amount_token: null,
       severity,
       legs:         legs.length,
+      whaleUsdPricingAudits: legs
+        .flatMap(leg => {
+          if (Array.isArray(leg.whaleUsdPricingAudits)) return leg.whaleUsdPricingAudits
+          return leg.whaleUsdPricingAudit ? [leg.whaleUsdPricingAudit] : []
+        }),
     })
   }
 
@@ -371,8 +377,28 @@ function countStatsFiltered(
 // Fetch the USD price for an arbitrary Base token via GeckoTerminal pools endpoint.
 // Sorts pools by liquidity and reads base_token_price_usd from the deepest pool.
 // Returns null on any failure so callers never throw.
-async function fetchBaseTokenPrice(tokenAddress: string): Promise<number | null> {
+async function fetchBaseTokenPrice(tokenAddress: string): Promise<WhalePriceQuote> {
+  const sourcesTried: string[] = []
+  let providerResponded = false
   try {
+    sourcesTried.push('dexscreener_current')
+    const dex = await getOrFetchCached<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number } }> }>({
+      key: `dexscreener:base:token-price:${tokenAddress.toLowerCase()}`,
+      ttlMs: 120_000,
+      fetcher: async () => {
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        if (!res.ok) throw new Error(`DexScreener ${res.status}`)
+        return res.json() as Promise<{ pairs?: Array<{ chainId?: string; priceUsd?: string; liquidity?: { usd?: number } }> }>
+      },
+    })
+    const pair = (dex.data?.pairs ?? [])
+      .filter(p => p.chainId === 'base' && Number(p.priceUsd) > 0)
+      .sort((a, b) => Number(b.liquidity?.usd ?? 0) - Number(a.liquidity?.usd ?? 0))[0]
+    providerResponded = true
+    if (pair) return { priceUsd: Number(pair.priceUsd), sourceUsed: 'dexscreener_current', sourcesTried }
+  } catch {}
+  try {
+    sourcesTried.push('geckoterminal_current')
     type GTPoolAttrs = { base_token_price_usd?: string; reserve_in_usd?: string }
     const result = await getOrFetchCached<{ data?: Array<{ attributes: GTPoolAttrs }> }>({
       key: `geckoterminal:base:token-price:${tokenAddress.toLowerCase()}`,
@@ -386,7 +412,7 @@ async function fetchBaseTokenPrice(tokenAddress: string): Promise<number | null>
       },
     })
     const pools = Array.isArray(result.data?.data) ? result.data.data : []
-    if (pools.length === 0) return null
+    providerResponded = true
     const sorted = [...pools].sort(
       (a, b) =>
         (parseFloat(b.attributes.reserve_in_usd ?? '0') || 0) -
@@ -394,30 +420,42 @@ async function fetchBaseTokenPrice(tokenAddress: string): Promise<number | null>
     )
     const priceStr = sorted[0]?.attributes?.base_token_price_usd
     const price    = priceStr ? parseFloat(priceStr) : NaN
-    return isNaN(price) || price <= 0 ? null : price
-  } catch {
-    return null
-  }
+    if (!isNaN(price) && price > 0) return { priceUsd: price, sourceUsed: 'geckoterminal_current', sourcesTried }
+  } catch {}
+  try {
+    sourcesTried.push('coingecko_onchain_current')
+    const result = await getOrFetchCached<Record<string, { usd?: number }>>({
+      key: `coingecko:base:token-price:${tokenAddress.toLowerCase()}`,
+      ttlMs: 120_000,
+      fetcher: async () => {
+        const res = await fetch(`https://api.coingecko.com/api/v3/simple/token_price/base?contract_addresses=${tokenAddress}&vs_currencies=usd`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+        if (!res.ok) throw new Error(`CoinGecko ${res.status}`)
+        return res.json() as Promise<Record<string, { usd?: number }>>
+      },
+    })
+    const price = result.data?.[tokenAddress.toLowerCase()]?.usd
+    providerResponded = true
+    if (typeof price === 'number' && price > 0) return { priceUsd: price, sourceUsed: 'coingecko_onchain_current', sourcesTried }
+  } catch {}
+  return { priceUsd: null, sourceUsed: null, sourcesTried, providerFailed: !providerResponded }
 }
-
 // Fetch prices for multiple Base token addresses in parallel (Promise.allSettled).
 async function batchFetchTokenPrices(
   addresses: string[],
-): Promise<{ prices: Map<string, number>; hits: number; misses: number }> {
+): Promise<{ prices: Map<string, number>; quotes: Map<string, WhalePriceQuote>; hits: number; misses: number }> {
   const prices  = new Map<string, number>()
+  const quotes = new Map<string, WhalePriceQuote>()
   const results = await Promise.allSettled(
-    addresses.map(addr => fetchBaseTokenPrice(addr).then(p => ({ addr, p }))),
+    addresses.map(addr => fetchBaseTokenPrice(addr).then(q => ({ addr, q }))),
   )
   let hits = 0, misses = 0
   for (const r of results) {
-    if (r.status === 'fulfilled' && r.value.p !== null) {
-      prices.set(r.value.addr.toLowerCase(), r.value.p)
-      hits++
-    } else {
-      misses++
-    }
+    if (r.status !== 'fulfilled') { misses++; continue }
+    quotes.set(r.value.addr.toLowerCase(), r.value.q)
+    if (r.value.q.priceUsd !== null) { prices.set(r.value.addr.toLowerCase(), r.value.q.priceUsd); hits++ }
+    else misses++
   }
-  return { prices, hits, misses }
+  return { prices, quotes, hits, misses }
 }
 
 // Second enrichment pass: price rows that still have amount_usd=null
@@ -784,7 +822,8 @@ export async function GET(req: NextRequest) {
     //   5.  Drop stablecoin-only dust as a secondary safety net
     //   6.  Collapse rapid repeats
     //   7.  Limit
-    const step1 = ((alertsRes.data ?? []) as RawRow[]).map(row => enrichRowUsd(row, majorPrices))
+    const rawAlertRows = (alertsRes.data ?? []) as RawRow[]
+    const step1 = rawAlertRows.map(row => enrichRowUsd(row, majorPrices))
 
     // Collect unique token_address values that still have no USD value after step 1
     // and are not already handled by enrichRowUsd. Cap at MAX_RANDOM_TOKENS.
@@ -802,14 +841,23 @@ export async function GET(req: NextRequest) {
       ),
     ].slice(0, MAX_RANDOM_TOKENS)
 
-    const { prices: tokenPrices, hits: randomTokenPriceHits, misses: randomTokenPriceMisses } =
+    const { prices: tokenPrices, quotes: tokenPriceQuotes, hits: randomTokenPriceHits, misses: randomTokenPriceMisses } =
       randomAddresses.length > 0
         ? await batchFetchTokenPrices(randomAddresses)
-        : { prices: new Map<string, number>(), hits: 0, misses: 0 }
+        : { prices: new Map<string, number>(), quotes: new Map<string, WhalePriceQuote>(), hits: 0, misses: 0 }
 
-    const enriched = randomAddresses.length > 0
-      ? step1.map(row => enrichRowWithTokenPrice(row, tokenPrices))
-      : step1
+    const quoteForRow = (row: RawRow): WhalePriceQuote | null => {
+      const sym = String(row.token_symbol ?? '').toUpperCase().trim()
+      if (STABLECOINS.has(sym) || sym === 'USDBC') return { priceUsd: 1, sourceUsed: 'stablecoin_peg', sourcesTried: ['stablecoin_peg'] }
+      if (sym === 'WETH' || sym === 'ETH') return { priceUsd: majorPrices.eth, sourceUsed: majorPrices.eth ? 'coingecko_current' : null, sourcesTried: ['coingecko_current'], providerFailed: majorPrices.eth == null }
+      if (sym === 'CBBTC' || sym === 'WBTC') return { priceUsd: majorPrices.btc, sourceUsed: majorPrices.btc ? 'coingecko_current' : null, sourcesTried: ['coingecko_current'], providerFailed: majorPrices.btc == null }
+      const address = typeof row.token_address === 'string' ? row.token_address.toLowerCase() : null
+      return address ? (tokenPriceQuotes.get(address) ?? null) : null
+    }
+    const enriched = rawAlertRows.map(row => {
+      const priced = priceWhaleMovement(row, quoteForRow(row))
+      return { ...row, amount_usd: priced.amountUsd, whaleUsdPricingAudit: priced.audit }
+    })
 
     const scored   = groupAlertsByTx(enriched).map(row => ({
       ...row,
@@ -1000,8 +1048,17 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const whaleUsdPricingAudits = enriched
+      .map(row => row.whaleUsdPricingAudit as WhaleUsdPricingAudit | undefined)
+      .filter((audit): audit is WhaleUsdPricingAudit => Boolean(audit))
     const payload = {
       alerts: alertsWithContext,
+      whaleUsdPricingAudits,
+      lastSyncedAt: rawAlertRows
+        .map(row => typeof row.created_at === 'string' ? row.created_at : null)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1) ?? null,
       intelligence,
       stats: {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
