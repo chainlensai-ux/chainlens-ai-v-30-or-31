@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
-import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
+import { fetchCoinGeckoBaseLowCapMemes, fetchCoinGeckoBaseTrending, LOW_CAP_MEME_MAX_MARKET_CAP_USD } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from '@/lib/server/trendingTokens';
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { isValidSolanaMintAddress } from "@/lib/solanaAddress";
@@ -59,6 +59,7 @@ import {
   classifyClarkPrompt,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
+  formatBaseLowCapMemeReadFromRows,
   formatNewBasePoolReadFromCandidates,
   isNewBaseLaunchPrompt,
   formatBaseRadarRead,
@@ -12311,6 +12312,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         ui: { intentBadge: "New Base Pools", actions: toClarkUiActions(actions) },
         quotaConsumed: Boolean(formatted),
       };
+    }
+    const wantsMemecoins = /\b(?:meme\s*coins?|memecoins?)\b/i.test(prompt)
+    if (wantsMemecoins) {
+      const trendWindow: '24h' | '7d' = /\b(?:7d|7\s*days?|week)\b/i.test(prompt) ? '7d' : '24h'
+      const memeResult = await fetchCoinGeckoBaseLowCapMemes(trendWindow).catch(() => ({ ok: false as const, reason: 'coingecko_exception' }))
+      const rows = memeResult.ok ? memeResult.rows.map(row => ({
+        symbol: row.symbol, name: row.name, change24h: row.change24h, volume24hUsd: row.volume24hUsd,
+        priceUsd: row.priceUsd, marketCapUsd: row.marketCapUsd, liquidityUsd: null,
+        tokenAddress: null, poolAddress: null, reasonTags: ['CoinGecko Base Meme category', 'market cap verified low-cap'],
+      })) : []
+      const formatted = formatBaseLowCapMemeReadFromRows(rows, trendWindow, LOW_CAP_MEME_MAX_MARKET_CAP_USD)
+      const actions = buildRoutedActions(['Open Base Radar', 'Refresh Market Data'])
+      return {
+        feature: 'clark-ai', chain, mode: 'analysis', intent: 'base_market_discovery', toolsUsed: ['coingecko_base_meme_category'],
+        analysis: formatted ?? `BASE LOW-CAP MEMECOINS\nNo Base Meme-category tokens with verified market cap at or below $25M were returned. I excluded large caps and tokens without meme-category proof.\nCTA: Refresh Market Data / Open Base Radar`,
+        intentBadge: 'base_low_cap_memes', actions,
+        ui: { intentBadge: 'Base Low-Cap Memes', actions: toClarkUiActions(actions) },
+        quotaConsumed: Boolean(formatted),
+      }
     }
     // COINGECKO-PRIMARY, DISCLOSED ("what's pumping" vs "Base Radar" follow-up): "what's pumping"
     // now answers from CoinGecko's Base-ecosystem category — real, independent market data, not

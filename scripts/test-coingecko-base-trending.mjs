@@ -2,7 +2,7 @@
 // Every RPC/HTTP call is served by an injected fetch stub — no network access, no API key.
 
 import assert from 'node:assert/strict'
-import { fetchCoinGeckoBaseTrending } from '../lib/server/coingeckoBaseTrending.ts'
+import { fetchCoinGeckoBaseLowCapMemes, fetchCoinGeckoBaseTrending, LOW_CAP_MEME_MAX_MARKET_CAP_USD } from '../lib/server/coingeckoBaseTrending.ts'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -22,6 +22,23 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
   check('real price/change/volume/marketCap map correctly', r.rows[0].priceUsd === 0.05 && r.rows[0].change24h === 12.3 && r.rows[0].volume24hUsd === 5_000_000 && r.rows[0].marketCapUsd === 400_000_000)
   check('contract is never fabricated — CoinGecko markets endpoint has no per-chain address', r.rows[0].contract === null)
   check('second row maps independently', r.rows[1].symbol === 'AERO' && r.rows[1].change24h === -3.1)
+}
+
+// ─── Meme requests use the Base Meme category and enforce a real low-cap ceiling ───────────────
+{
+  let requestedUrl = ''
+  const stub = async (url) => {
+    requestedUrl = String(url)
+    return { ok: true, json: async () => ([
+      { symbol: 'tiny', name: 'Tiny Meme', current_price: 0.001, price_change_percentage_24h: 22, price_change_percentage_7d_in_currency: 55, total_volume: 400_000, market_cap: 4_000_000 },
+      { symbol: 'link', name: 'Chainlink', current_price: 12, price_change_percentage_24h: 2, total_volume: 300_000_000, market_cap: 8_000_000_000 },
+      { symbol: 'unknown', name: 'Unknown Cap', current_price: 1, price_change_percentage_24h: 500, total_volume: 1_000_000, market_cap: null },
+    ]) }
+  }
+  const r = await fetchCoinGeckoBaseLowCapMemes('7d', stub)
+  check('meme discovery uses CoinGecko Base Meme category', requestedUrl.includes('category=base-meme-coins'))
+  check('only verified low-cap rows survive', r.ok === true && r.rows.length === 1 && r.rows[0].symbol === 'TINY' && r.rows[0].marketCapUsd <= LOW_CAP_MEME_MAX_MARKET_CAP_USD)
+  check('requested 7d momentum is mapped from the 7d field', r.ok === true && r.rows[0].change24h === 55)
 }
 
 // ─── HTTP failure degrades cleanly, never throws ────────────────────────────────────────────────

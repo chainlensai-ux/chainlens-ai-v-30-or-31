@@ -993,6 +993,22 @@ export function formatBaseMarketReadFromCandidates(candidates: MarketLikeRow[] |
   return formatBaseMarketReadFromRows(candidates);
 }
 
+export function formatBaseLowCapMemeReadFromRows(rows: MarketLikeRow[], window: '24h' | '7d', maxMarketCapUsd: number): string | null {
+  const verified = rows
+    .filter(row => row.marketCapUsd != null && row.marketCapUsd > 0 && row.marketCapUsd <= maxMarketCapUsd)
+    .slice(0, 8)
+  if (verified.length === 0) return null
+  const lines = [`TRENDING BASE LOW-CAP MEMECOINS — ${window}`, `Verified category: CoinGecko Base Meme · Market cap ≤${fmtUsdShort(maxMarketCapUsd)}`]
+  verified.forEach((row, index) => {
+    const symbol = String(row.symbol ?? '?').toUpperCase()
+    const label = row.name && row.name !== row.symbol ? `${symbol} (${row.name})` : symbol
+    lines.push(`${index + 1}. ${label} — ${fmtPct(row.change24h)} ${window} | volume ${fmtUsdShort(row.volume24hUsd)} | market cap ${fmtUsdShort(row.marketCapUsd)}`)
+    lines.push('   Evidence: CoinGecko Base Meme category; low-cap threshold passed.')
+  })
+  lines.push('', 'Risk: low-cap memecoins can have thin exits. Scan liquidity, holders, LP control, and contract safety before acting.', 'CTA: Scan top token / Open Base Radar / Refresh Market Data')
+  return lines.join('\n')
+}
+
 export function formatNewBasePoolReadFromCandidates(candidates: MarketLikeRow[] | undefined | null, maxAgeHours = 72): string | null {
   if (!candidates || candidates.length === 0) return null;
   const verified = candidates
