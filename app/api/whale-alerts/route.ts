@@ -9,7 +9,8 @@ import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
-import { priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
+import { getBaseStablecoinShortcut, priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
+import { getPriceAtTime } from '@/src/modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -88,6 +89,13 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
           if (Array.isArray(leg.whaleUsdPricingAudits)) return leg.whaleUsdPricingAudits
           return leg.whaleUsdPricingAudit ? [leg.whaleUsdPricingAudit] : []
         }),
+      whaleAlertUsdAudits: legs
+        .flatMap(leg => {
+          if (Array.isArray(leg.whaleAlertUsdAudits)) return leg.whaleAlertUsdAudits
+          if (leg.whaleAlertUsdAudit) return [leg.whaleAlertUsdAudit]
+          if (Array.isArray(leg.whaleUsdPricingAudits)) return leg.whaleUsdPricingAudits
+          return leg.whaleUsdPricingAudit ? [leg.whaleUsdPricingAudit] : []
+        }),
     })
   }
 
@@ -115,14 +123,57 @@ function firstNonRoutingSymbol(sym: string | null): string | null {
 
 const GT_BASE_URL     = 'https://api.geckoterminal.com/api/v2'
 const GT_REQ_HEADERS  = { accept: 'application/json', origin: 'https://chainlens.ai' }
-// Tokens already priced by enrichRowUsd — skip for random GeckoTerminal lookups
-const ENRICHED_BY_COINGECKO = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'WBTC'])
-const MAX_RANDOM_TOKENS = 30
 const DEXSCREENER_TOKEN_URL = 'https://api.dexscreener.com/latest/dex/tokens'
 const WHALE_CACHE_TTL_MS = 45_000
 const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
+const BASE_WETH = '0x4200000000000000000000000000000000000006'
+const historicalWhalePriceCache = new Map<string, { expiresAt: number; promise: Promise<WhalePriceQuote> }>()
+const currentWhalePriceCache = new Map<string, { expiresAt: number; priceUsd: number }>()
+
+function pricingTokenAddress(row: RawRow): string | null {
+  const address = typeof row.token_address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(row.token_address) ? row.token_address.toLowerCase() : null
+  const symbol = String(row.token_symbol ?? '').toUpperCase().trim()
+  return address ?? (symbol === 'ETH' || symbol === 'WETH' ? BASE_WETH : null)
+}
+
+function stablecoinShortcut(row: RawRow): WhalePriceQuote | null {
+  return getBaseStablecoinShortcut({ tokenAddress: pricingTokenAddress(row), symbol: row.token_symbol })
+}
+
+async function historicalWhaleQuote(row: RawRow): Promise<WhalePriceQuote | null> {
+  const tokenAddress = pricingTokenAddress(row)
+  const timestamp = typeof row.occurred_at === 'string' ? new Date(row.occurred_at).getTime() : NaN
+  if (!tokenAddress || !Number.isFinite(timestamp)) return null
+  const timestampBucket = Math.floor(timestamp / (5 * 60 * 1000)) * 5 * 60 * 1000
+  const key = `whale-price:8453:${tokenAddress}:${timestampBucket}`
+  const cached = historicalWhalePriceCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.promise
+  const promise = getPriceAtTime({ chain: 'base', tokenAddress, timestamp: timestampBucket })
+    .then(result => ({
+      priceUsd: result.priceUsd,
+      sourceUsed: result.priceUsd != null ? `${result.source}_historical` : null,
+      sourcesTried: result.debug.attempts.map(attempt => `${attempt.provider}_historical`),
+      providerFailed: result.debug.attempts.length > 0 && result.debug.attempts.every(attempt => !attempt.ok),
+    } satisfies WhalePriceQuote))
+    .catch(() => ({ priceUsd: null, sourceUsed: null, sourcesTried: ['historical_provider'], providerFailed: true } satisfies WhalePriceQuote))
+  historicalWhalePriceCache.set(key, { expiresAt: Date.now() + 24 * 60 * 60 * 1000, promise })
+  return promise
+}
+
+async function fetchHistoricalWhaleQuotes(rows: RawRow[]): Promise<Map<RawRow, WhalePriceQuote | null>> {
+  const output = new Map<RawRow, WhalePriceQuote | null>()
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < rows.length) {
+      const row = rows[cursor++]
+      output.set(row, await historicalWhaleQuote(row))
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(12, rows.length) }, worker))
+  return output
+}
 
 
 // Rank alerts so non-stablecoin buys/swaps surface first, stablecoin moves last.
@@ -456,9 +507,19 @@ async function batchFetchTokenPrices(
 ): Promise<{ prices: Map<string, number>; quotes: Map<string, WhalePriceQuote>; hits: number; misses: number }> {
   const prices  = new Map<string, number>()
   const quotes = new Map<string, WhalePriceQuote>()
-  const results = await Promise.allSettled(
-    addresses.map(addr => fetchBaseTokenPrice(addr).then(q => ({ addr, q }))),
-  )
+  const results: PromiseSettledResult<{ addr: string; q: WhalePriceQuote }>[] = []
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < addresses.length) {
+      const addr = addresses[cursor++]
+      try {
+        results.push({ status: 'fulfilled', value: { addr, q: await fetchBaseTokenPrice(addr) } })
+      } catch (reason) {
+        results.push({ status: 'rejected', reason })
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(8, addresses.length) }, worker))
   let hits = 0, misses = 0
   for (const r of results) {
     if (r.status !== 'fulfilled') { misses++; continue }
@@ -475,8 +536,16 @@ async function batchFetchTokenPrices(
 async function fetchDexScreenerTokenPrices(addresses: string[]): Promise<Map<string, number>> {
   const prices = new Map<string, number>()
   if (addresses.length === 0) return prices
+  const now = Date.now()
+  const uncached: string[] = []
+  for (const address of addresses) {
+    const normalized = address.toLowerCase()
+    const cached = currentWhalePriceCache.get(`whale-price:8453:${normalized}:current:dexscreener`)
+    if (cached && cached.expiresAt > now) prices.set(normalized, cached.priceUsd)
+    else uncached.push(normalized)
+  }
   const chunks: string[][] = []
-  for (let i = 0; i < addresses.length; i += 30) chunks.push(addresses.slice(i, i + 30))
+  for (let i = 0; i < uncached.length; i += 30) chunks.push(uncached.slice(i, i + 30))
   for (const chunk of chunks) {
     try {
       const res = await fetch(`${DEXSCREENER_TOKEN_URL}/${chunk.join(',')}`, {
@@ -499,7 +568,10 @@ async function fetchDexScreenerTokenPrices(addresses: string[]): Promise<Map<str
         const prev = best.get(baseAddr)
         if (!prev || liq >= prev.liq) best.set(baseAddr, { price, liq: Number.isFinite(liq) ? liq : 0 })
       }
-      for (const [addr, v] of best) prices.set(addr, v.price)
+      for (const [addr, v] of best) {
+        prices.set(addr, v.price)
+        currentWhalePriceCache.set(`whale-price:8453:${addr}:current:dexscreener`, { expiresAt: now + 120_000, priceUsd: v.price })
+      }
     } catch {
       // Misses fall through to GeckoTerminal.
     }
@@ -872,23 +944,29 @@ export async function GET(req: NextRequest) {
     //   6.  Collapse rapid repeats
     //   7.  Limit
     const rawAlertRows = (alertsRes.data ?? []) as RawRow[]
-    const step1 = rawAlertRows.map(row => enrichRowUsd(row, majorPrices))
+    const historicalQuotes = await fetchHistoricalWhaleQuotes(rawAlertRows.filter(row => {
+      const stored = Number(row.amount_usd)
+      return !(Number.isFinite(stored) && stored > 0) && Number(row.amount_token) > 0
+    }))
 
     // Collect unique token_address values that still have no USD value after step 1
-    // and are not already handled by enrichRowUsd. Cap at MAX_RANDOM_TOKENS.
+    // and are not already handled by native-asset pricing. Every unique token is
+    // attempted; provider calls themselves are chunked/bounded above.
     const randomAddresses = [
       ...new Set(
-        step1
+        rawAlertRows
           .filter(row => {
-            if ((row.amount_usd as number | null) !== null) return false
+            const stored = Number(row.amount_usd)
+            if (Number.isFinite(stored) && stored > 0) return false
+            if (historicalQuotes.get(row)?.priceUsd != null) return false
             const sym = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
-            if (ENRICHED_BY_COINGECKO.has(sym)) return false
-            const addr = row.token_address as string | null
+            if (sym === 'ETH' || sym === 'WETH' || sym === 'CBBTC' || sym === 'WBTC') return false
+            const addr = pricingTokenAddress(row)
             return addr != null && /^0x[a-fA-F0-9]{40}$/.test(addr)
           })
-          .map(row => (row.token_address as string).toLowerCase()),
+          .map(row => pricingTokenAddress(row)!),
       ),
-    ].slice(0, MAX_RANDOM_TOKENS)
+    ]
 
     const dexPrices = randomAddresses.length > 0
       ? await fetchDexScreenerTokenPrices(randomAddresses)
@@ -909,16 +987,27 @@ export async function GET(req: NextRequest) {
     const randomTokenPriceMisses = Math.max(0, randomAddresses.length - tokenPrices.size)
 
     const quoteForRow = (row: RawRow): WhalePriceQuote | null => {
+      const historical = historicalQuotes.get(row)
+      if (historical?.priceUsd != null) return historical
       const sym = String(row.token_symbol ?? '').toUpperCase().trim()
-      if (STABLECOINS.has(sym) || sym === 'USDBC') return { priceUsd: 1, sourceUsed: 'stablecoin_peg', sourcesTried: ['stablecoin_peg'] }
-      if (sym === 'WETH' || sym === 'ETH') return { priceUsd: majorPrices.eth, sourceUsed: majorPrices.eth ? 'coingecko_current' : null, sourcesTried: ['coingecko_current'], providerFailed: majorPrices.eth == null }
-      if (sym === 'CBBTC' || sym === 'WBTC') return { priceUsd: majorPrices.btc, sourceUsed: majorPrices.btc ? 'coingecko_current' : null, sourcesTried: ['coingecko_current'], providerFailed: majorPrices.btc == null }
-      const address = typeof row.token_address === 'string' ? row.token_address.toLowerCase() : null
-      return address ? (tokenPriceQuotes.get(address) ?? null) : null
+      const historicalTried = historical?.sourcesTried ?? []
+      if (sym === 'WETH' || sym === 'ETH') return { priceUsd: majorPrices.eth, sourceUsed: majorPrices.eth ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.eth == null }
+      if (sym === 'CBBTC' || sym === 'WBTC') return { priceUsd: majorPrices.btc, sourceUsed: majorPrices.btc ? 'coingecko_current' : null, sourcesTried: [...historicalTried, 'coingecko_current'], providerFailed: majorPrices.btc == null }
+      const address = pricingTokenAddress(row)
+      const current = address ? tokenPriceQuotes.get(address) : null
+      if (current?.priceUsd != null) return { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] }
+      const stable = stablecoinShortcut(row)
+      if (stable) return { ...stable, sourcesTried: [...historicalTried, ...(current?.sourcesTried ?? []), ...stable.sourcesTried] }
+      return current ? { ...current, sourcesTried: [...historicalTried, ...current.sourcesTried] } : historical ?? null
     }
     const enriched = rawAlertRows.map(row => {
       const priced = priceWhaleMovement(row, quoteForRow(row))
-      return { ...row, amount_usd: priced.amountUsd, whaleUsdPricingAudit: priced.audit }
+      return {
+        ...row,
+        amount_usd: priced.amountUsd,
+        whaleAlertUsdAudit: priced.audit,
+        whaleUsdPricingAudit: priced.audit,
+      }
     })
 
     const scored   = groupAlertsByTx(enriched).map(row => ({
@@ -1115,6 +1204,7 @@ export async function GET(req: NextRequest) {
       .filter((audit): audit is WhaleUsdPricingAudit => Boolean(audit))
     const payload = {
       alerts: alertsWithContext,
+      whaleAlertUsdAudits: whaleUsdPricingAudits,
       whaleUsdPricingAudits,
       lastSyncedAt: rawAlertRows
         .map(row => typeof row.created_at === 'string' ? row.created_at : null)

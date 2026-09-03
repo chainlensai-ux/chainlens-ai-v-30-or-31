@@ -37,6 +37,14 @@ export type ClarkWhaleIntelligenceUi = {
   walletRows?: ClarkWhaleWalletRow[]
 }
 
+export function rankClarkWhaleFlowRows(rows: readonly ClarkWhaleFlowRow[]): ClarkWhaleFlowRow[] {
+  return [...rows].sort((a, b) => {
+    const aUsd = a.usdValue ?? -1
+    const bUsd = b.usdValue ?? -1
+    return bUsd - aUsd || b.txCount - a.txCount
+  })
+}
+
 export function parseClarkWhaleIntelligenceUi(value: unknown): ClarkWhaleIntelligenceUi | undefined {
   if (!value || typeof value !== 'object') return undefined
   const row = value as Partial<ClarkWhaleIntelligenceUi>

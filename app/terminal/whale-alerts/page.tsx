@@ -53,6 +53,8 @@ type AlertItem = {
   } | null
   whaleUsdPricingAudit?: WhaleUsdPricingAudit | null
   whaleUsdPricingAudits?: WhaleUsdPricingAudit[] | null
+  whaleAlertUsdAudit?: WhaleUsdPricingAudit | null
+  whaleAlertUsdAudits?: WhaleUsdPricingAudit[] | null
 }
 type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
@@ -157,12 +159,29 @@ const fmtAmtNum = (n?: number | null) => {
   if (n == null) return null
   if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`
-  return n.toFixed(2)
+  if (n >= 1) return n.toFixed(2)
+  if (n >= 0.01) return n.toFixed(4)
+  if (n > 0) return n.toLocaleString('en-US', { maximumSignificantDigits: 6 })
+  return '0'
 }
 
 function shortWallet(addr: string | null | undefined): string | null {
   if (!addr || addr.length < 12) return addr ?? null
   return `${addr.slice(0, 8)}…${addr.slice(-6)}`
+}
+
+function AddressCopyButton({ address, label }: { address: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button type="button" title={`Copy ${label}`} aria-label={`Copy ${label}`} className="wa-address-copy"
+      onClick={async () => {
+        await navigator.clipboard.writeText(address)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      }}>
+      {shortWallet(address)} <span aria-hidden="true">⧉</span>{copied && <span className="wa-copied">Copied</span>}
+    </button>
+  )
 }
 
 // ASK CLARK ROW, DISCLOSED (reported live: Ask Clark ran Wallet Scanner because the prompt led
@@ -182,6 +201,10 @@ function buildWhaleRowClarkPrompt(alert: {
   tx_hash?: string | null
   occurred_at?: string | null
   legs?: number | null
+  whaleUsdPricingAudit?: WhaleUsdPricingAudit | null
+  whaleUsdPricingAudits?: WhaleUsdPricingAudit[] | null
+  whaleAlertUsdAudit?: WhaleUsdPricingAudit | null
+  whaleAlertUsdAudits?: WhaleUsdPricingAudit[] | null
 }): string {
   const tokenAddr = typeof alert.token_address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(alert.token_address)
     ? alert.token_address
@@ -189,7 +212,12 @@ function buildWhaleRowClarkPrompt(alert: {
   const tok = alert.focus_token_symbol || alert.token_symbol || alert.token_name || 'Unknown token'
   const walletName = alert.wallet_label || 'Tracked Wallet'
   const walletShort = shortWallet(alert.wallet_address)
-  const usd = (alert.amount_usd != null && alert.amount_usd > 0) ? `$${alert.amount_usd.toFixed(2)}` : 'unverified'
+  const valueAudit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
+  const usd = (alert.amount_usd != null && alert.amount_usd > 0)
+    ? `$${alert.amount_usd.toFixed(2)}`
+    : alert.amount_usd === 0 && valueAudit?.finalValueStatus === 'zero'
+      ? '$0 (zero movement)'
+      : `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}`
   const tokenAmt = alert.amount_token != null ? `${alert.amount_token} ${tok}` : null
   const s = (alert.side ?? '').toLowerCase()
   const isMultiTok = (alert.token_symbol || '').includes(' / ')
@@ -200,6 +228,7 @@ function buildWhaleRowClarkPrompt(alert: {
     `Trader: ${walletName}${walletShort ? ` (${walletShort})` : ''}`,
     `Action: ${alertType} · Token: ${tok}`,
     `Value (USD): ${usd}`,
+    `Value audit: ${JSON.stringify(valueAudit ?? { finalValueStatus: 'unavailable', failureReason: 'price missing' })}`,
     tokenAmt ? `Amount (token): ${tokenAmt}` : null,
     alert.tx_hash ? `TX: ${alert.tx_hash}` : null,
     `Timestamp: ${alert.occurred_at ?? 'unknown'}`,
@@ -420,6 +449,7 @@ export default function WhaleAlertsPage() {
   const [feedSettled, setFeedSettled] = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
   const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
+  const [feedLastSyncedAt, setFeedLastSyncedAt] = useState<string | null>(null)
   // UI-ONLY DISCLOSURE STATE, DISCLOSED (Whale Alerts UI redesign): drives the collapsed/expanded
   // state of the diagnostics disclosure in the sync module. No fetch, no backend involvement — it
   // only reveals `feedDiagnostics`, which this page already receives from /api/whale-alerts today.
@@ -493,6 +523,7 @@ export default function WhaleAlertsPage() {
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
       setFeedDiagnostics(json?.diagnostics ?? null)
       setIntelligence(json?.intelligence ?? null)
+      setFeedLastSyncedAt(typeof json?.lastSyncedAt === 'string' ? json.lastSyncedAt : null)
     } catch {
       setFeedError(true)
     } finally {
@@ -627,6 +658,11 @@ export default function WhaleAlertsPage() {
   const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.alert_type).filter(Boolean) as string[]))], [alerts])
   const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
   const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
+  const missingUsdCount = useMemo(() => alerts.filter((alert) => {
+    const audit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
+    return alert.amount_usd == null || (alert.amount_usd === 0 && audit?.finalValueStatus !== 'zero')
+  }).length, [alerts])
+  const shouldRecommendSync = alerts.length >= 3 && missingUsdCount / alerts.length >= 0.35
 
   const effectiveProcessed = syncState?.processedTotal ?? syncState?.processed ?? 0
   const effectiveInserted = syncState?.insertedTotal ?? syncState?.inserted ?? 0
@@ -675,13 +711,13 @@ export default function WhaleAlertsPage() {
         const label  = a.wallet_label || 'Tracked Wallet'
         const tok    = a.focus_token_symbol ?? a.token_symbol ?? a.token_name ?? 'Unknown token'
         const side   = a.side ?? 'move'
-        const pricingAudit = a.whaleUsdPricingAudit ?? a.whaleUsdPricingAudits?.[0] ?? null
+        const pricingAudit = a.whaleAlertUsdAudit ?? a.whaleAlertUsdAudits?.[0] ?? a.whaleUsdPricingAudit ?? a.whaleUsdPricingAudits?.[0] ?? null
         const usdStatus = pricingAudit?.finalUsdStatus === 'estimated' ? 'estimated' : 'verified'
         const usd = (a.amount_usd != null && a.amount_usd > 0)
           ? `$${a.amount_usd.toFixed(0)} ${usdStatus}`
           : a.amount_usd === 0 && pricingAudit?.finalUsdStatus === 'zero'
             ? '$0 (zero movement)'
-            : `USD unavailable: ${pricingAudit?.failureReason ?? 'price unavailable'}`
+            : `USD unavailable: ${pricingAudit?.failureReason ?? 'price missing'}`
         const sig    = a.signal_score ?? 'LOW SIGNAL'
         const sev    = a.severity ?? 'unknown'
         const age    = ageStr(a.occurred_at)
@@ -845,6 +881,9 @@ export default function WhaleAlertsPage() {
           background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.13);
           white-space: nowrap;
         }
+        .wa-address-copy { display:inline-flex; align-items:center; gap:4px; max-width:150px; padding:2px 5px; border:1px solid rgba(83,243,195,.16); border-radius:5px; background:rgba(83,243,195,.04); color:#718096; font:500 9px/1.25 var(--font-plex-mono,monospace); cursor:pointer; overflow:hidden; white-space:nowrap; }
+        .wa-address-copy:hover { color:#53f3c3; border-color:rgba(83,243,195,.35); }
+        .wa-copied { color:#53f3c3; font-family:var(--font-inter,sans-serif); }
 
         @media (max-width: 900px) {
           .wa-controls  { grid-template-columns: 1fr !important; }
@@ -1229,6 +1268,23 @@ export default function WhaleAlertsPage() {
             </div>
           )}
 
+          {!feedError && !loading && shouldRecommendSync && (
+            <div className="flex flex-wrap items-center justify-between"
+              style={{ gap: 10, margin: '10px 12px 0', padding: '10px 12px', border: '1px solid rgba(240,179,93,.18)', borderRadius: 9, background: 'rgba(240,179,93,.055)' }}>
+              <div style={{ minWidth: 0 }}>
+                <strong style={{ display: 'block', color: '#d8c29a', fontSize: 11.5 }}>Data is incomplete — sync more wallets for fresher evidence.</strong>
+                <span style={{ color: '#756b5d', fontSize: 10.5 }}>
+                  {missingUsdCount} of {alerts.length} alerts still lack a priced USD value · {feedLastSyncedAt ? `last synced ${timeAgo(feedLastSyncedAt)}` : 'last sync unavailable'}
+                </span>
+              </div>
+              <button type="button" className="wa-btn wa-btn-secondary"
+                onClick={() => { void runSync(syncState?.hasMore ? (syncState.nextOffset ?? 0) : undefined, 'batch') }}
+                disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}>
+                {syncing ? 'Scanning…' : 'Sync more wallets'}
+              </button>
+            </div>
+          )}
+
           {/* empty state */}
           {!feedError && !loading && alerts.length === 0 && (() => {
             const total   = syncState?.trackedWalletsTotal ?? 0
@@ -1262,7 +1318,7 @@ export default function WhaleAlertsPage() {
                       ? 'No qualifying whale alerts found'
                       : 'No whale alerts yet'
             const body = unpricedHidden
-              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found with unverified USD value. Switch to All value range and All activity to see them.`
+              ? `${serverHiddenFilter} alert${serverHiddenFilter !== 1 ? 's' : ''} found without resolved USD pricing. Switch to All value range and All activity to see each exact reason.`
               : hiddenByFilters
                 ? 'Switch to All activity or reset filters to view them.'
                 : rangeActive
@@ -1369,12 +1425,14 @@ export default function WhaleAlertsPage() {
             const s          = alert.side?.toLowerCase() ?? ''
             const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
 
-            // Amount: USD is the primary value. Token quantity is secondary context, never the
-            // dollar figure. amount_usd=0 means no verified price — treat as null.
-            const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
-            const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
+            // Amount: USD is the primary value. Token quantity is secondary context. A zero value
+            // is only rendered when the pricing receipt explicitly proves a zero movement.
+            const valueAudit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
+            const isTrueZero = alert.amount_usd === 0 && valueAudit?.finalValueStatus === 'zero'
+            const amtUnverified = alert.amount_usd == null || (alert.amount_usd === 0 && !isTrueZero)
+            const amtU    = alert.amount_usd != null && (alert.amount_usd > 0 || isTrueZero) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU ?? (amtUnverified ? 'Value unverified' : null)
+            const amtShow = amtU ?? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : null)
             const tokenAmtShow = !isMultiTok && amtTNum ? `${amtTNum} ${primarySym}` : null
 
             // Verb and preposition split so amount fits between them for swaps
@@ -1404,8 +1462,8 @@ export default function WhaleAlertsPage() {
             const signalReason =
               signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
               : signal === 'WATCH' ? 'Repeated activity from tracked wallet'
-              : signal === 'NOISE' ? 'Value unverified'
-              : (amtUnverified ? 'Value unverified' : 'Low-value token movement')
+              : signal === 'NOISE' ? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-signal movement')
+              : (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-value token movement')
 
             // COMPACT METADATA CHIPS, DISCLOSED (feed polish): replaces the old run-on subline
             // ("Tracked wallet · Base · 2 legs · Repeated activity from tracked wallet") plus the
@@ -1462,21 +1520,23 @@ export default function WhaleAlertsPage() {
                         {chipLabel}
                       </span>
                       <span style={{ fontSize: 13, fontWeight: 600, color: '#b9c6d8' }}>{walletName}</span>
+                      {alert.wallet_address && <AddressCopyButton address={alert.wallet_address} label="wallet address" />}
                       <span style={{ fontSize: 12.5, color: '#55647d' }}>{baseVerb}</span>
                       {amtShow && (
-                        <span className={amtShow === 'Value unverified' ? undefined : 'tabular-nums'}
+                        <span className={amtUnverified ? undefined : 'tabular-nums'}
                           style={{
-                            fontSize: amtShow === 'Value unverified' ? 12.5 : 14.5,
-                            fontWeight: amtShow === 'Value unverified' ? 500 : 700,
+                            fontSize: amtUnverified ? 12.5 : 14.5,
+                            fontWeight: amtUnverified ? 500 : 700,
                             letterSpacing: '-0.01em',
-                            color: amtShow === 'Value unverified' ? '#4a5769' : '#5eead4',
-                            fontStyle: amtShow === 'Value unverified' ? 'italic' : undefined,
+                            color: amtUnverified ? '#7c8ba1' : '#5eead4',
+                            fontStyle: amtUnverified ? 'italic' : undefined,
                           }}>
                           {amtShow}
                         </span>
                       )}
                       {isSwap && <span style={{ fontSize: 12.5, color: '#55647d' }}>into</span>}
                       <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f5f9' }}>{tok}</span>
+                      {alert.token_address && <AddressCopyButton address={alert.token_address} label="token contract" />}
                       {tokenAmtShow && (
                         <span className="tabular-nums" style={{ fontSize: 11.5, color: '#55647d' }}>{tokenAmtShow}</span>
                       )}
