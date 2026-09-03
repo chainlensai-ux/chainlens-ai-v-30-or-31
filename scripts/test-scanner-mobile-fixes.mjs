@@ -35,9 +35,19 @@ console.log('\nSection 1: Solana Token Scanner scan/deep-check calls attach the 
 
 console.log('\nSection 2: pricing page no longer runs its own nested scroll container fighting the page scroll')
 {
-  check('root wrapper no longer sets its own overflowY (was competing with the document\'s own scroll on mobile)', !/minHeight: '100vh'[\s\S]{0,40}overflowY: 'auto'/.test(pricingSrc))
+  const rootDivLine = pricingSrc.slice(pricingSrc.indexOf("return (\n    <div"), pricingSrc.indexOf("return (\n    <div") + 300)
+  check('root wrapper no longer sets its own overflowY (was competing with the document\'s own scroll on mobile)', !/overflowY/.test(rootDivLine))
+  check('root wrapper no longer sets its own overflowX either — a second, independent overflow property was still a candidate for the same nested-scroll-container bug even after removing overflowY', !/overflowX/.test(rootDivLine))
   check('root wrapper uses 100dvh so min-height tracks the real visible viewport, not the address-bar-inclusive one', /minHeight: '100dvh'/.test(pricingSrc))
-  check('overflowX stays clipped (still needed for the decorative background arcs/blobs)', /overflowX: 'hidden'/.test(pricingSrc))
+  check('horizontal clipping still happens at the html/body level instead, so nothing regresses', /html,body\{max-width:100%;overflow-x:hidden\}/.test(pricingSrc))
+}
+
+console.log('\nSection 3: the payment-modal body-scroll-lock effect can no longer churn/race while the modal is open')
+{
+  check('the lock effect no longer depends on checkoutLoading (was re-running on every checkout state change while the modal was open)', /\}, \[selectedPlanId\]\)/.test(pricingSrc))
+  check('checkoutLoading is read via a ref inside the Escape handler instead', /checkoutLoadingRef\.current/.test(pricingSrc))
+  check('cleanup always restores overflow to empty string, never a possibly-already-stuck captured value', /document\.body\.style\.overflow = ''/.test(pricingSrc))
+  check('the effect no longer reads/reruns off checkoutLoading directly as a dependency', !/\}, \[checkoutLoading, selectedPlanId\]\)/.test(pricingSrc))
 }
 
 console.log('\nSection 3: Pump Alerts\' Clark-preview block is no longer hover-only on touch devices')

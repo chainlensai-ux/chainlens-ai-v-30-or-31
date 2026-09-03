@@ -71,13 +71,24 @@ export default function PricingPage() {
     })
   }, [])
 
+  // MOBILE SCROLL FIX, DISCLOSED (follow-up — the page still wouldn't scroll past a point after the
+  // previous fix): this effect previously depended on [checkoutLoading, selectedPlanId] — every
+  // checkoutLoading change while the modal was open (start of checkout, end of checkout) re-ran the
+  // whole effect: React tears down the OLD run (restoring body.style.overflow to whatever it
+  // captured) and immediately sets it back to 'hidden' again. If a click, refresh, or a stale
+  // navigation ever landed between that teardown and re-set — a real possibility once checkout
+  // starts navigating the tab away — body scroll could be left locked with no modal on screen to
+  // explain it, exactly matching "can't scroll down to the plans" with no visible dialog. This now
+  // only ever runs on selectedPlanId (open/close), reads checkoutLoading via a ref instead of a
+  // dependency, and always restores to '' (never a possibly-already-stuck captured value).
+  const checkoutLoadingRef = useRef(checkoutLoading)
+  useEffect(() => { checkoutLoadingRef.current = checkoutLoading }, [checkoutLoading])
   useEffect(() => {
     if (!selectedPlanId) return
-    const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     closeButtonRef.current?.focus()
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !checkoutLoading) {
+      if (event.key === 'Escape' && !checkoutLoadingRef.current) {
         setSelectedPlanId(null)
         setSelectedPaymentMethod(null)
         setCheckoutError(null)
@@ -85,10 +96,10 @@ export default function PricingPage() {
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => {
-      document.body.style.overflow = previousOverflow
+      document.body.style.overflow = ''
       window.removeEventListener('keydown', closeOnEscape)
     }
-  }, [checkoutLoading, selectedPlanId])
+  }, [selectedPlanId])
 
   // After PayPal redirects back from the subscription approval flow (return_url set by
   // /api/paypal/create-subscription), the plan hasn't been granted yet — that only happens once
@@ -262,11 +273,16 @@ export default function PricingPage() {
   // (nothing here scrolls to a ref/anchor inside it). On mobile Safari a nested overflow:auto region
   // like this is the classic cause of "scroll stops partway, can't reach the plan buttons below" —
   // the browser's dynamic toolbar resizing the viewport mid-scroll can leave the inner container's
-  // height stale. Only overflowX stays (needed to clip the decorative background arcs/blobs);
-  // vertical scrolling is left entirely to the document, and 100dvh replaces 100vh so the min height
-  // tracks the real visible viewport instead of the address-bar-inclusive one.
+  // height stale. The follow-up report that this persisted after removing overflowY led to removing
+  // overflowX here too, for the same reason: html/body already clip horizontal overflow (both
+  // globally in globals.css and in this file's own <style> block right below), so this element
+  // carried a fully redundant, independent overflow property doing nothing but adding another
+  // candidate for exactly this class of nested-scroll-container bug. This element now sets NO
+  // overflow property of its own at all — scrolling in every direction belongs to the document,
+  // full stop. 100dvh replaces 100vh so the min height tracks the real visible viewport instead of
+  // the address-bar-inclusive one.
   return (
-    <div style={{ minHeight: '100dvh', background: '#03060f', color: '#f8fafc', position: 'relative', overflowX: 'hidden', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+    <div style={{ minHeight: '100dvh', background: '#03060f', color: '#f8fafc', position: 'relative', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
       <style>{`
         html,body{max-width:100%;overflow-x:hidden}body{margin:0}
         /* PROFESSIONAL POLISH PASS, DISCLOSED (pricing page task): calmer glass cards, static
