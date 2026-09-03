@@ -100,7 +100,9 @@
     "app/api/dev-wallet/route.ts": { "maxDuration": 60 },
     "app/api/pump-alerts/route.ts": { "maxDuration": 60 },
     "app/api/base-radar/enrichment/route.ts": { "maxDuration": 60 },
-    "app/api/clark/route.ts": { "maxDuration": 60 }
+    "app/api/clark/route.ts": { "maxDuration": 60 },
+    "app/api/liquidity-safety/route.ts": { "maxDuration": 60 },
+    "app/api/resolve/route.ts": { "maxDuration": 30 }
   },
   "crons": [
     { "path": "/api/base-radar/cron", "schedule": "0 6 * * *" }

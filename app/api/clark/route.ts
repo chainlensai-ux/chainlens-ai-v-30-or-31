@@ -3612,6 +3612,22 @@ function wantsFastTokenPreview(prompt: string): boolean {
 // internal call (wallet, whale, liquidity, resolve) keeps the unchanged 9s budget.
 const TOKEN_CORE_TIMEOUT_MS = 18000;
 
+// LIQUIDITY/RESOLVE-TIMEOUT FIX, DISCLOSED (reported live: "/holders" was found to reliably time
+// out on a genuinely-succeeding scan because its own outer race used a shorter timeout than the
+// route it called — see CLARK_HOLDERS_SOURCE_TIMEOUT_MS's own header, lib/server/
+// clarkRequestLifecycle.ts. Auditing every other Clark command for the same category of bug,
+// found the comment above this constant was itself the root of the risk: /api/liquidity-safety
+// (used by /lp, "Liquidity check <symbol/CA>", and every liquidity-follow-up prompt — 625 lines,
+// multi-provider, including a real concentrated-LP position/controller proof attempt comparable in
+// cost to Token Core's own) and /api/resolve (the real DexScreener/GeckoTerminal-backed symbol
+// search "Liquidity check AERO" and every other bare-symbol prompt depends on before it can even
+// call liquidity-safety) were both still on the unchanged 9s default despite neither ever having an
+// explicit maxDuration override in vercel.json before this fix — the same missing-budget pattern
+// /holders had. Raised both here so a real, still-succeeding resolve+liquidity read is never
+// reported as unavailable purely because Clark's own internal clock ran out first.
+const CLARK_LIQUIDITY_SOURCE_TIMEOUT_MS = 18000;
+const CLARK_RESOLVE_SOURCE_TIMEOUT_MS = 12000;
+
 // MULTI-CHAIN ENTITY-CHECK FIX, DISCLOSED (requested: Clark must see tokens on Base/ETH/BNB/
 // Robinhood, not just Base). This previously collapsed EVERY chain that wasn't literally
 // "ethereum"/"eth" into the Base branch — a BNB or Robinhood address got its eth_getCode contract
@@ -6361,7 +6377,7 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "liquidity_analyze") {
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader ?? undefined, input.verifiedPlan);
+        const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader ?? undefined, input.verifiedPlan, CLARK_LIQUIDITY_SOURCE_TIMEOUT_MS);
         const l = (((liqRes.json as Record<string, unknown>)?.data ?? {}) as Record<string, unknown>);
         const poolBreakdown = Array.isArray(l.pool_breakdown) ? l.pool_breakdown as Array<Record<string, unknown>> : [];
         const topPool = poolBreakdown[0] ?? null;
@@ -11373,7 +11389,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (THIS_LIQ_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined, undefined, CLARK_LIQUIDITY_SOURCE_TIMEOUT_MS);
     const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
     if (liqRes.ok && liqRes.json) {
       const raw = liqRes.json as Record<string, unknown>;
@@ -12113,14 +12129,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       cached: cached && !wrongChainRejected ? cached : null,
     }, {
       fetchEvmLiquidity: async (tokenAddress, evmChain) => {
-        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: evmChain }, authHeader ?? undefined, verifiedPlan);
+        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: evmChain }, authHeader ?? undefined, verifiedPlan, CLARK_LIQUIDITY_SOURCE_TIMEOUT_MS);
         const raw = (liqRes.json ?? {}) as Record<string, unknown>;
         const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
         if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) return null;
         return data;
       },
       fetchSolanaLiquidity: async (mint) => {
-        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan, TOKEN_CORE_TIMEOUT_MS);
         const raw = (tokRes.json ?? {}) as Record<string, unknown>;
         if (!tokRes.ok || raw.ok === false) return null;
         return raw;
@@ -12888,7 +12904,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: preferChain, matchesCount: 1 };
     if (isValidSolanaMintAddress(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: "solana", matchesCount: 1 };
     const prefer = preferChain === "ethereum" ? "eth" : preferChain;
-    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: prefer }, authHeader ?? undefined, verifiedPlan).catch((err) => {
+    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: prefer }, authHeader ?? undefined, verifiedPlan, CLARK_RESOLVE_SOURCE_TIMEOUT_MS).catch((err) => {
       const msg = String(err?.message ?? err ?? "");
       return { ok: false, json: { status: /timeout|abort/i.test(msg) ? "timed_out" : "not_found", reason: msg } } as Awaited<ReturnType<typeof callInternalApi>>;
     });
@@ -14188,14 +14204,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       cached: cached && !wrongChainRejected ? cached : null,
     }, {
       fetchEvmLiquidity: async (addr, evmChain) => {
-        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: addr, chain: evmChain }, authHeader ?? undefined, verifiedPlan);
+        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: addr, chain: evmChain }, authHeader ?? undefined, verifiedPlan, CLARK_LIQUIDITY_SOURCE_TIMEOUT_MS);
         const raw = (liqRes.json ?? {}) as Record<string, unknown>;
         const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
         if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) return null;
         return data;
       },
       fetchSolanaLiquidity: async (mint) => {
-        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan, TOKEN_CORE_TIMEOUT_MS);
         const raw = (tokRes.json ?? {}) as Record<string, unknown>;
         if (!tokRes.ok || raw.ok === false) return null;
         return raw;
