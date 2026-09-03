@@ -16,12 +16,12 @@ export const maxDuration = 300
 
 type ScanMode = 'normal' | 'deep'
 
-// PLAN GATE, FIXED (audit: wallet-scanner): wallet-scanner is Pro/Elite-only per
-// lib/planFeatures.ts and the pricing page, but this route previously never checked auth or plan
-// at all — only the frontend page (app/terminal/wallet-scanner/page.tsx) hid the UI for free
-// users. A direct POST here bypassed that entirely and got the full deep scan for free. Mirrors
-// app/api/token/route.ts's own getPlan()/checkRate() convention: fail closed to 'free' on any
-// missing/invalid token.
+// PLAN GATE, FIXED (audit: wallet-scanner): wallet-scanner is available on Free/Pro/Elite
+// (Basic Wallet Scanner on Free; Full on Pro/Elite via wallet-scanner-full for UI depth).
+// Deep mode alone consumes SCAN_DAILY_LIMITS (Free 3/month, Pro 30/month, Elite unlimited).
+// Normal wallet scans never consume that pool. This route checks auth + canAccessFeature
+// ('wallet-scanner'). Mirrors app/api/token/route.ts getPlan()/checkRate(): fail closed to
+// 'free' on any missing/invalid token.
 async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
