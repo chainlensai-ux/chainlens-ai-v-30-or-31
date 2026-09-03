@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { isSafeInternalPath } from '@/lib/safeNextPath';
-import { authCallbackError, authRedirectUrl, initialAuthMode } from '@/lib/authFlow';
+import { authCallbackError, authRedirectUrl, initialAuthMode, setSignedInPresenceCookie } from '@/lib/authFlow';
 import { checkPasswordPolicy, getPasswordStrength, meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy';
 
 type Mode = 'signin' | 'signup' | 'forgot';
@@ -127,6 +127,7 @@ export default function AuthPage() {
           return;
         }
         setAuthCheckLoading(false);
+        setSignedInPresenceCookie(true);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
         return;
@@ -146,6 +147,7 @@ export default function AuthPage() {
           return;
         }
         setAuthCheckLoading(false);
+        setSignedInPresenceCookie(true);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
       }
@@ -242,6 +244,7 @@ export default function AuthPage() {
           // Establish session in browser — onAuthStateChange fires SIGNED_IN → redirect
           const { error: sessionError } = await supabase.auth.setSession(data.session);
           if (sessionError) setError('Signed in, but the browser session could not be saved. Please try again.');
+          else setSignedInPresenceCookie(true); // before /terminal redirect — proxy requires cl_signed_in
         } else {
           setError('Login is temporarily unavailable. Please try again.');
         }
