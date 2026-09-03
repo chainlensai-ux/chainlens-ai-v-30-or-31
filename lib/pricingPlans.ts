@@ -36,6 +36,31 @@ export const SCAN_DAILY_LIMITS: Record<UserPlan, number | null> = {
 }
 export const SCAN_HISTORY_LIMITS = { free: 5, pro: 30, elite: 100 } as const
 
+// Token Scanner weekly quota. Free is capped; Pro/Elite unlimited (`null`).
+// Separate from deep wallet SCAN_DAILY_LIMITS and from the per-minute TOKEN_RATE_BY_PLAN.
+export type TokenScanQuotaPeriod = 'week'
+export const TOKEN_SCAN_WEEKLY_LIMITS: Record<UserPlan, number | null> = {
+  free: 3,
+  pro: null,
+  elite: null,
+}
+
+export function tokenScanWeeklyLimit(plan: UserPlan): number | null {
+  if (Object.prototype.hasOwnProperty.call(TOKEN_SCAN_WEEKLY_LIMITS, plan)) return TOKEN_SCAN_WEEKLY_LIMITS[plan]
+  return TOKEN_SCAN_WEEKLY_LIMITS.free
+}
+
+export function tokenScanLimitLabel(plan: UserPlan): string {
+  const limit = tokenScanWeeklyLimit(plan)
+  if (limit == null) return 'Unlimited token scans'
+  return `${limit} token scans per week`
+}
+
+export function tokenScanLimitReachedMessage(plan: UserPlan, limit: number | null): string {
+  if (limit == null) return `Token scan limit reached on ${plan}.`
+  return `Weekly token scan limit reached (${limit} token scans per week on ${plan}).`
+}
+
 export type DeepScanQuotaPeriod = 'day' | 'month'
 
 export const SCAN_QUOTA_PERIOD: Record<UserPlan, DeepScanQuotaPeriod | null> = {
@@ -213,11 +238,12 @@ export const pricingPlans: PricingPlan[] = [
     features: [
       'Unlimited normal wallet scans',
       deepScanLimitLabel('free'),
+      tokenScanLimitLabel('free'),
       'Token Scanner — market, holders, LP Safety, Risk Engine, and dev checks',
       'Basic Wallet Scanner',
       'Portfolio Intelligence',
       'Watchlist — full access',
-      'Clark AI — 3 prompts per day',
+      'Clark AI — full capability · 3 prompts per day',
       'Clark chat history — 3 saved chats',
     ],
   },
@@ -289,7 +315,8 @@ export const PRICING_PROOF = [
   'Watchlist on every plan',
   'Clark AI — on-chain analysis, not trading signals',
   'Unlimited normal wallet scans on every plan',
-  'Deep scans: 3 / month on Free, 30 / month on Pro, unlimited on Elite',
+  'Deep wallet scans: 3 / month on Free, 30 / month on Pro, unlimited on Elite',
+  'Token scans: 3 / week on Free, unlimited on Pro and Elite',
 ] as const
 
 export type PlanToolNavItem = { icon: string; name: string; href: string; note: string }
@@ -309,11 +336,11 @@ export const PLAN_TOOL_NAV: Array<{
     bg: 'rgba(103,232,249,0.08)',
     border: 'rgba(103,232,249,0.20)',
     tools: [
-      { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: 'Market, holders, LP Safety, Risk Engine, dev checks' },
+      { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: '3 token scans/week · market, holders, LP Safety, Risk, dev' },
       { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Unlimited normal wallet scans · 3 deep scans/month' },
       { icon: '📊', name: 'Portfolio', href: '/terminal/portfolio', note: 'Portfolio Intelligence' },
       { icon: '☆', name: 'Watchlist', href: '/terminal/watchlist', note: 'Full access' },
-      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '3 prompts/day · 3 saved chats' },
+      { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: 'Full capability · 3 prompts/day · 3 saved chats' },
     ],
   },
   {
@@ -345,7 +372,7 @@ export const PLAN_TOOL_NAV: Array<{
 
 export function planFaqWhatIsIncluded(): string {
   return [
-    `Free: unlimited normal wallet scans and ${deepScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI at ${CLARK_DAILY_LIMITS.free} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.free} saved chats.`,
+    `Free: unlimited normal wallet scans and ${deepScanLimitLabel('free')}; ${tokenScanLimitLabel('free')}; Token Scanner with market, holders, LP Safety, Risk Engine, and dev checks; Basic Wallet Scanner; Portfolio Intelligence; Watchlist full access; Clark AI full capability at ${CLARK_DAILY_LIMITS.free} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.free} saved chats.`,
     `Pro ($30/month): unlimited normal wallet scans, ${deepScanLimitLabel('pro')}, full Token Scanner, full Wallet Scanner, Portfolio Intelligence, Watchlist, Clark AI at ${CLARK_DAILY_LIMITS.pro} prompts per day and ${CLARK_CHAT_HISTORY_LIMITS.pro} saved chats, Base Radar, and Whale Alerts.`,
     `Elite ($60/month): everything in Pro, ${deepScanLimitLabel('elite').toLowerCase()}, Clark AI at ${CLARK_DAILY_LIMITS.elite} prompts per day, unlimited Clark chat history, and the FOMO PnL leaderboard (24H / 7D / 30D / ALL).`,
   ].join(' ')
@@ -356,5 +383,5 @@ export function planFaqProVsElite(): string {
 }
 
 export function planFaqClarkLimits(): string {
-  return `Signed-out visitors get ${CLARK_DAILY_UNAUTH} per day. Free gets ${CLARK_DAILY_LIMITS.free}. Pro gets ${CLARK_DAILY_LIMITS.pro}. Elite gets ${CLARK_DAILY_LIMITS.elite}. Unused prompts do not roll over. Free keeps ${CLARK_CHAT_HISTORY_LIMITS.free} saved Clark chats, Pro keeps ${CLARK_CHAT_HISTORY_LIMITS.pro}, and Elite is unlimited. Free prompts accept normal Clark commands (token, wallet, LP, holders, deployer) and stop when the daily limit is reached.`
+  return `Signed-out visitors get ${CLARK_DAILY_UNAUTH} per day. Free gets ${CLARK_DAILY_LIMITS.free}. Pro gets ${CLARK_DAILY_LIMITS.pro}. Elite gets ${CLARK_DAILY_LIMITS.elite}. Unused prompts do not roll over. Free keeps ${CLARK_CHAT_HISTORY_LIMITS.free} saved Clark chats, Pro keeps ${CLARK_CHAT_HISTORY_LIMITS.pro}, and Elite is unlimited. Free has Clark's full capability on Free-plan tools (token, wallet, LP, holders, deployer); only the daily prompt count is capped.`
 }
