@@ -14,6 +14,24 @@ export type ResolverCandidate = {
   reason: string
 }
 
+export type ResolverMatch = {
+  name: string | null
+  symbol: string | null
+  chainId: string
+  chainSlug: string
+  tokenAddress: string
+  pairAddress: string | null
+  dex: string
+  priceUsd: number | null
+  marketCapUsd: number | null
+  fdvUsd: number | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  priceChange24hPct: number | null
+  confidence: 'high' | 'medium' | 'low'
+  reason: string
+}
+
 export type ResolverResult = {
   status: 'resolved' | 'ambiguous' | 'not_found'
   contractAddress: string | null
@@ -22,6 +40,14 @@ export type ResolverResult = {
   alternates: ResolverCandidate[]
   confidence: 'high' | 'medium' | 'low'
   reason: string
+  // SPEC RESULT SHAPE, DISCLOSED (ticker search task): additive fields — every existing consumer
+  // of this type keeps working off status/contractAddress/bestCandidate/alternates unchanged.
+  query: string
+  normalizedQuery: string
+  matches: ResolverMatch[]
+  selectedMatch: ResolverMatch | null
+  needsUserChoice: boolean
+  failureReason: string | null
 }
 
 export const CA_REGEX = /^0x[a-fA-F0-9]{40}$/

@@ -434,6 +434,15 @@ type ClarkSessionMemory = {
     chainsFound: string[];
     timestamp: number;
   } | null;
+  // TICKER RESOLVER FIX, DISCLOSED (ticker search task): "/token PEPE" with more than one strong
+  // match used to fall straight through to "share a token symbol/contract" — resolveTokenSymbolToAddress
+  // WAS called, but its "ambiguous" status was never checked outside the LP/liquidity flow, so the
+  // real match list it returned was silently discarded. Recorded here (OPTIONAL, so every existing
+  // ClarkSessionMemory literal in this file stays valid unchanged) whenever a disambiguation prompt
+  // is shown, so a bare follow-up reply ("1", "scan 2", "the base one") can resolve against the exact
+  // same match list instead of re-guessing from scratch. Cleared once a selection is made or the
+  // symbol changes.
+  lastTickerMatches?: { symbol: string; matches: ClarkLiquidityMatch[]; ts: number } | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -698,6 +707,56 @@ function updateMemToken(
     lastIntent: opts?.lastIntent ?? mem.lastIntent ?? "token_scan",
     lastResultSummary: scanSummary,
   });
+}
+
+// TICKER RESOLVER FIX, DISCLOSED (ticker search task): records the exact match list shown in a
+// disambiguation prompt so a follow-up reply ("1", "scan 2", "the base one") can resolve against
+// it directly instead of re-running provider search from scratch and possibly landing on a
+// different ranking.
+function updateMemTickerMatches(mem: ClarkSessionMemory, symbol: string, matches: ClarkLiquidityMatch[]) {
+  mem.lastTickerMatches = { symbol, matches, ts: Date.now() };
+}
+
+// Recognizes a bare selection reply against a just-shown ticker disambiguation list — "1", "2.",
+// "scan 2", "option 3", "the base one", "base", a symbol+chain phrase, or the exact contract
+// address. Never guesses: returns null (falls through to normal routing) unless the reply clearly
+// names exactly one of the remembered matches. Expires after 5 minutes so a stale list from an
+// unrelated earlier command never hijacks a fresh, unrelated prompt.
+const TICKER_MATCH_REPLY_TTL_MS = 5 * 60 * 1000;
+function parseTickerMatchSelection(prompt: string, mem: ClarkSessionMemory): ClarkLiquidityMatch | null {
+  const remembered = mem.lastTickerMatches;
+  if (!remembered || Date.now() - remembered.ts > TICKER_MATCH_REPLY_TTL_MS) return null;
+  const matches = remembered.matches;
+  if (!matches || matches.length === 0) return null;
+  const t = prompt.trim();
+  if (!t || t.length > 40) return null; // a real follow-up prompt, not a short selection reply
+
+  if (/^0x[a-fA-F0-9]{40}$/.test(t)) {
+    return matches.find((m) => m.address.toLowerCase() === t.toLowerCase()) ?? null;
+  }
+
+  const numMatch = t.match(/^(?:scan\s+|option\s+|#\s*)?(\d{1,2})\.?$/i);
+  if (numMatch) {
+    const idx = Number(numMatch[1]) - 1;
+    return matches[idx] ?? null;
+  }
+
+  const chainWords: Record<string, string[]> = {
+    base: ["base"], ethereum: ["eth", "ethereum"], bnb: ["bnb", "bsc", "binance"],
+    robinhood: ["robinhood"], solana: ["solana", "sol"],
+  };
+  const lower = t.toLowerCase();
+  for (const [chainSlug, words] of Object.entries(chainWords)) {
+    if (words.some((w) => new RegExp(`\\b${w}\\b`).test(lower))) {
+      const onChain = matches.filter((m) => (m.chainSlug === "eth" ? "ethereum" : m.chainSlug) === chainSlug);
+      if (onChain.length === 1) return onChain[0];
+    }
+  }
+
+  const bySymbol = matches.filter((m) => m.symbol.toUpperCase() === t.toUpperCase().replace(/^\$/, ""));
+  if (bySymbol.length === 1) return bySymbol[0];
+
+  return null;
 }
 
 function updateMemWallet(
@@ -9543,6 +9602,45 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
+  // TICKER RESOLVER FIX, DISCLOSED (ticker search task): "/token PEPE" -> multiple matches used to
+  // give the user no way to actually pick one — resolveTokenForFollowup's ambiguous result now shows
+  // the real matches (see ambiguousTokenReply below), but only if the user can then reply "1",
+  // "scan 2", or "the base one" and have it resolve. Runs before every other intent classifier so a
+  // short selection reply is never misread as a fresh, unrelated prompt — but only ever fires when a
+  // disambiguation list was actually just shown (parseTickerMatchSelection returns null otherwise,
+  // including once the remembered list is more than 5 minutes old), so it can never hijack normal
+  // conversation.
+  {
+    const selection = parseTickerMatchSelection(prompt, sessionMem);
+    if (selection) {
+      sessionMem.lastTickerMatches = null;
+      const ev = await fetchTokenEvidence(selection.address);
+      const selChain = selection.chainSlug === "eth" ? "ethereum" : selection.chainSlug;
+      const selChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, selChain as SupportedChain | "robinhood"));
+      const analysis = renderClarkTokenAnalystFromEvidence(ev, prompt, selChainLabel, "safe");
+      const usable = hasUsableTokenEvidence(ev);
+      updateMemToken(sessionMem, selection.address, ev.token?.symbol ?? selection.symbol ?? null, ev.token?.name ?? selection.name ?? null, analysis, {
+        confidence: tokenCoreConfidence(ev, ((ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], usable),
+        normalizedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
+        cachedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
+        chain: selChain as ClarkMemoryChain,
+      });
+      updateMemIntent(sessionMem, "token_scan");
+      const selVerdictMeta = tokenScanVerdictMeta(ev, usable);
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
+        analysis,
+        verdict: selVerdictMeta.verdict,
+        confidence: selVerdictMeta.confidence,
+        source: selVerdictMeta.source,
+        intentBadge: "token_scan",
+        actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+        ui: { intentBadge: "Token Read", actions: buildClarkTokenAnswerActions(selection.address, selChainLabel) },
+        quotaConsumed: ev.ok ?? false,
+      };
+    }
+  }
+
   {
     const marketReply = await answerClarkMarketOrPumping({ prompt, chain, sessionMem, body });
     if (marketReply) return marketReply;
@@ -13093,7 +13191,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     ].join("\n");
   }
 
-  async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
+  async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true } | { ambiguous: true; symbol: string; matches: ClarkLiquidityMatch[] }> {
     // Check memory first — follow-ups do not re-call providers if cached evidence exists
     if (opts?.fromMemoryOnly || (!tokenFollowupRefreshRequested && !routed.address && !routed.symbol)) {
       const mem = sessionMem?.lastToken;
@@ -13103,7 +13201,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     let tokenAddress = routed.address;
     if (!tokenAddress && routed.symbol) {
-      const resolved = await resolveTokenSymbolToAddress(routed.symbol);
+      // TICKER RESOLVER FIX, DISCLOSED (ticker search task): this used to call
+      // resolveTokenSymbolToAddress(routed.symbol) with NO chain argument (always defaulted to
+      // "base" regardless of the user's actually-selected chain — "/token PEPE" on Solana or BNB
+      // silently searched Base) and never checked for status "ambiguous" — a real ambiguous match
+      // list came back but resolved?.address was "" (empty, by design, so nothing could accidentally
+      // auto-pick a wrong token), which fell through to "no token in memory" instead of ever showing
+      // the user the real matches. Now passes the real selected chain and requires an explicit
+      // choice on a genuine multi-match tie, surfacing it instead of silently discarding it.
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol, chainForClarkTools, { requireExplicitSelection: true });
+      if (resolved?.status === "ambiguous" && Array.isArray(resolved.matches) && resolved.matches.length > 1) {
+        updateMemTickerMatches(sessionMem!, routed.symbol, resolved.matches as ClarkLiquidityMatch[]);
+        return { ambiguous: true, symbol: routed.symbol, matches: resolved.matches as ClarkLiquidityMatch[] };
+      }
       tokenAddress = resolved?.address ?? null;
     }
     if (!tokenAddress && sessionMem?.lastToken) {
@@ -13119,14 +13229,28 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   const tokenFollowupRefreshRequested = /\b(refresh|rescan|re-scan|deep\s+scan|full\s+scan|retry)\b/i.test(prompt);
-  function tokenFollowupDebug(r: { ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }) {
-    const fromMemory = !("needsAddress" in r) && r.fromMemory === true;
+  function tokenFollowupDebug(r: { ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true } | { ambiguous: true; symbol: string; matches: ClarkLiquidityMatch[] }) {
+    const fromMemory = !("needsAddress" in r) && !("ambiguous" in r) && r.fromMemory === true;
     const age = fromMemory && sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null;
     return {
       followUpUsedMemory: fromMemory,
       followUpTriggeredRefresh: tokenFollowupRefreshRequested && !fromMemory,
       tokenMemoryAgeMs: age,
-      evidenceSource: fromMemory ? "lastToken" : (("needsAddress" in r) ? "partialMemory" : "freshScan"),
+      evidenceSource: fromMemory ? "lastToken" : ("ambiguous" in r ? "ambiguousMatches" : ("needsAddress" in r) ? "partialMemory" : "freshScan"),
+    };
+  }
+
+  // TICKER RESOLVER FIX, DISCLOSED: shared handling for resolveTokenForFollowup's "ambiguous"
+  // result — every call site below checks this first, before its existing "needsAddress" branch,
+  // so a genuine multi-match tie always shows the real matches instead of falling through to a
+  // generic "share a token symbol/contract" message.
+  function ambiguousTokenReply(r: { symbol: string; matches: ClarkLiquidityMatch[] }, intent: string) {
+    return {
+      feature: "clark-ai" as const, chain, mode: "analysis" as const, intent, toolsUsed: [],
+      analysis: formatAmbiguousLiquiditySymbol(r.symbol, r.matches),
+      intentBadge: intent,
+      actions: buildRoutedActions(["Open Token Scanner"]),
+      quotaConsumed: false,
     };
   }
 
@@ -13205,6 +13329,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkCommandPartial: "timeout",
       };
     }
+    if ("ambiguous" in r) return ambiguousTokenReply(r, "holders_check");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
@@ -13900,6 +14025,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Memory-first: reuse the same Token Scanner evidence the token_safety/token_scan
     // flows already gather — no new provider calls, no rewrite of scan logic.
     const r = await resolveTokenForFollowup();
+    if ("ambiguous" in r) return ambiguousTokenReply(r, "token_ape_risk");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed: [],
@@ -14071,6 +14197,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_safety") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
+    if ("ambiguous" in r) return ambiguousTokenReply(r, "token_safety");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed: [],
@@ -14114,6 +14241,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "dev_rug_check") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
+    if ("ambiguous" in r) return ambiguousTokenReply(r, "dev_rug_check");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed: [],
@@ -14154,7 +14282,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Memory-first for LP follow-ups; only explicit refresh/rescan/deep/full/retry requests may call live LP evidence.
     if (!tokenFollowupRefreshRequested) {
       const r = await resolveTokenForFollowup({ fromMemoryOnly: true });
-      if (!("needsAddress" in r)) {
+      if (!("needsAddress" in r) && !("ambiguous" in r)) {
         const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
         updateMemIntent(sessionMem, "lp_lock_check");
         return {
@@ -14278,6 +14406,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "risk_explanation") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
+    if ("ambiguous" in r) return ambiguousTokenReply(r, "risk_explanation");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: [],

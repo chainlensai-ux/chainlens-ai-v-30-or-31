@@ -44,6 +44,28 @@ export type ResolverCandidate = {
   matchType: MatchType
   reason: string
 }
+// SPEC RESULT SHAPE, DISCLOSED (ticker search task): query/normalizedQuery/matches/selectedMatch/
+// needsUserChoice/failureReason are additive — every existing consumer (lib/tickerResolver.ts,
+// the Token Scanner page, Clark's resolveTokenSymbolToAddress) keeps reading status/contractAddress/
+// bestCandidate/alternates exactly as before. matches mirrors bestCandidate+alternates in the
+// requested per-match shape so a caller that wants it doesn't have to re-derive it.
+export type ResolverMatch = {
+  name: string | null
+  symbol: string | null
+  chainId: string
+  chainSlug: string
+  tokenAddress: string
+  pairAddress: string | null
+  dex: string
+  priceUsd: number | null
+  marketCapUsd: number | null
+  fdvUsd: number | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  priceChange24hPct: number | null
+  confidence: 'high' | 'medium' | 'low'
+  reason: string
+}
 export type ResolverResult = {
   status: 'resolved' | 'ambiguous' | 'not_found'
   contractAddress: string | null
@@ -52,6 +74,12 @@ export type ResolverResult = {
   alternates: ResolverCandidate[]
   confidence: 'high' | 'medium' | 'low'
   reason: string
+  query: string
+  normalizedQuery: string
+  matches: ResolverMatch[]
+  selectedMatch: ResolverMatch | null
+  needsUserChoice: boolean
+  failureReason: string | null
 }
 
 const CHAIN_LABEL: Record<string, string> = {
@@ -153,14 +181,25 @@ async function fetchDexScreener(query: string, prefer: string): Promise<Resolver
   } catch { return [] }
 }
 
+// CHAIN-AWARE FIX, DISCLOSED (ticker search task): the network-scoped GeckoTerminal call used to
+// hardcode network=base regardless of which chain the user actually had selected — "/token PEPE"
+// with BNB or Solana selected still ran its chain-specific search against Base. Now maps the
+// caller's preferred chain to GeckoTerminal's own network slug (falls back to the global,
+// non-network-scoped search alone when the chain has no GeckoTerminal network, e.g. robinhood).
+const GECKOTERMINAL_NETWORK: Record<string, string> = {
+  base: 'base', eth: 'eth', ethereum: 'eth', bnb: 'bsc', bsc: 'bsc', solana: 'solana',
+}
+
 async function fetchGeckoTerminal(query: string, prefer: string): Promise<ResolverCandidate[]> {
   try {
-    const [r1, r2] = await Promise.allSettled([
-      fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=base&page=1`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }),
-      fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&page=1`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }),
-    ])
+    const network = GECKOTERMINAL_NETWORK[prefer.toLowerCase()]
+    const calls = [fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&page=1`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })]
+    if (network) {
+      calls.push(fetch(`https://api.geckoterminal.com/api/v2/search/pools?query=${encodeURIComponent(query)}&network=${network}&page=1`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) }))
+    }
+    const results = await Promise.allSettled(calls)
     const allPools: unknown[] = []
-    for (const r of [r1, r2]) {
+    for (const r of results) {
       if (r.status === 'fulfilled' && r.value.ok) {
         const j = await r.value.json() as { data?: unknown[] }
         if (Array.isArray(j.data)) allPools.push(...j.data)
@@ -232,6 +271,34 @@ function resolvedChain(chainId: string): string {
   return c
 }
 
+function toMatch(c: ResolverCandidate, confidence: 'high' | 'medium' | 'low'): ResolverMatch {
+  return {
+    name: c.name, symbol: c.symbol, chainId: c.chainId, chainSlug: resolvedChain(c.chainId),
+    tokenAddress: c.contractAddress, pairAddress: c.pairAddress, dex: c.source,
+    priceUsd: null, marketCapUsd: null, fdvUsd: c.fdvUsd, liquidityUsd: c.liquidityUsd,
+    volume24hUsd: c.volume24hUsd, priceChange24hPct: null, confidence, reason: c.reason,
+  }
+}
+
+// TICKER RESOLVER AUDIT, DISCLOSED (ticker search task): one structured record per resolve
+// attempt, logged server-side only — mirrors this codebase's existing audit-object convention
+// (paypalPaymentAudit, checkoutFlowAudit, robinhoodTokenEvidenceAudit).
+type TickerResolverAudit = {
+  query: string
+  source: 'ca' | 'solana_mint' | 'internal_alias' | 'live_search'
+  selectedChain: string
+  providersTried: string[]
+  matchesFound: number
+  topMatch: string | null
+  confidence: 'high' | 'medium' | 'low'
+  needsUserChoice: boolean
+  finalAction: 'resolved' | 'ambiguous' | 'not_found'
+  failureReason: string | null
+}
+function logTickerResolverAudit(audit: TickerResolverAudit): void {
+  console.log('tickerResolverAudit', JSON.stringify(audit))
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json() as { query?: string; chain?: string }
@@ -239,7 +306,7 @@ export async function POST(req: Request) {
     const prefer   = (body.chain  ?? 'base').toLowerCase()
 
     if (!rawQuery) {
-      return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'Empty query.' })
+      return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'Empty query.', query: rawQuery, normalizedQuery: '', matches: [], selectedMatch: null, needsUserChoice: false, failureReason: 'empty_query' })
     }
 
     const normalized = rawQuery.replace(/^\$/, '').trim()
@@ -248,17 +315,21 @@ export async function POST(req: Request) {
     // 1. Direct CA — resolve immediately (EVM lowercased for comparison; Solana mints are
     // case-sensitive base58 and must be returned exactly as given).
     if (CA_REGEX.test(rawQuery)) {
-      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery.toLowerCase(), chain: prefer, bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.' })
+      logTickerResolverAudit({ query: rawQuery, source: 'ca', selectedChain: prefer, providersTried: [], matchesFound: 1, topMatch: rawQuery.toLowerCase(), confidence: 'high', needsUserChoice: false, finalAction: 'resolved', failureReason: null })
+      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery.toLowerCase(), chain: prefer, bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.', query: rawQuery, normalizedQuery: normalized, matches: [], selectedMatch: null, needsUserChoice: false, failureReason: null })
     }
     if (isValidSolanaMintAddress(rawQuery)) {
-      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery, chain: 'solana', bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.' })
+      logTickerResolverAudit({ query: rawQuery, source: 'solana_mint', selectedChain: 'solana', providersTried: [], matchesFound: 1, topMatch: rawQuery, confidence: 'high', needsUserChoice: false, finalAction: 'resolved', failureReason: null })
+      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery, chain: 'solana', bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.', query: rawQuery, normalizedQuery: normalized, matches: [], selectedMatch: null, needsUserChoice: false, failureReason: null })
     }
 
     // 2. Internal alias map — instant, no network call
     const alias = INTERNAL_ALIASES[upper]
     if (alias) {
       const c: ResolverCandidate = { contractAddress: alias.address.toLowerCase(), chainId: 'base', chainLabel: 'BASE', symbol: alias.symbol, name: alias.name, source: 'internal', liquidityUsd: null, volume24hUsd: null, fdvUsd: null, pairAddress: null, confidenceScore: 999, matchType: 'exact_symbol', reason: 'Internal registry match.' }
-      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: alias.address.toLowerCase(), chain: 'base', bestCandidate: c, alternates: [], confidence: 'high', reason: `Matched ${alias.symbol} from internal token registry.` })
+      const m = toMatch(c, 'high')
+      logTickerResolverAudit({ query: rawQuery, source: 'internal_alias', selectedChain: prefer, providersTried: [], matchesFound: 1, topMatch: alias.symbol, confidence: 'high', needsUserChoice: false, finalAction: 'resolved', failureReason: null })
+      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: alias.address.toLowerCase(), chain: 'base', bestCandidate: c, alternates: [], confidence: 'high', reason: `Matched ${alias.symbol} from internal token registry.`, query: rawQuery, normalizedQuery: normalized, matches: [m], selectedMatch: m, needsUserChoice: false, failureReason: null })
     }
 
     // 3. Live search — DexScreener + GeckoTerminal in parallel
@@ -273,7 +344,8 @@ export async function POST(req: Request) {
     ]
 
     if (all.length === 0) {
-      return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'No matching token found. Try pasting the contract address.' })
+      logTickerResolverAudit({ query: rawQuery, source: 'live_search', selectedChain: prefer, providersTried: ['dexscreener', 'geckoterminal'], matchesFound: 0, topMatch: null, confidence: 'low', needsUserChoice: false, finalAction: 'not_found', failureReason: 'no_matches' })
+      return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'No matching token found. Try pasting the contract address.', query: rawQuery, normalizedQuery: normalized, matches: [], selectedMatch: null, needsUserChoice: false, failureReason: 'no_matches' })
     }
 
     // Apply no-liquidity penalty after merging
@@ -287,8 +359,18 @@ export async function POST(req: Request) {
     const second = merged[1]
     const alternates = merged.slice(1, 6)
 
+    // AMBIGUITY-GATING FIX, DISCLOSED (ticker search task): exact-symbol/exact-name matches used to
+    // be entirely EXEMPT from the ambiguity check ("best.matchType !== 'exact_symbol' && ... !==
+    // 'exact_name'") — two different real tokens that both happen to be an exact "PEPE" match on
+    // different chains (or even the same chain) always silently resolved to whichever ranked
+    // marginally higher, never asking. Per explicit instruction ("do not randomly choose a token
+    // when confidence is low" / "if multiple matches exist, show options"), exact matches are no
+    // longer exempt — they just get a tighter score-gap threshold than fuzzy matches, since a real
+    // exact-symbol tie deserves more benefit of the doubt than two loose partial matches do.
+    const exactTie = best.matchType === 'exact_symbol' || best.matchType === 'exact_name'
     const scoreDiff = best.confidenceScore - (second?.confidenceScore ?? 0)
-    const isAmbiguous = !!second && scoreDiff < 50 && best.matchType !== 'exact_symbol' && best.matchType !== 'exact_name'
+    const ambiguousThreshold = exactTie ? 30 : 50
+    const isAmbiguous = !!second && scoreDiff < ambiguousThreshold
 
     let confidence: 'high' | 'medium' | 'low' = 'low'
     if (best.matchType === 'exact_symbol' || best.matchType === 'exact_name') {
@@ -297,21 +379,36 @@ export async function POST(req: Request) {
       confidence = (best.liquidityUsd ?? 0) > 250_000 ? 'medium' : 'low'
     }
 
+    const matches = [best, ...alternates].map((c) => toMatch(c, confidence))
+    const selectedMatch = isAmbiguous ? null : matches[0]
+    logTickerResolverAudit({
+      query: rawQuery, source: 'live_search', selectedChain: prefer,
+      providersTried: ['dexscreener', 'geckoterminal'], matchesFound: merged.length,
+      topMatch: best.symbol ?? best.name, confidence, needsUserChoice: isAmbiguous,
+      finalAction: isAmbiguous ? 'ambiguous' : 'resolved', failureReason: null,
+    })
+
     const displayName = best.symbol ?? best.name ?? normalized.toUpperCase()
     return NextResponse.json<ResolverResult>({
       status: isAmbiguous ? 'ambiguous' : 'resolved',
       contractAddress: best.contractAddress,
       chain: resolvedChain(best.chainId),
       bestCandidate: best,
+      query: rawQuery,
+      normalizedQuery: normalized,
+      matches,
+      selectedMatch,
+      needsUserChoice: isAmbiguous,
+      failureReason: null,
       alternates,
       confidence,
       reason: isAmbiguous
-        ? `Multiple ${normalized.toUpperCase()} tokens found. Using the highest-liquidity match.`
+        ? `Multiple tokens found for ${normalized.toUpperCase()}. Choose one to scan.`
         : `Resolved ${displayName} on ${best.chainLabel}.`,
     })
 
   } catch (err) {
     console.error('[resolve]', err)
-    return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'Resolver error.' }, { status: 500 })
+    return NextResponse.json<ResolverResult>({ status: 'not_found', contractAddress: null, chain: null, bestCandidate: null, alternates: [], confidence: 'low', reason: 'Resolver error.', query: '', normalizedQuery: '', matches: [], selectedMatch: null, needsUserChoice: false, failureReason: 'resolver_error' }, { status: 500 })
   }
 }

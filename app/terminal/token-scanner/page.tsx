@@ -4966,6 +4966,16 @@ export default function TerminalTokenScanner() {
           setError(resolved.reason || 'No matching token found. Try pasting the contract address.')
           return
         }
+        // AMBIGUOUS-AUTO-SCAN FIX, DISCLOSED (ticker search task): this used to fall through and
+        // scan resolved.contractAddress (the resolver's best GUESS) even when status was
+        // 'ambiguous' — multiple real matches existed and the resolver said so, but the UI silently
+        // picked one anyway. Typing two different, both-ambiguous tickers back to back could easily
+        // land on similarly-ranked pairs and look like "every search returns the same token." Per
+        // explicit instruction ("do not randomly choose a token when confidence is low" / "if
+        // multiple matches exist, show options"), an ambiguous result now stops here — the banner +
+        // alternates picker already rendered below (from setResolverResult above) is the only way
+        // to continue; nothing scans until the user explicitly picks one.
+        if (resolved.status === 'ambiguous') return
         scanContract = resolved.contractAddress
         scanChain    = resolved.chain === 'eth' ? 'eth' : 'base'
       } catch {
@@ -5603,48 +5613,60 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Resolver result banner */}
+          {/* Resolver result banner — AMBIGUOUS-AUTO-SCAN FIX, DISCLOSED (ticker search task): an
+              ambiguous result no longer auto-scans (see handleScan's ticker-resolution block), so
+              this now has to actually let the user pick — the best match renders as its own Scan
+              button alongside the alternates, not just a passive "already scanning this" banner. */}
           {!resolving && resolverResult && resolverResult.status !== 'not_found' && resolverResult.bestCandidate && (
             <div style={{ maxWidth:'680px', marginBottom:'12px' }}>
-              <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:`1px solid ${resolverResult.status === 'ambiguous' ? 'rgba(250,204,21,0.35)' : 'rgba(45,212,191,0.2)'}`, fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
-                <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
-                  <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
-                    {resolverResult.status === 'ambiguous' ? '⚠ Multiple matches' : '✓ Resolved'}
-                  </span>
-                  <span style={{ color:'#e2e8f0', fontWeight:700 }}>
-                    {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
-                  </span>
-                  {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
-                    <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
-                  )}
-                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainLabel}</span>
-                  {resolverResult.bestCandidate.liquidityUsd != null && (
-                    <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
-                  )}
-                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.contractAddress?.slice(0,8)}…{resolverResult.contractAddress?.slice(-4)}</span>
-                </div>
-              </div>
-
-              {/* Alternates picker */}
-              {resolverResult.alternates.length > 0 && (
-                <div style={{ marginTop:'6px', display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                  <span style={{ color:'#334155', fontSize:'9px', fontFamily:'var(--font-plex-mono)', alignSelf:'center' }}>Other matches:</span>
-                  {resolverResult.alternates.slice(0, 4).map((alt: ResolverCandidate) => (
-                    <button
-                      key={alt.contractAddress + alt.chainId}
-                      disabled={loading || resolving}
-                      onClick={() => {
-                        const altChain: 'base' | 'eth' | 'bnb' | 'robinhood' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'bnb' ? 'bnb' : alt.chainId === 'robinhood' ? 'robinhood' : 'base'
-                        setChain(altChain)
-                        handleScan(alt.contractAddress, altChain)
-                      }}
-                      style={{ padding:'4px 10px', borderRadius:'999px', background:'rgba(100,116,139,0.12)', border:'1px solid rgba(100,116,139,0.25)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'flex', alignItems:'center', gap:'5px' }}
-                    >
-                      <span style={{ fontWeight:700 }}>{alt.symbol ?? alt.name ?? alt.contractAddress.slice(0,6)}</span>
-                      <span style={{ opacity:0.6 }}>{alt.chainLabel}</span>
-                      {alt.liquidityUsd != null && <span style={{ opacity:0.5 }}>{fmtLiquidity(alt.liquidityUsd)}</span>}
-                    </button>
-                  ))}
+              {resolverResult.status === 'ambiguous' ? (
+                <>
+                  <div style={{ padding:'10px 14px', marginBottom:'8px', borderRadius:'10px', background:'rgba(250,204,21,0.06)', border:'1px solid rgba(250,204,21,0.3)', fontFamily:'var(--font-plex-mono)', fontSize:'11px', color:'#facc15', fontWeight:700 }}>
+                    Multiple tokens found for {(resolverResult.bestCandidate.symbol ?? input).toUpperCase()}. Choose one to scan.
+                  </div>
+                  <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                    {[resolverResult.bestCandidate, ...resolverResult.alternates].slice(0, 5).map((cand: ResolverCandidate) => (
+                      <button
+                        key={cand.contractAddress + cand.chainId}
+                        type="button"
+                        disabled={loading || resolving}
+                        onClick={() => {
+                          const candChain: 'base' | 'eth' | 'bnb' | 'robinhood' = cand.chainId === 'ethereum' ? 'eth' : cand.chainId === 'bnb' ? 'bnb' : cand.chainId === 'robinhood' ? 'robinhood' : 'base'
+                          setChain(candChain)
+                          handleScan(cand.contractAddress, candChain)
+                        }}
+                        style={{ display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap', width:'100%', textAlign:'left', padding:'9px 12px', borderRadius:'9px', background:'rgba(255,255,255,0.02)', border:'1px solid rgba(148,163,184,0.16)', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontSize:'11px', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.5 : 1 }}
+                      >
+                        <span style={{ fontWeight:700 }}>{cand.symbol ?? cand.name ?? cand.contractAddress.slice(0, 6)}</span>
+                        {cand.name && cand.name !== cand.symbol && <span style={{ color:'#64748b' }}>{cand.name}</span>}
+                        <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.08em' }}>{cand.chainLabel}</span>
+                        <span style={{ color:'#334155', fontSize:'9px' }}>{cand.contractAddress.slice(0,6)}…{cand.contractAddress.slice(-4)}</span>
+                        <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(cand.liquidityUsd)}</span>
+                        <span style={{ color:'#475569', fontSize:'10px' }}>FDV {fmtLiquidity(cand.fdvUsd)}</span>
+                        <span style={{ color:'#475569', fontSize:'10px' }}>Vol24h {fmtLiquidity(cand.volume24hUsd)}</span>
+                        <span style={{ marginLeft:'auto', padding:'4px 10px', borderRadius:'999px', background:'rgba(45,212,191,0.10)', color:'#2dd4bf', fontSize:'9px', fontWeight:700 }}>Scan</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:'1px solid rgba(45,212,191,0.2)', fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                    <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
+                      ✓ Resolved
+                    </span>
+                    <span style={{ color:'#e2e8f0', fontWeight:700 }}>
+                      {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
+                    </span>
+                    {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
+                      <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
+                    )}
+                    <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainLabel}</span>
+                    {resolverResult.bestCandidate.liquidityUsd != null && (
+                      <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
+                    )}
+                    <span style={{ color:'#334155', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.contractAddress?.slice(0,8)}…{resolverResult.contractAddress?.slice(-4)}</span>
+                  </div>
                 </div>
               )}
             </div>
