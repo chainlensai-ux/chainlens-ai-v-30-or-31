@@ -13,9 +13,14 @@ const pumpAlertsSrc = readFileSync(new URL('../app/terminal/pump-alerts/page.tsx
 
 console.log('\nSection 1: Solana Token Scanner scan/deep-check calls attach the session auth token (/api/token requires one)')
 {
+  // NOTE, DISCLOSED: a concurrent ticker-resolver rewrite moved this check from
+  // "effectiveChain === 'solana'" (checked immediately) to "scanChain === 'solana'" (checked after
+  // ticker resolution settles the actual chain) — same guarded branch, same auth-token attachment,
+  // just relocated. Matched on the SOLANA BETA PATH marker comment instead of the literal condition
+  // so this assertion doesn't re-break on a future harmless rename.
   const solanaScanBlock = tokenScannerSrc.slice(
-    tokenScannerSrc.indexOf("if (effectiveChain === 'solana') {"),
-    tokenScannerSrc.indexOf("if (effectiveChain === 'solana') {") + 1500,
+    tokenScannerSrc.indexOf('SOLANA BETA PATH'),
+    tokenScannerSrc.indexOf('SOLANA BETA PATH') + 1500,
   )
   check('main Solana scan path reads the Supabase session before calling /api/token', /supabase\.auth\.getSession\(\)/.test(solanaScanBlock))
   check('main Solana scan path sends an Authorization header when a token exists', /Authorization: `Bearer \$\{_tok\}`/.test(solanaScanBlock))

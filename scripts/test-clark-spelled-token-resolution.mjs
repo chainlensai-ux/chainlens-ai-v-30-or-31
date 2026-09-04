@@ -75,12 +75,17 @@ console.log('\nSection D: route.ts guards routed.symbol before short-circuiting 
 
 console.log('\nSection E: /api/resolve accepts Solana (base58) candidates instead of silently dropping them')
 {
+  // NOTE, DISCLOSED: /api/resolve was rewritten on top of lib/tickerResolverCore.ts by a concurrent
+  // ticker-resolver task (chain-aware ranking, needsUserChoice picker, etc.) — same Solana-address
+  // support, now expressed via the core module's isDirectTokenAddress/isEvmAddress/
+  // isValidSolanaMintAddress rather than a route-local isResolvableContractAddress helper. Updated
+  // to match the current shape instead of the old symbol names.
   const fs = await import('node:fs')
   const src = fs.readFileSync(new URL('../app/api/resolve/route.ts', import.meta.url), 'utf8')
   check('imports isValidSolanaMintAddress', /isValidSolanaMintAddress/.test(src))
-  check('dexscreener/geckoterminal filters use isResolvableContractAddress, not a bare EVM regex', (src.match(/isResolvableContractAddress\(/g) ?? []).length >= 2)
+  check('candidate addresses are validated as EVM-or-Solana, not a bare EVM-only regex', /isEvmAddress\(value\) \|\| isValidSolanaMintAddress\(value\)/.test(src))
   check('candidate addresses are not force-lowercased (would corrupt base58)', !/addr = \(bt\?\.address as string \| undefined\)\?\.toLowerCase\(\)/.test(src))
-  check('direct Solana mint query resolves immediately', /isValidSolanaMintAddress\(rawQuery\)/.test(src))
+  check('direct Solana mint query resolves immediately', /isValidSolanaMintAddress\(query\)/.test(src) && /isDirectTokenAddress\(query\)/.test(src))
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)
