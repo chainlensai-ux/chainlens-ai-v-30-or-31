@@ -46,6 +46,20 @@ type FomoLeaderboardAudit = {
   errorReason: string | null
 }
 
+type FomoBoardLoadAudit = {
+  userIdPresent: boolean
+  plan: string | null
+  timeWindow: FomoWindow
+  cacheHit: boolean
+  liveFetchAttempted: boolean
+  apiStatus: number | null
+  tradersReturned: number
+  evmWalletsResolved: number
+  staleCacheUsed: boolean
+  finalStatus: 'ready' | 'empty' | 'stale_cache' | 'error'
+  failureReason: string | null
+}
+
 type AddState = 'idle' | 'adding' | 'added' | 'duplicate' | 'error'
 type AddErrorInfo = { reason: string; message: string }
 
@@ -156,6 +170,10 @@ export default function FomoBoardPanel() {
   const [addStates, setAddStates] = useState<Record<string, AddState>>({})
   const [addErrors, setAddErrors] = useState<Record<string, AddErrorInfo>>({})
   const [toast, setToast] = useState<string | null>(null)
+  // The browser copy is intentionally separate from the server cache.  A failed refresh must
+  // never replace a board the user was already able to inspect with an empty/error state.
+  const lastGoodByWindow = useRef(new Map<FomoWindow, { traders: FomoTraderRow[]; audit: FomoLeaderboardAudit | null }>())
+  const latestLeaderboardRequest = useRef(0)
   // fomoApiUsageAudit's requestCountThisPageLoad, DISCLOSED (live report: "one leaderboard load
   // appears to cost multiple credits/requests"). Counts only requests the server actually reports
   // as apiCalled:true (a real external FOMO API call) — a cache hit against our own route never
@@ -185,36 +203,90 @@ export default function FomoBoardPanel() {
 
   const loadLeaderboard = useCallback(async (w: FomoWindow, reason: 'initial_load' | 'window_change' | 'manual_refresh') => {
     if (!hasAccess) return
+    const requestId = latestLeaderboardRequest.current + 1
+    latestLeaderboardRequest.current = requestId
     setLoading(true)
     setError(null)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15_000)
+    let sessionToken: string | undefined
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
+      sessionToken = session?.access_token
       const res = await fetch(`/api/fomo/leaderboard?window=${w}&limit=100`, {
         cache: 'no-store',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+        signal: controller.signal,
       })
       const json = await res.json().catch(() => null)
       const a = json?.fomoLeaderboardAudit as FomoLeaderboardAudit | undefined
+      if (requestId !== latestLeaderboardRequest.current) return
       if (a?.apiCalled) requestCountThisPageLoad.current += 1
       if (process.env.NODE_ENV === 'development' && a) {
         console.log('[fomo] fomoApiUsageAudit', { ...a, requestCountThisPageLoad: requestCountThisPageLoad.current, reasonForFetch: reason })
       }
       if (!res.ok || !json?.ok) {
-        setTraders([])
-        setAudit(a ?? null)
-        setError(json?.error ?? 'Could not load the FOMO board.')
+        const cached = lastGoodByWindow.current.get(w)
+        if (cached) {
+          setTraders(cached.traders)
+          setAudit(cached.audit)
+          setError(`${json?.error ?? 'Live FOMO data is unavailable.'} Showing the last successful result.`)
+        } else {
+          setTraders([])
+          setAudit(a ?? null)
+          setError(json?.error ?? 'Could not load the FOMO board.')
+        }
+        if (process.env.NODE_ENV === 'development') {
+          const loadAudit: FomoBoardLoadAudit = {
+            userIdPresent: Boolean(sessionToken), plan, timeWindow: w, cacheHit: Boolean(a?.cacheHit),
+            liveFetchAttempted: Boolean(a?.apiCalled), apiStatus: res.status, tradersReturned: cached?.traders.length ?? 0,
+            evmWalletsResolved: cached?.traders.filter((row) => Boolean(row.evmWallet)).length ?? 0,
+            staleCacheUsed: Boolean(cached), finalStatus: cached ? 'stale_cache' : 'error', failureReason: json?.error ?? 'request_failed',
+          }
+          console.log('[fomo] fomoBoardLoadAudit', loadAudit)
+        }
         return
       }
-      setTraders(Array.isArray(json.traders) ? json.traders : [])
-      setAudit(a ?? null)
-    } catch {
-      setTraders([])
-      setError('Could not load the FOMO board.')
+      const nextTraders = Array.isArray(json.traders) ? json.traders as FomoTraderRow[] : []
+      const nextAudit = a ?? null
+      setTraders(nextTraders)
+      setAudit(nextAudit)
+      if (nextTraders.length > 0) lastGoodByWindow.current.set(w, { traders: nextTraders, audit: nextAudit })
+      if (process.env.NODE_ENV === 'development') {
+        const loadAudit: FomoBoardLoadAudit = {
+          userIdPresent: Boolean(sessionToken), plan, timeWindow: w, cacheHit: Boolean(a?.cacheHit),
+          liveFetchAttempted: Boolean(a?.apiCalled), apiStatus: res.status, tradersReturned: nextTraders.length,
+          evmWalletsResolved: nextTraders.filter((row) => Boolean(row.evmWallet)).length,
+          staleCacheUsed: Boolean(a?.errorReason), finalStatus: nextTraders.length > 0 ? 'ready' : 'empty', failureReason: a?.errorReason ?? null,
+        }
+        console.log('[fomo] fomoBoardLoadAudit', loadAudit)
+      }
+    } catch (caught) {
+      if (requestId !== latestLeaderboardRequest.current) return
+      const cached = lastGoodByWindow.current.get(w)
+      const failureReason = caught instanceof DOMException && caught.name === 'AbortError' ? 'client_timeout' : 'network_error'
+      if (cached) {
+        setTraders(cached.traders)
+        setAudit(cached.audit)
+        setError(`Live FOMO data is unavailable (${failureReason.replace('_', ' ')}). Showing the last successful result.`)
+      } else {
+        setTraders([])
+        setError(`Could not load the FOMO board (${failureReason.replace('_', ' ')}).`)
+      }
+      if (process.env.NODE_ENV === 'development') {
+        const loadAudit: FomoBoardLoadAudit = {
+          userIdPresent: Boolean(sessionToken), plan, timeWindow: w, cacheHit: false, liveFetchAttempted: true,
+          apiStatus: null, tradersReturned: cached?.traders.length ?? 0,
+          evmWalletsResolved: cached?.traders.filter((row) => Boolean(row.evmWallet)).length ?? 0,
+          staleCacheUsed: Boolean(cached), finalStatus: cached ? 'stale_cache' : 'error', failureReason,
+        }
+        console.log('[fomo] fomoBoardLoadAudit', loadAudit)
+      }
     } finally {
-      setLoading(false)
+      clearTimeout(timeout)
+      if (requestId === latestLeaderboardRequest.current) setLoading(false)
     }
-  }, [hasAccess])
+  }, [hasAccess, plan])
 
   const isFirstLoadRef = useRef(true)
   useEffect(() => {
@@ -262,9 +334,9 @@ export default function FomoBoardPanel() {
         body: JSON.stringify({
           address: addr,
           chainSlug: 'base',
-          source: 'fomo',
-          fomoHandle: row.handle,
-          fomoRank: row.rank,
+          source: 'fomo_board',
+          sourceHandle: row.handle,
+          sourceRank: row.rank,
           fomoWindow: window_,
           label: row.displayName || row.handle,
           tags: ['fomo', 'social_trader'],
@@ -272,10 +344,10 @@ export default function FomoBoardPanel() {
       })
       const json = await res.json().catch(() => null)
       if (process.env.NODE_ENV === 'development') {
-        console.log('[fomo] fomoAddTrackerAudit', json?.fomoAddTrackerAudit)
+        console.log('[fomo] fomoAddWalletAudit', json?.fomoAddWalletAudit)
       }
       if (!res.ok || !json?.ok) {
-        const reason = json?.fomoAddTrackerAudit?.errorReason ?? (res.status === 403 ? 'plan_blocked' : 'add_failed')
+        const reason = json?.fomoAddWalletAudit?.failureReason ?? (res.status === 403 ? 'plan_blocked' : 'add_failed')
         const message =
           reason === 'plan_blocked' ? 'Whale Alerts tracking requires Pro or Elite.'
           : reason === 'rls_blocked_on_write' || reason === 'rls_blocked_on_lookup' ? 'Permission denied writing to the tracker.'
@@ -288,7 +360,7 @@ export default function FomoBoardPanel() {
       const alreadyTracked = json.status === 'duplicate' || json.alreadyTracked === true
       setAddStates((prev) => ({ ...prev, [addr]: alreadyTracked ? 'duplicate' : 'added' }))
       setTrackedAddresses((prev) => new Set(prev).add(addr))
-      const countAfter = json?.fomoAddTrackerAudit?.trackedWalletCountAfter
+      const countAfter = json?.fomoAddWalletAudit?.trackedWalletCountAfter
       setTrackedCount(typeof countAfter === 'number' ? countAfter : (countBefore != null ? countBefore + (alreadyTracked ? 0 : 1) : null))
       if (!alreadyTracked) {
         setToast(`Added ${fmtAddr(addr)} to Base Whale Alerts tracker.`)
@@ -308,10 +380,14 @@ export default function FomoBoardPanel() {
       return <span title="This trader only has a Solana wallet on file — Base Whale Alerts tracks EVM wallets only." style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>SOL only</span>
     }
     if (!addr) {
-      return <span title="FOMO hasn't resolved an EVM wallet for this trader yet." style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>Wallet pending</span>
+      return (
+        <button type="button" onClick={() => void loadLeaderboard(window_, 'manual_refresh')} disabled={loading} title="Retry EVM wallet resolution from the FOMO provider." style={{ ...addBtnStyle, borderColor: 'rgba(148,163,184,0.28)', color: '#94a3b8' }}>
+          {loading ? 'Wallet pending' : 'Retry resolve'}
+        </button>
+      )
     }
     if (alreadyTracked) {
-      return <span title="Already in the Base Whale Alerts tracker — Sync wallets will watch it." style={pillStyle('#5eead4', 'rgba(45,212,191,0.10)', 'rgba(45,212,191,0.30)')}>Tracked</span>
+      return <span title="Already in your Base Whale Alerts tracker." style={pillStyle('#5eead4', 'rgba(45,212,191,0.10)', 'rgba(45,212,191,0.30)')}>Already added</span>
     }
     if (state === 'error') {
       const info = addErrors[addr]
@@ -404,17 +480,31 @@ export default function FomoBoardPanel() {
         </div>
       )}
 
+      {error && traders.length > 0 && (
+        <div role="status" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 9, border: '1px solid rgba(251,191,36,0.28)', background: 'rgba(120,53,15,0.14)', color: '#fcd34d', fontSize: 11.5 }}>
+          <span>{error}</span>
+          <button type="button" onClick={() => void loadLeaderboard(window_, 'manual_refresh')} style={{ ...addBtnStyle, minHeight: 32, padding: '6px 10px', borderColor: 'rgba(251,191,36,0.38)', color: '#fcd34d' }}>Retry</button>
+        </div>
+      )}
+
       <div style={{ background: cardBg, border: bdr, borderRadius: 12, overflow: 'hidden' }}>
         {loading && traders.length === 0 && (
-          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#7c8ba1', fontSize: 12.5 }}>
-            Loading FOMO board…
+          <div aria-busy="true" style={{ padding: '22px 20px', display: 'grid', gap: 10 }}>
+            <div className="cl-skeleton" style={{ height: 18, borderRadius: 6 }} />
+            <div className="cl-skeleton" style={{ height: 18, borderRadius: 6 }} />
+            <div className="cl-skeleton" style={{ height: 18, borderRadius: 6 }} />
           </div>
         )}
 
         {!loading && error && traders.length === 0 && (
-          <div style={{ padding: '40px 20px', textAlign: 'center', color: '#fda4af', fontSize: 12.5 }}>
-            {error}
+          <div role="alert" style={{ padding: '40px 20px', display: 'grid', justifyItems: 'center', gap: 12, textAlign: 'center', color: '#fda4af', fontSize: 12.5 }}>
+            <span>{error}</span>
+            <button type="button" onClick={() => void loadLeaderboard(window_, 'manual_refresh')} style={{ ...addBtnStyle, borderColor: 'rgba(244,63,94,0.45)', color: '#fda4af' }}>Retry</button>
           </div>
+        )}
+
+        {loading && traders.length > 0 && (
+          <div aria-busy="true" style={{ height: 3, background: 'linear-gradient(90deg, transparent, #5eead4, transparent)' }} />
         )}
 
         {!loading && !error && traders.length === 0 && (

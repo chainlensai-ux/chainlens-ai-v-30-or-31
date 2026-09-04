@@ -15,6 +15,40 @@ export type ClarkCommandFormat =
 
 const EVM_ADDRESS_RE = /\b0x[a-fA-F0-9]{40}\b/;
 
+export type ClarkTokenCommand = {
+  input: string;
+  address: string | null;
+  ticker: string | null;
+};
+
+/**
+ * Reads the entity explicitly supplied to `/token`.  This deliberately does
+ * not consult Clark memory: callers use it to make the current command win
+ * over a previously scanned token.
+ */
+export function parseClarkTokenCommand(prompt: string): ClarkTokenCommand | null {
+  const match = String(prompt ?? "").trim().match(/^\/token\s+(.+)$/i);
+  if (!match) return null;
+  const input = match[1].trim();
+  if (!input) return null;
+  const address = input.match(EVM_ADDRESS_RE)?.[0] ?? null;
+  return { input, address, ticker: address ? null : input };
+}
+
+/** Whether a scan response belongs to the explicit `/token` command in flight. */
+export function doesClarkTokenResponseMatch(
+  command: ClarkTokenCommand,
+  previousAddress: string | null | undefined,
+  responseAddress: string | null | undefined,
+  pickerRequired = false,
+): boolean {
+  if (!responseAddress || pickerRequired) return false;
+  if (command.address) return responseAddress.toLowerCase() === command.address.toLowerCase();
+  // A ticker picker/resolver may leave session memory unchanged. That old value
+  // is not a result for the ticker in the current message.
+  return responseAddress.toLowerCase() !== (previousAddress ?? '').toLowerCase();
+}
+
 export function parseClarkCommandName(prompt: string): ClarkCommandName | null {
   const t = String(prompt ?? "").trim();
   if (!t) return null;

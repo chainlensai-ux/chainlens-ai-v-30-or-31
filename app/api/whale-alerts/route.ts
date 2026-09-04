@@ -843,10 +843,12 @@ export async function GET(req: NextRequest) {
   if (!token) return unauthorizedResponse()
   let plan: 'free' | 'pro' | 'elite' = 'free'
   let settingsRowFound = false
+  let userId: string | null = null
   if (token) {
     const planData = await getCurrentUserPlanFromBearerToken(token).catch(() => null)
-    if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound }
+    if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound; userId = planData.userId }
   }
+  if (!userId) return unauthorizedResponse()
   if (plan === 'free') return NextResponse.json({ alerts: [], error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const now = Date.now()
@@ -877,7 +879,7 @@ export async function GET(req: NextRequest) {
     const severity = params.get('severity')?.trim() || null
     const limit = parseLimit(params.get('limit'))
     const liveEnrichment = params.get('enrich') === 'true'
-    const cacheKey = `whale:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}:${liveEnrichment ? 'live' : 'cached'}`
+    const cacheKey = `whale:${userId}:${plan}:${selectedWindow}:${valueRangeRaw}:${interestingRaw}:${type ?? ''}:${side ?? ''}:${severity ?? ''}:${limit}:${liveEnrichment ? 'live' : 'cached'}`
     const bypassCache = params.has('t')
     const cached = whaleCache.get(cacheKey)
     if (!bypassCache && cached && cached.exp > now) return NextResponse.json(cached.payload, { headers: { 'Cache-Control': 'no-store' } })
@@ -899,12 +901,16 @@ export async function GET(req: NextRequest) {
 
     // Fetch more rows than the display limit so grouping still yields a full page.
     const internalLimit = Math.min(300, limit * 3)
+    // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
+    // only to that same user. This prevents a personal add from becoming another user's feed row.
+    const ownerScope = `owner_user_id.is.null,owner_user_id.eq.${userId}`
 
     let query = supabase
       .from('whale_alerts')
       .select('*')
       .gte('occurred_at', windowStartIso)
       .or(meaningfulFilter)
+      .or(ownerScope)
       .order('occurred_at', { ascending: false })
       .limit(internalLimit)
 
@@ -922,10 +928,10 @@ export async function GET(req: NextRequest) {
 
     const [alertsRes, stats15m, stats1h, stats24h, trackedCount, majorPrices] = await Promise.all([
       query,
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('is_active', true),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
+      supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('chain_id', 8453).eq('is_active', true),
       fetchMajorPrices(),
     ])
 
@@ -1048,6 +1054,7 @@ export async function GET(req: NextRequest) {
           .select('wallet_address, side, amount_usd, token_symbol, focus_token_symbol')
           .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
           .in('wallet_address', needsHistory)
+          .or(ownerScope)
           .limit(500)
         if (!histRes.error && histRes.data) {
           historyRowsUsed = histRes.data.length

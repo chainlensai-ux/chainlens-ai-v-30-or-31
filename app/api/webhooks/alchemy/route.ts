@@ -105,6 +105,7 @@ async function handleWebhook(payload: AlchemyPayload) {
   const { data: wallets, error: walletError } = await supabase
     .from('tracked_wallets')
     .select('address,label')
+    .is('user_id', null)
     .eq('is_active', true)
 
   if (walletError) {
@@ -181,6 +182,7 @@ async function handleWebhook(payload: AlchemyPayload) {
         token_address: tokenAddress,
         token_symbol: tokenSymbol,
         token_name: null,
+        owner_user_id: null,
         alert_type: 'token_transfer',
         side: match.side,
         amount_usd: null,
@@ -204,7 +206,7 @@ async function handleWebhook(payload: AlchemyPayload) {
   const { data, error: insertError } = await supabase
     .from('whale_alerts')
     .upsert(candidates, {
-      onConflict: 'tx_hash,wallet_address,token_address,alert_type',
+      onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id',
       ignoreDuplicates: true,
     })
     .select('id')

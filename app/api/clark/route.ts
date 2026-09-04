@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from "@/lib/clark/commandFormats";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseLowCapMemes, fetchCoinGeckoBaseTrending, LOW_CAP_MEME_MAX_MARKET_CAP_USD } from "@/lib/server/coingeckoBaseTrending";
@@ -434,15 +435,11 @@ type ClarkSessionMemory = {
     chainsFound: string[];
     timestamp: number;
   } | null;
-  // TICKER RESOLVER FIX, DISCLOSED (ticker search task): "/token PEPE" with more than one strong
-  // match used to fall straight through to "share a token symbol/contract" — resolveTokenSymbolToAddress
-  // WAS called, but its "ambiguous" status was never checked outside the LP/liquidity flow, so the
-  // real match list it returned was silently discarded. Recorded here (OPTIONAL, so every existing
-  // ClarkSessionMemory literal in this file stays valid unchanged) whenever a disambiguation prompt
-  // is shown, so a bare follow-up reply ("1", "scan 2", "the base one") can resolve against the exact
-  // same match list instead of re-guessing from scratch. Cleared once a selection is made or the
-  // symbol changes.
-  lastTickerMatches?: { symbol: string; matches: ClarkLiquidityMatch[]; ts: number } | null;
+  lastTickerMatches?: Array<{
+    name: string | null; symbol: string | null; chainSlug: string; tokenAddress: string;
+    pairAddress: string | null; liquidityUsd: number | null; marketCapUsd: number | null;
+    fdvUsd: number | null; volume24hUsd: number | null; confidence: number;
+  }>;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -707,56 +704,6 @@ function updateMemToken(
     lastIntent: opts?.lastIntent ?? mem.lastIntent ?? "token_scan",
     lastResultSummary: scanSummary,
   });
-}
-
-// TICKER RESOLVER FIX, DISCLOSED (ticker search task): records the exact match list shown in a
-// disambiguation prompt so a follow-up reply ("1", "scan 2", "the base one") can resolve against
-// it directly instead of re-running provider search from scratch and possibly landing on a
-// different ranking.
-function updateMemTickerMatches(mem: ClarkSessionMemory, symbol: string, matches: ClarkLiquidityMatch[]) {
-  mem.lastTickerMatches = { symbol, matches, ts: Date.now() };
-}
-
-// Recognizes a bare selection reply against a just-shown ticker disambiguation list — "1", "2.",
-// "scan 2", "option 3", "the base one", "base", a symbol+chain phrase, or the exact contract
-// address. Never guesses: returns null (falls through to normal routing) unless the reply clearly
-// names exactly one of the remembered matches. Expires after 5 minutes so a stale list from an
-// unrelated earlier command never hijacks a fresh, unrelated prompt.
-const TICKER_MATCH_REPLY_TTL_MS = 5 * 60 * 1000;
-function parseTickerMatchSelection(prompt: string, mem: ClarkSessionMemory): ClarkLiquidityMatch | null {
-  const remembered = mem.lastTickerMatches;
-  if (!remembered || Date.now() - remembered.ts > TICKER_MATCH_REPLY_TTL_MS) return null;
-  const matches = remembered.matches;
-  if (!matches || matches.length === 0) return null;
-  const t = prompt.trim();
-  if (!t || t.length > 40) return null; // a real follow-up prompt, not a short selection reply
-
-  if (/^0x[a-fA-F0-9]{40}$/.test(t)) {
-    return matches.find((m) => m.address.toLowerCase() === t.toLowerCase()) ?? null;
-  }
-
-  const numMatch = t.match(/^(?:scan\s+|option\s+|#\s*)?(\d{1,2})\.?$/i);
-  if (numMatch) {
-    const idx = Number(numMatch[1]) - 1;
-    return matches[idx] ?? null;
-  }
-
-  const chainWords: Record<string, string[]> = {
-    base: ["base"], ethereum: ["eth", "ethereum"], bnb: ["bnb", "bsc", "binance"],
-    robinhood: ["robinhood"], solana: ["solana", "sol"],
-  };
-  const lower = t.toLowerCase();
-  for (const [chainSlug, words] of Object.entries(chainWords)) {
-    if (words.some((w) => new RegExp(`\\b${w}\\b`).test(lower))) {
-      const onChain = matches.filter((m) => (m.chainSlug === "eth" ? "ethereum" : m.chainSlug) === chainSlug);
-      if (onChain.length === 1) return onChain[0];
-    }
-  }
-
-  const bySymbol = matches.filter((m) => m.symbol.toUpperCase() === t.toUpperCase().replace(/^\$/, ""));
-  if (bySymbol.length === 1) return bySymbol[0];
-
-  return null;
 }
 
 function updateMemWallet(
@@ -1230,6 +1177,8 @@ const KNOWN_BASE_TOKEN_ALIASES: Record<string, string> = {
 };
 
 function extractTokenLookupQuery(prompt: string): string | null {
+  const slashToken = parseClarkTokenCommand(prompt);
+  if (slashToken?.ticker) return slashToken.ticker.toLowerCase();
   const t = prompt.trim().toLowerCase();
   const blockedQueries = new Set([
     "holder", "holders", "holder count", "holder distribution", "holder concentration",
@@ -6022,8 +5971,9 @@ type ClarkToolEvidence = {
   tokenResolve?: {
     ok: boolean;
     query: string;
-    matches: Array<{ symbol: string; contract: string; liquidity?: number }>;
-    selected?: { symbol: string; contract: string } | null;
+    matches: Array<{ symbol: string; contract: string; chainSlug: string; name: string | null; pairAddress: string | null; liquidity: number | null; marketCapUsd: number | null; fdvUsd: number | null; volume24hUsd: number | null; confidence: number }>;
+    selected?: { symbol: string; contract: string; chainSlug: string } | null;
+    audit?: Record<string, unknown>;
     errorSafeMessage?: string;
   };
   tokenScan?: {
@@ -6163,42 +6113,36 @@ async function executeClarkToolPlan(input: {
 
       if (tool.name === "token_resolve") {
         const query = String(tool.args.query ?? "").trim();
-        const matches = query ? await searchBaseTokenCandidates(query) : [];
-
-        let selected: { symbol: string; contract: string } | null = null;
-        if (matches.length === 1) {
-          selected = { symbol: matches[0].symbol, contract: matches[0].contract };
-        } else if (matches.length > 1) {
-          const qUpper = query.toUpperCase();
-          const exactMatch = matches.find((m) => m.symbol === qUpper);
-          const top = matches[0];
-          const second = matches[1];
-          if (exactMatch) {
-            selected = { symbol: exactMatch.symbol, contract: exactMatch.contract };
-          } else if (top && second && (top.liquidity ?? 0) > (second.liquidity ?? 0) * 5 && (top.liquidity ?? 0) > 10_000) {
-            selected = { symbol: top.symbol, contract: top.contract };
-          } else if (top && (top.liquidity ?? 0) > 200_000) {
-            selected = { symbol: top.symbol, contract: top.contract };
-          }
-        }
-
-        // Mismatch guard: if selected symbol doesn't match query and we have a known alias, prefer alias
-        const qUpperR = query.trim().toUpperCase();
-        if (selected && selected.symbol.toUpperCase() !== qUpperR) {
-          const aliasEntry = BASE_TOKEN_ALIAS_MAP[query.trim().toLowerCase()];
-          if (aliasEntry && aliasEntry.symbol.toUpperCase() === qUpperR) {
-            selected = { symbol: aliasEntry.symbol, contract: aliasEntry.contract };
-          }
-        }
+        const explicitlyNamedChain = /\b(base|ethereum|eth|bnb|bsc|robinhood|solana)\b/i.test(input.prompt);
+        const preferredChain = explicitlyNamedChain ? (input.chain === "ethereum" ? "eth" : input.chain) : null;
+        const resolver = query ? await callInternalApi(input.origin, "/api/resolve", { query, chain: preferredChain }, input.authHeader ?? undefined, input.verifiedPlan, 12000) : null;
+        const raw = resolver?.ok ? resolver.json as Record<string, unknown> : {};
+        const rawMatches = Array.isArray(raw.matches) ? raw.matches as Array<Record<string, unknown>> : [];
+        const matches = rawMatches.map((m) => ({
+          symbol: String(m.symbol ?? query).toUpperCase(), contract: String(m.tokenAddress ?? ""),
+          chainSlug: String(m.chainSlug ?? "base"), name: typeof m.name === "string" ? m.name : null,
+          pairAddress: typeof m.pairAddress === "string" ? m.pairAddress : null,
+          liquidity: typeof m.liquidityUsd === "number" ? m.liquidityUsd : null,
+          marketCapUsd: typeof m.marketCapUsd === "number" ? m.marketCapUsd : null,
+          fdvUsd: typeof m.fdvUsd === "number" ? m.fdvUsd : null,
+          volume24hUsd: typeof m.volume24hUsd === "number" ? m.volume24hUsd : null,
+          confidence: typeof m.confidence === "number" ? m.confidence : 0,
+        })).filter((m) => m.contract);
+        const selectedRaw = raw.selectedMatch && typeof raw.selectedMatch === "object" ? raw.selectedMatch as Record<string, unknown> : null;
+        const selected = selectedRaw ? { symbol: String(selectedRaw.symbol ?? query).toUpperCase(), contract: String(selectedRaw.tokenAddress ?? ""), chainSlug: String(selectedRaw.chainSlug ?? "base") } : null;
 
         evidence.tokenResolve = {
           ok: matches.length > 0 || selected != null,
           query,
-          matches: matches.map((m) => ({ symbol: m.symbol, contract: m.contract, liquidity: m.liquidity })),
+          matches,
           selected,
-          errorSafeMessage: matches.length ? undefined : "I could not confirm a Base match from current checks. Paste the contract address for a deeper scan.",
+          audit: raw.tickerResolverAudit && typeof raw.tickerResolverAudit === "object" ? raw.tickerResolverAudit as Record<string, unknown> : undefined,
+          errorSafeMessage: matches.length ? undefined : "I could not confirm a supported-chain match from current checks. Paste the contract address.",
         };
-        if (selected?.contract) resolvedAddress = selected.contract;
+        if (selected?.contract) {
+          resolvedAddress = selected.contract;
+          input.chain = selected.chainSlug === "eth" ? "ethereum" : selected.chainSlug as SupportedChain | "robinhood";
+        }
         continue;
       }
 
@@ -9591,6 +9535,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // with no stated chain should be probed, not silently assumed to be on whatever the UI/memory
   // default happens to be.
   const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
+  const explicitTokenCommand = /^\s*\/token\b/i.test(prompt);
+  if (sessionMem.lastTickerMatches?.length) {
+    const numbered = prompt.trim().match(/^(?:scan\s*)?(\d+)$/i);
+    const namedChoice = /^(?:scan\s+)?(?:the\s+)?(base|ethereum|eth|bnb|bsc|robinhood|solana)(?:\s+one)?$/i.exec(prompt.trim());
+    const wantedChain = namedChoice ? (namedChoice[1].toLowerCase() === "ethereum" ? "eth" : namedChoice[1].toLowerCase() === "bsc" ? "bnb" : namedChoice[1].toLowerCase()) : null;
+    const chainMatches = wantedChain ? sessionMem.lastTickerMatches.filter((match) => match.chainSlug === wantedChain) : [];
+    if (wantedChain && chainMatches.length > 1) {
+      sessionMem.lastTickerMatches = chainMatches;
+      return {
+        feature: "clark-ai", chain, mode: "token_name_lookup", intent: "token_analysis", toolsUsed: [],
+        analysis: `I found ${chainMatches.length} ${wantedChain.toUpperCase()} matches. Choose one:\n${chainMatches.map((match, index) => `${index + 1}. ${match.symbol ?? "TOKEN"}${match.name ? ` · ${match.name}` : ""} · ${shortAddress(match.tokenAddress)} · Liq ${formatUsdShort(match.liquidityUsd)}`).join("\n")}\nReply with the number.`,
+      };
+    }
+    const picked = numbered ? sessionMem.lastTickerMatches[Number(numbered[1]) - 1]
+      : chainMatches[0] ?? null;
+    if (picked) {
+      sessionMem.lastTickerMatches = undefined;
+      const pickedChain = picked.chainSlug === "eth" ? "ethereum" : picked.chainSlug;
+      return await handleClarkAI({ ...body, prompt: `/token ${picked.tokenAddress} on ${pickedChain}`, chain: pickedChain as SupportedChain }, origin, authHeader, verifiedPlan, sessionMem);
+    }
+  }
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
@@ -9602,46 +9567,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
-  // TICKER RESOLVER FIX, DISCLOSED (ticker search task): "/token PEPE" -> multiple matches used to
-  // give the user no way to actually pick one — resolveTokenForFollowup's ambiguous result now shows
-  // the real matches (see ambiguousTokenReply below), but only if the user can then reply "1",
-  // "scan 2", or "the base one" and have it resolve. Runs before every other intent classifier so a
-  // short selection reply is never misread as a fresh, unrelated prompt — but only ever fires when a
-  // disambiguation list was actually just shown (parseTickerMatchSelection returns null otherwise,
-  // including once the remembered list is more than 5 minutes old), so it can never hijack normal
-  // conversation.
-  {
-    const selection = parseTickerMatchSelection(prompt, sessionMem);
-    if (selection) {
-      sessionMem.lastTickerMatches = null;
-      const ev = await fetchTokenEvidence(selection.address);
-      const selChain = selection.chainSlug === "eth" ? "ethereum" : selection.chainSlug;
-      const selChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, selChain as SupportedChain | "robinhood"));
-      const analysis = renderClarkTokenAnalystFromEvidence(ev, prompt, selChainLabel, "safe");
-      const usable = hasUsableTokenEvidence(ev);
-      updateMemToken(sessionMem, selection.address, ev.token?.symbol ?? selection.symbol ?? null, ev.token?.name ?? selection.name ?? null, analysis, {
-        confidence: tokenCoreConfidence(ev, ((ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], usable),
-        normalizedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
-        cachedEvidence: ev.ok || (ev as Record<string, unknown>)._partialEvidenceUsed ? ev : null,
-        chain: selChain as ClarkMemoryChain,
-      });
-      updateMemIntent(sessionMem, "token_scan");
-      const selVerdictMeta = tokenScanVerdictMeta(ev, usable);
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
-        analysis,
-        verdict: selVerdictMeta.verdict,
-        confidence: selVerdictMeta.confidence,
-        source: selVerdictMeta.source,
-        intentBadge: "token_scan",
-        actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-        ui: { intentBadge: "Token Read", actions: buildClarkTokenAnswerActions(selection.address, selChainLabel) },
-        quotaConsumed: ev.ok ?? false,
-      };
-    }
-  }
-
-  {
+  if (!explicitTokenCommand) {
     const marketReply = await answerClarkMarketOrPumping({ prompt, chain, sessionMem, body });
     if (marketReply) return marketReply;
   }
@@ -9656,7 +9582,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // safety/report language so the existing, much richer token_scan/token_ape_risk/entity-routing
   // paths keep owning full risk reads — this only replaces the "nothing to say" case for a pure
   // market question, never a comprehensive one.
-  {
+  if (!explicitTokenCommand) {
     const marketIntent = classifyClarkMarketIntent(prompt);
     const hijacksBroaderReport = /\b(safe|safety|\brug\b|honeypot|scam|holders?|\blp\b|liquidity\s+locked|sellable|can\s+i\s+sell|\btax\b|deployer|dev\s+rug|red\s+flags?|full\s+report|risk\s+breakdown)\b/i.test(prompt);
     // A broad "what's pumping/running/moving on Base" question is chain-wide market discovery,
@@ -11863,7 +11789,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    if (slashFill.address && !routed.address) {
+    // Only a bare slash command may reuse the active token. A typed ticker or
+    // contract is an explicit new subject and must never be replaced by memory.
+    if (slashCmd.bare && slashFill.address && !routed.address) {
       routed.address = slashFill.address;
       if (!routed.symbol && (slashCmd.command === "lp" || slashCmd.command === "token" || slashCmd.command === "deployer" || slashCmd.command === "holders" || slashCmd.command === "explain")) {
         routed.symbol = sessionMem.lastClarkSubject?.symbol ?? sessionMem.lastToken?.symbol ?? routed.symbol;
@@ -13026,7 +12954,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  async function resolveTokenSymbolToAddress(sym: string, preferChain: string = "base", options?: { requireExplicitSelection?: boolean }): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string; chain?: string; matches?: ClarkLiquidityMatch[]; matchesCount?: number } | null> {
+  async function resolveTokenSymbolToAddress(sym: string, preferChain: string = "base", options?: { requireExplicitSelection?: boolean }): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string; chain?: string; matches?: ClarkLiquidityMatch[]; matchesCount?: number; tickerMatches?: ClarkSessionMemory["lastTickerMatches"]; tickerResolverAudit?: Record<string, unknown> } | null> {
     if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: preferChain, matchesCount: 1 };
     if (isValidSolanaMintAddress(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: "solana", matchesCount: 1 };
     const prefer = preferChain === "ethereum" ? "eth" : preferChain;
@@ -13039,19 +12967,46 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return status && /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out", matchesCount: 0 } : null;
     }
     const j = (res.json ?? {}) as Record<string, unknown>;
-    // /api/resolve returns the chosen result as bestCandidate and alternatives separately.
-    // Include both before deciding whether an LP name lookup is safe to auto-resolve.
+    // `/api/resolve` now returns `matches` and `selectedMatch`; retain the
+    // legacy fields too because LP/deployer callers still use the older shape.
+    const resolverAudit = j.tickerResolverAudit && typeof j.tickerResolverAudit === "object"
+      ? j.tickerResolverAudit as Record<string, unknown> : undefined;
+    const rawTickerMatches = Array.isArray(j.matches) ? j.matches as Array<Record<string, unknown>> : [];
+    const selectedTicker = j.selectedMatch && typeof j.selectedMatch === "object" ? j.selectedMatch as Record<string, unknown> : null;
     const candidates = [
+      ...(selectedTicker ? [selectedTicker] : []),
+      ...rawTickerMatches,
       ...(j.bestCandidate && typeof j.bestCandidate === "object" ? [j.bestCandidate as Record<string, unknown>] : []),
       ...(Array.isArray(j.candidates) ? j.candidates as Array<Record<string, unknown>> : Array.isArray(j.alternates) ? j.alternates as Array<Record<string, unknown>> : []),
     ];
     const matches: ClarkLiquidityMatch[] = candidates.map((c) => ({
-      address: String(c.contractAddress ?? c.address ?? ""),
-      chainSlug: String(c.chainId ?? c.chain ?? "base").toLowerCase(),
+      address: String(c.tokenAddress ?? c.contractAddress ?? c.address ?? ""),
+      chainSlug: String(c.chainSlug ?? c.chainId ?? c.chain ?? "base").toLowerCase(),
       symbol: String(c.symbol ?? sym).toUpperCase(),
       name: typeof c.name === "string" ? c.name : null,
       liquidityUsd: typeof c.liquidityUsd === "number" ? c.liquidityUsd : null,
     })).filter((m) => m.address);
+    const tickerMatches: NonNullable<ClarkSessionMemory["lastTickerMatches"]> = rawTickerMatches.map((c) => ({
+      name: typeof c.name === "string" ? c.name : null,
+      symbol: typeof c.symbol === "string" ? c.symbol.toUpperCase() : sym.toUpperCase(),
+      chainSlug: String(c.chainSlug ?? c.chainId ?? c.chain ?? "base").toLowerCase(),
+      tokenAddress: String(c.tokenAddress ?? c.contractAddress ?? c.address ?? ""),
+      pairAddress: typeof c.pairAddress === "string" ? c.pairAddress : null,
+      liquidityUsd: typeof c.liquidityUsd === "number" ? c.liquidityUsd : null,
+      marketCapUsd: typeof c.marketCapUsd === "number" ? c.marketCapUsd : null,
+      fdvUsd: typeof c.fdvUsd === "number" ? c.fdvUsd : null,
+      volume24hUsd: typeof c.volume24hUsd === "number" ? c.volume24hUsd : null,
+      confidence: typeof c.confidence === "number" ? c.confidence : 0,
+    })).filter((m) => m.tokenAddress);
+    if (selectedTicker) {
+      const address = String(selectedTicker.tokenAddress ?? selectedTicker.contractAddress ?? selectedTicker.address ?? "");
+      if (address) return {
+        address, name: String(selectedTicker.name ?? sym), symbol: String(selectedTicker.symbol ?? sym).toUpperCase(),
+        status: "resolved", confidence: String(selectedTicker.confidence ?? "high"),
+        chain: String(selectedTicker.chainSlug ?? selectedTicker.chain ?? prefer), matches, matchesCount: matches.length,
+        tickerMatches, tickerResolverAudit: resolverAudit,
+      };
+    }
     const uniqueChains = Array.from(new Set(matches.map((m) => m.chainSlug.replace(/^eth$/, "ethereum"))));
     const preferNorm = prefer === "eth" ? "ethereum" : prefer;
     const preferMatches = matches.filter((m) => {
@@ -13062,10 +13017,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const requested = sym.trim().replace(/^\$/, "").toUpperCase();
       const exactMatches = matches.filter((m) => m.symbol.toUpperCase() === requested || m.name?.trim().toUpperCase() === requested);
       const uniqueExact = Array.from(new Map(exactMatches.map((m) => [`${m.chainSlug.toLowerCase()}:${m.address.toLowerCase()}`, m])).values());
-      if (uniqueExact.length > 1) {
-        return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches: uniqueExact, matchesCount: uniqueExact.length };
+      if (uniqueExact.length > 1 || j.needsUserChoice === true) {
+        return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches: uniqueExact.length ? uniqueExact : matches, matchesCount: matches.length, tickerMatches, tickerResolverAudit: resolverAudit };
       }
     }
+    if (j.needsUserChoice === true) return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches, matchesCount: matches.length, tickerMatches, tickerResolverAudit: resolverAudit };
     if (!preferChain || preferChain === "base") {
       const exact = preferMatches
         .filter((c) => c.symbol.toUpperCase() === sym.toUpperCase())
@@ -13075,16 +13031,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         const status = String(j.status ?? j.reason ?? "");
         return /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out", matchesCount: matches.length } : null;
       }
-      return { address: addr, name: String(j.name ?? exact?.name ?? sym), symbol: String(j.symbol ?? exact?.symbol ?? sym).toUpperCase(), status: "resolved", confidence: String(j.confidence ?? "high"), chain: "base", matches, matchesCount: matches.length };
+      return { address: addr, name: String(j.name ?? exact?.name ?? sym), symbol: String(j.symbol ?? exact?.symbol ?? sym).toUpperCase(), status: "resolved", confidence: String(j.confidence ?? "high"), chain: "base", matches, matchesCount: matches.length, tickerMatches, tickerResolverAudit: resolverAudit };
     }
     if (uniqueChains.length > 1 && preferMatches.length === 0) {
-      return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches, matchesCount: matches.length };
+      return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches, matchesCount: matches.length, tickerMatches, tickerResolverAudit: resolverAudit };
     }
     const chosen = preferMatches[0] ?? matches[0];
     const addr = chosen?.address ?? (typeof j.address === "string" ? j.address : null);
     if (!addr) return { address: "", name: sym, symbol: sym.toUpperCase(), status: "not_found", matches, matchesCount: matches.length };
     const chainSlug = (chosen?.chainSlug === "eth" ? "ethereum" : chosen?.chainSlug) || preferNorm;
-    return { address: addr, name: String(chosen?.name ?? j.name ?? sym), symbol: String(chosen?.symbol ?? j.symbol ?? sym).toUpperCase(), status: "resolved", confidence: "medium", chain: chainSlug, matches, matchesCount: matches.length };
+    return { address: addr, name: String(chosen?.name ?? j.name ?? sym), symbol: String(chosen?.symbol ?? j.symbol ?? sym).toUpperCase(), status: "resolved", confidence: "medium", chain: chainSlug, matches, matchesCount: matches.length, tickerMatches, tickerResolverAudit: resolverAudit };
   }
 
   type TokenConfidenceLabel = "high" | "medium" | "low" | "open_check" | "failed";
@@ -13191,7 +13147,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     ].join("\n");
   }
 
-  async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true } | { ambiguous: true; symbol: string; matches: ClarkLiquidityMatch[] }> {
+  async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
     // Check memory first — follow-ups do not re-call providers if cached evidence exists
     if (opts?.fromMemoryOnly || (!tokenFollowupRefreshRequested && !routed.address && !routed.symbol)) {
       const mem = sessionMem?.lastToken;
@@ -13201,19 +13157,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     let tokenAddress = routed.address;
     if (!tokenAddress && routed.symbol) {
-      // TICKER RESOLVER FIX, DISCLOSED (ticker search task): this used to call
-      // resolveTokenSymbolToAddress(routed.symbol) with NO chain argument (always defaulted to
-      // "base" regardless of the user's actually-selected chain — "/token PEPE" on Solana or BNB
-      // silently searched Base) and never checked for status "ambiguous" — a real ambiguous match
-      // list came back but resolved?.address was "" (empty, by design, so nothing could accidentally
-      // auto-pick a wrong token), which fell through to "no token in memory" instead of ever showing
-      // the user the real matches. Now passes the real selected chain and requires an explicit
-      // choice on a genuine multi-match tie, surfacing it instead of silently discarding it.
-      const resolved = await resolveTokenSymbolToAddress(routed.symbol, chainForClarkTools, { requireExplicitSelection: true });
-      if (resolved?.status === "ambiguous" && Array.isArray(resolved.matches) && resolved.matches.length > 1) {
-        updateMemTickerMatches(sessionMem!, routed.symbol, resolved.matches as ClarkLiquidityMatch[]);
-        return { ambiguous: true, symbol: routed.symbol, matches: resolved.matches as ClarkLiquidityMatch[] };
-      }
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol);
       tokenAddress = resolved?.address ?? null;
     }
     if (!tokenAddress && sessionMem?.lastToken) {
@@ -13229,28 +13173,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   const tokenFollowupRefreshRequested = /\b(refresh|rescan|re-scan|deep\s+scan|full\s+scan|retry)\b/i.test(prompt);
-  function tokenFollowupDebug(r: { ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true } | { ambiguous: true; symbol: string; matches: ClarkLiquidityMatch[] }) {
-    const fromMemory = !("needsAddress" in r) && !("ambiguous" in r) && r.fromMemory === true;
+  function tokenFollowupDebug(r: { ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }) {
+    const fromMemory = !("needsAddress" in r) && r.fromMemory === true;
     const age = fromMemory && sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null;
     return {
       followUpUsedMemory: fromMemory,
       followUpTriggeredRefresh: tokenFollowupRefreshRequested && !fromMemory,
       tokenMemoryAgeMs: age,
-      evidenceSource: fromMemory ? "lastToken" : ("ambiguous" in r ? "ambiguousMatches" : ("needsAddress" in r) ? "partialMemory" : "freshScan"),
-    };
-  }
-
-  // TICKER RESOLVER FIX, DISCLOSED: shared handling for resolveTokenForFollowup's "ambiguous"
-  // result — every call site below checks this first, before its existing "needsAddress" branch,
-  // so a genuine multi-match tie always shows the real matches instead of falling through to a
-  // generic "share a token symbol/contract" message.
-  function ambiguousTokenReply(r: { symbol: string; matches: ClarkLiquidityMatch[] }, intent: string) {
-    return {
-      feature: "clark-ai" as const, chain, mode: "analysis" as const, intent, toolsUsed: [],
-      analysis: formatAmbiguousLiquiditySymbol(r.symbol, r.matches),
-      intentBadge: intent,
-      actions: buildRoutedActions(["Open Token Scanner"]),
-      quotaConsumed: false,
+      evidenceSource: fromMemory ? "lastToken" : (("needsAddress" in r) ? "partialMemory" : "freshScan"),
     };
   }
 
@@ -13329,7 +13259,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkCommandPartial: "timeout",
       };
     }
-    if ("ambiguous" in r) return ambiguousTokenReply(r, "holders_check");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
@@ -13751,7 +13680,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const wantsFastPreview = wantsFastTokenPreview(prompt) && !wantsFullTokenScan(prompt);
     const wantsFullScan = !wantsFastPreview;
     if (!tokenAddress && resolvedSymbol) {
-      const resolved = await resolveTokenSymbolToAddress(resolvedSymbol);
+      const resolved = await resolveTokenSymbolToAddress(resolvedSymbol, String(chainForClarkTools), { requireExplicitSelection: true });
+      if (resolved?.status === "ambiguous") {
+        const options = resolved.tickerMatches ?? [];
+        sessionMem.lastTickerMatches = options;
+        const rows = options.slice(0, 6).map((match, index) => `${index + 1}. ${match.symbol ?? "TOKEN"}${match.name ? ` · ${match.name}` : ""} · ${match.chainSlug.toUpperCase()} · ${shortAddress(match.tokenAddress)} · Liq ${formatUsdShort(match.liquidityUsd)} · ${match.marketCapUsd != null ? `MC ${formatUsdShort(match.marketCapUsd)}` : `FDV ${formatUsdShort(match.fdvUsd)}`} · Vol ${formatUsdShort(match.volume24hUsd)} · ${Math.round(match.confidence)}% confidence`).join("\n");
+        return {
+          feature: "clark-ai", chain, mode: "token_name_lookup", intent: "token_scan", toolsUsed: ["token_resolve"],
+          analysis: `Multiple or low-confidence matches found for ${resolvedSymbol.toUpperCase()}. Choose one to scan.\n${rows || "No supported-chain matches were returned."}\nReply “1”, “scan 2”, or “Base one”.`,
+          intentBadge: "Token matches", ui: { intentBadge: "Choose token", actions: options.slice(0, 6).map((match, index) => ({ label: `Scan ${index + 1}`, prompt: `scan ${index + 1}`, kind: "prompt" as const })) },
+          clarkTokenPickerRequired: true, tickerResolverAudit: resolved.tickerResolverAudit ?? null, quotaConsumed: false,
+        };
+      }
       if (!resolved || !resolved.address) {
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_resolve"],
@@ -13763,6 +13703,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
       tokenAddress = resolved.address;
       resolvedSymbol = resolved.symbol;
+      if (resolved.chain) chainForClarkTools = resolved.chain === "eth" ? "ethereum" : resolved.chain as SupportedChain | "robinhood";
     }
     if (!tokenAddress) {
       return {
@@ -13791,6 +13732,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const memMissingEvidence = sectionsMissing.map(s => `${s.section}: ${s.reason}`);
     const tokenVerdictMeta = tokenScanVerdictMeta(ev, usableEvidence);
 
+    if (explicitTokenCommand && !usableEvidence) {
+      const failureReason = String(evDebug._tokenScanFailureReason ?? evDebug._tokenRouteStatus ?? "Token Scanner returned no usable evidence for this contract.");
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
+        analysis: `TOKEN READ — unavailable\nContract: ${tokenAddress}\nChain: ${chainDisplayLabel(chainForClarkTools)}\nReason: ${failureReason}`,
+        intentBadge: "Token Read", quotaConsumed: false, clarkTokenScanFailed: true,
+      };
+    }
+
     let analysis: string;
     let formatterUsed: string;
 
@@ -13808,6 +13758,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis = renderClarkTokenVerdictForEvm(ev, tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)), usableEvidence);
       formatterUsed = "renderClarkTokenVerdictForEvm";
     }
+    if (explicitTokenCommand) {
+      // An explicit contract read must never end in a placeholder or turn
+      // missing evidence into a verdict. Keep the established detailed copy,
+      // but use the honest public state name for unverified sections.
+      analysis = analysis
+        .replace(/^TOKEN READ — \?/m, `TOKEN READ — ${shortAddress(tokenAddress)}`)
+        .replace(/\bOpen Check\b/gi, "Unverified");
+    }
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
       normalizedEvidenceSummary: ev.ok ? "loaded" : partialEvidenceUsed ? "partial" : memConfidence,
@@ -13815,7 +13773,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       confidence: memConfidence,
       normalizedEvidence: memConfidence !== "failed" ? ev : null,
       cachedEvidence: memConfidence !== "failed" ? ev : null,
-      chain: tokenEvidenceChain(ev, chainForClarkTools) === "ethereum" ? "eth" : "base",
+      chain: normalizeClarkChain(tokenEvidenceChain(ev, chainForClarkTools)) ?? sessionMem.selectedChain,
     });
     updateMemIntent(sessionMem, "token_analysis");
 
@@ -14025,7 +13983,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Memory-first: reuse the same Token Scanner evidence the token_safety/token_scan
     // flows already gather — no new provider calls, no rewrite of scan logic.
     const r = await resolveTokenForFollowup();
-    if ("ambiguous" in r) return ambiguousTokenReply(r, "token_ape_risk");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed: [],
@@ -14197,7 +14154,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_safety") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
-    if ("ambiguous" in r) return ambiguousTokenReply(r, "token_safety");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_safety", toolsUsed: [],
@@ -14241,7 +14197,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "dev_rug_check") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
-    if ("ambiguous" in r) return ambiguousTokenReply(r, "dev_rug_check");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_check", toolsUsed: [],
@@ -14282,7 +14237,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Memory-first for LP follow-ups; only explicit refresh/rescan/deep/full/retry requests may call live LP evidence.
     if (!tokenFollowupRefreshRequested) {
       const r = await resolveTokenForFollowup({ fromMemoryOnly: true });
-      if (!("needsAddress" in r) && !("ambiguous" in r)) {
+      if (!("needsAddress" in r)) {
         const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
         updateMemIntent(sessionMem, "lp_lock_check");
         return {
@@ -14406,7 +14361,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "risk_explanation") {
     // Memory-first: use cached evidence for follow-up without re-calling providers
     const r = await resolveTokenForFollowup();
-    if ("ambiguous" in r) return ambiguousTokenReply(r, "risk_explanation");
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: [],
@@ -14959,6 +14913,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     appContext: body.appContext,
   });
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain: chainForClarkTools, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
+  if (evidence.tokenResolve?.matches.length && !evidence.tokenResolve.selected) {
+    sessionMem.lastTickerMatches = evidence.tokenResolve.matches.map((m) => ({
+      name: m.name, symbol: m.symbol, chainSlug: m.chainSlug, tokenAddress: m.contract,
+      pairAddress: m.pairAddress, liquidityUsd: m.liquidity, marketCapUsd: m.marketCapUsd,
+      fdvUsd: m.fdvUsd, volume24hUsd: m.volume24hUsd, confidence: m.confidence,
+    }));
+  } else if (evidence.tokenResolve?.selected) {
+    sessionMem.lastTickerMatches = undefined;
+  }
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {
@@ -15044,25 +15007,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", intent: "token_full_report_request", toolsUsed: [],
         analysis: buildLockedResponse('token_full_report', 'ask about token concepts or request a basic preview.') };
     }
-    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
-      const q = evidence.tokenResolve.query;
-      if (!shouldShowCanonicalAmbiguity(q, prompt)) {
-        const asset = matchCanonicalAsset(q) ?? matchCanonicalAsset(prompt);
-        return {
-          feature: "clark-ai",
-          chain,
-          mode: "analysis",
-          analysis: asset ? formatClarkCanonicalScanAsk(asset) : `That's a major asset ticker. Paste a contract address to scan a specific token, or ask for the live price.`,
-          intent: plan.intent,
-          toolsUsed,
-        };
-      }
-      const options = evidence.tokenResolve.matches.slice(0, 4).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
+    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 0 && !evidence.tokenResolve.selected) {
+      const options = evidence.tokenResolve.matches.slice(0, 6).map((c, i) => `${i + 1}. ${c.symbol}${c.name ? ` · ${c.name}` : ""} · ${c.chainSlug.toUpperCase()} · ${shortAddress(c.contract)} · Liq ${formatUsdShort(c.liquidity)} · ${c.marketCapUsd != null ? `MC ${formatUsdShort(c.marketCapUsd)}` : `FDV ${formatUsdShort(c.fdvUsd)}`} · Vol ${formatUsdShort(c.volume24hUsd)}`).join("\n");
       return {
         feature: "clark-ai",
         chain,
         mode: "token_name_lookup",
-        analysis: `I found multiple Base matches for '${evidence.tokenResolve.query}'. Pick one before I run the full report:\n${options}\nSend the number or paste the contract.`,
+        analysis: `Multiple tokens found for ${evidence.tokenResolve.query.toUpperCase()}. Choose one to scan.\n${options}\nReply “1”, “scan 2”, or name the chain.`,
         intent: plan.intent,
         toolsUsed,
       };
@@ -15639,35 +15590,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (plan.intent === "token_analysis") {
-    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 1 && !evidence.tokenResolve.selected) {
-      const q = evidence.tokenResolve.query;
-      if (!shouldShowCanonicalAmbiguity(q, prompt)) {
-        const asset = matchCanonicalAsset(q) ?? matchCanonicalAsset(prompt);
-        return {
-          feature: "clark-ai",
-          chain,
-          mode: "analysis",
-          analysis: asset ? formatClarkCanonicalScanAsk(asset) : `That's a major asset ticker. Paste a contract address to scan a specific token, or ask for the live price.`,
-          intent: plan.intent,
-          toolsUsed,
-        };
-      }
-      const options = evidence.tokenResolve.matches.slice(0, 3).map((c, i) => `${i + 1}. ${c.symbol} — ${c.contract}`).join("\n");
+    const resolvedAnswerChain: ClarkMemoryChain = (evidence.tokenResolve?.selected?.chainSlug as ClarkMemoryChain | undefined)
+      ?? normalizeClarkChain(chainForClarkTools)
+      ?? "base";
+    if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 0 && !evidence.tokenResolve.selected) {
+      const options = evidence.tokenResolve.matches.slice(0, 6).map((c, i) => `${i + 1}. ${c.symbol}${c.name ? ` · ${c.name}` : ""} · ${c.chainSlug.toUpperCase()} · ${shortAddress(c.contract)} · Liq ${formatUsdShort(c.liquidity)} · ${c.marketCapUsd != null ? `MC ${formatUsdShort(c.marketCapUsd)}` : `FDV ${formatUsdShort(c.fdvUsd)}`} · Vol ${formatUsdShort(c.volume24hUsd)}`).join("\n");
       return {
         feature: "clark-ai",
         chain,
         mode: "token_name_lookup",
-        analysis: `I found multiple Base matches for '${evidence.tokenResolve.query}'. Pick one:\n${options}\nSend the number or paste the contract.`,
+        analysis: `Multiple tokens found for ${evidence.tokenResolve.query.toUpperCase()}. Choose one to scan.\n${options}\nReply “1”, “scan 2”, or name the chain.`,
         intent: plan.intent,
         toolsUsed,
       };
     }
 
     if (plan.tools.some((t) => t.name === "token_resolve") && evidence.tokenResolve?.selected?.contract) {
-      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract }, authHeader ?? undefined);
+      const selectedChain = evidence.tokenResolve.selected.chainSlug === "eth" ? "eth" : evidence.tokenResolve.selected.chainSlug;
+      const tokenRes = await callInternalApi(origin, "/api/token", { contract: evidence.tokenResolve.selected.contract, chain: selectedChain }, authHeader ?? undefined);
       const tokenData = tokenRes.ok ? tokenRes.json : null;
-      const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, "base");
-      if (tokenData) evidence.tokenScan = {
+      const selectedChainId = selectedChain === "eth" ? "1" : selectedChain === "bnb" ? "56" : selectedChain === "robinhood" ? "4663" : "8453";
+      const securitySim = await fetchHoneypotSecurity(evidence.tokenResolve.selected.contract, selectedChainId);
+      const returnedIdentity = tokenData && String((tokenData as Record<string, unknown>).contract ?? '').toLowerCase();
+      if (tokenData && returnedIdentity === evidence.tokenResolve.selected.contract.toLowerCase()) evidence.tokenScan = {
         ok: true,
         token: { name: String((tokenData as Record<string, unknown>).name ?? "Token"), symbol: String((tokenData as Record<string, unknown>).symbol ?? "?"), address: String((tokenData as Record<string, unknown>).contract ?? evidence.tokenResolve.selected.contract) },
         market: {
@@ -15796,7 +15741,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           const otherChains = multiChainContractsForClarkTools.filter((c) => c !== chainForClarkTools).map((c) => chainDisplayLabel(c));
           if (otherChains.length > 0) fbScanText = buildMultiChainDisclosure(chainDisplayLabel(chainForClarkTools), otherChains) + fbScanText;
         }
-        updateMemToken(sessionMem, resolvedAddress, fallbackReport.token.symbol ?? null, fallbackReport.token.name ?? null, fbScanText);
+        updateMemToken(sessionMem, resolvedAddress, fallbackReport.token.symbol ?? null, fallbackReport.token.name ?? null, fbScanText, { chain: resolvedAnswerChain });
         updateMemIntent(sessionMem, "token_analysis");
         return {
           feature: "clark-ai",
@@ -15831,7 +15776,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         'Full report — security simulation, holder distribution, LP control, dev wallet — is included in Pro and Elite.',
         'Upgrade to unlock full CORTEX reads.',
       ].join('\n');
-      updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, freeAnalysis);
+      updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, freeAnalysis, { chain: resolvedAnswerChain });
       updateMemIntent(sessionMem, "token_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", analysis: freeAnalysis, intent: plan.intent, toolsUsed };
     }
@@ -15860,7 +15805,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               const otherChains = multiChainContractsForClarkTools.filter((c) => c !== chainForClarkTools).map((c) => chainDisplayLabel(c));
               return otherChains.length > 0 ? buildMultiChainDisclosure(chainDisplayLabel(chainForClarkTools), otherChains) + scanText : scanText;
             })();
-    updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, analysis);
+    updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, analysis, { chain: resolvedAnswerChain });
     updateMemIntent(sessionMem, "token_analysis");
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
   }
@@ -15972,6 +15917,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
   }
   if (body.message && !body.prompt) body.prompt = body.message
+  const explicitTokenCommand = parseClarkTokenCommand(body.prompt ?? '')
+  if (explicitTokenCommand) {
+    // The entity in this message has precedence over all restored page/session
+    // context. This is the server-side half of the stale-token guard.
+    body.tokenAddress = explicitTokenCommand.address ?? undefined
+    body.addressOrToken = explicitTokenCommand.input
+    body.appContext = { ...(body.appContext ?? {}), selectedToken: null, currentTokenAddress: null, tokenSummary: null }
+    if (body.clientContext) body.clientContext = { ...body.clientContext, lastToken: undefined }
+  }
   const requestId = normalizeClarkRequestId(body.requestId)
   const messageId = typeof body.messageId === "string" && body.messageId.trim() ? body.messageId.trim().slice(0, 80) : requestId
   body.requestId = requestId
@@ -15983,13 +15937,26 @@ export async function POST(req: NextRequest) {
   const sessionKey = makeSessionKey(req, authenticated)
   const memoryKeySource = getSessionKeySource(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
+  const previousActiveTokenAddress = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null
+  if (explicitTokenCommand) {
+    // Do not let a failed or pending new command leave the previous token as
+    // the active subject for `/holders`, `/deployer`, or `/explain lp`.
+    sessionMem.lastToken = null
+    sessionMem.lastTokenAddress = null
+    sessionMem.lastTokenSymbol = null
+    sessionMem.lastTokenName = null
+    sessionMem.lastTokenSummary = null
+  }
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
     updateMemMomentum(sessionMem, body.clientContext!.lastMomentumList!.slice(0, 20));
   }
   if (typeof body.clientContext?.lastMomentumShownCount === "number" && body.clientContext.lastMomentumShownCount >= 0) {
     sessionMem.lastMomentumShownCount = Math.min(body.clientContext.lastMomentumShownCount, sessionMem.lastMomentumList.length);
   }
-  if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
+  if (!explicitTokenCommand) {
+    if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
+  }
+  if (explicitTokenCommand) sessionMem.lastTickerMatches = undefined;
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   // Restore the deployer and Radar list the same way token/wallet already were — see the
   // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
@@ -16060,6 +16027,10 @@ export async function POST(req: NextRequest) {
   // cache key carries no session/memory state, so a cached miss from before a scan (or a cached
   // answer from a different memory state) would otherwise replay regardless of current memory.
   const memorySensitivePrompt = Boolean(earlyPrompt) && (
+    // `/token` is an explicit live subject selection. Replaying a short-lived
+    // cached resolver result would violate the "resolve fresh" contract for
+    // tickers and can reintroduce stale token context.
+    Boolean(explicitTokenCommand) ||
     earlyToolIntent.intent.startsWith("whale_alerts_") ||
     /\bwhales?|\bfomo\b|\bsmart\s+money\b/i.test(earlyPrompt) ||
     isWalletFollowupPrompt(earlyPrompt) ||
@@ -16312,7 +16283,18 @@ export async function POST(req: NextRequest) {
           ...(echoedWalletProfile ? { cachedEvidence: { walletProfile: echoedWalletProfile } } : {}),
         }
       }
-      if (sessionMem.lastToken?.address) {
+      const explicitResponseAddress = sessionMem.lastToken?.address ?? null
+      const explicitResponseChain = normalizeClarkChain(sessionMem.lastToken?.chain ?? null)
+      const explicitRequestedChain = normalizeClarkChain(extractRequestedChainFromPrompt(body.prompt ?? '') ?? body.chain ?? sessionMem.selectedChain)
+      const explicitPickerRequired = (result as Record<string, unknown>)?.clarkTokenPickerRequired === true
+      const explicitScanFailed = (result as Record<string, unknown>)?.clarkTokenScanFailed === true
+      const explicitResponseMatches = !explicitTokenCommand || (
+        doesClarkTokenResponseMatch(explicitTokenCommand, previousActiveTokenAddress, explicitResponseAddress, explicitPickerRequired)
+        && (!explicitTokenCommand.address || explicitResponseChain === explicitRequestedChain)
+      )
+      // Do not echo a prior token when the explicit token command did not
+      // resolve a new matching subject (for example, a ticker picker).
+      if (sessionMem.lastToken?.address && explicitResponseMatches) {
         genericMemoryEcho.lastToken = {
           address: sessionMem.lastToken.address,
           symbol: sessionMem.lastToken.symbol ?? null,
@@ -16371,6 +16353,21 @@ export async function POST(req: NextRequest) {
       if (Object.keys(genericMemoryEcho).length > 0) {
         const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}
         normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }
+      }
+      if (explicitTokenCommand) {
+        normData.clarkTokenCommandAudit = {
+          message: body.prompt ?? '', parsedCommand: 'token', requestedInput: explicitTokenCommand.input,
+          requestedTokenAddress: explicitTokenCommand.address, requestedTicker: explicitTokenCommand.ticker,
+          previousActiveTokenAddress, newRequestId: requestId,
+          selectedChain: body.chain ?? sessionMem.selectedChain ?? null,
+          scannerPayloadTokenAddress: body.tokenAddress ?? null, scannerPayloadChain: body.chain ?? sessionMem.selectedChain ?? null,
+          tokenScannerCalled: Array.isArray((result as Record<string, unknown>)?.toolsUsed) && ((result as Record<string, unknown>).toolsUsed as unknown[]).includes("token_scan"),
+          responseTokenAddress: explicitResponseAddress, responseTokenChain: explicitResponseChain, responseMatchesRequest: explicitResponseMatches,
+          pickerRequired: explicitPickerRequired,
+          staleResponseIgnored: !explicitResponseMatches, activeTokenAfterScan: explicitResponseMatches ? explicitResponseAddress : null,
+          finalStatus: explicitResponseMatches ? 'applied' : explicitPickerRequired ? 'picker_required' : explicitScanFailed ? 'scan_failed' : 'discarded',
+          failureReason: explicitResponseMatches ? null : explicitPickerRequired ? 'multiple_or_low_confidence_ticker_matches' : explicitScanFailed ? 'token_scanner_no_usable_evidence' : 'response_token_did_not_match_current_token_command',
+        }
       }
       // Per-message context audit — records the memory that was available BEFORE resolution
       // alongside what was chosen and why, so "Clark answered about the wrong token" is

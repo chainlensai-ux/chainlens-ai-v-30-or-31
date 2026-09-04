@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
+import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -4900,12 +4900,35 @@ export default function TerminalTokenScanner() {
     setSolanaClusterError(null)
     // ────────────────────────────────────────────────────────────────────────
 
+    // Resolve a symbol before choosing the chain-specific scan path. The resolved chain/address
+    // pair is kept together for the whole request so stale UI state cannot switch token identity.
+    let scanContract = q
+    let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' | 'solana' = effectiveChain
+    if (!override && !isContractAddress(q)) {
+      setResolving(true)
+      try {
+        const resolved = await resolveTokenQuery(q, effectiveChain)
+        setResolverResult(resolved)
+        if (resolved.needsUserChoice || !resolved.selectedMatch) {
+          if (!resolved.matches.length) setError(resolved.failureReason ?? 'No matching token found. Try pasting the contract address.')
+          return
+        }
+        scanContract = resolved.selectedMatch.tokenAddress
+        scanChain = resolved.selectedMatch.chainSlug
+      } catch {
+        setError("Couldn't resolve that ticker. Try pasting the contract address.")
+        return
+      } finally {
+        setResolving(false)
+      }
+    }
+
     // ── SOLANA BETA PATH, DISCLOSED (Token Scanner Solana Beta task) ─────────
     // Returns before the ticker resolver and before any EVM scan wiring below. Validation is the
     // same shared implementation the API enforces (lib/solanaAddress.ts), so an EVM 0x address is
     // rejected here with a specific message rather than being sent to a Solana RPC.
-    if (effectiveChain === 'solana') {
-      const rejection = classifySolanaMintInput(q)
+    if (scanChain === 'solana') {
+      const rejection = classifySolanaMintInput(scanContract)
       if (rejection) { setError(SOLANA_MINT_REJECTION_MESSAGE[rejection]); return }
       setLoading(true)
       try {
@@ -4918,7 +4941,7 @@ export default function TerminalTokenScanner() {
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-          body: JSON.stringify({ contract: q, chain: 'solana' }),
+          body: JSON.stringify({ contract: scanContract, chain: 'solana' }),
         })
         const json = await res.json().catch(() => null)
         if (!res.ok || !json || 'status' in (json ?? {})) {
@@ -4937,50 +4960,14 @@ export default function TerminalTokenScanner() {
 
     // ── Ticker resolver ─────────────────────────────────────────────────────
     // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
-    let scanContract = q
-    let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = effectiveChain
+    const evmScanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = scanChain
     // CHAIN-STRICT INPUT GUARD (chain-correctness audit): a well-formed Solana mint pasted while
     // an EVM chain is selected is rejected client-side with the switch-chain message — it must
     // never silently resolve-fail or reach the EVM scanner.
     {
       const looksSolanaMint = q.trim().length >= 32 && q.trim().length <= 44 && !isContractAddress(q) && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q.trim())
       if (looksSolanaMint && isValidSolanaMintAddress(q)) {
-        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
-        return
-      }
-    }
-    if (!override && !isContractAddress(q)) {
-      // Ticker/name search (resolveTokenQuery) only covers base/eth today — BNB and Robinhood
-      // Chain scans require a pasted contract address for now rather than silently searching the
-      // wrong chain for a matching symbol.
-      if (effectiveChain === 'bnb' || effectiveChain === 'robinhood') {
-        setError(`Ticker search isn't available for ${effectiveChain === 'bnb' ? 'BNB Chain' : 'Robinhood Chain'} yet — paste the contract address instead.`)
-        return
-      }
-      setResolving(true)
-      try {
-        const resolved = await resolveTokenQuery(q, effectiveChain)
-        setResolverResult(resolved)
-        setResolving(false)
-        if (resolved.status === 'not_found' || !resolved.contractAddress) {
-          setError(resolved.reason || 'No matching token found. Try pasting the contract address.')
-          return
-        }
-        // AMBIGUOUS-AUTO-SCAN FIX, DISCLOSED (ticker search task): this used to fall through and
-        // scan resolved.contractAddress (the resolver's best GUESS) even when status was
-        // 'ambiguous' — multiple real matches existed and the resolver said so, but the UI silently
-        // picked one anyway. Typing two different, both-ambiguous tickers back to back could easily
-        // land on similarly-ranked pairs and look like "every search returns the same token." Per
-        // explicit instruction ("do not randomly choose a token when confidence is low" / "if
-        // multiple matches exist, show options"), an ambiguous result now stops here — the banner +
-        // alternates picker already rendered below (from setResolverResult above) is the only way
-        // to continue; nothing scans until the user explicitly picks one.
-        if (resolved.status === 'ambiguous') return
-        scanContract = resolved.contractAddress
-        scanChain    = resolved.chain === 'eth' ? 'eth' : 'base'
-      } catch {
-        setResolving(false)
-        setError("Couldn't resolve that ticker. Try pasting the contract address.")
+        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(evmScanChain)}. Switch chain or scan with Auto Detect.`)
         return
       }
     }
@@ -4990,7 +4977,7 @@ export default function TerminalTokenScanner() {
       console.log('[scanner] scan start', {
         originalInput: q,
         resolvedAddress: scanContract,
-        resolvedChain: scanChain,
+        resolvedChain: evmScanChain,
         isCA: isContractAddress(q),
         hasOverride: !!override,
       })
@@ -5011,7 +4998,7 @@ export default function TerminalTokenScanner() {
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: scanContract, chain: scanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       // NON-JSON-RESPONSE FIX, DISCLOSED (audit: a gateway/proxy error page for a server-side
       // failure produced the misleading generic "Network error — check your connection" message,
@@ -5023,10 +5010,15 @@ export default function TerminalTokenScanner() {
         setClarkLoading(false)
         return
       }
+      if (res.ok && !json.error && (typeof json.contract !== 'string' || json.contract.toLowerCase() !== scanContract.toLowerCase())) {
+        setError('The scanner returned a different token identity. Nothing was displayed; choose the token again.')
+        setClarkLoading(false)
+        return
+      }
       if (process.env.NODE_ENV !== 'production') {
         console.log('[scanner] /api/token response', {
           scanRequestAddress: scanContract,
-          scanRequestChain: scanChain,
+          scanRequestChain: evmScanChain,
           returnedContract: json.contract,
           hasDevIntel: !!json.devIntel,
           deployerAddress: (json.devIntel as Record<string, unknown> | undefined)?.deployerAddress ?? null,
@@ -5043,7 +5035,7 @@ export default function TerminalTokenScanner() {
           // verbatim instead of the old generic "switch chain or Auto Detect" message. The optional
           // "Switch to X and scan" CTA below only ever appears from this candidate; it is never
           // auto-applied.
-          setError(json.error ?? `This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+          setError(json.error ?? `This token was not found on ${chainDisplayName(evmScanChain)}. Switch chain or scan with Auto Detect.`)
           setCrossChainSwitchCandidate(
             json?.crossChainCandidateFound && json?.crossChainCandidateChain
               ? { chain: json.crossChainCandidateChain as 'base' | 'eth' | 'bnb' | 'robinhood', address: scanContract }
@@ -5051,7 +5043,7 @@ export default function TerminalTokenScanner() {
           )
         }
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(evmScanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         if (process.env.NODE_ENV !== 'production') {
@@ -5613,60 +5605,52 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Resolver result banner — AMBIGUOUS-AUTO-SCAN FIX, DISCLOSED (ticker search task): an
-              ambiguous result no longer auto-scans (see handleScan's ticker-resolution block), so
-              this now has to actually let the user pick — the best match renders as its own Scan
-              button alongside the alternates, not just a passive "already scanning this" banner. */}
+          {/* Resolver result banner */}
           {!resolving && resolverResult && resolverResult.status !== 'not_found' && resolverResult.bestCandidate && (
             <div style={{ maxWidth:'680px', marginBottom:'12px' }}>
-              {resolverResult.status === 'ambiguous' ? (
-                <>
-                  <div style={{ padding:'10px 14px', marginBottom:'8px', borderRadius:'10px', background:'rgba(250,204,21,0.06)', border:'1px solid rgba(250,204,21,0.3)', fontFamily:'var(--font-plex-mono)', fontSize:'11px', color:'#facc15', fontWeight:700 }}>
-                    Multiple tokens found for {(resolverResult.bestCandidate.symbol ?? input).toUpperCase()}. Choose one to scan.
-                  </div>
-                  <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                    {[resolverResult.bestCandidate, ...resolverResult.alternates].slice(0, 5).map((cand: ResolverCandidate) => (
-                      <button
-                        key={cand.contractAddress + cand.chainId}
-                        type="button"
-                        disabled={loading || resolving}
-                        onClick={() => {
-                          const candChain: 'base' | 'eth' | 'bnb' | 'robinhood' = cand.chainId === 'ethereum' ? 'eth' : cand.chainId === 'bnb' ? 'bnb' : cand.chainId === 'robinhood' ? 'robinhood' : 'base'
-                          setChain(candChain)
-                          handleScan(cand.contractAddress, candChain)
-                        }}
-                        style={{ display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap', width:'100%', textAlign:'left', padding:'9px 12px', borderRadius:'9px', background:'rgba(255,255,255,0.02)', border:'1px solid rgba(148,163,184,0.16)', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontSize:'11px', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.5 : 1 }}
-                      >
-                        <span style={{ fontWeight:700 }}>{cand.symbol ?? cand.name ?? cand.contractAddress.slice(0, 6)}</span>
-                        {cand.name && cand.name !== cand.symbol && <span style={{ color:'#64748b' }}>{cand.name}</span>}
-                        <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.08em' }}>{cand.chainLabel}</span>
-                        <span style={{ color:'#334155', fontSize:'9px' }}>{cand.contractAddress.slice(0,6)}…{cand.contractAddress.slice(-4)}</span>
-                        <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(cand.liquidityUsd)}</span>
-                        <span style={{ color:'#475569', fontSize:'10px' }}>FDV {fmtLiquidity(cand.fdvUsd)}</span>
-                        <span style={{ color:'#475569', fontSize:'10px' }}>Vol24h {fmtLiquidity(cand.volume24hUsd)}</span>
-                        <span style={{ marginLeft:'auto', padding:'4px 10px', borderRadius:'999px', background:'rgba(45,212,191,0.10)', color:'#2dd4bf', fontSize:'9px', fontWeight:700 }}>Scan</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:'1px solid rgba(45,212,191,0.2)', fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
-                    <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
-                      ✓ Resolved
-                    </span>
-                    <span style={{ color:'#e2e8f0', fontWeight:700 }}>
-                      {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
-                    </span>
-                    {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
-                      <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
-                    )}
-                    <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainLabel}</span>
-                    {resolverResult.bestCandidate.liquidityUsd != null && (
-                      <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
-                    )}
-                    <span style={{ color:'#334155', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.contractAddress?.slice(0,8)}…{resolverResult.contractAddress?.slice(-4)}</span>
-                  </div>
+              <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:`1px solid ${resolverResult.status === 'ambiguous' ? 'rgba(250,204,21,0.35)' : 'rgba(45,212,191,0.2)'}`, fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                  <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
+                    {resolverResult.status === 'ambiguous' ? '⚠ Multiple matches' : '✓ Resolved'}
+                  </span>
+                  <span style={{ color:'#e2e8f0', fontWeight:700 }}>
+                    {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
+                  </span>
+                  {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
+                    <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
+                  )}
+                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainSlug.toUpperCase()}</span>
+                  {resolverResult.bestCandidate.liquidityUsd != null && (
+                    <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
+                  )}
+                  <span style={{ color:'#64748b', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.bestCandidate.tokenAddress.slice(0,8)}…{resolverResult.bestCandidate.tokenAddress.slice(-4)}</span>
+                </div>
+              </div>
+
+              {/* Alternates picker */}
+              {resolverResult.needsUserChoice && resolverResult.matches.length > 0 && (
+                <div style={{ marginTop:'8px', display:'grid', gap:'7px' }}>
+                  <span style={{ color:'#94a3b8', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>Multiple tokens found for {resolverResult.normalizedQuery}. Choose one to scan.</span>
+                  {resolverResult.matches.slice(0, 6).map((alt: ResolverCandidate) => (
+                    <button
+                      key={alt.tokenAddress + alt.chainSlug}
+                      disabled={loading || resolving}
+                      onClick={() => {
+                        const altChain = alt.chainSlug
+                        setChain(altChain)
+                        setInput(alt.tokenAddress)
+                        void handleScan(alt.tokenAddress, altChain)
+                      }}
+                      style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(100,116,139,0.10)', border:'1px solid rgba(100,116,139,0.28)', color:'#cbd5e1', fontSize:'10px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'grid', gridTemplateColumns:'minmax(120px,1fr) auto auto auto', alignItems:'center', gap:'10px', textAlign:'left', overflow:'hidden' }}
+                    >
+                      <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}><b>{alt.symbol ?? 'TOKEN'}</b> · {alt.name ?? alt.tokenAddress.slice(0,8)}</span>
+                      <span>{alt.chainSlug.toUpperCase()}</span>
+                      <span>Liq {fmtLiquidity(alt.liquidityUsd)}</span>
+                      <span>MC {fmtResolverUsd(alt.marketCapUsd ?? alt.fdvUsd)}</span>
+                      <span style={{ gridColumn:'1 / 4', color:'#64748b' }}>{alt.tokenAddress.slice(0,10)}…{alt.tokenAddress.slice(-6)} · Vol {fmtResolverUsd(alt.volume24hUsd)}</span>
+                      <span style={{ color:'#53f3c3', fontWeight:800 }}>SCAN →</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

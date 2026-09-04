@@ -1,69 +1,18 @@
-export type ResolverCandidate = {
-  contractAddress: string
-  chainId: string
-  chainLabel: string
-  symbol: string | null
-  name: string | null
-  source: 'internal' | 'dexscreener' | 'geckoterminal'
-  liquidityUsd: number | null
-  volume24hUsd: number | null
-  fdvUsd: number | null
-  pairAddress: string | null
-  confidenceScore: number
-  matchType: 'exact_symbol' | 'exact_name' | 'partial_symbol' | 'partial_name' | 'weak_match'
-  reason: string
+import { type TickerChainSlug, type TickerMatch, type TickerResolverResult } from '@/lib/tickerResolverCore'
+
+export type ResolverCandidate = TickerMatch
+export type ResolverResult = TickerResolverResult
+export function isContractAddress(query: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/.test(query.trim())
 }
 
-export type ResolverMatch = {
-  name: string | null
-  symbol: string | null
-  chainId: string
-  chainSlug: string
-  tokenAddress: string
-  pairAddress: string | null
-  dex: string
-  priceUsd: number | null
-  marketCapUsd: number | null
-  fdvUsd: number | null
-  liquidityUsd: number | null
-  volume24hUsd: number | null
-  priceChange24hPct: number | null
-  confidence: 'high' | 'medium' | 'low'
-  reason: string
-}
-
-export type ResolverResult = {
-  status: 'resolved' | 'ambiguous' | 'not_found'
-  contractAddress: string | null
-  chain: string | null
-  bestCandidate: ResolverCandidate | null
-  alternates: ResolverCandidate[]
-  confidence: 'high' | 'medium' | 'low'
-  reason: string
-  // SPEC RESULT SHAPE, DISCLOSED (ticker search task): additive fields — every existing consumer
-  // of this type keeps working off status/contractAddress/bestCandidate/alternates unchanged.
-  query: string
-  normalizedQuery: string
-  matches: ResolverMatch[]
-  selectedMatch: ResolverMatch | null
-  needsUserChoice: boolean
-  failureReason: string | null
-}
-
-export const CA_REGEX = /^0x[a-fA-F0-9]{40}$/
-
-export function isContractAddress(q: string): boolean {
-  return CA_REGEX.test(q.trim())
-}
-
-export async function resolveTokenQuery(query: string, chain: 'base' | 'eth' = 'base'): Promise<ResolverResult> {
-  const res = await fetch('/api/resolve', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+export async function resolveTokenQuery(query: string, chain: TickerChainSlug | null): Promise<ResolverResult> {
+  const response = await fetch('/api/resolve', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, chain }),
   })
-  if (!res.ok) throw new Error(`Resolver HTTP ${res.status}`)
-  return res.json() as Promise<ResolverResult>
+  if (!response.ok) throw new Error(`Resolver HTTP ${response.status}`)
+  return response.json() as Promise<ResolverResult>
 }
 
 export function fmtLiquidity(usd: number | null): string {
@@ -71,4 +20,12 @@ export function fmtLiquidity(usd: number | null): string {
   if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`
   if (usd >= 1_000) return `$${Math.round(usd / 1_000)}K`
   return `$${Math.round(usd)}`
+}
+
+export function fmtResolverUsd(usd: number | null): string {
+  if (usd == null) return 'Unavailable'
+  if (usd >= 1_000_000_000) return `$${(usd / 1_000_000_000).toFixed(1)}B`
+  if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(1)}M`
+  if (usd >= 1_000) return `$${(usd / 1_000).toFixed(1)}K`
+  return `$${usd.toFixed(2)}`
 }

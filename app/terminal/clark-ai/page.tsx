@@ -22,6 +22,7 @@ import {
   uiModeHintForPrompt,
 } from '@/lib/client/clarkAiLive'
 import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
+import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from '@/lib/clark/commandFormats'
 import { CLARK_AI_PAGE_CSS } from './clarkAiPageCss'
 import {
   ANALYSIS_STAGES,
@@ -107,6 +108,7 @@ function ClarkAiContent() {
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [loadingStage, setLoadingStage] = useState(0)
   const [memoryEpoch, setMemoryEpoch] = useState(0)
+  const [activeTokenPending, setActiveTokenPending] = useState<string | null>(null)
   const [clarkUsed, setClarkUsed] = useState(0)
   const account = useAccount()
   const planLimit = account.email === undefined
@@ -256,6 +258,11 @@ function ClarkAiContent() {
     const begun = requestGateRef.current.begin(text)
     if (!begun.proceed) return
     const requestId = begun.requestId
+    const tokenCommand = parseClarkTokenCommand(text)
+    // A `/token` entity is a new subject, never a follow-up to the previous
+    // token. Keep old storage out of the request and show a neutral pending
+    // state until the matching response has arrived.
+    if (tokenCommand) setActiveTokenPending(tokenCommand.address ?? tokenCommand.ticker)
     const sentForToken = chatSessionTokenRef.current
     const sendMode = uiModeHintForPrompt(text, activeMode)
     setActiveMode(sendMode)
@@ -344,12 +351,12 @@ function ClarkAiContent() {
         route: pathname,
         ...(resolvedChain ? { chain: resolvedChain } : {}),
         activeFeature: sendMode ?? 'clark-ai',
-        selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null,
+        selectedToken: tokenCommand ? null : (clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null),
         selectedWallet: clientClarkContext.lastWallet ?? null,
         currentWalletAddress: (walletSummary?.address as string | undefined) ?? clientClarkContext.lastWallet ?? null,
-        currentTokenAddress: (tokenSummary?.address as string | undefined) ?? clientClarkContext.lastToken ?? null,
+        currentTokenAddress: tokenCommand ? null : ((tokenSummary?.address as string | undefined) ?? clientClarkContext.lastToken ?? null),
         walletSummary,
-        tokenSummary,
+        tokenSummary: tokenCommand ? null : tokenSummary,
         marketContext: latestMarketContext,
         baseRadarSummary: clarkContextRef.current.lastMarketList ?? clientClarkContext.lastMomentumList ?? null,
         whaleSyncStatus: typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown' : 'unknown',
@@ -366,6 +373,8 @@ function ClarkAiContent() {
         body: JSON.stringify({
           feature: 'clark-ai', message: text, prompt: text,
           requestId, messageId: requestId,
+          ...(tokenCommand?.address ? { tokenAddress: tokenCommand.address } : {}),
+          ...(tokenCommand?.ticker ? { addressOrToken: tokenCommand.ticker } : {}),
           mode: 'analyst', uiModeHint: sendMode,
           context: null, history,
           sessionId: getOrCreateSessionId(),
@@ -381,6 +390,29 @@ function ClarkAiContent() {
       const payload = (json.data as Record<string, unknown>) ?? {}
       const echoedId = typeof payload.requestId === 'string' ? payload.requestId : (typeof json.requestId === 'string' ? json.requestId : requestId)
       if (echoedId !== requestId || !requestGateRef.current.shouldApply(requestId) || chatSessionTokenRef.current !== sentForToken) {
+        return
+      }
+      const tokenAudit = payload.clarkTokenCommandAudit as Record<string, unknown> | undefined
+      const echoedToken = payload.memoryEcho && typeof payload.memoryEcho === 'object'
+        ? (payload.memoryEcho as Record<string, unknown>).lastToken as Record<string, unknown> | undefined : undefined
+      const responseTokenAddress = typeof tokenAudit?.responseTokenAddress === 'string' ? tokenAudit.responseTokenAddress
+        : (typeof echoedToken?.address === 'string' ? echoedToken.address : null)
+      const previousTokenAddress = typeof tokenAudit?.previousActiveTokenAddress === 'string' ? tokenAudit.previousActiveTokenAddress : null
+      const responseMatchesRequest = tokenCommand
+        ? doesClarkTokenResponseMatch(tokenCommand, previousTokenAddress, responseTokenAddress, tokenAudit?.pickerRequired === true) && tokenAudit?.responseMatchesRequest === true
+        : true
+      const tokenPickerRequired = tokenAudit?.pickerRequired === true
+      const tokenScanFailed = tokenAudit?.finalStatus === 'scan_failed'
+      if (tokenCommand && !responseMatchesRequest && !tokenPickerRequired && !tokenScanFailed) {
+        // Do not render or persist a previous token under a fresh `/token` command.
+        applyIfCurrent((prev) => {
+          const next = [...prev]
+          const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+          if (idx >= 0) next[idx] = { role: 'clark', text: responseTokenAddress
+            ? 'Ignored a token response that did not match your requested token. Please retry the scan.'
+            : 'Scanning new token… Choose a match if Clark returned options.', intentBadge: 'TOKEN READ', requestId }
+          return next
+        })
         return
       }
       if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
@@ -419,6 +451,8 @@ function ClarkAiContent() {
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
       persistClarkMemoryEcho(payload)
+      if (tokenCommand && !tokenPickerRequired) setActiveTokenPending(null)
+      if (!tokenCommand && activeTokenPending && responseTokenAddress) setActiveTokenPending(null)
       setMemoryEpoch((n) => n + 1)
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
@@ -517,7 +551,7 @@ function ClarkAiContent() {
   const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown; lastChain?: unknown }
   const formatContextValue = (value: unknown) => formatLastWalletDisplay(value)
   const contextChain = formatChainDisplay(resolveClarkContextChain(clientContext))
-  const lastTokenDisplay = formatLastTokenDisplay(clientContext.lastToken)
+  const lastTokenDisplay = activeTokenPending ? `Scanning ${activeTokenPending.length > 18 ? `${activeTokenPending.slice(0, 10)}…${activeTokenPending.slice(-6)}` : activeTokenPending}` : formatLastTokenDisplay(clientContext.lastToken)
   const startWithChips = START_WITH_CHIPS
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
