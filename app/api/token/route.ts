@@ -3252,7 +3252,18 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
     if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s)) return "v3"
     if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
     if (/^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3/.test(s)) return "v3"
-    if (/^sushiswap|^pancakeswap/.test(s)) return "v2"  // unversioned: default to v2
+    // BARE-UNISWAP FIX, DISCLOSED (bug report: "LP Safety finds a Uniswap pool but still shows
+    // Model Open Check"): classifyPoolModel (lib/server/lpProof.ts) already treats ANY dex id
+    // containing "uniswap" as a constant-product V2 LP token (its regex has no version
+    // requirement), and this function already defaults unversioned "sushiswap"/"pancakeswap" to
+    // v2 below — but a bare "uniswap" dex id (no "_v2"/"-v2" suffix, which GeckoTerminal/
+    // DexScreener do return for some V2 pools) fell through every branch to "unknown" here. That
+    // mismatch left primaryPoolType/verifyPoolType stuck at "unknown" even when
+    // classifyPoolModel's broader match (used for modelProofStandardLockApplies) correctly saw a
+    // V2 pool — computeDisplayLpModel's "open_check" branch could still be reached before the
+    // safety-net override ran, and RPC reclassification is not guaranteed to succeed (network/env
+    // dependent). Treat bare "uniswap" the same as bare "sushiswap"/"pancakeswap": default to v2.
+    if (/^sushiswap|^pancakeswap|^uniswap$/.test(s)) return "v2"  // unversioned: default to v2
   }
   const has = (re: RegExp) => re.test(text);
   if (has(/\baerodrome\b|\bvelodrome\b/) && has(/slipstream|concentrated|\bcl\b/)) return "concentrated";
@@ -3263,6 +3274,11 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
   // Use (?:_|-) instead of \b after version number to match "uniswap_v3_eth" etc.
   if (has(/uniswap(?:[_-]?v)?3(?:[_-]|$)|\bpancakeswap(?:[_-]?v)?3(?:[_-]|$)|(?:^| )v3(?:[_-]|$)/)) return "v3";
   if (has(/uniswap(?:[_-]?v)?2(?:[_-]|$)|sushiswap(?:[_-]?v)?2(?:[_-]|$)|pancakeswap(?:[_-]?v)?2(?:[_-]|$)|\bbaseswap\b|\balienbase\b|\bswapbased\b|\bshiba(?:swap)?\b|constant[-_ ]?product|(?:^| )v2(?:[_-]|$)/)) return "v2";
+  // BARE-UNISWAP FIX, DISCLOSED: same reasoning as the idSignals fast-path above — a bare
+  // "uniswap" with no version marker anywhere in the joined text (already ruled out for v3/
+  // concentrated by the checks above) defaults to v2, matching classifyPoolModel's broader
+  // version-agnostic match instead of falling through to "unknown".
+  if (has(/\buniswap\b/)) return "v2";
   return "unknown";
 }
 
