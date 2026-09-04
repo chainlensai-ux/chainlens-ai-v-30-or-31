@@ -120,12 +120,17 @@ function PnlRobinhoodBoxTile({ box }: { box: WalletPnlRobinhoodBox }) {
 // Robinhood) renders through identically.
 function PnlChainRowItem({ row }: { row: WalletPnlChainRow }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', borderRadius: '9px', background: 'rgba(255,255,255,0.015)' }}>
-      <span style={{ fontWeight: 700, color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>{row.label}</span>
-      <StatusBadge label={row.status} tone={CHAIN_ROW_STATUS_TONE[row.status]} />
-      <span style={{ fontSize: '12px', fontWeight: 700, marginLeft: 'auto', color: row.value == null ? 'rgba(148,163,184,0.55)' : row.value.startsWith('-') ? '#f87171' : '#4ade80' }}>
-        {row.value ?? '—'}
-      </span>
+    <div style={{ padding: '7px 10px', borderRadius: '9px', background: 'rgba(255,255,255,0.015)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <span style={{ fontWeight: 700, color: '#e2e8f0', fontSize: '12px', minWidth: '90px' }}>{row.label}</span>
+        <StatusBadge label={row.status} tone={CHAIN_ROW_STATUS_TONE[row.status]} />
+        <span style={{ fontSize: '12px', fontWeight: 700, marginLeft: 'auto', color: row.value == null ? 'rgba(148,163,184,0.55)' : row.value.startsWith('-') ? '#f87171' : '#4ade80' }}>
+          {row.value ?? '—'}
+        </span>
+      </div>
+      {row.value == null && row.reason && (
+        <div style={{ marginTop: '3px', fontSize: '10px', color: 'rgba(148,163,184,0.55)', lineHeight: 1.4 }}>{row.reason}</div>
+      )}
     </div>
   )
 }
@@ -972,9 +977,9 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // math: it's built entirely from the same selectors already computed above.
   const pnlViewModel = buildWalletPnlViewModel({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned })
 
-  const headerIcon = displayed.realizedPnlUsd == null
-    ? <WarningIcon size={16} color="#fbbf24" />
-    : displayed.realizedPnlUsd >= 0 ? <TrendingUpIcon size={16} color="#4ade80" /> : <TrendingDownIcon size={16} color="#f87171" />
+  const headerIcon = pnlViewModel.combinedStatus === 'verified' && displayed.realizedPnlUsd != null
+    ? displayed.realizedPnlUsd >= 0 ? <TrendingUpIcon size={16} color="#4ade80" /> : <TrendingDownIcon size={16} color="#f87171" />
+    : <WarningIcon size={16} color="#fbbf24" />
 
   return (
     <section>

@@ -50,6 +50,9 @@ export type WalletPnlChainRow = {
   label: string
   status: WalletPnlChainRowStatus
   value: string | null
+  // ZERO-SUPPRESSION REASON, DISCLOSED (portfolio-vs-PnL contradiction fix): Partial/Unavailable/
+  // Not-verified rows never carry a dollar figure — the reason is what the user sees under "—".
+  reason: string
 }
 
 export type WalletRobinhoodPnlProof = {
@@ -98,6 +101,41 @@ export type WalletPnlViewModel = {
 // anywhere.
 export const COMBINED_PNL_LOCKED_ROBINHOOD_VERIFIED_MESSAGE =
   'Combined PnL is locked because Base/ETH history is partial. Robinhood realized PnL is verified separately.'
+
+// CHAIN-ROW COPY, DISCLOSED (portfolio-vs-PnL contradiction fix): Partial/unavailable chain PnL
+// must never render a green $0.00 — that $0 is the engine's empty-lot default, not a verified
+// realized figure. These strings are the honest reason shown next to "—".
+export const CHAIN_PNL_PARTIAL_REASON = 'Partial — realized PnL is not independently verified.'
+export const CHAIN_PNL_UNAVAILABLE_REASON = 'No verified PnL evidence for this chain.'
+export const CHAIN_PNL_VERIFIED_REASON = 'Verified closed-lot realized PnL.'
+
+export function chainPnlRowReason(status: WalletPnlChainRowStatus): string {
+  if (status === 'Verified') return CHAIN_PNL_VERIFIED_REASON
+  if (status === 'Partial') return CHAIN_PNL_PARTIAL_REASON
+  if (status === 'Not verified') return ROBINHOOD_PNL_NOT_VERIFIED_REASON
+  return CHAIN_PNL_UNAVAILABLE_REASON
+}
+
+// NUMERIC PNL DISPLAY GATE, DISCLOSED: a chain PnL dollar figure is only shown when that chain's
+// own status is Verified. Partial/Unavailable/Not-verified always render as "—" — including the
+// engine's default realizedPnlUsd=0 when closedLots=0 (the live $8.67K-holdings / $0.00-Base-PnL
+// contradiction). Verified + a real 0 still shows $0.00, because that 0 was independently proven.
+export function displayChainPnlValue(
+  status: WalletPnlChainRowStatus,
+  realizedPnlUsd: number | null | undefined,
+): string | null {
+  if (status !== 'Verified') return null
+  if (realizedPnlUsd == null || !Number.isFinite(realizedPnlUsd)) return null
+  return fmtSignedUsd(realizedPnlUsd)
+}
+
+export function shouldSuppressUnverifiedZeroPnl(
+  status: WalletPnlChainRowStatus | WalletPnlBoxStatus | WalletPnlCombinedStatus,
+  realizedPnlUsd: number | null | undefined,
+): boolean {
+  const verified = status === 'Verified' || status === 'verified'
+  return !verified && realizedPnlUsd === 0
+}
 
 export type BuildWalletPnlViewModelParams = {
   pnlV2: PnlV2 | null | undefined
@@ -177,11 +215,19 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // already-computed Base/ETH-only figure (never Robinhood's).
   const combinedRealizedBoxStatus: WalletPnlBoxStatus =
     combinedStatus === 'verified' ? 'Verified' : combinedStatus === 'partial' ? 'Partial' : combinedStatus === 'locked' ? 'Locked' : 'Unavailable'
-  const combinedRealizedValue = combinedRealizedBoxStatus === 'Verified'
-    ? (displayed.realizedPnlUsd != null ? fmtSignedUsd(displayed.realizedPnlUsd) : null)
+  // ZERO SUPPRESSION, DISCLOSED (portfolio-vs-PnL contradiction fix): a Partial combined figure of
+  // $0.00 is the empty-lot default, not a verified realized 0. Only a Verified combined status may
+  // show $0.00. Bounded-sample Partial still shows its real non-zero number.
+  const rawCombinedUsd = combinedRealizedBoxStatus === 'Verified'
+    ? (displayed.realizedPnlUsd ?? null)
     : combinedRealizedBoxStatus === 'Partial'
-      ? (boundedSample?.realizedPnlUsd != null ? fmtSignedUsd(boundedSample.realizedPnlUsd) : (displayed.realizedPnlUsd != null ? fmtSignedUsd(displayed.realizedPnlUsd) : null))
+      ? (boundedSample?.realizedPnlUsd ?? displayed.realizedPnlUsd ?? null)
       : null
+  const combinedRealizedValue = combinedRealizedBoxStatus === 'Locked' || combinedRealizedBoxStatus === 'Unavailable'
+    ? null
+    : shouldSuppressUnverifiedZeroPnl(combinedRealizedBoxStatus, rawCombinedUsd)
+      ? null
+      : (rawCombinedUsd != null && Number.isFinite(rawCombinedUsd) ? fmtSignedUsd(rawCombinedUsd) : null)
   const combinedRealizedBox = box(
     combinedRealizedValue,
     combinedRealizedBoxStatus,
@@ -213,7 +259,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       ? 'Locked'
       : confidenceToBoxStatus(confidence.unrealized)
   const unrealizedBox = box(
-    displayed.unrealizedPnlUsd == null || unrealizedStatus === 'Unavailable' || unrealizedStatus === 'Locked' ? null : fmtSignedUsd(displayed.unrealizedPnlUsd),
+    displayed.unrealizedPnlUsd == null || unrealizedStatus === 'Unavailable' || unrealizedStatus === 'Locked' || shouldSuppressUnverifiedZeroPnl(unrealizedStatus, displayed.unrealizedPnlUsd) ? null : fmtSignedUsd(displayed.unrealizedPnlUsd),
     unrealizedStatus,
     canonicalSampleUnavailable
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
@@ -259,11 +305,13 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       const chainId = EVM_CHAIN_ID_BY_SLUG[c]
       const row = pnlV2?.chainBreakdown.find((cb) => cb.chainId === chainId)
       const rowUnreliable = pnl.unreliable && row != null && Math.abs(row.realizedPnlUsd) > 1e9
+      const rawUsd = !canonicalSampleUnavailable && row != null && !rowUnreliable ? row.realizedPnlUsd : null
       return {
         chain: c,
         label: fmtChainLabel(c === 'ethereum' ? 'eth' : c),
         status: evmRowStatus,
-        value: !canonicalSampleUnavailable && row != null && !rowUnreliable && evmRowStatus !== 'Unavailable' ? fmtSignedUsd(row.realizedPnlUsd) : null,
+        value: displayChainPnlValue(evmRowStatus, rawUsd),
+        reason: chainPnlRowReason(evmRowStatus),
       }
     })
 
@@ -275,6 +323,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       label: fmtChainLabel('robinhood'),
       status: robinhoodBoxStatus,
       value: robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
+      reason: chainPnlRowReason(robinhoodBoxStatus),
     })
     if (robinhoodLane === 'verified' && audit) {
       robinhoodProof = {

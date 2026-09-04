@@ -15,6 +15,7 @@ import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { PnlStatusCard } from './PnlStatusCard'
 import { deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { buildWalletScannerViewModel } from '@/app/frontend/lib/buildWalletScannerViewModel'
 
 export type WalletScannerSummaryRowV3Props = {
   report: WalletV2Report
@@ -30,6 +31,29 @@ const cardStyle: React.CSSProperties = {
 }
 
 export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletScannerSummaryRowV3Props) {
+  const scannerView = buildWalletScannerViewModel({
+    walletAddress: report.scanMetadata?.walletAddress ?? null,
+    portfolio: report.portfolio,
+    portfolioV2: report.portfolioV2,
+    chainValueUsd: report.chainValueUsd,
+    portfolioTotalByChain: report.portfolioTotalByChain,
+    pricedHoldings: report.pricedHoldings,
+    canonicalOverride: deriveCanonicalMergeOverride(report),
+    canonicalTotalValueUsd: report.canonicalTotalValueUsd,
+    finalCanonicalMergeAudit: report.finalCanonicalMergeAudit,
+    pnlV2: report.pnlV2,
+    publicPnlStatus: report.finalSummary?.financialStatus?.officialPnlStatus,
+    unrealizedReconciliation: report.fifoAndPnl?.unrealizedReconciliation,
+    reconciliationSummary: report.reconciliationSummary,
+    canonicalSampleManifestAudit: report.canonicalSampleManifestAudit,
+    robinhoodResult,
+    chainsScanned: Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : [],
+  })
+  // PORTFOLIO VS PNL AUDIT, DISCLOSED (portfolio-vs-PnL contradiction fix): proof that the
+  // displayed portfolio total is independent of realized PnL, and that unverified $0.00 PnL
+  // figures were suppressed rather than painted green next to real holdings.
+  console.log('[wallet-scanner] walletScannerViewAudit', scannerView.audit)
+
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '16px' }}>
       {/* PortfolioIntelligenceCard already renders its OWN complete card chrome (padding/border/
