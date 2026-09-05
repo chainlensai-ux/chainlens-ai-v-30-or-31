@@ -147,12 +147,19 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
   } else if (evidence.zeroEvaluated) {
     sections.push({
       id: 'pnlEvidenceLevel',
-      text: `PnL Evidence Level: Insufficient evidence — 0 of ${input.totalSells} sells had verifiable pricing.`,
+      text: `PnL Evidence Level: Insufficient evidence — 0 of ${input.totalSells} closed lots verified (0% coverage).`,
     })
   } else {
+    // PNL-COVERAGE-RECOVERY-FIX-5, DISCLOSED (Wallet Scanner PnL coverage bottleneck task — bad UI
+    // copy fix): the prior wording ("X of Y sells had verifiable pricing") read as a plain fraction
+    // of sell EVENTS, but X (closedLots) and Y (totalSells) are actually "verified closed lots" over
+    // "total sell attempts" — the same numerator/denominator confusion this task named explicitly
+    // ("Never say '603 of 192 sells had verifiable pricing'"). Restated as an unambiguous "N of M
+    // closed lots verified (P% coverage)" — same real numbers, no wording that implies sells and
+    // lots are interchangeable or that the fraction could read as >100%.
     sections.push({
       id: 'pnlEvidenceLevel',
-      text: `PnL Evidence Level: Limited coverage — ${input.closedLots} of ${input.totalSells} sells had verifiable pricing.`,
+      text: `PnL Evidence Level: Limited coverage — ${input.closedLots} of ${input.totalSells} closed lots verified (${input.totalSells > 0 ? round((input.closedLots / input.totalSells) * 100) : 0}% coverage).`,
     })
   }
 
@@ -232,9 +239,9 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
   if (evidence.isFull) {
     sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: FULL.' })
   } else if (evidence.zeroEvaluated) {
-    sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: Insufficient evidence — 0 priced sells reconstructed.' })
+    sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: Insufficient evidence — 0 closed lots verified.' })
   } else {
-    sections.push({ id: 'scanDepthIndicator', text: `Scan Depth: Limited coverage — Only ${input.closedLots} priced sells reconstructed.` })
+    sections.push({ id: 'scanDepthIndicator', text: `Scan Depth: Limited coverage — Only ${input.closedLots} of ${input.totalSells} closed lots verified.` })
   }
 
   return sections

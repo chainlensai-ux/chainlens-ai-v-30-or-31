@@ -86,7 +86,17 @@ describe('buildWalletConditionMessages — section 2: wallet issues detected', (
 describe('buildWalletConditionMessages — section 3: PnL evidence level', () => {
   it('shows "Limited coverage" with real counts when closedLots < totalSells', () => {
     const sections = buildWalletConditionMessages(baseInput({ closedLots: 3, totalSells: 10 }))
-    assert.equal(findSection(sections, 'pnlEvidenceLevel')!.text, 'PnL Evidence Level: Limited coverage — 3 of 10 sells had verifiable pricing.')
+    assert.equal(findSection(sections, 'pnlEvidenceLevel')!.text, 'PnL Evidence Level: Limited coverage — 3 of 10 closed lots verified (30% coverage).')
+  })
+
+  // PNL-COVERAGE-RECOVERY-FIX-5, DISCLOSED: the exact bad-copy pattern this task named ("Never say
+  // '603 of 192 sells had verifiable pricing'") — asserts the new wording is unambiguous about what
+  // is being counted (closed lots verified, not raw sells) and includes the real coverage percent.
+  it('never uses the ambiguous "sells had verifiable pricing" wording', () => {
+    const sections = buildWalletConditionMessages(baseInput({ closedLots: 213, totalSells: 603 }))
+    const text = findSection(sections, 'pnlEvidenceLevel')!.text
+    assert.ok(!text.includes('had verifiable pricing'))
+    assert.equal(text, 'PnL Evidence Level: Limited coverage — 213 of 603 closed lots verified (35% coverage).')
   })
 
   it('shows FULL when closedLots === totalSells and there is no coverage issue', () => {
@@ -265,7 +275,7 @@ describe('buildWalletConditionMessages — section 9: tokens excluded from PnL',
 describe('buildWalletConditionMessages — section 10: scan depth indicator', () => {
   it('shows "Limited coverage" with a real count when closedLots < totalSells', () => {
     const sections = buildWalletConditionMessages(baseInput({ closedLots: 2, totalSells: 9 }))
-    assert.equal(findSection(sections, 'scanDepthIndicator')!.text, 'Scan Depth: Limited coverage — Only 2 priced sells reconstructed.')
+    assert.equal(findSection(sections, 'scanDepthIndicator')!.text, 'Scan Depth: Limited coverage — Only 2 of 9 closed lots verified.')
   })
 
   it('is FULL when closedLots === totalSells and there is no coverage issue', () => {
@@ -275,7 +285,7 @@ describe('buildWalletConditionMessages — section 10: scan depth indicator', ()
 
   it('shows "Insufficient evidence" (never FULL) with zero evaluated lots', () => {
     const sections = buildWalletConditionMessages(baseInput({ closedLots: 0, totalSells: 0 }))
-    assert.equal(findSection(sections, 'scanDepthIndicator')!.text, 'Scan Depth: Insufficient evidence — 0 priced sells reconstructed.')
+    assert.equal(findSection(sections, 'scanDepthIndicator')!.text, 'Scan Depth: Insufficient evidence — 0 closed lots verified.')
   })
 
   // HARD ASSERTION (this task's explicit rule): "partial transaction history can never equal FULL
