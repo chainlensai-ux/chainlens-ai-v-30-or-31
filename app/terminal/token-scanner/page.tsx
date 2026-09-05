@@ -130,6 +130,7 @@ function isProtocolPositionModel(result: ScanResult): boolean {
 }
 
 function primaryLiquidityModelLabel(result: ScanResult): string {
+  if (result.lpSafetyResolution?.model) return result.lpSafetyResolution.model
   const dex = result.lpHistoryTimeline?.primaryDex || result.primaryDexName || result.lpControl?.primaryPoolDex || result.lpControl?.dexName || result.lpModelProof?.dexName
   const dm = result.lpControl?.displayLpModel
   if (isProtocolPositionModel(result)) {
@@ -141,7 +142,9 @@ function primaryLiquidityModelLabel(result: ScanResult): string {
   }
   if (dm === 'erc20_lp_token') return 'ERC-20 LP Token'
   if (dm === 'no_pool') return 'No Active Pool'
-  return 'Model Open Check'
+  return result.lpControl?.reason
+    ? `Unavailable: ${result.lpControl.reason}`
+    : 'Unavailable: pool model could not be verified by metadata or RPC'
 }
 
 
@@ -327,6 +330,41 @@ type ScanResult = {
   } | null
   devClusterDiagnosisAudit?: DevClusterDiagnosisAudit | null
   lpExitRiskReason?: string
+  lpSafetyResolution?: {
+    model: string
+    status: string
+    lockBurnStatus: string
+    controlStatus: string
+    exitRisk: string
+    reason?: string | null
+  } | null
+  lpSafetyResolutionAudit?: {
+    chainId: number | null
+    tokenAddress: string
+    selectedPoolAddress: string | null
+    selectedPoolDex: string | null
+    selectedPoolSource: string | null
+    poolTypeDetected: string
+    token0: string | null
+    token1: string | null
+    lpTokenAddress: string | null
+    totalSupplyRead: boolean
+    alchemyRpcAttempted: boolean
+    alchemyCallsMade: number
+    proofAttempted: boolean
+    holdersReturned: number
+    burnSharePct: number | null
+    deadSharePct: number | null
+    dominantHolder: string | null
+    controllerType: string
+    concentratedDetected: boolean
+    positionProofAttempted: boolean
+    finalLpModel: string
+    finalLpStatus: string
+    finalLockBurnStatus: string
+    finalExitRisk: string
+    failureReason: string | null
+  } | null
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
   lpControllerIntel?: {
@@ -3742,6 +3780,18 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   const dm = lp?.displayLpModel
   const lpMode = getLpMode(result)
   const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
+  if (result.lpSafetyResolution) {
+    const finalStatus = result.lpSafetyResolution.status
+    const verified = finalStatus.startsWith('Verified')
+    const notApplicable = finalStatus.startsWith('Not applicable') || result.lpSafetyResolution.lockBurnStatus.startsWith('Not applicable')
+    return {
+      label: verified ? 'Verified' : notApplicable ? 'Not applicable' : finalStatus.startsWith('Partial') ? 'Partial' : 'Unavailable',
+      color: verified ? '#34d399' : notApplicable ? '#94a3b8' : '#fbbf24',
+      bg: verified ? 'rgba(52,211,153,0.07)' : 'rgba(251,191,36,0.06)',
+      border: verified ? 'rgba(52,211,153,0.22)' : 'rgba(251,191,36,0.20)',
+      description: result.lpSafetyResolution.lockBurnStatus,
+    }
+  }
   if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
   // lpControl.status is the authoritative read — prioritize it over legacy lpLockStatus.
   if (status === 'team_controlled') {
@@ -3780,6 +3830,11 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
   const lpMode = getLpMode(result)
   const liqDepth = result.liquidity ?? null
   const hasLiquidity = (liqDepth ?? 0) > 0 || lp?.poolAddressPresent
+  if (result.lpSafetyResolution) {
+    const finalRisk = result.lpSafetyResolution.exitRisk
+    const color = finalRisk === 'Low' ? '#34d399' : finalRisk === 'High' ? '#f87171' : '#fbbf24'
+    return { label: finalRisk, color, description: result.lpExitRiskReason ?? result.lpSafetyResolution.reason ?? finalRisk }
+  }
   if (result.noActivePools && !hasLiquidity) return { label: 'Critical', color: '#f87171', description: 'No active pool — exit liquidity is entirely unavailable.' }
 
   // A confirmed LP controller wallet is the strongest exit-risk signal — never downgrade
@@ -3939,12 +3994,12 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
   const ht = result.lpHistoryTimeline
 
   const protocolPosition = isProtocolPositionModel(result)
-  const controllerValue = isUniswapV3ConcentratedPartial(result) ? 'Position proof attempted — partial' : protocolPosition ? (ci?.controllerLabel ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : cleanStatusLabel(ci?.status)
+  const controllerValue = result.lpSafetyResolution?.controlStatus ?? (isUniswapV3ConcentratedPartial(result) ? 'Position proof attempted — partial' : protocolPosition ? (ci?.controllerLabel ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : cleanStatusLabel(ci?.status))
   const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
     : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
     : '#fbbf24'
 
-  const lockBurnValue = protocolPosition ? 'Protocol-specific' : cleanStatusLabel(lb?.lockBurnProof)
+  const lockBurnValue = result.lpSafetyResolution?.lockBurnStatus ?? (protocolPosition ? 'Protocol-specific' : cleanStatusLabel(lb?.lockBurnProof))
   const lockBurnColor = lb?.lockBurnProof === 'confirmed' ? '#34d399' : lb?.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24'
 
   const unlockValue = protocolPosition ? 'Protocol-specific' : cleanStatusLabel(ut?.unlockRisk)
@@ -3985,7 +4040,7 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
     mainRisk = 'No confirmed exit-liquidity protection yet — treat the LP as removable until lock/burn proof is confirmed.'
   }
 
-  const openChecks = chips.filter((c) => /open check|unknown|watch/.test(c.value)).map((c) => c.label)
+  const openChecks = chips.filter((c) => /unavailable|partial|watch/i.test(c.value)).map((c) => c.label)
   const monitor = Array.from(new Set([
     ...(ci?.nextActions ?? []),
     ...(mv?.nextActions ?? []),
@@ -4003,7 +4058,7 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
   ]))
 
   const foundSentence = `${found.charAt(0).toUpperCase()}${found.slice(1)}.`
-  const openChecksSentence = openChecks.length ? ` Still open check: ${openChecks.join(', ')}.` : ''
+  const openChecksSentence = openChecks.length ? ` Evidence incomplete: ${openChecks.join(', ')}.` : ''
   const verdict = `${foundSentence} ${mainRisk}${openChecksSentence}`
 
   return { chips, verdict, openChecks, monitor, evidenceGaps }
@@ -7236,7 +7291,7 @@ export default function TerminalTokenScanner() {
                 ]
                 const marketStrengthLabel = result.noActivePools ? 'Open check' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Open check'
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Open check' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
-                const lpProofLabel = lpMode === 'protocol' ? 'Protocol-specific' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Wallet Controlled' : lpStatus === 'partial' ? 'Partial Evidence' : lpStatus === 'no_pool' ? 'Open check' : lpMode === 'unknown' ? 'Open check' : 'Open check'
+                const lpProofLabel = result.lpSafetyResolution?.status ?? (lpMode === 'protocol' ? 'Protocol-specific' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Wallet Controlled' : lpStatus === 'partial' ? 'Partial Evidence' : 'Unavailable: LP proof incomplete')
                 const securityConfidenceLabel = simUiOverview.statusLabel
                 const degradedBadges = [
                   (result.lpControl?.status === 'unavailable_with_reason' || result.lpControl?.status === 'insufficient_data') ? 'LP open check' : null,
@@ -8235,9 +8290,9 @@ export default function TerminalTokenScanner() {
                         case 'verified': return `Verified — top position controlled by ${cpp.topPositionOwner ?? cpp.topPositionOwnerType ?? 'unknown'}`
                         case 'partial': return hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Partial — pool confirmed, but position ownership could not be fully resolved.'
                         case 'not_supported': return `${poolModelLabel} position ownership is not supported yet — top liquidity owner not verified.`
-                        case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
-                        case 'failed': return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
-                        default: return 'Open Check — no position ownership evidence returned.'
+                        case 'not_found': return 'Partial — pool confirmed with zero indexed active liquidity.'
+                        case 'failed': return `Unavailable: ${cpp.reason || 'position proof attempt returned no ownership evidence'}`
+                        default: return 'Unavailable: no position ownership evidence returned.'
                       }
                     })()
                     const missingProofHuman = (cpp?.missingEvidence ?? []).map((m) =>
@@ -8255,31 +8310,31 @@ export default function TerminalTokenScanner() {
                       ? 'Confirmed'
                       : isV3Partial ? 'Owner verification pending'
                       : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable'))
-                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open Check')
+                      : (result.lpSafetyResolution?.controlStatus ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Unavailable: LP controller proof returned no usable evidence'))
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
                       : isV3Partial ? 'ERC-20 LP proof not used'
                       : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.'
-                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.lockLabel ?? 'LP lock not confirmed') : 'Open Check')
+                      : (result.lpSafetyResolution?.lockBurnStatus ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.lockLabel ?? 'LP lock not confirmed') : 'Unavailable: LP lock/burn proof returned no usable evidence'))
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
                       : result.liquidityDepthRisk === 'medium' ? 'Moderate'
                       : result.liquidityDepthRisk === 'high' ? 'Thin'
                       : (result.liquidity ?? 0) > 500_000 ? 'Deep'
                       : (result.liquidity ?? 0) > 50_000 ? 'Moderate'
-                      : hasPool ? 'Thin' : 'Open Check'
-                    const exitRisk = isV3Partial ? (result.lpExitRisk === 'watch' ? 'Watch' : 'Monitor')
+                      : hasPool ? 'Thin' : 'Unavailable: no active pool'
+                    const exitRisk = result.lpSafetyResolution?.exitRisk ?? (isV3Partial ? (result.lpExitRisk === 'watch' ? 'Watch' : 'Monitor')
                       : result.lpExitRisk === 'low' ? 'Low'
                       : result.lpExitRisk === 'watch' || result.lpExitRisk === 'monitor' ? 'Watch'
                       : result.lpExitRisk === 'medium' ? 'Monitor'
-                      : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
+                      : result.lpExitRisk === 'high' ? 'High' : 'Unavailable: exit-risk evidence incomplete')
                     const lpControlDisplay = result.lpControl?.status === 'team_controlled' || result.lpControl?.lpControllerType === 'wallet'
                       ? 'Wallet Controlled'
                       : lpModeVal === 'protocol' ? 'Protocol Position Model'
                       : lpStatus === 'burned' ? 'Burned'
                       : lpStatus === 'locked' ? 'Locked'
                       : lpStatus === 'partial' ? 'Partial Evidence'
-                      : lpStatus === 'no_pool' ? (isRobinhoodScan(result) ? 'Unavailable' : 'Open Check')
+                      : lpStatus === 'no_pool' ? 'Unavailable: no active pool'
                       : (cleanStatusLabel(lpStatus) === 'Open Check' && isRobinhoodScan(result)
                         ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
                         : cleanStatusLabel(lpStatus))
@@ -8290,7 +8345,7 @@ export default function TerminalTokenScanner() {
                       ? (cpp.status === 'verified' ? 'Verified'
                         : cpp.status === 'partial' ? 'Position proof attempted — partial'
                         : cpp.status === 'not_supported' ? 'Position proof attempted — not supported'
-                        : 'Open Check')
+                        : (result.lpSafetyResolution?.status ?? 'Unavailable: position proof returned no usable evidence'))
                       : null
                     function getV3PartialPositionRows(samplingReason: string | null | undefined, primaryPool: string): { label: string; value: string; color?: string; note?: string }[] {
                       return [
@@ -8340,7 +8395,7 @@ export default function TerminalTokenScanner() {
                           }
                           return {
                             label: 'Position Ownership',
-                            value: valueByStatus[audit.finalStatus] ?? 'Open Check',
+                            value: valueByStatus[audit.finalStatus] ?? 'Unavailable: position proof status missing',
                             color: colorByStatus[audit.finalStatus],
                             note: audit.finalReason || 'No reason returned for this position-ownership state.',
                           }
@@ -8369,7 +8424,7 @@ export default function TerminalTokenScanner() {
                       })()] : (protocolPosition ? [{
                         label: 'Position Ownership',
                         value: result.concentratedLpPositionOwnershipAudit?.finalStatus === 'owner_unavailable' ? 'Owner Unavailable'
-                          : hasResolvedConcentratedManager(result) ? 'Owner not verified — bounded sample unavailable' : 'Open Check',
+                          : hasResolvedConcentratedManager(result) ? 'Owner not verified — bounded sample unavailable' : 'Unavailable: position owner proof missing',
                         note: result.concentratedLpPositionOwnershipAudit?.finalReason
                           || (hasResolvedConcentratedManager(result) ? 'No bounded position-candidate source is available yet for this pool.' : protocolPositionSubtext('control')),
                       }] : [])),
@@ -8467,7 +8522,7 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
                           <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Controller Intelligence</p>
-                          {result.lpControllerIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#a7f3d0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpControllerIntel.summary}</p>}
+                          {(result.lpSafetyResolution?.status || result.lpControllerIntel.summary) && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#a7f3d0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpSafetyResolution?.status ?? result.lpControllerIntel.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpControllerIntel.confidence === 'high' ? '#34d399' : '#fbbf24', background: result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.10)' : 'rgba(251,191,36,0.10)', border: `1px solid ${result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.30)' : 'rgba(251,191,36,0.30)'}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           {result.lpControllerIntel.confidence ?? 'open'}
@@ -8475,12 +8530,12 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '7px', marginBottom: '11px' }}>
                         {([
-                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
+                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? result.lpSafetyResolution?.controlStatus ?? 'Unavailable: controller evidence missing'],
                           ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
-                          ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Position proof attempted — not supported' : 'Position proof attempted — owner unresolved') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
-                          ['Control Proof', isUniswapV3ConcentratedPartial(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Owner verification pending') : isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : cleanStatusLabel(result.lpControllerIntel.controlProof)],
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
-                          ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
+                          ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Position proof attempted — not supported' : 'Position proof attempted — owner unresolved') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : (result.lpSafetyResolution?.controlStatus ?? 'Unavailable: holder rows missing')],
+                          ['Control Proof', result.lpSafetyResolution?.controlStatus ?? (isUniswapV3ConcentratedPartial(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Owner verification pending') : isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : cleanStatusLabel(result.lpControllerIntel.controlProof))],
+                          ['Lock/Burn Proof', result.lpSafetyResolution?.lockBurnStatus ?? (isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof))],
+                          ['Exit Risk', result.lpSafetyResolution?.exitRisk ?? cleanStatusLabel(result.lpControllerIntel.exitRisk)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
                           ['Migration Risk', migrationRiskFinalLabel(result.lpControllerIntel.migrationRisk)],
                         ] as Array<[string, string]>).map(([label, value]) => (
@@ -8516,7 +8571,7 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
                           <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Lock/Burn Intelligence</p>
-                          {result.lpLockBurnIntel.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpLockBurnIntel.summary}</p>}
+                          {(result.lpSafetyResolution?.lockBurnStatus || result.lpLockBurnIntel.summary) && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpSafetyResolution?.lockBurnStatus ?? result.lpLockBurnIntel.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(34,211,238,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.status)}
@@ -8524,10 +8579,10 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
-                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
-                          ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
-                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
+                          ['Lock/Burn Proof', result.lpSafetyResolution?.lockBurnStatus ?? (isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof))],
+                          ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Unavailable: holder proof missing' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
+                          ['Burned %', isProtocolPositionModel(result) ? 'Not applicable: position model' : result.lpLockBurnIntel.burnedPercent == null ? 'Unavailable: holder proof missing' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
+                          ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Not applicable: position model' : 'Unavailable: no verified lock') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
                           ['Proof Source', isProtocolPositionModel(result) ? 'Pool model' : cleanStatusLabel(result.lpLockBurnIntel.proofSource)],
                           ['Confidence', cleanStatusLabel(result.lpLockBurnIntel.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
@@ -8572,9 +8627,9 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
                           ['Migration Risk', migrationRiskFinalLabel(result.lpHistoryTimeline.migrationRisk)],
-                          ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Open check'],
-                          ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Open check' : String(result.lpHistoryTimeline.poolCount)],
-                          ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Open check' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
+                          ['Primary Pool Age', result.lpHistoryTimeline.primaryPoolAgeLabel ?? 'Unavailable: creation time missing'],
+                          ['Pool Count', result.lpHistoryTimeline.poolCount == null ? 'Unavailable: pool count missing' : String(result.lpHistoryTimeline.poolCount)],
+                          ['Liquidity', result.lpHistoryTimeline.liquidityUsd == null ? 'Unavailable: liquidity missing' : `$${Math.round(result.lpHistoryTimeline.liquidityUsd).toLocaleString()}`],
                           ['Fragmentation', cleanStatusLabel(result.lpHistoryTimeline.fragmentation)],
                           ['Confidence', result.lpHistoryTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
@@ -8620,8 +8675,8 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
                           ['Unlock Risk', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.unlockRisk)],
-                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
-                          ['Countdown', result.lpUnlockTimeline.unlockCountdownLabel ?? 'Open check'],
+                          ['Unlock Time', result.lpUnlockTimeline.unlockTime == null ? (result.lpUnlockTimeline.unlockTimeStatus === 'not_applicable' ? 'Not applicable: position model' : 'Unavailable: no verified lock') : new Date(result.lpUnlockTimeline.unlockTime).toLocaleString()],
+                          ['Countdown', result.lpUnlockTimeline.unlockCountdownLabel ?? 'Unavailable: no verified unlock time'],
                           ['Lock State', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.lockState)],
                           ['Confidence', result.lpUnlockTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
@@ -8668,8 +8723,8 @@ export default function TerminalTokenScanner() {
                         {([
                           ['Movement Watch', isProtocolPositionModel(result) ? 'Position movement required' : cleanStatusLabel(result.lpMovementWatch.movementRisk)],
                           ['Evidence Model', isProtocolPositionModel(result) ? protocolPositionSubtext('movement') : 'ERC-20 LP-token transfers'],
-                          ['Transfer Count', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpMovementWatch.recentTransferCount == null ? 'Open Check' : String(result.lpMovementWatch.recentTransferCount)],
-                          ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Open Check'],
+                          ['Transfer Count', isProtocolPositionModel(result) ? 'Not applicable: position model' : result.lpMovementWatch.recentTransferCount == null ? 'Unavailable: transfer rows missing' : String(result.lpMovementWatch.recentTransferCount)],
+                          ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Unavailable: transfer timestamp missing'],
                           ['Controller', isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved — owner verification pending' : isProtocolPositionModel(result) ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable') : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
@@ -8714,7 +8769,7 @@ export default function TerminalTokenScanner() {
                         {([
                           ['Secondary Pool', result.secondaryLpExposure.pair ?? result.secondaryLpExposure.poolDex ?? 'Secondary ERC-20 LP'],
                           ['Control Proof', cleanStatusLabel(result.secondaryLpExposure.status)],
-                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
+                          ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Unavailable: holder proof missing'],
                           ['Controller Type', cleanStatusLabel(result.secondaryLpExposure.controllerType)],
                           ['Lock/Burn Proof', cleanStatusLabel(result.secondaryLpExposure.lockBurnProof)],
                           ['Confidence', cleanStatusLabel(result.secondaryLpExposure.confidence)],
@@ -8753,13 +8808,13 @@ export default function TerminalTokenScanner() {
                       <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'rgba(2,6,23,0.4)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '14px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '12px' }}>
                           <div>
-                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#fbbf24', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Checks / Evidence Gaps</p>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#fbbf24', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
                             {elite.evidenceGaps.length > 0 ? elite.evidenceGaps.slice(0, 6).map((gap) => (
                               <div key={gap} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: '#fbbf24', fontSize: '10px', lineHeight: '15px' }}>•</span>
                                 <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{gap}</p>
                               </div>
-                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No open evidence gaps.</p>}
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No unresolved evidence gaps.</p>}
                           </div>
                           <div>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#67e8f9', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What To Monitor Next</p>
@@ -8981,7 +9036,7 @@ export default function TerminalTokenScanner() {
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
                     const missing2 = getMissingChecks(result)
                     const next2 = getNextAction(result)
-                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
+                    const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Unavailable: no active pool', unavailable_with_reason:'Unavailable: LP proof incomplete', unverified:'Partial: LP proof incomplete', insufficient_data:'Unavailable: LP evidence missing', error:'Unavailable: LP resolver failed', open_check:'Unavailable: LP proof incomplete', not_applicable:'Protocol-specific' }
                     const scanEvidence = scanEvidenceFor(result)
                     const normalizedEngineRisk = normalizeRiskScore({
                       rawScore: engine?.riskScore ?? result.riskScore,
@@ -9100,7 +9155,7 @@ export default function TerminalTokenScanner() {
                                     ['Confidence', cleanStatusLabel(result.lpControl?.confidence ?? result.lpControllerIntel?.confidence ?? result.lpDataConfidence)],
                                     ['Pool model', poolModel],
                                     ['Proof type', proofType],
-                                    ['Depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Open Check'],
+                                    ['Depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Unavailable: liquidity missing'],
                                   ]
                                   return (
                                     <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>

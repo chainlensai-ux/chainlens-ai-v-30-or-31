@@ -7,7 +7,7 @@ import { riskLabelFromCanonicalScore } from '../riskScoreDirection.ts'
 //  1. a cached response written by older code is never served to newer frontend code, and
 //  2. any client can verify it got a current-schema response instead of silently rendering
 //     a stale one (the reported "same token, different result per device" class).
-export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 7
+export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 8
 
 // Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
 // public text shows the neutral DEX brand name instead. Order matters: more specific
@@ -281,22 +281,21 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
   if ((sanitized as any).projectSocials) {
     delete (sanitized as any).projectSocials.sourceTrail
   }
-  // When LP lock/burn proof is an open check, public lpProofStatus/lpEvidenceSummary/
-  // sections.liquidity.lpLockBurnProofStatus should say "open_check" rather than the
-  // internal "missing"/"partial" wording, which reads as more alarming than warranted.
+  // Completed LP scans expose missing proof as partial evidence with the resolver's exact
+  // reason. "Open check" implied unfinished work and could contradict the canonical LP view.
   if ((sanitized as any).lpLockBurnIntel?.lockBurnProof === 'open_check') {
     if ((sanitized as any).lpProofStatus === 'missing' || (sanitized as any).lpProofStatus === 'partial') {
-      ;(sanitized as any).lpProofStatus = 'open_check'
+      ;(sanitized as any).lpProofStatus = 'partial'
     }
     if (typeof (sanitized as any).lpEvidenceSummary === 'string') {
       ;(sanitized as any).lpEvidenceSummary = (sanitized as any).lpEvidenceSummary.replace(
-        /Proof status:\s*(missing|partial)/i,
-        'Proof status: open_check'
+        /Proof status:\s*(missing|open_check)/i,
+        'Proof status: partial'
       )
     }
     const lpLockBurnProofStatus = (sanitized as any).sections?.liquidity?.lpLockBurnProofStatus
-    if (lpLockBurnProofStatus === 'missing' || lpLockBurnProofStatus === 'partial') {
-      ;(sanitized as any).sections.liquidity.lpLockBurnProofStatus = 'open_check'
+    if (lpLockBurnProofStatus === 'missing' || lpLockBurnProofStatus === 'open_check') {
+      ;(sanitized as any).sections.liquidity.lpLockBurnProofStatus = 'partial'
     }
   }
   rewriteLegacyRiskSummaryValues(sanitized, sanitized as Record<string, any>)

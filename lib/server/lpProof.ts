@@ -1000,10 +1000,17 @@ export interface RpcPoolClassification {
   probed: {
     token0: boolean;
     token1: boolean;
+    factory: boolean;
     getReserves: boolean;
     totalSupply: boolean;
     slot0: boolean;
     liquidity: boolean;
+  };
+  resolved: {
+    token0: string | null;
+    token1: string | null;
+    factory: string | null;
+    totalSupplyRaw: string | null;
   };
 }
 
@@ -1021,7 +1028,8 @@ function hexToBigInt(hex: string | null): bigint | null {
 export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | null | undefined): Promise<RpcPoolClassification> {
   const unknown: RpcPoolClassification = {
     model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false,
-    probed: { token0: false, token1: false, getReserves: false, totalSupply: false, slot0: false, liquidity: false },
+    probed: { token0: false, token1: false, factory: false, getReserves: false, totalSupply: false, slot0: false, liquidity: false },
+    resolved: { token0: null, token1: null, factory: null, totalSupplyRaw: null },
   };
   if (!poolAddress || !/^0x[a-fA-F0-9]{40}$/.test(poolAddress)) return unknown;
 
@@ -1033,32 +1041,44 @@ export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | nu
   const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: addr, data: selector }, "latest"]);
   // token0()=0x0dfe1681 token1()=0xd21220a7 getReserves()=0x0902f1ac
   // totalSupply()=0x18160ddd slot0()=0x3850c7bd liquidity()=0x1a686502
-  const [token0Hex, token1Hex, reservesHex, supplyHex, slot0Hex, liquidityHex] = await Promise.all([
-    call("0x0dfe1681"), call("0xd21220a7"), call("0x0902f1ac"),
+  const [token0Hex, token1Hex, factoryHex, reservesHex, supplyHex, slot0Hex, liquidityHex] = await Promise.all([
+    call("0x0dfe1681"), call("0xd21220a7"), call("0xc45a0155"), call("0x0902f1ac"),
     call("0x18160ddd"), call("0x3850c7bd"), call("0x1a686502"),
   ]);
 
   const probed = {
     token0: _rpcResolved(token0Hex),
     token1: _rpcResolved(token1Hex),
+    factory: _rpcResolved(factoryHex),
     getReserves: _rpcResolved(reservesHex),
     totalSupply: _rpcResolved(supplyHex),
     slot0: _rpcResolved(slot0Hex),
     liquidity: _rpcResolved(liquidityHex),
   };
+  const decodedAddress = (hex: string | null): string | null => {
+    if (!hex || !/^0x[0-9a-fA-F]{64}$/.test(hex)) return null;
+    const address = `0x${hex.slice(-40)}`.toLowerCase();
+    return /^0x0{40}$/.test(address) ? null : address;
+  };
+  const resolved = {
+    token0: decodedAddress(token0Hex),
+    token1: decodedAddress(token1Hex),
+    factory: decodedAddress(factoryHex),
+    totalSupplyRaw: probed.totalSupply ? (hexToBigInt(supplyHex)?.toString() ?? null) : null,
+  };
 
   let result: RpcPoolClassification;
   if (probed.token0 && probed.token1 && probed.getReserves && probed.totalSupply) {
     // Pair exposes reserves AND an ERC-20 total supply → standard V2 LP token.
-    result = { model: "v2_erc20_lp", poolType: "v2", hasLpToken: true, proofApplicable: true, probed };
+    result = { model: "v2_erc20_lp", poolType: "v2", hasLpToken: true, proofApplicable: true, probed, resolved };
   } else if (probed.token0 && probed.token1 && (probed.slot0 || probed.liquidity)) {
     // Pair exposes a concentrated-liquidity interface (slot0/liquidity) and is not a
     // constant-product ERC-20 LP token → standard lock/burn proof does not apply.
-    result = { model: "concentrated", poolType: "concentrated", hasLpToken: false, proofApplicable: false, probed };
+    result = { model: "concentrated", poolType: "concentrated", hasLpToken: false, proofApplicable: false, probed, resolved };
   } else {
     // An address exists but the probe could not confirm the model (RPC unavailable,
     // proxy, or non-standard pool) → pool detected, model is an open check.
-    result = { model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false, probed };
+    result = { model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false, probed, resolved };
   }
 
   rpcPoolClassCache.set(cacheKey, { exp: Date.now() + LP_PROOF_CACHE_TTL_MS, data: result });

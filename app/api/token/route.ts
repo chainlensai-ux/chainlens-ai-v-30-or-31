@@ -68,6 +68,7 @@ import { resolveUniswapV4RobinhoodRpc } from '@/lib/server/uniswapV4RobinhoodRpc
 import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
+import { resolveLpSafetyFinalState } from '@/lib/lpSafetyResolution'
 
 // MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
 // error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
@@ -4299,10 +4300,12 @@ export async function POST(req: Request) {
     // run for ANY primary pool with an unknown type and a valid contract address, synthesized or
     // not; the inner poolType==='unknown' guard already limits this to genuinely unresolved cases.
     let _fallbackRpcModel: 'v2' | 'concentrated' | 'unknown' | null = null
+    let _fallbackRpcEvidence: Awaited<ReturnType<typeof classifyPoolByRpc>> | null = null
     if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
       const _rpcProbePool = normalizedPools[0]
       if (_rpcProbePool && _rpcProbePool.poolType === 'unknown' && _rpcProbePool.address && /^0x[a-f0-9]{40}$/.test(_rpcProbePool.address)) {
         const _rpcCls = await classifyPoolByRpc(chain, _rpcProbePool.address)
+        _fallbackRpcEvidence = _rpcCls
         _fallbackRpcModel = _rpcCls.poolType
         if (_rpcCls.poolType !== 'unknown') {
           _rpcProbePool.poolType = _rpcCls.poolType
@@ -4310,6 +4313,8 @@ export async function POST(req: Request) {
         } else if (_rpcProbePool.hasLpToken == null) {
           _rpcProbePool.hasLpToken = _rpcCls.hasLpToken
         }
+        if (!_rpcProbePool.baseTokenAddress && _rpcCls.resolved.token0) _rpcProbePool.baseTokenAddress = _rpcCls.resolved.token0
+        if (!_rpcProbePool.quoteTokenAddress && _rpcCls.resolved.token1) _rpcProbePool.quoteTokenAddress = _rpcCls.resolved.token1
       }
     }
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
@@ -7335,6 +7340,33 @@ export async function POST(req: Request) {
         lpControlState: lpDiagnostics.lpState ?? null,
       },
     })
+    const lpSafetyResolution = (chain === 'base' || chain === 'eth' || chain === 'bnb') ? resolveLpSafetyFinalState({
+      chainId: CHAIN_ID_MAP[chain] ?? null,
+      tokenAddress: contract,
+      selectedPoolAddress: lpPoolAddress ?? lpPool?.address ?? null,
+      selectedPoolDex: lpDexId ?? lpDexName ?? null,
+      selectedPoolSource: canonicalPrimaryUsable ? 'primary_market' : (_dsFbPoolSynthesized ? 'market_fallback' : null),
+      poolType: lpPoolType === 'unknown' ? lpModelProof.model : lpPoolType,
+      token0: _fallbackRpcEvidence?.resolved.token0 ?? lpPool?.baseTokenAddress ?? null,
+      token1: _fallbackRpcEvidence?.resolved.token1 ?? lpPool?.quoteTokenAddress ?? null,
+      lpTokenAddress: _primaryConcentrated ? null : (_lpProofAddress ?? null),
+      totalSupplyRead: Boolean(lpDiagnostics.totalSupplyChecked || _fallbackRpcEvidence?.probed.totalSupply),
+      rpcAttempted: Boolean(_fallbackRpcModel != null || lpDiagnostics.rpcAttempted),
+      rpcCallsMade: _fallbackRpcModel != null ? 7 : (lpDiagnostics.rpcFallbackAttempted ? 1 : 0),
+      proofAttempted: standardLpProofAttempted || concentratedPositionProofAttempted,
+      holdersReturned: Number(lpDiagnostics.holderRawItemCount ?? 0),
+      burnSharePct: lpDiagnostics.burnPercent ?? null,
+      deadSharePct: null,
+      dominantHolder: lpControllerAddress ?? null,
+      controllerType: lpControllerType,
+      positionProofAttempted: concentratedPositionProofAttempted,
+      positionProofStatus: concentratedPositionProof?.status ?? null,
+      lockStatus: lpLockStatus,
+      burnStatus: lpControl.burnStatus ?? null,
+      exitRisk: lpExitRisk,
+      exitRiskReason: lpExitRiskReason,
+      failureReason: lpDiagnostics.failureReason ?? lpControl.reason ?? null,
+    }) : null
     const lpUnlockTimeline = buildLpUnlockTimeline({
       chain,
       lpLockBurnIntel,
@@ -8591,6 +8623,10 @@ export async function POST(req: Request) {
       }),
       lpMovementWatch,
       lpLockBurnIntel,
+      ...(lpSafetyResolution ? {
+        lpSafetyResolution,
+        lpSafetyResolutionAudit: lpSafetyResolution.audit,
+      } : {}),
       lpUnlockTimeline,
       lpHistoryTimeline,
       ...(secondaryLpExposure ? { secondaryLpExposure } : {}),
