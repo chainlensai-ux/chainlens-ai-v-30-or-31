@@ -1,5 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from "@/lib/clark/commandFormats";
+import {
+  generateTickerSearchId,
+  buildTickerPickerOptions,
+  resolveTickerSelection,
+  parseTypedTickerOptionIndex,
+  buildTickerSelectionAudit,
+  type ClarkTickerMatch,
+  type ClarkTickerSelectionPayload,
+} from "@/lib/server/clarkTickerSelection";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseLowCapMemes, fetchCoinGeckoBaseTrending, LOW_CAP_MEME_MAX_MARKET_CAP_USD } from "@/lib/server/coingeckoBaseTrending";
@@ -435,11 +444,14 @@ type ClarkSessionMemory = {
     chainsFound: string[];
     timestamp: number;
   } | null;
-  lastTickerMatches?: Array<{
-    name: string | null; symbol: string | null; chainSlug: string; tokenAddress: string;
-    pairAddress: string | null; liquidityUsd: number | null; marketCapUsd: number | null;
-    fdvUsd: number | null; volume24hUsd: number | null; confidence: number;
-  }>;
+  // CLARK TICKER SELECTION FIX, DISCLOSED: `lastTickerMatches` and `lastTickerSearchId` are always
+  // read/written TOGETHER as one atomic pair (see lib/server/clarkTickerSelection.ts's own header)
+  // — a "scan N" reply is only ever resolved against the matches that belong to the CURRENT
+  // searchId, never a stale list left over from an older search. The match shape is now the shared
+  // ClarkTickerMatch type so the picker-render and selection-resolution code paths can never drift
+  // structurally apart.
+  lastTickerMatches?: ClarkTickerMatch[];
+  lastTickerSearchId?: string | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -929,6 +941,12 @@ interface ClarkRequestBody {
   requestId?: string;
   messageId?: string;
   tokenData?: unknown;
+  // CLARK TICKER SELECTION FIX, DISCLOSED: set ONLY when the client is echoing back a "Scan N"
+  // button click (see lib/server/clarkTickerSelection.ts's own header) — the exact
+  // tickerSearchId/optionIndex/tokenAddress/chainId the button carried when it was rendered. Never
+  // set for a manually typed "scan 1"/"1" reply — that case still resolves against whatever is
+  // CURRENTLY in session memory (see the parseTypedTickerOptionIndex fallback in handleClarkAI).
+  tickerSelection?: ClarkTickerSelectionPayload;
   appContext?: {
     route?: string | null;
     chain?: string | null;
@@ -9536,24 +9554,78 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // default happens to be.
   const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
   const explicitTokenCommand = /^\s*\/token\b/i.test(prompt);
+  // CLARK TICKER SELECTION FIX, DISCLOSED (bug report: "/token cashcat" showed CASHCAT matches,
+  // but "scan 1" scanned an unrelated token, Base Juice/BASEJUICE). A "Scan N" button click echoes
+  // back the EXACT tickerSearchId/optionIndex/tokenAddress/chainId it was rendered with (see
+  // lib/server/clarkTickerSelection.ts's own header for the full root-cause trace) — checked FIRST,
+  // before anything else in this function, including before activeToken/lastClarkSubject are ever
+  // consulted, so a ticker option selection can never be redirected by leftover "active token"
+  // context. A click that belongs to an OLDER search (superseded by a newer /token command, or
+  // raced by a concurrent request) is honestly rejected instead of silently resolving against
+  // whatever happens to currently sit in session memory.
+  if (body.tickerSelection) {
+    const selection = body.tickerSelection;
+    const resolution = resolveTickerSelection({
+      selection,
+      currentSearchId: sessionMem.lastTickerSearchId ?? null,
+      currentMatches: sessionMem.lastTickerMatches ?? null,
+    });
+    const tickerSelectionAudit = buildTickerSelectionAudit({
+      rawUserReply: prompt,
+      tickerSearchId: selection.tickerSearchId,
+      selectedIndex: selection.optionIndex,
+      resolution,
+      previousActiveToken: sessionMem.lastToken?.address ?? null,
+    });
+    if (resolution.status === "resolved" && resolution.selectedMatch) {
+      const picked = resolution.selectedMatch;
+      sessionMem.lastTickerMatches = undefined;
+      sessionMem.lastTickerSearchId = null;
+      const pickedChain = picked.chainSlug === "eth" ? "ethereum" : picked.chainSlug;
+      const recursed = await handleClarkAI({ ...body, tickerSelection: undefined, prompt: `/token ${picked.tokenAddress} on ${pickedChain}`, chain: pickedChain as SupportedChain }, origin, authHeader, verifiedPlan, sessionMem);
+      return { ...recursed, tickerSelectionAudit };
+    }
+    // Never silently scan a different token when the selection can't be verified — say exactly why.
+    return {
+      feature: "clark-ai", chain, mode: "token_name_lookup", intent: "token_analysis", toolsUsed: [],
+      analysis: resolution.status === "stale_search"
+        ? "That option is from an earlier search — send /token <symbol> again to get fresh matches."
+        : `I couldn't verify that option against what's currently on screen (${resolution.reason ?? "unknown reason"}). Send /token <symbol> again to get fresh matches.`,
+      tickerSelectionAudit,
+    };
+  }
   if (sessionMem.lastTickerMatches?.length) {
-    const numbered = prompt.trim().match(/^(?:scan\s*)?(\d+)$/i);
+    const numbered = parseTypedTickerOptionIndex(prompt);
     const namedChoice = /^(?:scan\s+)?(?:the\s+)?(base|ethereum|eth|bnb|bsc|robinhood|solana)(?:\s+one)?$/i.exec(prompt.trim());
     const wantedChain = namedChoice ? (namedChoice[1].toLowerCase() === "ethereum" ? "eth" : namedChoice[1].toLowerCase() === "bsc" ? "bnb" : namedChoice[1].toLowerCase()) : null;
     const chainMatches = wantedChain ? sessionMem.lastTickerMatches.filter((match) => match.chainSlug === wantedChain) : [];
     if (wantedChain && chainMatches.length > 1) {
+      // Re-narrowing to one chain shows a DIFFERENT, renumbered list — a fresh searchId so a stale
+      // click against the OLD full list's indices can never resolve against this narrowed one.
+      const narrowedSearchId = generateTickerSearchId();
       sessionMem.lastTickerMatches = chainMatches;
+      sessionMem.lastTickerSearchId = narrowedSearchId;
       return {
         feature: "clark-ai", chain, mode: "token_name_lookup", intent: "token_analysis", toolsUsed: [],
         analysis: `I found ${chainMatches.length} ${wantedChain.toUpperCase()} matches. Choose one:\n${chainMatches.map((match, index) => `${index + 1}. ${match.symbol ?? "TOKEN"}${match.name ? ` · ${match.name}` : ""} · ${shortAddress(match.tokenAddress)} · Liq ${formatUsdShort(match.liquidityUsd)}`).join("\n")}\nReply with the number.`,
+        ui: { intentBadge: "Choose token", actions: buildTickerPickerOptions(chainMatches, narrowedSearchId) },
       };
     }
-    const picked = numbered ? sessionMem.lastTickerMatches[Number(numbered[1]) - 1]
+    const picked = numbered != null ? sessionMem.lastTickerMatches[numbered]
       : chainMatches[0] ?? null;
+    const typedSelectionAudit = buildTickerSelectionAudit({
+      rawUserReply: prompt,
+      tickerSearchId: sessionMem.lastTickerSearchId ?? null,
+      selectedIndex: numbered,
+      resolution: picked ? { status: "resolved", selectedMatch: picked, reason: null } : null,
+      previousActiveToken: sessionMem.lastToken?.address ?? null,
+    });
     if (picked) {
       sessionMem.lastTickerMatches = undefined;
+      sessionMem.lastTickerSearchId = null;
       const pickedChain = picked.chainSlug === "eth" ? "ethereum" : picked.chainSlug;
-      return await handleClarkAI({ ...body, prompt: `/token ${picked.tokenAddress} on ${pickedChain}`, chain: pickedChain as SupportedChain }, origin, authHeader, verifiedPlan, sessionMem);
+      const recursed = await handleClarkAI({ ...body, prompt: `/token ${picked.tokenAddress} on ${pickedChain}`, chain: pickedChain as SupportedChain }, origin, authHeader, verifiedPlan, sessionMem);
+      return { ...recursed, tickerSelectionAudit: typedSelectionAudit };
     }
   }
 
@@ -13683,12 +13755,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const resolved = await resolveTokenSymbolToAddress(resolvedSymbol, String(chainForClarkTools), { requireExplicitSelection: true });
       if (resolved?.status === "ambiguous") {
         const options = resolved.tickerMatches ?? [];
+        // CLARK TICKER SELECTION FIX, DISCLOSED: a fresh, unique tickerSearchId replaces
+        // sessionMem.lastTickerMatches/lastTickerSearchId ATOMICALLY together — this is the exact
+        // picker the reported bug traced to ("/token cashcat"). Every button carries this
+        // searchId + its own tokenAddress/chainId so a later "Scan N" click can be verified against
+        // THIS exact list, never a different/older one.
+        const tickerSearchId = generateTickerSearchId();
         sessionMem.lastTickerMatches = options;
+        sessionMem.lastTickerSearchId = tickerSearchId;
         const rows = options.slice(0, 6).map((match, index) => `${index + 1}. ${match.symbol ?? "TOKEN"}${match.name ? ` · ${match.name}` : ""} · ${match.chainSlug.toUpperCase()} · ${shortAddress(match.tokenAddress)} · Liq ${formatUsdShort(match.liquidityUsd)} · ${match.marketCapUsd != null ? `MC ${formatUsdShort(match.marketCapUsd)}` : `FDV ${formatUsdShort(match.fdvUsd)}`} · Vol ${formatUsdShort(match.volume24hUsd)} · ${Math.round(match.confidence)}% confidence`).join("\n");
         return {
           feature: "clark-ai", chain, mode: "token_name_lookup", intent: "token_scan", toolsUsed: ["token_resolve"],
           analysis: `Multiple or low-confidence matches found for ${resolvedSymbol.toUpperCase()}. Choose one to scan.\n${rows || "No supported-chain matches were returned."}\nReply “1”, “scan 2”, or “Base one”.`,
-          intentBadge: "Token matches", ui: { intentBadge: "Choose token", actions: options.slice(0, 6).map((match, index) => ({ label: `Scan ${index + 1}`, prompt: `scan ${index + 1}`, kind: "prompt" as const })) },
+          intentBadge: "Token matches", ui: { intentBadge: "Choose token", actions: buildTickerPickerOptions(options, tickerSearchId) },
           clarkTokenPickerRequired: true, tickerResolverAudit: resolved.tickerResolverAudit ?? null, quotaConsumed: false,
         };
       }
@@ -14914,13 +14993,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   });
   const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain: chainForClarkTools, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
   if (evidence.tokenResolve?.matches.length && !evidence.tokenResolve.selected) {
+    // CLARK TICKER SELECTION FIX, DISCLOSED: same atomic (matches, searchId) write as the
+    // resolveTokenSymbolToAddress picker above — this is the SECOND, independent ticker-resolution
+    // path (executeClarkToolPlan's tokenResolve) that used to write the same session slot with no
+    // shared identity between the two, which is exactly how a picker rendered by one path could be
+    // answered against a list written by the other. Both now go through the same
+    // generateTickerSearchId()/lastTickerSearchId pair.
     sessionMem.lastTickerMatches = evidence.tokenResolve.matches.map((m) => ({
       name: m.name, symbol: m.symbol, chainSlug: m.chainSlug, tokenAddress: m.contract,
       pairAddress: m.pairAddress, liquidityUsd: m.liquidity, marketCapUsd: m.marketCapUsd,
       fdvUsd: m.fdvUsd, volume24hUsd: m.volume24hUsd, confidence: m.confidence,
     }));
+    sessionMem.lastTickerSearchId = generateTickerSearchId();
   } else if (evidence.tokenResolve?.selected) {
     sessionMem.lastTickerMatches = undefined;
+    sessionMem.lastTickerSearchId = null;
   }
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
@@ -15009,6 +15096,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 0 && !evidence.tokenResolve.selected) {
       const options = evidence.tokenResolve.matches.slice(0, 6).map((c, i) => `${i + 1}. ${c.symbol}${c.name ? ` · ${c.name}` : ""} · ${c.chainSlug.toUpperCase()} · ${shortAddress(c.contract)} · Liq ${formatUsdShort(c.liquidity)} · ${c.marketCapUsd != null ? `MC ${formatUsdShort(c.marketCapUsd)}` : `FDV ${formatUsdShort(c.fdvUsd)}`} · Vol ${formatUsdShort(c.volume24hUsd)}`).join("\n");
+      // CLARK TICKER SELECTION FIX, DISCLOSED: reads sessionMem.lastTickerMatches/lastTickerSearchId
+      // (already written together, above, from this SAME evidence.tokenResolve.matches array) so the
+      // rendered "Scan N" buttons can never disagree with what a later selection is verified against.
       return {
         feature: "clark-ai",
         chain,
@@ -15016,6 +15106,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: `Multiple tokens found for ${evidence.tokenResolve.query.toUpperCase()}. Choose one to scan.\n${options}\nReply “1”, “scan 2”, or name the chain.`,
         intent: plan.intent,
         toolsUsed,
+        ui: sessionMem.lastTickerSearchId ? { intentBadge: "Choose token", actions: buildTickerPickerOptions(sessionMem.lastTickerMatches ?? [], sessionMem.lastTickerSearchId) } : undefined,
       };
     }
 
@@ -15595,6 +15686,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ?? "base";
     if (evidence.tokenResolve?.ok && evidence.tokenResolve.matches.length > 0 && !evidence.tokenResolve.selected) {
       const options = evidence.tokenResolve.matches.slice(0, 6).map((c, i) => `${i + 1}. ${c.symbol}${c.name ? ` · ${c.name}` : ""} · ${c.chainSlug.toUpperCase()} · ${shortAddress(c.contract)} · Liq ${formatUsdShort(c.liquidity)} · ${c.marketCapUsd != null ? `MC ${formatUsdShort(c.marketCapUsd)}` : `FDV ${formatUsdShort(c.fdvUsd)}`} · Vol ${formatUsdShort(c.volume24hUsd)}`).join("\n");
+      // CLARK TICKER SELECTION FIX, DISCLOSED: reads sessionMem.lastTickerMatches/lastTickerSearchId
+      // (already written together, above, from this SAME evidence.tokenResolve.matches array) so the
+      // rendered "Scan N" buttons can never disagree with what a later selection is verified against.
       return {
         feature: "clark-ai",
         chain,
@@ -15602,6 +15696,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: `Multiple tokens found for ${evidence.tokenResolve.query.toUpperCase()}. Choose one to scan.\n${options}\nReply “1”, “scan 2”, or name the chain.`,
         intent: plan.intent,
         toolsUsed,
+        ui: sessionMem.lastTickerSearchId ? { intentBadge: "Choose token", actions: buildTickerPickerOptions(sessionMem.lastTickerMatches ?? [], sessionMem.lastTickerSearchId) } : undefined,
       };
     }
 
@@ -15956,7 +16051,11 @@ export async function POST(req: NextRequest) {
   if (!explicitTokenCommand) {
     if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
   }
-  if (explicitTokenCommand) sessionMem.lastTickerMatches = undefined;
+  // CLARK TICKER SELECTION FIX, DISCLOSED: a fresh explicit /token command always replaces BOTH
+  // lastTickerMatches and lastTickerSearchId together — never leaves a stale searchId paired with
+  // an undefined/cleared match list (or vice versa), which is exactly the kind of half-cleared state
+  // that let an old picker answer a new search.
+  if (explicitTokenCommand) { sessionMem.lastTickerMatches = undefined; sessionMem.lastTickerSearchId = null; }
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   // Restore the deployer and Radar list the same way token/wallet already were — see the
   // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
