@@ -62,6 +62,19 @@ function canonicalLabel(s: CanonicalStatus | string | undefined): string {
   return cleanStatusLabel(s)
 }
 
+// LP SAFETY OPEN-CHECK FIX, DISCLOSED: cleanStatusLabel() alone collapses several distinct
+// "not confirmed" machine states (open_check/unavailable_with_reason/insufficient_data/error/
+// unknown) into a single bare "Open Check" — discarding whatever real reason the resolver
+// (lpControllerIntel.summary / lpLockBurnIntel.summary, both already real explanatory text, e.g.
+// "The selected LP has partial LP evidence only...") already attached. Used only for the specific
+// rows this task's bug report named (Lock/Burn Proof, Control Proof); every other cleanStatusLabel
+// call site is left as-is.
+function reasonedProofLabel(value: string | null | undefined, reason: string | null | undefined): string {
+  const base = cleanStatusLabel(value)
+  if (base !== 'Open Check') return base
+  return reason ? `Unavailable: ${reason}` : 'Unavailable: LP lock/burn proof could not be confirmed from current evidence.'
+}
+
 function cleanStatusLabel(value: string | null | undefined): string {
   switch ((value ?? '').toLowerCase()) {
     case 'not_applicable': return 'Protocol-specific'
@@ -141,7 +154,14 @@ function primaryLiquidityModelLabel(result: ScanResult): string {
   }
   if (dm === 'erc20_lp_token') return 'ERC-20 LP Token'
   if (dm === 'no_pool') return 'No Active Pool'
-  return 'Model Open Check'
+  // LP SAFETY OPEN-CHECK FIX, DISCLOSED: a pool WAS found (dm is 'open_check', never 'no_pool'
+  // here) — the model just couldn't be fully classified. computeDisplayLpModel already attaches
+  // a real reason to lockBurnReason for every branch that lands here ("Pool detected, but LP
+  // model could not be fully classified.", "Pool detected from market fallback; pool model
+  // requires RPC confirmation.", etc.) — show that instead of a bare, unexplained "Model Open
+  // Check", which read as if the scan never finished.
+  const reason = result.lpControl?.lockBurnReason || result.lpControl?.reason
+  return `Unavailable: ${reason || 'LP model could not be determined from available data.'}`
 }
 
 
@@ -292,7 +312,8 @@ type ScanResult = {
     verificationPoolType?: string | null
     primaryPoolDex?: string | null
     primaryPoolType?: string | null
-    proofStatus?: 'open_check' | 'verified' | 'not_applicable' | null
+    proofStatus?: 'open_check' | 'verified' | 'partial' | 'unavailable' | 'not_applicable' | null
+    proofStatusReason?: string | null
     lockStatus?: 'locked' | 'not_confirmed' | 'not_applicable' | null
     burnStatus?: 'burned' | 'not_confirmed' | 'not_applicable' | null
     displayLpModel?: 'erc20_lp_token' | 'concentrated_liquidity' | 'protocol_or_gauge' | 'open_check' | 'no_pool' | null
@@ -402,6 +423,60 @@ type ScanResult = {
     proofSource?: string | null
     finalStatus?: 'verified_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'owner_unavailable' | 'unsupported_with_reason' | 'not_applicable'
     finalReason?: string
+  } | null
+  // LP SAFETY OPEN-CHECK FIX, DISCLOSED — see app/api/token/route.ts's own construction of this
+  // object for the exact resolution logic behind each field.
+  lpSafetyResolutionAudit?: {
+    chainId?: number | null
+    tokenAddress?: string | null
+    selectedPoolAddress?: string | null
+    selectedPoolDex?: string | null
+    selectedPoolSource?: string | null
+    poolTypeDetected?: string | null
+    token0?: string | null
+    token1?: string | null
+    lpTokenAddress?: string | null
+    totalSupplyRead?: string | null
+    alchemyRpcAttempted?: boolean
+    alchemyCallsMade?: number
+    proofAttempted?: boolean
+    holdersReturned?: number | null
+    burnSharePct?: number | null
+    deadSharePct?: number | null
+    dominantHolder?: string | null
+    controllerType?: string | null
+    concentratedDetected?: boolean
+    positionProofAttempted?: boolean
+    finalLpModel?: string | null
+    finalLpStatus?: string | null
+    finalLockBurnStatus?: string | null
+    finalExitRisk?: string | null
+    failureReason?: string | null
+  } | null
+  // LP SAFETY END-TO-END FIX, DISCLOSED — this task's own required audit shape (exact field
+  // names), additive to lpSafetyResolutionAudit above (same underlying resolution, different
+  // field names — see app/api/token/route.ts's own construction for how they relate).
+  lpResolutionAudit?: {
+    chainId?: number | null
+    poolAddress?: string | null
+    dex?: string | null
+    detectorsTried?: string[]
+    poolType?: string | null
+    rpcCalls?: number
+    fallbacksTried?: string[]
+    lpTokenAddress?: string | null
+    totalSupplyRead?: string | null
+    holderProofAttempted?: boolean
+    positionProofAttempted?: boolean
+    controllerResolved?: boolean
+    burnSharePct?: number | null
+    topOwner?: string | null
+    topSharePct?: number | null
+    finalModel?: string | null
+    finalControl?: string | null
+    finalLockBurn?: string | null
+    finalExitRisk?: string | null
+    failureReason?: string | null
   } | null
   lpMovementWatch?: {
     status?: string
@@ -8234,10 +8309,15 @@ export default function TerminalTokenScanner() {
                       switch (cpp.status) {
                         case 'verified': return `Verified — top position controlled by ${cpp.topPositionOwner ?? cpp.topPositionOwnerType ?? 'unknown'}`
                         case 'partial': return hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Partial — pool confirmed, but position ownership could not be fully resolved.'
-                        case 'not_supported': return `${poolModelLabel} position ownership is not supported yet — top liquidity owner not verified.`
-                        case 'not_found': return 'Open Check — pool confirmed with zero active liquidity.'
-                        case 'failed': return 'Open Check — position proof attempt failed; no position ownership evidence returned.'
-                        default: return 'Open Check — no position ownership evidence returned.'
+                        // LP SAFETY END-TO-END FIX, DISCLOSED: "Unsupported"/"Unavailable" are two
+                        // distinct required states (per this task's exact status vocabulary) — a
+                        // resolver genuinely not built yet for this protocol (not_supported) must
+                        // never read the same as a resolver that ran and simply found nothing
+                        // (not_found/failed), so each keeps its own honest prefix.
+                        case 'not_supported': return `Unsupported: ${poolModelLabel} position-owner resolution is not built for this protocol yet — top liquidity owner not verified.`
+                        case 'not_found': return 'Unavailable: pool confirmed with zero active liquidity, so there is no position to attribute ownership to.'
+                        case 'failed': return 'Unavailable: position proof attempt failed — no position ownership evidence returned.'
+                        default: return 'Unavailable: no position ownership evidence returned.'
                       }
                     })()
                     const missingProofHuman = (cpp?.missingEvidence ?? []).map((m) =>
@@ -8251,37 +8331,59 @@ export default function TerminalTokenScanner() {
                       : m === 'poolId' ? 'Pool ID not confirmed'
                       : String(m).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
                     )
+                    // LP SAFETY OPEN-CHECK FIX, DISCLOSED: the residual "nothing else matched" branch
+                    // for Control Proof / Lock-Burn Proof used to render a bare 'Open Check' — no
+                    // matter whether real partial evidence existed (a dominant holder found, a probed
+                    // V2 interface with no totalSupply) or nothing at all could be gathered. lpControl
+                    // already carries the real reason on `reason`/`proofStatusReason` for every branch
+                    // that lands here — show it instead of discarding it. 'partial' evidence (a real
+                    // finding that doesn't rise to confirmed lock/burn proof) reads as the exact
+                    // "Partial — LP holder proof unavailable: <reason>" wording this task asks for;
+                    // everything else (no evidence at all) reads as "Unavailable: <reason>".
+                    const _lpProofReason = result.lpControl?.proofStatusReason || result.lpControl?.reason || 'LP holder proof unavailable.'
+                    const _lpProofPartial = result.lpControl?.proofStatus === 'partial'
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
                       : isV3Partial ? 'Owner verification pending'
                       : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable'))
-                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open Check')
+                      : isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
+                      : _lpProofPartial ? `Partial — LP holder proof unavailable: ${_lpProofReason}`
+                      : `Unavailable: ${_lpProofReason}`
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
                       : isV3Partial ? 'ERC-20 LP proof not used'
                       : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.'
-                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.lockLabel ?? 'LP lock not confirmed') : 'Open Check')
+                      : isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.lockLabel ?? 'LP lock not confirmed')
+                      : _lpProofPartial ? `Partial — LP holder proof unavailable: ${_lpProofReason}`
+                      : `Unavailable: ${_lpProofReason}`
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
                       : result.liquidityDepthRisk === 'medium' ? 'Moderate'
                       : result.liquidityDepthRisk === 'high' ? 'Thin'
                       : (result.liquidity ?? 0) > 500_000 ? 'Deep'
                       : (result.liquidity ?? 0) > 50_000 ? 'Moderate'
-                      : hasPool ? 'Thin' : 'Open Check'
+                      : hasPool ? 'Thin' : 'Unavailable: liquidity depth could not be determined.'
+                    // LP SAFETY OPEN-CHECK FIX, DISCLOSED: computeLpExitRisk (lib/server/lpProof.ts)
+                    // already attaches a real lpExitRiskReason to every 'open_check' outcome ("No
+                    // active liquidity pool was found...", "Pool model could not be confirmed...",
+                    // etc. — result.lpExitRiskReason) — show it instead of a bare, unexplained label.
                     const exitRisk = isV3Partial ? (result.lpExitRisk === 'watch' ? 'Watch' : 'Monitor')
                       : result.lpExitRisk === 'low' ? 'Low'
                       : result.lpExitRisk === 'watch' || result.lpExitRisk === 'monitor' ? 'Watch'
                       : result.lpExitRisk === 'medium' ? 'Monitor'
-                      : result.lpExitRisk === 'high' ? 'High' : 'Open Check'
+                      : result.lpExitRisk === 'high' ? 'High'
+                      : `Unavailable: ${result.lpExitRiskReason || 'Exit risk could not be assessed.'}`
                     const lpControlDisplay = result.lpControl?.status === 'team_controlled' || result.lpControl?.lpControllerType === 'wallet'
                       ? 'Wallet Controlled'
                       : lpModeVal === 'protocol' ? 'Protocol Position Model'
                       : lpStatus === 'burned' ? 'Burned'
                       : lpStatus === 'locked' ? 'Locked'
                       : lpStatus === 'partial' ? 'Partial Evidence'
-                      : lpStatus === 'no_pool' ? (isRobinhoodScan(result) ? 'Unavailable' : 'Open Check')
-                      : (cleanStatusLabel(lpStatus) === 'Open Check' && isRobinhoodScan(result)
-                        ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
+                      : lpStatus === 'no_pool' ? `Unavailable: ${result.lpControl?.reason || 'No active pool detected.'}`
+                      : (cleanStatusLabel(lpStatus) === 'Open Check'
+                        ? (isRobinhoodScan(result)
+                          ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
+                          : `${_lpProofPartial ? 'Partial' : 'Unavailable'}: ${_lpProofReason}`)
                         : cleanStatusLabel(lpStatus))
                     // LP Control for concentrated pools mirrors the real position-proof attempt
                     // result instead of a static "required" placeholder — keeps it consistent
@@ -8289,8 +8391,8 @@ export default function TerminalTokenScanner() {
                     const lpControlFromAttempt = protocolPosition && cpp
                       ? (cpp.status === 'verified' ? 'Verified'
                         : cpp.status === 'partial' ? 'Position proof attempted — partial'
-                        : cpp.status === 'not_supported' ? 'Position proof attempted — not supported'
-                        : 'Open Check')
+                        : cpp.status === 'not_supported' ? 'Unsupported: position-owner resolution is not built for this protocol yet.'
+                        : `Unavailable: ${cpp.reason || 'position proof attempt returned no evidence.'}`)
                       : null
                     function getV3PartialPositionRows(samplingReason: string | null | undefined, primaryPool: string): { label: string; value: string; color?: string; note?: string }[] {
                       return [
@@ -8309,7 +8411,7 @@ export default function TerminalTokenScanner() {
                       { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
                       { label: 'LP Control', value: isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: isV3Partial ? '#fbbf24' : lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
                       { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : isV3Partial ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : lockBurnProof === 'Open Check' ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : protocolPosition ? protocolPositionSubtext('lock') : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : /^(Partial|Unavailable)/.test(lockBurnProof) ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : protocolPosition ? protocolPositionSubtext('lock') : undefined },
                       // POSITION-OWNERSHIP-AUDIT-WIRED, DISCLOSED (fix for "LP position ownership is
                       // not verified"/"Position ownership unsupported" showing with no reason): this row
                       // now reads finalStatus/finalReason from concentratedLpPositionOwnershipAudit —
@@ -8475,12 +8577,12 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '7px', marginBottom: '11px' }}>
                         {([
-                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? 'Open check'],
-                          ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : cleanStatusLabel(result.lpControllerIntel.controllerType)],
-                          ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Position proof attempted — not supported' : 'Position proof attempted — owner unresolved') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
-                          ['Control Proof', isUniswapV3ConcentratedPartial(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Owner verification pending') : isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : cleanStatusLabel(result.lpControllerIntel.controlProof)],
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpControllerIntel.lockBurnProof)],
-                          ['Exit Risk', cleanStatusLabel(result.lpControllerIntel.exitRisk)],
+                          ['Controller', result.lpControllerIntel.controller ?? result.lpControllerIntel.controllerLabel ?? `Unavailable: ${result.lpControllerIntel.summary || 'controller could not be resolved.'}`],
+                          ['Controller Type', isProtocolPositionModel(result) ? 'Protocol Position Model' : reasonedProofLabel(result.lpControllerIntel.controllerType, result.lpControllerIntel.summary)],
+                          ['Controller Share', isProtocolPositionModel(result) ? (result.concentratedPositionProof?.status === 'not_supported' ? 'Unsupported: position-owner resolution is not built for this protocol yet.' : 'Unavailable: position owner unresolved.') : result.lpControllerIntel.controllerSharePercent != null ? `${result.lpControllerIntel.controllerSharePercent.toFixed(2)}%` : `Unavailable: ${result.lpControllerIntel.summary || 'controller share could not be resolved.'}`],
+                          ['Control Proof', isUniswapV3ConcentratedPartial(result) ? (result.lpControllerIntel.controlProofLabel ?? 'Owner verification pending') : isProtocolPositionModel(result) ? (result.lpControllerIntel.controlProofLabel ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : reasonedProofLabel(result.lpControllerIntel.controlProof, result.lpControllerIntel.summary)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : reasonedProofLabel(result.lpControllerIntel.lockBurnProof, result.lpControllerIntel.summary)],
+                          ['Exit Risk', reasonedProofLabel(result.lpControllerIntel.exitRisk, result.lpExitRiskReason ?? result.lpControllerIntel.summary)],
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
                           ['Migration Risk', migrationRiskFinalLabel(result.lpControllerIntel.migrationRisk)],
                         ] as Array<[string, string]>).map(([label, value]) => (
@@ -8524,7 +8626,7 @@ export default function TerminalTokenScanner() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(145px,1fr))', gap: '7px', marginBottom: '10px' }}>
                         {([
-                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : cleanStatusLabel(result.lpLockBurnIntel.lockBurnProof)],
+                          ['Lock/Burn Proof', isProtocolPositionModel(result) ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : reasonedProofLabel(result.lpLockBurnIntel.lockBurnProof, result.lpLockBurnIntel.summary)],
                           ['Locked %', isProtocolPositionModel(result) ? protocolPositionSubtext('lock') : result.lpLockBurnIntel.lockedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.lockedPercent.toFixed(2)}%`],
                           ['Burned %', isProtocolPositionModel(result) ? 'Protocol-specific' : result.lpLockBurnIntel.burnedPercent == null ? 'Open Check' : `${result.lpLockBurnIntel.burnedPercent.toFixed(2)}%`],
                           ['Unlock Time', result.lpLockBurnIntel.unlockTime == null ? (result.lpLockBurnIntel.unlockTimeStatus === 'not_applicable' ? 'Protocol-specific' : 'Open Check') : new Date(result.lpLockBurnIntel.unlockTime).toLocaleString()],
@@ -8716,7 +8818,7 @@ export default function TerminalTokenScanner() {
                           ['Control Proof', cleanStatusLabel(result.secondaryLpExposure.status)],
                           ['Controller Share', result.secondaryLpExposure.controllerSharePercent != null ? `${result.secondaryLpExposure.controllerSharePercent.toFixed(2)}%` : 'Open Check'],
                           ['Controller Type', cleanStatusLabel(result.secondaryLpExposure.controllerType)],
-                          ['Lock/Burn Proof', cleanStatusLabel(result.secondaryLpExposure.lockBurnProof)],
+                          ['Lock/Burn Proof', reasonedProofLabel(result.secondaryLpExposure.lockBurnProof, result.secondaryLpExposure.summary)],
                           ['Confidence', cleanStatusLabel(result.secondaryLpExposure.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
                           <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>

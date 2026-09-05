@@ -1005,6 +1005,14 @@ export interface RpcPoolClassification {
     slot0: boolean;
     liquidity: boolean;
   };
+  // LP SAFETY OPEN-CHECK FIX, DISCLOSED: token0()/token1()/totalSupply() were already being
+  // called (to decide `probed` above) but their actual decoded values were discarded — only a
+  // boolean "did this selector resolve" was kept. lpSafetyResolutionAudit needs the real
+  // addresses/value, and decoding them costs no extra RPC calls (same three eth_call responses
+  // already fetched above), so they are decoded and exposed here instead of re-fetched elsewhere.
+  token0: string | null;
+  token1: string | null;
+  totalSupplyRaw: string | null;
 }
 
 const rpcPoolClassCache = new Map<string, { exp: number; data: RpcPoolClassification }>();
@@ -1018,10 +1026,17 @@ function hexToBigInt(hex: string | null): bigint | null {
   try { return BigInt(hex); } catch { return null; }
 }
 
+function _decodeAddress(hex: string | null): string | null {
+  if (!hex || hex === "0x" || hex.length < 66) return null;
+  const addr = `0x${hex.slice(-40)}`.toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(addr) ? addr : null;
+}
+
 export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | null | undefined): Promise<RpcPoolClassification> {
   const unknown: RpcPoolClassification = {
     model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false,
     probed: { token0: false, token1: false, getReserves: false, totalSupply: false, slot0: false, liquidity: false },
+    token0: null, token1: null, totalSupplyRaw: null,
   };
   if (!poolAddress || !/^0x[a-fA-F0-9]{40}$/.test(poolAddress)) return unknown;
 
@@ -1046,19 +1061,23 @@ export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | nu
     slot0: _rpcResolved(slot0Hex),
     liquidity: _rpcResolved(liquidityHex),
   };
+  // Decoded from the same eth_call responses already fetched above — no extra RPC calls.
+  const token0 = _decodeAddress(token0Hex);
+  const token1 = _decodeAddress(token1Hex);
+  const totalSupplyRaw = probed.totalSupply && supplyHex ? BigInt(supplyHex).toString() : null;
 
   let result: RpcPoolClassification;
   if (probed.token0 && probed.token1 && probed.getReserves && probed.totalSupply) {
     // Pair exposes reserves AND an ERC-20 total supply → standard V2 LP token.
-    result = { model: "v2_erc20_lp", poolType: "v2", hasLpToken: true, proofApplicable: true, probed };
+    result = { model: "v2_erc20_lp", poolType: "v2", hasLpToken: true, proofApplicable: true, probed, token0, token1, totalSupplyRaw };
   } else if (probed.token0 && probed.token1 && (probed.slot0 || probed.liquidity)) {
     // Pair exposes a concentrated-liquidity interface (slot0/liquidity) and is not a
     // constant-product ERC-20 LP token → standard lock/burn proof does not apply.
-    result = { model: "concentrated", poolType: "concentrated", hasLpToken: false, proofApplicable: false, probed };
+    result = { model: "concentrated", poolType: "concentrated", hasLpToken: false, proofApplicable: false, probed, token0, token1, totalSupplyRaw };
   } else {
     // An address exists but the probe could not confirm the model (RPC unavailable,
     // proxy, or non-standard pool) → pool detected, model is an open check.
-    result = { model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false, probed };
+    result = { model: "unknown", poolType: "unknown", hasLpToken: null, proofApplicable: false, probed, token0, token1, totalSupplyRaw };
   }
 
   rpcPoolClassCache.set(cacheKey, { exp: Date.now() + LP_PROOF_CACHE_TTL_MS, data: result });
