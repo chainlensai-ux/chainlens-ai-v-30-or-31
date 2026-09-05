@@ -159,7 +159,15 @@ export function buildWalletPnlCoverageRecoveryAudit(params: {
   const triggered = evaluation.filter((e) => e.recoveryTriggered)
   const triggeredRecoveryTokens = triggered.map((e) => `${e.chain}:${e.token}`)
   // "Succeeded" means the fetch actually returned usable events — not merely that it was attempted.
-  const succeeded = triggered.filter((e) => e.pagesUsed > 0 && e.recoveredEvents.length > 0)
+  //
+  // PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task): a candidate can
+  // now recover real events with pagesUsed === 0 — recoveryPolicy's fetchGoldrushFreeRideEvents lets
+  // a triggered candidate with zero of its OWN wallet-page budget still read another candidate's
+  // already-fetched (request-scope coalesced, token-agnostic) GoldRush page for free. The old
+  // `pagesUsed > 0 &&` guard wrongly classified that as a failure — pagesUsed only reflects whose
+  // budget paid for the page, never whether real events were actually found. Success is (and was
+  // always meant to be) solely about whether usable events came back.
+  const succeeded = triggered.filter((e) => e.recoveredEvents.length > 0)
   const recoverySucceededTokens = succeeded.map((e) => `${e.chain}:${e.token}`)
   // A triggered token that got no pages was starved by the wallet page cap, not proven empty —
   // that distinction is the whole point of separating these two lists.

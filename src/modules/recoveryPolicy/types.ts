@@ -53,11 +53,38 @@ export type RecoveryEvaluationEntry = {
   recoveredEvents: RawProviderEvent[]
 }
 
+// PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task) — a compact,
+// per-token trace of the fetch-stage flow this module owns: triggered -> ranked -> included in the
+// shared per-chain request -> matching events found -> entry/exit legs recovered. `priceRequirements`/
+// `pricesResolved`/`lotsVerified` are always null here — this module runs strictly BEFORE
+// fifoEngine/pricing (Architecture Step 4 §5, index.ts's own header) and structurally cannot import
+// either, so it honestly cannot know those three outcomes; a caller with pricing/lot visibility
+// (src/lib/walletPnlCoverageRecoveryAudit.ts) is the correct place to fill them in.
+export type PnlRecoveryFlowAuditEntry = {
+  token: string
+  chain: SupportedChain
+  lotCount: number
+  ranked: number
+  includedInSharedRequest: boolean
+  pagesAvailable: number
+  matchingEventsFound: number
+  entryLotsRecovered: number
+  exitLotsRecovered: number
+  priceRequirements: number | null
+  pricesResolved: number | null
+  lotsVerified: number | null
+  dropStage: 'not_triggered' | 'no_shared_request' | 'no_matching_events' | 'not_dropped'
+  dropReason: string | null
+}
+
 export type RecoveryPolicyResult = {
   triggerRecoveryWhen: RecoveryPolicyTriggerConfig
   caps: RecoveryPolicyCaps
   evaluation: RecoveryEvaluationEntry[]
   totalPagesUsedThisWallet: number
+  // Optional so any existing caller/test constructing a RecoveryPolicyResult without it keeps
+  // compiling.
+  pnlRecoveryFlowAudit?: PnlRecoveryFlowAuditEntry[]
 }
 
 // repeated_in_sell_timeline_min_count LOWERED 2 -> 1, DISCLOSED (real-scan evidence): a

@@ -238,6 +238,33 @@ export async function fetchAlchemyTokenHistory(
   }
 }
 
+// PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task — confirmed
+// production shape: 8 tokens triggered, only 3 succeeded, "page cap 6 funds only 3 tokens" —
+// exactly floor(DEFAULT_RECOVERY_CAPS.maxHistoricalPagesPerWallet / 2) triggered candidates ever
+// get a real page BUDGET from planRecoveryFetches; buildRecoveryPolicyObject previously skipped
+// every OTHER triggered candidate entirely via `Promise.resolve({ events: [], pagesUsed: 0 })`).
+//
+// ROOT CAUSE: fetchGoldrushHistoricalPage's own URL (see this file's own "REQUEST-SCOPED PROMISE
+// COALESCING" header above) depends ONLY on (chain, wallet, page) — it has NO token parameter, and
+// is already request-scope coalesced across every caller sharing that key. That means a triggered
+// candidate with ZERO of its own wallet-page budget can still read the EXACT SAME already-fetched
+// (or in-flight) GoldRush page for free, filtered to its own token client-side — AS LONG AS some
+// OTHER candidate on the SAME chain already has real budget and will trigger that call anyway. This
+// spends zero extra pages: it is the identical coalesced promise, just filtered to a different
+// token, same as the paying candidate's own filter. Always reports pagesUsed: 0 — it never consumes
+// this candidate's own (nonexistent) budget, it only reads data another candidate already paid for.
+// Alchemy's per-token call (fetchAlchemyTokenHistory) is genuinely token-scoped and metered — it is
+// NEVER free-ridden here, so total provider-call/page volume is unchanged.
+export async function fetchGoldrushFreeRideEvents(
+  chain: SupportedChain,
+  token: string,
+  walletAddress: string,
+): Promise<{ events: RawProviderEvent[]; pagesUsed: number }> {
+  const goldrushEvents = await fetchGoldrushHistoricalPage(chain, walletAddress, 1)
+  const events = goldrushEvents.filter((e) => (e.contract ?? '').toLowerCase() === token.toLowerCase())
+  return { events, pagesUsed: 0 }
+}
+
 // PURE. Distinct (chain, token) pairs referenced by buyTimeline + sellTimeline ONLY — never
 // distributionTimeline (Architecture Step 3 §2 / Step 9 §7: distributions can never trigger
 // recovery, enforced structurally by this function simply never being given that timeline).

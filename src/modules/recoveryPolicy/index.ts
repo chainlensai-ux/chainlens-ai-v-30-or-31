@@ -17,6 +17,7 @@ import type { BuyTimeline, SellTimeline } from '../timelineBuilder/types'
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type {
   HoldingInput,
+  PnlRecoveryFlowAuditEntry,
   RecoveryEvaluationEntry,
   RecoveryPolicyCaps,
   RecoveryPolicyResult,
@@ -29,6 +30,7 @@ import {
   distinctTokensFromTimelines,
   evidenceRefsFor,
   fetchAlchemyTokenHistory,
+  fetchGoldrushFreeRideEvents,
   fetchGoldrushHistoricalPage,
   sellOccurrenceCount,
   top3HoldingTokens,
@@ -36,6 +38,7 @@ import {
 
 export type {
   HoldingInput,
+  PnlRecoveryFlowAuditEntry,
   RecoveryEvaluationEntry,
   RecoveryPolicyCaps,
   RecoveryPolicyResult,
@@ -229,7 +232,7 @@ function materialityRank(candidate: CandidateEvaluation): { sellCount: number; c
 export function planRecoveryFetches(
   candidates: CandidateEvaluation[],
   caps: RecoveryPolicyCaps,
-): Array<{ candidate: CandidateEvaluation; pageBudget: number }> {
+): Array<{ candidate: CandidateEvaluation; pageBudget: number; rank: number }> {
   // Stable descending sort by materiality, carrying the original index so the result can be
   // restored to input order after allocation.
   const allocationOrder = candidates
@@ -243,12 +246,17 @@ export function planRecoveryFetches(
     })
 
   const budgetByIndex = new Array<number>(candidates.length).fill(0)
+  // PNL-RECOVERY-FLOW-FIX, DISCLOSED (compact per-token flow audit, "ranked" field): the same
+  // materiality position already computed for allocation, exposed per-candidate so pnlRecoveryFlowAudit
+  // can report it without a second, duplicate sort.
+  const rankByIndex = new Array<number>(candidates.length).fill(-1)
   let remainingWalletBudget = caps.maxHistoricalPagesPerWallet
 
-  for (const { candidate, index } of allocationOrder) {
+  allocationOrder.forEach(({ candidate, index }, rankPosition) => {
+    rankByIndex[index] = rankPosition
     if (!candidate.recoveryTriggered || remainingWalletBudget <= 0) {
       budgetByIndex[index] = 0
-      continue
+      return
     }
     const pageBudget = Math.min(caps.maxHistoricalPagesPerToken, remainingWalletBudget)
     // fetchHistoricalPages never actually consumes more than 2 pages regardless of pageBudget (see
@@ -257,9 +265,9 @@ export function planRecoveryFetches(
     const actualPagesForThisCandidate = Math.min(Math.max(0, pageBudget), 2)
     remainingWalletBudget -= actualPagesForThisCandidate
     budgetByIndex[index] = pageBudget
-  }
+  })
 
-  return candidates.map((candidate, index) => ({ candidate, pageBudget: budgetByIndex[index] }))
+  return candidates.map((candidate, index) => ({ candidate, pageBudget: budgetByIndex[index], rank: rankByIndex[index] }))
 }
 
 // Orchestrates evaluation + capped, triggered historical fetches into the final recoveryPolicy
@@ -287,11 +295,24 @@ export async function buildRecoveryPolicyObject(params: {
   // reasoning about deep-scan cost.
   const plan = planRecoveryFetches(candidates, caps)
 
-  const results = await mapWithConcurrencyLimit(plan, RECOVERY_CANDIDATE_CONCURRENCY_LIMIT, ({ candidate, pageBudget }) =>
-    pageBudget > 0
-      ? fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
-      : Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 }),
-  )
+  // PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task — confirmed
+  // production shape: 8 triggered, only 3 succeeded, "page cap 6 funds only 3 tokens"). A triggered
+  // candidate that planRecoveryFetches allocated ZERO wallet-page budget to (the scarce budget was
+  // already spent on higher-materiality candidates) used to be skipped OUTRIGHT below, even though
+  // fetchGoldrushHistoricalPage's page-1 fetch has no token parameter and is already request-scope
+  // coalesced (see utils.ts) — i.e. if ANY other candidate on the SAME chain has real budget and will
+  // trigger that exact call anyway, a zero-budget candidate can read the SAME already-fetched (or
+  // in-flight) page for free and recover its own token's entry/exit legs from it, at zero additional
+  // provider cost. Only chains with at least one REAL paying candidate get this free ride — a chain
+  // where nobody has budget never triggers an extra fetch, so total provider-call/page volume is
+  // unchanged; only which already-fetched data zero-budget candidates get to benefit from changes.
+  const chainsWithRealGoldrushBudget = new Set(plan.filter((p) => p.pageBudget > 0).map((p) => p.candidate.chain))
+
+  const results = await mapWithConcurrencyLimit(plan, RECOVERY_CANDIDATE_CONCURRENCY_LIMIT, ({ candidate, pageBudget }) => {
+    if (pageBudget > 0) return fetchHistoricalPages(candidate.chain, candidate.token, params.walletAddress, pageBudget)
+    if (chainsWithRealGoldrushBudget.has(candidate.chain)) return fetchGoldrushFreeRideEvents(candidate.chain, candidate.token, params.walletAddress)
+    return Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 })
+  })
 
   const evaluation: RecoveryEvaluationEntry[] = plan.map(({ candidate }, i) => ({
     ...candidate,
@@ -300,5 +321,49 @@ export async function buildRecoveryPolicyObject(params: {
   }))
   const totalPagesUsedThisWallet = results.reduce((sum, r) => sum + r.pagesUsed, 0)
 
-  return { triggerRecoveryWhen: triggerConfig, caps, evaluation, totalPagesUsedThisWallet }
+  const walletLower = params.walletAddress.trim().toLowerCase()
+  const pnlRecoveryFlowAudit: PnlRecoveryFlowAuditEntry[] = plan.map(({ candidate, pageBudget, rank }, i) => {
+    const matchingEvents = results[i].events
+    let entryLotsRecovered = 0
+    let exitLotsRecovered = 0
+    for (const ev of matchingEvents) {
+      const to = (ev.toAddress ?? '').toLowerCase()
+      const from = (ev.fromAddress ?? '').toLowerCase()
+      if (to === walletLower) entryLotsRecovered += 1
+      else if (from === walletLower) exitLotsRecovered += 1
+    }
+    const includedInSharedRequest = pageBudget > 0 || chainsWithRealGoldrushBudget.has(candidate.chain)
+    let dropStage: PnlRecoveryFlowAuditEntry['dropStage'] = 'not_dropped'
+    let dropReason: string | null = null
+    if (!candidate.recoveryTriggered) {
+      dropStage = 'not_triggered'
+      dropReason = 'no recovery trigger rule matched for this token'
+    } else if (!includedInSharedRequest) {
+      dropStage = 'no_shared_request'
+      dropReason = 'no candidate on this chain received wallet page budget, so no shared GoldRush page was fetched for this chain'
+    } else if (matchingEvents.length === 0) {
+      dropStage = 'no_matching_events'
+      dropReason = 'the fetched page(s) for this chain contained no transactions for this token'
+    }
+    return {
+      token: candidate.token,
+      chain: candidate.chain,
+      lotCount: candidate.coverageMateriality?.sellCount ?? 0,
+      ranked: rank,
+      includedInSharedRequest,
+      pagesAvailable: pageBudget,
+      matchingEventsFound: matchingEvents.length,
+      entryLotsRecovered,
+      exitLotsRecovered,
+      // recoveryPolicy runs strictly before fifoEngine/pricing (this file's own architectural rule) —
+      // it structurally cannot know these; honestly null, never guessed.
+      priceRequirements: null,
+      pricesResolved: null,
+      lotsVerified: null,
+      dropStage,
+      dropReason,
+    }
+  })
+
+  return { triggerRecoveryWhen: triggerConfig, caps, evaluation, totalPagesUsedThisWallet, pnlRecoveryFlowAudit }
 }
