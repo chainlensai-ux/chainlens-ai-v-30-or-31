@@ -11,7 +11,7 @@ for (const forbidden of ['current provider', 'provider path', 'honeypot provider
   assert.ok(!publicTokenFormatterBlock.toLowerCase().includes(forbidden.toLowerCase()), `public token formatter leaks internal wording: ${forbidden}`)
 }
 assert.ok(route.includes('publicReason'), 'initial TOKEN READ must sanitize public missing reasons')
-assert.ok(route.includes('Position/controller proof is unavailable in this read'), 'public LP wording should be safe')
+assert.ok(route.includes('Position/controller proof is Unavailable: controller was not confirmed.'), 'public LP wording should be safe')
 assert.ok(routing.includes('Security simulation unavailable'), 'security gaps should use public-safe wording')
 
 // 2. Security unavailable has exact missing reason and independent attempts/mapping debug.
@@ -26,7 +26,7 @@ assert.ok(route.includes('securityMissingReason'), 'debug must expose security m
 assert.ok(route.includes('tokenRouteSecurityMapped'), 'Clark must map security fields returned by Token Scanner')
 
 // 3. Concentrated LP maps to position/controller Open Check, not generic provider-path unsupported.
-assert.ok(routing.includes('Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.'), 'concentrated LP public wording must be specific')
+assert.ok(routing.includes('standard LP-token lock/burn proof does not apply') && routing.includes('Position/controller proof'), 'concentrated LP public wording must be specific')
 assert.ok(routing.includes('Controller/position evidence'), 'controller/position evidence must be surfaced if present')
 assert.ok(route.includes('lpProofApplicability'), 'debug must expose LP proof applicability')
 assert.ok(route.includes('concentratedLpDetected'), 'debug must expose concentratedLpDetected')
@@ -35,7 +35,7 @@ assert.ok(route.includes('rawLpState'), 'Clark must map raw LP state')
 assert.ok(route.includes('positionProofStatus'), 'Clark must map concentrated position proof status')
 
 // 4. Open Check verdict includes specific reasons.
-assert.ok(route.includes('Open Check. Reasons:'), 'partial initial read must include specific Open Check reasons')
+assert.ok(route.includes('Unavailable: ${openReasons'), 'partial initial read must include specific unavailable reasons')
 assert.ok(routing.includes('- Reasons:'), 'full initial read must include Open Check reasons')
 assert.ok(route.includes('Security simulation unavailable'), 'Open Check should include security reason')
 assert.ok(route.includes('Concentrated LP position/controller proof unavailable'), 'Open Check should include concentrated LP reason')
@@ -74,7 +74,7 @@ assert.ok(route.includes('chainDisplayLabel(tokenEvidenceChain(ev, chainForClark
 assert.ok(route.includes('Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))}'), 'partial TOKEN READ must print resolved chain')
 assert.ok(route.includes('followUpUsedMemory') && route.includes('evidenceSource: fromMemory ? "lastToken"'), 'ETH follow-ups must use lastToken memory debug')
 assert.ok(route.includes('toolsUsed: fromMemory ? ["memory"]'), 'token follow-ups from lastToken must report memory tools')
-assert.ok(route.includes('LP proof is open check'), 'missing LP evidence must remain Open Check')
+assert.ok(route.includes('LP proof is Unavailable:'), 'missing LP evidence must remain unavailable with a reason')
 assert.ok(!route.includes('no active pool data on Base"'), 'Token Core must not hardcode Base no-pool wording')
 assert.ok(!route.includes('Token not found on Base or no active pool data'), 'Token Core missing evidence must not hardcode Base')
 

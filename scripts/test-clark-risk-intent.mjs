@@ -79,13 +79,13 @@ const walletAddr = '0x' + '2'.repeat(40)
   const lines = out.split('\n')
   assert.equal(lines[0], 'CORTEX TOKEN RISK READ')
   assert.equal(lines[2], 'Verdict:')
-  assert.equal(lines[3], '- Open Check')
-  assert.equal(lines[4], '- Ape risk: Unknown')
+  assert.equal(lines[3], '- Unavailable: no scan evidence available yet')
+  assert.equal(lines[4], '- Ape risk: Unavailable: no scan evidence available yet')
 
   const derivedEmpty = deriveDevHistoryFromTokenEvidence(null)
   assert.equal(derivedEmpty.status, 'open_check')
   const historyOut = formatDevHistoryRead({ status: derivedEmpty.status, gaps: derivedEmpty.evidenceGaps })
-  assert.ok(/No confirmed rug evidence|Open Check/.test(historyOut))
+  assert.ok(/No confirmed rug evidence|Unavailable/.test(historyOut))
   assert.ok(!/Confirmed prior rug evidence found/i.test(historyOut))
 }
 
@@ -185,7 +185,7 @@ const walletAddr = '0x' + '2'.repeat(40)
   // Missing evidence -> every section reads as Open Check, never a fabricated verdict.
   const sectionLines = out.split('\n').filter((l) => l.trim().startsWith('- Status:'))
   assert.equal(sectionLines.length, 6)
-  for (const l of sectionLines) assert.ok(l.includes('Open Check'))
+  for (const l of sectionLines) assert.ok(l.includes('Unavailable'))
 }
 
 // All 6 risk sections are present with real evidence too, each with a Status + Why it matters line.
@@ -330,7 +330,7 @@ const walletAddr = '0x' + '2'.repeat(40)
   const ev = { token: { symbol: 'X' }, ok: true, deployerAddress: '0x' + '9'.repeat(40) }
   const derived = deriveDevHistoryFromTokenEvidence(ev, null)
   const out = formatDevHistoryRead({ status: derived.status, previousLaunchedTokens: derived.previousLaunchedTokens, walletEvidenceChecked: derived.walletEvidenceChecked })
-  assert.ok(out.includes('previous launched tokens: Open Check — not checked'))
+  assert.ok(out.includes('previous launched tokens: Unavailable: not checked'))
 }
 
 // 18. Previous tokens checked (dev-wallet evidence fetched) but empty reads as "none found", not Open Check.

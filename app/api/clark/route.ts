@@ -166,6 +166,7 @@ import {
   formatHoldersCheck,
   isHoldersCheckPrompt,
   isDeployerCheckPrompt,
+  rewriteForbiddenStatusVocab,
 } from "@/lib/server/clarkRouting";
 import {
   classifyClarkMarketIntent,
@@ -13190,15 +13191,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (h?.top1 != null && h.top1 >= 40) openReasons.push(`Major single-wallet dominance: top-1 holder ${h.top1.toFixed(1)}%`);
     if (h?.top10 != null && h.top10 >= 40) openReasons.push(`Elevated holder concentration: top-10 ${h.top10.toFixed(1)}%`);
     const hasRisk = sec?.honeypot === true || sec?.mintable === true || sec?.ownerRenounced === false || lp?.status === "wallet_controlled" || lp?.status === "team_controlled" || (h?.top10 != null && h.top10 > 80);
-    const verdict = sec?.honeypot === true ? "Avoid — honeypot detected." : openReasons.length > 0 || missing.length > 0 || confidence === "open_check" || confidence === "failed" ? `Open Check. Reasons: ${openReasons.length ? openReasons.join("; ") : "Evidence unavailable."}` : hasRisk ? "High Risk — available evidence shows risk signals." : confidence === "high" ? "Evidence shows no confirmed core red flags; verify before trading." : "Available evidence suggests no confirmed core red flags; verify missing checks before trading.";
+    const verdict = sec?.honeypot === true ? "Avoid — honeypot detected." : openReasons.length > 0 || missing.length > 0 || confidence === "open_check" || confidence === "failed" ? `Unavailable: ${openReasons.length ? openReasons.join("; ") : "Evidence unavailable."}` : hasRisk ? "High Risk — available evidence shows risk signals." : confidence === "high" ? "Evidence shows no confirmed core red flags; verify before trading." : "Available evidence suggests no confirmed core red flags; verify missing checks before trading.";
     const marketLine = sectionsPresent.includes("market") && (mkt?.price != null || mkt?.liquidity != null || mkt?.volume24h != null)
       ? `loaded${mkt?.liquidity != null ? ` — liquidity ${pFmtUsd(mkt.liquidity)}` : ""}${mkt?.volume24h != null ? `, volume ${pFmtUsd(mkt.volume24h)}` : ""}`
       : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "market")?.reason ?? "Evidence unavailable.")}`;
     const lpLine = concentrated
-      ? (hasControllerProof ? `Concentrated liquidity detected. Controller/position evidence: ${publicReason((lp as any)?.positionProofReason ?? lp?.reason ?? lp?.status)}.` : "Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.")
+      ? (hasControllerProof ? `Concentrated liquidity detected. Controller/position evidence: ${publicReason((lp as any)?.positionProofReason ?? lp?.reason ?? lp?.status)}.` : "Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is Unavailable: controller was not confirmed.")
       : sectionsPresent.includes("lp") && lp?.status
       ? `${lp.status}${lp.reason ? ` — ${publicReason(lp.reason)}` : ""}`
-      : `LP proof is open check — ${publicReason(sectionsMissing.find(s => s.section === "lp")?.reason ?? "Evidence unavailable.")}`;
+      : `LP proof is Unavailable: ${publicReason(sectionsMissing.find(s => s.section === "lp")?.reason ?? "Evidence unavailable.")}`;
     const holdersLine = sectionsPresent.includes("holders") && h?.top10 != null
       ? `loaded — top-10 ${h.top10.toFixed(1)}%${h.holderCount != null ? `, holders ${h.holderCount}` : ""}`
       : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "holders")?.reason ?? "Evidence unavailable.")}`;
@@ -13847,9 +13848,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis = renderClarkTokenVerdictForEvm(ev, tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)), usableEvidence);
       formatterUsed = "renderClarkTokenVerdictForEvm";
     }
-    analysis = analysis
-      .replace(/^TOKEN READ — \?/m, `TOKEN READ — ${clarkTokenReadHeading(ev.token?.symbol, tokenAddress)}`)
-      .replace(/\bOpen Check\b/gi, "Unverified");
+    analysis = rewriteForbiddenStatusVocab(
+      analysis.replace(/^TOKEN READ — \?/m, `TOKEN READ — ${clarkTokenReadHeading(ev.token?.symbol, tokenAddress)}`),
+    );
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
       normalizedEvidenceSummary: ev.ok ? "loaded" : partialEvidenceUsed ? "partial" : memConfidence,

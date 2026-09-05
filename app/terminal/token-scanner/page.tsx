@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } fr
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
-import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
@@ -32,6 +31,10 @@ import {
   classifyTokenScannerEvidence,
   tokenScannerEvidenceChainId,
 } from '@/lib/tokenScannerEvidence'
+import {
+  formatTokenScannerPublicStatus,
+} from '@/lib/tokenScannerPublicStatus'
+import { formatHolderCountDisplay } from '@/lib/tokenScannerHolderCount'
 import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
@@ -70,46 +73,11 @@ function canonicalLabel(s: CanonicalStatus | string | undefined): string {
 // rows this task's bug report named (Lock/Burn Proof, Control Proof); every other cleanStatusLabel
 // call site is left as-is.
 function reasonedProofLabel(value: string | null | undefined, reason: string | null | undefined): string {
-  const base = cleanStatusLabel(value)
-  if (base !== 'Open Check') return base
-  return reason ? `Unavailable: ${reason}` : 'Unavailable: LP lock/burn proof could not be confirmed from current evidence.'
+  return formatTokenScannerPublicStatus(value, reason)
 }
 
-function cleanStatusLabel(value: string | null | undefined): string {
-  switch ((value ?? '').toLowerCase()) {
-    case 'not_applicable': return 'Protocol-specific'
-    case 'concentrated_liquidity': return 'Concentrated Liquidity'
-    case 'protocol_or_gauge': return 'Protocol Position Model'
-    case 'open_check':
-    case 'unavailable_with_reason':
-    case 'insufficient_data':
-    case 'error':
-    case 'unknown': return 'Open Check'
-    case 'team_controlled':
-    case 'wallet_controlled':
-    case 'wallet': return 'Wallet Controlled'
-    case 'burn':
-    case 'burned': return 'Burned'
-    case 'lockcontract':
-    case 'locked': return 'Locked'
-    case 'partial': return 'Partial Evidence'
-    case 'confirmed':
-    case 'verified': return 'Confirmed'
-    case 'no_pool': return 'No Active Pool'
-    case 'low': return 'Low'
-    case 'medium': return 'Medium'
-    case 'high': return 'High'
-    case 'watch': return 'Watch'
-    case 'protected': return 'Protected'
-    case 'none': return 'None'
-    case 'expired': return 'Expired'
-    case 'deep': return 'Deep'
-    case 'contract': return 'Contract'
-    default: {
-      const raw = value?.trim()
-      return raw ? raw.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'Open Check'
-    }
-  }
+function cleanStatusLabel(value: string | null | undefined, reason?: string | null): string {
+  return formatTokenScannerPublicStatus(value, reason)
 }
 
 // MIGRATION-RISK FINAL-STATE HELPER, DISCLOSED (Base Token Scanner state/copy consistency
@@ -252,7 +220,7 @@ function concentratedLpPositionView(result: ScanResult): {
   const verified = status === 'verified_position_owner' || status === 'protocol_managed'
   const topOwner = verified ? (audit?.topOwner ?? own?.topLiquidityOwner ?? cpp?.topPositionOwner ?? null) : null
   const topShare = verified ? (audit?.topOwnerLiquiditySharePct ?? own?.topLiquidityOwnerSharePct ?? cpp?.topPositionSharePercent ?? null) : null
-  let ownershipValue = 'Open Check'
+  let ownershipValue = formatTokenScannerPublicStatus('unavailable', reason || 'Position ownership proof was not confirmed')
   let ownershipNote = reason || 'Position ownership is still being verified.'
   let ownershipColor: string | undefined
   if (status === 'verified_position_owner') {
@@ -404,7 +372,7 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
-  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'partial'|'unavailable_with_reason'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
   debugHolderStatus?: {
     providerCalled?: boolean; chain?: string; endpointPath?: string; authMode?: string;
@@ -820,6 +788,9 @@ type ScanResult = {
     confidence?: string
   }
   riskScore?: number
+  riskScoreSource?: string
+  riskInputsUsed?: string[]
+  riskInputStatuses?: Record<string, string>
   safetyScore?: number
   riskScoreType?: 'risk_score' | 'safety_score'
   riskScoreDirection?: 'higher_is_riskier'
@@ -1049,7 +1020,7 @@ function behaviorTitle(label: WalletBehaviorLabel): string {
     case 'wash-pattern': return 'Wash-pattern signal'
     case 'funding-relay': return 'Funding relay'
     case 'cluster-feeder': return 'Cluster feeder'
-    case 'open-check': return 'Open check'
+    case 'open-check': return 'Unavailable: wallet role was not confirmed'
     default: return label.charAt(0).toUpperCase() + label.slice(1)
   }
 }
@@ -1071,7 +1042,7 @@ function confidenceRank(confidence: GraphEdge['confidence'] | ClusterNode['confi
 }
 
 function confidenceLabel(confidence: BehaviorConfidence): string {
-  return confidence === 'open_check' ? 'Open check' : confidence.charAt(0).toUpperCase() + confidence.slice(1)
+  return confidence === 'open_check' ? 'Unavailable: confidence not confirmed' : confidence.charAt(0).toUpperCase() + confidence.slice(1)
 }
 
 function edgeSeverity(edge: GraphEdge): ClusterTimelineEvent['severity'] {
@@ -1932,8 +1903,8 @@ function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidenc
     liquidityDepth: result.liquidity ?? null,
     marketCapToFdvPct: ratio,
     marketCapToFdvLabel: ratio == null ? 'MC unavailable' : `${ratio.toFixed(1)}%`,
-    holderConcentration: robinhood?.holderLabel ?? 'Open check',
-    supplySpread: robinhood?.holderLabel ?? 'Open check',
+    holderConcentration: robinhood?.holderLabel ?? formatTokenScannerPublicStatus('unavailable', 'holder concentration was not returned'),
+    supplySpread: robinhood?.holderLabel ?? formatTokenScannerPublicStatus('unavailable', 'supply spread was not returned'),
     providerReturnedNoRows: (result.holderDistribution?.topHolders?.length ?? 0) === 0,
   }
 }
@@ -2489,8 +2460,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       : confidence === 'low'
         ? 'Low confidence — this wallet is based on weak or incomplete evidence.'
         : confidence === 'open_check'
-          ? 'Open check — CORTEX needs more data before confirming this wallet’s role.'
-          : 'Open check — confidence not confirmed.'
+          ? 'Unavailable: CORTEX needs more data before confirming this wallet’s role.'
+          : 'Unavailable: confidence not confirmed.'
   const supplyFor = (node: ClusterNode | null) => {
     if (!node) return null
     if (node.supplyPercent != null) return node.supplyPercent
@@ -2530,7 +2501,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const deployerLineage: DeployerLineage = (() => {
     const deployerNode = nodes.find((node) => node.type === 'deployer' || node.isCreator) ?? null
     if (!deployerNode) {
-      return { status: 'unavailable_with_reason', deployer: null, directLinkedWallets: [], secondLayerWallets: [], relatedHolderWallets: [], lineageEdges: [], summary: { directLinks: 0, secondLayerLinks: 0, suspiciousLinks: 0, linkedSupplyPercent: null, clusterSupplyPercent: summary?.clusterSupplyPercent ?? null, riskLabel: 'Open check', reason: 'No deployer wallet is available in this pass.' } }
+      return { status: 'unavailable_with_reason', deployer: null, directLinkedWallets: [], secondLayerWallets: [], relatedHolderWallets: [], lineageEdges: [], summary: { directLinks: 0, secondLayerLinks: 0, suspiciousLinks: 0, linkedSupplyPercent: null, clusterSupplyPercent: summary?.clusterSupplyPercent ?? null, riskLabel: 'Unavailable: deployer not resolved', reason: 'No deployer wallet is available in this pass.' } }
     }
     const directlyTouchedIds = new Set(graphEdges.filter((edge) => edge.source === deployerNode.id || edge.target === deployerNode.id).flatMap((edge) => [edge.source, edge.target]).filter((id) => id !== deployerNode.id))
     const directLinkedWallets = uniqueById(nodes.filter((node) => node.id !== deployerNode.id && (directlyTouchedIds.has(node.id) || node.isLinked || node.type === 'linked_wallet')))
@@ -2579,7 +2550,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
         suspiciousLinks,
         linkedSupplyPercent,
         clusterSupplyPercent: summary?.clusterSupplyPercent ?? null,
-        riskLabel: suspiciousLinks > 0 || (summary?.clusterRiskLabel === 'critical' || summary?.clusterRiskLabel === 'high') ? 'Elevated lineage watch' : lineageEdges.length > 0 ? 'Lineage mapped' : 'Open check',
+        riskLabel: suspiciousLinks > 0 || (summary?.clusterRiskLabel === 'critical' || summary?.clusterRiskLabel === 'high') ? 'Elevated lineage watch' : lineageEdges.length > 0 ? 'Lineage mapped' : 'Unavailable: no lineage edges confirmed',
         reason: lineageEdges.length > 0 ? 'Lineage uses only deployer, linked-wallet, cluster-wallet, holder, and edge evidence already in the cluster map.' : 'No lineage edges confirmed in this pass. Other contracts not available in this pass.',
       },
     }
@@ -2811,8 +2782,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Address</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{fmt(hNode.address)}</div></div>
                 <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Supply</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hSupply!=null?`${hSupply.toFixed(1)}%`:'Not indexed in this pass'}</div></div>
                 <div style={{ display:'flex', gap:'12px' }}>
-                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Risk</div><div style={{ fontSize:'10px', color:CMAP_RISK_COLOR[risk], fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{risk==='open_check'?'Open check':risk.charAt(0).toUpperCase()+risk.slice(1)}</div></div>
-                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Confidence</div><div style={{ fontSize:'10px', color:hNode.confidence==='high'?'#34d399':hNode.confidence==='medium'?'#fbbf24':'#94a3b8', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hNode.confidence==='open_check'?'Open check':hNode.confidence.charAt(0).toUpperCase()+hNode.confidence.slice(1)}</div></div>
+                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Risk</div><div style={{ fontSize:'10px', color:CMAP_RISK_COLOR[risk], fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{risk==='open_check'?'Unavailable':risk.charAt(0).toUpperCase()+risk.slice(1)}</div></div>
+                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Confidence</div><div style={{ fontSize:'10px', color:hNode.confidence==='high'?'#34d399':hNode.confidence==='medium'?'#fbbf24':'#94a3b8', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hNode.confidence==='open_check'?'Unavailable':hNode.confidence.charAt(0).toUpperCase()+hNode.confidence.slice(1)}</div></div>
                 </div>
               </div>
             )
@@ -2861,7 +2832,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
             )
           })}
           <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'6px', zIndex:3 }}>
-            {([['#34d399','Low risk'],['#facc15','Med/pattern'],['#fb7185','High/susp'],['#a855f7','Open check'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster'],['#38bdf8','Transfer edge']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(148,163,184,.16)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
+            {([['#34d399','Low risk'],['#facc15','Med/pattern'],['#fb7185','High/susp'],['#a855f7','Unavailable'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster'],['#38bdf8','Transfer edge']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(148,163,184,.16)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
           </div>
         </div>
         <div style={{ display:'grid', gap:'10px', alignContent:'start' }}>
@@ -3006,7 +2977,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 </section>
                 {openChecks.length > 0 && (
                   <section style={{ display:'grid', gap:'6px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                    <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#94a3b8', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                    <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#94a3b8', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE GAPS</p>
                     {openChecks.map((check) => <p key={check} style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {check}</p>)}
                   </section>
                 )}
@@ -4010,7 +3981,13 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   if (dm === 'concentrated_liquidity' || status === 'concentrated_liquidity') return { label: 'Protocol / Concentrated Liquidity', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
   if (dm === 'protocol_or_gauge' || status === 'protocol' || lpMode === 'protocol') return { label: 'Protocol Managed', color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)', description: lp?.reason ?? 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
   if (status === 'no_pool' && result.noActivePools) return { label: 'No Pool Found', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
-  if (status === 'open_check') return { label: 'Open Check', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: lp?.reason ?? 'LP proof is an open check — verify lock, burn, and controller status on-chain.' }
+  if (status === 'open_check') return {
+    label: formatTokenScannerPublicStatus('unavailable', lp?.reason ?? 'LP lock, burn, and controller evidence are not confirmed'),
+    color: '#fbbf24',
+    bg: 'rgba(251,191,36,0.06)',
+    border: 'rgba(251,191,36,0.20)',
+    description: lp?.reason ?? 'LP lock, burn, and controller evidence are not confirmed.',
+  }
 
   // Legacy fallback for scans without a resolved lpControl.status
   const lockStatus = result.lpLockStatus
@@ -4021,8 +3998,8 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   if (lockStatus === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'On-chain data shows LP tokens sent to a burn address — exit liquidity is permanently locked.' }
   if (lockStatus === 'unlocked') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof.' }
   if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
-  if (hasLiquidity) return { label: 'Unverified', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock or burn proof has not been confirmed. Open check — verify on-chain.' }
-  return { label: 'Unverified', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP lock/burn proof not confirmed. Treat exit liquidity as unprotected until verified.' }
+  if (hasLiquidity) return { label: formatTokenScannerPublicStatus('unavailable', 'Pool detected, but lock or burn proof has not been confirmed'), color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock or burn proof has not been confirmed.' }
+  return { label: formatTokenScannerPublicStatus('unavailable', 'LP lock/burn proof not confirmed'), color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP lock/burn proof not confirmed. Treat exit liquidity as unprotected until verified.' }
 }
 
 function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; description: string } {
@@ -4290,7 +4267,7 @@ function getLpNextAction(result: ScanResult): string {
   if (dm === 'protocol_or_gauge') return 'Protocol or gauge-based liquidity can be normal. Monitor depth, pool age, and whether liquidity is moving.'
   if (lpMode === 'protocol') return 'Primary liquidity uses a protocol position model. Review position ownership, pool depth, age, and holder concentration.'
   if (lockStatus === 'unlocked') return 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof — treat exit risk as elevated and avoid large positions.'
-  return 'LP lock/burn proof is an open check — verify directly on-chain (lock explorer, LP token holder list) before trusting any safety claim.'
+  return 'LP lock/burn proof is Unavailable: verify directly on-chain before trusting any safety claim.'
 }
 
 // ─── CORTEX Score Engine ──────────────────────────────────────────────────
@@ -4311,7 +4288,7 @@ type CortexScoreResult = {
   }
 }
 
-function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResultV2['verdict'] | 'Strong' | 'High Risk' | 'Open Check'): { label: string; color: string; bg: string; border: string } {
+function getVerdictStyle(verdict: string): { label: string; color: string; bg: string; border: string } {
   switch (verdict) {
     case 'High Risk':
     case 'AVOID':        return { label: verdict === 'High Risk' ? 'HIGH RISK' : 'AVOID', color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
@@ -4320,8 +4297,10 @@ function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResu
     case 'WATCH':        return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     case 'CAUTION':      return { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
     case 'Open Check':
-    case 'OPEN CHECK':   return { label: 'OPEN CHECK',    color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
-    default:             return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
+    case 'OPEN CHECK':
+    case 'Unavailable':
+    case 'UNAVAILABLE': return { label: 'UNAVAILABLE', color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
+    default:             return { label: formatTokenScannerPublicStatus(String(verdict)), color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
   }
 }
 
@@ -4441,9 +4420,9 @@ function getHolderRead(result: ScanResult): string {
     // this is a Robinhood scan.
     const robinhood = robinhoodEvidenceFor(result)
     if (robinhood) return robinhood.holderLabel
-    return 'Holder distribution was not returned this scan. Supply spread is an open check.'
+    return 'Holder distribution was not returned this scan. Supply spread is Unavailable: holder rows were not returned.'
   }
-  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is an open check.'
+  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is Partial: indexed rows lack percentages.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
   const parts = [
@@ -5063,6 +5042,8 @@ export default function TerminalTokenScanner() {
   // token input already having `disabled={loading}`, there is no longer a live path to start a
   // second scan before the first settles, so no separate AbortController/request-id is needed.
 
+  const scanGenerationRef = useRef(0)
+  const scanRequestIdRef = useRef<string | null>(null)
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
   async function copyHolderAddress(address: string) {
@@ -5143,6 +5124,11 @@ export default function TerminalTokenScanner() {
     }
     if (loading || resolving || scanInFlightRef.current) return
     scanInFlightRef.current = true
+    const scanGeneration = ++scanGenerationRef.current
+    const scanRequestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `scan_${Date.now()}_${scanGeneration}`
+    scanRequestIdRef.current = scanRequestId
 
     // ── Stale-state reset — runs on every new scan regardless of path ────────
     setResolverResult(null)
@@ -5201,9 +5187,10 @@ export default function TerminalTokenScanner() {
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-          body: JSON.stringify({ contract: scanContract, chain: 'solana' }),
+          body: JSON.stringify({ contract: scanContract, chain: 'solana', requestId: scanRequestId, skipCache: true, forceRescan: true }),
         })
         const json = await res.json().catch(() => null)
+        if (scanGeneration !== scanGenerationRef.current) return
         if (!res.ok || !json || 'status' in (json ?? {})) {
           setError(typeof json?.error === 'string' ? json.error : 'Solana scan failed. Try again shortly.')
           setSolanaResult(null)
@@ -5255,16 +5242,18 @@ export default function TerminalTokenScanner() {
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
+      const forceRescan = Boolean(result && String(result.contract ?? '').toLowerCase() === scanContract.toLowerCase() && (result.chain === evmScanChain))
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, requestId: scanRequestId, skipCache: forceRescan, forceRescan, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
       // NON-JSON-RESPONSE FIX, DISCLOSED (audit: a gateway/proxy error page for a server-side
       // failure produced the misleading generic "Network error — check your connection" message,
       // because an unguarded res.json() throws on non-JSON and that error is caught by the outer
       // catch block, which can't distinguish it from an actual network failure). ...
       const json = await res.json().catch(() => null)
+      if (scanGeneration !== scanGenerationRef.current) return
       if (!json) {
         setError('Server returned an unexpected response. Try again shortly.')
         setClarkLoading(false)
@@ -5413,6 +5402,8 @@ export default function TerminalTokenScanner() {
           cortexScore: json.cortexScore ?? null,
           cortexVerdict: json.cortexVerdict ?? undefined,
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
+          riskScoreSource: json.riskScoreSource ?? undefined,
+          riskInputsUsed: json.riskInputsUsed ?? undefined,
           safetyScore: typeof json.safetyScore === 'number' ? json.safetyScore : undefined,
           riskScoreType: json.riskScoreType === 'safety_score' ? 'safety_score' : 'risk_score',
           riskScoreDirection: json.riskScoreDirection ?? undefined,
@@ -6286,7 +6277,7 @@ export default function TerminalTokenScanner() {
                         <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>TOP-ACCOUNT CONCENTRATION</span>
-                            <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: concColor, background: `${concColor}12`, border: `1px solid ${concColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{concRisk ?? 'OPEN CHECK'}</span>
+                            <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: concColor, background: `${concColor}12`, border: `1px solid ${concColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{concRisk ?? 'UNAVAILABLE'}</span>
                             {/* RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability
                                 task, UI state #4 — "if verified: show ... source badge"): the real
                                 source resolveSolanaHolderConcentration used for this scan's
@@ -6917,7 +6908,7 @@ export default function TerminalTokenScanner() {
                         {([
                           ['Deployer', creatorResolved ? 'Likely matched' : dc && !dc.success ? 'Not resolved' : 'Not run'],
                           ['Linked Wallets', sr.clusterMap ? (sr.clusterMap.evidenceCount > 0 ? `${sr.clusterMap.evidenceCount} verified` : 'None found') : 'Not run'],
-                          ['Supply Control', !sr.authorityReadSucceeded ? 'Open check' : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
+                          ['Supply Control', !sr.authorityReadSucceeded ? formatTokenScannerPublicStatus('unavailable', 'authority read did not succeed') : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
                           ['Patterns', `${sr.patternAnalysis.patterns.filter(p => p.detected !== null).length}/${sr.patternAnalysis.patterns.length} checkable`],
                         ]).map(([k, v]) => (
                           <div key={k} style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.82)' }}>
@@ -7234,7 +7225,7 @@ export default function TerminalTokenScanner() {
                                 ))}
                               </div>
                               <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(251,191,36,.04)', border: '1px solid rgba(251,191,36,.18)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#fbbf24', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#fbbf24', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>EVIDENCE GAPS</p>
                                 {cxForDev.factors.filter(f => f.kind === 'negative').slice(0, 4).map((f, i) => (
                                   <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f.label}</p>
                                 ))}
@@ -7446,14 +7437,6 @@ export default function TerminalTokenScanner() {
 
               {/* ── CORTEX READ ───────────────────────────────────────── */}
               {activeSection === 'cortex-read' && (() => {
-                const cx = calculateCortexScoreV2(result)
-                const score = cx.score
-                const scoreDisplay = cx.displayScore
-                const scoreForBar = score ?? 0
-                const scoreColor = cx.isOpenCheck ? '#fbbf24' : scoreForBar >= 75 ? '#34d399' : scoreForBar >= 50 ? '#fbbf24' : '#f87171'
-                const v = getVerdictStyle(cx.verdict)
-                const confidence = cx.confidence
-                const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
                 const holderState = deriveHolderState(result)
                 const scanEvidence = scanEvidenceFor(result)
                 const lpStatus = result.lpControl?.status
@@ -7462,8 +7445,8 @@ export default function TerminalTokenScanner() {
                 const marketChipOk = (result.price != null || result.liquidity != null) && !result.noActivePools
                 const holdersChipOk = holderState.kind === 'rowsWithPercent'
                 const holdersChipPartial = holderState.kind === 'rowsWithoutPercent'
-                const riskChipOk = result.honeypot?.isHoneypot === false && result.honeypot?.simulationSuccess === true
                 const simUiOverview = tradingSimUiFor(result)
+                const riskChipOk = result.honeypot?.isHoneypot === false && result.honeypot?.simulationSuccess === true
                 const simUnavailable = simUiOverview.treatAsOpenRisk && simUiOverview.statusLabel !== 'Risk detected'
                 const hp2 = result.honeypot
                 const liq2 = result.liquidity ?? 0
@@ -7495,22 +7478,20 @@ export default function TerminalTokenScanner() {
                   { label: 'LP Control',  chipOk: lpVerified || lpMode === 'protocol', chipPartial: lpMode === 'unknown', chipColor: lpVerified || lpMode === 'protocol' ? '#34d399' : lpMode === 'unknown' ? '#fbbf24' : '#f87171' },
                   { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUiOverview.statusLabel === 'Risk detected',     chipColor: riskChipOk ? '#34d399' : simUiOverview.statusLabel === 'Risk detected' ? '#f87171' : '#94a3b8', chipLabel: simUiOverview.statusLabel },
                 ]
-                const marketStrengthLabel = result.noActivePools ? 'Open check' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Open check'
-                const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? 'Open check' : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
+                const marketStrengthLabel = result.noActivePools ? formatTokenScannerPublicStatus('unavailable', 'no active pool') : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : formatTokenScannerPublicStatus('unavailable', 'liquidity was not returned')
+                const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? formatTokenScannerPublicStatus('unavailable', 'holder concentration was not confirmed') : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
                 const lpProofLabel = result.lpSafetyResolution?.status ?? (lpMode === 'protocol' ? 'Protocol-specific' : lpStatus === 'locked' || lpStatus === 'burned' ? 'Verified' : lpStatus === 'team_controlled' ? 'Wallet Controlled' : lpStatus === 'partial' ? 'Partial Evidence' : 'Unavailable: LP proof incomplete')
                 const securityConfidenceLabel = simUiOverview.statusLabel
                 const degradedBadges = [
-                  (result.lpControl?.status === 'unavailable_with_reason' || result.lpControl?.status === 'insufficient_data') ? 'LP open check' : null,
-                  result.holderDistributionStatus?.status === 'unavailable_with_reason' ? 'Holders open check' : null,
+                  (result.lpControl?.status === 'unavailable_with_reason' || result.lpControl?.status === 'insufficient_data') ? 'LP unavailable' : null,
+                  result.holderDistributionStatus?.status === 'unavailable_with_reason' ? 'Holders unavailable' : null,
                   (result.noActivePools || result.marketCapStatus === 'partial') ? 'Market data partial' : null,
                 ].filter(Boolean) as string[]
                 const scoreBreakdown = [
-                  { label: 'LiquidityScore', value: cx.breakdown.liquidityScore.score, ok: cx.breakdown.liquidityScore.score != null, reason: cx.breakdown.liquidityScore.reason },
-                  { label: 'HolderScore', value: cx.breakdown.holderScore.score, ok: cx.breakdown.holderScore.score != null, reason: cx.breakdown.holderScore.reason },
-                  { label: 'SecurityScore', value: cx.breakdown.securityScore.score, ok: cx.breakdown.securityScore.score != null, reason: cx.breakdown.securityScore.reason },
-                  { label: 'MarketHealthScore', value: cx.breakdown.marketHealthScore.score, ok: cx.breakdown.marketHealthScore.score != null, reason: cx.breakdown.marketHealthScore.reason },
-                  { label: 'VolatilityPenalty', value: cx.breakdown.volatilityPenalty.score, ok: cx.breakdown.volatilityPenalty.score != null, reason: cx.breakdown.volatilityPenalty.reason },
-                  { label: 'DevScore', value: cx.breakdown.devScore.score, ok: cx.breakdown.devScore.score != null, reason: cx.breakdown.devScore.reason },
+                  { label: 'Market Maturity', value: result.riskBreakdown?.marketMaturity?.score ?? null, ok: result.riskBreakdown?.marketMaturity?.score != null, reason: (result.riskBreakdown?.marketMaturity?.reasons ?? []).join(', ') },
+                  { label: 'Liquidity Safety', value: result.riskBreakdown?.liquiditySafety?.score ?? null, ok: result.riskBreakdown?.liquiditySafety?.score != null, reason: (result.riskBreakdown?.liquiditySafety?.reasons ?? []).join(', ') },
+                  { label: 'Contract Safety', value: result.riskBreakdown?.contractSafety?.score ?? null, ok: result.riskBreakdown?.contractSafety?.score != null, reason: (result.riskBreakdown?.contractSafety?.reasons ?? []).join(', ') },
+                  { label: 'Behavioral Risk', value: result.riskBreakdown?.behavioralRisk?.score ?? null, ok: result.riskBreakdown?.behavioralRisk?.score != null, reason: (result.riskBreakdown?.behavioralRisk?.reasons ?? []).join(', ') },
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
@@ -7526,13 +7507,24 @@ export default function TerminalTokenScanner() {
                 const riskScoreVal = normalizedRisk.riskScore0To100
                 const riskLabelColor = riskColorFromCanonicalLabel(normalizedRisk.riskLabel)
                 const riskLabelDisplay = normalizedRisk.riskLabel ?? 'Unrated'
+                const score = riskScoreVal
+                const scoreDisplay = riskScoreVal != null ? String(riskScoreVal) : '—'
+                const scoreColor = riskLabelColor
+                const scoreForBar = riskGaugeFillPercent(riskScoreVal ?? 0)
+                const v = getVerdictStyle(riskLabelDisplay)
+                const confidence = normalizedRisk.confidence.toUpperCase()
+                const confColor = normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                const cx = {
+                  scanQuality: (normalizedRisk.confidence === 'high' ? 'FULL' : normalizedRisk.confidence === 'medium' ? 'PARTIAL' : 'LIMITED') as 'FULL' | 'PARTIAL' | 'LIMITED',
+                  confidence: confidence as 'HIGH' | 'MEDIUM' | 'LOW',
+                  capReason: null as string | null,
+                }
                 const riskBreakdownRows: Array<{ label: string; data?: { score?: number; max?: number; reasons?: string[] } }> = [
                   { label: 'Market Maturity', data: result.riskBreakdown?.marketMaturity },
                   { label: 'Liquidity Safety', data: result.riskBreakdown?.liquiditySafety },
                   { label: 'Contract Safety', data: result.riskBreakdown?.contractSafety },
                   { label: 'Behavioral Risk', data: result.riskBreakdown?.behavioralRisk },
                 ]
-                const legacyCortexScore = result.cortexScore ?? score
                 // LIQUIDITY-UNAVAILABLE BANNER (Robinhood scan-inconsistency audit): when the scan
                 // produced no liquidity read, say so plainly with the reason — a missing section
                 // must never render as silent blank space. Data comes from the response's own
@@ -7652,18 +7644,18 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
 
-                    {/* CORTEX Safety Read — explicitly named historical safety score. */}
+                    {/* Canonical CORTEX / Risk Score — same number as Overview, sidebar, Clark. */}
                     <div style={{ marginBottom: '20px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX SAFETY READ</div>
-                        <div style={{ fontSize: '15px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)' }}>{legacyCortexScore != null ? `Safety Score: ${legacyCortexScore}/100` : 'Unavailable'}</div>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: riskLabelColor, fontFamily: 'var(--font-plex-mono)' }}>{riskScoreVal != null ? `Risk Score: ${riskScoreVal}/100` : formatTokenScannerPublicStatus('unavailable', 'risk score was not returned')}</div>
                         <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk label: <span style={{ color: riskLabelColor, fontWeight: 700 }}>{riskLabelDisplay}</span></div>
                         <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                       </div>
                       {riskLabelCopy(normalizedRisk.riskLabel, scanEvidence) && (
                         <p style={{ margin: '0 0 6px', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel, scanEvidence)}</p>
                       )}
-                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>This secondary model is explicitly a Safety Score: higher means safer. The Risk Score above is the canonical product score.</p>
+                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Same canonical Risk Score as Overview and the sidebar. Higher means higher risk. Missing evidence reduces confidence, not safety.</p>
                     </div>
 
                     {/* Advanced CORTEX Details — collapsed by default. The old large CORTEX
@@ -7676,7 +7668,7 @@ export default function TerminalTokenScanner() {
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
                         <div style={{ flexShrink: 0 }}>
-                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SAFETY SCORE</div>
+                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CANONICAL RISK SCORE</div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
                             <span style={{ fontSize: score == null ? '38px' : '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{scoreDisplay}</span>
                             {score != null && <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>}
@@ -7699,7 +7691,7 @@ export default function TerminalTokenScanner() {
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 7px ${chipColor}` }} />
                             <div>
                               <div style={{ fontSize: '9px', letterSpacing: '.12em', color: chipColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{label}</div>
-                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipLabel ?? (chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Open check')}</div>
+                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipLabel ?? (chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Unavailable')}</div>
                             </div>
                           </div>
                         ))}
@@ -7726,7 +7718,7 @@ export default function TerminalTokenScanner() {
                         {scoreBreakdown.map((b, bIdx)=>(
                           <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'150px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
                             <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{b.label}</span>
-                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? b.value : 'OPEN'}</span>
+                            <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? b.value : 'Unavailable'}</span>
                             <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
@@ -8133,7 +8125,7 @@ export default function TerminalTokenScanner() {
                             ? `Moderate concentration — top 10 holders control ${top10h != null ? top10h.toFixed(1) : '—'}%.`
                             : concRisk === 'LOW'
                               ? `Spread looks reasonable — top 10 holders control ${top10h != null ? top10h.toFixed(1) : '—'}%.`
-                              : 'Holder concentration verdict is an open check for this scan.'
+                              : 'Holder concentration verdict is Unavailable: concentration was not confirmed for this scan.'
                         return (
                           <>
                         <div style={{ padding: '14px 16px', borderRadius: '12px', background: `${concColor}0c`, border: `1px solid ${concColor}30`, marginBottom: '12px' }}>
@@ -8145,14 +8137,20 @@ export default function TerminalTokenScanner() {
                             <div style={{ gridColumn:'1 / -1', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${concColor}28` }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
                                 <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>CONCENTRATION SUMMARY</span>
-                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:concColor, background:`${concColor}12`, border:`1px solid ${concColor}40`, fontFamily:'var(--font-plex-mono)' }}>{concRisk ?? 'OPEN CHECK'} CONCENTRATION</span>
+                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:concColor, background:`${concColor}12`, border:`1px solid ${concColor}40`, fontFamily:'var(--font-plex-mono)' }}>{concRisk ?? 'UNAVAILABLE'} CONCENTRATION</span>
                               </div>
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px' }}>
                                 {[
-                                  ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : 'N/A'],
-                                  ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : 'N/A'],
-                                  ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : 'N/A'],
-                                  ['Holders', holderCount != null ? holderCount.toLocaleString() : 'N/A'],
+                                  ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-1 percent was not returned')],
+                                  ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-10 percent was not returned')],
+                                  ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-20 percent was not returned')],
+                                  ['Holders', formatHolderCountDisplay({
+                                    holderCount,
+                                    holderCountReason: result.holderDistribution?.holderCountReason,
+                                    isCapped: result.holderDistribution?.holderCountCapped,
+                                    holderRowsReturned: result.holderDistribution?.topHolders?.length ?? 0,
+                                    reasonText: result.holderDistributionStatus?.reason,
+                                  }).display],
                                 ].map(([label, val]) => (
                                   <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>
                                     <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
@@ -8245,18 +8243,18 @@ export default function TerminalTokenScanner() {
                       // of chain or real reason — Robinhood scans now show the resolver's specific
                       // classification instead.
                       const robinhoodEv = robinhoodEvidenceFor(result)
-                      const ownerStatusValue = fallback.ownerStatus !== 'Open check' ? fallback.ownerStatus : (robinhoodEv?.ownershipLabel ?? fallback.ownerStatus)
+                      const ownerStatusValue = fallback.ownerStatus !== 'Open check' ? fallback.ownerStatus : (robinhoodEv?.ownershipLabel ?? formatTokenScannerPublicStatus('unavailable', 'ownership was not confirmed'))
                       const securityValue = simUiHolders.statusLabel
                       const lpControlValue = lpV
                         ? 'Verified'
-                        : (robinhoodEv?.lpControllerLabel ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open check'))
+                        : (robinhoodEv?.lpControllerLabel ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : formatTokenScannerPublicStatus('unavailable', 'LP controller was not confirmed')))
                       const holderMissingCopy = isRobinhoodScan(result)
                         ? ROBINHOOD_HOLDER_UNAVAILABLE_LABEL
                         : 'Holder distribution was not returned in this scan. Supply concentration remains an open risk check.'
                       const evItems: Array<{label:string;value:string;ok:boolean}> = [
                         { label: 'Market data',         value: result.price!=null?'Available':'Unavailable',                   ok: result.price!=null },
-                        { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):'Open check', ok: fallback.liquidityDepth!=null },
-                        { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):'Open check',    ok: fallback.poolCount>0 },
+                        { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):formatTokenScannerPublicStatus('unavailable', 'liquidity depth was not returned'), ok: fallback.liquidityDepth!=null },
+                        { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):formatTokenScannerPublicStatus('unavailable', 'no active pool counted'),    ok: fallback.poolCount>0 },
                         { label: 'LP control',          value: lpControlValue,                                                ok: lpV },
                         { label: 'Owner status',        value: ownerStatusValue,                                              ok: fallback.ownerStatus==='Renounced' },
                         { label: 'Security simulation', value: securityValue,                                                 ok: hpV },
@@ -8562,7 +8560,7 @@ export default function TerminalTokenScanner() {
                       : lpStatus === 'locked' ? 'Locked'
                       : lpStatus === 'partial' ? 'Partial Evidence'
                       : lpStatus === 'no_pool' ? `Unavailable: ${result.lpControl?.reason || 'No active pool detected.'}`
-                      : (cleanStatusLabel(lpStatus) === 'Open Check'
+                      : (cleanStatusLabel(lpStatus).startsWith('Unavailable')
                         ? (isRobinhoodScan(result)
                           ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
                           : `${_lpProofPartial ? 'Partial' : 'Unavailable'}: ${_lpProofReason}`)
@@ -8599,7 +8597,7 @@ export default function TerminalTokenScanner() {
                       { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : /^(Partial|Unavailable)/.test(lockBurnProof) ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? CONCENTRATED_ERC20_LOCK_BURN_LABEL : isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : undefined },
                       ...(protocolPosition ? [{
                         label: 'Position Ownership',
-                        value: clpView?.ownershipValue ?? 'Open Check',
+                        value: clpView?.ownershipValue ?? formatTokenScannerPublicStatus('unavailable', 'position ownership was not confirmed'),
                         color: clpView?.ownershipColor,
                         note: clpView?.ownershipNote || 'No reason returned for this position-ownership state.',
                       }] : []),
@@ -9247,7 +9245,7 @@ export default function TerminalTokenScanner() {
                               <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
                               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
-                                  {displayCortexVerdict ?? 'OPEN CHECK'}
+                                  {displayCortexVerdict ?? formatTokenScannerPublicStatus('unavailable', 'risk verdict was not returned')}
                                 </span>
                                 <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
                                   {displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
@@ -9454,9 +9452,9 @@ export default function TerminalTokenScanner() {
                             </div>
                           </div>
 
-                          {/* Open Checks */}
+                          {/* Evidence Gaps */}
                           <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.16)' }}>
-                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Open Checks</p>
+                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Evidence Gaps</p>
                             {(() => {
                               const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
                               return openItems.length > 0 ? (
@@ -9873,7 +9871,7 @@ export default function TerminalTokenScanner() {
                             )}
                           </div>
                           <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.18)' }}>
-                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#fbbf24', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE GAPS</p>
                             {openChecks.length > 0 ? (
                               <div style={{ display:'grid', gap:'4px' }}>
                                 {openChecks.map((c, i) => <p key={i} style={{ margin:0, fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{c}</p>)}
@@ -10126,7 +10124,7 @@ export default function TerminalTokenScanner() {
               displayLocation: 'right_rail',
               holdersVerified: scanEvidence.holdersVerified,
             })
-            const verdict = sidebarRisk.riskLabel ?? 'Open Check'
+            const verdict = sidebarRisk.riskLabel ?? formatTokenScannerPublicStatus('unavailable', 'risk score was not returned')
             const verdictColor = riskColorFromCanonicalLabel(sidebarRisk.riskLabel)
             const bull = [
               liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
@@ -10179,7 +10177,7 @@ export default function TerminalTokenScanner() {
                   <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
                     <div style={{flexShrink:0}}>
                       <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>RISK SCORE</div>
-                      <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore ?? 'Open Check'}{sidebarScore != null && <span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span>}</div>
+                      <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore ?? '—'}{sidebarScore != null && <span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span>}</div>
                     </div>
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>

@@ -201,8 +201,8 @@ function positionOwnershipLabel(ownershipStatus: string | null | undefined): str
     case 'ownership_verified_burned': return 'Burned'
     case 'ownership_verified_contract': return 'Contract Controlled'
     case 'ownership_verified': return 'Ownership Verified'
-    case 'ownership_open_check': return 'Open Check'
-    case 'ownership_unavailable_with_reason': return 'Open Check'
+    case 'ownership_open_check': return 'Unavailable: ownership not confirmed'
+    case 'ownership_unavailable_with_reason': return 'Unavailable: ownership evidence was not confirmed'
     default: return null
   }
 }
@@ -418,7 +418,7 @@ export function buildLpControllerIntel(input: LpControllerIntelInput): LpControl
     nextActions,
     controlProofLabel: status === 'concentrated_liquidity'
       ? concentratedControlProofLabel(input.concentratedPositionProof)
-      : (controlProof === 'confirmed' ? 'Confirmed' : controlProof === 'not_applicable' ? 'Not Applicable' : 'Open Check'),
+      : (controlProof === 'confirmed' ? 'Confirmed' : controlProof === 'not_applicable' ? 'Not Applicable' : 'Unavailable: control proof was not confirmed'),
     positionProofStatus: input.concentratedPositionProof?.status ?? null,
     positionProofConfidence: asString(input.concentratedPositionProof?.confidence) ?? null,
     topPositionOwner: asString(input.concentratedPositionProof?.topPositionOwner) ?? null,
