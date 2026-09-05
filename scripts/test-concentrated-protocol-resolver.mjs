@@ -24,8 +24,8 @@ async function main() {
 
     const v4 = resolveConcentratedProtocol('base', 'uniswap_v4', 'pool_id')
     assert.equal(v4.protocol, 'uniswap_v4')
-    assert.equal(v4.positionManager, null)
-    assert.equal(v4.confidence, 'low')
+    assert.equal(v4.positionManager, '0x7c5f5a4bbd8fd63184577525326123b519429bdc')
+    assert.equal(v4.confidence, 'high')
   }
 
   // ── attemptConcentratedPositionProof now reuses the resolver to populate positionManager ──

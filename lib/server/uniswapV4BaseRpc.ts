@@ -1,4 +1,4 @@
-// UNISWAP-V4-BASE-RPC, DISCLOSED: resolves real V4 concentrated-liquidity position ownership for
+// UNISWAP-V4-BASE-RPC, DISCLOSED: resolves pool-scoped V4 concentrated-liquidity activity for
 // Base mainnet directly via RPC event logs, the same approach already used for Robinhood Chain in
 // lib/server/uniswapV4RobinhoodRpc.ts (that file's header explains why RPC event logs rather than
 // a subgraph: no Base-specific V4 subgraph ID is configured anywhere in this codebase, so this is
@@ -23,7 +23,7 @@ const BASE_V4_LOG_QUERY_TIMEOUT_MS = 8_000
 // throughout this codebase's concentrated-liquidity proof code.
 const BASE_V4_LOG_SAMPLE_CAP = 500
 
-import type { ConcentratedOwnerResolver, ConcentratedOwnerRecord } from './lpProof'
+import type { ConcentratedOwnerLookupResult, ConcentratedOwnerResolver, ConcentratedOwnerRecord } from './lpProof'
 import { RPC } from '../rpc'
 import { logRpcCall } from './rpcDebug'
 import { auditGlobalAlchemyCall } from './globalRpcAudit'
@@ -126,11 +126,26 @@ function aggregateOwnersFromLogs(logs: RawLog[]): ConcentratedOwnerRecord[] {
 // The ConcentratedOwnerResolver plugged into attemptConcentratedPositionProof for Base. Only
 // applies when chain === 'base' && poolModel === 'uniswap_v4' && a real poolId is present —
 // returns null (meaning "no real source available", never a fabricated empty-but-confident
-// result) for every other chain/model.
+// result) for every other chain/model. ModifyLiquidity sender addresses are deliberately retained
+// as activity evidence only because they are not necessarily the beneficial position owners.
 export const resolveUniswapV4BaseRpc: ConcentratedOwnerResolver = async (input) => {
-  if (input.chain !== 'base' || input.poolModel !== 'uniswap_v4' || !input.poolId) return null
+  if (input.chain !== 'base' || input.poolModel !== 'uniswap_v4') return null
+  if (!input.poolId) return { records: null, attempted: true, providerUsed: 'base_rpc_uniswap_v4_modify_liquidity', positionsFound: null, activePositionsFound: null, failureReason: 'The selected Uniswap V4 market did not include its bytes32 pool ID, so pool-specific position logs cannot be queried.' } satisfies ConcentratedOwnerLookupResult
+  if (!RPC.base) return { records: null, attempted: true, providerUsed: 'base_rpc_uniswap_v4_modify_liquidity', positionsFound: null, activePositionsFound: null, failureReason: 'Base RPC is not configured for the Uniswap V4 position lookup.' } satisfies ConcentratedOwnerLookupResult
   const logs = await fetchModifyLiquidityLogs(input.poolId)
-  if (logs == null) return null
-  if (logs.length === 0) return []
-  return aggregateOwnersFromLogs(logs)
+  if (logs == null) return { records: null, attempted: true, providerUsed: 'base_rpc_uniswap_v4_modify_liquidity', positionsFound: null, activePositionsFound: null, failureReason: 'Base RPC did not return Uniswap V4 ModifyLiquidity logs for this pool.' } satisfies ConcentratedOwnerLookupResult
+  const modifiers = aggregateOwnersFromLogs(logs)
+  // ModifyLiquidity.sender proves who submitted liquidity changes, but a router/PositionManager
+  // may submit them for another beneficial NFT owner. Keep this as activity evidence only; never
+  // promote a modifier into a verified position owner/share.
+  return {
+    records: null,
+    attempted: true,
+    providerUsed: 'base_rpc_uniswap_v4_modify_liquidity',
+    positionsFound: logs.length,
+    activePositionsFound: null,
+    failureReason: modifiers.length === 0
+      ? 'Uniswap V4 ModifyLiquidity logs were found, but no active positive-liquidity modifier remained in the indexed range.'
+      : `Uniswap V4 activity was indexed (${modifiers.length} modifier address(es)), but ModifyLiquidity sender is not proof of the beneficial position owner.`,
+  } satisfies ConcentratedOwnerLookupResult
 }

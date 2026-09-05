@@ -396,6 +396,11 @@ type ScanResult = {
     poolIdentity?: string | null
     poolIdentityType?: 'contract' | 'pool_id' | 'unknown' 
     positionManager?: string | null
+    positionLookupAttempted?: boolean
+    positionProviderUsed?: string | null
+    positionsFound?: number | null
+    activePositionsFound?: number | null
+    positionLookupFailureReason?: string | null
     positionCount?: number | null
     topPositionOwner?: string | null
     topPositionOwnerType?: 'wallet' | 'locker' | 'protocol' | 'unknown' | null
@@ -440,6 +445,26 @@ type ScanResult = {
     proofSource?: string | null
     finalStatus?: 'verified_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'owner_unavailable' | 'unsupported_with_reason' | 'not_applicable'
     finalReason?: string
+  } | null
+  concentratedLpPositionAudit?: {
+    chainId?: number | null
+    tokenAddress?: string | null
+    poolAddress?: string | null
+    protocol?: string | null
+    poolType?: string | null
+    positionManagerResolved?: boolean
+    positionManagerAddress?: string | null
+    positionLookupAttempted?: boolean
+    providerUsed?: string | null
+    positionsFound?: number | null
+    activePositionsFound?: number | null
+    totalActiveLiquidity?: string | number | null
+    topOwner?: string | null
+    topOwnerLiquiditySharePct?: number | null
+    ownerIsContract?: boolean | null
+    ownerClassification?: string | null
+    finalStatus?: 'verified_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'owner_unavailable_with_reason' | 'unsupported_with_reason' | 'unavailable_with_reason'
+    failureReason?: string | null
   } | null
   lpMovementWatch?: {
     status?: string
@@ -5190,6 +5215,7 @@ export default function TerminalTokenScanner() {
           concentratedPositionProof: json.concentratedPositionProof ?? null,
           concentratedPositionProofRead: json.concentratedPositionProofRead ?? null,
           concentratedLpPositionOwnershipAudit: json.concentratedLpPositionOwnershipAudit ?? null,
+          concentratedLpPositionAudit: json.concentratedLpPositionAudit ?? null,
           poolActivity: json.poolActivity ?? null,
           priceChart: json.priceChart ?? null,
           chartStatus: json.chartStatus ?? null,
@@ -8375,14 +8401,16 @@ export default function TerminalTokenScanner() {
                       // that specific mapping applies. Falls back to the pre-existing cpp-derived text
                       // only if the audit itself is unavailable (older cached scan payload).
                       ...(protocolPosition && cpp ? [(() => {
-                        const audit = result.concentratedLpPositionOwnershipAudit
+                        const audit = result.concentratedLpPositionAudit ?? result.concentratedLpPositionOwnershipAudit
                         if (audit && audit.finalStatus) {
                           const valueByStatus: Record<string, string> = {
                             verified_position_owner: 'Verified — position owner confirmed',
                             protocol_managed: 'Protocol Managed',
                             contract_owner_unverified: 'Contract Owner — Unverified',
-                            owner_unavailable: 'Owner Unavailable',
-                            unsupported_with_reason: 'Unsupported',
+                            owner_unavailable: 'Unavailable — owner evidence missing',
+                            owner_unavailable_with_reason: 'Unavailable — owner evidence missing',
+                            unsupported_with_reason: 'Unsupported — provider path unavailable',
+                            unavailable_with_reason: 'Unavailable — provider lookup failed',
                             not_applicable: 'Not Applicable',
                           }
                           const colorByStatus: Record<string, string | undefined> = {
@@ -8390,14 +8418,19 @@ export default function TerminalTokenScanner() {
                             protocol_managed: '#34d399',
                             contract_owner_unverified: '#fbbf24',
                             owner_unavailable: '#fbbf24',
+                            owner_unavailable_with_reason: '#fbbf24',
                             unsupported_with_reason: '#fbbf24',
+                            unavailable_with_reason: '#fbbf24',
                             not_applicable: undefined,
                           }
+                          const auditReason = 'failureReason' in audit
+                            ? audit.failureReason
+                            : ('finalReason' in audit ? audit.finalReason : null)
                           return {
                             label: 'Position Ownership',
                             value: valueByStatus[audit.finalStatus] ?? 'Unavailable: position proof status missing',
                             color: colorByStatus[audit.finalStatus],
-                            note: audit.finalReason || 'No reason returned for this position-ownership state.',
+                            note: auditReason || (audit.finalStatus === 'verified_position_owner' ? 'Owner and liquidity share verified from active-position evidence.' : 'No reason returned for this position-ownership state.'),
                           }
                         }
                         return {
@@ -8423,9 +8456,9 @@ export default function TerminalTokenScanner() {
                         }
                       })()] : (protocolPosition ? [{
                         label: 'Position Ownership',
-                        value: result.concentratedLpPositionOwnershipAudit?.finalStatus === 'owner_unavailable' ? 'Owner Unavailable'
+                        value: (result.concentratedLpPositionAudit?.finalStatus === 'owner_unavailable_with_reason' || result.concentratedLpPositionOwnershipAudit?.finalStatus === 'owner_unavailable') ? 'Unavailable — owner evidence missing'
                           : hasResolvedConcentratedManager(result) ? 'Owner not verified — bounded sample unavailable' : 'Unavailable: position owner proof missing',
-                        note: result.concentratedLpPositionOwnershipAudit?.finalReason
+                        note: result.concentratedLpPositionAudit?.failureReason || result.concentratedLpPositionOwnershipAudit?.finalReason
                           || (hasResolvedConcentratedManager(result) ? 'No bounded position-candidate source is available yet for this pool.' : protocolPositionSubtext('control')),
                       }] : [])),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },

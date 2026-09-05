@@ -1193,6 +1193,11 @@ export interface ConcentratedPositionProof {
   poolIdentity: string | null;
   poolIdentityType: "contract" | "pool_id" | "unknown";
   positionManager: string | null;
+  positionLookupAttempted: boolean;
+  positionProviderUsed: string | null;
+  positionsFound: number | null;
+  activePositionsFound: number | null;
+  positionLookupFailureReason: string | null;
   positionCount: number | null;
   totalPositionLiquidity: string | number | null;
   topPositionOwner: string | null;
@@ -1235,6 +1240,18 @@ export interface ConcentratedOwnerRecord {
   positionCount?: number | null;
 }
 
+/** Provider-aware result used by production position indexers. The legacy array return remains
+ * accepted for fixture resolvers, while this shape preserves the exact reason a live lookup did
+ * not produce ownership evidence. */
+export interface ConcentratedOwnerLookupResult {
+  records: ConcentratedOwnerRecord[] | null;
+  attempted: boolean;
+  providerUsed: string | null;
+  positionsFound: number | null;
+  activePositionsFound: number | null;
+  failureReason: string | null;
+}
+
 /** Pluggable position-owner source. Returns null when no source is configured/available —
  * the proof then falls back to the existing RPC-only pool-confirmation path (never "verified").
  * Production has no real indexer configured today (no subgraph/Graph endpoint, no Alchemy NFT
@@ -1246,7 +1263,7 @@ export type ConcentratedOwnerResolver = (input: {
   poolModel: ConcentratedPoolModel;
   poolAddress: string | null;
   poolId: string | null;
-}) => Promise<ConcentratedOwnerRecord[] | null>;
+}) => Promise<ConcentratedOwnerRecord[] | ConcentratedOwnerLookupResult | null>;
 
 const CONCENTRATED_PROOF_CACHE_TTL_MS = 10 * 60 * 1000;
 const concentratedProofCache = new Map<string, { exp: number; data: ConcentratedPositionProof }>();
@@ -1269,6 +1286,9 @@ const KNOWN_PROTOCOL_MANAGERS = new Set([
   "0x73991a25c818bf1f1128deaab1492d45638de0d3", // Uniswap V3 NonfungiblePositionManager (Robinhood Chain)
   "0x8366a39cc670b4001a1121b8f6a443a643e40951", // Uniswap V4 PoolManager (Robinhood Chain)
   "0x58daec3116aae6d93017baaea7749052e8a04fa7", // Uniswap V4 PositionManager (Robinhood Chain)
+  "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e", // Uniswap V4 PositionManager (Ethereum)
+  "0x7c5f5a4bbd8fd63184577525326123b519429bdc", // Uniswap V4 PositionManager (Base)
+  "0x7a4a5c919ae2541aed11041a1aeee68f1287f95b", // Uniswap V4 PositionManager (BNB Chain)
 ]);
 
 // Partial, not Record<LpChain,string> — only chains with a verified position-manager address get
@@ -1278,6 +1298,13 @@ const POSITION_MANAGER_BY_CHAIN: Partial<Record<LpChain, string>> = {
   base: "0x03a520b32c04bf3beef7beb72e919cf822ed34f1",
   bnb: "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364",
   robinhood: "0x73991a25c818bf1f1128deaab1492d45638de0d3",
+};
+
+const V4_POSITION_MANAGER_BY_CHAIN: Partial<Record<LpChain, string>> = {
+  eth: "0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e",
+  base: "0x7c5f5a4bbd8fd63184577525326123b519429bdc",
+  bnb: "0x7a4a5c919ae2541aed11041a1aeee68f1287f95b",
+  robinhood: "0x58daec3116aae6d93017baaea7749052e8a04fa7",
 };
 
 /** Stage 1 — protocol resolver. Centralizes the protocol/position-manager knowledge that was
@@ -1311,7 +1338,11 @@ export function resolveConcentratedProtocol(
   // forks are detected and labeled correctly, but their position-manager addresses are not yet
   // confirmed here — reporting one without verification would risk probing the wrong contract, so
   // this stays null/low-confidence for them rather than guessing.
-  const positionManager = (protocol === "uniswap_v3" || protocol === "pancakeswap_v3") ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null) : null;
+  const positionManager = protocol === "uniswap_v4"
+    ? (V4_POSITION_MANAGER_BY_CHAIN[chain] ?? null)
+    : (protocol === "uniswap_v3" || protocol === "pancakeswap_v3")
+      ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null)
+      : null;
   return {
     protocol,
     positionManager,
@@ -1514,16 +1545,18 @@ function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAd
 async function _resolveOwnersSafely(
   resolver: ConcentratedOwnerResolver | undefined,
   input: { chain: LpChain; poolModel: ConcentratedPoolModel; poolAddress: string | null; poolId: string | null },
-): Promise<ConcentratedOwnerRecord[] | null> {
-  if (!resolver) return null;
+): Promise<ConcentratedOwnerLookupResult> {
+  if (!resolver) return { records: null, attempted: false, providerUsed: null, positionsFound: null, activePositionsFound: null, failureReason: "No concentrated-position owner resolver is configured." };
   try {
     const result = await Promise.race([
       resolver(input),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 6000)),
+      new Promise<ConcentratedOwnerLookupResult>((resolve) => setTimeout(() => resolve({ records: null, attempted: true, providerUsed: null, positionsFound: null, activePositionsFound: null, failureReason: "Position-owner lookup timed out after 6 seconds." }), 6000)),
     ]);
-    return Array.isArray(result) ? result : null;
-  } catch {
-    return null;
+    if (Array.isArray(result)) return { records: result, attempted: true, providerUsed: "position_owner_resolver", positionsFound: result.reduce((sum, row) => sum + (row.positionCount ?? 1), 0), activePositionsFound: result.reduce((sum, row) => sum + (row.positionCount ?? 1), 0), failureReason: null };
+    if (result && typeof result === "object" && "records" in result) return result;
+    return { records: null, attempted: true, providerUsed: null, positionsFound: null, activePositionsFound: null, failureReason: "No compatible position-owner source is configured for this protocol and chain." };
+  } catch (error) {
+    return { records: null, attempted: true, providerUsed: null, positionsFound: null, activePositionsFound: null, failureReason: error instanceof Error ? `Position-owner lookup failed: ${error.message}` : "Position-owner lookup failed with an unknown provider error." };
   }
 }
 
@@ -1678,6 +1711,11 @@ export async function attemptConcentratedPositionProof(
     poolIdentity,
     poolIdentityType: normalizedPoolId ? "pool_id" : normalizedPoolAddress ? "contract" : "unknown",
     positionManager: protocolInfo.positionManager,
+    positionLookupAttempted: false,
+    positionProviderUsed: null,
+    positionsFound: null,
+    activePositionsFound: null,
+    positionLookupFailureReason: null,
     positionCount: null,
     totalPositionLiquidity: null,
     topPositionOwner: null,
@@ -1783,13 +1821,16 @@ export async function attemptConcentratedPositionProof(
   // of the existing RPC/market provider path here. If a real position-owner source is plugged in
   // via `resolveOwners`, attempt it first — but never fabricate an owner when none is configured.
   if (!poolAddress || poolAddressType === "pool_id") {
-    const v4Owners = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
-    if (v4Owners != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, base, v4Owners), "external_resolver", "v4_external_resolver");
+    const v4Lookup = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+    const v4Base = { ...base, positionLookupAttempted: v4Lookup.attempted, positionProviderUsed: v4Lookup.providerUsed, positionsFound: v4Lookup.positionsFound, activePositionsFound: v4Lookup.activePositionsFound, positionLookupFailureReason: v4Lookup.failureReason };
+    if (v4Lookup.records != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, v4Base, v4Lookup.records), "external_resolver", "v4_external_resolver");
     return finish({
-      ...base,
+      ...v4Base,
       status: "not_supported",
       confidence: "low",
-      reason: "The pool is confirmed active but ownership of its concentrated liquidity positions could not be fully resolved.",
+      reason: v4Lookup.failureReason
+        ? `The pool is confirmed active, but ownership of its concentrated liquidity positions could not be fully resolved: ${v4Lookup.failureReason}`
+        : "The pool is confirmed active, but no provider returned beneficial owners for its concentrated-liquidity positions.",
       evidence: poolId ? [`poolId=${poolId}`] : [],
       missingEvidence: ["positionManager", "topPositionOwner", "positionCount", "positionLiquidityShare"],
       nextAction: "Liquidity ownership is still being verified — re-check after the next scan.",
@@ -1800,12 +1841,13 @@ export async function attemptConcentratedPositionProof(
   // one is configured via `resolveOwners`); then a real on-chain probe of known burn/locker
   // candidates against the NonfungiblePositionManager; otherwise fall back to the existing RPC
   // probe of the pool itself, which confirms liquidity but cannot attribute it to a position owner.
-  const v3Owners = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
-  if (v3Owners != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, base, v3Owners), "external_resolver", "v3_external_resolver");
+  const v3Lookup = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+  const v3Base = { ...base, positionLookupAttempted: v3Lookup.attempted, positionProviderUsed: v3Lookup.providerUsed, positionsFound: v3Lookup.positionsFound, activePositionsFound: v3Lookup.activePositionsFound, positionLookupFailureReason: v3Lookup.failureReason };
+  if (v3Lookup.records != null) return finish(await _buildVerifiedOrPartialFromOwners(chain, v3Base, v3Lookup.records), "external_resolver", "v3_external_resolver");
 
   const candidateOwners = await _resolveKnownCandidateOwners(chain, poolModel, poolAddress);
   if (candidateOwners != null && candidateOwners.length > 0) {
-    return finish(await _buildVerifiedOrPartialFromOwners(chain, base, candidateOwners), "rpc_candidate_probe", "nft_position_manager_candidate_probe");
+    return finish(await _buildVerifiedOrPartialFromOwners(chain, { ...v3Base, positionProviderUsed: v3Base.positionProviderUsed ?? "rpc_position_manager_candidate_probe" }, candidateOwners), "rpc_candidate_probe", "nft_position_manager_candidate_probe");
   }
 
   const call = (selector: string) => lpRpcCall(chain, "eth_call", [{ to: poolAddress.toLowerCase(), data: selector }, "latest"]);
@@ -1815,7 +1857,7 @@ export async function attemptConcentratedPositionProof(
     [liquidityHex, slot0Hex] = await Promise.all([call("0x1a686502"), call("0x3850c7bd")]);
   } catch {
     return finish({
-      ...base,
+      ...v3Base,
       status: "failed",
       confidence: "low",
       reason: "RPC call to the pool contract failed while attempting position-proof verification.",
@@ -1828,7 +1870,7 @@ export async function attemptConcentratedPositionProof(
   const slot0Resolved = _rpcResolved(slot0Hex);
   if (!liquidityResolved && !slot0Resolved) {
     return finish({
-      ...base,
+      ...v3Base,
       status: "failed",
       confidence: "low",
       reason: "Pool contract did not respond to liquidity()/slot0() probes — position proof could not be attempted.",
@@ -1840,7 +1882,7 @@ export async function attemptConcentratedPositionProof(
   const liquidityBig = liquidityResolved ? hexToBigInt(liquidityHex) : null;
   if (liquidityResolved && liquidityBig === BigInt(0)) {
     return finish({
-      ...base,
+      ...v3Base,
       status: "not_found",
       confidence: "medium",
       reason: "Pool contract confirmed on-chain, but reports zero active liquidity — no position to attribute ownership to.",
@@ -1851,12 +1893,14 @@ export async function attemptConcentratedPositionProof(
   }
   const sampling = await _attemptSampling();
   return finish({
-    ...base,
+    ...v3Base,
     ...sampling,
     totalPositionLiquidity: liquidityBig != null ? liquidityBig.toString() : null,
     status: "partial",
     confidence: "low",
-    reason: "The pool is confirmed active, but the largest liquidity owner could not be verified from currently available evidence.",
+    reason: v3Lookup.failureReason
+      ? `The pool is confirmed active, but position ownership is unavailable: ${v3Lookup.failureReason}`
+      : "The pool is confirmed active, but the largest liquidity owner could not be verified from currently available evidence.",
     evidence: [
       liquidityResolved ? `liquidity probe: resolved (${liquidityBig != null ? liquidityBig.toString() : "nonzero"})` : `liquidity probe: unresolved`,
       slot0Resolved ? `slot0 probe: resolved (pool active)` : `slot0 probe: unresolved`,
@@ -2018,6 +2062,75 @@ export function buildConcentratedLpPositionOwnershipAudit(
 
   // "open_check" — no pool address/id was available to attempt a proof at all.
   return { ...base, finalStatus: "not_applicable", finalReason: proof.reason };
+}
+
+export type ConcentratedLpPositionAuditStatus =
+  | "verified_position_owner"
+  | "contract_owner_unverified"
+  | "protocol_managed"
+  | "owner_unavailable_with_reason"
+  | "unsupported_with_reason"
+  | "unavailable_with_reason";
+
+export interface ConcentratedLpPositionAudit {
+  chainId: number | null;
+  tokenAddress: string | null;
+  poolAddress: string | null;
+  protocol: ConcentratedPoolModel | null;
+  poolType: ConcentratedPoolModel | null;
+  positionManagerResolved: boolean;
+  positionManagerAddress: string | null;
+  positionLookupAttempted: boolean;
+  providerUsed: string | null;
+  positionsFound: number | null;
+  activePositionsFound: number | null;
+  totalActiveLiquidity: string | number | null;
+  topOwner: string | null;
+  topOwnerLiquiditySharePct: number | null;
+  ownerIsContract: boolean | null;
+  ownerClassification: ConcentratedOwnerType | null;
+  finalStatus: ConcentratedLpPositionAuditStatus;
+  failureReason: string | null;
+}
+
+/** Required concentrated-position audit. Owner/share fields are populated only after full-pool
+ * ownership evidence is verified; bounded samples remain useful evidence but are never promoted
+ * into a verified controller. */
+export function buildConcentratedLpPositionAudit(
+  proof: ConcentratedPositionProof | null | undefined,
+  meta: { chainId: number | null; tokenAddress: string | null },
+): ConcentratedLpPositionAudit | null {
+  if (!proof) return null;
+  const verified = proof.status === "verified" && proof.topPositionOwner != null;
+  const ownerType = verified ? proof.topPositionOwnerType : null;
+  const { ownerIsContract } = _ownerIsContractFlags(ownerType);
+  const base = {
+    chainId: meta.chainId,
+    tokenAddress: meta.tokenAddress,
+    poolAddress: proof.poolAddress ?? proof.poolId,
+    protocol: proof.poolModel,
+    poolType: proof.poolModel,
+    positionManagerResolved: proof.positionManager != null,
+    positionManagerAddress: proof.positionManager,
+    positionLookupAttempted: proof.positionLookupAttempted,
+    providerUsed: proof.positionProviderUsed,
+    positionsFound: proof.positionsFound,
+    activePositionsFound: proof.activePositionsFound,
+    totalActiveLiquidity: verified ? proof.totalPositionLiquidity : null,
+    topOwner: verified ? proof.topPositionOwner : null,
+    topOwnerLiquiditySharePct: verified ? proof.topPositionSharePercent : null,
+    ownerIsContract,
+    ownerClassification: ownerType,
+  };
+  if (verified) {
+    if (ownerType === "protocol") return { ...base, finalStatus: "protocol_managed", failureReason: null };
+    if (ownerType === "contract") return { ...base, finalStatus: "contract_owner_unverified", failureReason: "The top liquidity position is held by a contract, but its beneficial controller is not independently verified." };
+    return { ...base, finalStatus: "verified_position_owner", failureReason: null };
+  }
+  const reason = proof.positionLookupFailureReason ?? proof.reason;
+  if (proof.status === "not_supported") return { ...base, finalStatus: "unsupported_with_reason", failureReason: reason };
+  if (proof.status === "failed" || proof.status === "open_check") return { ...base, finalStatus: "unavailable_with_reason", failureReason: reason };
+  return { ...base, finalStatus: "owner_unavailable_with_reason", failureReason: reason };
 }
 
 // ─── Canonical pool identity — cross-scan stability for the same pool address ──────────────

@@ -206,7 +206,7 @@ function main() {
 
     const uiSrc = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
     assert.ok(uiSrc.includes('concentratedLpPositionOwnershipAudit'), 'Token Scanner UI reads the audit object')
-    assert.ok(uiSrc.includes("audit.finalReason || 'No reason returned"), 'Position Ownership row always shows a reason')
+    assert.ok(uiSrc.includes("'failureReason' in audit") && uiSrc.includes("'finalReason' in audit"), 'Position Ownership row always reads the exact audit reason')
 
     const clarkRouteSrc = readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
     assert.ok(clarkRouteSrc.includes('positionOwnershipFinalStatus'), 'Clark evidence mapping carries finalStatus through')

@@ -52,6 +52,7 @@ import {
   buildCanonicalPoolIdentity,
   reconcileCanonicalPoolIdentity,
   buildConcentratedLpPositionOwnershipAudit,
+  buildConcentratedLpPositionAudit,
   type ProofApplicability,
   type ConcentratedPositionProof,
   type CanonicalPoolIdentity,
@@ -120,6 +121,16 @@ const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (inpu
   if (v4Rpc != null) return v4Rpc
   const v4BaseRpc = await resolveUniswapV4BaseRpc(input)
   if (v4BaseRpc != null) return v4BaseRpc
+  if (input.poolModel === 'uniswap_v4') {
+    return {
+      records: null,
+      attempted: true,
+      providerUsed: null,
+      positionsFound: null,
+      activePositionsFound: null,
+      failureReason: `No Uniswap V4 position-owner indexer is configured for ${input.chain}; the pool model is verified, but beneficial position ownership cannot be attributed from pool metadata alone.`,
+    }
+  }
   return resolveUniswapV3PositionOwners(input)
 }
 
@@ -3108,8 +3119,15 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
   const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
   const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
-  const { address, poolId, poolAddressType } = extractPoolAddressOrId(pool?.id, attrs.address)
   const { dexId, dexName } = extractPoolDex(pool, []);
+  const defaultIdentity = extractPoolAddressOrId(pool?.id, attrs.address)
+  // GeckoTerminal can expose the V4 singleton PoolManager as attributes.address while its
+  // resource id contains the actual bytes32 pool ID. Prefer that pool ID for V4; querying by the
+  // singleton address cannot isolate this token's positions.
+  const rawIdIdentity = extractPoolAddressOrId(pool?.id, null)
+  const { address, poolId, poolAddressType } = /uniswap.*v4|v4.*uniswap/i.test(`${dexId} ${dexName}`) && rawIdIdentity.poolId
+    ? rawIdIdentity
+    : defaultIdentity
   return {
     address,
     poolId,
@@ -4756,8 +4774,11 @@ export async function POST(req: Request) {
         // reaching this proof attempt at all, even after LpChain itself was widened earlier this
         // session. `chain` is already narrowed to one of the four supported ChainKey values by the
         // request-level gate, so this cast is now accurate rather than lossy.
-        chain as "eth" | "base" | "bnb" | "robinhood", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
-        primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+        chain as "eth" | "base" | "bnb" | "robinhood",
+        lpPool?.poolId ? null : (lpPool?.address ?? primaryPoolAddress),
+        lpPool?.poolId ?? primaryMarketPoolId ?? null,
+        lpPool?.poolId ? "pool_id" : (lpPool?.poolAddressType ?? primaryMarketPoolAddressType ?? "unknown"),
+        lpDexId ?? lpDexName ?? null,
         resolveConcentratedPositionOwners,
       )
       lpControl = {
@@ -7365,7 +7386,7 @@ export async function POST(req: Request) {
       burnStatus: lpControl.burnStatus ?? null,
       exitRisk: lpExitRisk,
       exitRiskReason: lpExitRiskReason,
-      failureReason: lpDiagnostics.failureReason ?? lpControl.reason ?? null,
+      failureReason: concentratedPositionProof?.reason ?? lpDiagnostics.failureReason ?? lpControl.reason ?? null,
     }) : null
     const lpUnlockTimeline = buildLpUnlockTimeline({
       chain,
@@ -8618,6 +8639,10 @@ export async function POST(req: Request) {
       concentratedPositionProof,
       concentratedPositionProofRead,
       concentratedLpPositionOwnershipAudit: buildConcentratedLpPositionOwnershipAudit(concentratedPositionProof, {
+        chainId: CHAIN_ID_MAP[chain] ?? null,
+        tokenAddress: contract,
+      }),
+      concentratedLpPositionAudit: buildConcentratedLpPositionAudit(concentratedPositionProof, {
         chainId: CHAIN_ID_MAP[chain] ?? null,
         tokenAddress: contract,
       }),
