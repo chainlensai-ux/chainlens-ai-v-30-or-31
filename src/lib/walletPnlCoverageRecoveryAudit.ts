@@ -16,7 +16,7 @@
 // public PnL gate itself uses (isCanonicalVerifiedPublishedLot), never a second local definition.
 
 import type { MatchedLot } from '../modules/fifoEngine/types'
-import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
+import type { RecoveryEvaluationEntry, RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { canonicalVerifiedRejectionReason } from './canonicalVerifiedLot'
 
 // The task's required per-lot classification taxonomy.
@@ -87,6 +87,37 @@ export type WalletPnlCoverageRecoveryAudit = {
   stillExcludedLots: number
   officialPnlEligibleAfterRecovery: boolean
   officialPnlStillBlockedReason: string | null
+  pnlRecoveryFlowAudit: PnlRecoveryFlowAudit[]
+  acceptedEvidenceReuse: {
+    acceptedSidesLoaded: number
+    pricingRequirementsRemoved: number
+    reused: boolean
+  } | null
+}
+
+export type PnlRecoveryFlowDropStage =
+  | 'ranked'
+  | 'shared_request'
+  | 'pages'
+  | 'events'
+  | 'entry_exit'
+  | 'price'
+  | null
+
+export type PnlRecoveryFlowAudit = {
+  token: string
+  lotCount: number
+  ranked: boolean
+  includedInSharedRequest: boolean
+  pagesAvailable: number
+  matchingEventsFound: number
+  entryLotsRecovered: number
+  exitLotsRecovered: number
+  priceRequirements: number
+  pricesResolved: number
+  lotsVerified: number
+  dropStage: PnlRecoveryFlowDropStage
+  dropReason: string | null
 }
 
 // Maps the shared canonical rejection reason onto the task's taxonomy.
@@ -137,6 +168,11 @@ export function buildWalletPnlCoverageRecoveryAudit(params: {
   thresholdRequired?: number
   /** Providers this deployment has configured for graph/indexed recovery. */
   graphSourcesAvailable?: readonly string[]
+  /** Real accepted-evidence skip counters from this scan's pricing pass — reuse verification only. */
+  acceptedEvidenceReuse?: {
+    acceptedSidesLoaded: number
+    pricingRequirementsRemoved: number
+  } | null
 }): WalletPnlCoverageRecoveryAudit {
   const thresholdRequired = params.thresholdRequired ?? 0.5
   const lots = params.matchedLots
@@ -158,21 +194,16 @@ export function buildWalletPnlCoverageRecoveryAudit(params: {
   const evaluation = params.recoveryPolicy?.evaluation ?? []
   const triggered = evaluation.filter((e) => e.recoveryTriggered)
   const triggeredRecoveryTokens = triggered.map((e) => `${e.chain}:${e.token}`)
-  // "Succeeded" means the fetch actually returned usable events — not merely that it was attempted.
-  //
-  // PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task): a candidate can
-  // now recover real events with pagesUsed === 0 — recoveryPolicy's fetchGoldrushFreeRideEvents lets
-  // a triggered candidate with zero of its OWN wallet-page budget still read another candidate's
-  // already-fetched (request-scope coalesced, token-agnostic) GoldRush page for free. The old
-  // `pagesUsed > 0 &&` guard wrongly classified that as a failure — pagesUsed only reflects whose
-  // budget paid for the page, never whether real events were actually found. Success is (and was
-  // always meant to be) solely about whether usable events came back.
+  // "Succeeded" means the fetch (dedicated OR already-paid shared chain page) actually returned
+  // usable events. pagesUsed stays the dedicated paid-budget counter and must NOT be required
+  // here — a ranked-eligible token that only read a shared GoldRush page (or free-rode another
+  // candidate's page via recoveryPolicy's fetchGoldrushFreeRideEvents) reports pagesUsed=0 while
+  // still receiving real recoveredEvents. pagesUsed only reflects whose budget paid for the page,
+  // never whether real events were actually found.
   const succeeded = triggered.filter((e) => e.recoveredEvents.length > 0)
   const recoverySucceededTokens = succeeded.map((e) => `${e.chain}:${e.token}`)
-  // A triggered token that got no pages was starved by the wallet page cap, not proven empty —
-  // that distinction is the whole point of separating these two lists.
   const recoveryFailedTokens = triggered
-    .filter((e) => !(e.pagesUsed > 0 && e.recoveredEvents.length > 0))
+    .filter((e) => e.recoveredEvents.length === 0)
     .map((e) => `${e.chain}:${e.token}`)
 
   // Recovered legs, split by direction relative to the scanned wallet. Entry = inbound (supplies a
@@ -232,11 +263,19 @@ export function buildWalletPnlCoverageRecoveryAudit(params: {
       ]
       if (dominant) parts.push(`Largest blocker: ${dominant[0]} (${dominant[1]} lots).`)
       if (starvedByCap > 0) {
-        parts.push(
-          `${starvedByCap} of ${triggered.length} triggered token${triggered.length === 1 ? '' : 's'} received no historical pages — ` +
-          `the wallet page cap (${params.recoveryPolicy?.caps.maxHistoricalPagesPerWallet ?? 'n/a'}) funds only ` +
-          `${Math.floor((params.recoveryPolicy?.caps.maxHistoricalPagesPerWallet ?? 0) / 2)} tokens per scan.`,
-        )
+        const notInShared = triggered.filter((e) => e.recoveredEvents.length === 0 && e.includedInSharedRequest !== true).length
+        const inSharedNoEvents = triggered.filter((e) => e.recoveredEvents.length === 0 && e.includedInSharedRequest === true).length
+        if (inSharedNoEvents > 0) {
+          parts.push(
+            `${inSharedNoEvents} of ${triggered.length} triggered token${triggered.length === 1 ? '' : 's'} were in paid shared chain pages but had no matching transfers.`,
+          )
+        }
+        if (notInShared > 0) {
+          parts.push(
+            `${notInShared} of ${triggered.length} triggered token${triggered.length === 1 ? '' : 's'} received no historical pages — ` +
+            `they were outside the paid shared chain request (wallet page cap ${params.recoveryPolicy?.caps.maxHistoricalPagesPerWallet ?? 'n/a'}).`,
+          )
+        }
       }
       officialPnlStillBlockedReason = parts.join(' ')
     }
@@ -264,5 +303,110 @@ export function buildWalletPnlCoverageRecoveryAudit(params: {
     stillExcludedLots,
     officialPnlEligibleAfterRecovery,
     officialPnlStillBlockedReason,
+    pnlRecoveryFlowAudit: buildPnlRecoveryFlowAudit({
+      wallet: walletLower,
+      matchedLots: lots,
+      evaluation,
+    }),
+    acceptedEvidenceReuse: params.acceptedEvidenceReuse
+      ? {
+          acceptedSidesLoaded: params.acceptedEvidenceReuse.acceptedSidesLoaded,
+          pricingRequirementsRemoved: params.acceptedEvidenceReuse.pricingRequirementsRemoved,
+          reused: params.acceptedEvidenceReuse.acceptedSidesLoaded > 0
+            && params.acceptedEvidenceReuse.pricingRequirementsRemoved > 0,
+        }
+      : null,
   }
+}
+
+function buildPnlRecoveryFlowAudit(params: {
+  wallet: string
+  matchedLots: readonly MatchedLot[]
+  evaluation: readonly RecoveryEvaluationEntry[]
+}): PnlRecoveryFlowAudit[] {
+  const lotsByToken = new Map<string, MatchedLot[]>()
+  for (const lot of params.matchedLots) {
+    const key = `${lot.chain}:${lot.token.toLowerCase()}`
+    const list = lotsByToken.get(key) ?? []
+    list.push(lot)
+    lotsByToken.set(key, list)
+  }
+
+  return params.evaluation.filter((entry) => entry.recoveryTriggered).map((entry) => {
+    const token = `${entry.chain}:${entry.token}`
+    const tokenLots = lotsByToken.get(`${entry.chain}:${entry.token.toLowerCase()}`) ?? []
+    const lotCount = tokenLots.length
+    const ranked = entry.rankedEligible ?? false
+    const includedInSharedRequest = entry.includedInSharedRequest ?? false
+    const pagesAvailable = includedInSharedRequest
+      ? Math.max(entry.sharedPagesAvailable ?? 0, entry.pagesUsed)
+      : entry.pagesUsed
+    const matchingEventsFound = entry.recoveredEvents.length
+    let entryLotsRecovered = 0
+    let exitLotsRecovered = 0
+    for (const ev of entry.recoveredEvents) {
+      const to = (ev.toAddress ?? '').toLowerCase()
+      const from = (ev.fromAddress ?? '').toLowerCase()
+      if (to === params.wallet) entryLotsRecovered += 1
+      else if (from === params.wallet) exitLotsRecovered += 1
+    }
+    let lotsVerified = 0
+    let priceRequirements = 0
+    let pricesResolved = 0
+    for (const lot of tokenLots) {
+      const reason = classifyMissingLot(lot)
+      if (reason === null) {
+        lotsVerified += 1
+        pricesResolved += 2
+        continue
+      }
+      priceRequirements += 1
+      if (reason === 'missing_price') {
+        // Both legs exist; the remaining gap is a pricing-quality miss.
+        pricesResolved += 0
+      } else if (reason === 'missing_entry_buy' && lot.proceedsUsd != null) {
+        pricesResolved += 1
+      } else if (reason === 'missing_exit_sell' && lot.costBasisUsd != null) {
+        pricesResolved += 1
+      }
+    }
+
+    let dropStage: PnlRecoveryFlowDropStage = null
+    let dropReason: string | null = null
+    if (!ranked) {
+      dropStage = 'ranked'
+      dropReason = 'outside the 12-token lots-completable eligibility cap'
+    } else if (!includedInSharedRequest) {
+      dropStage = 'shared_request'
+      dropReason = 'token was ranked eligible but its chain was not part of a paid shared GoldRush page'
+    } else if (pagesAvailable <= 0) {
+      dropStage = 'pages'
+      dropReason = 'included in the shared chain request but no historical pages were available'
+    } else if (matchingEventsFound === 0) {
+      dropStage = 'events'
+      dropReason = 'paid shared pages contained no transfers for this token'
+    } else if (entryLotsRecovered === 0 && exitLotsRecovered === 0) {
+      dropStage = 'entry_exit'
+      dropReason = 'matching events found but none were wallet entry or exit legs'
+    } else if (lotCount > 0 && lotsVerified < lotCount) {
+      dropStage = 'price'
+      dropReason = 'recovered legs still missing a trusted historical price'
+    }
+
+    return {
+      token,
+      lotCount,
+      ranked,
+      includedInSharedRequest,
+      pagesAvailable,
+      matchingEventsFound,
+      entryLotsRecovered,
+      exitLotsRecovered,
+      priceRequirements,
+      pricesResolved,
+      lotsVerified,
+      dropStage,
+      dropReason,
+    }
+  })
 }

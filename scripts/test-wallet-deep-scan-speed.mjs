@@ -467,8 +467,18 @@ assert.match(
 )
 assert.match(
   snap,
+  /const _extraTargetContracts = new Set\(_syntheticTargetExtraEligibleTokens\)/,
+  'the paid GoldRush extra page is filtered to every ranked-eligible token, not the reserved-credit dedicated slice',
+)
+assert.doesNotMatch(
+  snap,
   /const _extraTargetContracts = new Set\(_syntheticTargetExtraAttemptedTokens\)/,
-  'the GoldRush fetch loop queries only the budget-affordable attempted targets, not all eligible targets',
+  'the paid shared page must not be post-filtered to attempted tokens after the call is already paid',
+)
+assert.match(
+  snap,
+  /else if \(_syntheticEligibleStillMissingPriorBuy\.length === 0\) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'/,
+  'extra pages skip only when every eligible token already has a prior buy, not when any one token succeeded',
 )
 assert.match(
   snap,

@@ -51,6 +51,13 @@ export type RecoveryEvaluationEntry = {
   recoveryTriggered: boolean
   pagesUsed: number
   recoveredEvents: RawProviderEvent[]
+  // SHARED-PAGE ATTRIBUTION, DISCLOSED (wallet PnL recovery bottleneck). GoldRush historical
+  // pages are per (chain, wallet, page) — never per token — so a paid shared chain page must
+  // service every ranked-eligible token present in the returned data. These fields record that
+  // attribution without changing pagesUsed / totalPagesUsedThisWallet (the real paid budget).
+  rankedEligible?: boolean
+  includedInSharedRequest?: boolean
+  sharedPagesAvailable?: number
 }
 
 // PNL-RECOVERY-FLOW-FIX, DISCLOSED (Wallet Scanner PnL recovery bottleneck task) — a compact,

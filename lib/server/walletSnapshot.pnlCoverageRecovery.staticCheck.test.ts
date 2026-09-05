@@ -68,6 +68,43 @@ describe('walletSnapshot.ts — recovery token eligibility is no longer artifici
     assert.match(src, /_syntheticTargetExtraTokensAffordableByReservedBudget/)
     assert.match(src, /_syntheticTargetExtraPagesAllowed/)
   })
+
+  it('the paid extra GoldRush page is filtered to every ranked-eligible token, not the reserved-credit token slice', () => {
+    assert.match(
+      src,
+      /const _extraTargetContracts = new Set\(_syntheticTargetExtraEligibleTokens\)/,
+      'GoldRush extra pages are per-chain; reserved credits cap pages, not the post-filter after a page is paid',
+    )
+    assert.doesNotMatch(
+      src,
+      /const _extraTargetContracts = new Set\(_syntheticTargetExtraAttemptedTokens\)/,
+      'attempted-token slice must not drop other eligible tokens from an already-paid shared page',
+    )
+  })
+
+  it('extra pages are not skipped just because the broad pass recovered a prior buy for some other token', () => {
+    assert.match(
+      src,
+      /else if \(_syntheticEligibleStillMissingPriorBuy\.length === 0\) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'/,
+    )
+    assert.doesNotMatch(
+      src,
+      /else if \(_syntheticTargetExtraPriorBuysFoundSoFar > 0\) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'/,
+    )
+  })
+
+  it('recoveryCallsByToken attributes paid per-chain pages to every ranked-eligible token', () => {
+    assert.match(
+      src,
+      /for \(const t of _syntheticTargetExtraEligibleTokens\) \{/,
+    )
+  })
+
+  it('extra-page chain selection prefers still-missing eligible tokens so a recovered chain cannot starve another', () => {
+    assert.match(src, /const _extraMissingSyntheticLots = _extraTargetSyntheticLots\.filter/)
+    assert.match(src, /const _extraChainSourceLots = _extraMissingSyntheticLots\.length > 0 \? _extraMissingSyntheticLots : _extraTargetSyntheticLots/)
+    assert.match(src, /const _stillMissingOnThisChain = _stillMissingAfterPage\.filter/)
+  })
 })
 
 describe('walletSnapshot.ts — pnlCoverageRecoveryAudit is built with the required exact field list', () => {
@@ -75,7 +112,7 @@ describe('walletSnapshot.ts — pnlCoverageRecoveryAudit is built with the requi
     'closedLots', 'verifiedLotsBefore', 'verifiedLotsAfter', 'coverageBefore', 'coverageAfter',
     'missingPriceLots', 'tokensRanked', 'recoveryCallsByToken', 'lotsCompletedByToken',
     'acceptedEvidenceHits', 'sameTxQuoteRecoveries', 'providerRecoveries', 'budgetSkippedTokens',
-    'thresholdReached', 'exactRemainingBlocker',
+    'thresholdReached', 'exactRemainingBlocker', 'pnlRecoveryFlowAudit',
   ]
 
   it('declares every required field on the PnlCoverageRecoveryAudit type', () => {
@@ -100,5 +137,18 @@ describe('walletSnapshot.ts — pnlCoverageRecoveryAudit is built with the requi
   it('the 50% coverage gate threshold used elsewhere in this codebase (fifoEngine) is left untouched', () => {
     assert.match(src, /thresholdReached: _pnlCoverageThresholdReached/)
     assert.match(src, /_pnlCoverageThresholdReached = _pnlCoverageAfter >= 50/)
+  })
+
+  it('pnlRecoveryFlowAudit rows carry the compact drop-stage fields', () => {
+    for (const field of [
+      'token', 'lotCount', 'ranked', 'includedInSharedRequest', 'pagesAvailable',
+      'matchingEventsFound', 'entryLotsRecovered', 'exitLotsRecovered',
+      'priceRequirements', 'pricesResolved', 'lotsVerified', 'dropStage', 'dropReason',
+    ]) {
+      assert.match(src, new RegExp(`\\b${field}\\b`), `pnlRecoveryFlowAudit must include ${field}`)
+    }
+    assert.match(src, /dropStage = 'ranked'/)
+    assert.match(src, /dropStage = 'shared_request'/)
+    assert.match(src, /token was ranked eligible but its chain was not part of a paid shared GoldRush page/)
   })
 })
