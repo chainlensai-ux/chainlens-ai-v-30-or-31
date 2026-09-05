@@ -2,6 +2,8 @@
 // Clark surfaces use this when a request times out locally so the badge/body stay
 // on the command that was sent, never a generic TOKEN READ.
 
+import { isValidSolanaMintAddress } from "../solanaAddress.ts";
+
 export type ClarkCommandName = "lp" | "token" | "wallet" | "deployer" | "holders" | "explain" | "base";
 
 export type ClarkCommandFormat =
@@ -14,6 +16,8 @@ export type ClarkCommandFormat =
   | "GENERIC";
 
 const EVM_ADDRESS_RE = /\b0x[a-fA-F0-9]{40}\b/;
+const TICKER_ON_CHAIN_RE = /\s+on\s+(base|ethereum|eth|bnb|bsc|robinhood|solana)\b.*$/i;
+const TICKER_SEARCH_TAG_RE = /\s+#?clkts_[a-z0-9]+/ig;
 
 export type ClarkTokenCommand = {
   input: string;
@@ -31,8 +35,18 @@ export function parseClarkTokenCommand(prompt: string): ClarkTokenCommand | null
   if (!match) return null;
   const input = match[1].trim();
   if (!input) return null;
-  const address = input.match(EVM_ADDRESS_RE)?.[0] ?? null;
-  return { input, address, ticker: address ? null : input };
+  const evm = input.match(EVM_ADDRESS_RE)?.[0] ?? null;
+  if (evm) return { input, address: evm, ticker: null };
+  const parts = input.split(/[\s,#]+/).filter(Boolean);
+  for (const part of parts) {
+    if (isValidSolanaMintAddress(part)) return { input, address: part, ticker: null };
+  }
+  const ticker = input
+    .replace(TICKER_SEARCH_TAG_RE, "")
+    .replace(TICKER_ON_CHAIN_RE, "")
+    .replace(/^\$/, "")
+    .trim();
+  return { input, address: null, ticker: ticker || input };
 }
 
 /** Whether a scan response belongs to the explicit `/token` command in flight. */
@@ -47,6 +61,19 @@ export function doesClarkTokenResponseMatch(
   // A ticker picker/resolver may leave session memory unchanged. That old value
   // is not a result for the ticker in the current message.
   return responseAddress.toLowerCase() !== (previousAddress ?? '').toLowerCase();
+}
+
+/** Never title a TOKEN READ with "?". Prefer symbol, then short address, then "unverified". */
+export function clarkTokenReadHeading(symbolOrName: string | null | undefined, address?: string | null): string {
+  const raw = String(symbolOrName ?? "").trim();
+  const looksUnknown = !raw || raw === "?" || raw === "(?)" || /^[?( )\s]+$/.test(raw);
+  if (!looksUnknown) {
+    const cleaned = raw.replace(/\s*\(\?\)$/, "").replace(/\s*\?$/, "").trim();
+    if (cleaned && cleaned !== "?") return cleaned;
+  }
+  const addr = String(address ?? "").trim();
+  if (addr.length >= 10) return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  return "unverified";
 }
 
 export function parseClarkCommandName(prompt: string): ClarkCommandName | null {

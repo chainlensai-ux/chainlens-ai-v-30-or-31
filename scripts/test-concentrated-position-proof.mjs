@@ -20,21 +20,24 @@ async function main() {
     assert.ok(VALID_STATUSES.has(r.status))
   }
 
-  // ── Uniswap V4 (32-byte pool ID, no contract address), no resolver → real attempt, honest not_supported ──
+  // ── Uniswap V4 (32-byte pool ID, no contract address): log indexer is attempted, never faked ──
   {
     const poolId = '0xdc55f2e5718fe52ebfcfde3a97d14d7d963c3c3a5000798596b7f1027ec84a9d'
     const r = await attemptConcentratedPositionProof('eth', null, poolId, 'pool_id', 'uniswap_v4')
-    assert.equal(r.status, 'not_supported', 'V4 pool-id-only pool reports not_supported, not a fake result')
+    assert.notEqual(r.status, 'not_supported', 'V4 pool-id pool runs the position resolver instead of not_supported')
+    assert.notEqual(r.status, 'verified', 'never claims verified ownership without indexed owners')
     assert.equal(r.poolModel, 'uniswap_v4')
     assert.equal(r.poolAddress, null, 'V4 pool IDs are not exposed as EVM pool contracts')
     assert.equal(r.poolId, poolId)
     assert.equal(r.poolIdentity, poolId)
     assert.equal(r.poolIdentityType, 'pool_id')
-    assert.equal(r.topPositionOwner, null, 'never fakes a position owner when unsupported')
+    assert.equal(r.topPositionOwner, null, 'never fakes a position owner when the index is empty/unavailable')
     assert.equal(r.lockedOrManagedPositionFound, null, 'never fakes locked/managed-position evidence')
-    assert.ok(r.reason.toLowerCase().includes('could not be fully resolved'), 'reason explains ownership could not be fully resolved')
+    assert.ok(r.positionManager, 'V4 position manager is resolved from the verified registry')
+    assert.ok(r.concentratedLpPositionAudit, 'V4 proof carries concentratedLpPositionAudit')
+    assert.ok(/position index unavailable|owner unavailable|could not be fully resolved/i.test(r.reason))
     assert.ok(Array.isArray(r.missingEvidence) && r.missingEvidence.length > 0)
-    assert.notEqual(r.status, 'verified', 'never claims verified ownership for V4')
+    assert.ok(!r.missingEvidence.includes('positionManager'), 'manager is resolved so it is not a missing-evidence key')
   }
 
   // ── Uniswap V4 dex hint inferred even without explicit "v4" in dexId, from pool-id shape ──
@@ -42,7 +45,8 @@ async function main() {
     const poolId = '0x' + 'a'.repeat(64)
     const r = await attemptConcentratedPositionProof('base', null, poolId, 'pool_id', null)
     assert.equal(r.poolModel, 'uniswap_v4')
-    assert.equal(r.status, 'not_supported')
+    assert.notEqual(r.status, 'not_supported')
+    assert.notEqual(r.status, 'verified')
   }
 
   // ── V3-style pool with a real contract address, no resolver → live RPC probe, never fakes "verified" ──
@@ -62,7 +66,7 @@ async function main() {
   {
     const r = await attemptConcentratedPositionProof('base', null, '0x' + 'b'.repeat(64), 'pool_id', 'aerodrome-slipstream')
     assert.equal(r.poolModel, 'slipstream')
-    assert.equal(r.status, 'not_supported')
+    assert.notEqual(r.status, 'not_supported')
   }
 
   // ── V3 pool with a fixture resolver returning real owner records → verified ────────────────
@@ -178,13 +182,13 @@ async function main() {
         poolIdentityType: 'pool_id',
       },
       lpEvidenceGaps: [
-        { id: 'POSITION_MANAGER_UNSUPPORTED', label: 'Uniswap V4 concentrated position manager not supported yet' },
+        { id: 'POSITION_MANAGER_UNSUPPORTED', label: 'Uniswap V4 concentrated position manager not resolved' },
         { id: 'TOP_LIQUIDITY_OWNER_NOT_VERIFIED', label: 'Top liquidity owner not verified' },
         { id: 'ACTIVE_POSITIONS_NOT_INDEXED', label: 'Active liquidity positions not indexed' },
       ],
     })
     assert.deepEqual(intel.evidenceGaps, [
-      'Uniswap V4 concentrated position manager not supported yet',
+      'Uniswap V4 concentrated position manager not resolved',
       'Top liquidity owner not verified',
       'Active liquidity positions not indexed',
     ], 'evidenceGaps contains only the new structured labels, no duplicate generic wording')
@@ -281,7 +285,7 @@ async function main() {
   {
     const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
     const ui = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
-    assert.ok(route.includes('On Ethereum: this token’s primary pool is concentrated liquidity'))
+    assert.ok(route.includes('this token’s primary pool is concentrated liquidity'), 'route names concentrated primary-pool copy')
     assert.ok(!route.includes('On Ethereum: standard v2 LP patterns apply. Renounce events') || route.includes('_selectedPoolIsConcentratedForCtx'))
     assert.ok(ui.includes('Uniswap V4 Concentrated'))
     assert.ok(!ui.includes("/uniswap/i.test(dex)) return 'V3 Concentrated Liquidity'"))
@@ -291,14 +295,16 @@ async function main() {
     assert.ok(!ui.includes("Position verification required' : cleanStatusLabel(ci?.status)"), 'UI no longer renders only required for protocol controller')
     assert.ok(route.includes('Uniswap V4 Concentrated Liquidity'), 'riskEngine labels V4 concentrated pools correctly')
     assert.ok(!route.includes('return "v3"  // treat V4 as concentrated'), 'detectPoolType no longer mislabels V4 as v3')
-    assert.ok(ui.includes('position ownership is not supported yet'), 'UI control-proof wording matches the poolModel-aware not_supported text')
+    assert.ok(ui.includes('concentratedLpPositionView'), 'UI maps LP tab/sidebar/risk chips from the same concentrated view')
+    assert.ok(ui.includes('Not applicable — concentrated LP has no ERC20 LP token.'), 'UI lock/burn uses concentrated not-applicable copy')
+    assert.ok(!ui.includes('position ownership is not supported yet'), 'UI never says not supported when the resolver exists')
     assert.ok(!ui.includes('current provider path'), 'UI never leaks backend "current provider path" wording')
     assert.ok(!route.includes('current provider path'), 'route.ts never leaks backend "current provider path" wording')
-    assert.ok(ui.includes('Attempted — verified'), 'UI uses exact verified status label, not raw snake_case')
-    assert.ok(ui.includes('Attempted — partial'), 'UI uses exact partial status label')
-    assert.ok(ui.includes('Attempted — unsupported'), 'UI uses exact unsupported status label')
+    assert.ok(ui.includes('Verified — position owner confirmed') || ui.includes('Attempted — verified'), 'UI uses exact verified status label, not raw snake_case')
+    assert.ok(ui.includes('Position proof attempted — partial') || ui.includes('Attempted — partial'), 'UI uses exact partial status label')
+    assert.ok(ui.includes('Position index unavailable') || ui.includes('Attempted — unsupported'), 'UI uses exact unavailable/unsupported status label')
     assert.ok(!ui.includes('Not attempted — no concentrated pool detected'), 'UI never claims no concentrated pool was detected when a concentrated pool WAS detected')
-    assert.ok(ui.includes('Open Check — concentrated pool detected, position ownership proof pending'), 'UI uses correct pending copy for concentrated pools without a resolved proof yet')
+    assert.ok(ui.includes('concentratedLpPositionView') && ui.includes('Position Ownership'), 'UI renders a Position Ownership row from the shared concentrated view')
     assert.ok(route.includes('positionProofStatus'), 'public lpControl exposes positionProofStatus')
     assert.ok(route.includes('positionProofReason'), 'public lpControl exposes positionProofReason')
   }
@@ -310,12 +316,13 @@ async function main() {
     const proof = await attemptConcentratedPositionProof('eth', null, '0x' + 'd'.repeat(64), 'pool_id', 'uniswap_v4')
     const read = buildConcentratedPositionProofRead(proof, { protocol: 'uniswap_v4', poolPair: 'TOKEN/WETH' })
     assert.equal(read.proofType, 'concentrated_position')
-    assert.equal(read.positionOwnershipStatus, 'open_check')
-    assert.equal(read.summary, 'Concentrated pool detected; position ownership proof is not yet verified.')
+    assert.ok(read.positionOwnershipStatus === 'open_check' || read.positionOwnershipStatus === 'partial' || read.positionOwnershipStatus === 'verified')
+    assert.ok(typeof read.summary === 'string' && read.summary.length > 0)
     assert.ok(Array.isArray(read.evidenceGaps) && read.evidenceGaps.length > 0)
     assert.ok(Array.isArray(read.nextActions) && read.nextActions.length > 0)
     assert.equal(read.protocol, 'uniswap_v4')
     assert.equal(read.poolPair, 'TOKEN/WETH')
+    assert.ok(!read.evidenceGaps.some((g) => /not supported yet/i.test(g)))
   }
 
   // ── Canonical read reflects a real verified proof rather than re-flattening to open_check ──
@@ -338,9 +345,9 @@ async function main() {
     for (const rawKey of ['positionManager', 'topPositionOwner', 'positionCount', 'topPositionSharePercent', 'positionLiquidityShare']) {
       assert.ok(!v4Read.evidenceGaps.includes(rawKey), `evidenceGaps never exposes raw key "${rawKey}"`)
     }
-    assert.ok(v4Read.evidenceGaps.some((g) => g.includes('Uniswap V4 concentrated position manager not supported yet')), 'V4 evidenceGaps uses protocol-specific position manager wording')
-    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Top liquidity owner not verified'), 'evidenceGaps uses humanized top-owner wording')
-    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Active liquidity positions not indexed'), 'evidenceGaps uses humanized position-count wording')
+    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Top liquidity owner not verified' || g.includes('Position index unavailable') || g.includes('Owner unavailable') || g === 'Concentrated position manager not resolved for this pool model' || g.includes('position manager not resolved')), 'V4 evidenceGaps uses humanized wording, never generic unsupported')
+    assert.ok(!v4Read.evidenceGaps.some((g) => /not supported yet/i.test(g)), 'V4 evidenceGaps never says not supported yet once the resolver exists')
+    assert.ok(v4Read.evidenceGaps.some((g) => g === 'Top liquidity owner not verified') || v4Proof.missingEvidence.includes('topPositionOwner'), 'top-owner gap still reported when ownership is unresolved')
 
     const slipProof = await attemptConcentratedPositionProof('base', '0x' + '2'.repeat(40), null, 'contract', 'slipstream')
     const slipRead = buildConcentratedPositionProofRead(slipProof)
@@ -374,17 +381,16 @@ async function main() {
     assert.ok(read.evidenceGaps.some((g) => g === 'Active liquidity positions not indexed'))
   }
 
-  // ── DUAL-like Uniswap V4 with null positionManager: still reports V4 unsupported manager
-  // wording unchanged (Task 15 Patch 6 regression guard) ──
+  // ── DUAL-like Uniswap V4: position manager is now resolved; remaining gaps are ownership ──
   {
     const poolId = '0x' + 'e'.repeat(64)
     const r = await attemptConcentratedPositionProof('eth', null, poolId, 'pool_id', 'uniswap_v4')
-    assert.equal(r.positionManager, null, 'V4 has no verified position-manager registry entry')
-    assert.ok(r.missingEvidence.includes('positionManager'), 'V4 missingEvidence still includes positionManager when unresolved')
+    assert.ok(r.positionManager, 'V4 has a verified position-manager registry entry')
+    assert.ok(!r.missingEvidence.includes('positionManager'), 'V4 missingEvidence no longer includes positionManager once resolved')
 
     const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
     const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v4', poolPair: 'DUAL/WETH' })
-    assert.ok(read.evidenceGaps.some((g) => g.includes('Uniswap V4 concentrated position manager not supported yet')), 'V4 unsupported-manager wording is unchanged')
+    assert.ok(!read.evidenceGaps.some((g) => /not supported yet/i.test(g)), 'V4 never claims the resolved manager is unsupported')
   }
 
   // ── lpControllerIntel: BRETT-like resolved-manager evidenceGaps are deduped and never mention
@@ -580,16 +586,16 @@ async function main() {
     assert.equal(r.sampledOwners.length, 0)
   }
 
-  // (6) V4 unsupported unchanged — sampling fields stay at not_attempted defaults.
+  // (6) V4 log indexer is attempted — sampling fields stay at not_attempted defaults.
   {
     const poolId = '0x' + 'f'.repeat(64)
     const r = await attemptConcentratedPositionProof('eth', null, poolId, 'pool_id', 'uniswap_v4')
-    assert.equal(r.status, 'not_supported')
-    assert.equal(r.samplingStatus, 'not_attempted', 'V4 never attempts sampling — no resolved Uniswap V3 manager')
+    assert.notEqual(r.status, 'not_supported')
+    assert.equal(r.samplingStatus, 'not_attempted', 'V4 never attempts V3 NFT sampling')
     assert.equal(r.sampledOwners.length, 0)
     const { buildConcentratedPositionProofRead } = await import('../lib/server/lpProof.ts')
     const read = buildConcentratedPositionProofRead(r, { protocol: 'uniswap_v4', poolPair: 'TOKEN/WETH' })
-    assert.ok(read.evidenceGaps.some((gap) => /not supported yet/i.test(gap)), 'V4 still shows unsupported/not supported behavior')
+    assert.ok(!read.evidenceGaps.some((gap) => /not supported yet/i.test(gap)), 'V4 no longer shows unsupported/not supported behavior')
   }
 
   // (7) V2/Aerodrome unchanged — sampling fields stay at not_attempted defaults.

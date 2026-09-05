@@ -522,8 +522,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // formatTokenScanResult with ok=false triggers inline fallback in route.ts (not this formatter),
   // but the formatter should not crash and should handle null evidence gracefully
   const out = formatTokenScanResult(emptyEv)
-  // token is null → symbol defaults to "?"
-  assert.ok(out.includes('?'), 'handles null token gracefully')
+  assert.ok(!out.includes('TOKEN READ — ?'), 'never titles TOKEN READ with a placeholder question mark')
+  assert.ok(out.startsWith('TOKEN READ — unverified') || out.includes('unverified'), 'handles null token as unverified, not ?')
 }
 
 // ─── Task 10: Timeout fallback preserves original intent ─────────────────────

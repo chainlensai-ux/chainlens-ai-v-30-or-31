@@ -69,18 +69,36 @@ describe('resolveConcentratedProtocol — protocol identity + honest position-ma
     assert.ok(info.positionManager, 'a verified position manager address must be present for Uniswap V3')
   })
 
-  it('Uniswap V4 resolves protocol "uniswap_v4" but never fabricates a position manager address it has not verified', () => {
-    const info = resolveConcentratedProtocol('base', 'uniswap_v4', 'pool_id')
-    assert.equal(info.protocol, 'uniswap_v4')
-    assert.equal(info.positionManager, null, 'no unverified address may ever be reported as a real position manager')
-    assert.equal(info.confidence, 'low')
+  // UPDATED, DISCLOSED (merge with a concurrent "Index concentrated LP positions" change): a
+  // verified Uniswap V4 PositionManager registry (lib/server/concentratedLpPositions.ts,
+  // cross-checked against Uniswap's official deployments) now covers ETH/Base/BNB, plus this
+  // codebase's own independently-verified Robinhood V4 address — so V4 legitimately resolves a
+  // real manager everywhere this codebase has one, never a guess where it doesn't.
+  it('Uniswap V4 resolves protocol "uniswap_v4" with a real, verified position manager on every chain this codebase has confirmed one for', () => {
+    for (const chain of ['eth', 'base', 'bnb', 'robinhood'] as const) {
+      const info = resolveConcentratedProtocol(chain, 'uniswap_v4', 'pool_id')
+      assert.equal(info.protocol, 'uniswap_v4')
+      assert.ok(info.positionManager, `expected a verified V4 position manager on ${chain}`)
+      assert.equal(info.confidence, 'high')
+    }
   })
 
-  it('Aerodrome Slipstream resolves protocol "slipstream" but never fabricates a position manager address', () => {
-    const info = resolveConcentratedProtocol('base', 'aerodrome-slipstream', 'contract')
-    assert.equal(info.protocol, 'slipstream')
-    assert.equal(info.positionManager, null)
-    assert.equal(info.confidence, 'low')
+  // UPDATED, DISCLOSED: Aerodrome Slipstream's NonfungiblePositionManager on Base is now a
+  // verified address (lib/server/concentratedLpPositions.ts, from Aerodrome's own deployments
+  // table) — verified only for Base, since that is the only chain Aerodrome/Slipstream deploys
+  // to in this codebase; every other chain still never guesses one.
+  it('Aerodrome Slipstream resolves protocol "slipstream" with a real, verified position manager on Base only — never elsewhere', () => {
+    const base = resolveConcentratedProtocol('base', 'aerodrome-slipstream', 'contract')
+    assert.equal(base.protocol, 'slipstream')
+    assert.ok(base.positionManager, 'expected a verified Slipstream position manager on Base')
+    assert.equal(base.confidence, 'high')
+
+    for (const chain of ['eth', 'bnb', 'robinhood'] as const) {
+      const info = resolveConcentratedProtocol(chain, 'aerodrome-slipstream', 'contract')
+      assert.equal(info.protocol, 'slipstream')
+      assert.equal(info.positionManager, null, `Slipstream on ${chain} must never guess a position manager address`)
+      assert.equal(info.confidence, 'low')
+    }
   })
 
   it('PancakeSwap V3 resolves protocol "pancakeswap_v3" with a real, high-confidence position manager', () => {

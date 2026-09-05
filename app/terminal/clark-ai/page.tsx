@@ -64,7 +64,17 @@ const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
   network_error: 'History temporarily unavailable',
 }
 
-type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
+// CLARK TICKER SELECTION FIX, DISCLOSED (bug report: "/token cashcat" showed CASHCAT matches, but
+// "scan 1" scanned an unrelated token, Base Juice/BASEJUICE). A ticker-picker "Scan N" action now
+// carries the exact tickerSearchId/optionIndex/tokenAddress/chainId it was rendered with (see
+// lib/server/clarkTickerSelection.ts's own header) — all four optional so every OTHER action kind
+// (a plain "scan 1" against a Radar/momentum rank list, a link action, etc.) is unaffected. Clicking
+// a button that carries these fields sends them back to the server as `tickerSelection` instead of
+// relying on session memory alone to guess which option "1" refers to.
+type ClarkAction = {
+  label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean
+  tickerSearchId?: string; optionIndex?: number; tokenAddress?: string; chainId?: number | null
+}
 type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[]; whaleIntelligence?: ClarkWhaleIntelligenceUi; requestId?: string }
 type UiTab   = 'analyst' | 'chat'
 
@@ -252,7 +262,11 @@ function ClarkAiContent() {
   }
   function handleClear() { setMessages([]); setInput('') }
 
-  async function handleSendText(raw: string) {
+  // CLARK TICKER SELECTION FIX, DISCLOSED: `tickerSelection` is set ONLY by the "Scan N" button
+  // click handler below, echoing the exact fields that button was rendered with. It is never
+  // derived from `text` — the server verifies it against the CURRENT ticker search independently,
+  // so this client-side value is advisory only (a tampered/mismatched payload is rejected server-side).
+  async function handleSendText(raw: string, tickerSelection?: { tickerSearchId: string; optionIndex: number; tokenAddress: string; chainId: number | null }) {
     const text = raw.trim()
     if (!text) return
     const begun = requestGateRef.current.begin(text)
@@ -375,6 +389,7 @@ function ClarkAiContent() {
           requestId, messageId: requestId,
           ...(tokenCommand?.address ? { tokenAddress: tokenCommand.address } : {}),
           ...(tokenCommand?.ticker ? { addressOrToken: tokenCommand.ticker } : {}),
+          ...(tickerSelection ? { tickerSelection } : {}),
           mode: 'analyst', uiModeHint: sendMode,
           context: null, history,
           sessionId: getOrCreateSessionId(),
@@ -661,7 +676,16 @@ function ClarkAiContent() {
                                 key={`${action.label}-${action.prompt}`}
                                 type='button'
                                 className='clk-action clk-action--btn'
-                                onClick={() => { void handleSendText(action.prompt as string) }}
+                                onClick={() => {
+                                  // CLARK TICKER SELECTION FIX, DISCLOSED: a "Scan N" ticker-picker
+                                  // button carries the exact option it was rendered with — echo it
+                                  // back so the server scans THIS option, never re-deriving "1"
+                                  // against whatever session memory currently holds.
+                                  const tickerSelection = action.tickerSearchId && action.tokenAddress
+                                    ? { tickerSearchId: action.tickerSearchId, optionIndex: action.optionIndex ?? 0, tokenAddress: action.tokenAddress, chainId: action.chainId ?? null }
+                                    : undefined
+                                  void handleSendText(action.prompt as string, tickerSelection)
+                                }}
                               >
                                 {action.label}
                               </button>

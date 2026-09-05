@@ -27,6 +27,8 @@ test('multiple exact ticker identities require user choice', () => {
   assert.equal(result.needsUserChoice, true)
   assert.equal(result.selectedMatch, null)
   assert.equal(result.tickerResolverAudit.finalAction, 'show_picker')
+  assert.equal(result.tickerResolverAudit.selectedMatch, null)
+  assert.ok(result.tickerResolverAudit.topMatch)
 })
 
 test('one strong selected-chain match auto scans', () => {

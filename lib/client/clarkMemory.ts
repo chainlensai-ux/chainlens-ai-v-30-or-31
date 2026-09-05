@@ -24,6 +24,8 @@ const LAST_RADAR_TS_KEY = 'chainlens:clark:last-radar-ts'
 const LAST_CHAIN_KEY = 'chainlens:clark:last-chain'
 const LAST_CLARK_SUBJECT_KEY = 'chainlens:clark:last-clark-subject'
 const PREV_CLARK_SUBJECT_KEY = 'chainlens:clark:prev-clark-subject'
+const LAST_TICKER_MATCHES_KEY = 'chainlens:clark:last-ticker-matches'
+const TICKER_SEARCH_ID_KEY = 'chainlens:clark:ticker-search-id'
 
 /** Stable Clark session id. Created once per browser session, reused forever — never regenerated per message. */
 export function getClarkSessionId(): string {
@@ -50,6 +52,8 @@ export type ClarkClientContext = {
   lastChain?: string | null
   lastClarkSubject?: unknown | null
   prevClarkSubject?: unknown | null
+  lastTickerMatches?: unknown[]
+  tickerSearchId?: string | null
 }
 
 function readJson(key: string): unknown {
@@ -78,6 +82,8 @@ export function readClarkClientContext(): ClarkClientContext {
     lastChain: sessionStorage.getItem(LAST_CHAIN_KEY) ?? undefined,
     lastClarkSubject: readJson(LAST_CLARK_SUBJECT_KEY) ?? undefined,
     prevClarkSubject: readJson(PREV_CLARK_SUBJECT_KEY) ?? undefined,
+    lastTickerMatches: (readJson(LAST_TICKER_MATCHES_KEY) as unknown[] | null) ?? undefined,
+    tickerSearchId: sessionStorage.getItem(TICKER_SEARCH_ID_KEY) ?? undefined,
   }
 }
 
@@ -146,6 +152,17 @@ export function persistClarkMemoryEcho(payload: unknown): void {
   const prevClarkSubject = echo.prevClarkSubject as { address?: unknown } | undefined
   if (prevClarkSubject && typeof prevClarkSubject === 'object' && typeof prevClarkSubject.address === 'string' && prevClarkSubject.address.trim()) {
     sessionStorage.setItem(PREV_CLARK_SUBJECT_KEY, JSON.stringify(prevClarkSubject))
+  }
+  if (Array.isArray(echo.lastTickerMatches)) {
+    if (echo.lastTickerMatches.length > 0) {
+      sessionStorage.setItem(LAST_TICKER_MATCHES_KEY, JSON.stringify(echo.lastTickerMatches))
+      if (typeof echo.tickerSearchId === 'string' && echo.tickerSearchId.trim()) {
+        sessionStorage.setItem(TICKER_SEARCH_ID_KEY, echo.tickerSearchId.trim())
+      }
+    } else {
+      sessionStorage.removeItem(LAST_TICKER_MATCHES_KEY)
+      sessionStorage.removeItem(TICKER_SEARCH_ID_KEY)
+    }
   }
 
 }

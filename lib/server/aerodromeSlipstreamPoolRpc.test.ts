@@ -10,6 +10,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import type { ConcentratedOwnerRecord } from './lpProof'
 
 const POOL = '0x1234567890123456789012345678901234567890'
 const OWNER_A = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
@@ -87,7 +88,7 @@ void (async () => {
         }
         return { ok: true, json: async () => ({ result: [] }) }
       }) as unknown as typeof fetch
-      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null })
+      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null }) as ConcentratedOwnerRecord[] | null
       assert.ok(Array.isArray(result))
       assert.equal(result!.length, 1)
       assert.equal(result![0].address, OWNER_A)
@@ -106,7 +107,7 @@ void (async () => {
         }
         return { ok: true, json: async () => ({ result: [] }) }
       }) as unknown as typeof fetch
-      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null })
+      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null }) as ConcentratedOwnerRecord[] | null
       assert.ok(Array.isArray(result))
       assert.equal(result!.length, 0, 'a fully net-zero owner must never appear as a resolved position owner')
     })
@@ -128,20 +129,20 @@ void (async () => {
         }
         return { ok: true, json: async () => ({ result: [] }) }
       }) as unknown as typeof fetch
-      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null })
+      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null }) as ConcentratedOwnerRecord[] | null
       assert.equal(result!.length, 2)
       assert.equal(result![0].address, OWNER_B, 'the larger net liquidity owner must be ranked first')
     })
 
     it('returns null (never a fabricated empty-but-confident result) when the RPC call fails', async () => {
       globalThis.fetch = (async () => ({ ok: false, status: 500, json: async () => null })) as unknown as typeof fetch
-      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null })
+      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null }) as ConcentratedOwnerRecord[] | null
       assert.equal(result, null)
     })
 
     it('returns an empty array (a real, honest "no positions found") when both queries succeed with zero logs', async () => {
       globalThis.fetch = (async () => ({ ok: true, json: async () => ({ result: [] }) })) as unknown as typeof fetch
-      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null })
+      const result = await resolveAerodromeSlipstreamPoolRpc({ chain: 'base', poolModel: 'slipstream', poolAddress: POOL, poolId: null }) as ConcentratedOwnerRecord[] | null
       assert.deepEqual(result, [])
     })
   })

@@ -52,9 +52,9 @@ describe('classifyPoolByRpc — token0/token1/totalSupply decoding (Alchemy/RPC 
     const result = await classifyPoolByRpc('base', '0x1111111111111111111111111111111111111111')
     assert.equal(result.poolType, 'v2')
     assert.equal(result.hasLpToken, true)
-    assert.equal(result.token0, TOKEN0)
-    assert.equal(result.token1, TOKEN1)
-    assert.equal(result.totalSupplyRaw, String(1_000_000))
+    assert.equal(result.resolved.token0, TOKEN0)
+    assert.equal(result.resolved.token1, TOKEN1)
+    assert.equal(result.resolved.totalSupplyRaw, String(1_000_000))
   })
 
   it('a concentrated pool (slot0 present, no totalSupply) decodes token0/token1 but totalSupplyRaw stays null', async () => {
@@ -66,9 +66,9 @@ describe('classifyPoolByRpc — token0/token1/totalSupply decoding (Alchemy/RPC 
     const result = await classifyPoolByRpc('base', '0x2222222222222222222222222222222222222222')
     assert.equal(result.poolType, 'concentrated')
     assert.equal(result.hasLpToken, false)
-    assert.equal(result.token0, TOKEN0)
-    assert.equal(result.token1, TOKEN1)
-    assert.equal(result.totalSupplyRaw, null)
+    assert.equal(result.resolved.token0, TOKEN0)
+    assert.equal(result.resolved.token1, TOKEN1)
+    assert.equal(result.resolved.totalSupplyRaw, null)
   })
 
   it('an unresponsive/non-standard pool (every probe fails) reports poolType "unknown" with every value honestly null — never fabricated', async () => {
@@ -76,9 +76,9 @@ describe('classifyPoolByRpc — token0/token1/totalSupply decoding (Alchemy/RPC 
     const result = await classifyPoolByRpc('base', '0x3333333333333333333333333333333333333333')
     assert.equal(result.poolType, 'unknown')
     assert.equal(result.hasLpToken, null)
-    assert.equal(result.token0, null)
-    assert.equal(result.token1, null)
-    assert.equal(result.totalSupplyRaw, null)
+    assert.equal(result.resolved.token0, null)
+    assert.equal(result.resolved.token1, null)
+    assert.equal(result.resolved.totalSupplyRaw, null)
   })
 
   it('an invalid pool address never attempts an RPC call at all', async () => {
@@ -87,6 +87,6 @@ describe('classifyPoolByRpc — token0/token1/totalSupply decoding (Alchemy/RPC 
     const result = await classifyPoolByRpc('base', 'not-an-address')
     assert.equal(called, false)
     assert.equal(result.poolType, 'unknown')
-    assert.equal(result.token0, null)
+    assert.equal(result.resolved.token0, null)
   })
 })

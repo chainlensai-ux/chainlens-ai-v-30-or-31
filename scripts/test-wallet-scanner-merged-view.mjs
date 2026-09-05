@@ -593,7 +593,14 @@ function run() {
     check('snapshot total does NOT pass a worker canonicalOverride — sidecar merge is the snapshot source of truth', /computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult\)/.test(pageSrc) && !/computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult,/.test(pageSrc))
     check('snapshot PnL is pending / Deep scan still running — never a completed PnL figure', pageSrc.includes('PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.'))
     check('standalone Robinhood card is hidden while the snapshot is on screen — no duplicate totals', /\{robinhoodResult && \(!result \|\| debugMode\) && !partialSnapshot &&/.test(pageSrc))
-    check('snapshot card is hidden once the completed result exists', /\{loading && partialSnapshot && !result &&/.test(pageSrc))
+    // STUCK-SCANNING-LIFECYCLE FIX, DISCLOSED: this assertion previously required the `loading &&`
+    // prefix — that gate is exactly what kept the snapshot card (and everything else "portfolio
+    // ready" implies) tied to the full job's `loading` flag, so it vanished at the same moment the
+    // "still scanning" copy did instead of staying visible through the limitedEvidenceMode
+    // transition. The card's hide condition is now `!result` alone (see WalletScannerPage's own
+    // "PORTFOLIO-READY-RENDERS FIX" disclosure) — still hidden the instant a completed result
+    // exists, just no longer coupled to `loading`.
+    check('snapshot card is hidden once the completed result exists', /\{partialSnapshot && !result &&/.test(pageSrc))
     check('user-facing Deep Scan copy no longer says V2 engine', !/V2 engine · holdings/.test(pageSrc))
     check('page logs walletScanPerformanceAudit with uiFirstResultMs', pageSrc.includes('[walletScanPerformanceAudit]') && pageSrc.includes('uiFirstResultMs'))
     check('worker canonical EVM total prefers the live snapshot/portfolioV2 figure, not stale V1 portfolio', workerSrcQa.includes('const evmTotalFromSnapshot = typeof portfolioOutput.portfolio.totalValueUsd === \'number\'') && workerSrcQa.includes('const evmTotalValueUsd = snapshotTimedOutEmpty ? evmTotalFromV1 : (evmTotalFromSnapshot ?? evmTotalFromV1)'))

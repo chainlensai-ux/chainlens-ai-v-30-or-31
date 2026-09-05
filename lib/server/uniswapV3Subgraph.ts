@@ -34,7 +34,7 @@
 // Selection is keyed by (chain, poolModel) pair, not chain alone, so eth/base (Uniswap-only in
 // practice) and bnb (which needs both) are each handled correctly.
 
-import type { ConcentratedOwnerResolver, ConcentratedOwnerRecord } from './lpProof'
+import type { ConcentratedOwnerLookupResult, ConcentratedOwnerResolver, ConcentratedOwnerRecord } from './lpProof'
 
 const V3_SUBGRAPH_QUERY_TIMEOUT_MS = 8_000
 // Bounded sample size — same "real read on a capped number of records, never full-pool coverage"
@@ -54,6 +54,10 @@ const PANCAKESWAP_V3_SUBGRAPH_ID_BY_CHAIN: Partial<Record<'bnb', string | undefi
   bnb: process.env.GRAPH_PANCAKESWAP_V3_SUBGRAPH_ID_BNB,
 }
 
+const SLIPSTREAM_SUBGRAPH_ID_BY_CHAIN: Partial<Record<'base', string | undefined>> = {
+  base: process.env.GRAPH_AERODROME_SLIPSTREAM_SUBGRAPH_ID_BASE,
+}
+
 interface PositionRow {
   id: string
   owner: string | null
@@ -64,9 +68,9 @@ function graphSubgraphUrl(apiKey: string, subgraphId: string): string {
   return `https://gateway.thegraph.com/api/${apiKey}/subgraphs/id/${subgraphId}`
 }
 
-async function queryTopPositions(subgraphId: string, poolAddress: string): Promise<PositionRow[] | null> {
+async function queryTopPositions(subgraphId: string, poolAddress: string): Promise<{ rows: PositionRow[] | null; failureReason: string | null }> {
   const apiKey = process.env.GRAPH_API_KEY
-  if (!apiKey) return null
+  if (!apiKey) return { rows: null, failureReason: 'The Graph API key is not configured.' }
 
   const query = `query($pool: String!, $first: Int!) {
     positions(first: $first, orderBy: liquidity, orderDirection: desc, where: { pool: $pool, liquidity_gt: "0" }) {
@@ -84,12 +88,12 @@ async function queryTopPositions(subgraphId: string, poolAddress: string): Promi
       cache: 'no-store',
       signal: AbortSignal.timeout(V3_SUBGRAPH_QUERY_TIMEOUT_MS),
     })
-    if (!res.ok) return null
+    if (!res.ok) return { rows: null, failureReason: `The Graph position lookup returned HTTP ${res.status}.` }
     const json = await res.json() as { data?: { positions?: PositionRow[] }; errors?: unknown[] }
-    if (json.errors || !json.data) return null
-    return json.data.positions ?? []
-  } catch {
-    return null
+    if (json.errors || !json.data) return { rows: null, failureReason: 'The Graph position response contained errors or no data.' }
+    return { rows: json.data.positions ?? [], failureReason: null }
+  } catch (error) {
+    return { rows: null, failureReason: error instanceof Error && error.name === 'TimeoutError' ? 'The Graph position lookup timed out.' : 'The Graph position lookup failed.' }
   }
 }
 
@@ -127,13 +131,28 @@ function toOwnerRecords(rows: PositionRow[]): ConcentratedOwnerRecord[] {
 export const resolveUniswapV3PositionOwners: ConcentratedOwnerResolver = async (input) => {
   if (!input.poolAddress) return null
   const chain = input.chain as 'eth' | 'base' | 'bnb'
+  const providerUsed = input.poolModel === 'pancakeswap_v3'
+    ? 'the_graph_pancakeswap_v3'
+    : input.poolModel === 'slipstream'
+      ? 'the_graph_aerodrome_slipstream'
+      : 'the_graph_uniswap_v3'
   const subgraphId = input.poolModel === 'uniswap_v3'
     ? UNISWAP_V3_SUBGRAPH_ID_BY_CHAIN[chain]
     : input.poolModel === 'pancakeswap_v3'
       ? PANCAKESWAP_V3_SUBGRAPH_ID_BY_CHAIN[chain as 'bnb']
-      : undefined
-  if (!subgraphId) return null
-  const rows = await queryTopPositions(subgraphId, input.poolAddress)
-  if (rows == null) return null
-  return toOwnerRecords(rows)
+      : input.poolModel === 'slipstream' && chain === 'base'
+        ? SLIPSTREAM_SUBGRAPH_ID_BY_CHAIN.base
+        : undefined
+  if (!['uniswap_v3', 'pancakeswap_v3', 'slipstream'].includes(input.poolModel)) return null
+  if (!subgraphId) {
+    const envName = input.poolModel === 'pancakeswap_v3' ? 'GRAPH_PANCAKESWAP_V3_SUBGRAPH_ID_BNB'
+      : input.poolModel === 'slipstream' ? 'GRAPH_AERODROME_SLIPSTREAM_SUBGRAPH_ID_BASE'
+      : `GRAPH_UNISWAP_V3_SUBGRAPH_ID_${chain.toUpperCase()}`
+    return { records: null, attempted: true, providerUsed, positionsFound: null, activePositionsFound: null, failureReason: `${envName} is not configured for this position lookup.` } satisfies ConcentratedOwnerLookupResult
+  }
+  const result = await queryTopPositions(subgraphId, input.poolAddress)
+  if (result.rows == null) return { records: null, attempted: true, providerUsed, positionsFound: null, activePositionsFound: null, failureReason: result.failureReason }
+  const records = toOwnerRecords(result.rows)
+  const activePositionsFound = records.reduce((sum, row) => sum + (row.positionCount ?? 1), 0)
+  return { records, attempted: true, providerUsed, positionsFound: result.rows.length, activePositionsFound, failureReason: records.length === 0 ? 'The position indexer returned no active-liquidity positions for this pool.' : null }
 }

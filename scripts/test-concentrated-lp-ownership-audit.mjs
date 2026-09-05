@@ -203,10 +203,14 @@ function main() {
   {
     const routeSrc = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
     assert.ok(routeSrc.includes('concentratedLpPositionOwnershipAudit: buildConcentratedLpPositionOwnershipAudit('), 'API response attaches the audit object')
+    assert.ok(routeSrc.includes('concentratedLpPositionAudit:'), 'API response also attaches the log-index audit')
 
     const uiSrc = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
     assert.ok(uiSrc.includes('concentratedLpPositionOwnershipAudit'), 'Token Scanner UI reads the audit object')
-    assert.ok(uiSrc.includes("audit.finalReason || 'No reason returned"), 'Position Ownership row always shows a reason')
+    assert.ok(uiSrc.includes('concentratedLpPositionView'), 'Token Scanner UI maps LP tab/sidebar from the same concentrated view')
+    assert.ok(uiSrc.includes('failureReason'), 'Position Ownership row reads the audit failureReason')
+    assert.ok(uiSrc.includes('finalReason'), 'Position Ownership row reads the ownership-audit finalReason')
+    assert.ok(uiSrc.includes('No reason returned for this position-ownership state.'), 'Position Ownership row always shows a reason')
 
     const clarkRouteSrc = readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
     assert.ok(clarkRouteSrc.includes('positionOwnershipFinalStatus'), 'Clark evidence mapping carries finalStatus through')

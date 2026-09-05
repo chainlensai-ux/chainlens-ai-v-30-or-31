@@ -5,6 +5,7 @@ export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent }
 import { isValidSolanaMintAddress } from "../solanaAddress.ts";
 import { classifyClarkMarketIntent } from "./clarkMarketIntent.ts";
 import { normalizeRiskScore } from "../riskScoreDirection.ts";
+import { clarkTokenReadHeading } from "../clark/commandFormats.ts";
 
 export type DashboardMarketRow = {
   symbol: string;
@@ -442,10 +443,10 @@ function slashSymbolFromRest(rest: string, address: string | null): string | nul
   if (!rest || address) return null;
   const first = rest.replace(/^\$/, "").split(/\s+/)[0] ?? "";
   const upper = first.toUpperCase();
-  if (/^[A-Z][A-Z0-9]{1,15}$/.test(upper) && !TOKEN_NAME_STOPWORDS.has(upper) && !LP_CHAIN_WORDS.has(upper)) {
-    return upper;
-  }
-  return null;
+  if (!/^[A-Z][A-Z0-9]{1,15}$/.test(upper) || TOKEN_NAME_STOPWORDS.has(upper)) return null;
+  // Bare ETH/BTC/SOL (and other chain-named tickers) are still ticker lookups for /token.
+  if (LP_CHAIN_WORDS.has(upper) && rest.trim().replace(/^\$/, "").toUpperCase() !== upper) return null;
+  return upper;
 }
 
 export function parseClarkSlashCommand(prompt: string): ClarkSlashCommand | null {
@@ -3440,7 +3441,9 @@ export function computeClarkTokenVerdictCore(input: ClarkTokenVerdictInput, usab
   }
   const missingMajorSafetyOnThin = (lowLiquidity || input.liquidityUsd == null) && !hasSecurity;
   if (missingMajorSafetyOnThin) why.push("Major safety checks are missing on a new/low-liquidity token.");
-  if (veryConcentrated || lowLiquidity || lpControlUnclear || controlActive || missingMajorSafetyOnThin) {
+  // High Risk requires confirmed evidence (concentration, known-low liquidity, active control).
+  // Missing LP/security is missing evidence, never a fabricated High Risk verdict.
+  if (veryConcentrated || lowLiquidity || controlActive) {
     return { verdict: "High Risk", riskLevel: "High", confidence: hasSecurity ? "Medium" : "Low", why, risks, goodSigns, missingEvidence };
   }
 
@@ -3599,8 +3602,9 @@ export function renderClarkTokenVerdict(opts: {
   nextActions: string[];
 }): string {
   const { result } = opts;
+  const heading = clarkTokenReadHeading(opts.symbolOrName, opts.address);
   const lines: string[] = [
-    `TOKEN READ — ${opts.symbolOrName}`,
+    `TOKEN READ — ${heading}`,
     `Chain: ${opts.chainLabel}`,
     `Address: ${opts.address}`,
     "",
@@ -3685,8 +3689,12 @@ const SOLANA_CLARK_TOKEN_NEXT_ACTIONS = ["/lp", "/holders", "/deployer", "/expla
 export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddress: string, chainLabel: string, usableEvidence: boolean): string {
   const input = buildClarkTokenVerdictInputFromEvidence(ev);
   const result = computeClarkTokenVerdictCore(input, usableEvidence);
-  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
-  const name = ev.token?.name && ev.token.name !== "Unknown" ? ev.token.name : null;
+  const heading = clarkTokenReadHeading(
+    ev.token?.name && ev.token.name !== "Unknown" && ev.token.symbol
+      ? `${ev.token.name} (${String(ev.token.symbol).toUpperCase()})`
+      : (ev.token?.symbol ?? null),
+    tokenAddress,
+  );
   const canonicalRisk = normalizeRiskScore({
     rawScore: ev.riskScore,
     rawScoreType: ev.riskScoreType ?? 'risk_score',
@@ -3694,7 +3702,7 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
     displayLocation: 'clark_token_read',
   });
   return renderClarkTokenVerdict({
-    symbolOrName: name && name.toUpperCase() !== sym ? `${name} (${sym})` : sym,
+    symbolOrName: heading,
     chainLabel,
     address: tokenAddress,
     result,
@@ -3770,10 +3778,14 @@ export function renderClarkTokenVerdictForSolana(params: {
   // wording via vocab.controlLabel in computeClarkTokenVerdictCore — no extra Solana-specific
   // patching needed here; the shared scoring logic already produces chain-correct bullets from the
   // vocab strings passed in.
-  const sym = (params.tokenSymbol ?? "?").toUpperCase();
-  const symbolOrName = params.tokenName && params.tokenName.toUpperCase() !== sym ? `${params.tokenName} (${sym})` : sym;
+  const heading = clarkTokenReadHeading(
+    params.tokenName && params.tokenSymbol && params.tokenName.toUpperCase() !== params.tokenSymbol.toUpperCase()
+      ? `${params.tokenName} (${String(params.tokenSymbol).toUpperCase()})`
+      : (params.tokenSymbol ?? params.tokenName),
+    params.tokenAddress,
+  );
   return renderClarkTokenVerdict({
-    symbolOrName,
+    symbolOrName: heading,
     chainLabel: "Solana",
     address: params.tokenAddress,
     result,
@@ -3819,19 +3831,19 @@ export function formatTokenSecurityStatus(sec: NonNullable<TokenScanEvidence["se
 }
 
 export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): string {
-  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
-  const name = ev.token?.name ?? sym;
   const addr = ev.token?.address ?? null;
+  const heading = clarkTokenReadHeading(ev.token?.symbol ?? ev.token?.name, addr);
+  const name = ev.token?.name ?? heading;
   const sec = ev.security;
   const h = ev.holders;
   const mkt = ev.market;
 
   const lines: string[] = [
-    `TOKEN READ — ${sym}`,
+    `TOKEN READ — ${heading}`,
     `- Chain: ${chain}`,
   ];
   if (addr) lines.push(`- Address: ${addr}`);
-  if (name !== sym) lines.push(`- Name: ${name}`);
+  if (name !== heading) lines.push(`- Name: ${name}`);
   if (mkt?.liquidity != null) lines.push(`- Liquidity: ${fmtUsdShort(mkt.liquidity)}`);
   if (mkt?.volume24h != null) lines.push(`- 24h volume: ${fmtUsdShort(mkt.volume24h)}`);
   if (mkt?.change24h != null) lines.push(`- 24h change: ${fmtPct(mkt.change24h)}`);

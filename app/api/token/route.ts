@@ -52,7 +52,7 @@ import {
   buildCanonicalPoolIdentity,
   reconcileCanonicalPoolIdentity,
   buildConcentratedLpPositionOwnershipAudit,
-  buildConcentratedPositionAudit,
+  buildConcentratedLpPositionAudit,
   type ProofApplicability,
   type ConcentratedPositionProof,
   type CanonicalPoolIdentity,
@@ -70,6 +70,7 @@ import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveAerodromeSlipstreamPoolRpc } from '@/lib/server/aerodromeSlipstreamPoolRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
+import { resolveLpSafetyFinalState } from '@/lib/lpSafetyResolution'
 
 // MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
 // error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
@@ -129,6 +130,16 @@ const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (inpu
   if (v4BaseRpc != null) return v4BaseRpc
   const slipstreamRpc = await resolveAerodromeSlipstreamPoolRpc(input)
   if (slipstreamRpc != null) return slipstreamRpc
+  if (input.poolModel === 'uniswap_v4') {
+    return {
+      records: null,
+      attempted: true,
+      providerUsed: null,
+      positionsFound: null,
+      activePositionsFound: null,
+      failureReason: `No Uniswap V4 position-owner indexer is configured for ${input.chain}; the pool model is verified, but beneficial position ownership cannot be attributed from pool metadata alone.`,
+    }
+  }
   return resolveUniswapV3PositionOwners(input)
 }
 
@@ -2857,7 +2868,7 @@ type LpDiagnostics = {
 
 function humanizeConcentratedMissingEvidence(key: string, sampled?: boolean): string {
   switch (key) {
-    case "positionManager": return "Position ownership is not supported yet for this pool model";
+    case "positionManager": return "Concentrated position manager was not resolved for this pool";
     case "topPositionOwner": return sampled ? "Full-pool top liquidity owner not verified" : "Top liquidity owner not verified";
     case "positionCount": return sampled ? "Full active position count not indexed" : "Active liquidity positions not indexed";
     case "topPositionSharePercent": return sampled ? "Full-pool liquidity share not available" : "Position liquidity share not available";
@@ -2940,7 +2951,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           ...(positionProof?.positionManager ? ["Position manager resolved"] : []),
           ...(positionProof?.status === "partial" && positionProof.positionManager ? ["Pool active/liquidity confirmed"] : []),
           ...(hasSampledEvidence ? ["Sampled V3 position owners found"] : []),
-          ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? "not supported" : positionProof.status.replace(/_/g, " ")}`] : []),
+          ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? (positionProof.concentratedLpPositionAudit?.failureReason ?? "unavailable for this pool model") : positionProof.status.replace(/_/g, " ")}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
         couldNotVerify,
@@ -3127,8 +3138,15 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
   const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
   const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
-  const { address, poolId, poolAddressType } = extractPoolAddressOrId(pool?.id, attrs.address)
   const { dexId, dexName } = extractPoolDex(pool, []);
+  const defaultIdentity = extractPoolAddressOrId(pool?.id, attrs.address)
+  // GeckoTerminal can expose the V4 singleton PoolManager as attributes.address while its
+  // resource id contains the actual bytes32 pool ID. Prefer that pool ID for V4; querying by the
+  // singleton address cannot isolate this token's positions.
+  const rawIdIdentity = extractPoolAddressOrId(pool?.id, null)
+  const { address, poolId, poolAddressType } = /uniswap.*v4|v4.*uniswap/i.test(`${dexId} ${dexName}`) && rawIdIdentity.poolId
+    ? rawIdIdentity
+    : defaultIdentity
   return {
     address,
     poolId,
@@ -3236,6 +3254,15 @@ function concentratedPoolDisplayLabel(poolModel: string | null | undefined, dexT
   if (/pancakeswap.*v3/.test(d)) return "PancakeSwap V3 concentrated";
   if (/uniswap.*v3/.test(d)) return "Uniswap V3 concentrated";
   return "concentrated";
+}
+
+function concentratedPositionAttemptReason(proof: ConcentratedPositionProof): string {
+  const audit = proof.concentratedLpPositionAudit;
+  if (audit?.failureReason) return audit.failureReason;
+  if (proof.status === "not_supported") {
+    return proof.reason || "Position index unavailable: this pool model could not be fully resolved.";
+  }
+  return proof.reason;
 }
 
 function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string): LpControlResult["poolType"] {
@@ -4342,21 +4369,25 @@ export async function POST(req: Request) {
     let _lpAuditToken1: string | null = null
     let _lpAuditTotalSupplyRaw: string | null = null
     let _lpAuditAlchemyRpcAttempted = false
+    let _fallbackRpcEvidence: Awaited<ReturnType<typeof classifyPoolByRpc>> | null = null
     if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
       const _rpcProbePool = normalizedPools[0]
       if (_rpcProbePool && _rpcProbePool.poolType === 'unknown' && _rpcProbePool.address && /^0x[a-f0-9]{40}$/.test(_rpcProbePool.address)) {
         _lpAuditAlchemyRpcAttempted = true
         const _rpcCls = await classifyPoolByRpc(chain, _rpcProbePool.address)
+        _fallbackRpcEvidence = _rpcCls
         _fallbackRpcModel = _rpcCls.poolType
-        _lpAuditToken0 = _rpcCls.token0
-        _lpAuditToken1 = _rpcCls.token1
-        _lpAuditTotalSupplyRaw = _rpcCls.totalSupplyRaw
+        _lpAuditToken0 = _rpcCls.resolved.token0
+        _lpAuditToken1 = _rpcCls.resolved.token1
+        _lpAuditTotalSupplyRaw = _rpcCls.resolved.totalSupplyRaw
         if (_rpcCls.poolType !== 'unknown') {
           _rpcProbePool.poolType = _rpcCls.poolType
           _rpcProbePool.hasLpToken = _rpcCls.hasLpToken
         } else if (_rpcProbePool.hasLpToken == null) {
           _rpcProbePool.hasLpToken = _rpcCls.hasLpToken
         }
+        if (!_rpcProbePool.baseTokenAddress && _rpcCls.resolved.token0) _rpcProbePool.baseTokenAddress = _rpcCls.resolved.token0
+        if (!_rpcProbePool.quoteTokenAddress && _rpcCls.resolved.token1) _rpcProbePool.quoteTokenAddress = _rpcCls.resolved.token1
       }
     }
     const selectedLpPool = selectLpVerificationPool(normalizedPools, String(contract));
@@ -4803,8 +4834,11 @@ export async function POST(req: Request) {
         // reaching this proof attempt at all, even after LpChain itself was widened earlier this
         // session. `chain` is already narrowed to one of the four supported ChainKey values by the
         // request-level gate, so this cast is now accurate rather than lossy.
-        chain as "eth" | "base" | "bnb" | "robinhood", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
-        primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+        chain as "eth" | "base" | "bnb" | "robinhood",
+        lpPool?.poolId ? null : (lpPool?.address ?? primaryPoolAddress),
+        lpPool?.poolId ?? primaryMarketPoolId ?? null,
+        lpPool?.poolId ? "pool_id" : (lpPool?.poolAddressType ?? primaryMarketPoolAddressType ?? "unknown"),
+        lpDexId ?? lpDexName ?? null,
         resolveConcentratedPositionOwners,
       )
       lpControl = {
@@ -4812,7 +4846,7 @@ export async function POST(req: Request) {
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
@@ -4833,7 +4867,7 @@ export async function POST(req: Request) {
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`, `poolModel=${concentratedPositionProof.poolModel}`,
@@ -5126,7 +5160,7 @@ export async function POST(req: Request) {
         ...lpControl,
         status: "concentrated_liquidity",
         poolType: lpControl.poolType ?? lpPoolType,
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
       };
     }
 
@@ -7225,8 +7259,8 @@ export async function POST(req: Request) {
       if (!_cppManagerResolved) {
         _concentratedGaps.push({
           id: 'POSITION_MANAGER_UNSUPPORTED',
-          label: `${_cppPoolModelLabel} position manager not supported yet`,
-          explanation: `ChainLens detected the concentrated pool, but this pool model needs model-specific position ownership support before liquidity owners can be verified.`,
+          label: `${_cppPoolModelLabel} position manager not resolved`,
+          explanation: `ChainLens detected the concentrated pool, but a verified position-manager address was not resolved for this pool model, so liquidity owners could not be indexed.`,
           nextAction: 'Verify position ownership through the protocol\'s official position-manager UI.',
         })
       }
@@ -7503,6 +7537,33 @@ export async function POST(req: Request) {
         lpControlState: lpDiagnostics.lpState ?? null,
       },
     })
+    const lpSafetyResolution = (chain === 'base' || chain === 'eth' || chain === 'bnb') ? resolveLpSafetyFinalState({
+      chainId: CHAIN_ID_MAP[chain] ?? null,
+      tokenAddress: contract,
+      selectedPoolAddress: lpPoolAddress ?? lpPool?.address ?? null,
+      selectedPoolDex: lpDexId ?? lpDexName ?? null,
+      selectedPoolSource: canonicalPrimaryUsable ? 'primary_market' : (_dsFbPoolSynthesized ? 'market_fallback' : null),
+      poolType: lpPoolType === 'unknown' ? lpModelProof.model : lpPoolType,
+      token0: _fallbackRpcEvidence?.resolved.token0 ?? lpPool?.baseTokenAddress ?? null,
+      token1: _fallbackRpcEvidence?.resolved.token1 ?? lpPool?.quoteTokenAddress ?? null,
+      lpTokenAddress: _primaryConcentrated ? null : (_lpProofAddress ?? null),
+      totalSupplyRead: Boolean(lpDiagnostics.totalSupplyChecked || _fallbackRpcEvidence?.probed.totalSupply),
+      rpcAttempted: Boolean(_fallbackRpcModel != null || lpDiagnostics.rpcAttempted),
+      rpcCallsMade: _fallbackRpcModel != null ? 7 : (lpDiagnostics.rpcFallbackAttempted ? 1 : 0),
+      proofAttempted: standardLpProofAttempted || concentratedPositionProofAttempted,
+      holdersReturned: Number(lpDiagnostics.holderRawItemCount ?? 0),
+      burnSharePct: lpDiagnostics.burnPercent ?? null,
+      deadSharePct: null,
+      dominantHolder: lpControllerAddress ?? null,
+      controllerType: lpControllerType,
+      positionProofAttempted: concentratedPositionProofAttempted,
+      positionProofStatus: concentratedPositionProof?.status ?? null,
+      lockStatus: lpLockStatus,
+      burnStatus: lpControl.burnStatus ?? null,
+      exitRisk: lpExitRisk,
+      exitRiskReason: lpExitRiskReason,
+      failureReason: concentratedPositionProof?.reason ?? lpDiagnostics.failureReason ?? lpControl.reason ?? null,
+    }) : null
     const lpUnlockTimeline = buildLpUnlockTimeline({
       chain,
       lpLockBurnIntel,
@@ -8759,14 +8820,16 @@ export async function POST(req: Request) {
         chainId: CHAIN_ID_MAP[chain] ?? null,
         tokenAddress: contract,
       }),
-      // FINISH-CONCENTRATED-LP-OWNERSHIP-PROOF, DISCLOSED: this task's own required audit shape,
-      // additive to concentratedLpPositionOwnershipAudit above (same underlying
-      // concentratedPositionProof, never a second independent proof attempt).
-      concentratedPositionAudit: buildConcentratedPositionAudit(concentratedPositionProof, {
+      concentratedLpPositionAudit: buildConcentratedLpPositionAudit(concentratedPositionProof, {
         chainId: CHAIN_ID_MAP[chain] ?? null,
+        tokenAddress: contract,
       }),
       lpMovementWatch,
       lpLockBurnIntel,
+      ...(lpSafetyResolution ? {
+        lpSafetyResolution,
+        lpSafetyResolutionAudit: lpSafetyResolution.audit,
+      } : {}),
       lpUnlockTimeline,
       lpHistoryTimeline,
       ...(secondaryLpExposure ? { secondaryLpExposure } : {}),

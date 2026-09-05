@@ -14,18 +14,23 @@ async function main() {
     assert.equal(base.confidence, 'high')
   }
 
-  // Never guesses a position-manager address for a protocol/chain this codebase hasn't verified
-  // — confidence must drop to "low" with a null address rather than fabricating one.
+  // Verified position-manager addresses for Slipstream / Uniswap V4 / Pancake V3.
   {
     const slipstream = resolveConcentratedProtocol('base', 'aerodrome-slipstream', 'contract')
     assert.equal(slipstream.protocol, 'slipstream')
-    assert.equal(slipstream.positionManager, null, 'never guesses an unverified Slipstream position-manager address')
-    assert.equal(slipstream.confidence, 'low')
+    assert.equal(slipstream.positionManager, '0x827922686190790b37229fd06084350e74485b72')
+    assert.equal(slipstream.confidence, 'high')
 
     const v4 = resolveConcentratedProtocol('base', 'uniswap_v4', 'pool_id')
     assert.equal(v4.protocol, 'uniswap_v4')
-    assert.equal(v4.positionManager, null)
-    assert.equal(v4.confidence, 'low')
+    assert.equal(v4.positionManager, '0x7c5f5a4bbd8fd63184577525326123b519429bdc')
+    assert.equal(v4.confidence, 'high')
+
+    const pancake = resolveConcentratedProtocol('bnb', 'pancakeswap_v3', 'contract')
+    assert.equal(pancake.positionManager, '0x46a15b0b27311cedf172ab29e4f4766fbe7f4364')
+    const uniBnb = resolveConcentratedProtocol('bnb', 'uniswap_v3', 'contract')
+    assert.equal(uniBnb.positionManager, '0x7b8a01b39d58278b5de7e48c8449c9f4f5170613')
+    assert.notEqual(pancake.positionManager, uniBnb.positionManager, 'BNB Uniswap V3 and Pancake V3 use distinct managers')
   }
 
   // ── attemptConcentratedPositionProof now reuses the resolver to populate positionManager ──
@@ -41,7 +46,8 @@ async function main() {
   {
     const r = await attemptConcentratedPositionProof('eth', null, '0x' + 'd'.repeat(64), 'pool_id', 'uniswap_v4')
     assert.ok(!/subgraph|indexer|provider path|nft/i.test(r.reason), 'reason avoids backend jargon')
-    assert.ok(r.reason.includes('could not be fully resolved'))
+    assert.ok(/position index unavailable|owner unavailable|could not be fully resolved/i.test(r.reason), 'reason is a concrete unavailable message')
+    assert.notEqual(r.status, 'not_supported', 'V4 resolver was attempted so status is not generic not_supported')
   }
 
   console.log('test-concentrated-protocol-resolver.mjs: all assertions passed')

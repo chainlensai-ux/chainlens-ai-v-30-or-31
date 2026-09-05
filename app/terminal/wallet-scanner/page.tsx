@@ -320,6 +320,154 @@ function buildCortexReadV2(
 // (or no prior result at all) starts from null, so a wallet's total can never be shown while a
 // DIFFERENT wallet is being scanned.
 
+// STUCK-SCANNING-LIFECYCLE FIX, DISCLOSED (bug report: "Wallet Scanner starts scan and finds
+// portfolio value/holdings, but UI stays stuck on SCANNING.../Checking activity.../Deep scan still
+// running/CORTEX reading wallet activity... — never cleanly transitions to completed result").
+//
+// ROOT CAUSE: the backend job/poll pipeline (app/frontend/api/scanWallet.ts's scanWalletV2, and
+// workers/walletScanV2.ts's per-module runWithTimeoutAndRpcAudit/WORKER_GLOBAL_TIMEOUT_MS) already
+// bounds every stage and always eventually reaches a terminal 'done'/'failed' job status or a
+// client-side poll timeout — it does not hang forever at the storage/queue layer. The actual stuck
+// UI came from this PAGE: every "still scanning" surface (the scan button's disabled state, the
+// CORTEX Wallet Read sidebar's "reading…" text, the input's disabled state) was gated on the single
+// monolithic `loading` flag, which only flips false once the ENTIRE scanWalletV2() promise settles —
+// i.e. once ALL 11 backend modules (holdings/pricing/portfolio/trades/pnl/activity/risk/personality/
+// behavior/signals/smartMoney) have run, even though holdings/pricing/portfolio (the real "does this
+// wallet have a result" signal) are already known via the worker's own early `partial` snapshot
+// (publishWalletScanPartialSnapshot) long before PnL/activity/CORTEX finish. A slow or degraded
+// PnL/activity/CORTEX stage therefore kept the WHOLE page pinned on generic "scanning" copy for up
+// to the full ~270s worker budget, which reads to a user as "stuck forever" even though the request
+// was technically still in flight and would eventually resolve.
+//
+// FIX: `limitedEvidenceMode` (state below) is a UI-only flag, independent of `loading` — once the
+// worker's own partial snapshot proves holdings/pricing/portfolio are ready (see the onUpdate
+// callback in handleScan) and PORTFOLIO_READY_GRACE_MS elapses without the full result landing, the
+// scan/rescan button and the CORTEX panel stop presenting a blocking "scanning" state and instead
+// show a real "Scan completed with limited evidence" state built from the verified partial
+// snapshot, with an explicit "Retry deep scan" action — never a fabricated $0 or a fabricated PnL
+// value. The underlying poll keeps running in the background so a genuinely fast PnL/activity finish
+// can still upgrade the view to the full result; `scanGenerationRef` ensures a stale background
+// resolution (or one superseded by the user starting a fresh scan) can never clobber newer state.
+const PORTFOLIO_READY_GRACE_MS = 45_000
+
+// walletScanStageState / walletScanLifecycleAudit, DISCLOSED: the task-specified shapes, derived
+// (never independently computed/guessed) from the same real signals this page already tracks —
+// partialSnapshot (holdings/pricing/portfolio), result (the full report, which also carries the
+// real pnlV2/chainActivityV2/pnlStatus fields), loading/limitedEvidenceMode, and error. Exported so
+// this derivation can be unit-tested directly instead of only exercised through the full page.
+export type WalletScanStageStatus = 'pending' | 'ready' | 'failed'
+export type WalletScanPnlStageStatus = 'pending' | 'verified' | 'partial' | 'unavailable'
+export type WalletScanActivityStageStatus = 'pending' | 'ready' | 'failed' | 'unavailable'
+export type WalletScanCortexStageStatus = 'pending' | 'ready' | 'skipped' | 'failed'
+export type WalletScanFinalStatus = 'scanning' | 'completed' | 'completed_with_limited_evidence' | 'failed' | 'stalled'
+
+export type WalletScanStageState = {
+  holdings: WalletScanStageStatus
+  pricing: WalletScanStageStatus
+  portfolio: WalletScanStageStatus
+  activity: WalletScanActivityStageStatus
+  pnl: WalletScanPnlStageStatus
+  cortex: WalletScanCortexStageStatus
+  finalStatus: WalletScanFinalStatus
+}
+
+export function deriveWalletScanStageState(params: {
+  loading: boolean
+  limitedEvidenceMode: boolean
+  hasPartialSnapshot: boolean
+  hasResult: boolean
+  pnlStatus: string | null | undefined
+  chainActivityV2Present: boolean
+  hasError: boolean
+  timeoutHit: boolean
+}): WalletScanStageState {
+  const { loading, limitedEvidenceMode, hasPartialSnapshot, hasResult, pnlStatus, chainActivityV2Present, hasError, timeoutHit } = params
+
+  // Holdings/pricing/portfolio are ready the moment either the worker's own partial snapshot
+  // (published before PnL/activity even start) or the full result exists — never gated on PnL.
+  const portfolioSignalReady = hasPartialSnapshot || hasResult
+  const holdings: WalletScanStageStatus = portfolioSignalReady ? 'ready' : hasError && !loading ? 'failed' : 'pending'
+  const pricing: WalletScanStageStatus = holdings
+  const portfolio: WalletScanStageStatus = holdings
+
+  const pnl: WalletScanPnlStageStatus = !hasResult
+    ? (loading && !limitedEvidenceMode ? 'pending' : 'unavailable')
+    : pnlStatus === 'verified' ? 'verified'
+    : pnlStatus === 'partial' ? 'partial'
+    : pnlStatus === 'unavailable' ? 'unavailable'
+    // A completed result with no explicit pnlStatus field still carries real pnlV2 numbers —
+    // treat as verified rather than a fabricated "pending" on an already-finished scan.
+    : 'verified'
+
+  const activity: WalletScanActivityStageStatus = !hasResult
+    ? (loading && !limitedEvidenceMode ? 'pending' : 'unavailable')
+    : chainActivityV2Present ? 'ready' : 'unavailable'
+
+  const cortex: WalletScanCortexStageStatus = hasResult ? 'ready' : (loading && !limitedEvidenceMode ? 'pending' : 'skipped')
+
+  const finalStatus: WalletScanFinalStatus =
+    hasResult ? 'completed'
+      : hasError && !loading ? (timeoutHit ? 'stalled' : 'failed')
+      : limitedEvidenceMode ? 'completed_with_limited_evidence'
+      : 'scanning'
+
+  return { holdings, pricing, portfolio, activity, pnl, cortex, finalStatus }
+}
+
+export type WalletScanLifecycleAudit = {
+  walletAddress: string
+  jobId: string | null
+  requestedMode: 'normal' | 'deep'
+  stage: string
+  holdingsReady: boolean
+  pricingReady: boolean
+  portfolioReady: boolean
+  activityReady: boolean
+  pnlReady: boolean
+  cortexReady: boolean
+  workerStatus: string | null
+  pollingStatus: 'polling' | 'stopped'
+  lastProgressAt: number | null
+  elapsedMs: number
+  timeoutHit: boolean
+  finalStatus: WalletScanFinalStatus
+  failureReason: string | null
+}
+
+export function buildWalletScanLifecycleAudit(params: {
+  walletAddress: string
+  jobId: string | null
+  requestedMode: 'normal' | 'deep'
+  stageState: WalletScanStageState
+  workerStatus: string | null
+  polling: boolean
+  lastProgressAt: number | null
+  scanStartedAt: number
+  timeoutHit: boolean
+  failureReason: string | null
+}): WalletScanLifecycleAudit {
+  const { walletAddress, jobId, requestedMode, stageState, workerStatus, polling, lastProgressAt, scanStartedAt, timeoutHit, failureReason } = params
+  return {
+    walletAddress,
+    jobId,
+    requestedMode,
+    stage: stageState.finalStatus,
+    holdingsReady: stageState.holdings === 'ready',
+    pricingReady: stageState.pricing === 'ready',
+    portfolioReady: stageState.portfolio === 'ready',
+    activityReady: stageState.activity === 'ready' || stageState.activity === 'unavailable',
+    pnlReady: stageState.pnl === 'verified' || stageState.pnl === 'partial' || stageState.pnl === 'unavailable',
+    cortexReady: stageState.cortex === 'ready' || stageState.cortex === 'skipped',
+    workerStatus,
+    pollingStatus: polling ? 'polling' : 'stopped',
+    lastProgressAt,
+    elapsedMs: Date.now() - scanStartedAt,
+    timeoutHit,
+    finalStatus: stageState.finalStatus,
+    failureReason,
+  }
+}
+
 // ATOMIC SCAN ENVELOPE, DISCLOSED (live-value staleness task): the report and the identity of the
 // scan that produced it are held in ONE state value, always replaced wholesale — see
 // app/frontend/lib/walletScanIdentity.ts's own header for the confirmed root cause this closes.
@@ -358,6 +506,16 @@ export default function WalletScannerPage() {
   // early return, this effect releases it whenever `loading` goes false for any reason, so the guard
   // can never get stuck permanently blocking future scans.
   useEffect(() => { if (!loading) scanInFlightRef.current = false }, [loading])
+  // LIMITED-EVIDENCE MODE, DISCLOSED (stuck-scanning-lifecycle fix — see this file's own header
+  // comment above WalletScanEnvelope for the full trace): a UI-only flag, deliberately independent
+  // of `loading`. Set once the worker's own partial snapshot has proven holdings/pricing/portfolio
+  // are ready and PORTFOLIO_READY_GRACE_MS has elapsed with no full result yet — never touches the
+  // in-flight request itself (the background poll keeps running and can still upgrade the view to a
+  // full completed result). `scanGenerationRef` lets a stale background resolution from a scan the
+  // user has since superseded (by starting a fresh one while this flag was true) be silently
+  // ignored instead of clobbering the newer scan's state.
+  const [limitedEvidenceMode, setLimitedEvidenceMode] = useState(false)
+  const scanGenerationRef = useRef(0)
   const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
   const [currentJobId, setCurrentJobId] = useState<string | null>(null)
   // STAGE PROGRESS, DISCLOSED (perceived-speed follow-up task — replaces the previously-dead
@@ -587,8 +745,16 @@ export default function WalletScannerPage() {
   async function handleScan(mode: 'normal' | 'deep' = 'normal') {
     const address = input.trim()
     if (!address) return
-    if (scanInFlightRef.current) return
+    // STUCK-SCANNING-LIFECYCLE FIX, DISCLOSED: a scan already in flight only blocks a new one while
+    // it still LOOKS like it's scanning to the user (limitedEvidenceMode is false). Once portfolio
+    // evidence is ready and the grace period has elapsed, the button is meant to work again — this
+    // lets a rescan supersede the still-polling background request rather than being silently
+    // dropped. scanGenerationRef below ensures the old request's eventual resolution can never
+    // clobber the new scan's state once superseded this way.
+    if (scanInFlightRef.current && !limitedEvidenceMode) return
     scanInFlightRef.current = true
+    const myGeneration = ++scanGenerationRef.current
+    setLimitedEvidenceMode(false)
 
     if (mode === 'deep') {
       // eslint-disable-next-line no-console
@@ -679,6 +845,11 @@ export default function WalletScannerPage() {
       // request. Robinhood availability is still gated server-side by isRobinhoodChainAvailable() —
       // sending this string never fakes Robinhood being scanned when it isn't configured.
       const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, partial, walletChainSelectionAudit }) => {
+        // STALE-UPDATE GUARD, DISCLOSED (stuck-scanning-lifecycle fix): if the user started a fresh
+        // scan while this one was still polling in the background (allowed once limitedEvidenceMode
+        // let the button re-enable), this callback belongs to a superseded generation — drop it so
+        // it can never clobber the newer scan's state.
+        if (scanGenerationRef.current !== myGeneration) return
         scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
@@ -688,7 +859,35 @@ export default function WalletScannerPage() {
         // yet — the last real stage stays visible rather than the UI reverting to a generic spinner).
         if (progress) setScanProgress(progress)
         if (partial) {
-          if (uiFirstResultMsRef.current == null) uiFirstResultMsRef.current = Date.now() - scanStartedAt
+          if (uiFirstResultMsRef.current == null) {
+            uiFirstResultMsRef.current = Date.now() - scanStartedAt
+            // GRACE TIMER, DISCLOSED (stuck-scanning-lifecycle fix): holdings/pricing/portfolio are
+            // now known-ready (this is the worker's own verified early snapshot, never a guess) —
+            // schedule the UI to stop presenting a blocking "scanning" state after
+            // PORTFOLIO_READY_GRACE_MS if the full result (PnL/activity/CORTEX) still hasn't
+            // landed. Scheduled exactly once per scan (guarded by uiFirstResultMsRef being null),
+            // and generation-guarded so it can never fire for a superseded scan.
+            globalThis.setTimeout(() => {
+              if (scanGenerationRef.current !== myGeneration) return
+              setLimitedEvidenceMode(true)
+              // eslint-disable-next-line no-console
+              console.warn('[walletScanLifecycleAudit]', buildWalletScanLifecycleAudit({
+                walletAddress: address,
+                jobId: scanJobId,
+                requestedMode: mode,
+                stageState: deriveWalletScanStageState({
+                  loading: true, limitedEvidenceMode: true, hasPartialSnapshot: true, hasResult: false,
+                  pnlStatus: null, chainActivityV2Present: false, hasError: false, timeoutHit: false,
+                }),
+                workerStatus: 'running',
+                polling: true,
+                lastProgressAt: Date.now(),
+                scanStartedAt,
+                timeoutHit: false,
+                failureReason: null,
+              }))
+            }, PORTFOLIO_READY_GRACE_MS)
+          }
           setPartialSnapshot(partial)
         }
         // Only present on the enqueue update — kept on later polls that don't carry it (see
@@ -699,6 +898,7 @@ export default function WalletScannerPage() {
           console.log('[SCAN] walletChainSelectionAudit', walletChainSelectionAudit)
         }
       }, scanSession?.access_token)
+      if (scanGenerationRef.current !== myGeneration) return
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
       // previously left the PRESERVED previous result on screen — the `degraded` branch did a bare
@@ -758,17 +958,61 @@ export default function WalletScannerPage() {
       })
       logEngineConsistencyIfDev(report)
       logScanIdentityIfDev(envelope)
+      // eslint-disable-next-line no-console
+      console.warn('[walletScanLifecycleAudit]', buildWalletScanLifecycleAudit({
+        walletAddress: address,
+        jobId: scanJobId,
+        requestedMode: mode,
+        stageState: deriveWalletScanStageState({
+          loading: false, limitedEvidenceMode: false, hasPartialSnapshot: false, hasResult: true,
+          pnlStatus: (report as unknown as { pnlStatus?: string | null }).pnlStatus ?? null,
+          chainActivityV2Present: Array.isArray(report.chainActivityV2) && report.chainActivityV2.length > 0,
+          hasError: false, timeoutHit: false,
+        }),
+        workerStatus: 'done',
+        polling: false,
+        lastProgressAt: Date.now(),
+        scanStartedAt,
+        timeoutHit: false,
+        failureReason: null,
+      }))
     } catch (err: unknown) {
+      if (scanGenerationRef.current !== myGeneration) return
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)
+      const failureMessage = err instanceof Error ? err.message : String(err)
+      // eslint-disable-next-line no-console
+      console.warn('[walletScanLifecycleAudit]', buildWalletScanLifecycleAudit({
+        walletAddress: address,
+        jobId: scanJobId,
+        requestedMode: mode,
+        stageState: deriveWalletScanStageState({
+          loading: false, limitedEvidenceMode, hasPartialSnapshot: partialSnapshot != null, hasResult: false,
+          pnlStatus: null, chainActivityV2Present: false, hasError: true,
+          timeoutHit: /timed out|timeout/i.test(failureMessage),
+        }),
+        workerStatus: 'failed',
+        polling: false,
+        lastProgressAt: Date.now(),
+        scanStartedAt,
+        timeoutHit: /timed out|timeout/i.test(failureMessage),
+        failureReason: failureMessage,
+      }))
       setResultEnvelope(null)
       setPartialSnapshot(null)
       setError(err instanceof Error ? err.message : 'Scan failed — try again later')
     } finally {
-      setLoading(false)
-      setJobStatusMessage(null)
-      setCurrentJobId(null)
-      setScanProgress(null)
+      // STALE-UPDATE GUARD, DISCLOSED (stuck-scanning-lifecycle fix): a superseded generation must
+      // never reset `loading`/`jobStatusMessage`/etc for the NEWER scan currently in flight — those
+      // belong entirely to whichever scan is the CURRENT generation. refreshDeepScanQuota is a
+      // harmless read regardless of generation, so it still runs unconditionally.
+      if (scanGenerationRef.current === myGeneration) {
+        setLoading(false)
+        setLimitedEvidenceMode(false)
+        setJobStatusMessage(null)
+        setCurrentJobId(null)
+        setScanProgress(null)
+      }
       if (mode === 'deep') void refreshDeepScanQuota()
     }
   }
@@ -898,7 +1142,7 @@ export default function WalletScannerPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void handleScan() }}
-              disabled={loading}
+              disabled={loading && !limitedEvidenceMode}
               placeholder="0x… wallet address"
               spellCheck={false}
               style={{
@@ -911,18 +1155,22 @@ export default function WalletScannerPage() {
             <button
               className="ws-scan-btn"
               onClick={() => void handleScan()}
-              disabled={loading || !input.trim()}
+              disabled={(loading && !limitedEvidenceMode) || !input.trim()}
               style={{
                 padding: '14px 24px', borderRadius: '13px', border: 'none',
-                background: (loading || !input.trim()) ? 'rgba(45,212,191,0.20)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
-                color: (loading || !input.trim()) ? 'rgba(255,255,255,0.30)' : '#03121e',
+                background: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'rgba(45,212,191,0.20)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
+                color: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'rgba(255,255,255,0.30)' : '#03121e',
                 fontSize: '11px', fontWeight: 900, letterSpacing: '0.12em', textTransform: 'uppercase',
-                cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer',
+                cursor: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'not-allowed' : 'pointer',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px',
               }}
             >
-              {loading ? 'Scanning…' : 'Scan'}
+              {/* SCAN-BUTTON-NEVER-STUCK FIX, DISCLOSED (stuck-scanning-lifecycle fix): once
+                  limitedEvidenceMode is true the button is live again even while the background poll
+                  for the previous scan is still running — it reads "Rescan" since a completed (if
+                  limited) result already exists to refresh. */}
+              {loading && !limitedEvidenceMode ? 'Scanning…' : loading && limitedEvidenceMode ? 'Rescan' : result ? 'Rescan' : 'Scan'}
             </button>
           </div>
 
@@ -930,19 +1178,19 @@ export default function WalletScannerPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
             <button
               onClick={() => void handleScan('deep')}
-              disabled={loading || !input.trim() || deepScanAtLimit}
+              disabled={(loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit}
               title={deepScanAtLimit ? scanDailyLimitReachedMessage(plan, deepScanQuota?.limit ?? null) : 'Deep scan — holdings and portfolio first, then recovery and PnL.'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.45)',
                 background: 'rgba(45,212,191,0.08)', color: '#2DD4BF',
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
-                cursor: (loading || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
+                cursor: ((loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
                 opacity: deepScanAtLimit ? 0.45 : 1,
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}
             >
-              Deep Scan
+              {limitedEvidenceMode ? 'Retry Deep Scan' : 'Deep Scan'}
             </button>
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               Holdings + portfolio first · PnL and recovery follow
@@ -955,8 +1203,11 @@ export default function WalletScannerPage() {
                 via the "Rescan" control inside the Robinhood card itself, once results exist. */}
           </div>
 
-          {/* Loading state */}
-          {loading && (
+          {/* Loading state — hidden once limitedEvidenceMode kicks in (stuck-scanning-lifecycle
+              fix): the generic "Scanning…/queued/still scanning" copy is replaced below by the real
+              "Scan completed with limited evidence" card once holdings/pricing/portfolio are proven
+              ready and the grace period has elapsed with no full result yet. */}
+          {loading && !limitedEvidenceMode && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
               {/* REFRESHING INDICATOR, DISCLOSED (this task's "clearly show Refreshing…"
                   requirement): when a previous result is still on screen, the numbers below this
@@ -995,7 +1246,14 @@ export default function WalletScannerPage() {
             </div>
           )}
 
-          {loading && partialSnapshot && !result && (() => {
+          {/* PORTFOLIO-READY-RENDERS FIX, DISCLOSED (stuck-scanning-lifecycle fix, explicit rule
+              "Portfolio/holdings ready = render wallet result"): this card is now keyed on
+              `partialSnapshot && !result` alone — no longer also requires `loading` — so it stays
+              visible through the limitedEvidenceMode transition rather than disappearing the moment
+              the blocking "scanning" UI is dismissed. Never overwrites/is overwritten by a real
+              `result`: the instant the full report lands this card unmounts (its guard is
+              `!result`) and the full result view below takes over. */}
+          {partialSnapshot && !result && (() => {
             const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)
             const chainLabels = partialSnapshot.activeChainIds.map((id) => (
               id === 8453 ? 'Base' : id === 1 ? 'ETH' : id === 4663 ? 'Robinhood' : `chain ${id}`
@@ -1004,8 +1262,8 @@ export default function WalletScannerPage() {
             const top = partialSnapshot.topHoldings.slice(0, 5)
             return (
               <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#2DD4BF', marginBottom: '10px' }}>
-                  Portfolio snapshot · live
+                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
+                  {limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
                   {fmtUsd(merged.totalValueUsd)}
@@ -1019,9 +1277,29 @@ export default function WalletScannerPage() {
                     {top.map((h) => `${h.symbol} ${fmtUsd(h.valueUsd)}`).join(' · ')}
                   </div>
                 )}
-                <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
-                  PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.
-                </div>
+                {limitedEvidenceMode ? (
+                  <>
+                    <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                      Holdings and portfolio value above are verified. PnL, activity, and the CORTEX wallet read did not finish within {(PORTFOLIO_READY_GRACE_MS / 1000).toFixed(0)}s and are marked unavailable for this scan — they are not being reported as $0 or as confirmed.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleScan('deep')}
+                      style={{
+                        marginTop: '10px', padding: '8px 14px', borderRadius: '9px',
+                        border: '1px solid rgba(45,212,191,0.45)', background: 'rgba(45,212,191,0.08)',
+                        color: '#2DD4BF', fontSize: '10px', fontWeight: 800, letterSpacing: '0.1em',
+                        textTransform: 'uppercase', cursor: 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                      }}
+                    >
+                      Retry deep scan
+                    </button>
+                  </>
+                ) : (
+                  <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                    PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.
+                  </div>
+                )}
               </div>
             )
           })()}
@@ -1256,8 +1534,19 @@ export default function WalletScannerPage() {
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {loading && (
+            {/* CORTEX-PANEL-NEVER-STUCK FIX, DISCLOSED (stuck-scanning-lifecycle fix): "reading…"
+                is now gated on `loading && !limitedEvidenceMode` instead of `loading` alone, so it
+                can never sit forever once holdings/pricing/portfolio are ready and the grace period
+                has elapsed — it hands off to an honest "still processing in the background" message
+                instead, which itself upgrades to the real WalletReadPanel the moment `result` (and
+                therefore `cortexRead`) actually lands. */}
+            {loading && !limitedEvidenceMode && (
               <p style={{ fontSize: '12px', color: 'rgba(45,212,191,0.60)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>CORTEX reading wallet activity…</p>
+            )}
+            {loading && limitedEvidenceMode && !cortexRead && (
+              <p style={{ fontSize: '12px', color: 'rgba(251,191,36,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6 }}>
+                Portfolio ready. CORTEX wallet read is still processing in the background — rescan anytime to check again.
+              </p>
             )}
             {!loading && !cortexRead && (
               <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.18)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
@@ -1270,7 +1559,7 @@ export default function WalletScannerPage() {
                 structured WalletReadV2 output (identity, headline, key signals, why-this-label
                 bullets, verified/partial/missing evidence, isolated PnL lanes, next action). See
                 app/frontend/lib/walletReadBuilder.ts's own header for the full disclosure. */}
-            {!loading && cortexRead && <WalletReadPanel read={cortexRead} />}
+            {(!loading || limitedEvidenceMode) && cortexRead && <WalletReadPanel read={cortexRead} />}
 
             <div style={{ marginTop: '4px', background: 'rgba(45,212,191,0.035)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '14px', padding: '14px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
@@ -1306,7 +1595,7 @@ export default function WalletScannerPage() {
                       <div key={wallet.id ?? wallet.address} style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '10px', borderRadius: '11px', background: 'rgba(6,10,18,0.72)', border: '1px solid rgba(255,255,255,0.06)' }}>
                         <button type="button" onClick={() => setInput(wallet.address)} title="Load wallet address" style={{ minWidth: 0, flex: 1, textAlign: 'left', border: 0, background: 'transparent', padding: 0, cursor: 'pointer' }}>
                           <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 8)}…{wallet.address.slice(-6)}</p>
-                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: 'rgba(148,163,184,0.55)' }}>{wallet.portfolio_value ? fmtUSD(wallet.portfolio_value) : 'Value not saved'}{wallet.label ? ` · ${wallet.label}` : ''}</p>
+                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: 'rgba(148,163,184,0.55)' }}>{wallet.portfolio_value != null && Number.isFinite(wallet.portfolio_value) ? `Portfolio ${fmtUSD(wallet.portfolio_value)}` : 'Portfolio value not saved'}{wallet.label ? ` · ${wallet.label}` : ''}</p>
                         </button>
                         <button type="button" aria-label="Remove wallet from watchlist" disabled={deleting} onClick={() => handleRemoveWalletFromWatchlist(wallet.address)} style={{ width: '30px', height: '30px', flexShrink: 0, borderRadius: '9px', border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.08)', color: deleting ? 'rgba(248,113,113,0.45)' : '#f87171', cursor: deleting ? 'wait' : 'pointer', fontSize: '14px', lineHeight: 1 }}>
                           🗑
