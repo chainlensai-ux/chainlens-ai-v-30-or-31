@@ -152,11 +152,34 @@ describe('buildWalletPnlCoverageRecoveryAudit — recovery attribution', () => {
     assert.deepEqual(a.recoveryFailedTokens, ['base:0xd', 'base:0xe'])
   })
 
+  it('a shared-page match with pagesUsed=0 still counts as recovery success', () => {
+    const rp = emptyRecovery({
+      evaluation: [
+        { token: '0xa', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 2, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xb', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xc', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xd', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xe', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xf', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 2, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0x1', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 2, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0x2', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [recovered(WALLET, '0xdead')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+      ],
+      totalPagesUsedThisWallet: 6,
+    })
+    const a = buildWalletPnlCoverageRecoveryAudit({ wallet: WALLET, chains: ['base'], matchedLots: verifiedLots(1), recoveryPolicy: rp })
+    assert.equal(a.triggeredRecoveryTokens.length, 8)
+    assert.equal(a.recoverySucceededTokens.length, 8)
+    assert.equal(a.recoveryFailedTokens.length, 0)
+    assert.equal(a.pnlRecoveryFlowAudit.length, 8)
+    assert.ok(a.pnlRecoveryFlowAudit.every((row) => row.includedInSharedRequest && row.matchingEventsFound > 0))
+    assert.ok(a.officialPnlStillBlockedReason == null || !/funds only 3 tokens/.test(a.officialPnlStillBlockedReason))
+  })
+
   it('names the page-cap starvation explicitly in the blocked reason', () => {
     const rp = emptyRecovery({
       evaluation: [
-        { token: '0xa', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 2, recoveredEvents: [recovered(WALLET, '0xd')] },
-        { token: '0xd', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [] },
+        { token: '0xa', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 2, recoveredEvents: [recovered(WALLET, '0xd')], rankedEligible: true, includedInSharedRequest: true, sharedPagesAvailable: 1 },
+        { token: '0xd', chain: 'base', triggeredBy: [], recoveryTriggered: true, pagesUsed: 0, recoveredEvents: [], rankedEligible: true, includedInSharedRequest: false, sharedPagesAvailable: 0 },
       ],
     })
     const lots = [...verifiedLots(1), lot({ lotId: 'u', costBasisUsd: null, evidenceQuality: 'unpriced' })]
@@ -164,7 +187,10 @@ describe('buildWalletPnlCoverageRecoveryAudit — recovery attribution', () => {
     lots.push(lot({ lotId: 'u2', costBasisUsd: null, evidenceQuality: 'unpriced' }))
     const a = buildWalletPnlCoverageRecoveryAudit({ wallet: WALLET, chains: ['base'], matchedLots: lots, recoveryPolicy: rp })
     assert.match(a.officialPnlStillBlockedReason!, /received no historical pages/)
-    assert.match(a.officialPnlStillBlockedReason!, /funds only 3 tokens per scan/)
+    assert.match(a.officialPnlStillBlockedReason!, /outside the paid shared chain request/)
+    const starved = a.pnlRecoveryFlowAudit.find((row) => row.token === 'base:0xd')
+    assert.ok(starved)
+    assert.equal(starved!.dropStage, 'shared_request')
   })
 
   it('splits recovered legs into entry vs exit by wallet direction', () => {

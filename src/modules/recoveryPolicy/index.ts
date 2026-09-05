@@ -14,7 +14,7 @@
 //     on fifoEngine, and fifoEngine consumes this module's output, never the reverse)
 
 import type { BuyTimeline, SellTimeline } from '../timelineBuilder/types'
-import type { SupportedChain } from '../providerFetchWindow/types'
+import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/types'
 import type {
   HoldingInput,
   RecoveryEvaluationEntry,
@@ -45,6 +45,12 @@ export type {
   RecoveryTriggerRule,
 } from './types'
 export { DEFAULT_RECOVERY_CAPS, DEFAULT_TRIGGER_RECOVERY_WHEN } from './types'
+
+// ELIGIBILITY CAP, DISCLOSED (wallet PnL recovery bottleneck): ranking may consider up to 12
+// triggered tokens for SHARED GoldRush attribution. This is NOT a page-budget increase — the
+// wallet still pays at most maxHistoricalPagesPerWallet pages (DEFAULT 6). The 12-token cap only
+// decides which triggered tokens are allowed to read an already-paid per-chain GoldRush page.
+export const MAX_ELIGIBLE_RECOVERY_TOKENS = 12
 
 // CONCURRENCY CAP, DISCLOSED (wallet-scanner audit fix): buildRecoveryPolicyObject previously ran
 // ALL triggered candidates' fetchHistoricalPages concurrently via a single Promise.all — not just
@@ -204,24 +210,19 @@ export async function fetchHistoricalPages(
 // MATERIALITY-ORDERED ALLOCATION, DISCLOSED (verified-coverage recovery task — confirmed
 // production defect). The wallet page budget is genuinely scarce: DEFAULT_RECOVERY_CAPS allows 6
 // pages per wallet and fetchHistoricalPages consumes 2 per candidate, so exactly
-// floor(6 / 2) = 3 triggered tokens can ever receive recovery, no matter how many trigger. That
+// floor(6 / 2) = 3 triggered tokens can ever receive a DEDICATED GoldRush+Alchemy fetch. That
 // ceiling is intentional cost control and is NOT changed here.
 //
-// What WAS wrong is which 3 got it. Candidates arrive in distinctTokensFromTimelines' Map
-// insertion order — i.e. whichever token happens to appear first in the buy/sell timelines — which
-// is chronological and completely unrelated to how much a token contributes to the verified
-// coverage gate. So the scarce budget was routinely spent on an incidental single-sell token while
-// a repeatedly-sold token (worth many closed lots) got nothing. Confirmed live shape: 5 tokens
-// triggered, 3 recovered, coverage stalled at 46.36%.
+// SHARED-PAGE ATTRIBUTION, DISCLOSED (follow-up): GoldRush pages are per (chain, wallet, page),
+// not per token. The dedicated 3-token fetch still pays those pages; attributeSharedGoldrushEvents
+// then lets every ranked-eligible token on that same chain (up to MAX_ELIGIBLE_RECOVERY_TOKENS=12)
+// read the already-paid result. The 3-token dedicated cap must never filter results AFTER a shared
+// call is already paid.
 //
-// This orders the SAME budget by measured coverage materiality first. It does not raise any cap,
-// does not fetch more pages, and does not change how many candidates get budget — identical
-// provider call volume, aimed at the tokens that can actually move the gate.
-//
-// The sort is STABLE and only ever reorders ALLOCATION: the returned array stays in the caller's
-// original candidate order, so output shape/ordering downstream is byte-identical to before.
-// Candidates with equal (or absent) materiality keep their original relative order, which is why
-// existing allocation behaviour for unmeasured candidates is unchanged.
+// Ranking is lots-completable-per-call: sellCount is the number of closed lots a recovered entry
+// buy can complete for this token. The sort is STABLE and only ever reorders ALLOCATION: the
+// returned array stays in the caller's original candidate order. Candidates with equal (or absent)
+// materiality keep their original relative order.
 function materialityRank(candidate: CandidateEvaluation): { sellCount: number; cumulativeBuyUsd: number } {
   return candidate.coverageMateriality ?? { sellCount: 0, cumulativeBuyUsd: 0 }
 }
@@ -262,6 +263,74 @@ export function planRecoveryFetches(
   return candidates.map((candidate, index) => ({ candidate, pageBudget: budgetByIndex[index] }))
 }
 
+function candidateKey(chain: SupportedChain, token: string): string {
+  return `${chain}:${token.toLowerCase()}`
+}
+
+function eventDedupeKey(event: RawProviderEvent): string {
+  return `${event.provider}:${event.chain}:${(event.txHash ?? '').toLowerCase()}:${(event.contract ?? '').toLowerCase()}:${(event.fromAddress ?? '')}:${(event.toAddress ?? '')}:${event.amountRaw ?? ''}`
+}
+
+export function mergeRawProviderEvents(primary: RawProviderEvent[], extra: RawProviderEvent[]): RawProviderEvent[] {
+  const seen = new Set(primary.map(eventDedupeKey))
+  const out = [...primary]
+  for (const event of extra) {
+    const key = eventDedupeKey(event)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(event)
+  }
+  return out
+}
+
+/**
+ * Rank triggered candidates by lots-completable-per-call (sellCount, then cumulative buy USD).
+ * Returns the top `limit` keys. Does NOT spend pages — it only decides who may read a shared
+ * already-paid GoldRush page.
+ */
+export function selectEligibleRecoveryTokens(
+  candidates: CandidateEvaluation[],
+  limit: number = MAX_ELIGIBLE_RECOVERY_TOKENS,
+): Set<string> {
+  const ranked = candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .filter(({ candidate }) => candidate.recoveryTriggered)
+    .sort((a, b) => {
+      const ra = materialityRank(a.candidate)
+      const rb = materialityRank(b.candidate)
+      if (rb.sellCount !== ra.sellCount) return rb.sellCount - ra.sellCount
+      if (rb.cumulativeBuyUsd !== ra.cumulativeBuyUsd) return rb.cumulativeBuyUsd - ra.cumulativeBuyUsd
+      return a.index - b.index
+    })
+  return new Set(ranked.slice(0, Math.max(0, limit)).map(({ candidate }) => candidateKey(candidate.chain, candidate.token)))
+}
+
+/**
+ * Attribute an already-paid per-chain GoldRush page onto one token. Dedicated Alchemy events stay
+ * on the funded token; GoldRush matches are merged for every ranked-eligible token on that chain.
+ * A later unknown/empty dedicated result must never wipe matches already present in the shared page.
+ */
+export function attributeSharedGoldrushEvents(params: {
+  token: string
+  chain: SupportedChain
+  dedicatedEvents: RawProviderEvent[]
+  sharedEvents: RawProviderEvent[]
+  rankedEligible: boolean
+  chainWasFetched: boolean
+}): { events: RawProviderEvent[]; includedInSharedRequest: boolean; matchingFromShared: number } {
+  const includedInSharedRequest = params.rankedEligible && params.chainWasFetched
+  if (!includedInSharedRequest) {
+    return { events: params.dedicatedEvents, includedInSharedRequest: false, matchingFromShared: 0 }
+  }
+  const tokenLc = params.token.toLowerCase()
+  const matching = params.sharedEvents.filter((event) => (event.contract ?? '').toLowerCase() === tokenLc)
+  return {
+    events: mergeRawProviderEvents(params.dedicatedEvents, matching),
+    includedInSharedRequest: true,
+    matchingFromShared: matching.length,
+  }
+}
+
 // Orchestrates evaluation + capped, triggered historical fetches into the final recoveryPolicy
 // object. This is the only function in the module that awaits network calls; everything above it
 // (evaluateRecoveryTriggers, planRecoveryFetches) is pure and synchronous.
@@ -286,6 +355,8 @@ export async function buildRecoveryPolicyObject(params: {
   // variable-count, per-candidate-token GoldRush/Alchemy pagination, worth knowing about when
   // reasoning about deep-scan cost.
   const plan = planRecoveryFetches(candidates, caps)
+  const eligibleKeys = selectEligibleRecoveryTokens(candidates)
+  const chainsFetched = new Set(plan.filter((row) => row.pageBudget > 0).map((row) => row.candidate.chain))
 
   const results = await mapWithConcurrencyLimit(plan, RECOVERY_CANDIDATE_CONCURRENCY_LIMIT, ({ candidate, pageBudget }) =>
     pageBudget > 0
@@ -293,11 +364,35 @@ export async function buildRecoveryPolicyObject(params: {
       : Promise.resolve({ events: [] as Awaited<ReturnType<typeof fetchHistoricalPages>>['events'], pagesUsed: 0 }),
   )
 
-  const evaluation: RecoveryEvaluationEntry[] = plan.map(({ candidate }, i) => ({
-    ...candidate,
-    pagesUsed: results[i].pagesUsed,
-    recoveredEvents: results[i].events,
-  }))
+  // SHARED-PAGE READ, DISCLOSED: fetchGoldrushHistoricalPage is request-scoped-coalesced on
+  // (chain, wallet, pageNumber=1). Every chain that already paid for a dedicated candidate hits
+  // the in-flight/settled cache — zero new GoldRush HTTP. Unfunded eligible tokens on that chain
+  // then filter the SAME payload locally. Chains that were never paid are not fetched here (that
+  // would raise the page budget).
+  const sharedEventsByChain = new Map<SupportedChain, RawProviderEvent[]>()
+  for (const chain of chainsFetched) {
+    sharedEventsByChain.set(chain, await fetchGoldrushHistoricalPage(chain, params.walletAddress, 1))
+  }
+
+  const evaluation: RecoveryEvaluationEntry[] = plan.map(({ candidate }, i) => {
+    const rankedEligible = eligibleKeys.has(candidateKey(candidate.chain, candidate.token))
+    const attributed = attributeSharedGoldrushEvents({
+      token: candidate.token,
+      chain: candidate.chain,
+      dedicatedEvents: results[i].events,
+      sharedEvents: sharedEventsByChain.get(candidate.chain) ?? [],
+      rankedEligible,
+      chainWasFetched: chainsFetched.has(candidate.chain),
+    })
+    return {
+      ...candidate,
+      pagesUsed: results[i].pagesUsed,
+      recoveredEvents: attributed.events,
+      rankedEligible,
+      includedInSharedRequest: attributed.includedInSharedRequest,
+      sharedPagesAvailable: attributed.includedInSharedRequest ? 1 : 0,
+    }
+  })
   const totalPagesUsedThisWallet = results.reduce((sum, r) => sum + r.pagesUsed, 0)
 
   return { triggerRecoveryWhen: triggerConfig, caps, evaluation, totalPagesUsedThisWallet }

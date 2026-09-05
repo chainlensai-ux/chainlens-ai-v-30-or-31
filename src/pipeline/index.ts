@@ -3690,6 +3690,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     chains: preScan.sanitizedChains,
     matchedLots: reconciledFifoAndPnl.matchedLots,
     recoveryPolicy,
+    acceptedEvidenceReuse: {
+      acceptedSidesLoaded: walletPriceLookups.acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip,
+      pricingRequirementsRemoved: walletPriceLookups.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence,
+    },
   })
   console.warn('[wallet-pnl-coverage-recovery-audit]', walletPnlCoverageRecoveryAudit)
 

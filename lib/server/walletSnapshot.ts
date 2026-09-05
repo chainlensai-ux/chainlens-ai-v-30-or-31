@@ -3116,6 +3116,12 @@ const targetedHistoricalScanCache = new Map<string, TargetedHistoricalScanCache>
 // Per-tier limits for targeted historical scan
 const TIER_HISTORICAL_PAGES: Record<WalletValueTier, number> = { micro: 0, small: 1, standard: 2, high_value: 3, whale: 5 }
 const TIER_HISTORICAL_MAX_TOKENS: Record<WalletValueTier, number> = { micro: 0, small: 2, standard: 3, high_value: 5, whale: 5 }
+// SHARED-PAGE ATTRIBUTION, DISCLOSED (wallet PnL recovery bottleneck): GoldRush historical pages
+// are per-chain, already paid once. The funded-token cap (TIER_HISTORICAL_MAX_TOKENS, 2-5) still
+// bounds dedicated follow-up (acquisition / PnL-v2 receipts). Eligibility for reading the paid
+// shared page is wider — up to 12 tokens ranked by lots-completable-per-call — so the funded cap
+// must not drop other eligible tokens AFTER the shared call is already paid.
+const HISTORICAL_ELIGIBLE_TOKEN_CAP = 12
 
 const BASE_PNL_RECON_TTL_MS = 50 * 60 * 1000
 
@@ -4862,7 +4868,9 @@ async function buildWalletHistoricalCoverage(
     }
   }
 
-  // Targeted historical recovery: keep exact contracts chosen by the budget planner.
+  // Targeted historical recovery: keep every ranked-eligible token present in the already-paid
+  // shared per-chain GoldRush page. The funded-token cap (2-5) still bounds dedicated follow-up
+  // fetches; it must not drop other eligible targets AFTER this shared call is already paid.
   const preFilterEvents = targetContracts && targetContracts.size > 0
     ? allEvents.filter(ev => targetContracts.has((ev.contract ?? '').toLowerCase()))
     : allEvents
@@ -15458,40 +15466,45 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _historicalCallsSavedByCostGuard = _missingCostBasisGuardActive ? _pagesAllowed : 0
 
   const _historicalTargetRankingStartedAt = Date.now()
-  const _rankedHistoricalTargets = (() => {
-    const byContract = new Map<string, { contract: string; symbol: string; chain: string; score: number; reasons: string[]; estimatedUsd: number }>()
-    const add = (contract: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined, score: number, reason: string, estimatedUsd = 0) => {
+  const _rankedHistoricalPlan = (() => {
+    const byContract = new Map<string, { contract: string; symbol: string; chain: string; score: number; reasons: string[]; estimatedUsd: number; lotCount: number }>()
+    const add = (contract: string | null | undefined, symbol: string | null | undefined, chain: string | null | undefined, score: number, reason: string, estimatedUsd = 0, lotCount = 0) => {
       const c = (contract ?? '').toLowerCase()
       if (!/^0x[a-f0-9]{40}$/.test(c)) return
-      const cur = byContract.get(c) ?? { contract: c, symbol: symbol ?? 'TOKEN', chain: normalizeChain(chain ?? '') || 'unknown', score: 0, reasons: [], estimatedUsd: 0 }
+      const cur = byContract.get(c) ?? { contract: c, symbol: symbol ?? 'TOKEN', chain: normalizeChain(chain ?? '') || 'unknown', score: 0, reasons: [], estimatedUsd: 0, lotCount: 0 }
       cur.score += score
       cur.estimatedUsd = Math.max(cur.estimatedUsd, estimatedUsd)
+      cur.lotCount += lotCount
       if (!cur.reasons.includes(reason)) cur.reasons.push(reason)
       byContract.set(c, cur)
     }
-    for (const s of _lotEngineDebug.sampleUnmatchedSells ?? []) add(s.tokenAddress, s.symbol, 'base', 1000 + Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)), 'biggest_unmatched_sells', Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)))
-    for (const l of _lotEngineDebug.sampleOpenLots ?? []) add(l.tokenAddress, l.symbol, l.chain, 650 + Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)), 'open_buys', Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)))
-    for (const h of holdings.slice().sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).slice(0, 8)) add(h.contract, h.symbol, h.chain, 500 + (h.value ?? 0) / 100, 'top_holdings_by_value', h.value ?? 0)
+    for (const s of _lotEngineDebug.sampleUnmatchedSells ?? []) add(s.tokenAddress, s.symbol, 'base', 1000 + Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)), 'biggest_unmatched_sells', Math.abs((s.amount ?? 0) * (s.exitPriceUsd ?? 0)), 1)
+    for (const l of _lotEngineDebug.sampleOpenLots ?? []) add(l.tokenAddress, l.symbol, l.chain, 650 + Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)), 'open_buys', Math.abs((l.amountRemaining ?? 0) * (l.entryPriceUsd ?? 0)), 0)
+    for (const h of holdings.slice().sort((a, b) => (b.value ?? 0) - (a.value ?? 0)).slice(0, 8)) add(h.contract, h.symbol, h.chain, 500 + (h.value ?? 0) / 100, 'top_holdings_by_value', h.value ?? 0, 0)
     for (const ev of _swapEvidenceWithDetection) {
       if (!ev.swapDetection?.isSwapCandidate) continue
       const c = (ev.contract ?? '').toLowerCase()
       const quoteBoost = STABLE_USD_CONTRACTS[c] || WETH_CONTRACTS_PRICE[c] ? 250 : 0
-      add(ev.contract, ev.symbol, ev.chain, 300 + quoteBoost + ((ev.usdValue ?? 0) / 100), quoteBoost ? 'stablecoin_weth_eth_quote_leg_trades' : 'high_value_swap_candidates', ev.usdValue ?? 0)
+      add(ev.contract, ev.symbol, ev.chain, 300 + quoteBoost + ((ev.usdValue ?? 0) / 100), quoteBoost ? 'stablecoin_weth_eth_quote_leg_trades' : 'high_value_swap_candidates', ev.usdValue ?? 0, 0)
     }
     // SYNTH-RECOVERY-FIX-2: synthetic-FIFO-backfilled lot tokens get top priority — these are
     // exactly the tokens with missing real entry prices that targeted recovery should fetch first.
-    for (const l of _syntheticClosedLots) add(l.tokenAddress, l.tokenSymbol, l.chain, 5000, 'synthetic_fifo_lot_needs_real_buy', l.proceedsUsd ?? 0)
-    const ranked = [...byContract.values()].sort((a, b) => b.score - a.score || b.estimatedUsd - a.estimatedUsd)
-    const maxTokens = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 2 : _walletValueTier === 'standard' ? 3 : _walletValueTier === 'high_value' ? 4 : 5
-    const baseTargets = ranked.slice(0, maxTokens)
+    for (const l of _syntheticClosedLots) add(l.tokenAddress, l.tokenSymbol, l.chain, 5000, 'synthetic_fifo_lot_needs_real_buy', l.proceedsUsd ?? 0, 1)
+    const ranked = [...byContract.values()].sort((a, b) => b.lotCount - a.lotCount || b.score - a.score || b.estimatedUsd - a.estimatedUsd)
+    const maxFundedTokens = _walletValueTier === 'micro' ? 0 : _walletValueTier === 'small' ? 2 : _walletValueTier === 'standard' ? 3 : _walletValueTier === 'high_value' ? 4 : 5
+    const eligibleCap = maxFundedTokens === 0 ? 0 : HISTORICAL_ELIGIBLE_TOKEN_CAP
+    let eligible = ranked.slice(0, eligibleCap)
     if (_syntheticLotsDetected && _syntheticRecoveryTierEligible) {
       const syntheticTargets = ranked.filter(r => _syntheticLotTokenTargets.includes(r.contract))
       const merged = [...syntheticTargets]
-      for (const t of baseTargets) if (!merged.some(m => m.contract === t.contract)) merged.push(t)
-      return merged.slice(0, (_adminOverrideUsed || debug) ? Math.max(maxTokens, syntheticTargets.length) : maxTokens)
+      for (const t of ranked) if (!merged.some(m => m.contract === t.contract)) merged.push(t)
+      eligible = merged.slice(0, (_adminOverrideUsed || debug) ? Math.max(eligibleCap, syntheticTargets.length) : eligibleCap)
     }
-    return baseTargets
+    const funded = eligible.slice(0, maxFundedTokens)
+    return { eligible, funded }
   })()
+  const _eligibleHistoricalTargets = _rankedHistoricalPlan.eligible
+  const _rankedHistoricalTargets = _rankedHistoricalPlan.funded
   _perfWalletTimings.historicalTargetRankingMs += Date.now() - _historicalTargetRankingStartedAt
   const _hasPreAcqRecoverableTradePath = Boolean(
     (_lotEngineDebug.unmatchedSells ?? 0) > 0 ||
@@ -15510,7 +15523,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     (walletEvidenceSummary.reconstructionContextEvents ?? (_swapDetectionDebug?.unknownDirectionUsedAsContextOnly ?? 0)) >= (_relayedUnknownDirectionEvents ?? 0)
 
   const _recoveryEligibilityStartedAt = Date.now()
-  const _targetContracts = new Set(_rankedHistoricalTargets.map(t => t.contract))
+  const _targetContracts = new Set(_eligibleHistoricalTargets.map(t => t.contract))
   const _eligibilityReasons: string[] = []
   const _skipReasons: string[] = []
   if (totalValue >= 100 || _adminOverrideUsed) _eligibilityReasons.push('wallet_value_meets_threshold'); else _skipReasons.push('wallet_value_below_100')
@@ -15567,7 +15580,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   let _historicalCoverageDebug: NonNullable<WalletSnapshot['_diagnostics']>['walletHistoricalCoverageDebug']
   let _hcEvents: PnlEvent[] = []
   if (_runHistoricalCoverage) {
-    const hcCacheKey = `wallet:historicalCoverage:v2:${addrNorm}:${chainMode}:${_walletValueTier}:${_rankedHistoricalTargets.map(t => t.contract).join(',')}:${_pagesAllowedForBroadPass}`
+    const hcCacheKey = `wallet:historicalCoverage:v2:${addrNorm}:${chainMode}:${_walletValueTier}:${_eligibleHistoricalTargets.map(t => t.contract).join(',')}:${_pagesAllowedForBroadPass}`
     const hcCached = historicalCoverageCache.get(hcCacheKey)
     if (hcCached && Date.now() - hcCached.cachedAt < HISTORICAL_COVERAGE_TTL_MS) {
       walletHistoricalCoverageSummary = hcCached.data.summary
