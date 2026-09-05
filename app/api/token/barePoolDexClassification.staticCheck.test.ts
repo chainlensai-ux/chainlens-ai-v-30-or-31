@@ -51,9 +51,9 @@ describe('detectPoolType treats a bare (unversioned) "uniswap" dex id as v2, mat
   })
 
   it('the bare-uniswap fast-path check comes after the versioned uniswap v2/v3/v4 checks (so a real "uniswap_v3" id is never misclassified as v2)', () => {
-    const v4Index = src.indexOf('if (/^uniswap_v4|^uniswap-v4/.test(s)) return "concentrated"')
-    const v3Index = src.indexOf('if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s)) return "v3"')
-    const v2Index = src.indexOf('if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"')
+    const v4Index = src.indexOf('if (/uniswap[_-]?v4|uniswapv4/.test(s)) return "concentrated"')
+    const v3Index = src.indexOf('if (/uniswap[_-]?v3|uniswapv3|pancakeswap[_-]?v3|pancakeswapv3|sushiswap[_-]?v3|sushiswapv3|\\balgebra\\b/.test(s)) return "v3"')
+    const v2Index = src.indexOf('if (/uniswap[_-]?v2|uniswapv2|pancakeswap[_-]?v2|pancakeswapv2|sushiswap[_-]?v2|sushiswapv2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"')
     const bareIndex = src.indexOf('if (/^sushiswap|^pancakeswap|^uniswap$/.test(s)) return "v2"')
     assert.ok(v4Index !== -1 && v3Index !== -1 && v2Index !== -1 && bareIndex !== -1, 'all four checks must be present')
     assert.ok(v4Index < bareIndex && v3Index < bareIndex && v2Index < bareIndex, 'the versioned checks must run before the bare-uniswap fallback, so a real versioned dex id is never shadowed by the unversioned default')

@@ -509,6 +509,32 @@ type ScanResult = {
     finalLockBurnStatus: string
     finalExitRisk: string
     failureReason: string | null
+    lpFinalDecisionAudit?: {
+      poolAddress: string | null
+      dex: string | null
+      detectorsTried: string[]
+      successfulDetector: string | null
+      detectedModel: string | null
+      modelBeforeFallback: string | null
+      fallbackTriggered: boolean
+      fallbackReason: string | null
+      proofPathUsed: string
+      finalModel: string
+      finalStatus: string
+    }
+  } | null
+  lpFinalDecisionAudit?: {
+    poolAddress: string | null
+    dex: string | null
+    detectorsTried: string[]
+    successfulDetector: string | null
+    detectedModel: string | null
+    modelBeforeFallback: string | null
+    fallbackTriggered: boolean
+    fallbackReason: string | null
+    proofPathUsed: string
+    finalModel: string
+    finalStatus: string
   } | null
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
