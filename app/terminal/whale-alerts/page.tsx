@@ -128,7 +128,20 @@ const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
 const CLIENT_SYNC_CACHE_KEY = 'whale_alerts_last_sync_at'
 const CLIENT_FULL_SYNC_CACHE_KEY = 'whale_alerts_last_full_sync_at'
-const CLIENT_SYNC_STATE_CACHE_KEY = 'whale_alerts_last_sync_state_v1'
+const CLIENT_SYNC_STATE_CACHE_KEY = 'whale_alerts_last_sync_state_v2'
+
+function apiFailureMessage(body: unknown, status: number, fallback: string): string {
+  const row = body && typeof body === 'object' ? body as Record<string, unknown> : null
+  const supplied = typeof row?.message === 'string'
+    ? row.message
+    : typeof row?.error === 'string' && !row.error.includes('_')
+      ? row.error
+      : null
+  if (supplied) return supplied
+  if (status === 401) return 'Your session expired. Sign in again, then retry.'
+  if (status === 429) return 'Too many refreshes. Wait a moment, then retry.'
+  return fallback
+}
 
 const short = (value?: string | null) => (!value ? 'Unknown' : `${value.slice(0, 6)}...${value.slice(-4)}`)
 const timeAgo = (iso?: string | null) => {
@@ -437,7 +450,8 @@ export default function WhaleAlertsPage() {
   const [enrichLoading, setEnrichLoading] = useState(false)
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
-  const [feedError, setFeedError]     = useState(false)
+  const [feedError, setFeedError]     = useState<string | null>(null)
+  const [syncError, setSyncError]     = useState<string | null>(null)
 
   useEffect(() => {
     if (new URLSearchParams(window.location.search).get('tab') !== 'fomo') return
@@ -472,7 +486,9 @@ export default function WhaleAlertsPage() {
       if (!parsed || typeof parsed !== 'object') return
       const savedAt = Number(parsed.savedAt ?? 0)
       const maxAgeMs = 24 * 60 * 60 * 1000
-      const looksInvalid = (parsed.trackedWalletsTotal ?? 0) < 0 || (parsed.processedTotal ?? 0) < 0
+      const looksInvalid = parsed.ok === false
+        || (parsed.trackedWalletsTotal ?? 0) < 0
+        || (parsed.processedTotal ?? 0) < 0
       if (looksInvalid || !Number.isFinite(savedAt) || savedAt <= 0 || (Date.now() - savedAt) > maxAgeMs) {
         window.localStorage.removeItem(CLIENT_SYNC_STATE_CACHE_KEY)
         return
@@ -489,7 +505,7 @@ export default function WhaleAlertsPage() {
     }
     if (opts?.enrich) setEnrichLoading(true)
     else setLoading(true)
-    setFeedError(false)
+    setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: '100' })
       if (feedMode === 'all') p.set('interesting', 'false')
@@ -517,15 +533,20 @@ export default function WhaleAlertsPage() {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: AbortSignal.timeout(20_000),
       })
-      if (!res.ok) { setFeedError(true); return }
-      const json = await res.json()
+      const json = await res.json().catch(() => null)
+      if (!res.ok) {
+        setFeedError(apiFailureMessage(json, res.status, 'The server could not read the whale feed. Retry in a moment.'))
+        return
+      }
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
       setFeedDiagnostics(json?.diagnostics ?? null)
       setIntelligence(json?.intelligence ?? null)
       setFeedLastSyncedAt(typeof json?.lastSyncedAt === 'string' ? json.lastSyncedAt : null)
-    } catch {
-      setFeedError(true)
+    } catch (error) {
+      setFeedError(error instanceof DOMException && error.name === 'TimeoutError'
+        ? 'The whale feed timed out. Retry in a moment.'
+        : 'The whale feed could not be reached. Check your connection and retry.')
     } finally {
       setLoading(false)
       setEnrichLoading(false)
@@ -550,6 +571,7 @@ export default function WhaleAlertsPage() {
       return
     }
     setSyncing(true)
+    setSyncError(null)
     try {
       if (mode === 'full') {
         // Auto-loop: run batches until done=true or error — no manual Continue needed
@@ -563,8 +585,11 @@ export default function WhaleAlertsPage() {
             method: 'POST',
             headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
           })
-          const json = (await res.json()) as SyncResponse
-          if (!res.ok || json.ok === false) break
+          const json = (await res.json().catch(() => null)) as SyncResponse | null
+          if (!res.ok || !json || json.ok === false) {
+            setSyncError(apiFailureMessage(json, res.status, 'Wallet sync failed. Retry in a moment.'))
+            return
+          }
           cumulativeInserted += Number(json.inserted ?? 0)
           const merged: SyncResponse = {
             ...json,
@@ -599,7 +624,11 @@ export default function WhaleAlertsPage() {
           method: 'POST',
           headers: syncToken ? { Authorization: `Bearer ${syncToken}` } : {},
         })
-        const json = (await res.json()) as SyncResponse
+        const json = (await res.json().catch(() => null)) as SyncResponse | null
+        if (!res.ok || !json || json.ok === false) {
+          setSyncError(apiFailureMessage(json, res.status, 'Wallet sync failed. Retry in a moment.'))
+          return
+        }
         const prev = isBatchContinuation && syncState?.mode === 'batch' ? syncState : null
         const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
         const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
@@ -683,7 +712,9 @@ export default function WhaleAlertsPage() {
     ? (syncState?.mode === 'full' && (syncState?.trackedWalletsTotal ?? 0) > 0
         ? `Scanning ${scannedCount}/${syncState.trackedWalletsTotal}`
         : 'Scanning…')
-    : isFullInProgress
+    : syncError
+      ? 'Sync unavailable'
+      : isFullInProgress
       ? 'Full refresh in progress'
       : syncState
         ? (syncState.hasMore ? 'Partial refresh' : (syncState.mode === 'full' ? `Full refresh complete — ${scannedCount}/${trackedCount} wallets` : 'Recently refreshed'))
@@ -952,7 +983,7 @@ export default function WhaleAlertsPage() {
             const hasScan = whaleHasScanEvidence({ syncState, alertCount: alerts.length, diagnostics: feedDiagnostics })
             const tile = whaleKpiTile({
               loading,
-              feedError,
+              feedError: Boolean(feedError),
               hasScanEvidence: hasScan,
               feedSettled,
               value: m.val,
@@ -1099,6 +1130,13 @@ export default function WhaleAlertsPage() {
               <p className="rounded-[8px]"
                 style={{ margin: 0, padding: '7px 10px', fontSize: 11, lineHeight: 1.5, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.16)', color: '#e0b44a' }}>
                 {syncState?.providerErrors} source delay{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may lag.
+              </p>
+            )}
+
+            {syncError && (
+              <p className="rounded-[8px]" role="alert"
+                style={{ margin: 0, padding: '7px 10px', fontSize: 11, lineHeight: 1.5, background: 'rgba(244,63,94,0.06)', border: '1px solid rgba(244,63,94,0.16)', color: '#fb7185' }}>
+                {syncError}
               </p>
             )}
 
@@ -1260,7 +1298,7 @@ export default function WhaleAlertsPage() {
               </div>
               <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#e8eef7', margin: 0 }}>Feed request failed</p>
               <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
-                The alert feed could not be reached. Tracked wallets are unaffected and any sync in progress continues.
+                {feedError}
               </p>
               <button onClick={() => void loadAlerts()} className="wa-btn wa-btn-primary" style={{ marginTop: 18 }}>
                 Retry

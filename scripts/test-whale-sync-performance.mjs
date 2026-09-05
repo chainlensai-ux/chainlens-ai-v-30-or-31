@@ -85,8 +85,8 @@ const now = Date.now()
 {
   // Exactly ONE upsert call for all filtered alerts of the batch:
   assert.equal((src.match(/\.upsert\(allFilteredAlerts/g) ?? []).length, 1)
-  assert.match(src, /onConflict: 'tx_hash,wallet_address,token_address,alert_type'/,
-    'deterministic dedupe keys')
+  assert.match(src, /onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id'/,
+    'deterministic user-scoped dedupe keys')
   assert.match(src, /ignoreDuplicates: true/)
 }
 
