@@ -227,4 +227,25 @@ describe('buildWalletPnlCoverageRecoveryAudit — recovery attribution', () => {
     assert.equal(a.recoveredEntryLots, 0)
     assert.equal(a.recoveredExitLots, 0)
   })
+
+  it('reports accepted-evidence reuse when persisted sides actually removed pricing requirements', () => {
+    const lots = [...verifiedLots(1), lot({ lotId: 'u', costBasisUsd: null, evidenceQuality: 'unpriced' })]
+    const a = buildWalletPnlCoverageRecoveryAudit({
+      wallet: WALLET, chains: ['base'], matchedLots: lots, recoveryPolicy: emptyRecovery(),
+      acceptedEvidenceReuse: { acceptedSidesLoaded: 240, pricingRequirementsRemoved: 180 },
+    })
+    assert.deepEqual(a.acceptedEvidenceReuse, {
+      acceptedSidesLoaded: 240,
+      pricingRequirementsRemoved: 180,
+      reused: true,
+    })
+  })
+
+  it('does not claim reuse when accepted sides loaded but none were applied', () => {
+    const a = buildWalletPnlCoverageRecoveryAudit({
+      wallet: WALLET, chains: ['base'], matchedLots: verifiedLots(1), recoveryPolicy: emptyRecovery(),
+      acceptedEvidenceReuse: { acceptedSidesLoaded: 240, pricingRequirementsRemoved: 0 },
+    })
+    assert.equal(a.acceptedEvidenceReuse?.reused, false)
+  })
 })

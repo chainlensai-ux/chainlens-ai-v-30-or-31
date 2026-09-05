@@ -315,6 +315,31 @@ type WalletFacts = {
 // PNL-COVERAGE-RECOVERY-FIX-4, DISCLOSED (Wallet Scanner PnL coverage bottleneck task) — see the
 // construction site (search "pnlCoverageRecoveryAudit") for why every field is real/measured, never
 // fabricated.
+export type PnlRecoveryFlowDropStage =
+  | 'ranked'
+  | 'shared_request'
+  | 'pages'
+  | 'events'
+  | 'entry_exit'
+  | 'price'
+  | null
+
+export type PnlRecoveryFlowAudit = {
+  token: string
+  lotCount: number
+  ranked: boolean
+  includedInSharedRequest: boolean
+  pagesAvailable: number
+  matchingEventsFound: number
+  entryLotsRecovered: number
+  exitLotsRecovered: number
+  priceRequirements: number
+  pricesResolved: number
+  lotsVerified: number
+  dropStage: PnlRecoveryFlowDropStage
+  dropReason: string | null
+}
+
 export type PnlCoverageRecoveryAudit = {
   closedLots: number
   verifiedLotsBefore: number
@@ -331,6 +356,7 @@ export type PnlCoverageRecoveryAudit = {
   budgetSkippedTokens: string[]
   thresholdReached: boolean
   exactRemainingBlocker: string | null
+  pnlRecoveryFlowAudit: PnlRecoveryFlowAudit[]
 }
 
 export type WalletSnapshot = {
@@ -15652,8 +15678,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : _hcAllHistoricalEvidence
 
   // SYNTH-RECOVERY-FIX-12: if synthetic lots still have zero real prior buys after the normal
-  // historical pass, run a small targeted extra-page lookup for ONLY the synthetic lots' own
-  // target tokens (max 2 extra pages per chain, stopping the moment a real prior buy is found).
+  // historical pass, run a small targeted extra-page lookup for the synthetic lots' own
+  // target tokens (max 2 extra pages per chain, stopping once every still-missing eligible
+  // token has a real prior buy — not on the first success of any one token).
   // This does not broaden provider calls to other holdings and does not touch FIFO math — it only
   // feeds additional candidate evidence into the existing pricing/FIFO preview pipeline below.
   //
@@ -15698,6 +15725,18 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   })).values()).sort((a, b) => b.lotCount - a.lotCount || b.excludedUsd - a.excludedUsd).map(t => t.contract)
   const _syntheticTargetExtraEligibleTokens = _syntheticTargetRankedTokens
     .slice(0, _syntheticTargetExtraMaxTokens)
+  // PNL-COVERAGE-RECOVERY-FIX-5, DISCLOSED (remaining hole after FIX-1 widened the eligible
+  // cap to 12): GoldRush extra pages are still per (chain, wallet, page). Reserved credits cap
+  // how many PAGES we pay for — they must not also shrink the post-filter after a page is paid.
+  // `_syntheticTargetExtraAttemptedTokens` stays the page-budget arithmetic input (unchanged
+  // `_syntheticTargetExtraPagesAllowed`); the already-paid page is filtered to EVERY ranked-
+  // eligible token, including those that would not have received a dedicated token slot.
+  const _syntheticTokensAlreadyRecoveredFromBroad = new Set(
+    (_syntheticTargetRecovery?.newCandidateEvidence ?? []).map(e => (e.contract ?? '').toLowerCase()),
+  )
+  const _syntheticEligibleStillMissingPriorBuy = _syntheticTargetExtraEligibleTokens.filter(
+    t => !_syntheticTokensAlreadyRecoveredFromBroad.has(t),
+  )
   // RECOVERY-EXEC-FIX-2 (cont.): when the reserved recovery credit is smaller than the number of
   // eligible targets, attempt the highest-priority target(s) first (up to what the reserved credit
   // can actually pay for) and explicitly record the rest as budget-skipped rather than silently
@@ -15708,10 +15747,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     : _syntheticTargetExtraEligibleTokens.length
   const _syntheticTargetExtraAttemptedTokens = _syntheticTargetExtraEligibleTokens
     .slice(0, _syntheticTargetExtraTokensAffordableByReservedBudget)
-  const _syntheticTargetExtraSkippedTargets = _syntheticTargetExtraEligibleTokens
+  let _syntheticTargetExtraSkippedTargets: Array<{ contract: string; reason: 'reserved_credit_insufficient_for_remaining_target' | 'chain_not_in_paid_shared_page' }> = _syntheticTargetExtraEligibleTokens
     .slice(_syntheticTargetExtraTokensAffordableByReservedBudget)
     .map(contract => ({ contract, reason: 'reserved_credit_insufficient_for_remaining_target' as const }))
-  const _syntheticTargetExtraPriorBuysFoundSoFar = _syntheticTargetRecovery?.debug.syntheticTargetPriorBuysFound ?? 0
   // Shared accumulator already reflects broad-pass page credits spent above, so the remaining
   // pool here is what's actually left for the whole scan — not a locally re-derived estimate.
   _noteHardCapReached('synthetic_target_extra_pricing')
@@ -15743,7 +15781,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   else if (!GOLDRUSH_KEY) _syntheticTargetExtraSkippedReason = 'provider_not_configured'
   else if (_syntheticLotTokenTargets.length === 0) _syntheticTargetExtraSkippedReason = 'no_synthetic_targets'
   else if (_syntheticTargetExtraEligibleTokens.length === 0) _syntheticTargetExtraSkippedReason = 'already_real_backed_lot_for_target'
-  else if (_syntheticTargetExtraPriorBuysFoundSoFar > 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
+  // Skip extra pages only when EVERY ranked-eligible token already has a prior buy from the
+  // broad pass. Finding a prior buy for 1 of 8 tokens must not starve the other 7 — the extra
+  // page is already paid per-chain and still contains their transfers.
+  else if (_syntheticEligibleStillMissingPriorBuy.length === 0) _syntheticTargetExtraSkippedReason = 'prior_buy_already_found'
   // RECOVERY-EXEC-FIX-1: distinguish "the reservation itself never got any credit" (e.g. the hard
   // cap was already reached before reservation ran) from "there is genuinely no budget left for
   // anyone" — both end up at _syntheticTargetExtraPagesAllowed <= 0, but the reserved-budget case has
@@ -15774,12 +15815,17 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _syntheticTargetExtraPagesByChain: Record<string, number> = {}
 
   if (_syntheticTargetExtraRecoveryAttempted) {
-    const _extraTargetContracts = new Set(_syntheticTargetExtraAttemptedTokens)
+    // PNL-COVERAGE-RECOVERY-FIX-5 (cont.): the paid GoldRush page is filtered to every
+    // ranked-eligible token, not the reserved-credit token slice. Dedicated page budget
+    // (`_syntheticTargetExtraPagesAllowed` / attempted-token arithmetic above) is unchanged.
+    const _extraTargetContracts = new Set(_syntheticTargetExtraEligibleTokens)
     const _extraTargetSyntheticLots = _syntheticClosedLots.filter(l => _extraTargetContracts.has(l.tokenAddress.toLowerCase()))
-    // SYNTH-RECOVERY-FIX-13: only query the chain(s) the eligible target tokens actually live on
-    // (e.g. a Base-only token never queries eth-mainnet) — this is what kept the previous version
-    // within its 2-page TOTAL cap instead of 2-pages-per-chain (up to 4 total).
-    const _extraTargetOwnChains = new Set(_extraTargetSyntheticLots.map(l => normalizeChainForGoldrush(l.chain)))
+    // Query chains that still need a prior buy first so a recovered Base token cannot burn the
+    // remaining page budget before an eligible ETH token is ever requested. The paid page itself
+    // is still filtered to every ranked-eligible token on that chain.
+    const _extraMissingSyntheticLots = _extraTargetSyntheticLots.filter(l => _syntheticEligibleStillMissingPriorBuy.includes(l.tokenAddress.toLowerCase()))
+    const _extraChainSourceLots = _extraMissingSyntheticLots.length > 0 ? _extraMissingSyntheticLots : _extraTargetSyntheticLots
+    const _extraTargetOwnChains = new Set(_extraChainSourceLots.map(l => normalizeChainForGoldrush(l.chain)))
     const _extraChainOrder: Array<'base-mainnet' | 'eth-mainnet'> = ['base-mainnet', 'eth-mainnet']
     const _extraChainsToTry = _extraChainOrder.filter(c => _extraTargetOwnChains.has(c))
     _syntheticTargetExtraSkippedChains = _extraChainOrder.filter(c => !_extraTargetOwnChains.has(c))
@@ -15812,21 +15858,46 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
         _syntheticTargetExtraPriorBuysFound = _extraRecovery.debug.syntheticTargetPriorBuysFound
         _syntheticTargetExtraNewEvidence = _extraRecovery.newCandidateEvidence
 
-        if (_syntheticTargetExtraPriorBuysFound > 0) {
+        // Stop extra pages only once every still-missing eligible token has a prior buy
+        // in the already-paid shared result. One token succeeding must not discard the
+        // rest of this page's matches or skip leftover allowed pages for the others.
+        const _recoveredNow = new Set(_syntheticTargetExtraNewEvidence.map(e => (e.contract ?? '').toLowerCase()))
+        const _stillMissingAfterPage = _syntheticEligibleStillMissingPriorBuy.filter(t => !_recoveredNow.has(t))
+        if (_stillMissingAfterPage.length === 0 && _syntheticTargetExtraPriorBuysFound > 0) {
           _syntheticTargetExtraStopReason = 'real_prior_buy_found'
           break outer
         }
+        // This chain is done: remaining page budget belongs to other still-missing chains.
+        const _stillMissingOnThisChain = _stillMissingAfterPage.filter(t => {
+          const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === t)
+          return lot ? normalizeChainForGoldrush(lot.chain) === _chain : false
+        })
+        if (_stillMissingOnThisChain.length === 0) break
         if (_extraPagesThisCall === 0) break // no more pages available on this chain
       }
     }
     if (_pagesUsedTotal >= _syntheticTargetExtraPagesAllowed) _syntheticTargetExtraPageCapHit = true
 
     if (!_syntheticTargetExtraStopReason) {
-      _syntheticTargetExtraNoInboundFound = true
-      _syntheticTargetExtraStopReason = 'no_prior_buy_found_after_targeted_pages'
-      _syntheticTargetMarkedUnrecoverable = true
-      _syntheticTargetUnrecoverableReason = 'no_inbound_target_token_found_after_capped_extra_recovery'
+      if (_syntheticTargetExtraPriorBuysFound > 0) {
+        _syntheticTargetExtraStopReason = 'real_prior_buy_found'
+      } else {
+        _syntheticTargetExtraNoInboundFound = true
+        _syntheticTargetExtraStopReason = 'no_prior_buy_found_after_targeted_pages'
+        _syntheticTargetMarkedUnrecoverable = true
+        _syntheticTargetUnrecoverableReason = 'no_inbound_target_token_found_after_capped_extra_recovery'
+      }
     }
+    // Honest skip list: a ranked-eligible token is budget-skipped only when its own chain
+    // received zero paid extra pages. Tokens present on a paid shared chain page are not
+    // "skipped" just because reserved credits would not have bought them a dedicated slot.
+    _syntheticTargetExtraSkippedTargets = _syntheticTargetExtraEligibleTokens
+      .filter(t => {
+        const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === t)
+        const tokenChain = lot ? normalizeChainForGoldrush(lot.chain) : null
+        return !tokenChain || (_syntheticTargetExtraPagesByChain[tokenChain] ?? 0) === 0
+      })
+      .map(contract => ({ contract, reason: 'chain_not_in_paid_shared_page' as const }))
   }
 
   // PNL-RECOVERY-V2-BASE: if synthetic lots exist with zero real-backed closed lots even after the
@@ -18781,8 +18852,10 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   }
   // Real, measured per-token call attribution: a token only benefits from pages fetched on its OWN
   // chain (see _syntheticTargetExtraPagesByChain above) — never an invented per-token call count.
+  // PNL-COVERAGE-RECOVERY-FIX-5: attribute the paid per-chain page to EVERY ranked-eligible token
+  // on that chain, not only the reserved-credit dedicated slice.
   const _pnlCoverageRecoveryCallsByToken: Record<string, number> = {}
-  for (const t of _syntheticTargetExtraAttemptedTokens) {
+  for (const t of _syntheticTargetExtraEligibleTokens) {
     const lot = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === t)
     const tokenChain = lot ? normalizeChainForGoldrush(lot.chain) : null
     _pnlCoverageRecoveryCallsByToken[t] = tokenChain ? (_syntheticTargetExtraPagesByChain[tokenChain] ?? 0) : 0
@@ -18792,10 +18865,91 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
   const _pnlCoverageExactRemainingBlocker = _pnlCoverageThresholdReached
     ? null
     : _pnlCoverageBudgetSkippedTokens.length > 0
-      ? `${_pnlCoverageRemainingLots} lot(s) still missing_price; ${_pnlCoverageBudgetSkippedTokens.length} eligible token(s) skipped for recovery budget (reserved_credit_insufficient_for_remaining_target)`
+      ? `${_pnlCoverageRemainingLots} lot(s) still missing_price; ${_pnlCoverageBudgetSkippedTokens.length} eligible token(s) were not on a paid shared chain page`
       : _pnlCoverageRemainingLots > 0
         ? `${_pnlCoverageRemainingLots} lot(s) still missing_price after recovery; no real prior-buy/price evidence found for the remaining tokens`
         : 'coverage threshold not reached; no missing-price lots remain to recover'
+  const _eligibleHistoricalContractSet = new Set(_eligibleHistoricalTargets.map(t => t.contract))
+  const _broadPagesByChain = walletHistoricalCoverageSummary?.pagesAttemptedByChain ?? {}
+  const _flowEventsByToken = new Map<string, { entry: number; exit: number; matching: number }>()
+  const _flowSeen = new Set<string>()
+  const _noteFlowEvent = (contract: string | null | undefined, direction: string | null | undefined, txHash: string | null | undefined) => {
+    const c = (contract ?? '').toLowerCase()
+    if (!c) return
+    const k = `${c}:${(txHash ?? '').toLowerCase()}:${direction ?? ''}`
+    if (_flowSeen.has(k)) return
+    _flowSeen.add(k)
+    const cur = _flowEventsByToken.get(c) ?? { entry: 0, exit: 0, matching: 0 }
+    cur.matching += 1
+    if (direction === 'buy') cur.entry += 1
+    else if (direction === 'sell') cur.exit += 1
+    _flowEventsByToken.set(c, cur)
+  }
+  for (const ev of _hcEvents) _noteFlowEvent(ev.contract, ev.direction, ev.txHash)
+  for (const ev of _syntheticTargetRecovery?.newCandidateEvidence ?? []) _noteFlowEvent(ev.contract, ev.direction, ev.txHash)
+  for (const ev of _syntheticTargetExtraNewEvidence) _noteFlowEvent(ev.contract, ev.direction, ev.txHash)
+  const _pnlRecoveryFlowAudit: PnlRecoveryFlowAudit[] = _syntheticTargetRankedTokens.map(token => {
+    const lotSample = _syntheticClosedLots.find(l => l.tokenAddress.toLowerCase() === token)
+      ?? _syntheticLotsAfterSourceLots.find(l => l.tokenAddress.toLowerCase() === token)
+    const tokenChain = lotSample ? normalizeChainForGoldrush(lotSample.chain) : null
+    const ranked = _syntheticTargetExtraEligibleTokens.includes(token)
+    const extraPages = tokenChain ? (_syntheticTargetExtraPagesByChain[tokenChain] ?? 0) : 0
+    const extraAttemptedOnChain = tokenChain != null && _syntheticTargetExtraChainsAttempted.includes(tokenChain)
+    const broadAttemptedOnChain = Boolean(_runHistoricalCoverage && _eligibleHistoricalContractSet.has(token))
+    const broadPages = broadAttemptedOnChain && tokenChain ? (_broadPagesByChain[tokenChain] ?? 0) : 0
+    const pagesAvailable = extraPages + broadPages
+    const includedInSharedRequest = ranked && (extraAttemptedOnChain || extraPages > 0 || broadAttemptedOnChain)
+    const tokenLots = _syntheticLotsAfterSourceLots.filter(l => l.tokenAddress.toLowerCase() === token)
+    const lotCount = tokenLots.length
+    const ev = _flowEventsByToken.get(token) ?? { entry: 0, exit: 0, matching: 0 }
+    let lotsVerified = 0
+    let priceRequirements = 0
+    let pricesResolved = 0
+    for (const lot of tokenLots) {
+      if (_isRealBackedClosedLot(lot)) {
+        lotsVerified += 1
+        pricesResolved += 2
+      } else {
+        priceRequirements += 1
+      }
+    }
+    let dropStage: PnlRecoveryFlowDropStage = null
+    let dropReason: string | null = null
+    if (!ranked) {
+      dropStage = 'ranked'
+      dropReason = 'outside the 12-token lots-completable eligibility cap'
+    } else if (!includedInSharedRequest) {
+      dropStage = 'shared_request'
+      dropReason = 'token was ranked eligible but its chain was not part of a paid shared GoldRush page'
+    } else if (pagesAvailable <= 0) {
+      dropStage = 'pages'
+      dropReason = 'included in the shared chain request but no historical pages were available'
+    } else if (ev.matching === 0) {
+      dropStage = 'events'
+      dropReason = 'paid shared pages contained no transfers for this token'
+    } else if (ev.entry === 0 && ev.exit === 0) {
+      dropStage = 'entry_exit'
+      dropReason = 'matching events found but none were wallet entry or exit legs'
+    } else if (lotCount > 0 && lotsVerified < lotCount) {
+      dropStage = 'price'
+      dropReason = 'recovered legs still missing a trusted historical price'
+    }
+    return {
+      token,
+      lotCount,
+      ranked,
+      includedInSharedRequest,
+      pagesAvailable,
+      matchingEventsFound: ev.matching,
+      entryLotsRecovered: ev.entry,
+      exitLotsRecovered: ev.exit,
+      priceRequirements,
+      pricesResolved,
+      lotsVerified,
+      dropStage,
+      dropReason,
+    }
+  })
   const pnlCoverageRecoveryAudit = {
     closedLots: _pnlCoverageRecoveryClosedLots,
     verifiedLotsBefore: _pnlCoverageRecoveryVerifiedBefore,
@@ -18812,6 +18966,7 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     budgetSkippedTokens: _pnlCoverageBudgetSkippedTokens,
     thresholdReached: _pnlCoverageThresholdReached,
     exactRemainingBlocker: _pnlCoverageExactRemainingBlocker,
+    pnlRecoveryFlowAudit: _pnlRecoveryFlowAudit,
   }
 
   const snapshot: WalletSnapshot = {
