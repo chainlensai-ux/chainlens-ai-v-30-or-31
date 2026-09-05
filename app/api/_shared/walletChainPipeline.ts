@@ -47,6 +47,12 @@ import { computeUnrealizedPnl, type Holding, type UnrealizedPnlResult } from '@/
 import { UNKNOWN_TOKEN } from '@/src/modules/swapNormalizer'
 import { buildTradeTimelineV2, type NormalizedSwap, type NormalizedTransfer, type TradeEntry } from '@/lib/engines/tradeTimelineEngineV2'
 import { rpcDebugLog, type RpcDebugEntry } from '@/lib/server/rpcDebug'
+import {
+  identifyRecoveryCandidate,
+  recoverMissingQuoteLeg,
+  type QuoteLegChain,
+} from '@/src/modules/swapNormalizer/quoteLegRecovery'
+import { fetchTransactionReceiptLogs } from './receiptQuoteLegFetcher'
 
 // WINDOW WIDENING, DISCLOSED: this used to be a hardcoded `= 90` constant. It now resolves via
 // providerFetchWindow's new `getEffectiveFetchWindow()` (src/modules/providerFetchWindow/index.ts),
@@ -172,25 +178,145 @@ export function groupRawEventsIntoTxBundles(rawEvents: RawProviderEvent[], chain
   return bundles
 }
 
+// WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED — real per-chain counters for the walletPnlEvidenceAudit
+// shape (lib/engine/modules/pnl/types.ts), populated by the quote-leg recovery pass below. Every
+// count here is a real, observed number from this exact scan — never estimated.
+export type QuoteLegRecoveryChainAudit = {
+  transferEvents: number
+  oneLegTxCount: number
+  candidateSwapTxs: number
+  receiptsFetched: number
+  quoteLegsRecovered: number
+  nativeQuoteLegsRecovered: number
+  stableQuoteLegsRecovered: number
+  rejectionReasons: Record<string, number>
+}
+
+function emptyQuoteLegRecoveryAudit(): QuoteLegRecoveryChainAudit {
+  return {
+    transferEvents: 0, oneLegTxCount: 0, candidateSwapTxs: 0, receiptsFetched: 0,
+    quoteLegsRecovered: 0, nativeQuoteLegsRecovered: 0, stableQuoteLegsRecovered: 0,
+    rejectionReasons: {},
+  }
+}
+
+function bumpReason(audit: QuoteLegRecoveryChainAudit, reason: string): void {
+  audit.rejectionReasons[reason] = (audit.rejectionReasons[reason] ?? 0) + 1
+}
+
+// RECEIPT-BUDGET, DISCLOSED: bounded independently of the scan's overall provider-call cuBudget
+// (which this function ALSO records into via fetchTransactionReceiptLogs) — a hard local cap so a
+// wallet with hundreds of one-leg candidate txs can never turn this recovery pass into hundreds of
+// extra RPC calls in one scan. Same order of magnitude as src/modules/receiptSwapDecoder/
+// receiptAcquisition.ts's own DEFAULT_MAX_LIVE_CALLS (10) for the same real-world reason: a handful
+// of recovered quote legs already meaningfully unblocks FIFO/PnL for the common case, and every
+// candidate beyond the cap is honestly left as a genuine one-leg trade, not silently ignored (still
+// counted in `candidateSwapTxs`).
+const MAX_RECEIPT_FETCHES_PER_CHAIN = 10
+
+// Real, bounded quote-leg recovery: for each transaction bundle whose transfers form a genuine
+// one-leg swap candidate (see identifyRecoveryCandidate's own header), fetches that transaction's
+// real receipt and looks for a standard ERC20 Transfer log moving a known WETH/stable quote asset
+// to/from the wallet. When found, splices that REAL leg into the bundle's transfers (additively —
+// the existing leg is never touched or removed) so swapNormalizer sees both sides and classifies a
+// genuine BUY/SELL instead of a missing-side best-effort guess. Never fabricates an amount or a
+// counterparty; a candidate with no recoverable quote leg in its receipt is left exactly as it was.
+// Exported for direct testing (walletChainPipeline.quoteLegRecovery.test.ts) — the real receipt
+// fetch is stubbed there via fetchTransactionReceiptLogs's own module-level fetch call, same
+// convention as this codebase's other network-touching pure-orchestration functions.
+export async function recoverQuoteLegsForBundles(
+  bundles: RawTxBundle[],
+  walletAddress: string,
+  chain: SwapNormalizerChain,
+  cuBudget?: CuBudget,
+): Promise<{ bundles: RawTxBundle[]; audit: QuoteLegRecoveryChainAudit }> {
+  const audit = emptyQuoteLegRecoveryAudit()
+  audit.transferEvents = bundles.reduce((sum, b) => sum + (b.transfers?.length ?? 0), 0)
+
+  if (chain !== 'eth' && chain !== 'base') return { bundles, audit } // receiptQuoteLegFetcher's own supported-chain scope
+
+  let receiptCallsUsed = 0
+  const recoveryChain = chain as QuoteLegChain
+  const out: RawTxBundle[] = []
+
+  for (const bundle of bundles) {
+    const transfers = bundle.transfers ?? []
+    const candidate = identifyRecoveryCandidate(transfers, walletAddress, recoveryChain)
+    if (!candidate.candidate) {
+      out.push(bundle)
+      continue
+    }
+    audit.oneLegTxCount += 1
+    audit.candidateSwapTxs += 1
+
+    if (receiptCallsUsed >= MAX_RECEIPT_FETCHES_PER_CHAIN) {
+      bumpReason(audit, 'receipt_budget_exhausted')
+      out.push(bundle)
+      continue
+    }
+    receiptCallsUsed += 1
+    audit.receiptsFetched += 1
+    const receipt = await fetchTransactionReceiptLogs(recoveryChain, bundle.txHash, cuBudget)
+    if (receipt.status !== 'ok') {
+      bumpReason(audit, `receipt_${receipt.status}`)
+      out.push(bundle)
+      continue
+    }
+
+    const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, candidate.missingSide)
+    if (recovered.status !== 'recovered') {
+      bumpReason(audit, recovered.status)
+      out.push(bundle)
+      continue
+    }
+
+    audit.quoteLegsRecovered += 1
+    if (recovered.leg.kind === 'native_wrapped') audit.nativeQuoteLegsRecovered += 1
+    else audit.stableQuoteLegsRecovered += 1
+
+    const nextLogIndex = transfers.reduce((max, t) => Math.max(max, t.logIndex), 0) + 1
+    out.push({
+      ...bundle,
+      transfers: [
+        ...transfers,
+        {
+          logIndex: nextLogIndex,
+          contract: recovered.leg.contract,
+          symbol: recovered.leg.symbol,
+          decimals: undefined,
+          from: recovered.leg.from,
+          to: recovered.leg.to,
+          amountRaw: recovered.leg.amountRaw,
+        },
+      ],
+    })
+  }
+
+  return { bundles: out, audit }
+}
+
 export type TradesWithIntentForChainResult = {
   chain: SupportedChain
   chainSupported: boolean
   trades: TradeWithIntent[]
+  quoteLegRecoveryAudit: QuoteLegRecoveryChainAudit
 }
 
-// Real chain: fetchProviderWindow -> groupRawEventsIntoTxBundles -> normalizeTrades (real
-// swapNormalizer) -> classifyTradeIntent (real tradeIntent). See file header for disclosures.
+// Real chain: fetchProviderWindow -> groupRawEventsIntoTxBundles -> recoverQuoteLegsForBundles (see
+// its own header — the wallet-scanner PnL evidence fix) -> normalizeTrades (real swapNormalizer) ->
+// classifyTradeIntent (real tradeIntent). See file header for disclosures.
 // CU-HARDENING: `cache` threaded through to fetchRawEventsForChain — optional, same
 // zero-behavior-change-when-omitted guarantee as that function's own comment.
 export async function buildTradesWithIntentForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<TradesWithIntentForChainResult> {
   if (!isSwapNormalizerChain(chain)) {
-    return { chain, chainSupported: false, trades: [] }
+    return { chain, chainSupported: false, trades: [], quoteLegRecoveryAudit: emptyQuoteLegRecoveryAudit() }
   }
   const rawEvents = await fetchRawEventsForChain(chain, walletAddress, cache, cuBudget)
-  const bundles = groupRawEventsIntoTxBundles(rawEvents, chain)
+  const rawBundles = groupRawEventsIntoTxBundles(rawEvents, chain)
+  const { bundles, audit: quoteLegRecoveryAudit } = await recoverQuoteLegsForBundles(rawBundles, walletAddress, chain, cuBudget)
   const normalizedTrades = normalizeTrades(bundles, walletAddress)
   const trades = classifyTradeIntent(normalizedTrades)
-  return { chain, chainSupported: true, trades }
+  return { chain, chainSupported: true, trades, quoteLegRecoveryAudit }
 }
 
 export type LotsForChainResult = {
@@ -553,6 +679,10 @@ export type TradeTimelineForChainResult = {
   // (de-duplication across the two lists, if a caller needs it, is a UI-layer concern — this file
   // only supplies both real lists honestly).
   sellCandidates: SellCandidate[]
+  // ADDITIVE, DISCLOSED: real quote-leg-recovery counters for this chain — see
+  // recoverQuoteLegsForBundles's own header. Threaded through so lib/engine/modules/pnl/
+  // computePnl.ts's fetchParsedTrades can fold these into the full walletPnlEvidenceAudit.
+  quoteLegRecoveryAudit: QuoteLegRecoveryChainAudit
 }
 
 // Real chain continued (alternate branch from lots): TradeWithIntent[] -> adapter above ->
@@ -563,8 +693,8 @@ export type TradeTimelineForChainResult = {
 // lib/engine/modules/activity/computeChainActivity.ts uses is what actually fixes docs/CU_AUDIT.md
 // Finding #1 — both modules now share one real fetchRawEventsForChain call per chain per request.
 export async function buildTradeTimelineForChain(chain: SupportedChain, walletAddress: string, cache?: EventsCache, cuBudget?: CuBudget): Promise<TradeTimelineForChainResult> {
-  const { chainSupported, trades } = await buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget)
-  if (!chainSupported) return { chain, chainSupported: false, trades: [], sellCandidates: [] }
+  const { chainSupported, trades, quoteLegRecoveryAudit } = await buildTradesWithIntentForChain(chain, walletAddress, cache, cuBudget)
+  if (!chainSupported) return { chain, chainSupported: false, trades: [], sellCandidates: [], quoteLegRecoveryAudit }
 
   const transfers: NormalizedTransfer[] = []
   const swaps: NormalizedSwap[] = []
@@ -576,5 +706,5 @@ export async function buildTradeTimelineForChain(chain: SupportedChain, walletAd
 
   const timeline = await buildTradeTimelineV2({ chain, walletAddress, transfers, swaps })
   const sellCandidates = buildSellCandidatesFromTrades(trades, walletAddress)
-  return { chain, chainSupported: true, trades: timeline.trades, sellCandidates }
+  return { chain, chainSupported: true, trades: timeline.trades, sellCandidates, quoteLegRecoveryAudit }
 }

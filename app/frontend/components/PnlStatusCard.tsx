@@ -27,7 +27,7 @@ import { useState } from 'react'
 //     realized/unrealized breakdown and per-chain breakdown, both directly from PnlV2.
 //   - ROI: now computed purely from PnlV2 — realizedPnlUsd / sum(costBasis[].totalCostUsd), a real
 //     total cost basis PnlV2 does carry (per-token, summed here), never fifoAndPnl.costBasisUsd.
-import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { PnlV2, WalletPnlEvidenceAudit } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
@@ -189,6 +189,14 @@ export type PnlStatusCardProps = {
   // render (never to recompute pnlV2 itself). Omitting this prop simply skips the EVM lane badges —
   // no fabricated chain list.
   chainsScanned?: string[]
+  // WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED — the real field lives at result.walletPnlEvidenceAudit
+  // (lib/engine/modules/pnl/types.ts, populated by workers/walletScanV2.ts alongside pnlV2). Never
+  // changes combinedStatus/blocked/any verified-vs-unavailable gate (officialPnlStatus above stays
+  // the sole authority for that) — only replaces the generic "PnL unavailable due to missing
+  // evidence" wording with the real blocker (open position only / no verified swaps / quote leg
+  // missing) when the combined figure is unavailable. Omitting this prop keeps the old generic
+  // message exactly as before.
+  walletPnlEvidenceAudit?: WalletPnlEvidenceAudit | null
 }
 
 export type VerifiedPnlData = {
@@ -911,7 +919,7 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned }: PnlStatusCardProps) {
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned, walletPnlEvidenceAudit }: PnlStatusCardProps) {
   // TECHNICAL-DETAILS TOGGLE, DISCLOSED (Wallet Scanner second-pass audit, task 3 — same collapsed-
   // by-default convention as WalletScannerDiagnosticsV3's own "Advanced Diagnostics" section): real
   // engine-divergence/coverage/evidence numbers are never deleted or hidden from a user who wants
@@ -970,7 +978,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // selector both this card and CORTEX's sidebar (walletReadBuilder.ts's buildCortexReadV2) call for
   // combined status/box/chain-row wording — see buildWalletPnlViewModel.ts's own header. No new PnL
   // math: it's built entirely from the same selectors already computed above.
-  const pnlViewModel = buildWalletPnlViewModel({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned })
+  const pnlViewModel = buildWalletPnlViewModel({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned, walletPnlEvidenceAudit })
 
   const headerIcon = displayed.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />

@@ -16,7 +16,7 @@
 // only reshapes/labels their outputs. It never recomputes a PnL figure, never invents a threshold,
 // and never marks Robinhood "verified" except via the exact same selectRobinhoodPnlLaneStatus gate
 // (Phase 3 sidecar, verifiedSwapCount > 0) the main card and CORTEX already required.
-import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { PnlV2, WalletPnlEvidenceAudit } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
@@ -107,6 +107,14 @@ export type BuildWalletPnlViewModelParams = {
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
   robinhoodResult?: RobinhoodWalletScanResponse | null
   chainsScanned?: string[]
+  // WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED: does NOT change combinedStatus/blocked/any gating —
+  // officialPnlStatus (publicPnlStatus above) stays the sole authority for verified/partial/
+  // unavailable, per this file's own "NO NEW PNL MATH" rule. Only replaces the generic, unspecific
+  // PNL_UNAVAILABLE_MESSAGE wording with the real blocker (e.g. "Open position only — no verified
+  // closed trades.", "No verified swaps found.", "Swap found, quote leg missing.") when the V2
+  // engine's own evidence audit recorded one — never fabricated, never shown while combinedStatus is
+  // anything other than 'unavailable'. Optional and omittable: no reason text changes if absent.
+  walletPnlEvidenceAudit?: WalletPnlEvidenceAudit | null
 }
 
 function box(value: string | null, status: WalletPnlBoxStatus, reason: string): WalletPnlBox {
@@ -114,7 +122,8 @@ function box(value: string | null, status: WalletPnlBoxStatus, reason: string): 
 }
 
 export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): WalletPnlViewModel {
-  const { pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned } = params
+  const { pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned, walletPnlEvidenceAudit } = params
+  const specificUnavailableReason = walletPnlEvidenceAudit?.failureReason ?? PNL_UNAVAILABLE_MESSAGE
 
   const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
   const effectiveStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
@@ -163,7 +172,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   } else if (baseCombinedStatus === 'partial') {
     combinedReason = boundedSample?.label ?? 'Verified bounded sample.'
   } else {
-    combinedReason = PNL_UNAVAILABLE_MESSAGE
+    combinedReason = specificUnavailableReason
   }
 
   // COMBINED REALIZED BOX, DISCLOSED (this task's own root-cause fix — confirmed reported bug: the
@@ -193,7 +202,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
           ? (boundedSample?.label ?? 'Base/ETH history is a bounded, verified sample.')
           : combinedRealizedBoxStatus === 'Verified'
             ? (buildRealizedVerifiedMessage(effectiveStatus) ?? 'Closed-lot coverage confirmed.')
-            : PNL_UNAVAILABLE_MESSAGE,
+            : specificUnavailableReason,
   )
 
   // ROBINHOOD BOX, DISCLOSED: a distinct top-row box (never folded into the combined figure above) —

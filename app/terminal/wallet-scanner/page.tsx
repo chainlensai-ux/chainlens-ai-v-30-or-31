@@ -66,7 +66,7 @@ import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
-import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { PnlV2, WalletPnlEvidenceAudit } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 import type { PersonalityV2 } from '@/lib/engine/modules/personality/types'
@@ -103,6 +103,12 @@ export type WalletV2Report = FinalReport & {
   pricedHoldings?: PricedHolding[]
   chainValueUsd?: Record<number, number>
   pnlV2?: PnlV2
+  // WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED — workers/walletScanV2.ts attaches this alongside
+  // pnlV2 (lib/engine/modules/pnl/computePnl.ts's own evidence audit: closed-lot/quote-leg-recovery
+  // counters + finalPnlStatus + a human failureReason). Optional/omittable — a scan that hasn't run
+  // through the updated worker simply has no specific reason text (PnlStatusCard falls back to its
+  // existing generic message).
+  walletPnlEvidenceAudit?: WalletPnlEvidenceAudit
   chainActivityV2?: ChainActivityRecord[]
   // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): same real gap as portfolioV2/
   // chainActivityV2 above — only ever populated by app/api/scan-v2/full-scan/route.ts.
@@ -279,6 +285,7 @@ function buildCortexReadV2(
     canonicalSampleManifestAudit: report.canonicalSampleManifestAudit,
     robinhoodResult,
     chainsScanned: Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : [],
+    walletPnlEvidenceAudit: report.walletPnlEvidenceAudit,
   })
 
   return buildWalletReadV2({
@@ -1154,6 +1161,7 @@ export default function WalletScannerPage() {
                   unrealizedReconciliation={result.fifoAndPnl?.unrealizedReconciliation}
                   reconciliationSummary={result.reconciliationSummary}
                   canonicalSampleManifestAudit={result.canonicalSampleManifestAudit}
+                  walletPnlEvidenceAudit={result.walletPnlEvidenceAudit}
                 />
               </div>
 

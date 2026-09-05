@@ -659,12 +659,12 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
     // something is genuinely misbehaving — trades is skipped entirely rather than adding its own
     // calls on top of an already-abnormal scan.
-    const trades = scanRpcBudgetExceeded(moduleErrors)
-      ? ([] as Awaited<ReturnType<typeof fetchParsedTrades>>)
+    const { trades, evidenceByChain } = scanRpcBudgetExceeded(moduleErrors)
+      ? ({ trades: [], evidenceByChain: [] } as Awaited<ReturnType<typeof fetchParsedTrades>>)
       : await runWithTimeoutAndRpcAudit(
         'trades',
         () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
-        [] as Awaited<ReturnType<typeof fetchParsedTrades>>,
+        { trades: [], evidenceByChain: [] } as Awaited<ReturnType<typeof fetchParsedTrades>>,
         moduleErrors,
         moduleTimeoutMs(startTime),
       )
@@ -678,7 +678,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     t0 = performance.now()
     const pnlOutput = await runWithTimeoutAndRpcAudit(
       'pnl',
-      () => computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades),
+      () => computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades, evidenceByChain, walletAddress),
       {
         pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
         pnlStatus: 'unavailable',
@@ -686,6 +686,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       moduleErrors,
       moduleTimeoutMs(startTime),
     )
+    // eslint-disable-next-line no-console
+    console.warn('[wallet-pnl-evidence-audit]', pnlOutput.walletPnlEvidenceAudit)
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished pnl in', performance.now() - t0, 'ms')
 
@@ -936,6 +938,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         portfolioStatus: portfolioOutput.portfolioStatus,
         pnlV2: pnlOutput.pnlV2,
         pnlStatus: pnlOutput.pnlStatus,
+        walletPnlEvidenceAudit: pnlOutput.walletPnlEvidenceAudit,
         chainActivityV2: chainActivityOutput.chainActivityV2,
         chainActivityStatus: chainActivityOutput.chainActivityStatus,
         riskV2: riskOutput.riskV2,

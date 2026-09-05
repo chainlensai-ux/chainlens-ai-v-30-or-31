@@ -91,9 +91,55 @@ export type PnlV2 = {
   unrealizedExcludedPositions?: ExcludedUnrealizedPosition[]
 }
 
+// WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED (prod issue: PnL almost always says unavailable/
+// missing evidence even for wallets with real swaps — root cause traced to one-leg swap txs whose
+// missing quote leg was never recovered; see src/modules/swapNormalizer/quoteLegRecovery.ts and
+// app/api/_shared/walletChainPipeline.ts for the fix). `pnlStatus` is kept ('ok'/'partial'/
+// 'unavailable') for every existing reader of this field — ADDITIVE `finalPnlStatus` below is the
+// new, more honest taxonomy this task specifies, distinguishing "no swaps at all"
+// (transfer_only) from "buys only, no verified sells yet" (open_position_only) from a genuine,
+// evidence-backed realized result (verified/partial) — never collapsing all of those into one bare
+// "unavailable".
+export type PnlFinalStatus =
+  | 'verified'
+  | 'partial'
+  | 'unavailable'
+  | 'open_position_only'
+  | 'transfer_only'
+  | 'unsupported_with_reason'
+
+export type WalletPnlEvidenceAudit = {
+  walletAddress: string
+  chainId: number | null
+  rawEvents: number
+  transferEvents: number
+  candidateSwapTxs: number
+  receiptsFetched: number
+  verifiedSwapCount: number
+  likelySwapCount: number
+  rejectedSwapCount: number
+  rejectionReasons: Record<string, number>
+  oneLegTxCount: number
+  quoteLegsRecovered: number
+  nativeQuoteLegsRecovered: number
+  stableQuoteLegsRecovered: number
+  buysClassified: number
+  sellsClassified: number
+  openPositions: number
+  closedLots: number
+  fullyPricedClosedLots: number
+  realizedPnlUsd: number | null
+  finalPnlStatus: PnlFinalStatus
+  failureReason: string | null
+}
+
 export type PnlEngineOutput = {
   pnlV2: PnlV2
   pnlStatus: 'ok' | 'partial' | 'unavailable'
+  // ADDITIVE, OPTIONAL, DISCLOSED: populated by computePnl's own real FIFO/evidence derivation —
+  // optional so every existing PnlEngineOutput fixture across this codebase continues to typecheck
+  // unchanged (same convention already used for PnlV2.unrealizedExcludedPositions above).
+  walletPnlEvidenceAudit?: WalletPnlEvidenceAudit
 }
 
 // Minimal trade shape this module's own FIFO algorithm needs — see file header disclosure.
