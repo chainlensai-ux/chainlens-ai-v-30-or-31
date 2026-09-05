@@ -70,7 +70,7 @@ import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveAerodromeSlipstreamPoolRpc } from '@/lib/server/aerodromeSlipstreamPoolRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
-import { resolveLpSafetyFinalState } from '@/lib/lpSafetyResolution'
+import { resolveLpSafetyFinalState, detectKnownLpProtocol } from '@/lib/lpSafetyResolution'
 
 // MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
 // error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
@@ -3099,10 +3099,18 @@ function extractPoolDex(pool: Record<string, unknown> | null, included: unknown[
   const lookupId = relDexId || attrDexId;
   let incDexName = "";
   if (lookupId && included.length) {
-    const dexObj = included.find((x) => String((x as Record<string, unknown>).id ?? "").toLowerCase() === lookupId) as Record<string, unknown> | undefined;
+    const dexObj = included.find((x) => {
+      const rec = x as Record<string, unknown>
+      const type = String(rec.type ?? '').toLowerCase()
+      return String(rec.id ?? "").toLowerCase() === lookupId && (type === '' || type === 'dex')
+    }) as Record<string, unknown> | undefined;
     if (dexObj) incDexName = String(((dexObj.attributes ?? {}) as Record<string, unknown>).name ?? "").toLowerCase().trim();
   }
-  return { dexId: attrDexId || relDexId, dexName: attrDexName || incDexName || attrDexId || relDexId };
+  const rawId = attrDexId || relDexId
+  const looksLikeProtocol = (s: string) => /uniswap|pancake|aerodrome|velodrome|sushi|baseswap|alienbase|swapbased|shiba|slipstream|algebra/.test(s)
+  const protocolName = [attrDexName, incDexName].find((s) => looksLikeProtocol(s)) ?? ''
+  const dexId = looksLikeProtocol(rawId) ? rawId : (protocolName || rawId)
+  return { dexId, dexName: attrDexName || incDexName || dexId };
 }
 
 // Resolves a pool's identifier to either a real 20-byte contract address, or — for
@@ -3127,7 +3135,7 @@ function extractPoolAddressOrId(rawId: unknown, attrAddress: unknown): { address
   return { address: null, poolId: null, poolAddressType: "unknown" }
 }
 
-function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>): NormalizedPool {
+function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>, includedAll: unknown[] = []): NormalizedPool {
   const attrs = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
   const baseId = String((((rel.base_token as Record<string, unknown> | undefined)?.data as Record<string, unknown> | undefined)?.id) ?? "").trim();
@@ -3138,7 +3146,7 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const quoteTokenAddress = String((quoteInc as Record<string, unknown>).address ?? "").trim().toLowerCase() || null;
   const baseTokenSymbol = String((baseInc as Record<string, unknown>).symbol ?? "").trim() || null;
   const quoteTokenSymbol = String((quoteInc as Record<string, unknown>).symbol ?? "").trim() || null;
-  const { dexId, dexName } = extractPoolDex(pool, []);
+  const { dexId, dexName } = extractPoolDex(pool, includedAll);
   const defaultIdentity = extractPoolAddressOrId(pool?.id, attrs.address)
   // GeckoTerminal can expose the V4 singleton PoolManager as attributes.address while its
   // resource id contains the actual bytes32 pool ID. Prefer that pool ID for V4; querying by the
@@ -3147,6 +3155,19 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
   const { address, poolId, poolAddressType } = /uniswap.*v4|v4.*uniswap/i.test(`${dexId} ${dexName}`) && rawIdIdentity.poolId
     ? rawIdIdentity
     : defaultIdentity
+  let poolType = detectPoolType(pool, dexId || dexName || undefined)
+  if (poolType === 'unknown') {
+    const detected = detectKnownLpProtocol({
+      dex: dexId,
+      dexName,
+      poolType,
+      poolId,
+      poolAddressType,
+    })
+    // Unversioned "uniswap"/"pancake" labels are not enough to skip RPC: V2 vs V3 still
+    // has to be distinguished by interface probes. Versioned dex/pool-id may classify now.
+    if (detected.poolType !== 'unknown' && detected.detector !== 'unversioned_dex_metadata') poolType = detected.poolType
+  }
   return {
     address,
     poolId,
@@ -3159,12 +3180,11 @@ function normalizePool(pool: Record<string, unknown> | null, includedTokenById: 
     quoteTokenSymbol,
     baseTokenAddress,
     quoteTokenAddress,
-    poolType: detectPoolType(pool, dexId || undefined),
+    poolType,
     hasLpToken: (() => {
-      const pt = detectPoolType(pool, dexId || undefined)
       // "aerodrome" now means Aerodrome V2 (volatile/stable) — pool contract IS the ERC-20 LP token.
-      if (pt === 'v2' || pt === 'aerodrome') return true
-      if (pt === 'v3' || pt === 'concentrated') return false
+      if (poolType === 'v2' || poolType === 'aerodrome') return true
+      if (poolType === 'v3' || poolType === 'concentrated') return false
       return null
     })(),
     hasDexMeta: Boolean(dexId || dexName),
@@ -3284,7 +3304,7 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
   // Aerodrome/Velodrome Slipstream (concentrated-liquidity) pools are NOT ERC-20 LP tokens —
   // distinguish them from Aerodrome V2 (volatile/stable) pools, which ARE ERC-20 LP tokens.
   const isAerodromeFamily = (s: string) => /aerodrome|velodrome/.test(s)
-  const isConcentratedMarker = (s: string) => /slipstream|concentrated|algebra|\bcl\b|[-_]cl[-_]?|[-_]cl$/.test(s)
+  const isConcentratedMarker = (s: string) => /slipstream|concentrated|algebra|\bcl\b|[-_]cl(?=[-_]|$)/.test(s)
   // CLMM / Infinity CLMM (e.g. PancakeSwap Infinity CLMM, any future "*-clmm-*" naming) and
   // Uniswap V3/V4 are concentrated-liquidity models — LP positions are NFTs, never ERC-20 V2
   // LP tokens, so they must never fall through to the generic "^pancakeswap|^sushiswap" → v2 default.
@@ -3295,21 +3315,13 @@ function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string
     if (isAerodromeFamily(s) && isConcentratedMarker(s)) return "concentrated"
     if (isAerodromeFamily(s)) return "aerodrome"
     if (isConcentratedDex(s)) return "concentrated"
-    if (/^uniswap_v4|^uniswap-v4/.test(s)) return "concentrated"
-    if (/^uniswap_v3|^uniswap-v3|^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3|^algebra/.test(s)) return "v3"
-    if (/^uniswap_v2|^uniswap-v2|^pancakeswap_v2|^pancakeswap-v2|^sushiswap_v2|^sushiswap-v2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
-    if (/^pancakeswap_v3|^pancakeswap-v3|^sushiswap_v3|^sushiswap-v3/.test(s)) return "v3"
+    if (/uniswap[_-]?v4|uniswapv4/.test(s)) return "concentrated"
+    if (/uniswap[_-]?v3|uniswapv3|pancakeswap[_-]?v3|pancakeswapv3|sushiswap[_-]?v3|sushiswapv3|\balgebra\b/.test(s)) return "v3"
+    if (/uniswap[_-]?v2|uniswapv2|pancakeswap[_-]?v2|pancakeswapv2|sushiswap[_-]?v2|sushiswapv2|^baseswap|^alienbase|^swapbased|^shibaswap/.test(s)) return "v2"
     // BARE-UNISWAP FIX, DISCLOSED (bug report: "LP Safety finds a Uniswap pool but still shows
-    // Model Open Check"): classifyPoolModel (lib/server/lpProof.ts) already treats ANY dex id
-    // containing "uniswap" as a constant-product V2 LP token (its regex has no version
-    // requirement), and this function already defaults unversioned "sushiswap"/"pancakeswap" to
-    // v2 below — but a bare "uniswap" dex id (no "_v2"/"-v2" suffix, which GeckoTerminal/
-    // DexScreener do return for some V2 pools) fell through every branch to "unknown" here. That
-    // mismatch left primaryPoolType/verifyPoolType stuck at "unknown" even when
-    // classifyPoolModel's broader match (used for modelProofStandardLockApplies) correctly saw a
-    // V2 pool — computeDisplayLpModel's "open_check" branch could still be reached before the
-    // safety-net override ran, and RPC reclassification is not guaranteed to succeed (network/env
-    // dependent). Treat bare "uniswap" the same as bare "sushiswap"/"pancakeswap": default to v2.
+    // Model Open Check"): classifyPoolModel already treats ANY dex id containing "uniswap" as a
+    // constant-product V2 LP token, and unversioned sushiswap/pancakeswap already default to v2.
+    // A bare "uniswap" dex id (no "_v2"/"-v2" suffix) must not fall through to unknown.
     if (/^sushiswap|^pancakeswap|^uniswap$/.test(s)) return "v2"  // unversioned: default to v2
   }
   const has = (re: RegExp) => re.test(text);
@@ -4285,7 +4297,7 @@ export async function POST(req: Request) {
       const attrs = (inc.attributes ?? {}) as Record<string, unknown>;
       if (id) includedTokenById.set(id, attrs);
     }
-    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById));
+    const normalizedPools = matchingPools.map((p) => normalizePool(p, includedTokenById, gtIncluded));
     // When GeckoTerminal has no pool data, synthesize a pool from DexScreener pair address
     // so LP verification (burn/lock/team checks) can still be attempted.
     let _dsFbPoolSynthesized = false
@@ -4303,6 +4315,16 @@ export async function POST(req: Request) {
       // contract address — it has no ERC-20 LP token, so the pool model is concentrated unless
       // dex metadata says otherwise.
       if (_dsFbPairIsPoolId && _dsFbType === 'unknown') _dsFbType = 'concentrated'
+      if (_dsFbType === 'unknown') {
+        const detected = detectKnownLpProtocol({
+          dex: _dsFbDexId,
+          dexName: normalizeDexLabel(_dsFbDexId),
+          poolType: _dsFbType,
+          poolId: _dsFbPairIsPoolId ? _dsFbPairIdRaw : null,
+          poolAddressType: _dsFbPairIsContractAddress ? 'contract' : (_dsFbPairIsPoolId ? 'pool_id' : 'unknown'),
+        })
+        if (detected.poolType !== 'unknown' && detected.detector !== 'unversioned_dex_metadata') _dsFbType = detected.poolType
+      }
       normalizedPools.push({
         address: _dsFbPairIsContractAddress ? _dsFbPairIdRaw : null,
         poolId: _dsFbPairIsPoolId ? _dsFbPairIdRaw : null,
@@ -4428,6 +4450,29 @@ export async function POST(req: Request) {
       : null
     if (canonicalPoolIdentity?.model === "concentrated" && lpPoolType !== "v3" && lpPoolType !== "concentrated") {
       lpPoolType = "concentrated"
+    }
+    // Known Uniswap/Aerodrome/Pancake metadata must classify the pool before the unknown→generic
+    // unavailable fallback. RPC probing confirms the model; it must not be the only path.
+    if (lpPoolType === "unknown") {
+      const _dexDetected = detectKnownLpProtocol({
+        dex: lpPool?.dexId ?? null,
+        dexName: lpPool?.dexName ?? null,
+        poolType: lpPoolType,
+        poolId: lpPool?.poolId ?? primaryMarketPoolId ?? null,
+        poolAddressType: lpPool?.poolAddressType ?? primaryMarketPoolAddressType ?? "unknown",
+        rpcPoolType: _fallbackRpcModel,
+      })
+      if (_dexDetected.poolType !== "unknown") {
+        // Same rule as normalizePool: unversioned dex names must not skip RPC classification.
+        if (_dexDetected.detector !== "unversioned_dex_metadata") {
+          lpPoolType = _dexDetected.poolType
+          if (lpPool && lpPool.poolType === "unknown") {
+            lpPool.poolType = _dexDetected.poolType
+            if (_dexDetected.poolType === "v2" || _dexDetected.poolType === "aerodrome") lpPool.hasLpToken = true
+            if (_dexDetected.poolType === "v3" || _dexDetected.poolType === "concentrated") lpPool.hasLpToken = false
+          }
+        }
+      }
     }
     // Canonical LP proof target: the PRIMARY/highest-liquidity pool (lpPool) is the single
     // source of truth for whether standard ERC-20 LP lock/burn proof applies (selection
@@ -5442,6 +5487,17 @@ export async function POST(req: Request) {
     // Ensure poolAddressPresent is always correct on the final object — some inner branches
     // replace lpControl wholesale without setting this field (e.g., GoldRush/RPC paths).
     lpControl.poolAddressPresent = _lpProofPresent;
+
+    // A later RPC/control classification may resolve an earlier unknown model. Fill only —
+    // never overwrite a successful detector result with unknown.
+    if (lpPoolType === 'unknown' && (lpControl.poolType === 'v2' || lpControl.poolType === 'v3' || lpControl.poolType === 'concentrated' || lpControl.poolType === 'aerodrome')) {
+      lpPoolType = lpControl.poolType
+    }
+    if (lpPool && lpPool.poolType === 'unknown' && lpPoolType !== 'unknown') {
+      lpPool.poolType = lpPoolType
+      if (lpPoolType === 'v2' || lpPoolType === 'aerodrome') lpPool.hasLpToken = true
+      if (lpPoolType === 'v3' || lpPoolType === 'concentrated') lpPool.hasLpToken = false
+    }
 
     // Normalize split-pool and proof-status fields so frontend never needs to derive them.
     // These are always set regardless of which LP branch ran. Uses the shared
@@ -7541,12 +7597,12 @@ export async function POST(req: Request) {
       chainId: CHAIN_ID_MAP[chain] ?? null,
       tokenAddress: contract,
       selectedPoolAddress: lpPoolAddress ?? lpPool?.address ?? null,
-      selectedPoolDex: lpDexId ?? lpDexName ?? null,
+      selectedPoolDex: lpDexId ?? lpDexName ?? primaryDexName ?? null,
       selectedPoolSource: canonicalPrimaryUsable ? 'primary_market' : (_dsFbPoolSynthesized ? 'market_fallback' : null),
-      poolType: lpPoolType === 'unknown' ? lpModelProof.model : lpPoolType,
+      poolType: lpPoolType === 'unknown' ? (lpControl.poolType !== 'unknown' ? lpControl.poolType : lpModelProof.model) : lpPoolType,
       token0: _fallbackRpcEvidence?.resolved.token0 ?? lpPool?.baseTokenAddress ?? null,
       token1: _fallbackRpcEvidence?.resolved.token1 ?? lpPool?.quoteTokenAddress ?? null,
-      lpTokenAddress: _primaryConcentrated ? null : (_lpProofAddress ?? null),
+      lpTokenAddress: _primaryConcentrated || lpPoolType === 'v3' || lpPoolType === 'concentrated' ? null : (_lpProofAddress ?? null),
       totalSupplyRead: Boolean(lpDiagnostics.totalSupplyChecked || _fallbackRpcEvidence?.probed.totalSupply),
       rpcAttempted: Boolean(_fallbackRpcModel != null || lpDiagnostics.rpcAttempted),
       rpcCallsMade: _fallbackRpcModel != null ? 7 : (lpDiagnostics.rpcFallbackAttempted ? 1 : 0),
@@ -7563,6 +7619,13 @@ export async function POST(req: Request) {
       exitRisk: lpExitRisk,
       exitRiskReason: lpExitRiskReason,
       failureReason: concentratedPositionProof?.reason ?? lpDiagnostics.failureReason ?? lpControl.reason ?? null,
+      poolId: lpPool?.poolId ?? primaryMarketPoolId ?? null,
+      poolAddressType: lpPool?.poolAddressType ?? primaryMarketPoolAddressType ?? null,
+      rpcPoolType: _fallbackRpcModel,
+      controlPoolType: lpControl.poolType,
+      concentratedPoolModel: concentratedPositionProof?.poolModel ?? null,
+      displayLpModel: lpControl.displayLpModel ?? null,
+      primaryDexName,
     }) : null
     const lpUnlockTimeline = buildLpUnlockTimeline({
       chain,
@@ -8829,6 +8892,7 @@ export async function POST(req: Request) {
       ...(lpSafetyResolution ? {
         lpSafetyResolution,
         lpSafetyResolutionAudit: lpSafetyResolution.audit,
+        lpFinalDecisionAudit: lpSafetyResolution.finalDecisionAudit,
       } : {}),
       lpUnlockTimeline,
       lpHistoryTimeline,
