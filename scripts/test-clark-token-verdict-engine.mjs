@@ -85,7 +85,7 @@ function baseSafeInput(vocab) {
 }
 {
   const r = computeClarkTokenVerdictCore({ ...baseSafeInput(EVM_VOCAB), lpStatus: "unknown" }, true);
-  assert.equal(r.verdict, "High Risk", 'unconfirmed LP control is a High Risk trigger (lpControlUnclear), not just a Watch-tier gap');
+  assert.equal(r.verdict, "Watch", 'unconfirmed LP control is missing evidence (Watch), never a fake High Risk');
 }
 
 // ── Safer Watch tier — every gap closed ──────────────────────────────────────────────────────

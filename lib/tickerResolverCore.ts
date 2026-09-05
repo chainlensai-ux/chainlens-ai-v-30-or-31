@@ -30,6 +30,7 @@ export type TickerResolverAudit = {
   providersTried: TickerResolverSource[]
   matchesFound: number
   topMatch: { chainSlug: TickerChainSlug; tokenAddress: string; symbol: string | null } | null
+  selectedMatch: { chainSlug: TickerChainSlug; tokenAddress: string; symbol: string | null } | null
   confidence: number
   needsUserChoice: boolean
   finalAction: 'direct_scan' | 'auto_scan' | 'show_picker' | 'not_found'
@@ -171,6 +172,7 @@ export function finalizeTickerResolution(input: {
       providersTried: input.providersTried,
       matchesFound: ranked.length,
       topMatch: top ? { chainSlug: top.chainSlug, tokenAddress: top.tokenAddress, symbol: top.symbol } : null,
+      selectedMatch: selectedMatch ? { chainSlug: selectedMatch.chainSlug, tokenAddress: selectedMatch.tokenAddress, symbol: selectedMatch.symbol } : null,
       confidence: top?.confidence ?? 0,
       needsUserChoice,
       finalAction,

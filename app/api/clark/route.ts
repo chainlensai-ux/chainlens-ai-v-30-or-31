@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from "@/lib/clark/commandFormats";
+import { doesClarkTokenResponseMatch, parseClarkTokenCommand, clarkTokenReadHeading, parseClarkCommandName } from "@/lib/clark/commandFormats";
+import { buildClarkRouteIntentAudit } from "@/lib/clark/tickerSelection";
 import {
   generateTickerSearchId,
   buildTickerPickerOptions,
@@ -774,6 +775,9 @@ function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['l
   mem.lastMomentumList = items;
   mem.lastMomentumTs = Date.now();
   mem.lastMomentumShownCount = 0;
+  // A new movers list owns "scan 1". Stale ticker-picker numbered scans must not steal it.
+  mem.lastTickerMatches = undefined;
+  mem.lastTickerSearchId = null;
 }
 
 function updateMemIntent(mem: ClarkSessionMemory, intent: string) {
@@ -998,6 +1002,8 @@ interface ClarkRequestBody {
     lastClarkSubject?: ClarkLastSubject | null;
     prevClarkSubject?: ClarkLastSubject | null;
     lastWalletSubject?: ClarkSessionMemory["lastWalletSubject"];
+    lastTickerMatches?: ClarkSessionMemory["lastTickerMatches"];
+    tickerSearchId?: string | null;
   };
   route?: string;
   currentTool?: string;
@@ -13061,7 +13067,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const tickerMatches: NonNullable<ClarkSessionMemory["lastTickerMatches"]> = rawTickerMatches.map((c) => ({
       name: typeof c.name === "string" ? c.name : null,
       symbol: typeof c.symbol === "string" ? c.symbol.toUpperCase() : sym.toUpperCase(),
-      chainSlug: String(c.chainSlug ?? c.chainId ?? c.chain ?? "base").toLowerCase(),
+      chainSlug: String(c.chainSlug ?? c.chain ?? "base").toLowerCase(),
       tokenAddress: String(c.tokenAddress ?? c.contractAddress ?? c.address ?? ""),
       pairAddress: typeof c.pairAddress === "string" ? c.pairAddress : null,
       liquidityUsd: typeof c.liquidityUsd === "number" ? c.liquidityUsd : null,
@@ -13723,6 +13729,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
+    const tokenCmd = parseClarkTokenCommand(prompt);
+    if (tokenCmd?.address) tokenAddress = tokenCmd.address;
+    if (!tokenAddress && tokenCmd?.ticker) resolvedSymbol = tokenCmd.ticker;
     if (!tokenAddress && !resolvedSymbol) {
       const sub = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
       tokenAddress = sub?.address ?? sessionMem.lastToken?.address ?? tokenAddress;
@@ -13817,6 +13826,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: ["token_scan"],
         analysis: `TOKEN READ — unavailable\nContract: ${tokenAddress}\nChain: ${chainDisplayLabel(chainForClarkTools)}\nReason: ${failureReason}`,
         intentBadge: "Token Read", quotaConsumed: false, clarkTokenScanFailed: true,
+        scannedTokenAddress: tokenAddress, scannedTokenChain: chainForClarkTools, tokenScannerCalled: true,
       };
     }
 
@@ -13837,14 +13847,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis = renderClarkTokenVerdictForEvm(ev, tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)), usableEvidence);
       formatterUsed = "renderClarkTokenVerdictForEvm";
     }
-    if (explicitTokenCommand) {
-      // An explicit contract read must never end in a placeholder or turn
-      // missing evidence into a verdict. Keep the established detailed copy,
-      // but use the honest public state name for unverified sections.
-      analysis = analysis
-        .replace(/^TOKEN READ — \?/m, `TOKEN READ — ${shortAddress(tokenAddress)}`)
-        .replace(/\bOpen Check\b/gi, "Unverified");
-    }
+    analysis = analysis
+      .replace(/^TOKEN READ — \?/m, `TOKEN READ — ${clarkTokenReadHeading(ev.token?.symbol, tokenAddress)}`)
+      .replace(/\bOpen Check\b/gi, "Unverified");
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
       normalizedEvidenceSummary: ev.ok ? "loaded" : partialEvidenceUsed ? "partial" : memConfidence,
@@ -13971,6 +13976,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       },
       quotaConsumed,
       ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
+      scannedTokenAddress: tokenAddress,
+      scannedTokenChain: chainForClarkTools,
+      tokenScannerCalled: true,
     };
   }
 
@@ -16033,9 +16041,12 @@ export async function POST(req: NextRequest) {
   const memoryKeySource = getSessionKeySource(req, authenticated)
   const sessionMem = getSessionMemory(sessionKey)
   const previousActiveTokenAddress = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null
+  const activeWalletBefore = sessionMem.lastWallet?.address ?? body.clientContext?.lastWallet?.address ?? null
   if (explicitTokenCommand) {
     // Do not let a failed or pending new command leave the previous token as
     // the active subject for `/holders`, `/deployer`, or `/explain lp`.
+    sessionMem.prevClarkSubject = sessionMem.lastClarkSubject ?? sessionMem.prevClarkSubject
+    sessionMem.lastClarkSubject = null
     sessionMem.lastToken = null
     sessionMem.lastTokenAddress = null
     sessionMem.lastTokenSymbol = null
@@ -16043,7 +16054,8 @@ export async function POST(req: NextRequest) {
     sessionMem.lastTokenSummary = null
   }
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
-    updateMemMomentum(sessionMem, body.clientContext!.lastMomentumList!.slice(0, 20));
+    sessionMem.lastMomentumList = body.clientContext!.lastMomentumList!.slice(0, 20);
+    sessionMem.lastMomentumTs = Date.now();
   }
   if (typeof body.clientContext?.lastMomentumShownCount === "number" && body.clientContext.lastMomentumShownCount >= 0) {
     sessionMem.lastMomentumShownCount = Math.min(body.clientContext.lastMomentumShownCount, sessionMem.lastMomentumList.length);
@@ -16056,6 +16068,10 @@ export async function POST(req: NextRequest) {
   // an undefined/cleared match list (or vice versa), which is exactly the kind of half-cleared state
   // that let an old picker answer a new search.
   if (explicitTokenCommand) { sessionMem.lastTickerMatches = undefined; sessionMem.lastTickerSearchId = null; }
+  else if ((!sessionMem.lastTickerMatches || sessionMem.lastTickerMatches.length === 0) && Array.isArray(body.clientContext?.lastTickerMatches) && body.clientContext.lastTickerMatches.length > 0) {
+    sessionMem.lastTickerMatches = body.clientContext.lastTickerMatches;
+    sessionMem.lastTickerSearchId = body.clientContext.tickerSearchId ?? sessionMem.lastTickerSearchId ?? null;
+  }
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
   // Restore the deployer and Radar list the same way token/wallet already were — see the
   // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
@@ -16075,7 +16091,7 @@ export async function POST(req: NextRequest) {
     sessionMem.lastRadarChain = echoedRadarChain === "robinhood" || echoedRadarChain === "base" ? echoedRadarChain : sessionMem.lastRadarChain;
     sessionMem.lastRadarTs = typeof body.clientContext.lastRadarTs === "number" ? body.clientContext.lastRadarTs : Date.now();
   }
-  if (!sessionMem.lastClarkSubject && body.clientContext?.lastClarkSubject?.address) {
+  if (!explicitTokenCommand && !sessionMem.lastClarkSubject && body.clientContext?.lastClarkSubject?.address) {
     sessionMem.lastClarkSubject = body.clientContext.lastClarkSubject;
   }
   if (!sessionMem.prevClarkSubject && body.clientContext?.prevClarkSubject?.address) {
@@ -16449,24 +16465,58 @@ export async function POST(req: NextRequest) {
         genericMemoryEcho.lastRadarChain = sessionMem.lastRadarChain
         genericMemoryEcho.lastRadarTs = sessionMem.lastRadarTs
       }
+      if (sessionMem.lastTickerMatches?.length) {
+        genericMemoryEcho.lastTickerMatches = sessionMem.lastTickerMatches
+        genericMemoryEcho.tickerSearchId = sessionMem.lastTickerSearchId ?? null
+      } else {
+        genericMemoryEcho.lastTickerMatches = []
+        genericMemoryEcho.tickerSearchId = null
+      }
       if (Object.keys(genericMemoryEcho).length > 0) {
         const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}
         normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }
       }
       if (explicitTokenCommand) {
+        const scannedFromResult = (result as Record<string, unknown>)?.scannedTokenAddress
+        const scannerCalledFromResult = (result as Record<string, unknown>)?.tokenScannerCalled === true
+        const scannerPayloadTokenAddress = (typeof scannedFromResult === "string" && scannedFromResult)
+          || explicitResponseAddress
+          || body.tokenAddress
+          || explicitTokenCommand.address
+          || null
         normData.clarkTokenCommandAudit = {
           message: body.prompt ?? '', parsedCommand: 'token', requestedInput: explicitTokenCommand.input,
           requestedTokenAddress: explicitTokenCommand.address, requestedTicker: explicitTokenCommand.ticker,
-          previousActiveTokenAddress, newRequestId: requestId,
+          requestId, previousActiveTokenAddress, newRequestId: requestId,
           selectedChain: body.chain ?? sessionMem.selectedChain ?? null,
-          scannerPayloadTokenAddress: body.tokenAddress ?? null, scannerPayloadChain: body.chain ?? sessionMem.selectedChain ?? null,
-          tokenScannerCalled: Array.isArray((result as Record<string, unknown>)?.toolsUsed) && ((result as Record<string, unknown>).toolsUsed as unknown[]).includes("token_scan"),
+          scannerPayloadTokenAddress, scannerPayloadChain: (result as Record<string, unknown>)?.scannedTokenChain ?? body.chain ?? sessionMem.selectedChain ?? null,
+          tokenScannerCalled: scannerCalledFromResult || (Array.isArray((result as Record<string, unknown>)?.toolsUsed) && ((result as Record<string, unknown>).toolsUsed as unknown[]).includes("token_scan")),
           responseTokenAddress: explicitResponseAddress, responseTokenChain: explicitResponseChain, responseMatchesRequest: explicitResponseMatches,
           pickerRequired: explicitPickerRequired,
           staleResponseIgnored: !explicitResponseMatches, activeTokenAfterScan: explicitResponseMatches ? explicitResponseAddress : null,
           finalStatus: explicitResponseMatches ? 'applied' : explicitPickerRequired ? 'picker_required' : explicitScanFailed ? 'scan_failed' : 'discarded',
           failureReason: explicitResponseMatches ? null : explicitPickerRequired ? 'multiple_or_low_confidence_ticker_matches' : explicitScanFailed ? 'token_scanner_no_usable_evidence' : 'response_token_did_not_match_current_token_command',
         }
+      }
+      const existingIntentAudit = (normData.clarkIntentAudit && typeof normData.clarkIntentAudit === "object")
+        ? normData.clarkIntentAudit as Record<string, unknown> : {}
+      const slashForAudit = parseClarkSlashCommand(body.prompt ?? "")
+      normData.clarkIntentAudit = {
+        ...existingIntentAudit,
+        ...buildClarkRouteIntentAudit({
+          rawMessage: body.prompt ?? "",
+          parsedIntent: typeof existingIntentAudit.detectedIntent === "string" ? existingIntentAudit.detectedIntent : (typeof normData.intent === "string" ? normData.intent : slashForAudit?.intent ?? null),
+          command: parseClarkCommandName(body.prompt ?? "") ?? slashForAudit?.command ?? null,
+          requestedInput: explicitTokenCommand?.input ?? slashForAudit?.rest ?? null,
+          activeTokenBefore: previousActiveTokenAddress,
+          activeWalletBefore,
+          selectedChain: typeof body.chain === "string" ? body.chain : (sessionMem.selectedChain ?? null),
+          finalRoute: typeof normData.intent === "string" ? normData.intent : (typeof existingIntentAudit.detectedIntent === "string" ? existingIntentAudit.detectedIntent : null),
+          reason: typeof existingIntentAudit.providerRoute === "string" ? existingIntentAudit.providerRoute : (typeof existingIntentAudit.reason === "string" ? existingIntentAudit.reason : null),
+        }),
+      }
+      if ((result as Record<string, unknown>)?.tickerSelectionAudit) {
+        normData.tickerSelectionAudit = (result as Record<string, unknown>).tickerSelectionAudit
       }
       // Per-message context audit — records the memory that was available BEFORE resolution
       // alongside what was chosen and why, so "Clark answered about the wrong token" is
