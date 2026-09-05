@@ -11,6 +11,7 @@
 // (stage 5). Every other stage is a synchronous, pure, or try/catch-wrapped pure call.
 
 import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters, MAX_RAW_EVENTS_PER_PROVIDER } from '../modules/providerFetchWindow/index'
+import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from '../lib/knownDexRouters'
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
@@ -606,28 +607,21 @@ function safeRunBridgeDetection(normalizedEvents: NormalizedEvent[]): FinalRepor
 // bridgeTimeline, and recoveryPolicy (mechanism 4 needs recoveryPolicy's recoveredEvents, so this
 // must run after stage 5, not alongside bridgeDetection at stage 4b).
 //
-// REAL ROUTER REGISTRY WIRED IN, DISCLOSED (previously the empty-set bug this file's own comment
-// used to describe): src/modules/sellTimeline's own header says mechanism 2 (transfer-out to a
-// known router) "honestly produces nothing until a real registry is supplied" — but a real,
-// already-vetted registry has existed all along at src/modules/swapNormalizer/routers.ts, it was
-// simply never wired to this call site. That module doesn't export its raw address table (only
-// per-chain lookup functions: isKnownRouter/detectRouterType/routerName), and sellTimeline's own
-// `knownDexRouterAddresses` contract is a flat, chain-unaware ReadonlySet<string> — so rather than
-// modify either protected module to bridge that shape mismatch, KNOWN_DEX_ROUTER_ADDRESSES below is
-// a literal copy of the same real addresses (same "no runtime coupling, keep your own copy"
-// convention already used elsewhere in this codebase for GOLDRUSH_VERIFIED_CHAIN_SLUGS,
-// DEXSCREENER_CHAIN_IDS, etc.) — these are public, well-documented contract addresses, not
-// invented ones. SAME CONFIDENCE CAVEAT AS THE SOURCE REGISTRY: Uniswap V2/V3 (all chains) and
-// SushiSwap (eth) are long-standing, widely-documented canonical deployments; Aerodrome and
-// BaseSwap are real but were not re-verified against a live block explorer from this sandbox (no
-// network access) — treat those two specifically as best-effort pending re-confirmation.
+// SHARED ROUTER REGISTRY, DISCLOSED (Wallet Scanner audit, Priority 1 — "highest priority: create
+// ONE shared verified router source"). This used to be its own literal copy, independently drifting
+// from walletSnapshot.ts's KNOWN_DEX_ROUTERS/EXTENDED_DEX_ROUTERS and swapNormalizer/routers.ts's own
+// table (missing Uniswap Universal Router, 1inch, 0x, Paraswap, Permit2, LI.FI, AlienBase, Virtuals,
+// Balancer, Curve — every one of those IS already verified elsewhere in this repo, just never wired
+// here). Now sourced from src/lib/knownDexRouters.ts, the single shared registry — see that module's
+// header for the full "no new/unverified addresses" disclosure.
+//
+// The two Base addresses below are kept exactly as before: an EARLIER task added them here
+// "per explicit task instruction only" without independent on-chain verification — this
+// consolidation does not touch that decision either way (does not remove them, does not "promote"
+// them into the shared verified registry). They remain a local, explicitly-flagged addition on top
+// of the shared verified set.
 const KNOWN_DEX_ROUTER_ADDRESSES = new Set<string>([
-  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router02 (eth)
-  '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 SwapRouter (eth)
-  '0x2626664c2603336e57b271c5c0b26f421741e481', // Uniswap V3 SwapRouter02 (eth/base/arbitrum/optimism — same address)
-  '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f', // SushiSwap Router (eth)
-  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', // Aerodrome Router (base) — best-effort, see caveat above
-  '0x327df1e6de05895d2ab08513aadd9313fe505d86', // BaseSwap Router (base) — best-effort, see caveat above
+  ...SHARED_KNOWN_DEX_ROUTER_ADDRESSES,
   '0x6ff5693b99212da76ad316178a184ab56d299b43', // Base router — protocol/name not verified from this sandbox, added per explicit task instruction only
   '0xd0a40c6526acdebd4f6d87931098ff37a9f8e4bf', // Base router — protocol/name not verified from this sandbox, added per explicit task instruction only
 ])

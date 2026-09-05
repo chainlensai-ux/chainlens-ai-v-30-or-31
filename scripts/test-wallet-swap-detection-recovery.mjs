@@ -9,8 +9,13 @@ assert.match(snap, /else if \(hasInboundOutbound && txHasStableOrWeth\) \{\s*\n\
 
 // Scenario 2: tx to a known router with token legs -> routerSwapCandidateEvents > 0.
 assert.match(snap, /if \(txToKnownRouter && walletIsInitiator\) \{[\s\S]{0,500}routerSwapCandidateEventsCount\+\+/, 'wallet-initiated known-router tx increments routerSwapCandidateEventsCount')
-assert.match(snap, /const EXTENDED_DEX_ROUTERS = new Set<string>\(\[/, 'known router address set exists')
-assert.match(snap, /const KNOWN_DEX_ROUTERS: Record<string, string> = \{/, 'named router protocol map exists')
+// PNL-ROUTER-REGISTRY-FIX, DISCLOSED (Wallet Scanner audit, Priority 1): both structures are now
+// sourced from the single shared registry (src/lib/knownDexRouters.ts) instead of a hand-maintained
+// local literal, so the router coverage recognized here matches every other consumer (pipeline,
+// swapNormalizer, eventClassification, sellTimelineV2) — no independent drift between copies.
+assert.match(snap, /const EXTENDED_DEX_ROUTERS: ReadonlySet<string> = SHARED_DEX_ROUTER_ADDRESSES/, 'known router address set is sourced from the shared registry')
+assert.match(snap, /const KNOWN_DEX_ROUTERS: Readonly<Record<string, string>> = SHARED_KNOWN_DEX_ROUTERS/, 'named router protocol map is sourced from the shared registry')
+assert.match(snap, /import \{ KNOWN_DEX_ROUTERS as SHARED_KNOWN_DEX_ROUTERS, KNOWN_DEX_ROUTER_ADDRESSES as SHARED_DEX_ROUTER_ADDRESSES \} from '@\/src\/lib\/knownDexRouters'/, 'walletSnapshot.ts imports the shared router registry')
 
 // Scenario 3: activity exists, no swap candidates before receipt reconstruction -> reconstruction
 // runs when eligible (gated on swapCandidateEvents === 0 && events exist && activity requested).

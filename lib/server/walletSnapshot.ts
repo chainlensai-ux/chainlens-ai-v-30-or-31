@@ -1,4 +1,5 @@
 import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPaginated, fetchMoralisProfitabilitySummary, fetchMoralisHistoricalTokenPrice, isUsableProviderPnlSummary, type MoralisFetchResult, type MoralisChain, type MoralisTransferItem, type MoralisProfitabilitySummary } from './moralis'
+import { KNOWN_DEX_ROUTERS as SHARED_KNOWN_DEX_ROUTERS, KNOWN_DEX_ROUTER_ADDRESSES as SHARED_DEX_ROUTER_ADDRESSES } from '@/src/lib/knownDexRouters'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
@@ -2803,56 +2804,15 @@ const _alchemyEnvDebug = {
 const PUBLIC_BASE_RPC  = 'https://mainnet.base.org'  // fallback for receipt-only calls when Alchemy is not configured
 const GOLDRUSH_KEY     = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
 
-const EXTENDED_DEX_ROUTERS = new Set<string>([
-  // Uniswap
-  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d',
-  '0xe592427a0aece92de3edee1f18e0157c05861564',
-  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45',
-  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b',
-  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad',
-  // 1inch
-  '0x1111111254fb6c44bac0bed2854e76f90643097d',
-  '0x1111111254eeb25477b68fb85ed929f73a960582',
-  '0x111111125421ca6dc452d289314280a0f8842a65',
-  // 0x Protocol
-  '0xdef1c0ded9bec7f1a1670819833240f027b25eff',
-  '0x55dc0e69ec00debcebdc25fe6f7cad62e63c8f81',
-  // Paraswap
-  '0x216b4b4ba9f3e719726886d34a177484278bfcae',
-  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57',
-  // SushiSwap
-  '0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f',
-  '0x1b02da8cb0d097eb8d57a175b88c7d8b47997506',
-  // Aerodrome (Base)
-  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43',
-  '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5',
-  '0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5',
-  // AlienBase (Base)
-  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7',
-  '0xb20c411fc84fbb27e78608c24d0056d974ea9411',
-  // Virtuals Protocol (Base)
-  '0xf8dd39c71a278fe9f4377d009d7627ef140f809e',
-  // Balancer
-  '0xba12222222228d8ba445958a75a0704d566bf2c8',
-  // Curve
-  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f',
-  '0xf0d4c12a5768d806021f80a262b4d39d26c58b8d',
-  // BaseSwap
-  '0x327df1e6de05895d2ab08513aadd9313fe505d86',
-  // PHASE1-FIX-3: Permit2 — canonical singleton deployed at the same address on Ethereum,
-  // Base, and most other EVM chains. Aggregators (1inch, Uniswap Universal Router, Odos,
-  // etc.) route the approval/transfer leg through this contract, so its presence on a tx's
-  // `to` is a strong router signal even though Permit2 itself isn't a DEX.
-  '0x000000000022d473030f116ddee9f6b43ac78ba9',
-  // PHASE1-FIX-3: LI.FI Diamond — canonical cross-chain aggregator proxy, same address on
-  // Base as on Ethereum/most EVM chains.
-  '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae',
-  // NOTE: Odos, Bebop, and CoW Protocol router/settlement addresses are intentionally
-  // omitted — this file's policy (see docs/audit-router-swap-candidates-0xe896.md) is to
-  // never add a router address without independent on-chain verification. Add them here
-  // once their Base-deployed addresses are confirmed; until then they fall back to the
-  // inbound/outbound heuristics in buildSwapDetection() below.
-])
+// SHARED ROUTER REGISTRY, DISCLOSED (Wallet Scanner audit, Priority 1): this used to be a locally
+// hand-maintained address set, independently drifting from swapNormalizer/routers.ts and
+// pipeline/index.ts's own copies. Now sourced from src/lib/knownDexRouters.ts — the single shared
+// registry every router-consuming module in this codebase reads from — so a router recognized here
+// is recognized everywhere. Every address is unchanged (byte-for-byte the same set this file
+// already had, plus SwapRouter02 which swapNormalizer/routers.ts had independently verified but
+// this file's own tables never carried) — see that module's own header for the full disclosure and
+// the "no new/unverified addresses" policy this consolidation preserves.
+const EXTENDED_DEX_ROUTERS: ReadonlySet<string> = SHARED_DEX_ROUTER_ADDRESSES
 
 const FIFO_QUOTE_ASSETS = new Set<string>([
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC ETH
@@ -3107,25 +3067,11 @@ const KNOWN_STABLE_WETH_CONTRACTS: Record<string, string> = {
   '0x6b175474e89094c44da98b954eedeac495271d0f': 'DAI_ETH',
 }
 
-const KNOWN_DEX_ROUTERS: Record<string, string> = {
-  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'UniswapV2Router',
-  '0xe592427a0aece92de3edee1f18e0157c05861564': 'UniswapV3Router',
-  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b': 'UniswapUniversalRouter_ETH',
-  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad': 'UniswapUniversalRouter_ETH_CommandRouter',
-  '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc': 'UniswapUniversalRouter_Base',
-  '0x1111111254eeb25477b68fb85ed929f73a960582': 'OneInchRouter',
-  '0xdef1c0ded9bec7f1a1670819833240f027b25eff': 'ZeroExExchangeProxy',
-  '0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43': 'Aerodrome',
-  // Previously only present in EXTENDED_DEX_ROUTERS (used by ETH-side reconstruction) and
-  // therefore invisible to the Base wallet-side swap classifier below, which only ever
-  // consulted this map directly (router-coverage audit).
-  '0x6cb442acf35158d68425b2a89f7e7b02fb5e42d5': 'AerodromeSecondary',
-  '0x327df1e6de05895d2ab08513aadd9313fe505d86': 'BaseSwap',
-  '0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5': 'AerodromeSlipstream',
-  '0x8c1a3cf8f83074169fe5d7ad50b978e1cd6b37c7': 'AlienBaseRouter',
-  '0xb20c411fc84fbb27e78608c24d0056d974ea9411': 'AlienBaseV3SmartRouter',
-  '0xf8dd39c71a278fe9f4377d009d7627ef140f809e': 'VirtualsProtocolSellOrderExecutor',
-}
+// See EXTENDED_DEX_ROUTERS's own header above — sourced from the shared registry, not
+// hand-maintained here. Same protocol labels this file's own consumers already relied on
+// (matchedProtocol display strings only, never switched on) plus the addresses that registry
+// consolidates from swapNormalizer/pipeline's own previously-independent copies.
+const KNOWN_DEX_ROUTERS: Readonly<Record<string, string>> = SHARED_KNOWN_DEX_ROUTERS
 
 const SWAP_ENRICHMENT_TTL_MS = 45 * 60 * 1000
 const swapEnrichmentReceiptCache = new Map<string, { data: { isSwap: boolean; reason: string }; exp: number }>()

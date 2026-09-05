@@ -13,6 +13,7 @@
 // Arbitrum, and Optimism (Uniswap Labs' deterministic multi-chain deploy) — real, not a coincidence.
 
 import type { SwapNormalizerChain } from './types'
+import { KNOWN_DEX_ROUTERS as SHARED_KNOWN_DEX_ROUTERS } from '@/src/lib/knownDexRouters'
 
 export type RouterType =
   | 'UNISWAP_V2'
@@ -20,6 +21,12 @@ export type RouterType =
   | 'AERODROME'
   | 'BASESWAP'
   | 'SUSHI'
+  // SHARED-REGISTRY ROUTER, DISCLOSED (Wallet Scanner audit, Priority 1 — "wire same registry into
+  // swapNormalizer routers"): a verified router from src/lib/knownDexRouters.ts (Universal Router,
+  // 1inch, 0x, Paraswap, Permit2, LI.FI, AlienBase, Virtuals, Balancer, Curve, Slipstream, ...) that
+  // predates this module's own more specific RouterType enum. Still a real, verified match — never
+  // guessed — just without this file's own finer-grained label.
+  | 'KNOWN_DEX_ROUTER'
   | 'UNKNOWN_ROUTER'
 
 type RouterEntry = { type: RouterType; name: string }
@@ -42,6 +49,21 @@ const ROUTER_REGISTRY: Record<SwapNormalizerChain, Record<string, RouterEntry>> 
   optimism: {
     '0x2626664c2603336e57b271c5c0b26f421741e481': { type: 'UNISWAP_V3', name: 'Uniswap V3 SwapRouter02' },
   },
+}
+
+// SHARED-REGISTRY FILL-IN, DISCLOSED: additively merges every src/lib/knownDexRouters.ts address
+// into every chain's table (as 'KNOWN_DEX_ROUTER' unless a more specific entry above already
+// exists) — every one of these routers is verified as deployed at the SAME address across
+// Ethereum/Base/Arbitrum/Optimism (Uniswap Universal Router variants excepted — the Base one is
+// Base-only, added only to 'base'), per this codebase's own repeated deployment disclosures
+// (knownDexRouters.ts's own header). Never overwrites an existing, more specific entry.
+for (const chain of Object.keys(ROUTER_REGISTRY) as SwapNormalizerChain[]) {
+  const table = ROUTER_REGISTRY[chain]
+  for (const [address, protocol] of Object.entries(SHARED_KNOWN_DEX_ROUTERS)) {
+    if (table[address]) continue
+    if (protocol === 'UniswapUniversalRouter_Base' && chain !== 'base') continue
+    table[address] = { type: 'KNOWN_DEX_ROUTER', name: protocol }
+  }
 }
 
 // PURE. Never throws; an unrecognized address returns null rather than guessing a router type.
