@@ -52,6 +52,7 @@ import {
   buildCanonicalPoolIdentity,
   reconcileCanonicalPoolIdentity,
   buildConcentratedLpPositionOwnershipAudit,
+  buildConcentratedPositionAudit,
   type ProofApplicability,
   type ConcentratedPositionProof,
   type CanonicalPoolIdentity,
@@ -66,6 +67,7 @@ import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRad
 import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
 import { resolveUniswapV4RobinhoodRpc } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
+import { resolveAerodromeSlipstreamPoolRpc } from '@/lib/server/aerodromeSlipstreamPoolRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 
@@ -112,6 +114,12 @@ export const maxDuration = 300;
 // history directly via the already-working Base RPC (RPC.base), against a real,
 // independently-verified PoolManager address (see that file's own header for the verification
 // steps taken) — same null-means-"no real source" contract, same chain+poolModel gating.
+// AERODROME-SLIPSTREAM-POOL-RPC, DISCLOSED (Concentrated LP ownership proof — Slipstream gap):
+// resolveAerodromeSlipstreamPoolRpc (lib/server/aerodromeSlipstreamPoolRpc.ts) reads Mint/Burn
+// events directly from the Slipstream pool contract itself (no manager address needed at all —
+// see that file's own header) — gated strictly on chain==='base' && poolModel==='slipstream',
+// same null-means-"no real source" contract as every other resolver here. Tried after the V3/V4
+// resolvers (which gate on their own distinct poolModel and can never overlap with 'slipstream').
 const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (input) => {
   const v4Subgraph = await resolveUniswapV4PositionOwners(input)
   if (v4Subgraph != null) return v4Subgraph
@@ -119,6 +127,8 @@ const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (inpu
   if (v4Rpc != null) return v4Rpc
   const v4BaseRpc = await resolveUniswapV4BaseRpc(input)
   if (v4BaseRpc != null) return v4BaseRpc
+  const slipstreamRpc = await resolveAerodromeSlipstreamPoolRpc(input)
+  if (slipstreamRpc != null) return slipstreamRpc
   return resolveUniswapV3PositionOwners(input)
 }
 
@@ -8748,6 +8758,12 @@ export async function POST(req: Request) {
       concentratedLpPositionOwnershipAudit: buildConcentratedLpPositionOwnershipAudit(concentratedPositionProof, {
         chainId: CHAIN_ID_MAP[chain] ?? null,
         tokenAddress: contract,
+      }),
+      // FINISH-CONCENTRATED-LP-OWNERSHIP-PROOF, DISCLOSED: this task's own required audit shape,
+      // additive to concentratedLpPositionOwnershipAudit above (same underlying
+      // concentratedPositionProof, never a second independent proof attempt).
+      concentratedPositionAudit: buildConcentratedPositionAudit(concentratedPositionProof, {
+        chainId: CHAIN_ID_MAP[chain] ?? null,
       }),
       lpMovementWatch,
       lpLockBurnIntel,

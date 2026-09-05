@@ -1297,6 +1297,19 @@ export interface ConcentratedProtocolInfo {
   confidence: "high" | "low";
 }
 
+// V4-PERIPHERY-MANAGER-ROBINHOOD, DISCLOSED (Concentrated LP ownership proof — finishing the V4
+// gap): Robinhood Chain's Uniswap V4 PositionManager (0x58daec3116aae6d93017baaea7749052e8a04fa7)
+// is already an independently-verified address in KNOWN_PROTOCOL_MANAGERS above (fetched
+// byte-for-byte from Uniswap's own deployments repo — see that constant's own header) but was
+// never actually surfaced here, so managerResolved/managerVerified read false for a chain where a
+// real, verified V4 periphery contract exists. Base V4 deliberately has NO entry here — Base V4
+// ownership is resolved via resolveUniswapV4BaseRpc reading the PoolManager singleton's own event
+// log directly (see that file's header), which needs no periphery "position manager" address at
+// all, so reporting one here would only be redundant, never a missing capability.
+const V4_POSITION_MANAGER_BY_CHAIN: Partial<Record<LpChain, string>> = {
+  robinhood: "0x58daec3116aae6d93017baaea7749052e8a04fa7",
+};
+
 export function resolveConcentratedProtocol(
   chain: LpChain,
   dexId: string | null | undefined,
@@ -1306,11 +1319,17 @@ export function resolveConcentratedProtocol(
   // Uniswap V3's and PancakeSwap V3's NonfungiblePositionManagers are the verified addresses in
   // this codebase (POSITION_MANAGER_BY_CHAIN is single-entry per chain, and _classifyConcentratedPoolModel
   // only ever labels a pool "pancakeswap_v3" on a chain where that's the real deployed protocol, so
-  // there's no ambiguity in looking it up by chain alone). Aerodrome Slipstream/Uniswap V4/other
-  // forks are detected and labeled correctly, but their position-manager addresses are not yet
-  // confirmed here — reporting one without verification would risk probing the wrong contract, so
-  // this stays null/low-confidence for them rather than guessing.
-  const positionManager = (protocol === "uniswap_v3" || protocol === "pancakeswap_v3") ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null) : null;
+  // there's no ambiguity in looking it up by chain alone). Uniswap V4 only gets a positionManager
+  // for Robinhood, the one chain with an independently-verified V4 periphery address (see
+  // V4_POSITION_MANAGER_BY_CHAIN above) — Aerodrome Slipstream and every other V4 chain are
+  // detected and labeled correctly, but their position-manager addresses are not confirmed here —
+  // reporting one without verification would risk probing the wrong contract, so this stays
+  // null/low-confidence for them rather than guessing.
+  const positionManager = (protocol === "uniswap_v3" || protocol === "pancakeswap_v3")
+    ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null)
+    : protocol === "uniswap_v4"
+      ? (V4_POSITION_MANAGER_BY_CHAIN[chain] ?? null)
+      : null;
   return {
     protocol,
     positionManager,
@@ -2017,6 +2036,129 @@ export function buildConcentratedLpPositionOwnershipAudit(
 
   // "open_check" — no pool address/id was available to attempt a proof at all.
   return { ...base, finalStatus: "not_applicable", finalReason: proof.reason };
+}
+
+// ─── concentratedPositionAudit — "Finish concentrated LP ownership proof" task's own exact audit
+// shape/status vocabulary. Additive to ConcentratedLpPositionOwnershipAudit above (same underlying
+// ConcentratedPositionProof, never a second independent proof attempt) — kept separate because
+// this task specifies different field names AND a genuinely new status
+// ("partial_position_owner", for a real-but-bounded owner finding that the older taxonomy folded
+// into "contract_owner_unverified"/"owner_unavailable" and so could not be told apart from a
+// proof that found nothing at all).
+export type ConcentratedPositionFinalStatus =
+  | "verified_position_owner"
+  | "partial_position_owner"
+  | "protocol_managed"
+  | "contract_owner_unverified"
+  | "unavailable_with_reason"
+  | "unsupported_with_reason";
+
+export interface ConcentratedPositionAudit {
+  chainId: number | null;
+  poolAddress: string | null;
+  protocol: ConcentratedPoolModel | null;
+  managerResolved: boolean;
+  managerAddress: string | null;
+  // Mirrors managerResolved: this codebase's own rule (resolveConcentratedProtocol's header)
+  // is that positionManager is NEVER set to an address unless it is already independently
+  // verified — there is no code path where a manager address is present but unverified, so
+  // "resolved" and "verified" are the same real fact here, never independently faked.
+  managerVerified: boolean;
+  indexingAttempted: boolean;
+  source: ConcentratedOwnershipDebug["source"] | null;
+  positionsFound: number | null;
+  activePositions: number | null;
+  topOwner: string | null;
+  topSharePct: number | null;
+  ownerType: ConcentratedOwnerType | null;
+  finalStatus: ConcentratedPositionFinalStatus;
+  failureReason: string | null;
+}
+
+/** Pure, deterministic mapping from a ConcentratedPositionProof (or its absence) onto this task's
+ * required concentratedPositionAudit shape/status vocabulary — never set directly anywhere else,
+ * never fabricates an owner/share the underlying proof did not itself resolve. */
+export function buildConcentratedPositionAudit(
+  proof: ConcentratedPositionProof | null | undefined,
+  meta: { chainId: number | null },
+): ConcentratedPositionAudit {
+  if (!proof) {
+    return {
+      chainId: meta.chainId, poolAddress: null, protocol: null,
+      managerResolved: false, managerAddress: null, managerVerified: false,
+      indexingAttempted: false, source: null, positionsFound: null, activePositions: null,
+      topOwner: null, topSharePct: null, ownerType: null,
+      finalStatus: "unavailable_with_reason",
+      failureReason: "This pool is not a concentrated-liquidity pool, or no pool was selected — position-owner proof was not attempted.",
+    };
+  }
+
+  const topOwner = proof.topPositionOwner ?? proof.topSampledOwner ?? null;
+  const topOwnerType = proof.topPositionOwner != null ? proof.topPositionOwnerType : proof.topSampledOwnerType;
+  const topSharePct = proof.topPositionOwner != null ? proof.topPositionSharePercent : proof.topSampledOwnerShareOfSamplePercent;
+  const base: Omit<ConcentratedPositionAudit, "finalStatus" | "failureReason"> = {
+    chainId: meta.chainId,
+    poolAddress: proof.poolAddress ?? proof.poolId,
+    protocol: proof.poolModel,
+    managerResolved: proof.positionManager != null,
+    managerAddress: proof.positionManager,
+    managerVerified: proof.positionManager != null,
+    indexingAttempted: true,
+    source: proof.ownershipDebug.source,
+    positionsFound: proof.positionCount ?? proof.sampledPositionCount ?? null,
+    activePositions: proof.positionCount ?? proof.sampledPositionCount ?? null,
+    topOwner,
+    topSharePct: topSharePct ?? null,
+    ownerType: topOwnerType ?? null,
+  };
+
+  if (proof.status === "verified") {
+    if (topOwnerType === "protocol") return { ...base, finalStatus: "protocol_managed", failureReason: null };
+    if (topOwnerType === "contract") {
+      return {
+        ...base,
+        finalStatus: "contract_owner_unverified",
+        failureReason: `Top liquidity position is held by a contract (${topOwner ?? "unknown address"}) — the contract's beneficial owner is not independently verified.`,
+      };
+    }
+    // wallet, multisig, locker, burn, or a resolved-but-unclassified owner: a concrete address
+    // was resolved from real position-manager/on-chain-event evidence, so ownership is verified.
+    return { ...base, finalStatus: "verified_position_owner", failureReason: null };
+  }
+
+  if (proof.status === "partial") {
+    if (proof.topSampledOwner) {
+      // A bounded sample still found a real top owner — surface it as partial, never fully
+      // verified (a bounded sample never proves full-pool coverage) but never as
+      // "unsupported"/"unavailable" either, since a real owner WAS found.
+      if (proof.topSampledOwnerType === "contract") {
+        return {
+          ...base,
+          finalStatus: "contract_owner_unverified",
+          failureReason: `${proof.samplingReason} The sampled top holder is a contract; full-pool position-owner coverage is not confirmed.`,
+        };
+      }
+      return { ...base, finalStatus: "partial_position_owner", failureReason: proof.samplingReason };
+    }
+    return { ...base, finalStatus: "unavailable_with_reason", failureReason: POSITION_PROOF_NOT_INDEXED_REASON };
+  }
+
+  if (proof.status === "not_supported") {
+    // A verified position-manager/indexing path is genuinely not implemented for this
+    // protocol/chain combination — the exact case this task's own "Unsupported" state describes.
+    return { ...base, finalStatus: "unsupported_with_reason", failureReason: proof.reason };
+  }
+
+  if (proof.status === "not_found") {
+    return { ...base, finalStatus: "unavailable_with_reason", failureReason: proof.reason };
+  }
+
+  if (proof.status === "failed") {
+    return { ...base, finalStatus: "unavailable_with_reason", failureReason: proof.reason };
+  }
+
+  // "open_check" — no pool address/id was available to attempt a proof at all.
+  return { ...base, finalStatus: "unavailable_with_reason", failureReason: proof.reason };
 }
 
 // ─── Canonical pool identity — cross-scan stability for the same pool address ──────────────

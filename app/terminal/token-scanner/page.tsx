@@ -424,6 +424,25 @@ type ScanResult = {
     finalStatus?: 'verified_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'owner_unavailable' | 'unsupported_with_reason' | 'not_applicable'
     finalReason?: string
   } | null
+  // FINISH-CONCENTRATED-LP-OWNERSHIP-PROOF, DISCLOSED — this task's own required audit shape,
+  // additive to concentratedLpPositionOwnershipAudit above (same underlying proof attempt).
+  concentratedPositionAudit?: {
+    chainId?: number | null
+    poolAddress?: string | null
+    protocol?: string | null
+    managerResolved?: boolean
+    managerAddress?: string | null
+    managerVerified?: boolean
+    indexingAttempted?: boolean
+    source?: string | null
+    positionsFound?: number | null
+    activePositions?: number | null
+    topOwner?: string | null
+    topSharePct?: number | null
+    ownerType?: string | null
+    finalStatus?: 'verified_position_owner' | 'partial_position_owner' | 'protocol_managed' | 'contract_owner_unverified' | 'unavailable_with_reason' | 'unsupported_with_reason'
+    failureReason?: string | null
+  } | null
   // LP SAFETY OPEN-CHECK FIX, DISCLOSED — see app/api/token/route.ts's own construction of this
   // object for the exact resolution logic behind each field.
   lpSafetyResolutionAudit?: {
