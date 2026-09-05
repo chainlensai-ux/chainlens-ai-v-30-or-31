@@ -2849,7 +2849,7 @@ type LpDiagnostics = {
 
 function humanizeConcentratedMissingEvidence(key: string, sampled?: boolean): string {
   switch (key) {
-    case "positionManager": return "Position ownership is not supported yet for this pool model";
+    case "positionManager": return "Concentrated position manager was not resolved for this pool";
     case "topPositionOwner": return sampled ? "Full-pool top liquidity owner not verified" : "Top liquidity owner not verified";
     case "positionCount": return sampled ? "Full active position count not indexed" : "Active liquidity positions not indexed";
     case "topPositionSharePercent": return sampled ? "Full-pool liquidity share not available" : "Position liquidity share not available";
@@ -2932,7 +2932,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
           ...(positionProof?.positionManager ? ["Position manager resolved"] : []),
           ...(positionProof?.status === "partial" && positionProof.positionManager ? ["Pool active/liquidity confirmed"] : []),
           ...(hasSampledEvidence ? ["Sampled V3 position owners found"] : []),
-          ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? "not supported" : positionProof.status.replace(/_/g, " ")}`] : []),
+          ...(positionProof ? [`Position proof attempted — ${positionProof.status === "not_supported" ? (positionProof.concentratedLpPositionAudit?.failureReason ?? "unavailable for this pool model") : positionProof.status.replace(/_/g, " ")}`] : []),
           ...(lp.secondaryLpControlSignals ? ["Secondary ERC-20 LP exposure detected"] : []),
         ],
         couldNotVerify,
@@ -3235,6 +3235,15 @@ function concentratedPoolDisplayLabel(poolModel: string | null | undefined, dexT
   if (/pancakeswap.*v3/.test(d)) return "PancakeSwap V3 concentrated";
   if (/uniswap.*v3/.test(d)) return "Uniswap V3 concentrated";
   return "concentrated";
+}
+
+function concentratedPositionAttemptReason(proof: ConcentratedPositionProof): string {
+  const audit = proof.concentratedLpPositionAudit;
+  if (audit?.failureReason) return audit.failureReason;
+  if (proof.status === "not_supported") {
+    return proof.reason || "Position index unavailable: this pool model could not be fully resolved.";
+  }
+  return proof.reason;
 }
 
 function detectPoolType(pool: Record<string, unknown> | null, dexIdHint?: string): LpControlResult["poolType"] {
@@ -4786,7 +4795,7 @@ export async function POST(req: Request) {
         confidence: "medium",
         poolType: lpPoolType,
         source: "dex_data",
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${primaryPoolAddress ?? primaryMarketPoolId ?? lpPool?.poolId ?? "unknown"}`,
@@ -4807,7 +4816,7 @@ export async function POST(req: Request) {
         confidence: 'medium',
         poolType: _lpProofType,
         source: 'dex_data',
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
         evidence: [
           `Market pool: ${marketPair} (${concentratedPoolDisplayLabel(concentratedPositionProof.poolModel, lpDexId ?? lpDexName)})`,
           `pool=${_lpAddrSnippet}`, `dex=${lpDexId ?? lpDexName ?? 'unknown'}`, `hasLpToken=false`, `poolModel=${concentratedPositionProof.poolModel}`,
@@ -5100,7 +5109,7 @@ export async function POST(req: Request) {
         ...lpControl,
         status: "concentrated_liquidity",
         poolType: lpControl.poolType ?? lpPoolType,
-        reason: `Position proof attempted — ${concentratedPositionProof.status === "not_supported" ? "not supported yet for this pool model" : concentratedPositionProof.reason}`,
+        reason: `Position proof attempted — ${concentratedPositionAttemptReason(concentratedPositionProof)}`,
       };
     }
 
@@ -7174,8 +7183,8 @@ export async function POST(req: Request) {
       if (!_cppManagerResolved) {
         _concentratedGaps.push({
           id: 'POSITION_MANAGER_UNSUPPORTED',
-          label: `${_cppPoolModelLabel} position manager not supported yet`,
-          explanation: `ChainLens detected the concentrated pool, but this pool model needs model-specific position ownership support before liquidity owners can be verified.`,
+          label: `${_cppPoolModelLabel} position manager not resolved`,
+          explanation: `ChainLens detected the concentrated pool, but a verified position-manager address was not resolved for this pool model, so liquidity owners could not be indexed.`,
           nextAction: 'Verify position ownership through the protocol\'s official position-manager UI.',
         })
       }
