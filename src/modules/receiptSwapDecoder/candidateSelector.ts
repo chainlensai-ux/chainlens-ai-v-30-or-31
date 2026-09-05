@@ -159,7 +159,7 @@ export type Tier1SelectionDiagnostics = {
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v7-completion-requires-two-independent-signals'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v8-missing-sell-side-priority'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -494,10 +494,24 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
   // candidates WITHIN the same tier, before the existing leg-pairing/economic-value tie-breaks.
   const oppositeSideVerified = (evidence: CandidateTxEvidence): number => (evidence.hasVerifiedQuoteAddress ? 1 : 0)
 
+  // MISSING-SELL-SIDE PRIORITY, DISCLOSED (Wallet Scanner audit, Item 3 — "prioritize missing
+  // sell-side evidence"): within a tier, a candidate whose structural completion signal is
+  // specifically `missingClosedLotSide === 'exit'` (the sell/proceeds side of a real closed lot) is
+  // ranked ahead of one missing the entry/cost-basis side. Placed FIRST among the within-tier
+  // tie-breaks, ahead of oppositeSideVerified/legPairingStrength — this task names it as its own
+  // distinct priority signal, not a refinement of the existing ones. Never changes WHICH tier a
+  // candidate lands in (tier 1's own two-signal gate is unchanged); only reorders within a tier.
+  // Only meaningful for missingClosedLotSide !== null (tier-1 candidates) — every other tier's
+  // candidates uniformly score 0 here and fall straight through to the existing tie-breaks.
+  const missingSellSidePriority = (evidence: CandidateTxEvidence): number => (evidence.missingClosedLotSide === 'exit' ? 1 : 0)
+
   const ranked = eligible
     .map((evidence) => ({ evidence, priority: priorityFor(evidence, strictSeeds) }))
     .sort((a, b) => {
       if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+      const aSellSide = missingSellSidePriority(a.evidence)
+      const bSellSide = missingSellSidePriority(b.evidence)
+      if (aSellSide !== bSellSide) return bSellSide - aSellSide
       const aVerified = oppositeSideVerified(a.evidence)
       const bVerified = oppositeSideVerified(b.evidence)
       if (aVerified !== bVerified) return bVerified - aVerified

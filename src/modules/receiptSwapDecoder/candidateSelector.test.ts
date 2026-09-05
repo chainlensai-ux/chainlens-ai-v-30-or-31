@@ -360,6 +360,39 @@ test('Phase 2: within tier 1, a one-side-missing candidate whose existing leg is
   assert.deepEqual(result.selected.map((s) => s.priorityTier), [1, 1])
 })
 
+test('v8: within tier 1, a candidate missing the sell/exit side outranks one missing the buy/entry side, all else equal (Wallet Scanner audit, Item 3 — "prioritize missing sell-side evidence")', () => {
+  const evidence: CandidateTxEvidence[] = [
+    baseEvidence({
+      txHash: '0xmissingentry', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
+    baseEvidence({
+      txHash: '0xmissingexit', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.deepEqual(result.selected.map((s) => s.txHash), ['0xmissingexit', '0xmissingentry'])
+  assert.deepEqual(result.selected.map((s) => s.priorityTier), [1, 1], 'both remain tier 1 — this only reorders within the tier')
+})
+
+test('v8: missing-sell-side priority is placed ahead of the verified-quote tie-break, not merely equal to it', () => {
+  const evidence: CandidateTxEvidence[] = [
+    // Missing entry, but the existing leg IS a verified quote — would win the OLD (pre-v8) tie-break.
+    baseEvidence({
+      txHash: '0xentry-verified', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
+    // Missing exit, existing leg is NOT a verified quote — must still win under v8's sell-side-first rule.
+    baseEvidence({
+      txHash: '0xexit-unverified', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }, { contract: USDC, direction: 'inbound', amount: 1 }], missingClosedLotSide: 'exit',
+      isKnownRouter: true,
+    }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.deepEqual(result.selected.map((s) => s.txHash), ['0xexit-unverified', '0xentry-verified'], 'missing-sell-side ranks first, ahead of the verified-quote tie-break')
+})
+
 test('Phase 2: a completion-first (tier 1, two independent signals) candidate outranks a generic known-router-only (tier 4) transaction', () => {
   const evidence: CandidateTxEvidence[] = [
     baseEvidence({ txHash: '0xrouter', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
