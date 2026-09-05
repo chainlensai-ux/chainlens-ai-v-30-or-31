@@ -32,6 +32,7 @@ import {
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
+import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
@@ -3722,6 +3723,51 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
   console.warn('[wallet-pnl-coverage-recovery-audit]', walletPnlCoverageRecoveryAudit)
 
+  // WALLET SCANNER PIPELINE AUDIT, DISCLOSED (Wallet Scanner audit, Item 11): the single, compact,
+  // stage-by-stage funnel object — see src/lib/walletScannerPipelineAudit.ts's own header. Every
+  // count below is either read straight off a real, already-computed value from an earlier stage
+  // this same function ran, or a cheap pure re-derivation of already-fetched data (the dedupe-key
+  // Set and inbound/outbound splits mirror the [fifo-structure-audit] block above exactly, just
+  // recomputed here because that block's own locals are scoped to its own braces). Zero new
+  // provider calls, zero new pricing.
+  const pipelineAuditMergedEvents = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
+  const pipelineAuditEventIdentity = (e: NormalizedEvent) =>
+    `${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}:${e.direction}:${e.amount}:${e.timestamp}`
+  const pipelineAuditDedupedEventKeys = new Set(pipelineAuditMergedEvents.map(pipelineAuditEventIdentity))
+  const knownRouterHitCount = normalizedEvents.filter((e) =>
+    KNOWN_DEX_ROUTER_ADDRESSES.has(e.fromAddress.toLowerCase()) || KNOWN_DEX_ROUTER_ADDRESSES.has(e.toAddress.toLowerCase())).length
+  const routerCandidateCount = normalizedEvents.filter((e) =>
+    inferredRouterAddresses.has(e.fromAddress.toLowerCase()) || inferredRouterAddresses.has(e.toAddress.toLowerCase())).length
+  const verifiedBuyCount = structuralCoverageClassified.filter((c) => c.classification === 'genuine_trade_leg' && c.event.direction === 'inbound').length
+  const verifiedSellCount = structuralCoverageClassified.filter((c) => c.classification === 'genuine_trade_leg' && c.event.direction === 'outbound').length
+  const walletScannerPipelineAudit = buildWalletScannerPipelineAudit({
+    wallet: params.walletAddress,
+    chains: preScan.sanitizedChains,
+    rawEventCount: allRawEvents.length,
+    normalizedEventCount: normalizedEvents.length,
+    dedupedEventCount: pipelineAuditDedupedEventKeys.size,
+    inboundEventCount: normalizedEvents.filter((e) => e.direction === 'inbound').length,
+    outboundEventCount: normalizedEvents.filter((e) => e.direction === 'outbound').length,
+    eventsByClassification: countByClassification(structuralCoverageClassified),
+    knownRouterHits: knownRouterHitCount,
+    routerCandidates: routerCandidateCount,
+    swapCandidates: receiptCompletionPhase2SummarySnapshot?.candidatesConsidered ?? null,
+    receiptCandidates: receiptCompletionPhase2SummarySnapshot?.candidatesSelected ?? null,
+    receiptsFetched: receiptCompletionPhase2SummarySnapshot?.receiptsFetched ?? null,
+    receiptBudgetRejected: receiptCompletionPhase2SummarySnapshot?.rejectionReasons?.receipt_budget_exhausted ?? 0,
+    verifiedBuys: verifiedBuyCount,
+    verifiedSells: verifiedSellCount,
+    fifoInputBuys: pipelineAuditMergedEvents.filter((e) => e.direction === 'inbound').length,
+    fifoInputSells: pipelineAuditMergedEvents.filter((e) => e.direction === 'outbound').length,
+    closedLots: reconciledFifoAndPnl.matchedLots.length,
+    verifiedClosedLots: canonicalPublishedVerifiedLots.length,
+    quoteLegsRecovered: walletPnlCoverageRecoveryAudit.recoveredEntryLots + walletPnlCoverageRecoveryAudit.recoveredExitLots,
+    recoveryCalls: recoveryPolicy.totalPagesUsedThisWallet,
+    finalPnlStatus: reconciledFifoAndPnl.publicPnlStatus,
+    exactFailureReason: walletPnlCoverageRecoveryAudit.officialPnlStillBlockedReason,
+  })
+  console.warn('[wallet-scanner-pipeline-audit]', walletScannerPipelineAudit)
+
   // PERF-SPRINT TASK, DISCLOSED: the real requirement this write exists for (see its own original
   // disclosure at the call site above) is "genuinely populated before runWalletScan returns" — this
   // is the latest point that still satisfies that, after every stage that would otherwise have
@@ -3769,6 +3815,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,
     walletScannerProviderSupportAudit,
     walletPnlCoverageRecoveryAudit,
+    walletScannerPipelineAudit,
     scanPerformanceSummary,
     // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
     // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the

@@ -92,6 +92,12 @@ export type RunWalletScanResult = FinalReport & {
   // calls, zero pricing, no lot created or reclassified. See the module header for the honest
   // limits on which taxonomy reasons this lot-level pass can and cannot populate.
   walletPnlCoverageRecoveryAudit?: import('../lib/walletPnlCoverageRecoveryAudit').WalletPnlCoverageRecoveryAudit
+  // WALLET SCANNER PIPELINE AUDIT, DISCLOSED (Wallet Scanner audit, Item 11): the single, compact,
+  // stage-by-stage funnel object (raw provider events through to final PnL status) — see
+  // src/lib/walletScannerPipelineAudit.ts's own header for exactly which fields are real, measured
+  // counts vs. honestly `null` (e.g. robinhoodVerifiedSwaps, since this pipeline never touches the
+  // separate, standalone Robinhood scanner).
+  walletScannerPipelineAudit?: import('../lib/walletScannerPipelineAudit').WalletScannerPipelineAudit
   // SCAN PERFORMANCE SUMMARY, DISCLOSED (perf-sprint task: "a final scanPerformanceSummary showing
   // per-stage timings, percentage of total runtime, critical path, provider latency, cache hit
   // rate, and total scan duration"). Built entirely from real, already-measured values this scan
