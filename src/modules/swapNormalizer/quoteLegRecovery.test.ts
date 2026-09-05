@@ -97,12 +97,26 @@ test('recoverMissingQuoteLeg recovers the outgoing stable leg for a one-leg BUY 
   }
 })
 
-test('recoverMissingQuoteLeg reports no_quote_transfer_in_receipt when the receipt has no ERC20 quote-asset log at all (e.g. raw native ETH settlement — honestly out of scope)', () => {
+test('recoverMissingQuoteLeg reports no_quote_transfer_in_receipt when the receipt has a wallet-facing Transfer log, just not for a recognized quote asset', () => {
   const logs: RawReceiptLog[] = [
     transferLog({ logIndex: 1, address: MEMECOIN, from: WALLET, to: OTHER, amount: BigInt(1000) }),
   ]
   const result = recoverMissingQuoteLeg(logs, WALLET, 'base', 'tokenOut')
   assert.equal(result.status, 'no_quote_transfer_in_receipt')
+})
+
+test('recoverMissingQuoteLeg reports native_trace_unavailable when the receipt has NO wallet-facing Transfer log at all (Wallet Scanner audit, Item 6 — raw native-ETH settlement, honestly out of scope without a trace API)', () => {
+  const logs: RawReceiptLog[] = []
+  const result = recoverMissingQuoteLeg(logs, WALLET, 'base', 'tokenOut')
+  assert.equal(result.status, 'native_trace_unavailable')
+})
+
+test('recoverMissingQuoteLeg reports native_trace_unavailable when the receipt only has Transfer logs for OTHER wallets, never the scanned wallet', () => {
+  const logs: RawReceiptLog[] = [
+    transferLog({ logIndex: 1, address: MEMECOIN, from: OTHER, to: '0xdeaddeaddeaddeaddeaddeaddeaddeaddeaddead', amount: BigInt(1000) }),
+  ]
+  const result = recoverMissingQuoteLeg(logs, WALLET, 'base', 'tokenOut')
+  assert.equal(result.status, 'native_trace_unavailable')
 })
 
 test('recoverMissingQuoteLeg reports wrong_direction_only rather than fabricating a match when only the wrong-direction leg exists', () => {

@@ -121,7 +121,33 @@ export function decodeQuoteAssetTransfers(logs: readonly RawReceiptLog[], wallet
 export type QuoteLegRecoveryOutcome =
   | { status: 'recovered'; leg: RecoveredQuoteLeg }
   | { status: 'no_quote_transfer_in_receipt' }
+  | { status: 'native_trace_unavailable' }
   | { status: 'wrong_direction_only' }
+
+// NATIVE-SETTLEMENT DETECTION, DISCLOSED (Wallet Scanner audit, Item 6 — exact reason
+// `native_trace_unavailable`): a raw native-ETH settlement (a router unwrapping WETH and sending
+// native ETH via a low-level call, or the wallet paying in native ETH directly) never emits an
+// ERC20 Transfer log at all — this module's own header already explains why that case is
+// structurally unrecoverable here (would require a trace API, out of scope). This function
+// distinguishes that specific, real cause from a merely-unrecognized counterparty token using ONLY
+// the SAME already-fetched `logs` this call already has — no new provider call, no trace API. If
+// the receipt contains NOT ONE standard ERC20 Transfer log touching the wallet (any token, not just
+// a recognized quote asset), that is real, positive evidence no on-chain log could explain this
+// leg — consistent with a raw native-value settlement. If the receipt DOES contain a wallet-facing
+// Transfer log, just not for a token this module recognizes as a quote asset, that is a genuinely
+// different cause (an unrecognized counterparty token) and keeps the existing, more general
+// `no_quote_transfer_in_receipt` reason.
+function hasAnyWalletFacingTransferLog(logs: readonly RawReceiptLog[], walletAddress: string): boolean {
+  const wallet = walletAddress.toLowerCase()
+  for (const log of logs) {
+    if (!log.topics || log.topics.length < 3) continue
+    if (log.topics[0]?.toLowerCase() !== TRANSFER_EVENT_TOPIC0) continue
+    const from = topicToAddress(log.topics[1])
+    const to = topicToAddress(log.topics[2])
+    if (from === wallet || to === wallet) return true
+  }
+  return false
+}
 
 // Given the already-decoded quote-asset transfers for one transaction and which side of the trade
 // is missing, picks the best real match — the transfer whose direction actually fills the gap
@@ -136,7 +162,11 @@ export function recoverMissingQuoteLeg(
   missingSide: 'tokenIn' | 'tokenOut',
 ): QuoteLegRecoveryOutcome {
   const candidates = decodeQuoteAssetTransfers(logs, walletAddress, chain)
-  if (candidates.length === 0) return { status: 'no_quote_transfer_in_receipt' }
+  if (candidates.length === 0) {
+    return hasAnyWalletFacingTransferLog(logs, walletAddress)
+      ? { status: 'no_quote_transfer_in_receipt' }
+      : { status: 'native_trace_unavailable' }
+  }
 
   const neededDirection = missingSide === 'tokenOut' ? 'in' : 'out'
   const matching = candidates.filter((c) => c.direction === neededDirection)

@@ -70,7 +70,7 @@ describe('recoverQuoteLegsForBundles', () => {
   it('a genuine airdrop (single incoming transfer, no counter-leg anywhere in the receipt) is never fabricated into a swap', async () => {
     globalThis.fetch = (async () => ({
       ok: true,
-      json: async () => receiptResponse([]), // real receipt, but no quote-asset Transfer log at all
+      json: async () => receiptResponse([]), // real receipt, but no Transfer log at all
     })) as unknown as typeof fetch
 
     const bundle: RawTxBundle = { chain: 'base', txHash: '0xairdrop1', timestamp: 1000, transfers: [{ logIndex: 1, contract: MEMECOIN, from: ROUTER, to: WALLET, amountRaw: '5000' }] }
@@ -78,7 +78,12 @@ describe('recoverQuoteLegsForBundles', () => {
 
     assert.equal(bundles[0].transfers?.length, 1, 'no leg was fabricated for a real airdrop with no quote counterpart')
     assert.equal(audit.quoteLegsRecovered, 0)
-    assert.equal(audit.rejectionReasons.no_quote_transfer_in_receipt, 1)
+    // Wallet Scanner audit, Item 6, DISCLOSED: an EMPTY receipt (no wallet-facing Transfer log of
+    // any kind) is now distinguished from "some transfer exists but isn't a recognized quote asset"
+    // — this module has no way to tell "genuine airdrop" apart from "raw native-ETH settlement, no
+    // log to prove it" here, so it honestly reports the more specific native_trace_unavailable
+    // reason rather than the generic no_quote_transfer_in_receipt.
+    assert.equal(audit.rejectionReasons.native_trace_unavailable, 1)
   })
 
   it('a two-leg bundle (both sides already known — e.g. a normal token-to-token swap) is never touched — nothing to recover', async () => {
