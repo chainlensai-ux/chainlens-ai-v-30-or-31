@@ -433,12 +433,23 @@ async function run() {
   {
     const calls = mockPayPalFetch({ verifySuccess: true })
     const service = makeFakeServiceClient()
-    const activatePlan = async () => ({ error: 'simulated DB failure' })
+    let attempts = 0
+    const activatePlan = async () => {
+      attempts++
+      return attempts === 1 ? { error: 'simulated DB failure' } : { error: null }
+    }
+    const event = { id: 'evt-writefail', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-9', custom_id: 'pro:user-1' } }
     const res = await handlePayPalWebhook(
-      webhookRequest({ id: 'evt-writefail', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-9', custom_id: 'pro:user-1' } }),
+      webhookRequest(event),
       { getServiceClient: () => service, activatePlan },
     )
     check('a failed plan activation returns 500 so PayPal retries, never a silent 200', res.status === 500)
+    check('a failed activation is not permanently marked processed', service._db.paypal_webhook_events.length === 0)
+    const retry = await handlePayPalWebhook(webhookRequest(event), { getServiceClient: () => service, activatePlan })
+    check('retry after transient activation failure runs again and succeeds', retry.status === 200 && attempts === 2)
+    const replay = await handlePayPalWebhook(webhookRequest(event), { getServiceClient: () => service, activatePlan })
+    const replayJson = await replay.json()
+    check('successful replay is a no-op', replay.status === 200 && replayJson.deduped === true && attempts === 2)
     restoreFetch()
   }
 

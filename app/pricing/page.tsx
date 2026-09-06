@@ -7,16 +7,10 @@ import { supabase } from '@/lib/supabaseClient'
 import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
-import { pricingPlans, PRICING_PROOF, CARD_CHECKOUT_AVAILABLE } from '@/lib/pricingPlans'
+import { pricingPlans, PRICING_PROOF } from '@/lib/pricingPlans'
 
 type PaidPlanId = Exclude<UserPlan, 'free'>
-// CARD/PAYPAL FIX, DISCLOSED (checkout audit): PayPal and Card are now genuinely distinct options
-// — previously 'card' was the only non-crypto choice and silently ran the PayPal Subscriptions flow
-// (cardCheckoutUrl === paypalCheckoutUrl), which is why clicking "Card" redirected to PayPal's
-// hosted login page. 'card' stays a selectable method so its disabled/"coming soon" state can be
-// shown honestly, but startCheckout never fires a real request for it while CARD_CHECKOUT_AVAILABLE
-// is false.
-type PaymentMethod = 'paypal' | 'crypto' | 'card'
+type PaymentMethod = 'paypal' | 'crypto'
 
 const NAV_LINKS = [
   { label: 'Terminal', href: '/terminal' },
@@ -211,16 +205,9 @@ export default function PricingPage() {
   // this function only ever navigates the browser to a provider's real checkout/approval URL, it
   // never sets userPlan itself.
   async function startCheckout(planId: PaidPlanId, paymentMethod: PaymentMethod) {
-    // CARD/PAYPAL, DISCLOSED: Card runs through the same PayPal Subscriptions checkout as PayPal —
-    // see CARD_CHECKOUT_AVAILABLE's own comment in lib/pricingPlans.ts for why that's correct (guest
-    // card checkout on PayPal's hosted page, contingent on an account-level PayPal setting). This
-    // guard stays as defense-in-depth: if CARD_CHECKOUT_AVAILABLE is ever flipped back to false
-    // (provider misconfigured/disabled), Card never sends a request or redirects anywhere.
-    if (paymentMethod === 'card' && !CARD_CHECKOUT_AVAILABLE) return
     const plan = pricingPlans.find((candidate) => candidate.id === planId)
     const checkoutEndpoint = paymentMethod === 'crypto' ? plan?.cryptoCheckoutUrl
-      : paymentMethod === 'paypal' ? plan?.paypalCheckoutUrl
-      : plan?.cardCheckoutUrl
+      : plan?.paypalCheckoutUrl
     if (!plan || !checkoutEndpoint || userPlan === planId) return
     setCheckoutError(null)
     setSelectedPaymentMethod(paymentMethod)
@@ -654,7 +641,7 @@ export default function PricingPage() {
                 <span className='payment-option-title'>
                   {checkoutLoading && selectedPaymentMethod === 'paypal' ? 'Opening checkout…' : 'PayPal'}
                 </span>
-                <span className='payment-option-copy'>Pay monthly with PayPal</span>
+                <span className='payment-option-copy'>PayPal — balance or card on PayPal</span>
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
               </button>
 
@@ -678,31 +665,6 @@ export default function PricingPage() {
                 <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
               </button>
 
-              {/* CARD VIA PAYPAL, DISCLOSED (checkout audit, updated per explicit instruction):
-                  Card runs the same PayPal Subscriptions checkout as the PayPal option above —
-                  PayPal's hosted page can present a real card-entry form for a guest payer instead
-                  of forcing login, once Guest Checkout is enabled on the PayPal Business account
-                  (see CARD_CHECKOUT_AVAILABLE's comment in lib/pricingPlans.ts). Never disabled
-                  while CARD_CHECKOUT_AVAILABLE is true. */}
-              <button
-                type='button'
-                className='payment-option'
-                disabled={checkoutLoading !== null || !CARD_CHECKOUT_AVAILABLE}
-                aria-pressed={selectedPaymentMethod === 'card'}
-                onClick={() => startCheckout(selectedPlanId, 'card')}
-              >
-                <span className='payment-option-icon' aria-hidden='true'>
-                  <svg width='21' height='21' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
-                    <rect x='3' y='5' width='18' height='14' rx='2.5' />
-                    <path d='M3 10h18M7 15h3' />
-                  </svg>
-                </span>
-                <span className='payment-option-title'>
-                  {checkoutLoading && selectedPaymentMethod === 'card' ? 'Opening checkout…' : 'Card'}
-                </span>
-                <span className='payment-option-copy'>Pay by card via PayPal checkout</span>
-                <span className='payment-option-price'>${selectedPlan.priceMonthly}/month</span>
-              </button>
             </div>
 
             {checkoutError && <div className='payment-error' role='alert'>{checkoutError}</div>}
