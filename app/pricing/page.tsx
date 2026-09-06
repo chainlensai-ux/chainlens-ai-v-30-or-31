@@ -558,17 +558,16 @@ export default function PricingPage() {
         {/* Checkout disclosure */}
         {(!planReady || userPlan === 'free') && (
           <p style={{ marginTop:18, textAlign:'center', fontSize:11, color:'#3a5268', letterSpacing:'.04em' }}>
-            Choose crypto or card at checkout. Your plan activates automatically after payment confirmation.
+            Choose crypto or PayPal at checkout. Your plan activates automatically after payment confirmation.
           </p>
         )}
 
         {/* Trust/payment strip, DISCLOSED (final pricing polish task): existing, already-true copy
             only — same claims already made elsewhere on this page (crypto/PayPal, no regional
-            pricing, data ownership) plus "Cancel anytime", true for both payment paths (a PayPal
-            subscription can always be cancelled from PayPal; a crypto payment is a single period
-            with no auto-renewal to begin with). Purely a compact restatement, not new promises. */}
+            pricing and data ownership. PayPal cancellation revokes access immediately; crypto is a
+            single period with no auto-renewal. Purely a compact restatement, not new promises. */}
         <div style={{ marginTop:22, display:'flex', flexWrap:'wrap', justifyContent:'center', alignItems:'center', gap:'8px 14px', padding:'14px 12px', borderTop:'1px solid rgba(148,163,184,.08)' }}>
-          {['Cancel anytime', 'Crypto or card checkout', 'Base-native intelligence', 'No regional pricing', 'Your data stays yours'].map((item, i) => (
+          {['Cancel anytime — access ends immediately', 'Crypto or PayPal checkout', 'Base-native intelligence', 'No regional pricing', 'Your data stays yours'].map((item, i) => (
             <span key={item} style={{ display:'inline-flex', alignItems:'center', gap:14 }}>
               {i > 0 && <span style={{ color:'rgba(148,163,184,.18)', fontSize:11 }}>·</span>}
               <span style={{ fontSize:11, color:'#526073', letterSpacing:'.03em' }}>{item}</span>

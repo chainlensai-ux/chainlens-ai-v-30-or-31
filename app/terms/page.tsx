@@ -37,7 +37,7 @@ const SECTIONS = [
     body: [
       'ChainLens AI may offer free or paid subscription plans. Pricing, billing frequency, included features, limits, and renewal terms will be displayed at checkout before purchase.',
       'Paid subscriptions renew automatically unless cancelled before the next billing date. You may cancel at any time through your account settings or by contacting ChainLens AI.',
-      'If you cancel, you will generally retain access until the end of the current billing period unless otherwise stated at checkout.',
+      'If you cancel a PayPal subscription, paid access ends immediately. Suspended subscriptions retain access only through the current paid period.',
       'Except where required by law, payments are non-refundable once a billing period has started. This does not limit any rights you may have under applicable consumer laws, including Australian Consumer Law.',
       'We may update pricing or plan features from time to time. Where required, existing subscribers will be given reasonable notice before changes apply.',
     ],

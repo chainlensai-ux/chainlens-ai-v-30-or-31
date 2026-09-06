@@ -15,5 +15,5 @@ async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
 export async function GET(req: Request): Promise<Response> {
   const plan = await getPlan(req)
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  return NextResponse.json(snapshotDailyScan(plan, ip))
+  return NextResponse.json(await snapshotDailyScan(plan, ip))
 }

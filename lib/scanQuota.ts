@@ -1,4 +1,5 @@
 import { SCAN_DAILY_LIMITS, deepScanQuotaPeriod, type UserPlan } from './pricingPlans'
+import { incrementDurableQuota, readDurableQuota, __resetDurableQuotaForTest } from './durableQuota'
 
 // Deep-scan quota for Wallet Scanner deep mode only.
 // Token Scanner uses its own per-minute rate limit in /api/token and must not
@@ -8,7 +9,6 @@ import { SCAN_DAILY_LIMITS, deepScanQuotaPeriod, type UserPlan } from './pricing
 // Free and Pro reset monthly (1st of next UTC month). Normal wallet scans never
 // consume this pool.
 
-const buckets = new Map<string, { count: number; resetAt: number }>()
 let nowFn = () => Date.now()
 
 function utcPeriodReset(period: 'day' | 'month', now: number): number {
@@ -33,8 +33,8 @@ export type DeepScanQuotaSnapshot = {
   period: 'day' | 'month' | null
 }
 
-export function snapshotDailyScan(plan: UserPlan, actor: string): DeepScanQuotaSnapshot {
-  const peeked = peekDailyScan(plan, actor)
+export async function snapshotDailyScan(plan: UserPlan, actor: string): Promise<DeepScanQuotaSnapshot> {
+  const peeked = await peekDailyScan(plan, actor)
   return {
     plan,
     limit: peeked.limit,
@@ -45,32 +45,29 @@ export function snapshotDailyScan(plan: UserPlan, actor: string): DeepScanQuotaS
   }
 }
 
-export function consumeDailyScan(plan: UserPlan, actor: string): { allowed: boolean; limit: number | null; remaining: number | null } {
+export async function consumeDailyScan(plan: UserPlan, actor: string): Promise<{ allowed: boolean; limit: number | null; remaining: number | null }> {
   const limit = planScanLimit(plan)
   if (limit == null) return { allowed: true, limit: null, remaining: null }
   const period = deepScanQuotaPeriod(plan) ?? 'day'
   const now = nowFn()
-  const key = `${plan}:${actor}`
-  const cur = buckets.get(key)
-  if (!cur || cur.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: utcPeriodReset(period, now) })
-    return { allowed: true, limit, remaining: Math.max(0, limit - 1) }
-  }
-  if (cur.count >= limit) return { allowed: false, limit, remaining: 0 }
-  cur.count += 1
-  return { allowed: true, limit, remaining: Math.max(0, limit - cur.count) }
+  const resetAt = utcPeriodReset(period, now)
+  const periodStamp = period === 'month' ? new Date(now).toISOString().slice(0, 7) : new Date(now).toISOString().slice(0, 10)
+  const count = await incrementDurableQuota(`wallet-scan:${period}:${periodStamp}:${plan}:${actor}`, Math.max(60, Math.ceil((resetAt - now) / 1000)))
+  return { allowed: count <= limit, limit, remaining: Math.max(0, limit - count) }
 }
 
-export function peekDailyScan(plan: UserPlan, actor: string): { count: number; limit: number | null; remaining: number | null } {
+export async function peekDailyScan(plan: UserPlan, actor: string): Promise<{ count: number; limit: number | null; remaining: number | null }> {
   const limit = planScanLimit(plan)
   if (limit == null) return { count: 0, limit: null, remaining: null }
-  const cur = buckets.get(`${plan}:${actor}`)
-  if (!cur || cur.resetAt <= nowFn()) return { count: 0, limit, remaining: limit }
-  return { count: cur.count, limit, remaining: Math.max(0, limit - cur.count) }
+  const now = nowFn()
+  const period = deepScanQuotaPeriod(plan) ?? 'day'
+  const periodStamp = period === 'month' ? new Date(now).toISOString().slice(0, 7) : new Date(now).toISOString().slice(0, 10)
+  const count = await readDurableQuota(`wallet-scan:${period}:${periodStamp}:${plan}:${actor}`)
+  return { count, limit, remaining: Math.max(0, limit - count) }
 }
 
 export function __resetScanQuotaForTest(): void {
-  buckets.clear()
+  __resetDurableQuotaForTest()
   nowFn = () => Date.now()
 }
 

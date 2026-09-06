@@ -3738,12 +3738,12 @@ export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
   const _tokenScanIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  const _tokenScanQuota = consumeTokenScan(_requestPlan, _tokenScanIp)
+  const _tokenScanQuota = await consumeTokenScan(_requestPlan, _tokenScanIp)
   if (!_tokenScanQuota.allowed) {
     return NextResponse.json({
       error: tokenScanLimitReachedMessage(_requestPlan, _tokenScanQuota.limit),
       category: 'token_scan_limit',
-      tokenScanQuota: snapshotTokenScan(_requestPlan, _tokenScanIp),
+      tokenScanQuota: await snapshotTokenScan(_requestPlan, _tokenScanIp),
     }, { status: 429 })
   }
 

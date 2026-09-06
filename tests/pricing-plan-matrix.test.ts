@@ -21,6 +21,11 @@ import {
   consumeDailyScan,
   peekDailyScan,
 } from '../lib/scanQuota'
+import {
+  __resetTokenScanQuotaForTest,
+  consumeTokenScan,
+  peekTokenScan,
+} from '../lib/tokenScanQuota'
 
 const PLANS: UserPlan[] = ['free', 'pro', 'elite']
 
@@ -64,33 +69,41 @@ describe('pricing plan matrix matches /pricing promises', () => {
     assert.equal(TOKEN_SCAN_WEEKLY_LIMITS.elite, null)
   })
 
-  it('normal wallet scans never consume the deep-scan pool', () => {
+  it('token scan quota is shared by consume and peek while unlimited plans bypass storage', async () => {
+    __resetTokenScanQuotaForTest()
+    assert.equal((await consumeTokenScan('free', 'actor-token')).allowed, true)
+    assert.equal((await peekTokenScan('free', 'actor-token')).count, 1)
+    assert.equal((await consumeTokenScan('elite', 'actor-token')).limit, null)
+    assert.equal((await peekTokenScan('elite', 'actor-token')).count, 0)
+  })
+
+  it('normal wallet scans never consume the deep-scan pool', async () => {
     __resetScanQuotaForTest()
     // Only deep mode calls consumeDailyScan in the wallet-scan route.
     // After peeking with no consumes, Free still has full deep remaining.
-    const before = peekDailyScan('free', 'actor-normal')
+    const before = await peekDailyScan('free', 'actor-normal')
     assert.equal(before.remaining, 3)
     assert.equal(before.count, 0)
   })
 
-  it('deep wallet scan quota is enforced per plan', () => {
+  it('deep wallet scan quota is enforced per plan', async () => {
     __resetScanQuotaForTest()
     for (let i = 0; i < 3; i++) {
-      const r = consumeDailyScan('free', 'actor-deep-free')
+      const r = await consumeDailyScan('free', 'actor-deep-free')
       assert.equal(r.allowed, true)
     }
-    assert.equal(consumeDailyScan('free', 'actor-deep-free').allowed, false)
+    assert.equal((await consumeDailyScan('free', 'actor-deep-free')).allowed, false)
 
     __resetScanQuotaForTest()
     for (let i = 0; i < 30; i++) {
-      assert.equal(consumeDailyScan('pro', 'actor-deep-pro').allowed, true)
+      assert.equal((await consumeDailyScan('pro', 'actor-deep-pro')).allowed, true)
     }
-    assert.equal(consumeDailyScan('pro', 'actor-deep-pro').allowed, false)
+    assert.equal((await consumeDailyScan('pro', 'actor-deep-pro')).allowed, false)
 
     __resetScanQuotaForTest()
     for (let i = 0; i < 100; i++) {
-      assert.equal(consumeDailyScan('elite', 'actor-deep-elite').allowed, true)
-      assert.equal(consumeDailyScan('elite', 'actor-deep-elite').remaining, null)
+      assert.equal((await consumeDailyScan('elite', 'actor-deep-elite')).allowed, true)
+      assert.equal((await consumeDailyScan('elite', 'actor-deep-elite')).remaining, null)
     }
   })
 

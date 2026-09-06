@@ -265,9 +265,8 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     // subscription after repeated failed renewal charges via BILLING.SUBSCRIPTION.SUSPENDED (not
     // CANCELLED) — previously this fell into `default` and was silently ignored, leaving
     // paypal_subscriptions.status stuck on 'active' forever even though PayPal stopped billing.
-    // activateUserPlanServerSide's rolling current_period_end still lazily expires access, so this
-    // was never a full access-control gap — but the status row was misleading. Marked explicitly so
-    // any admin/support tooling reading paypal_subscriptions reflects PayPal's real state.
+    // Access remains available only through current_period_end; unlike cancellation/refund, a
+    // suspension does not wipe the paid plan immediately.
     case 'BILLING.SUBSCRIPTION.SUSPENDED':
     case 'BILLING.SUBSCRIPTION.EXPIRED': {
       const subscriptionId = resource.id
@@ -281,6 +280,30 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         audit.failureReason = 'write_failed'
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to record subscription status.' }, { status: 500 })
+      }
+      const { data: existing } = await client
+        .from('paypal_subscriptions')
+        .select('user_id')
+        .eq('paypal_subscription_id', subscriptionId)
+        .maybeSingle()
+      if (existing?.user_id) {
+        audit.userId = existing.user_id as string
+        const { data: settingsRow } = await client
+          .from('user_settings')
+          .select('lemon_subscription_id')
+          .eq('user_id', existing.user_id as string)
+          .maybeSingle()
+        if (settingsRow?.lemon_subscription_id === subscriptionId) {
+          const { error: settingsStatusError } = await client
+            .from('user_settings')
+            .update({ subscription_status: status, updated_at: new Date().toISOString() })
+            .eq('user_id', existing.user_id as string)
+          if (settingsStatusError) {
+            audit.failureReason = 'write_failed'
+            logPaypalPaymentAudit(audit)
+            return NextResponse.json({ error: 'Failed to sync subscription status.' }, { status: 500 })
+          }
+        }
       }
       break
     }

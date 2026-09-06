@@ -1,11 +1,15 @@
 import { TOKEN_SCAN_WEEKLY_LIMITS, type UserPlan } from './pricingPlans'
+import { incrementDurableQuota, readDurableQuota, __resetDurableQuotaForTest } from './durableQuota'
 
 // Weekly Token Scanner quota. Free = 3 / week (UTC week starting Monday).
 // Pro/Elite unlimited (`null`). Per-minute TOKEN_RATE_BY_PLAN in /api/token stays separate.
 // Do not coalesce null with `??` (that would treat Elite as Free).
 
-const buckets = new Map<string, { count: number; resetAt: number }>()
 let nowFn = () => Date.now()
+
+function weekStamp(now: number): string {
+  return new Date(utcWeekReset(now) - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
 
 function utcWeekReset(now: number): number {
   const d = new Date(now)
@@ -30,8 +34,8 @@ export type TokenScanQuotaSnapshot = {
   period: 'week' | null
 }
 
-export function snapshotTokenScan(plan: UserPlan, actor: string): TokenScanQuotaSnapshot {
-  const peeked = peekTokenScan(plan, actor)
+export async function snapshotTokenScan(plan: UserPlan, actor: string): Promise<TokenScanQuotaSnapshot> {
+  const peeked = await peekTokenScan(plan, actor)
   return {
     plan,
     limit: peeked.limit,
@@ -42,31 +46,25 @@ export function snapshotTokenScan(plan: UserPlan, actor: string): TokenScanQuota
   }
 }
 
-export function consumeTokenScan(plan: UserPlan, actor: string): { allowed: boolean; limit: number | null; remaining: number | null } {
+export async function consumeTokenScan(plan: UserPlan, actor: string): Promise<{ allowed: boolean; limit: number | null; remaining: number | null }> {
   const limit = planLimit(plan)
   if (limit == null) return { allowed: true, limit: null, remaining: null }
   const now = nowFn()
-  const key = `${plan}:${actor}`
-  const cur = buckets.get(key)
-  if (!cur || cur.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: utcWeekReset(now) })
-    return { allowed: true, limit, remaining: Math.max(0, limit - 1) }
-  }
-  if (cur.count >= limit) return { allowed: false, limit, remaining: 0 }
-  cur.count += 1
-  return { allowed: true, limit, remaining: Math.max(0, limit - cur.count) }
+  const resetAt = utcWeekReset(now)
+  const count = await incrementDurableQuota(`token-scan:week:${weekStamp(now)}:${plan}:${actor}`, Math.max(60, Math.ceil((resetAt - now) / 1000)))
+  return { allowed: count <= limit, limit, remaining: Math.max(0, limit - count) }
 }
 
-export function peekTokenScan(plan: UserPlan, actor: string): { count: number; limit: number | null; remaining: number | null } {
+export async function peekTokenScan(plan: UserPlan, actor: string): Promise<{ count: number; limit: number | null; remaining: number | null }> {
   const limit = planLimit(plan)
   if (limit == null) return { count: 0, limit: null, remaining: null }
-  const cur = buckets.get(`${plan}:${actor}`)
-  if (!cur || cur.resetAt <= nowFn()) return { count: 0, limit, remaining: limit }
-  return { count: cur.count, limit, remaining: Math.max(0, limit - cur.count) }
+  const now = nowFn()
+  const count = await readDurableQuota(`token-scan:week:${weekStamp(now)}:${plan}:${actor}`)
+  return { count, limit, remaining: Math.max(0, limit - count) }
 }
 
 export function __resetTokenScanQuotaForTest(): void {
-  buckets.clear()
+  __resetDurableQuotaForTest()
   nowFn = () => Date.now()
 }
 
