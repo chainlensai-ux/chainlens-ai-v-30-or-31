@@ -95,7 +95,7 @@ assert.match(proxySrc, /source: "dexscreener_fallback"/, 'a fallback-served resp
 
 // ─── Required fix 4: chain context (Base/ETH/Robinhood) preserved through tool execution ───────
 assert.match(routeCode, /const resolverChain = toTokenApiChain\(input\.chain\);/, 'the deployer/dev-wallet tool must resolve the real request chain, not assume Base')
-assert.match(routeCode, /chain: SupportedChain \| "robinhood";/, 'executeClarkToolPlan input must carry the resolved chain (widened to include Robinhood — see the multi-chain token scan fix)')
+assert.match(routeCode, /chain: SupportedChain \| "robinhood" \| "polygon";/, 'executeClarkToolPlan input must carry the resolved chain (widened to include Robinhood and polygon identity — polygon is named for honest rejection, not scanned)')
 
 // ─── Required fix 5: existing scanners answer before "unavailable" (deployer/holders/LP/whale) ──
 // Deployer: fast in-process resolver tried first, full /api/dev-wallet scan as the real fallback

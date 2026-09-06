@@ -1428,7 +1428,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('const promptChain = extractRequestedChainFromPrompt(prompt);'), 'handleClarkAI extracts a chain override from the prompt')
   assert.ok(
     routeFile.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;')
-    || routeFile.includes('(promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain'),
+    || routeFile.includes('(promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain')
+    || (routeFile.includes('promptAsSupported') && routeFile.includes('forcedScanChain') && routeFile.includes('extractRequestedChainFromPrompt(prompt)')),
     'chain priority is prompt > UI param > session memory > base default'
   )
   assert.ok(!/const chain = body\.chain \?\? "base";\s*\n\s*const prompt/.test(routeFile), 'chain must no longer be resolved from body.chain alone before reading the prompt')

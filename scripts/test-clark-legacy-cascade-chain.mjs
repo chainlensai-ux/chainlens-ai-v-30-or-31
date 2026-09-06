@@ -39,7 +39,7 @@ assert.match(routeCode, /const honeypotChain = toTokenApiChain\(chainForClarkToo
 // tokenEvidenceChain itself must recognize every real chain, not just eth/ethereum/base — a BNB or
 // Robinhood scan's own reported chain must never fall through to a stale fallback just because the
 // function didn't know that chain existed.
-assert.match(routeCode, /function tokenEvidenceChain\(ev: TokenScanEvidence \| null \| undefined, fallback: SupportedChain \| "robinhood"\): SupportedChain \| "robinhood" \{/, 'tokenEvidenceChain must accept and return the widened chain type')
+assert.match(routeCode, /function tokenEvidenceChain\(ev: TokenScanEvidence \| null \| undefined, fallback: SupportedChain \| "robinhood" \| "polygon"\): SupportedChain \| "robinhood" \| "polygon" \{/, 'tokenEvidenceChain must accept and return the widened chain type including polygon identity for honest rejection')
 assert.match(routeCode, /if \(raw === "bnb" \|\| raw === "bsc"\) return "bnb";/, 'tokenEvidenceChain must recognize a real BNB scan result')
 assert.match(routeCode, /if \(raw === "robinhood"\) return "robinhood";/, 'tokenEvidenceChain must recognize a real Robinhood scan result')
 

@@ -107,6 +107,9 @@ import {
   isTokenFollowupPrompt,
   classifyTokenFollowupKind,
   extractRequestedChainFromPrompt,
+  normalizeFollowupChain,
+  followupChainUnsupportedMessage,
+  type ClarkForcedScanChain,
   extractLiquiditySymbol,
   isLiquidityCheckIntent,
   parseClarkLiquidityIntent,
@@ -371,7 +374,7 @@ type ClarkSessionMemory = {
     volume24h: number | null;
     change24h: number | null;
     tag: string | null;
-    chain: SupportedChain | "robinhood";
+    chain: SupportedChain | "robinhood" | "polygon";
     poolAddress: string | null;
   }>;
   lastMomentumListId: string | null;
@@ -988,23 +991,13 @@ function checkClarkLowCostRate(actor: string, planKey: string): ClarkRateResult 
 
 // ---------- Types ----------
 
-type SupportedChain = "base" | "ethereum" | "polygon" | "bnb";
+type SupportedChain = "base" | "ethereum" | "bnb";
 
-// CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3 — hardcoded chain:"base" assumptions in
-// scan_rank/rescan_current_token followups): maps a resolved follow-up command's real chain (from
-// resolveClarkFollowupCommand's ClarkFollowupCommandResult.chain, itself carried straight from the
-// matched momentum/radar list item — never re-guessed) onto Clark's local SupportedChain union.
-// Falls back to "base" ONLY when the value is missing or not one of this union's representable
-// values (e.g. "robinhood", which forcedTokenScan cannot carry yet) — never silently overwrites a
-// real, different resolved chain.
-function normalizeFollowupChain(chain: string | null | undefined): SupportedChain {
-  const c = String(chain ?? "").toLowerCase();
-  if (c === "eth" || c === "ethereum") return "ethereum";
-  if (c === "polygon") return "polygon";
-  if (c === "bnb") return "bnb";
-  if (c === "base") return "base";
-  return "base";
-}
+// CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 14): maps a resolved follow-up
+// command's real chain onto a chain Token Core can actually scan. Returns null for
+// polygon/solana/unknown — never silently overwrites a different resolved chain with Base.
+// Robinhood is a ForcedTokenScanChain (toTokenApiChain supports it) even though it is not
+// in this file's GoldRush/GoPlus SupportedChain union.
 
 const CLARK_LIQ_CACHE_TTL_MS = 10 * 60 * 1000
 const clarkLiquidityResultCache = new Map<string, { exp: number; result: ClarkLiquidityCheckResult }>()
@@ -1106,7 +1099,7 @@ interface ClarkRequestBody {
   // Set internally on the recursive handleClarkAI call below for market-mover follow-up
   // scans ("scan 1", "scan velvet") so the token contract address can never be
   // reclassified as a plain EOA and routed into wallet_scan.
-  forcedTokenScan?: { address: string; chain: SupportedChain } | null;
+  forcedTokenScan?: { address: string; chain: ClarkForcedScanChain } | null;
   clientContext?: {
     lastMomentumList?: ClarkSessionMemory["lastMomentumList"];
     lastMomentumListId?: string | null;
@@ -1229,14 +1222,12 @@ type LiveIntent = "MARKET_OVERVIEW" | "TOKEN_QUERY" | "BASE_MARKET" | "BASE_MARK
 const GOLDRUSH_CHAIN: Record<SupportedChain, string> = {
   base: "base-mainnet",
   ethereum: "eth-mainnet",
-  polygon: "matic-mainnet",
   bnb: "bsc-mainnet",
 };
 
 const GOPLUS_CHAIN_ID: Record<SupportedChain, string> = {
   base: "8453",
   ethereum: "1",
-  polygon: "137",
   bnb: "56",
 };
 
@@ -1402,20 +1393,22 @@ function toTokenApiChain(chain: string): "base" | "eth" | "bnb" | "robinhood" | 
 // Robinhood scan's evidence fell straight through to the fallback regardless of what chain it
 // actually ran on, which is exactly the class of bug that produced "TOKEN SAFETY — ? (Base)" for a
 // real ETH token whose evidence never got a chance to say otherwise.
-function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: SupportedChain | "robinhood"): SupportedChain | "robinhood" {
+function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: SupportedChain | "robinhood" | "polygon"): SupportedChain | "robinhood" | "polygon" {
   const raw = String(ev?.chain ?? "").toLowerCase();
   if (raw === "eth" || raw === "ethereum") return "ethereum";
   if (raw === "base") return "base";
   if (raw === "bnb" || raw === "bsc") return "bnb";
   if (raw === "robinhood") return "robinhood";
+  if (raw === "polygon" || raw === "matic") return "polygon";
   return fallback;
 }
 
-function chainDisplayLabel(chain: SupportedChain | "eth" | "robinhood"): string {
+function chainDisplayLabel(chain: SupportedChain | "eth" | "robinhood" | "polygon" | "solana"): string {
   if (chain === "eth") return "Ethereum";
   if (chain === "ethereum") return "Ethereum";
   if (chain === "bnb") return "BNB";
   if (chain === "polygon") return "Polygon";
+  if (chain === "solana") return "Solana";
   if (chain === "robinhood") return "Robinhood Chain";
   return "Base";
 }
@@ -4250,7 +4243,7 @@ function applyCachedClarkWalletMemory(mem: ClarkSessionMemory, payload: unknown)
 // a completed deep scan — deep mode reports the orchestrator's own honest queued/unavailable status.
 async function buildClarkWalletReadResponse(params: {
   address: string;
-  outerChain: SupportedChain | "robinhood";
+  outerChain: SupportedChain | "robinhood" | "polygon";
   deepScan: boolean;
   sessionMem: ClarkSessionMemory;
   clarkDebugMode: boolean;
@@ -6288,7 +6281,7 @@ async function executeClarkToolPlan(input: {
   plan: ClarkToolPlan;
   origin: string;
   prompt: string;
-  chain: SupportedChain | "robinhood";
+  chain: SupportedChain | "robinhood" | "polygon";
   authHeader?: string | null;
   verifiedPlan?: 'free' | 'pro' | 'elite';
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
@@ -9495,7 +9488,7 @@ async function handleClarkTrackWallet(origin: string, authHeader: string | null,
 }
 
 function clarkMarketReply(input: {
-  chain: SupportedChain | "robinhood";
+  chain: SupportedChain | "robinhood" | "polygon";
   intent: string;
   analysis: string;
   audit: ClarkIntentAudit;
@@ -9516,7 +9509,7 @@ function clarkMarketReply(input: {
 
 async function answerClarkMarketOrPumping(input: {
   prompt: string;
-  chain: SupportedChain | "robinhood";
+  chain: SupportedChain | "robinhood" | "polygon";
   sessionMem: ClarkSessionMemory;
   body: ClarkRequestBody;
 }): Promise<Record<string, unknown> | null> {
@@ -9598,7 +9591,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // be overridden by the default UI chain.
   const promptChain = extractRequestedChainFromPrompt(prompt);
   const memSelectedChain: SupportedChain = sessionMem.selectedChain === "eth" ? "ethereum" : "base";
-  const chain: SupportedChain = (promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain;
+  const promptAsSupported: SupportedChain | null =
+    promptChain === "base" || promptChain === "ethereum" || promptChain === "bnb" ? promptChain : null;
+  const bodyAsSupported: SupportedChain | undefined =
+    body.chain === "base" || body.chain === "ethereum" || body.chain === "bnb" ? body.chain : undefined;
+  const forcedScanChain: ClarkForcedScanChain | null = body.forcedTokenScan?.chain ?? null;
+  const chain: SupportedChain =
+    (forcedScanChain && forcedScanChain !== "robinhood" ? forcedScanChain : null)
+    ?? promptAsSupported
+    ?? bodyAsSupported
+    ?? memSelectedChain;
   // MULTI-CHAIN ENTITY-CHECK FIX, DISCLOSED (requested: Clark must see tokens across Base/ETH/BNB/
   // Robinhood). Robinhood was never part of SupportedChain — extending that base type would have
   // forced fake Robinhood entries into GOLDRUSH_CHAIN/GOPLUS_CHAIN_ID (providers that don't
@@ -9610,8 +9612,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // already uses — so an unconfigured Robinhood flag/RPC never silently claims support it doesn't
   // have. Solana is a materially different address format (base58, no eth_getCode equivalent) and
   // is out of scope for this fix — flagged, not silently ignored.
-  let chainForClarkTools: SupportedChain | "robinhood" =
-    /\brobinhood\b/i.test(prompt) && isRobinhoodChainAvailable() ? "robinhood" : chain;
+  // CHAIN IDENTITY (Clark/CORTEX audit, Item 14): polygon is a named identity for honest rejection
+  // (Token Core cannot scan it) — never coerced into SupportedChain / Base. forcedTokenScan.chain
+  // wins so a robinhood list-item "scan 1" cannot fall through to Base just because the recursive
+  // prompt is a bare `scan 0x…` with no chain word.
+  let chainForClarkTools: SupportedChain | "robinhood" | "polygon" =
+    forcedScanChain
+    ?? (promptChain === "polygon" ? "polygon"
+      : /\brobinhood\b/i.test(prompt) && isRobinhoodChainAvailable() ? "robinhood"
+      : chain);
   // EMPTY-SCAN CHAIN HONESTY, DISCLOSED: hoisted out of the entity gate block below so the later
   // "I couldn't verify this token" fallback (buildEmptyTokenScanReply, reached when the token scan
   // itself comes back with no data at all — most often because the real token lives on a chain that
@@ -9627,7 +9636,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // defaults don't count as "explicit" here, since the whole point is that a bare pasted address
   // with no stated chain should be probed, not silently assumed to be on whatever the UI/memory
   // default happens to be.
-  const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
+  const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|polygon|matic|base)\b/i.test(prompt);
   const explicitTokenCommand = /^\s*\/token\b/i.test(prompt);
   // CLARK TICKER SELECTION FIX, DISCLOSED (bug report: "/token cashcat" showed CASHCAT matches,
   // but "scan 1" scanned an unrelated token, Base Juice/BASEJUICE). A "Scan N" button click echoes
@@ -10411,15 +10420,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
       if ((cmd.intent === "scan_rank" || cmd.intent === "scan_symbol" || cmd.intent === "open_rank") && cmd.address) {
         updateMemIntent(sessionMem, "token_analysis");
-        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3): the real chain the resolved
+        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3/14): the real chain the resolved
         // rank/symbol item actually belongs to — never hardcoded "base" regardless of source.
+        // Unsupported chains (polygon/solana/unknown) return null — never fall through to Base.
         const followupChain = normalizeFollowupChain(cmd.chain);
+        if (!followupChain) {
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+            analysis: followupChainUnsupportedMessage(cmd.chain),
+            ...cmdDebug,
+            clarkFollowupBlockedReason: "unsupported_followup_chain",
+          };
+        }
         const statusLabel = cmd.symbol ? String(cmd.symbol).toUpperCase() : "this token";
         const statusMessage = `Scanning ${statusLabel} on ${chainDisplayLabel(followupChain)}…\nContract: ${cmd.address}`;
         const scanSource = cmd.resolvedFrom === "market_context" ? "market_context" : "session_momentum";
         // Forced token_scan: a market-mover follow-up scan must never fall through to
         // wallet_scan, even though "scan <address>" alone would otherwise classify as a
-        // plain EOA wallet read.
+        // plain EOA wallet read. forcedTokenScan.chain is applied onto chainForClarkTools
+        // inside the recursive handleClarkAI so robinhood list items stay on robinhood.
         const scanResult: unknown = await handleClarkAI(
           { ...body, prompt: `scan ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: followupChain } },
           origin, authHeader, verifiedPlan, sessionMem,
@@ -10551,9 +10570,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
 
       if (cmd.intent === "rescan_current_token" && cmd.address) {
-        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3): rescan the token's own real
+        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3/14): rescan the token's own real
         // chain (carried from the active tokenSummary context), never hardcoded "base".
         const rescanChain = normalizeFollowupChain(cmd.chain);
+        if (!rescanChain) {
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+            analysis: followupChainUnsupportedMessage(cmd.chain),
+            ...cmdDebug,
+            clarkFollowupBlockedReason: "unsupported_followup_chain",
+          };
+        }
         const scanResult: Record<string, unknown> = await handleClarkAI(
           { ...body, prompt: `scan token ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: rescanChain } },
           origin, authHeader, verifiedPlan, sessionMem,
@@ -15129,6 +15156,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         // Has address — run token scan directly
         updateMemIntent(sessionMem, "token_analysis");
         const followupChain = normalizeFollowupChain(memItem.chain);
+        if (!followupChain) {
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
+            analysis: followupChainUnsupportedMessage(memItem.chain),
+          };
+        }
         const tokenRes = await callInternalApi(origin, "/api/token", { contract: memItem.address, chain: toTokenApiChain(followupChain) }, authHeader ?? undefined);
         const tokenData = tokenRes.ok ? tokenRes.json : null;
         const securitySim = await fetchHoneypotSecurity(memItem.address, followupChain);

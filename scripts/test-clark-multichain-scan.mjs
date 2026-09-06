@@ -46,10 +46,15 @@ assert.match(routeCode, /if \(c === "robinhood"\) return isRobinhoodChainAvailab
 assert.match(routeCode, /if \(c === "eth" \|\| c === "bnb" \|\| c === "polygon"\) return RPC\[c\] \|\| null;/, 'BNB/ETH/Polygon must resolve their own real RPC from the shared lib/rpc.ts map, not fall through to Base')
 
 // ─── Robinhood chain detection is narrow, additive, and fails closed ───────────────────────────
-assert.match(routeCode, /let chainForClarkTools: SupportedChain \| "robinhood" =\s*\n\s*\/\\brobinhood\\b\/i\.test\(prompt\) && isRobinhoodChainAvailable\(\) \? "robinhood" : chain;/, 'Robinhood detection must fail closed to the normal chain when the feature/RPC isn\'t configured (let, not const — the auto-chain-detection fix below reassigns it when a probe finds the real chain)')
-// SupportedChain itself (and its two exhaustive provider maps) must be untouched — extending it
-// would have forced fake Robinhood entries into providers that don't actually support it.
-assert.match(routeCode, /type SupportedChain = "base" \| "ethereum" \| "polygon" \| "bnb";/, 'SupportedChain must stay exactly as-is — Robinhood is handled as a separate, narrow union, not by widening every provider-indexed map in this file')
+assert.match(routeCode, /let chainForClarkTools: SupportedChain \| "robinhood" \| "polygon" =/, 'Robinhood detection must fail closed to the normal chain when the feature/RPC isn\'t configured (let, not const — the auto-chain-detection fix below reassigns it when a probe finds the real chain). Polygon is a named identity for honest rejection, not a GoldRush/GoPlus SupportedChain member.')
+assert.match(routeCode, /isRobinhoodChainAvailable\(\) \? "robinhood"/, 'Robinhood detection must fail closed to the normal chain when the feature/RPC isn\'t configured')
+// SupportedChain itself (and its two exhaustive provider maps) must not include Robinhood —
+// extending it would have forced fake Robinhood entries into providers that don't actually support it.
+// Polygon is also excluded: Token Core cannot scan it (toTokenApiChain returns null), so the type
+// must not claim support that does not exist (Clark/CORTEX audit, Item 14).
+assert.match(routeCode, /type SupportedChain = "base" \| "ethereum" \| "bnb";/, 'SupportedChain is GoldRush/GoPlus provider chains only — polygon is not token-scan supported; Robinhood stays a separate union')
+assert.doesNotMatch(routeCode, /polygon: "matic-mainnet"/, 'GOLDRUSH_CHAIN must not claim a polygon slug — Token Core cannot scan polygon')
+assert.doesNotMatch(routeCode, /polygon: "137"/, 'GOPLUS_CHAIN_ID must not claim polygon support via Clark\'s SupportedChain maps')
 
 // ─── Solana: fixed at the real root cause (the address extractor), not a duplicate pipeline ────
 assert.match(clarkRoutingSrc, /const SOLANA_MINT_CANDIDATE_RE = \/\\b\[1-9A-HJ-NP-Za-km-z\]\{32,44\}\\b\/g;/, 'a Solana mint candidate pattern must exist in the shared routing helpers')

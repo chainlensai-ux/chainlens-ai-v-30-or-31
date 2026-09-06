@@ -121,6 +121,37 @@ export function toPumpIntelligenceChain(raw: string | null | undefined): PumpInt
   return null;
 }
 
+/** Chains a Clark follow-up forced token scan can actually run. Polygon is excluded
+ * because Token Core cannot scan it (`toTokenApiChain` returns null). Robinhood is
+ * included because `toTokenApiChain` supports it even though it is not in Clark's
+ * GoldRush/GoPlus `SupportedChain` union. */
+export type ClarkForcedScanChain = "base" | "ethereum" | "bnb" | "robinhood";
+
+/**
+ * Map a resolved follow-up item's real chain onto a scannable token-scan chain.
+ * Never falls through to Base for unknown/unsupported values (polygon, solana,
+ * missing, garbage). Callers must handle null with an honest unsupported reply.
+ */
+export function normalizeFollowupChain(chain: string | null | undefined): ClarkForcedScanChain | null {
+  const c = String(chain ?? "").toLowerCase().trim();
+  if (c === "eth" || c === "ethereum") return "ethereum";
+  if (c === "bnb" || c === "bsc") return "bnb";
+  if (c === "base") return "base";
+  if (c === "robinhood") return "robinhood";
+  return null;
+}
+
+export function followupChainUnsupportedMessage(rawChain: string | null | undefined): string {
+  const c = String(rawChain ?? "").toLowerCase().trim();
+  const label =
+    c === "polygon" || c === "matic" ? "Polygon"
+    : c === "solana" ? "Solana"
+    : c === "arbitrum" ? "Arbitrum"
+    : !c ? "this chain"
+    : c.charAt(0).toUpperCase() + c.slice(1);
+  return `Token scanning on ${label} isn't available yet — I can run this on Base, Ethereum, BNB, or Robinhood Chain.`;
+}
+
 /**
  * Resolve the chain for a Pump Intelligence read from the exact asset/list identity.
  * Never overwrite a known ETH/Robinhood/Solana/BNB identity with Base.

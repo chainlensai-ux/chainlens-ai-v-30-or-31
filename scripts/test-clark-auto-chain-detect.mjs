@@ -56,7 +56,7 @@ assert.match(routeCode, /if \(explicitChainNamed\) \{/, 'the gate must branch on
 assert.match(routeCode, /const detected = await detectChainForAddress\(inlineAddress\);/, 'when no chain was named, the gate must call the probe')
 assert.match(routeCode, /if \(resolvedEntityType !== 'unknown'\) chainForClarkTools = detected\.chain;/, 'a successful detection must update chainForClarkTools so every downstream tool call (token_scan, honeypot check) uses the REAL detected chain, not just inform the message text')
 // chainForClarkTools must be reassignable (let, not const) for the above to even compile.
-assert.match(routeCode, /let chainForClarkTools: SupportedChain \| "robinhood" =/, 'chainForClarkTools must be declared with let — auto-detection needs to reassign it')
+assert.match(routeCode, /let chainForClarkTools: SupportedChain \| "robinhood" \| "polygon" =/, 'chainForClarkTools must be declared with let — auto-detection needs to reassign it')
 
 // ─── Same-address-multi-chain disclosure must actually be surfaced in the rendered scan ────────
 assert.match(routeCode, /multiChainContractsForClarkTools = detected\.multiChainContracts;/, 'the gate must capture multiChainContracts from the probe so later renders can disclose an ambiguous multi-chain match')
