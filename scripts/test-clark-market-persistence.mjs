@@ -85,8 +85,10 @@ for (const field of [
   assert.ok(routeSrc.includes(field), `route exposes debug field ${field}`)
 }
 
-// 8. A resolved scan follow-up produces a "Scanning ... on Base" status message before the result.
-assert.ok(/Scanning \$\{statusLabel\} on Base/.test(routeSrc), 'resolved scan follow-up builds a status message')
+// 8. A resolved scan follow-up produces a "Scanning ... on <real chain>" status message before the
+// result — Clark/CORTEX audit, Item 2: the chain is the resolved item's own real chain (via
+// normalizeFollowupChain/chainDisplayLabel), never hardcoded "Base" regardless of source.
+assert.ok(/Scanning \$\{statusLabel\} on \$\{chainDisplayLabel\(followupChain\)\}/.test(routeSrc), 'resolved scan follow-up builds a status message using the resolved chain, not a hardcoded Base')
 assert.ok(!PROVIDER_RE.test(routeSrc.match(/Scanning \$\{statusLabel\}[^\n]*\n[^\n]*/)?.[0] ?? ''), 'status message text has no provider names')
 
 // 9. Frontend renders the status message as an interim message before the final reply.
