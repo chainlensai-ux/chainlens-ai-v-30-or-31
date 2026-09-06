@@ -5,7 +5,13 @@
 // UI requirement ("Do not just say 'missing evidence.'"). Never changes combinedStatus itself
 // (still officialPnlStatus-gated) — additive reason text only, and only while combinedStatus is
 // already 'unavailable'.
+//
+// Wallet PnL publish Item 1: V2 closedLots:0 failureReason is diagnostic-only. When canonical
+// recon/publicPnlGateAudit has real closed lots, official headline/sidebar copy comes from that
+// gate (verified/structural coverage, unmatched, missing evidence) — never the V2 "no verified
+// closed lot could be built" line. Combined status stays canonical (unavailable if gates fail).
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 
 let passed = 0
 let failed = 0
@@ -13,8 +19,14 @@ function check(label, cond) {
   if (cond) { passed++ } else { failed++; console.error(`  FAIL: ${label}`) }
 }
 
-const { buildWalletPnlViewModel } = await import('../app/frontend/lib/buildWalletPnlViewModel.ts')
+const {
+  buildWalletPnlViewModel,
+  buildOfficialUnavailableReason,
+  isV2ZeroLotUnavailableCopy,
+} = await import('../app/frontend/lib/buildWalletPnlViewModel.ts')
 const { PNL_UNAVAILABLE_MESSAGE } = await import('../app/frontend/components/PnlStatusCard.tsx')
+
+const viewModelSrc = fs.readFileSync(new URL('../app/frontend/lib/buildWalletPnlViewModel.ts', import.meta.url), 'utf8')
 
 function emptyPnlV2() {
   return { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] }
@@ -28,6 +40,53 @@ function audit(overrides = {}) {
     buysClassified: 0, sellsClassified: 0, openPositions: 0, closedLots: 0, fullyPricedClosedLots: 0,
     realizedPnlUsd: null, finalPnlStatus: 'unavailable', failureReason: null,
     ...overrides,
+  }
+}
+
+const V2_ZERO_LOT_REASON = 'Sell activity was found but did not match any earlier buy in this wallet\'s recorded history — no verified closed lot could be built.'
+
+function canonicalUnavailableRecon(overrides = {}) {
+  const auditOverrides = overrides.publicPnlGateAudit ?? {}
+  const rest = { ...overrides }
+  delete rest.publicPnlGateAudit
+  return {
+    closedLots: 586,
+    unmatchedBuys: 88,
+    unmatchedSells: 184,
+    realizedPnlUsd: 11354.01,
+    unrealizedPnlUsd: -68.96,
+    missingEvidenceCount: 344,
+    publicPnlStatus: 'unavailable',
+    publicPnlGateAudit: {
+      verifiedLotCount: 242,
+      fullyPricedLotCount: 242,
+      pricingCoverage: 0.413,
+      structuralCoverage: 1,
+      unmatchedBuyCount: 88,
+      unmatchedSellCount: 184,
+      integrityTier: 'blocked',
+      blockingReasons: [
+        { rule: 'minimum_verified_pricing_coverage', threshold: '0.5', actualValue: '0.413' },
+        { rule: 'unmatched_sells', threshold: '0', actualValue: '184' },
+        { rule: 'unmatched_buys', threshold: '0', actualValue: '88' },
+        { rule: 'missing_evidence_count', threshold: '0', actualValue: '344' },
+      ],
+      verifiedClosedLots: 242,
+      structuralClosedLots: 586,
+      verifiedPricingCoverage: 0.413,
+      boundedSampleEligible: false,
+      boundedSampleBlockingReasons: [
+        { rule: 'minimum_verified_pricing_coverage', threshold: '0.5', actualValue: '0.413' },
+      ],
+      fullAvailabilityBlockingReasons: [
+        { rule: 'minimum_verified_pricing_coverage', threshold: '0.5', actualValue: '0.413' },
+        { rule: 'unmatched_sells', threshold: '0', actualValue: '184' },
+        { rule: 'unmatched_buys', threshold: '0', actualValue: '88' },
+        { rule: 'missing_evidence_count', threshold: '0', actualValue: '344' },
+      ],
+      ...auditOverrides,
+    },
+    ...rest,
   }
 }
 
@@ -74,6 +133,57 @@ function audit(overrides = {}) {
   const without = buildWalletPnlViewModel(params)
   const withAudit = buildWalletPnlViewModel({ ...params, walletPnlEvidenceAudit: audit({ failureReason: 'Swap found, quote leg missing.' }) })
   check('walletPnlEvidenceAudit never changes combinedStatus (reason-text-only)', without.combinedStatus === withAudit.combinedStatus)
+}
+
+// 6. Item 1 — canonical recon with closed lots MUST override V2's zero-lot failureReason.
+{
+  const v2Audit = audit({
+    sellsClassified: 12,
+    closedLots: 0,
+    fullyPricedClosedLots: 0,
+    realizedPnlUsd: null,
+    finalPnlStatus: 'unavailable',
+    failureReason: V2_ZERO_LOT_REASON,
+  })
+  const recon = canonicalUnavailableRecon()
+  const vm = buildWalletPnlViewModel({
+    pnlV2: emptyPnlV2(),
+    publicPnlStatus: 'unavailable',
+    reconciliationSummary: recon,
+    walletPnlEvidenceAudit: v2Audit,
+  })
+  check('Item 1: combinedStatus stays unavailable (gates not lowered)', vm.combinedStatus === 'unavailable')
+  check('Item 1: combinedReason does not use V2 zero-lot copy', !isV2ZeroLotUnavailableCopy(vm.combinedReason))
+  check('Item 1: combinedReason does not say no verified closed lot could be built', !/no verified closed lot/i.test(vm.combinedReason))
+  check('Item 1: combinedReason reports 242 of 586 closed lots', /242 of 586 closed lots verified/.test(vm.combinedReason))
+  check('Item 1: combinedReason reports 41.3% coverage', /41\.3% coverage/.test(vm.combinedReason))
+  check('Item 1: combinedReason names the 50% pricing-coverage gate', /below the 50% gate/.test(vm.combinedReason))
+  check('Item 1: combinedReason names unmatched sells', /184 unmatched sells/.test(vm.combinedReason))
+  check('Item 1: combinedReason names unmatched buys', /88 unmatched buys/.test(vm.combinedReason))
+  check('Item 1: combinedReason names missing evidence', /Missing evidence on 344 lot sides/.test(vm.combinedReason))
+  check('Item 1: combined realized box uses the same official copy', vm.combinedRealizedBox.reason === vm.combinedReason)
+  check('Item 1: combined realized box stays Unavailable (no invented sample)', vm.combinedRealizedBox.status === 'Unavailable')
+  check('Item 1: combined realized box has no dollar figure', vm.combinedRealizedBox.value === null)
+}
+
+// 7. Item 1 — helper: V2 reason still used when canonical recon has ZERO closed lots.
+{
+  const reason = buildOfficialUnavailableReason({
+    reconciliationSummary: canonicalUnavailableRecon({
+      publicPnlGateAudit: { verifiedClosedLots: 0, structuralClosedLots: 0, verifiedPricingCoverage: null, unmatchedBuyCount: 0, unmatchedSellCount: 0 },
+    }),
+    walletPnlEvidenceAudit: audit({ failureReason: V2_ZERO_LOT_REASON }),
+  })
+  check('Item 1: V2 zero-lot copy is allowed only when canonical has zero closed lots', reason === V2_ZERO_LOT_REASON)
+}
+
+// 8. Source: never assign unavailable copy from V2 failureReason without the canonical gate.
+{
+  check(
+    'Item 1 source: unavailable copy goes through buildOfficialUnavailableReason, not raw V2 failureReason',
+    viewModelSrc.includes('buildOfficialUnavailableReason({ reconciliationSummary, walletPnlEvidenceAudit })')
+      && !viewModelSrc.includes('walletPnlEvidenceAudit?.failureReason ?? PNL_UNAVAILABLE_MESSAGE'),
+  )
 }
 
 console.log(`${passed} passed, ${failed} failed`)
