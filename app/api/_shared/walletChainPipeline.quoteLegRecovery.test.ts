@@ -9,7 +9,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { recoverQuoteLegsForBundles } from './walletChainPipeline'
+import { recoverQuoteLegsForBundles, rankQuoteLegRecoveryBundles } from './walletChainPipeline'
 import type { RawTxBundle } from '@/src/modules/swapNormalizer/types'
 
 const WALLET = '0x1111111111111111111111111111111111111111'
@@ -140,5 +140,58 @@ describe('recoverQuoteLegsForBundles', () => {
     assert.equal(fetchCalled, false)
     assert.equal(bundles[0].transfers?.length, 1)
     assert.equal(audit.oneLegTxCount, 0)
+  })
+
+  it('Item 3: rankQuoteLegRecoveryBundles spends the scarce slots on the token that dominates one-leg candidates, never on singleton distractors listed first', () => {
+    const dominant = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const distractors: RawTxBundle[] = Array.from({ length: 12 }, (_, i) => ({
+      chain: 'base',
+      txHash: `0xdist${i.toString(16).padStart(2, '0')}`,
+      timestamp: 1000 + i,
+      transfers: [{ logIndex: 1, contract: `0x${(i + 1).toString(16).padStart(40, '0')}`, from: WALLET, to: ROUTER, amountRaw: '1000' }],
+    }))
+    const majors: RawTxBundle[] = Array.from({ length: 12 }, (_, i) => ({
+      chain: 'base',
+      txHash: `0xdom${i.toString(16).padStart(2, '0')}`,
+      timestamp: 2000 + i,
+      transfers: [{ logIndex: 1, contract: dominant, from: WALLET, to: ROUTER, amountRaw: '1000' }],
+    }))
+    const ranked = rankQuoteLegRecoveryBundles([...distractors, ...majors], WALLET, 'base')
+    const firstTenContracts = ranked.slice(0, 10).map((b) => b.transfers?.[0]?.contract.toLowerCase())
+    assert.deepEqual(firstTenContracts, Array(10).fill(dominant), 'the first 10 fetch slots must be the dominant one-leg token')
+    assert.equal(ranked.length, 24)
+  })
+
+  it('Item 3: recoverQuoteLegsForBundles fetches the dominant token even when singleton distractors are listed first, without raising the 10-receipt cap or reordering FIFO output', async () => {
+    const fetched: string[] = []
+    globalThis.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { params?: string[] } : null
+      const txHash = body?.params?.[0]
+      if (typeof txHash === 'string') fetched.push(txHash)
+      return { ok: true, json: async () => receiptResponse([]) }
+    }) as unknown as typeof fetch
+
+    const dominant = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const distractors: RawTxBundle[] = Array.from({ length: 12 }, (_, i) => ({
+      chain: 'base',
+      txHash: `0xdist${i.toString(16).padStart(2, '0')}`,
+      timestamp: 1000 + i,
+      transfers: [{ logIndex: 1, contract: `0x${(i + 1).toString(16).padStart(40, '0')}`, from: WALLET, to: ROUTER, amountRaw: '1000' }],
+    }))
+    const majors: RawTxBundle[] = Array.from({ length: 8 }, (_, i) => ({
+      chain: 'base',
+      txHash: `0xdom${i.toString(16).padStart(2, '0')}`,
+      timestamp: 2000 + i,
+      transfers: [{ logIndex: 1, contract: dominant, from: WALLET, to: ROUTER, amountRaw: '1000' }],
+    }))
+    const input = [...distractors, ...majors]
+    const { bundles, audit } = await recoverQuoteLegsForBundles(input, WALLET, 'base')
+
+    assert.equal(audit.candidateSwapTxs, 20)
+    assert.equal(audit.receiptsFetched, 10, 'cap is unchanged at 10')
+    assert.equal(audit.rejectionReasons.receipt_budget_exhausted, 10)
+    const dominantFetched = fetched.filter((h) => h.startsWith('0xdom')).length
+    assert.equal(dominantFetched, 8, 'every dominant-token one-leg tx must be fetched before leftover budget hits distractors')
+    assert.deepEqual(bundles.map((b) => b.txHash), input.map((b) => b.txHash), 'output order must match input so FIFO event order never moves')
   })
 })

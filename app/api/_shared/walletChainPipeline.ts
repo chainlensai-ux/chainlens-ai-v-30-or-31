@@ -214,6 +214,42 @@ function bumpReason(audit: QuoteLegRecoveryChainAudit, reason: string): void {
 // counted in `candidateSwapTxs`).
 const MAX_RECEIPT_FETCHES_PER_CHAIN = 10
 
+// QUOTE-LEG RECEIPT RANKING, DISCLOSED (Wallet PnL coverage Item 3): recoverQuoteLegsForBundles
+// previously walked bundles in provider-insertion order and spent the scarce
+// MAX_RECEIPT_FETCHES_PER_CHAIN=10 slots on whichever one-leg txs appeared first. Live evidence:
+// receipt_budget_exhausted ~144 while the tokens that dominate unmatched sells / unpriced closed
+// lots (FACY/NOX/0xc7c-class — counted by frequency, never hardcoded) starved. Ranking spends the
+// SAME 10 fetches on tokens that dominate the one-leg candidate set; non-candidates stay at the
+// back. FETCH order changes; OUTPUT order is restored to the caller's input order so FIFO
+// timestamps/event order never move. Never fabricates a quote leg; a candidate past the cap is
+// still counted as receipt_budget_exhausted.
+export function rankQuoteLegRecoveryBundles(
+  bundles: readonly RawTxBundle[],
+  walletAddress: string,
+  chain: QuoteLegChain,
+): RawTxBundle[] {
+  const tokenCount = new Map<string, number>()
+  const isCandidate = new Map<string, boolean>()
+  const knownToken = new Map<string, string>()
+  for (const bundle of bundles) {
+    const candidate = identifyRecoveryCandidate(bundle.transfers ?? [], walletAddress, chain)
+    isCandidate.set(bundle.txHash, candidate.candidate)
+    if (!candidate.candidate) continue
+    const token = candidate.knownContract.toLowerCase()
+    knownToken.set(bundle.txHash, token)
+    tokenCount.set(token, (tokenCount.get(token) ?? 0) + 1)
+  }
+  return [...bundles].sort((a, b) => {
+    const aCand = isCandidate.get(a.txHash) ? 0 : 1
+    const bCand = isCandidate.get(b.txHash) ? 0 : 1
+    if (aCand !== bCand) return aCand - bCand
+    const aCount = tokenCount.get(knownToken.get(a.txHash) ?? '') ?? 0
+    const bCount = tokenCount.get(knownToken.get(b.txHash) ?? '') ?? 0
+    if (aCount !== bCount) return bCount - aCount
+    return a.txHash.localeCompare(b.txHash)
+  })
+}
+
 // Real, bounded quote-leg recovery: for each transaction bundle whose transfers form a genuine
 // one-leg swap candidate (see identifyRecoveryCandidate's own header), fetches that transaction's
 // real receipt and looks for a standard ERC20 Transfer log moving a known WETH/stable quote asset
@@ -237,13 +273,14 @@ export async function recoverQuoteLegsForBundles(
 
   let receiptCallsUsed = 0
   const recoveryChain = chain as QuoteLegChain
-  const out: RawTxBundle[] = []
+  const recoveredByTx = new Map<string, RawTxBundle>()
+  const fetchOrder = rankQuoteLegRecoveryBundles(bundles, walletAddress, recoveryChain)
 
-  for (const bundle of bundles) {
+  for (const bundle of fetchOrder) {
     const transfers = bundle.transfers ?? []
     const candidate = identifyRecoveryCandidate(transfers, walletAddress, recoveryChain)
     if (!candidate.candidate) {
-      out.push(bundle)
+      recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
     audit.oneLegTxCount += 1
@@ -251,7 +288,7 @@ export async function recoverQuoteLegsForBundles(
 
     if (receiptCallsUsed >= MAX_RECEIPT_FETCHES_PER_CHAIN) {
       bumpReason(audit, 'receipt_budget_exhausted')
-      out.push(bundle)
+      recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
     receiptCallsUsed += 1
@@ -259,14 +296,14 @@ export async function recoverQuoteLegsForBundles(
     const receipt = await fetchTransactionReceiptLogs(recoveryChain, bundle.txHash, cuBudget)
     if (receipt.status !== 'ok') {
       bumpReason(audit, `receipt_${receipt.status}`)
-      out.push(bundle)
+      recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
 
     const recovered = recoverMissingQuoteLeg(receipt.logs, walletAddress, recoveryChain, candidate.missingSide)
     if (recovered.status !== 'recovered') {
       bumpReason(audit, recovered.status)
-      out.push(bundle)
+      recoveredByTx.set(bundle.txHash, bundle)
       continue
     }
 
@@ -275,7 +312,7 @@ export async function recoverQuoteLegsForBundles(
     else audit.stableQuoteLegsRecovered += 1
 
     const nextLogIndex = transfers.reduce((max, t) => Math.max(max, t.logIndex), 0) + 1
-    out.push({
+    recoveredByTx.set(bundle.txHash, {
       ...bundle,
       transfers: [
         ...transfers,
@@ -292,7 +329,10 @@ export async function recoverQuoteLegsForBundles(
     })
   }
 
-  return { bundles: out, audit }
+  return {
+    bundles: bundles.map((bundle) => recoveredByTx.get(bundle.txHash) ?? bundle),
+    audit,
+  }
 }
 
 export type TradesWithIntentForChainResult = {
