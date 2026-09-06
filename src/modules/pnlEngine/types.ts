@@ -71,7 +71,6 @@ export type PnlSummaryResult = {
   // labelled diagnostic field below, so API/UI consumers never see two competing official totals.
   realizedPnlUsd: number | null
   diagnosticRealizedPnlUsd?: number | null
-  diagnosticOnly?: boolean
   closedLots: ClosedLot[]
   winLossRate: WinLossRate
   chainBreakdown: ChainBreakdownEntry[]
