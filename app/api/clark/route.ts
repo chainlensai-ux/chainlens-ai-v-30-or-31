@@ -12840,7 +12840,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // CHAIN-STRICT: skip the honeypot sim entirely for chains with no chainId mapping
     // (null from toTokenApiChain) instead of silently probing as Base.
     const honeypotChain = toTokenApiChain(chainForClarkTools);
-    const honeypotPromise = honeypotChain == null
+    // FAST PREVIEW (Clark/CORTEX audit, Item 15): a clark_fast request must not secretly run
+    // the independent security simulation and then present honeypot:false / 0% tax as verified
+    // sellable. /api/token's own clark_fast branch already marks skipped sim as Not Checked.
+    const honeypotPromise = wantsFastPreview || honeypotChain == null
       ? Promise.resolve(null)
       : fetchHoneypotSecurity(tokenAddress, honeypotChain)
       .then((r) => { securitySim = r; return r; })
@@ -13103,7 +13106,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         // as a risk signal from here. Added the same way as the other contract flags above.
         blacklist: typeof tContractFlags.blacklist === "boolean" ? tContractFlags.blacklist : null,
         securityStatus: _hp?.securityStatus ?? (tokenRouteSecurityMapped ? "mapped_from_token_route" : (honeypotFailed ? "Security simulation unavailable" : "unverified")),
-        simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : (!hasHoneypot && honeypotFailed ? "unavailable" : null)),
+        simulationStatus: wantsFastPreview || (typeof tSectSecurity.status === "string" && /^(not_checked|skipped)$/i.test(String(tSectSecurity.status)))
+          ? "not_checked"
+          : (_hp?.simulationStatus ?? (honeypotAborted ? "timeout" : (!hasHoneypot && honeypotFailed ? "unavailable" : null))),
         riskLevel: _hp?.riskLevel ?? "unknown",
         missing: missingEvidence,
         missingReason: sectionsMissing.find(s => s.section === "security_sim")?.reason ?? null,
@@ -14019,9 +14024,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let analysis: string;
     let formatterUsed: string;
 
-    if (tokenApiMode === "clark_fast" && !ev.ok && usableEvidence) {
-      // Clark fast mode: market/pool identity present, deeper sections intentionally skipped —
-      // an explicit, narrower quick-preview request, kept separate from the full verdict below.
+    if (tokenApiMode === "clark_fast" && usableEvidence) {
+      // Clark fast mode: market/pool identity may be present, deeper sections intentionally skipped.
+      // Always use the fast formatter — market data making ev.ok true must not fall through to the
+      // full verdict engine (which can imply 0% tax / sellable / verified from partial flags).
       analysis = formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
       formatterUsed = "formatFastTokenRead";
     } else {
@@ -14048,7 +14054,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     updateMemIntent(sessionMem, "token_analysis");
 
     const evScanDebug = (evDebug._tokenScanDebug ?? {}) as Record<string, unknown>;
-    const finalAnswerType: string = !usableEvidence ? "token_read_failed_or_open_check" : (tokenApiMode === "clark_fast" && !ev.ok) ? "fast_token_read" : (ev.ok && !partialEvidenceUsed) ? "full_token_read" : "partial_token_read";
+    const finalAnswerType: string = !usableEvidence ? "token_read_failed_or_open_check" : (tokenApiMode === "clark_fast") ? "fast_token_read" : (ev.ok && !partialEvidenceUsed) ? "full_token_read" : "partial_token_read";
 
     // Task 2: quota is only consumed when there's usable evidence to charge for.
     const quotaEligible = usableEvidence;

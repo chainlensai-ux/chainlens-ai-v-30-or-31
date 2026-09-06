@@ -4212,7 +4212,7 @@ export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): stri
   const mkt = ev.market;
   const sec = ev.security;
   const hasMarket = mkt != null && (mkt.price != null || mkt.liquidity != null || mkt.volume24h != null);
-  const hasFastSecurity = sec != null && (sec.honeypot != null || sec.buyTax != null || sec.sellTax != null);
+  const honeypotFlagged = sec?.honeypot === true;
 
   const lines: string[] = [`TOKEN READ — fast evidence`];
   lines.push(`- Token: ${name && name !== sym ? `${name} / ${sym}` : sym}`);
@@ -4230,21 +4230,21 @@ export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): stri
 
   lines.push(`- LP: ${composeTokenScannerPublicStatus('not_checked', 'fast scan skipped LP proof')}`);
   lines.push(`- Holders: ${composeTokenScannerPublicStatus('not_checked', 'fast scan skipped holder scan')}`);
-
-  if (hasFastSecurity) {
-    lines.push(`- Security: ${sec?.honeypot === true ? "HONEYPOT flagged" : sec?.honeypot === false ? "no honeypot signal" : "available fast flags"}${sec?.buyTax != null ? ` (buy tax ${fmtTaxPct(sec.buyTax)}, sell tax ${fmtTaxPct(sec.sellTax)})` : ""}`);
+  // Item 15: skipped (or unconfirmed) sim is Not Checked. Never imply 0% tax / sellable / verified
+  // from a honeypot:false leftover. A confirmed honeypot flag is still enough to Avoid.
+  if (honeypotFlagged) {
+    lines.push(`- Security: HONEYPOT flagged`);
   } else {
     lines.push(`- Security: ${composeTokenScannerPublicStatus('not_checked', 'fast scan skipped security simulation')}`);
   }
 
-  const verdictKnown = sec?.honeypot === true;
-  lines.push(`- Verdict: ${verdictKnown ? "Avoid — honeypot detected" : composeTokenScannerPublicStatus('not_checked', 'fast scan skipped full token verification')}`);
+  lines.push(`- Verdict: ${honeypotFlagged ? "Avoid — honeypot detected" : composeTokenScannerPublicStatus('not_checked', 'fast scan skipped full token verification')}`);
 
   lines.push("");
   lines.push("Meaning:");
-  lines.push(verdictKnown
+  lines.push(honeypotFlagged
     ? "Honeypot evidence is enough to avoid this token even in a fast preview. LP proof, holders, and deployer/dev-risk were still not run."
-    : "This is a fast preview. Market identity may be available, but LP proof, holders, and deployer/dev-risk were not run — do not treat this as a full TOKEN READ.");
+    : "This is a fast preview. Market identity may be available, but LP proof, holders, security simulation, and deployer/dev-risk were not run — do not treat this as a full TOKEN READ.");
   if (hasMarket && mkt?.liquidity != null) {
     lines.push(`Visible liquidity is ${fmtUsdShort(mkt.liquidity)}, which is market depth only — not lock safety.`);
   }

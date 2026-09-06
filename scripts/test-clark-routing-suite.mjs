@@ -23,6 +23,7 @@ const tests = [
   'test-clark-pump-chain.mjs',
   'test-clark-wallet-analyze-quality-guard.mjs',
   'test-clark-supported-chain-consistency.mjs',
+  'test-clark-fast-preview-not-checked.mjs',
   'test-base-radar-chain-strict.mjs',
   'test-base-radar-provider-fallback.mjs',
   'test-base-radar-auto-retry.mjs',

@@ -223,6 +223,11 @@ function evmPayload(overrides = {}) {
   assert.match(fast, /Next:/)
   assert.match(fast, /LP: Not Checked: fast scan skipped LP proof/)
   assert.match(fast, /Holders: Not Checked: fast scan skipped holder scan/)
+  assert.match(fast, /Security: Not Checked: fast scan skipped security simulation/)
+  assert.match(fast, /Verdict: Not Checked: fast scan skipped full token verification/)
+  assert.doesNotMatch(fast, /no honeypot signal/i)
+  assert.doesNotMatch(fast, /sellable|0% tax/i)
+  assert.doesNotMatch(fast, /^- Verdict: Verified/m)
   assert.doesNotMatch(fast, /lp lock\/burn proof confirmed/i)
   assert.doesNotMatch(fast, /walletScanHealth/)
 }

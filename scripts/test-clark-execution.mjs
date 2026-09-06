@@ -890,6 +890,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Task 4: skipped holders/LP/dev sections are reported as Not Checked, never a fake safe verdict
   assert.ok(fastOut.includes('LP: Not Checked: fast scan skipped LP proof'), 'clark_fast LP section is Not Checked, not a fake verdict')
   assert.ok(fastOut.includes('Holders: Not Checked: fast scan skipped holder scan'), 'clark_fast holders section is Not Checked, not faked')
+  assert.ok(fastOut.includes('Security: Not Checked: fast scan skipped security simulation'), 'clark_fast security is Not Checked even when a leftover honeypot:false flag is present')
+  assert.ok(!/no honeypot signal|sellable|0% tax/i.test(fastOut), 'fast evidence never implies sellable / 0% tax / verified-clean from a skipped sim')
   assert.ok(fastOut.includes('Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan'), 'fast evidence output lists missing-evidence categories')
   assert.ok(!/lp.*locked|holders.*verified/i.test(fastOut), 'fast evidence never claims LP locked or holders verified without evidence')
 
