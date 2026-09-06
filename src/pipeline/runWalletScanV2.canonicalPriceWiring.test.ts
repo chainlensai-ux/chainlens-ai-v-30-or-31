@@ -54,6 +54,14 @@ describe('runWalletScanV2 — reusing the exact canonical priced holdings snapsh
     assert.deepEqual(priceLookup(TOKEN, 'base'), { priceUsd: 0.05, source: 'dexscreener_fallback' })
   })
 
+  it('direct provider price wins over a conflicting resolved fallback for Partial unrealized', () => {
+    const holdings = [holding({ providerPriceUsd: 2 })]
+    const prices: TokenPrice[] = [{ chain: 'base', contract: TOKEN, priceUsd: 1, source: 'dexscreener_fallback' }]
+    assert.deepEqual(buildCanonicalCurrentPriceLookup(holdings, prices)(TOKEN, 'base'), {
+      priceUsd: 2, source: 'provider_supplied',
+    })
+  })
+
   it('an "unavailable" resolvePrices result is never indexed as a fabricated price', () => {
     const holdings: TokenHolding[] = [holding()]
     const prices: TokenPrice[] = [{ chain: 'base', contract: TOKEN, priceUsd: null, source: 'unavailable' }]

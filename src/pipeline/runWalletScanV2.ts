@@ -173,6 +173,11 @@ export function buildCanonicalCurrentPriceLookup(
   prices: TokenPrice[],
 ): import('../modules/fifoEngine/types').CanonicalCurrentPriceLookup {
   const byKey = new Map<string, import('../modules/fifoEngine/types').CanonicalCurrentPriceResult>()
+  for (const h of holdings) {
+    if (h.providerPriceUsd == null || !Number.isFinite(h.providerPriceUsd) || h.providerPriceUsd <= 0) continue
+    const result = { priceUsd: h.providerPriceUsd, source: 'provider_supplied' }
+    for (const key of nativeAliasKeys(h.chain, h.contract)) byKey.set(key, result)
+  }
   for (const p of prices) {
     // UNAVAILABLE IS NOT A PRICE, DISCLOSED: resolvePrices reports `source: 'unavailable'` with
     // `priceUsd: null` when nothing was found — never indexed here, so a caller correctly sees
@@ -180,17 +185,6 @@ export function buildCanonicalCurrentPriceLookup(
     if (p.priceUsd == null || !Number.isFinite(p.priceUsd) || p.priceUsd <= 0) continue
     const result = { priceUsd: p.priceUsd, source: p.source }
     for (const key of nativeAliasKeys(p.chain, p.contract)) {
-      if (!byKey.has(key)) byKey.set(key, result)
-    }
-  }
-  // Defensive fallback to each holding's OWN providerPriceUsd, in case a (chain, contract) pair
-  // exists in `holdings` but was somehow never represented in `prices` (e.g. a caller passing a
-  // trimmed prices array) — mirrors buildPortfolioSummary's own `h.providerPriceUsd ?? ...`
-  // precedence exactly, never a second/different price system.
-  for (const h of holdings) {
-    if (h.providerPriceUsd == null || !Number.isFinite(h.providerPriceUsd) || h.providerPriceUsd <= 0) continue
-    const result = { priceUsd: h.providerPriceUsd, source: 'provider_supplied' }
-    for (const key of nativeAliasKeys(h.chain, h.contract)) {
       if (!byKey.has(key)) byKey.set(key, result)
     }
   }

@@ -7,9 +7,15 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { logPoolValidationAudit, AERODROME_CLASSIC_FACTORY, AERODROME_SLIPSTREAM_FACTORY } from './poolValidator'
+import { logPoolValidationAudit, AERODROME_CLASSIC_FACTORY, AERODROME_SLIPSTREAM_FACTORY, isCanonicalSlipstreamFactory } from './poolValidator'
 
 const originalConsoleWarn = console.warn
+
+test('Slipstream reverse validation accepts only the canonical Base CL factory', () => {
+  assert.equal(isCanonicalSlipstreamFactory(AERODROME_SLIPSTREAM_FACTORY.toLowerCase()), true)
+  assert.equal(isCanonicalSlipstreamFactory('0x0000000000000000000000000000000000000000'), false)
+  assert.equal(isCanonicalSlipstreamFactory(null), false)
+})
 
 function captureWarnings(): { calls: unknown[][]; restore: () => void } {
   const calls: unknown[][] = []

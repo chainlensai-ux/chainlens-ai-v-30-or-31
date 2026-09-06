@@ -3183,7 +3183,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       }
     }
 
-    if (!existingRead.manifest || refreshCanonicalSampleRequested) {
+    // A zero-lot manifest is not a canonical sample: it contains no accepted closed-lot evidence
+    // to preserve.  If historical pricing subsequently completes a structural lot, replace that
+    // empty bootstrap record instead of replaying it forever and demoting the newly verified lot.
+    // Non-empty manifests retain the existing explicit-refresh-only policy.
+    const replaceEmptyBootstrapManifest = existingRead.manifest?.verifiedLotCount === 0
+      && candidateVerifiedLots.length > 0
+    if (!existingRead.manifest || refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) {
       // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #9 — never an automatic refresh
       // because replay failed). The manifest records THIS scan's own candidate verified sample, and
       // that same sample is published unchanged; there is nothing to withhold.
@@ -3214,11 +3220,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       // guaranteed, permanent mismatch. Passing the SAME `computeManifestFingerprints` helper here that
       // replay already uses makes manifest creation and replay share one canonicalization, exactly like
       // the identity/evidence pipeline already does.
-      const newManifest = refreshCanonicalSampleRequested && existingRead.manifest
+      const newManifest = (refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) && existingRead.manifest
         ? await buildRefreshedManifest({
             priorManifest: existingRead.manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
             candidateVerifiedLots, structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
-            verifiedPricingCoverage, now: Date.now(), refreshReason: 'explicit-refresh-requested',
+            verifiedPricingCoverage, now: Date.now(), refreshReason: replaceEmptyBootstrapManifest
+              ? 'verified-evidence-replaced-empty-bootstrap'
+              : 'explicit-refresh-requested',
             loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
           })
         : await buildManifestFromCandidate({

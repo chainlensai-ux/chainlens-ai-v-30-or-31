@@ -212,11 +212,14 @@ export type AlchemyHistoricalAuditRecord = {
 
 // TEMPORAL ACCEPTANCE, DISCLOSED: a resolved price is only ACCEPTED if the closest returned price
 // point is within this asset class's max acceptable distance from the requirement's own timestamp.
-// ETH/WETH/stables get a wider window (deep, liquid markets move less between daily points); every
-// other token gets a tighter window (thin markets can move a lot in a day) — anything farther is
+// The endpoint supplies daily points, so every closed-lot asset gets the same-day nearest-candle
+// window. Anything farther than a complete day is
 // rejected as temporal_distance_exceeded rather than silently accepted as "close enough."
 const TIER2_MAX_TEMPORAL_DISTANCE_MS = 24 * 60 * 60 * 1000
-const OTHER_MAX_TEMPORAL_DISTANCE_MS = 6 * 60 * 60 * 1000
+// Alchemy returns daily historical points for this endpoint. Closed-lot requirements can occur at
+// any hour of that candle's UTC day, so a six-hour cutoff discarded valid same-day evidence for
+// most trades. One day admits the nearest daily candle while still rejecting stale multi-day data.
+const OTHER_MAX_TEMPORAL_DISTANCE_MS = 24 * 60 * 60 * 1000
 
 function maxTemporalDistanceMsFor(chain: SupportedChain, token: string): number {
   return isTier2Asset(chain, token) ? TIER2_MAX_TEMPORAL_DISTANCE_MS : OTHER_MAX_TEMPORAL_DISTANCE_MS
