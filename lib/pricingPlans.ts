@@ -6,18 +6,6 @@
 
 export type UserPlan = 'free' | 'pro' | 'elite'
 
-// CARD CHECKOUT AVAILABILITY, DISCLOSED (checkout audit, updated per explicit instruction to use
-// PayPal's own card option): "Card" now runs through the same PayPal Subscriptions approval page as
-// "PayPal" (see paypalCheckoutUrl below — they're intentionally the same URL again). This is
-// correct ONLY because PayPal's hosted checkout page can present a "Pay with Debit or Credit Card"
-// form instead of forcing login — but ONLY once Guest Checkout / "Advanced Credit and Debit Card
-// Payments" is enabled on the live PayPal Business account (Account Settings → Website payments).
-// That is an account-level PayPal setting, not something this code can turn on. If it is NOT
-// enabled, PayPal falls back to its login page for every payer, Card included — the exact bug this
-// flag once existed to prevent. CARD_CHECKOUT_AVAILABLE is true because the routing is now correct;
-// it does not itself guarantee guest/card checkout is turned on for this merchant account.
-export const CARD_CHECKOUT_AVAILABLE = true
-
 export const PLAN_RANK: Record<UserPlan, number> = { free: 0, pro: 1, elite: 2 }
 
 export const PLAN_LABEL: Record<UserPlan, string> = {
@@ -215,17 +203,7 @@ export type PricingPlan = {
   price: string
   priceMonthly: number
   cryptoCheckoutUrl: string | null
-  // CARD/PAYPAL, DISCLOSED (checkout audit, updated per explicit instruction to use PayPal's own
-  // card option): Card and PayPal intentionally point at the same PayPal Subscriptions endpoint —
-  // PayPal's hosted approval page can present a real "Pay with Debit or Credit Card" form for a
-  // guest payer instead of forcing login, but ONLY once Guest Checkout / "Advanced Credit and Debit
-  // Card Payments" is enabled on the live PayPal Business account (an account-level PayPal setting,
-  // not something this app's code controls). See CARD_CHECKOUT_AVAILABLE's own comment above for the
-  // full history: this exact "same URL" shape was originally a bug (Card silently ran PayPal with no
-  // card option ever available) — it is only correct now because that account setting is expected to
-  // be enabled. If it is not, Card falls back to the same PayPal login screen as everyone else.
   paypalCheckoutUrl: string | null
-  cardCheckoutUrl: string | null
   limits: {
     clarkPromptsPerDay: number
     scansPerDay: number | null
@@ -248,7 +226,6 @@ export const pricingPlans: PricingPlan[] = [
     priceMonthly: 0,
     cryptoCheckoutUrl: null,
     paypalCheckoutUrl: null,
-    cardCheckoutUrl: null,
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.free,
       scansPerDay: SCAN_DAILY_LIMITS.free,
@@ -278,7 +255,6 @@ export const pricingPlans: PricingPlan[] = [
     priceMonthly: 30,
     cryptoCheckoutUrl: '/api/checkout/crypto',
     paypalCheckoutUrl: '/api/paypal/create-subscription',
-    cardCheckoutUrl: '/api/paypal/create-subscription',
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.pro,
       scansPerDay: SCAN_DAILY_LIMITS.pro,
@@ -309,7 +285,6 @@ export const pricingPlans: PricingPlan[] = [
     priceMonthly: 60,
     cryptoCheckoutUrl: '/api/checkout/crypto',
     paypalCheckoutUrl: '/api/paypal/create-subscription',
-    cardCheckoutUrl: '/api/paypal/create-subscription',
     limits: {
       clarkPromptsPerDay: CLARK_DAILY_LIMITS.elite,
       scansPerDay: SCAN_DAILY_LIMITS.elite,
