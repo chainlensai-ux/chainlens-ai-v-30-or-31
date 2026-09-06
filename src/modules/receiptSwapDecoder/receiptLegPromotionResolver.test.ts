@@ -72,6 +72,16 @@ test('three total matches (split across both arrays) is ambiguous, never guessed
   assert.equal(result.reason, 'multiple_incomplete_matches_ambiguous')
 })
 
+test('unique exact receipt amount selects the canonical exit among same-tx fragments', () => {
+  const exact = exactSwap({ txHash: '0x0f292521', amountInRaw: '1000' })
+  const result = resolvePromotableLeg([
+    baseEvent({ txHash: exact.txHash, direction: 'outbound', contract: exact.tokenIn.address, amountRaw: '250' }),
+    baseEvent({ txHash: exact.txHash, direction: 'outbound', contract: exact.tokenIn.address, amountRaw: '1000' }),
+  ], WALLET, exact, new Set([exact.protocol]))
+  assert.equal(result.ok, true)
+  if (result.ok) assert.equal(result.existingIndex, 1)
+})
+
 test('one exact decoded anchor is promotable despite unrelated recovered inventory in the same transaction', () => {
   const events = [
     baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH }),

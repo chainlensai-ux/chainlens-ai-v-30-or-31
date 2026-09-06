@@ -72,13 +72,25 @@ export function resolvePromotableLeg(
   // A receipt may share its transaction with recovered inventory/noise legs. The exact decoded
   // token pair makes only an outbound tokenIn or inbound tokenOut a possible anchor. When that
   // filter leaves exactly one anchor, unrelated same-transaction transfers are not ambiguity.
-  if (totalMatchCount > 2) {
+  if (totalMatchCount > 1) {
     const isDecodedAnchor = (e: NormalizedEvent) =>
       (e.direction === 'outbound' && e.contract.toLowerCase() === decodedSwap.tokenIn.address.toLowerCase())
       || (e.direction === 'inbound' && e.contract.toLowerCase() === decodedSwap.tokenOut.address.toLowerCase())
     const canonicalAnchors = matchIndices.filter((i) => isDecodedAnchor(events[i]))
     const recoveredAnchors = additionalMatches.filter(isDecodedAnchor)
-    if (canonicalAnchors.length + recoveredAnchors.length === 1) {
+    const anchors = [...canonicalAnchors.map((i) => ({ index: i, event: events[i] })), ...recoveredAnchors.map((event) => ({ index: -1, event }))]
+    const exactAmountAnchors = anchors.filter(({ event }) => {
+      const expectedRaw = event.direction === 'outbound' ? decodedSwap.amountInRaw : decodedSwap.amountOutRaw
+      return event.amountRaw === expectedRaw
+    })
+    const oneAnchorDirection = new Set(anchors.map(({ event }) => event.direction)).size === 1
+    const selected = exactAmountAnchors.length === 1 && oneAnchorDirection ? exactAmountAnchors : anchors
+    if (selected.length === 1) {
+      const anchor = selected[0]
+      matchIndices = anchor.index >= 0 ? [anchor.index] : []
+      additionalMatches = anchor.index < 0 ? [anchor.event] : []
+      totalMatchCount = 1
+    } else if (canonicalAnchors.length + recoveredAnchors.length === 1) {
       matchIndices = canonicalAnchors
       additionalMatches = recoveredAnchors
       totalMatchCount = 1

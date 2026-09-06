@@ -53,6 +53,11 @@ const SLIPSTREAM_FACTORY_ABI = [
   },
 ] as const
 
+const CL_POOL_FACTORY_ABI = [{
+  type: 'function', name: 'factory', stateMutability: 'view', inputs: [],
+  outputs: [{ name: '', type: 'address' }],
+}] as const
+
 // Same tick-spacing enumeration basedex.ts uses for Slipstream pool discovery.
 const SLIPSTREAM_TICK_SPACINGS = [1, 50, 100, 200, 2000] as const
 
@@ -75,6 +80,10 @@ export async function tryClassicStableVariants(
     if (typeof pool === 'string' && pool.toLowerCase() === normalizedTarget) return true
   }
   return false
+}
+
+export function isCanonicalSlipstreamFactory(factory: unknown): boolean {
+  return typeof factory === 'string' && factory.toLowerCase() === AERODROME_SLIPSTREAM_FACTORY.toLowerCase()
 }
 
 // Shared client — see rpcClient.ts's own header for why this is one cached instance reused across
@@ -158,6 +167,13 @@ export function createLiveBaseDexPoolValidator(): PoolValidator {
             return true
           }
         }
+        const reverseFactory = await client.readContract({
+          address: poolAddress as `0x${string}`,
+          abi: CL_POOL_FACTORY_ABI,
+          functionName: 'factory',
+        })
+        attempts.push({ key: 'pool.factory()', returnedPool: typeof reverseFactory === 'string' ? reverseFactory.toLowerCase() : null })
+        if (isCanonicalSlipstreamFactory(reverseFactory)) return true
         logPoolValidationAudit(protocol, AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, false)
         return false
       } catch {

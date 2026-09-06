@@ -212,27 +212,27 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     // nothing here for a caller to accidentally consume without explicitly reading this return value.
   })
 
-  it('temporal acceptance: a non-tier2 token price found more than 6 hours away is rejected', async () => {
+  it('temporal acceptance: a non-tier2 closed-lot candle more than one day away is rejected', async () => {
     global.fetch = (async () =>
       new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '3500' }] }), { status: 200 })) as unknown as typeof fetch
 
     const requirements: AlchemyPricingRequirement[] = [
-      req({ txHash: '0xfar', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 7 * 60 * 60 * 1000 }),
+      req({ txHash: '0xfar', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 25 * 60 * 60 * 1000 }),
     ]
     const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow(requirements)
 
-    assert.equal(shadowPricesByTxHash.has('0xfar'), false, 'a price 7 hours away must be rejected for a non-tier2 asset (6h max)')
+    assert.equal(shadowPricesByTxHash.has('0xfar'), false, 'a stale price beyond the daily candle window must be rejected')
     assert.equal(audit.rejectedByTemporalDistance, 1)
     assert.equal(audit.acceptedRequirementsResolved, 0)
     assert.equal(audit.failureReasons.temporal_distance_exceeded, 1)
   })
 
-  it('temporal acceptance: a non-tier2 token price found within 6 hours is accepted', async () => {
+  it('temporal acceptance: a non-tier2 closed-lot price within the nearest daily candle is accepted', async () => {
     global.fetch = (async () =>
       new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '3500' }] }), { status: 200 })) as unknown as typeof fetch
 
     const requirements: AlchemyPricingRequirement[] = [
-      req({ txHash: '0xclose', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 5 * 60 * 60 * 1000 }),
+      req({ txHash: '0xclose', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 20 * 60 * 60 * 1000 }),
     ]
     const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow(requirements)
 
