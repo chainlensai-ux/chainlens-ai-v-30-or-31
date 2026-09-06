@@ -12,6 +12,7 @@ const tests = [
   'test-clark-no-transcript-followup.mjs',
   'test-clark-chat-memory-isolation.mjs',
   'test-clark-session-memory-precedence.mjs',
+  'test-clark-daily-quota.mjs',
   'test-clark-history.mjs',
   'test-clark-intent.mjs',
   'test-clark-market-metric-routing.mjs',

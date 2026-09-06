@@ -62,7 +62,8 @@ import {
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
-import { CLARK_DAILY_BY_PLAN, clarkPlanAllows } from '@/lib/pricingPlans'
+import { clarkPlanAllows } from '@/lib/pricingPlans'
+import { peekClarkDailyQuota, commitClarkDailyQuota } from '@/lib/clarkDailyQuota'
 import { buildClarkWhaleIntelligenceUi, rankClarkWhaleFlowRows, type ClarkWhaleFlowRow, type ClarkWhaleIntelligenceUi, type ClarkWhaleWalletRow } from '@/lib/clarkWhaleUi'
 import { whaleUsdUnavailableCopy, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 import {
@@ -237,7 +238,6 @@ const {
 
 const CLARK_CACHE_TTL_MS = 90 * 1000
 const clarkCache = new Map<string, { exp: number; payload: unknown }>()
-const clarkRateDaily = new Map<string, { count: number; resetAt: number }>()
 const clarkRateMinute = new Map<string, { count: number; resetAt: number }>()
 const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
 const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
@@ -956,26 +956,18 @@ function cleanClarkText(text: string): string {
     .replace(/\n{3,}/g, "\n\n");
 }
 
-type ClarkRateResult = { allowed: true; commitDaily: () => void } | { allowed: false; window: 'minute' | 'daily' }
-function checkClarkRate(actor: string, planKey: string): ClarkRateResult {
+type ClarkRateResult = { allowed: true; commitDaily: () => void | Promise<void> } | { allowed: false; window: 'minute' | 'daily' }
+async function checkClarkRate(actor: string, planKey: string): Promise<ClarkRateResult> {
   const now = Date.now()
   const minuteKey = `clark:${actor}:${planKey}:minute`
-  const dailyKey = `clark:${actor}:${planKey}:daily`
   const minuteLim = CLARK_MINUTE_BY_PLAN[planKey] ?? 1
-  const dailyLim = CLARK_DAILY_BY_PLAN[planKey] ?? 3
   const curMinute = clarkRateMinute.get(minuteKey)
   const minuteActive = Boolean(curMinute && curMinute.resetAt > now)
   if (minuteActive && curMinute!.count >= minuteLim) return { allowed: false, window: 'minute' }
-  const curDaily = clarkRateDaily.get(dailyKey)
-  const dailyActive = Boolean(curDaily && curDaily.resetAt > now)
-  if (dailyActive && curDaily!.count >= dailyLim) return { allowed: false, window: 'daily' }
+  const daily = await peekClarkDailyQuota(actor, planKey)
+  if (daily.count >= daily.limit) return { allowed: false, window: 'daily' }
   if (!minuteActive) { clarkRateMinute.set(minuteKey, { count: 1, resetAt: now + 60_000 }) } else { curMinute!.count += 1 }
-  const commitDaily = () => {
-    const cur = clarkRateDaily.get(dailyKey)
-    const active = Boolean(cur && cur.resetAt > Date.now())
-    if (!active) { clarkRateDaily.set(dailyKey, { count: 1, resetAt: Date.now() + 24 * 60 * 60 * 1000 }) } else { cur!.count += 1 }
-  }
-  return { allowed: true, commitDaily }
+  return { allowed: true, commitDaily: async () => { await commitClarkDailyQuota(actor, planKey) } }
 }
 
 function checkClarkLowCostRate(actor: string, planKey: string): ClarkRateResult {
@@ -16428,7 +16420,7 @@ export async function POST(req: NextRequest) {
 
   const rateResult = (promptIsLowCost || rankAllowanceActive)
     ? checkClarkLowCostRate(actor, planKey)
-    : checkClarkRate(actor, planKey)
+    : await checkClarkRate(actor, planKey)
   if (!rateResult.allowed) {
     const errMsg = promptIsLowCost
       ? "Slow down for a moment — Clark can continue after a short pause."
@@ -16725,7 +16717,7 @@ export async function POST(req: NextRequest) {
     if (typeof resultQuotaOverride === 'boolean') quotaConsumed = resultQuotaOverride
     if (normData.quotaConsumedOverride === false) quotaConsumed = false
     delete normData.quotaConsumedOverride
-    if (quotaConsumed) rateResult.commitDaily()
+    if (quotaConsumed) await rateResult.commitDaily()
     normalized.quotaConsumed = quotaConsumed
     normData.clarkAudit = buildClarkAudit({ result, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
     // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: entityAudit was stashed once, early, by the gate
