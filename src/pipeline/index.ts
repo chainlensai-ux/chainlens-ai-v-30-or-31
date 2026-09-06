@@ -3590,13 +3590,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // Maps buildWalletConditionMessages()'s inputs onto real fields this scan already computed.
   // Several of the task's own suggested mappings don't match the real data model — corrected here
   // (each one verified by reading the actual type, not assumed):
-  //   - closedLots: the task named `fifo.closedLots`, but fifoEngine's own output has no such
-  //     field (its shape is matchedLots/unmatchedBuys/unmatchedSells — a lot-matching count,
-  //     independent of whether a price was ever found for it). The real "how many sells got
-  //     verifiable pricing" concept lives in pnlSummaryV2.closedLots (ClosedLot[]) instead — that's
-  //     what's used below.
-  //   - totalSells: the task named `sellTimelineV2.outboundSellCount`, which doesn't exist;
-  //     SellTimelineResult's real field is `totalSells` directly.
+  //   - verifiedClosedLots / structuralClosedLots: publicPnlGateAudit's official pair (Item 4).
+  //     Never ayri attributedLots over sellTimelineV2.totalSells (that inverted 586/184 = 318%).
   //   - excludedTokens: the task named `dustSuppressedKeys + deadTokenKeys` — there is no separate
   //     "deadTokenKeys" set in this implementation; classifyDustSuppression's two reasons
   //     ('no_market_found' | 'liquidity_zero') both live in the ONE real dustSuppressedKeys set.
@@ -3625,20 +3620,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     fallbackAttempts: walletPriceLookups.sourceBreakdown.fallback,
     providerErrors: providerErrorCount,
     suppressionSkipped: dustSuppressedKeys.size,
-    // CONFIRMED BUG FIX, DISCLOSED: this previously passed reconciledPnlSummary.closedLots, which
-    // is `Math.max(fifoLots.length, pnlLots.length)` — the count of reconstructed lots regardless
-    // of whether pricing actually succeeded for them. Since pnlLots/fifoLots are both derived from
-    // the same sell-event set, this count is structurally always equal to totalSells below, so
-    // walletConditionMessages.ts's "closedLots < totalSells" evidence-gap check could never fire —
-    // it always reported "PnL Evidence Level: FULL" / "PnL Confidence: 100%" even when the real,
-    // authoritative PnL was 'unavailable due to missing evidence' (missingEvidenceCount: 724 in a
-    // real production run), a direct, user-visible contradiction between this message and the
-    // actual PnL card. ayriAttribution.attributedLots is the already-computed, correct count of
-    // lots that a real price source (primary/fallback/ratio/synthetic/recovered) actually priced —
-    // exactly what "sells with verifiable pricing" means — and already matches ayriAttribution's
-    // own coveragePercent for the same run.
-    closedLots: ayriAttribution.attributedLots,
-    totalSells: sellTimelineV2.totalSells,
+    // Wallet PnL publish Item 4: verifiedClosedLots / structuralClosedLots from the official
+    // publicPnlGateAudit — never ayri attributedLots over sellTimelineV2.totalSells, which produced
+    // the live "586 of 184 closed lots verified (318% coverage)" inversion. closedLots/totalSells
+    // aliases carry the same pair so older formatters still read the official numerator/denominator.
+    closedLots: reconciledPnlSummary.publicPnlGateAudit.verifiedClosedLots,
+    totalSells: reconciledPnlSummary.publicPnlGateAudit.structuralClosedLots,
+    verifiedClosedLots: reconciledPnlSummary.publicPnlGateAudit.verifiedClosedLots,
+    structuralClosedLots: reconciledPnlSummary.publicPnlGateAudit.structuralClosedLots,
     previousPnL: undefined,
     currentPnL: reconciledPnlSummary.realizedPnlUsd,
     excludedTokens,

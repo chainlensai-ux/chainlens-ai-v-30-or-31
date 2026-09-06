@@ -96,7 +96,7 @@ describe('buildWalletConditionMessages — section 3: PnL evidence level', () =>
     const sections = buildWalletConditionMessages(baseInput({ closedLots: 213, totalSells: 603 }))
     const text = findSection(sections, 'pnlEvidenceLevel')!.text
     assert.ok(!text.includes('had verifiable pricing'))
-    assert.equal(text, 'PnL Evidence Level: Limited coverage — 213 of 603 closed lots verified (35% coverage).')
+    assert.equal(text, 'PnL Evidence Level: Limited coverage — 213 of 603 closed lots verified (35.32% coverage).')
   })
 
   it('shows FULL when closedLots === totalSells and there is no coverage issue', () => {
@@ -132,6 +132,28 @@ describe('buildWalletConditionMessages — section 3: PnL evidence level', () =>
   it('shows "Limited coverage" (never FULL) when a provider rate limit was detected, even with a perfect ratio', () => {
     const sections = buildWalletConditionMessages(baseInput({ closedLots: 5, totalSells: 5, rateLimitDetected: true }))
     assert.match(findSection(sections, 'pnlEvidenceLevel')!.text, /^PnL Evidence Level: Limited coverage/)
+  })
+
+  it('Item 4: verified/structural pair 242 of 586 reports 41.30% coverage, matching the behaviour-score line', () => {
+    const sections = buildWalletConditionMessages(baseInput({
+      closedLots: 586,
+      totalSells: 184,
+      verifiedClosedLots: 242,
+      structuralClosedLots: 586,
+    }))
+    assert.equal(
+      findSection(sections, 'pnlEvidenceLevel')!.text,
+      'PnL Evidence Level: Limited coverage — 242 of 586 closed lots verified (41.30% coverage).',
+    )
+    assert.equal(findSection(sections, 'scanDepthIndicator')!.text, 'Scan Depth: Limited coverage — Only 242 of 586 closed lots verified.')
+  })
+
+  it('Item 4: inverted 586 of 184 never prints >100% coverage', () => {
+    const sections = buildWalletConditionMessages(baseInput({ closedLots: 586, totalSells: 184 }))
+    const text = findSection(sections, 'pnlEvidenceLevel')!.text
+    assert.ok(!text.includes('318%'), 'inverted fields must never produce 318% coverage')
+    assert.match(text, /\(100% coverage\)/)
+    assert.ok(!/^PnL Evidence Level: FULL/.test(text), 'inverted fields must never read as FULL')
   })
 })
 

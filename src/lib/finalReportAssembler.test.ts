@@ -73,9 +73,12 @@ describe('finalReportAssembler', () => {
     assert.deepEqual(assembler.assemble(baseInput()), assembler.assemble(baseInput()))
   })
 
-  it('wallet-condition uses reconciled values', () => {
+  it('wallet-condition uses verified/structural lots, never mixes reconciled closedLots with sell-timeline totalSells', () => {
     const report = createFinalReportAssembler({ logger: quiet }).assemble(baseInput())
-    assert.equal(report.walletConditionInputs.closedLots, 7)
+    assert.equal(report.walletConditionInputs.closedLots, 99)
+    assert.equal(report.walletConditionInputs.totalSells, 9)
+    assert.equal(report.walletConditionInputs.verifiedClosedLots, 99)
+    assert.equal(report.walletConditionInputs.structuralClosedLots, 9)
     assert.equal(report.walletConditionInputs.currentPnL, 123.45)
   })
 
