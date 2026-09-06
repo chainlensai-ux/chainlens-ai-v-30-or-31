@@ -35,7 +35,7 @@ check('the already-attributed check reads the real stored value, not a guess', r
 
 // ─── 3. Same business gates as /api/checkout/crypto's fresh-code resolution ────────────────────
 check('only an APPROVED affiliate can be attached — a pending/rejected code is never stored', /aff\.status !== 'approved'/.test(route))
-check('self-referral (an affiliate using their own code) is rejected', /selfReferral/.test(route) && /affEmail === userEmail/.test(route))
+check('self-referral is rejected by immutable user_id as well as the legacy email check', /aff\?\.user_id === userId/.test(route) && /affEmail === userEmail/.test(route))
 check('the code is validated for shape before any lookup', /isValidReferralCode\(rawRef\)/.test(route))
 
 // ─── 4. NOT a plain upsert — the whole point of this design ─────────────────────────────────────

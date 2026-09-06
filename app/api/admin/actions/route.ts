@@ -49,12 +49,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 type Action =
   | 'approve_affiliate'
   | 'reject_affiliate'
+  | 'suspend_affiliate'
   | 'mark_commission_paid'
   | 'mark_commission_pending'
 
 const VALID_ACTIONS = new Set<Action>([
   'approve_affiliate',
   'reject_affiliate',
+  'suspend_affiliate',
   'mark_commission_paid',
   'mark_commission_pending',
 ])
@@ -125,6 +127,17 @@ export async function POST(req: NextRequest) {
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })
     if (count === 0) return NextResponse.json({ error: 'Affiliate not found or not in pending state' }, { status: 409 })
     return NextResponse.json({ ok: true, message: 'Affiliate rejected' })
+  }
+
+  if (act === 'suspend_affiliate') {
+    const { error, count } = await sb
+      .from('affiliates')
+      .update({ status: 'suspended' }, { count: 'exact' })
+      .eq('id', id)
+      .in('status', ['approved', 'active'])
+    if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })
+    if (count === 0) return NextResponse.json({ error: 'Affiliate not found or not active' }, { status: 409 })
+    return NextResponse.json({ ok: true, message: 'Affiliate suspended; referral attribution disabled' })
   }
 
   if (act === 'mark_commission_paid') {

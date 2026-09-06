@@ -59,7 +59,7 @@ check('the leaderboard looks up stats by the affiliate\'s own id', /const stats 
 const updateCalls = [...adminData.matchAll(/\.update\(/g)] // sanity: adminData shouldn't have update calls at all (that's actions' job)
 check('admin/data has no mutating .update() calls (read-only route)', updateCalls.length === 0)
 const actionUpdates = [...adminActions.matchAll(/\.update\(\{[^}]*\},\s*\{\s*count:\s*'exact'\s*\}\)/g)]
-check('all four admin actions (approve/reject/mark-paid/mark-pending) now request { count: \'exact\' }', actionUpdates.length === 4)
+check('all five admin actions, including suspend, request exact affected-row counts', actionUpdates.length === 5)
 check('no admin action update omits the count option', !/\.update\(\{[^}]*\}\)\s*\n\s*\.eq/.test(adminActions))
 
 // ─── 3. Affiliate dashboard totals are not capped by the display-list limit ─────────────────────
@@ -70,11 +70,9 @@ check('conversions count comes from the uncapped payable row set', /conversions:
 check('only literal pending commissions count as awaiting payout', /r\.status === 'pending'/.test(affiliateMe))
 check('reversed commissions remain visible with their honest status', /r\.status === 'reversed'/.test(affiliateMe))
 
-// ─── 4. Affiliate lookup picks the row that matters, not just the oldest ────────────────────────
-check('the lookup no longer silently takes only the single oldest row', !affiliateMe.includes(".order('created_at', { ascending: true })\n    .limit(1)"))
-check('an approved application always wins when one exists, regardless of age', /rows\.find\(\(r\) => r\.status === 'approved'\)/.test(affiliateMe))
-check('a pending application is preferred over a rejected one when no approved row exists', /rows\.find\(\(r\) => r\.status === 'pending'\)/.test(affiliateMe))
-check('every row for the email is fetched (no artificial single-row limit) so the right one can be picked', !/\.ilike\('email', email\)\s*\n\s*\.order\([^)]*\)\s*\n\s*\.limit\(1\)/.test(affiliateMe))
+// ─── 4. Affiliate lookup auto-provisions the authenticated owner ──────────────────────────────
+check('the dashboard delegates ownership to the concurrency-safe ensure helper', affiliateMe.includes('ensureAffiliateForUser'))
+check('GET and POST share the authenticated provisioning handler', affiliateMe.includes('export const GET = handleMe') && affiliateMe.includes('export const POST = handleMe'))
 
 // ─── 5. Cookie parsing can never crash a caller ──────────────────────────────────────────────────
 check('a well-formed cookie still parses correctly', readReferralCodeFromCookie('chainlens_affiliate_ref=cl1a2b3c4d') === 'cl1a2b3c4d')

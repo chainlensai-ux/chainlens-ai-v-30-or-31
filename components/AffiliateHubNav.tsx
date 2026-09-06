@@ -15,7 +15,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
 const TABS = [
-  { href: '/affiliate', label: 'Overview & Apply' },
+  { href: '/affiliate', label: 'Program Overview' },
   { href: '/affiliate/dashboard', label: 'My Dashboard' },
 ] as const
 
