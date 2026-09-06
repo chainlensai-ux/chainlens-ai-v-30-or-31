@@ -22,6 +22,7 @@ import {
   assertCommandStayedOnFormat,
   buildClarkRequestLifecycleAudit,
   buildClarkCommandFallbackAudit,
+  CLARK_SINGLEFLIGHT_TTL_MS,
 } from '../lib/server/clarkRequestLifecycle.ts'
 import { classifyClarkPrompt } from '../lib/server/clarkRouting.ts'
 
@@ -137,8 +138,13 @@ assert.equal(commandForbidsTokenReadFallback('token'), false)
 {
   resetClarkSingleflightForTests()
   let runs = 0
-  const key = clarkSingleflightKey('deployer', BASE, 'base')
-  assert.equal(key, `deployer|${BASE.toLowerCase()}|base`)
+  const key = clarkSingleflightKey('deployer', BASE, 'base', {
+    intent: 'deployer_check',
+    actor: 'user-a',
+    session: 'sess-1',
+    critical: `/deployer ${BASE}`,
+  })
+  assert.equal(key, `user-a|sess-1|deployer|deployer_check|${BASE.toLowerCase()}|base|/deployer ${BASE.toLowerCase()}`)
   const fn = async () => {
     runs += 1
     await new Promise((r) => setTimeout(r, 30))
@@ -170,6 +176,31 @@ assert.equal(commandForbidsTokenReadFallback('token'), false)
   assert.equal(deployerRuns, 1)
   assert.equal(holdersRuns, 1)
 }
+
+// Distinct intent / asset / chain / user / session / critical params must not share a key.
+{
+  const baseScope = { intent: 'token_scan', actor: 'user-a', session: 'sess-1', critical: `/token ${BASE}` }
+  const a = clarkSingleflightKey('token', BASE, 'base', baseScope)
+  assert.notEqual(clarkSingleflightKey('token', BASE, 'base', { ...baseScope, actor: 'user-b' }), a, 'different users must not coalesce')
+  assert.notEqual(clarkSingleflightKey('token', BASE, 'base', { ...baseScope, session: 'sess-2' }), a, 'different sessions must not coalesce')
+  assert.notEqual(clarkSingleflightKey('token', BASE, 'ethereum', baseScope), a, 'different chains must not coalesce')
+  assert.notEqual(clarkSingleflightKey('holders', BASE, 'base', { ...baseScope, intent: 'holders_check' }), a, 'different commands must not coalesce')
+  assert.notEqual(clarkSingleflightKey('token', BASE, 'base', { ...baseScope, intent: 'token_safety' }), a, 'different intents must not coalesce')
+  assert.notEqual(
+    clarkSingleflightKey('wallet', BASE, 'base', { ...baseScope, intent: 'wallet_scan', critical: `/wallet ${BASE} deep` }),
+    clarkSingleflightKey('wallet', BASE, 'base', { ...baseScope, intent: 'wallet_scan', critical: `/wallet ${BASE}` }),
+    'preview vs deep (critical prompt) must not coalesce',
+  )
+  const otherAddr = '0x' + '9'.repeat(40)
+  assert.notEqual(clarkSingleflightKey('token', otherAddr, 'base', baseScope), a, 'different assets must not coalesce')
+  assert.equal(clarkSingleflightKey('token', BASE, 'base', { ...baseScope, critical: `/token  ${BASE}` }), a, 'whitespace-normalized duplicate prompt still coalesces')
+  assert.equal(clarkSingleflightKey(null, BASE, 'base', baseScope), null, 'no command → no singleflight (must not coalesce unrelated prompts)')
+  assert.equal(clarkSingleflightKey('token', null, 'base', baseScope), null, 'no address → no singleflight')
+}
+
+assert.match(routeSrc, /clarkSingleflightKey\([\s\S]{0,400}actor[\s\S]{0,400}session[\s\S]{0,400}critical/, 'route singleflight key includes actor, session, and critical prompt')
+assert.match(routeSrc, /x-clark-session/)
+assert.equal(CLARK_SINGLEFLIGHT_TTL_MS, 4_000)
 
 // ── Audits include required fields ───────────────────────────────────────────
 {

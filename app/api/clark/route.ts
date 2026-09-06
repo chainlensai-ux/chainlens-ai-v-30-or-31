@@ -16664,6 +16664,12 @@ export async function POST(req: NextRequest) {
             clarkCommandIdentity.command,
             clarkCommandIdentity.address,
             clarkCommandIdentity.chain ?? body.chain ?? null,
+            {
+              intent: clarkCommandIdentity.intent ?? clarkCommandIdentity.routeSelected,
+              actor,
+              session: req.headers.get("x-clark-session")?.trim() || sessionKey,
+              critical: String(body.prompt ?? body.message ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 200),
+            },
           );
           const sf = await runClarkSingleflight(sfKey, () => handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem));
           result = sf.value;

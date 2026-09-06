@@ -92,9 +92,31 @@ export function resolveClarkCommandIdentity(prompt: string, chainHint?: string |
   return { command, intent: String(intent), address, chain, intendedFormat, routeSelected };
 }
 
-export function clarkSingleflightKey(command: string | null, address: string | null, chain: string | null): string | null {
+export function clarkSingleflightKey(
+  command: string | null,
+  address: string | null,
+  chain: string | null,
+  scope?: {
+    intent?: string | null;
+    actor?: string | null;
+    session?: string | null;
+    critical?: string | null;
+  },
+): string | null {
   if (!command || !address) return null;
-  return `${command.toLowerCase()}|${address.toLowerCase()}|${String(chain ?? "").toLowerCase()}`;
+  const intent = String(scope?.intent ?? "").trim().toLowerCase();
+  const actor = String(scope?.actor ?? "").trim().toLowerCase();
+  const session = String(scope?.session ?? "").trim().toLowerCase();
+  const critical = String(scope?.critical ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 200);
+  return [
+    actor,
+    session,
+    command.toLowerCase(),
+    intent,
+    address.toLowerCase(),
+    String(chain ?? "").toLowerCase(),
+    critical,
+  ].join("|");
 }
 
 type FlightEntry<T> = {
