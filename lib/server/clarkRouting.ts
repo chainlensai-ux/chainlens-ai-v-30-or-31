@@ -2753,6 +2753,7 @@ export type ClarkFollowupMarketItem = {
   // the real chain this ranked item belongs to. Never guessed downstream — a caller building a
   // forcedTokenScan from a resolved rank must use THIS field, never assume Base.
   chain?: string | null;
+  poolAddress?: string | null;
 };
 
 export type ClarkFollowupAppContext = {
@@ -2761,7 +2762,7 @@ export type ClarkFollowupAppContext = {
   currentTool?: string | null;
   walletSummary?: ClarkWalletContextSummary | null;
   tokenSummary?: ClarkTokenContextSummary | null;
-  marketContext?: { items?: ClarkFollowupMarketItem[] | null } | null;
+  marketContext?: { items?: ClarkFollowupMarketItem[] | null; listId?: string | null } | null;
 };
 
 export type ClarkFollowupCommandResult = {
@@ -2775,7 +2776,50 @@ export type ClarkFollowupCommandResult = {
   // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/5): the resolved item's real chain, when
   // one was found — carried straight from the matched ClarkFollowupMarketItem, never guessed.
   chain: string | null;
+  listId: string | null;
 };
+
+export type ClarkMomentumListIdentity = {
+  currentListId?: string | null;
+  incomingListId?: string | null;
+};
+
+export type ClarkMomentumListSelectionStatus = "resolved" | "no_active_list" | "stale_list" | "rank_not_in_list";
+
+export type ClarkMomentumListSelectionResolution = {
+  status: ClarkMomentumListSelectionStatus;
+  selectedItem: ClarkFollowupMarketItem | null;
+  reason: string | null;
+};
+
+/**
+ * LIST IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 5): rank follow-ups ("scan 1" / "open 2" /
+ * "explain rank risk") must check the CURRENT lastMomentumListId before trusting a rank number.
+ * Modeled on resolveTickerSelection() — never a rank-only lookup without generation identity when
+ * the list lives in session memory. An inline market_context list on this request is current.
+ */
+export function resolveMomentumListSelection(params: {
+  selection: { listId?: string | null; rank: number };
+  currentListId: string | null;
+  currentItems: ClarkFollowupMarketItem[] | null;
+  requireListId?: boolean;
+}): ClarkMomentumListSelectionResolution {
+  const { selection, currentListId, currentItems, requireListId = false } = params;
+  if (!currentItems || currentItems.length === 0) {
+    return { status: "no_active_list", selectedItem: null, reason: "No movers list is active in this session." };
+  }
+  if (requireListId && !currentListId) {
+    return { status: "no_active_list", selectedItem: null, reason: "No movers list identity is active in this session." };
+  }
+  if (selection.listId && currentListId && selection.listId !== currentListId) {
+    return { status: "stale_list", selectedItem: null, reason: "This rank is from an older movers list that has since been replaced." };
+  }
+  const match = currentItems.find((m) => m.rank === selection.rank) ?? null;
+  if (!match) {
+    return { status: "rank_not_in_list", selectedItem: null, reason: `Rank ${selection.rank} is not in the current movers list.` };
+  }
+  return { status: "resolved", selectedItem: match, reason: null };
+}
 
 const ORDINAL_WORD_MAP: Record<string, number> = {
   first: 1, second: 2, third: 3, fourth: 4, fifth: 5,
@@ -2831,12 +2875,13 @@ export function resolveClarkFollowupCommand(
   prompt: string,
   appContext: ClarkFollowupAppContext | null | undefined,
   sessionMemMomentumList?: ClarkFollowupMarketItem[] | null,
+  listIdentity?: ClarkMomentumListIdentity | null,
 ): ClarkFollowupCommandResult {
   const ac = appContext ?? {};
   const t = String(prompt ?? "").trim();
   const empty: ClarkFollowupCommandResult = {
     intent: "unknown", resolvedFrom: "none", rank: null, symbol: null, address: null,
-    ambiguousMatches: [], omittedReason: null, chain: null,
+    ambiguousMatches: [], omittedReason: null, chain: null, listId: null,
   };
   if (!t) return empty;
 
@@ -2844,6 +2889,26 @@ export function resolveClarkFollowupCommand(
   const fromSessionMem = Array.isArray(sessionMemMomentumList) ? sessionMemMomentumList : [];
   const list = fromMarketContext.length ? fromMarketContext : fromSessionMem;
   const listSource: "market_context" | "session_memory" = fromMarketContext.length ? "market_context" : "session_memory";
+  const incomingListId = listIdentity?.incomingListId ?? ac.marketContext?.listId ?? null;
+  const currentListId = listIdentity?.currentListId ?? ac.marketContext?.listId ?? null;
+  const requireListId = listSource === "session_memory" && listIdentity != null;
+
+  const resolveRankItem = (rank: number): ClarkMomentumListSelectionResolution => resolveMomentumListSelection({
+    selection: { listId: incomingListId, rank },
+    currentListId,
+    currentItems: list,
+    requireListId,
+  });
+
+  const staleOrMissing = (intent: ClarkFollowupCommandIntent, rank: number, sel: ClarkMomentumListSelectionResolution): ClarkFollowupCommandResult | null => {
+    if (sel.status === "stale_list") {
+      return { ...empty, intent, rank, omittedReason: "stale_list", listId: currentListId };
+    }
+    if (sel.status === "no_active_list") {
+      return { ...empty, intent, rank, omittedReason: list.length ? "no_active_list" : "no_market_context", listId: currentListId };
+    }
+    return null;
+  };
 
   const routeTag = String(ac.route ?? ac.activeFeature ?? ac.currentTool ?? "").toLowerCase();
 
@@ -2868,24 +2933,31 @@ export function resolveClarkFollowupCommand(
   // 2. "explain risk on 1" / "why is 2 risky" — rank-scoped risk explanation.
   const riskRank = parseExplainRankRisk(t);
   if (riskRank != null) {
-    const match = list.find((m) => m.rank === riskRank) ?? null;
-    if (!match) return { ...empty, intent: "explain_rank_risk", rank: riskRank, omittedReason: "rank_not_in_list" };
+    const sel = resolveRankItem(riskRank);
+    const blocked = staleOrMissing("explain_rank_risk", riskRank, sel);
+    if (blocked) return blocked;
+    const match = sel.selectedItem;
+    if (!match) return { ...empty, intent: "explain_rank_risk", rank: riskRank, omittedReason: "rank_not_in_list", listId: currentListId };
     const addr = match.scanTarget ?? match.tokenAddress ?? null;
-    if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null };
-    return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null };
+    if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null, listId: currentListId };
+    return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null, listId: currentListId };
   }
 
   const momentumRankMatch = t.match(EXPLAIN_RANK_MOMENTUM_RE);
   if (momentumRankMatch) {
     const momentumRank = Number(momentumRankMatch[1]);
-    const match = list.find((m) => m.rank === momentumRank) ?? null;
-    if (!match) return { ...empty, intent: "explain_rank_momentum", rank: momentumRank, omittedReason: list.length ? "rank_not_in_list" : "no_market_context" };
+    const sel = resolveRankItem(momentumRank);
+    const blocked = staleOrMissing("explain_rank_momentum", momentumRank, sel);
+    if (blocked) return blocked;
+    const match = sel.selectedItem;
+    if (!match) return { ...empty, intent: "explain_rank_momentum", rank: momentumRank, omittedReason: list.length ? "rank_not_in_list" : "no_market_context", listId: currentListId };
     return {
       ...empty, intent: "explain_rank_momentum", rank: momentumRank,
       symbol: match.symbol ?? null, address: match.scanTarget ?? match.tokenAddress ?? null,
       resolvedFrom: listSource,
       omittedReason: match.scanTarget || match.tokenAddress ? null : "no_scan_target_for_rank",
       chain: match.chain ?? null,
+      listId: currentListId,
     };
   }
 
@@ -2904,12 +2976,15 @@ export function resolveClarkFollowupCommand(
   const rank = parseFollowupRank(t);
   if (rank != null) {
     const intent: ClarkFollowupCommandIntent = /^\s*open\b/i.test(t) ? "open_rank" : "scan_rank";
-    if (!list.length) return { ...empty, intent, rank, omittedReason: "no_market_context" };
-    const match = list.find((m) => m.rank === rank) ?? null;
-    if (!match) return { ...empty, intent, rank, resolvedFrom: listSource, omittedReason: "rank_not_in_list" };
+    if (!list.length) return { ...empty, intent, rank, omittedReason: "no_market_context", listId: currentListId };
+    const sel = resolveRankItem(rank);
+    const blocked = staleOrMissing(intent, rank, sel);
+    if (blocked) return blocked;
+    const match = sel.selectedItem;
+    if (!match) return { ...empty, intent, rank, resolvedFrom: listSource, omittedReason: "rank_not_in_list", listId: currentListId };
     const addr = match.scanTarget ?? match.tokenAddress ?? null;
-    if (!addr) return { ...empty, intent, rank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null };
-    return { ...empty, intent, rank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null };
+    if (!addr) return { ...empty, intent, rank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null, listId: currentListId };
+    return { ...empty, intent, rank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null, listId: currentListId };
   }
 
   // 5. Symbol-based scan/check/open ("scan velvet", "check VELVET", "open O") — exact match only.

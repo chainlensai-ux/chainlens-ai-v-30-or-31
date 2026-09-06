@@ -138,6 +138,7 @@ import {
   formatAppContextMissingAsk,
   buildClarkContextActions,
   resolveClarkFollowupCommand,
+  resolveMomentumListSelection,
   type ClarkWalletContextSummary,
   type ClarkTokenContextSummary,
   isTokenSafetyPrompt,
@@ -478,6 +479,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   if (existing.lastWallet && now - existing.lastWallet.ts > SESSION_MEMORY_TTL_MS) existing.lastWallet = null;
   if (existing.lastMomentumList.length && now - existing.lastMomentumTs > MOMENTUM_MEMORY_TTL_MS) {
     existing.lastMomentumList = [];
+    existing.lastMomentumListId = null;
     existing.lastMomentumTs = 0;
     existing.allowedRankScanUntil = 0;
     existing.allowedRankScanUsed = false;
@@ -1001,6 +1003,7 @@ interface ClarkRequestBody {
     lastWallet?: string | null;
     lastIntent?: string | null;
     lastSelectedRank?: number | null;
+    lastMomentumListId?: string | null;
     marketCursor?: { offset?: number; returnedCount?: number; requestedCount?: number; totalCandidates?: number } | null;
     seenMarketAddresses?: string[] | null;
     seenMarketSymbols?: string[] | null;
@@ -1015,6 +1018,7 @@ interface ClarkRequestBody {
   forcedTokenScan?: { address: string; chain: SupportedChain } | null;
   clientContext?: {
     lastMomentumList?: ClarkSessionMemory["lastMomentumList"];
+    lastMomentumListId?: string | null;
     lastMomentumShownCount?: number;
     lastToken?: ClarkSessionMemory["lastToken"];
     lastWallet?: ClarkSessionMemory["lastWallet"];
@@ -10384,8 +10388,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           : sessionMem.lastToken?.address ? { address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol, name: sessionMem.lastToken.name, chain: sessionMem.lastToken.chain } : null,
         marketContext: extractStructuredMarketItems(body).length ? { items: extractStructuredMarketItems(body) } : null,
       };
-      const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address, chain: m.chain }));
-      const cmd = resolveClarkFollowupCommand(prompt, followupAc, memMomentumForFollowup);
+      const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address, chain: m.chain, poolAddress: m.poolAddress }));
+      const incomingMomentumListId = body.clientContext?.lastMomentumListId ?? body.clarkContext?.lastMomentumListId ?? null;
+      const cmd = resolveClarkFollowupCommand(prompt, followupAc, memMomentumForFollowup, {
+        currentListId: sessionMem.lastMomentumListId,
+        incomingListId: incomingMomentumListId,
+      });
       const cmdDebug = {
         clarkFollowupCommandIntent: cmd.intent,
         clarkFollowupCommand: cmd.intent,
@@ -10397,6 +10405,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkFollowupStatusMessage: null as string | null,
         clarkFollowupAmbiguousMatches: cmd.ambiguousMatches,
         clarkFollowupOmittedReason: cmd.omittedReason,
+        clarkFollowupListId: cmd.listId,
         clarkFollowupForcedIntent: null as string | null,
         clarkFollowupScanSource: null as string | null,
         clarkFollowupScanTargetType: null as string | null,
@@ -10485,6 +10494,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
           analysis: "Ask \"what's pumping on Base?\" first, or send a token symbol/contract.",
           ...cmdDebug,
+        };
+      }
+      if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "explain_rank_risk" || cmd.intent === "explain_rank_momentum") && cmd.omittedReason === "stale_list") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "That rank is from an older movers list. Ask \"what's pumping on Base?\" again, then pick a number from the new list.",
+          ...cmdDebug,
+          clarkFollowupBlockedReason: "stale_momentum_list",
+        };
+      }
+      if ((cmd.intent === "scan_rank" || cmd.intent === "open_rank" || cmd.intent === "explain_rank_risk" || cmd.intent === "explain_rank_momentum") && cmd.omittedReason === "no_active_list") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
+          analysis: "I don't have a current movers list to resolve that rank against. Ask \"what's pumping on Base?\" first.",
+          ...cmdDebug,
+          clarkFollowupBlockedReason: "no_active_momentum_list",
         };
       }
 
@@ -15048,22 +15073,36 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "Ask 'what's pumping on Base?' first, or send a token symbol/contract." };
   }
 
-  // Rank follow-up: "scan 1", "2", "full report on 3" → resolve from session memory momentum list
-  // Only trigger when prompt is primarily a rank reference and the client has no structured list to use
+  // Rank follow-up: "scan 1", "2", "full report on 3" → resolve from CURRENT lastMomentumList
+  // generation only. Never a rank-only lookup without lastMomentumListId (Item 5).
   if (sessionMem.lastMomentumList.length > 0 && !marketFollowupResolution.item && !marketFollowupResolution.ambiguous.length) {
     const _memRank = askedRank;
     if (_memRank) {
+      const incomingListId = body.clientContext?.lastMomentumListId ?? body.clarkContext?.lastMomentumListId ?? null;
+      const memSel = resolveMomentumListSelection({
+        selection: { listId: incomingListId, rank: _memRank },
+        currentListId: sessionMem.lastMomentumListId,
+        currentItems: sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address, chain: m.chain, poolAddress: m.poolAddress })),
+        requireListId: true,
+      });
+      if (memSel.status === "stale_list") {
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "That rank is from an older movers list. Ask \"what's pumping on Base?\" again, then pick a number from the new list." };
+      }
+      if (memSel.status === "no_active_list") {
+        return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I don't have a current movers list to resolve that rank against. Ask \"what's pumping on Base?\" first." };
+      }
       const memItem = sessionMem.lastMomentumList.find(m => m.rank === _memRank);
-      if (memItem) {
+      if (memItem && memSel.status === "resolved") {
         if (!memItem.address) {
           // Symbol known but no address — re-route as symbol scan
           return await handleClarkAI({ ...body, prompt: `scan ${memItem.symbol}` }, origin, authHeader, verifiedPlan, sessionMem);
         }
         // Has address — run token scan directly
         updateMemIntent(sessionMem, "token_analysis");
-        const tokenRes = await callInternalApi(origin, "/api/token", { contract: memItem.address }, authHeader ?? undefined);
+        const followupChain = normalizeFollowupChain(memItem.chain);
+        const tokenRes = await callInternalApi(origin, "/api/token", { contract: memItem.address, chain: toTokenApiChain(followupChain) }, authHeader ?? undefined);
         const tokenData = tokenRes.ok ? tokenRes.json : null;
-        const securitySim = await fetchHoneypotSecurity(memItem.address, "base");
+        const securitySim = await fetchHoneypotSecurity(memItem.address, followupChain);
         if (tokenData) {
           const td = tokenData as Record<string, unknown>;
           const reportEvidence: ClarkToolEvidence = {
@@ -15106,7 +15145,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             },
           };
           const fullEvidence = buildFullReportEvidence(reportEvidence, memItem.address);
-          const scanText = renderQuickTokenScan(fullEvidence, "Base");
+          const scanText = renderQuickTokenScan(fullEvidence, chainDisplayLabel(followupChain));
           const safeSym = String(td.symbol ?? memItem.symbol ?? "TOKEN");
           const safeName = String(td.name ?? memItem.name ?? safeSym);
           updateMemToken(sessionMem, memItem.address, safeSym, safeName, scanText);
@@ -16192,6 +16231,9 @@ export async function POST(req: NextRequest) {
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
     sessionMem.lastMomentumList = body.clientContext!.lastMomentumList!.slice(0, 20);
     sessionMem.lastMomentumTs = Date.now();
+    sessionMem.lastMomentumListId = body.clientContext?.lastMomentumListId ?? sessionMem.lastMomentumListId ?? generateTickerSearchId();
+  } else if (!sessionMem.lastMomentumListId && sessionMem.lastMomentumList.length > 0) {
+    sessionMem.lastMomentumListId = body.clientContext?.lastMomentumListId ?? generateTickerSearchId();
   }
   if (typeof body.clientContext?.lastMomentumShownCount === "number" && body.clientContext.lastMomentumShownCount >= 0) {
     sessionMem.lastMomentumShownCount = Math.min(body.clientContext.lastMomentumShownCount, sessionMem.lastMomentumList.length);
@@ -16607,6 +16649,10 @@ export async function POST(req: NextRequest) {
       } else {
         genericMemoryEcho.lastTickerMatches = []
         genericMemoryEcho.tickerSearchId = null
+      }
+      if (sessionMem.lastMomentumList.length > 0) {
+        genericMemoryEcho.lastMomentumList = sessionMem.lastMomentumList
+        genericMemoryEcho.lastMomentumListId = sessionMem.lastMomentumListId
       }
       if (Object.keys(genericMemoryEcho).length > 0) {
         const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}

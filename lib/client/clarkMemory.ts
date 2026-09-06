@@ -11,6 +11,7 @@ const RECENT_WALLETS_KEY = 'chainlens:clark:recent-wallets'
 const LAST_TOKEN_KEY = 'chainlens:clark:last-token'
 const RECENT_TOKENS_KEY = 'chainlens:clark:recent-tokens'
 const LAST_MOMENTUM_LIST_KEY = 'chainlens:clark:last-momentum-list'
+const LAST_MOMENTUM_LIST_ID_KEY = 'chainlens:clark:last-momentum-list-id'
 const LAST_MOMENTUM_SHOWN_COUNT_KEY = 'chainlens:clark:last-momentum-shown-count'
 // COLD-START MEMORY, DISCLOSED (Clark memory audit): the backend's SESSION_MEMORY is a
 // process-local Map, so on a serverless instance switch only what the client can send back
@@ -44,6 +45,7 @@ export type ClarkClientContext = {
   lastToken?: unknown | null
   recentTokens?: unknown[]
   lastMomentumList?: unknown[]
+  lastMomentumListId?: string | null
   lastMomentumShownCount?: number
   lastDeployer?: unknown | null
   lastRadarList?: unknown[]
@@ -74,6 +76,7 @@ export function readClarkClientContext(): ClarkClientContext {
     lastToken: readJson(LAST_TOKEN_KEY) ?? undefined,
     recentTokens: (readJson(RECENT_TOKENS_KEY) as unknown[] | null) ?? undefined,
     lastMomentumList: (readJson(LAST_MOMENTUM_LIST_KEY) as unknown[] | null) ?? undefined,
+    lastMomentumListId: sessionStorage.getItem(LAST_MOMENTUM_LIST_ID_KEY) ?? undefined,
     lastMomentumShownCount: Number(sessionStorage.getItem(LAST_MOMENTUM_SHOWN_COUNT_KEY) ?? '0') || 0,
     lastDeployer: readJson(LAST_DEPLOYER_KEY) ?? undefined,
     lastRadarList: (readJson(LAST_RADAR_LIST_KEY) as unknown[] | null) ?? undefined,
@@ -165,13 +168,22 @@ export function persistClarkMemoryEcho(payload: unknown): void {
     }
   }
 
+  if (Array.isArray(echo.lastMomentumList) && echo.lastMomentumList.length > 0) {
+    persistClarkMomentumList(echo.lastMomentumList, typeof echo.lastMomentumListId === 'string' ? echo.lastMomentumListId : null)
+  } else if (typeof echo.lastMomentumListId === 'string' && echo.lastMomentumListId.trim()) {
+    sessionStorage.setItem(LAST_MOMENTUM_LIST_ID_KEY, echo.lastMomentumListId.trim())
+  }
+
 }
 
 /** Persists the momentum/movers list a Clark response returns, shared across surfaces. */
-export function persistClarkMomentumList(items: unknown[]): void {
+export function persistClarkMomentumList(items: unknown[], listId?: string | null): void {
   if (typeof window === 'undefined') return
   sessionStorage.setItem(LAST_MOMENTUM_LIST_KEY, JSON.stringify(items))
   sessionStorage.setItem(LAST_MOMENTUM_SHOWN_COUNT_KEY, String(Math.min(7, items.length)))
+  if (typeof listId === 'string' && listId.trim()) {
+    sessionStorage.setItem(LAST_MOMENTUM_LIST_ID_KEY, listId.trim())
+  }
 }
 
 // ── Persisted market momentum (survives page refresh, 15-minute expiry) ────────────────────────

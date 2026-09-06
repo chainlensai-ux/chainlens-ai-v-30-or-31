@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { resolveClarkFollowupCommand } from '../lib/server/clarkRouting.ts'
+import { resolveClarkFollowupCommand, resolveMomentumListSelection } from '../lib/server/clarkRouting.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const routeSrc = fs.readFileSync(path.join(__dirname, '../app/api/clark/route.ts'), 'utf8')
@@ -166,5 +166,48 @@ assert.ok(routeSrc.includes('pool/market row, not the token contract yet'), 'poo
 
 // 17. The forced-token-scan output must never read as a wallet read.
 assert.ok(!/WALLET READ/.test(routeSrc.match(/forcedTokenScan[\s\S]{0,400}/)?.[0] ?? ''), 'forced token-scan wiring stays clear of wallet-read output')
+
+// 18. Rank follow-ups validate generation identity before rank lookup (Item 5).
+{
+  const currentId = 'ticker_current'
+  const stale = resolveMomentumListSelection({
+    selection: { listId: 'ticker_old', rank: 1 },
+    currentListId: currentId,
+    currentItems: marketItems,
+    requireListId: true,
+  })
+  assert.equal(stale.status, 'stale_list')
+  assert.equal(stale.selectedItem, null)
+  const ok = resolveMomentumListSelection({
+    selection: { listId: currentId, rank: 2 },
+    currentListId: currentId,
+    currentItems: marketItems,
+    requireListId: true,
+  })
+  assert.equal(ok.status, 'resolved')
+  assert.equal(ok.selectedItem?.scanTarget, tokenAddr2)
+  const none = resolveMomentumListSelection({
+    selection: { rank: 1 },
+    currentListId: null,
+    currentItems: marketItems,
+    requireListId: true,
+  })
+  assert.equal(none.status, 'no_active_list')
+  const r = resolveClarkFollowupCommand('scan 1', { marketContext: { items: marketItems } }, [], {
+    currentListId: currentId,
+    incomingListId: 'ticker_old',
+  })
+  assert.equal(r.omittedReason, 'stale_list')
+  assert.equal(r.address, null)
+  const live = resolveClarkFollowupCommand('scan 1', { marketContext: { items: marketItems } }, [], {
+    currentListId: currentId,
+    incomingListId: currentId,
+  })
+  assert.equal(live.intent, 'scan_rank')
+  assert.equal(live.address, tokenAddr1)
+}
+assert.ok(routeSrc.includes('resolveMomentumListSelection'), 'route.ts uses resolveMomentumListSelection for rank follow-ups')
+assert.ok(routeSrc.includes('stale_momentum_list'), 'stale movers list is an explicit blocked reason')
+assert.ok(routeSrc.includes('requireListId: true'), 'session-memory rank lookups require lastMomentumListId')
 
 console.log('clark followup command checks passed')
