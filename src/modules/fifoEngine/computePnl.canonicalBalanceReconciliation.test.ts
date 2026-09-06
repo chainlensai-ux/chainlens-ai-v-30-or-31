@@ -40,48 +40,47 @@ describe('computePnl — canonical-balance reconciliation (false ~$545k unrealiz
     assert.deepEqual(unrealizedPnlExcludedTokens, [], 'sanity: no reconciliation was requested, so nothing is excluded here')
   })
 
-  it('1. corrected unrealized PnL reconciles with portfolio holdings — the same inflated lot is excluded once a real (much smaller) canonical balance is supplied', () => {
+  it('1. HARD ASSERTION (Wallet PnL Item 3): inflated FIFO open qty is capped to the real canonical balance for unrealized, never excluded and never valued at the FIFO quantity', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup = () => 0.0545
-    // The wallet's REAL, independently-fetched current balance for this token is only 100 —
-    // 100,000x smaller than fifoEngine's own event-replay-derived open quantity.
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
 
-    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
+    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(unrealizedPnlUsd, null, 'the entire fabricated-looking figure must be excluded, never partially included')
-    assert.deepEqual(unrealizedPnlExcludedTokens, [`${CHAIN}:${TOKEN.toLowerCase()}`], 'the specific mismatched token must be named, not silently hidden')
+    assert.deepEqual(unrealizedPnlExcludedTokens, [])
+    assert.equal(unrealizedReconciliation.cappedOpenPositions, 1)
+    const scale = 100 / 10_000_000
+    assert.equal(unrealizedPnlUsd, 0.0545 * 10_000_000 * scale - 100 * scale)
+    assert.ok((unrealizedPnlUsd ?? 0) < 10, 'official unrealized must be the held-quantity figure, never the ~$545k FIFO-qty candidate')
   })
 
-  it('2. malformed decimals cannot inflate value — a raw-unit-scaled quantity (10^18x too large) is excluded even with a tiny per-unit price', () => {
-    // Simulates a token whose amount was accidentally left in raw (undecimalized) units upstream —
-    // amountRemaining is ~10^18x what the real (decimal-adjusted) balance actually is.
+  it('2. malformed decimals cannot inflate value — a raw-unit-scaled quantity is capped to the real decimal-adjusted balance', () => {
     const lots = [openLot({ amountRemaining: 3_000_000_000_000, amountOpened: 3_000_000_000_000, costBasisUsd: 5 })]
     const currentPriceUsdLookup = () => 0.001
-    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 3_000 // real decimal-adjusted balance
+    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 3_000
 
     const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(unrealizedPnlUsd, null, 'a decimal-scaling-inflated quantity must never contribute to official unrealized PnL')
-    assert.equal(unrealizedPnlExcludedTokens.length, 1)
+    assert.equal(unrealizedPnlExcludedTokens.length, 0)
+    const scale = 3_000 / 3_000_000_000_000
+    assert.equal(unrealizedPnlUsd, 0.001 * 3_000_000_000_000 * scale - 5 * scale)
+    assert.ok((unrealizedPnlUsd ?? 0) < 10, 'must never contribute the raw-unit inflated figure')
   })
 
-  it('3. duplicate open lots cannot exceed the current canonical balance — two lots that individually look fine still fail reconciliation as a SUM', () => {
-    // Two separate open lots for the SAME token (e.g. a provider double-reporting one real
-    // transfer as two normalized buy events) — reconciliation must check the TOTAL, not each lot
-    // in isolation (a per-lot check would wrongly pass both).
+  it('3. duplicate open lots are capped as a SUM to the canonical balance, never valued twice', () => {
     const lots = [
       openLot({ lotId: 'lot-a', openedTxHash: '0xbuy-a', amountRemaining: 600, amountOpened: 600, costBasisUsd: 60 }),
       openLot({ lotId: 'lot-b', openedTxHash: '0xbuy-b', amountRemaining: 600, amountOpened: 600, costBasisUsd: 60 }),
     ]
     const currentPriceUsdLookup = () => 1
-    // Real balance is only 600 — exactly ONE of the two duplicated lots, not both summed.
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 600
 
-    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
+    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(unrealizedPnlUsd, null, 'the duplicated total (1200) exceeds the real balance (600) — both lots must be excluded together')
-    assert.equal(unrealizedPnlExcludedTokens.length, 1, 'excluded once per TOKEN, not once per lot')
+    assert.equal(unrealizedPnlExcludedTokens.length, 0)
+    assert.equal(unrealizedReconciliation.cappedOpenPositions, 1, 'capped once per TOKEN, not once per lot')
+    const scale = 600 / 1200
+    assert.equal(unrealizedPnlUsd, 1 * 1200 * scale - 120 * scale)
   })
 
   it('4. unverified/unknown canonical balance fails closed — a null lookup result excludes the token rather than assuming it is fine', () => {

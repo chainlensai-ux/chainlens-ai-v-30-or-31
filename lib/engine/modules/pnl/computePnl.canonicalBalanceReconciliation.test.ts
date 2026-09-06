@@ -43,10 +43,9 @@ function priced(overrides: Partial<PricedHolding>): PricedHolding {
 }
 
 describe('computePnl — canonical-balance reconciliation (false -$545k unrealized PnL fix)', () => {
-  it('REPRODUCES the exact failure mode: many unmatched buys inflate FIFO cost basis far past the real current holding, with no reconciliation the old code would have reported the fabricated loss', async () => {
+  it('HARD ASSERTION (Wallet PnL Item 3): FIFO remaining ≫ canonical balance is CAPPED to the held quantity for unrealized, never excluded and never valued at the FIFO quantity', async () => {
     // Production shape: a token with a real current balance/value of only ~$24, but a FIFO
-    // remaining quantity many times larger than the wallet actually holds (e.g. duplicated/
-    // mis-normalized buy trades, or a distribution/airdrop event misclassified as a buy).
+    // remaining quantity many times larger than the wallet actually holds.
     const trades: ParsedTrade[] = [
       trade({ quantity: 10_000_000, valueUsd: 545_857.17, timestamp: 1 }),
     ]
@@ -54,16 +53,13 @@ describe('computePnl — canonical-balance reconciliation (false -$545k unrealiz
 
     const result = await computePnl(holdings, [], 24, trades)
 
-    assert.equal(result.pnlV2.unrealized.length, 0, 'the mismatched position must be excluded from official unrealizedPnlUsd')
-    assert.equal(result.pnlV2.unrealizedPnlUsd, 0, 'official unrealizedPnlUsd must never show the fabricated ~-$545k figure')
-    assert.equal(result.pnlV2.unrealizedExcludedPositions?.length, 1)
-    const excluded = result.pnlV2.unrealizedExcludedPositions![0]
-    assert.equal(excluded.exclusionReason, 'quantity_exceeds_balance')
-    assert.equal(excluded.fifoRemainingQuantity, 10_000_000)
-    assert.equal(excluded.canonicalQuantity, 100)
-    // The refused candidate is reported (auditable), matching the reported production magnitude,
-    // but NEVER summed into the official total (asserted above).
-    assert.ok(excluded.candidateUnrealizedPnlUsd < -545_000 && excluded.candidateUnrealizedPnlUsd > -545_900, `expected the ~-$545k candidate, got ${excluded.candidateUnrealizedPnlUsd}`)
+    assert.equal(result.pnlV2.unrealized.length, 1, 'a known positive balance must still contribute to official unrealized')
+    assert.equal(result.pnlV2.unrealizedExcludedPositions?.length, 0)
+    const scale = 100 / 10_000_000
+    const expected = 24 - 545_857.17 * scale
+    assert.equal(result.pnlV2.unrealizedPnlUsd, expected)
+    assert.ok(result.pnlV2.unrealizedPnlUsd > -100 && result.pnlV2.unrealizedPnlUsd < 100, 'official unrealized must be the held-quantity figure, never the ~-$545k FIFO-qty candidate')
+    assert.equal(result.pnlV2.realizedPnlUsd, 0, 'capping unrealized must never invent missing sells into realized')
   })
 
   it('a position with FIFO remaining quantity <= canonical balance reconciles normally and contributes to official unrealizedPnlUsd', async () => {
@@ -107,10 +103,12 @@ describe('computePnl — canonical-balance reconciliation (false -$545k unrealiz
 
     const result = await computePnl(holdings, [], 10, trades)
 
-    assert.equal(result.pnlV2.realizedPnlUsd, 500, 'realizedPnlUsd (2500 - 2000) must be untouched by the excluded position')
+    assert.equal(result.pnlV2.realizedPnlUsd, 500, 'realizedPnlUsd (2500 - 2000) must be untouched by the capped open position')
     assert.equal(result.pnlV2.realized.length, 1)
     assert.equal(result.pnlV2.realized[0].realizedPnlUsd, 500)
-    assert.equal(result.pnlV2.unrealizedExcludedPositions?.length, 1, 'only the mismatched second token is excluded')
+    assert.equal(result.pnlV2.unrealizedExcludedPositions?.length, 0, 'a known positive balance is capped into unrealized, never excluded')
+    const scale = 10 / 5_000_000
+    assert.equal(result.pnlV2.unrealizedPnlUsd, 10 - 100_000 * scale)
   })
 
   it('zero-tolerance-boundary: a quantity within the 0.1% float-rounding tolerance still reconciles', async () => {

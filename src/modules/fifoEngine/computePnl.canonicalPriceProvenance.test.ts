@@ -64,9 +64,10 @@ describe('computePnl — canonical current-price provenance (missing_verified_cu
       canonicalCurrentPriceLookup: () => ({ priceUsd: 2, source: 'dexscreener_fallback' }),
     })
 
-    // Reconciled positions don't appear in excludedPositions — read provenance back via a
-    // deliberately-failing balance case to confirm the SAME source value surfaces in diagnostics.
-    const excludedButPriced = computePnl([], lots, () => null, () => 9, {
+    // Reconciled positions don't appear in excludedPositions — use a zero canonical balance so
+    // the position is still excluded (nothing currently held) while the price provenance is
+    // reported on the exclusion record.
+    const excludedButPriced = computePnl([], lots, () => null, () => 0, {
       canonicalCurrentPriceLookup: () => ({ priceUsd: 2, source: 'dexscreener_fallback' }),
     })
     assert.equal(excludedButPriced.unrealizedReconciliation.excludedPositions[0].currentPriceSource, 'dexscreener_fallback')
@@ -124,17 +125,18 @@ describe('computePnl — canonical current-price provenance (missing_verified_cu
     assert.equal(zero.unrealizedReconciliation.excludedPositions[0].exclusionReason, 'unverified_or_outlier_price')
   })
 
-  it('12. official unrealized PnL is computed ONLY from reconciled positions, excluding an unreconciled one entirely from the sum', () => {
+  it('12. official unrealized PnL is computed ONLY from reconciled positions, excluding an unpriced one entirely from the sum', () => {
     const lots = [
       openLot({ lotId: 'good', token: TOKEN, amountRemaining: 10, costBasisUsd: 5 }),
       openLot({ lotId: 'bad', token: WETH_BASE, amountRemaining: 10_000, costBasisUsd: 5 }),
     ]
     const canonicalBalanceLookup: CanonicalBalanceLookup = (token) => (token.toLowerCase() === TOKEN ? 10 : 1)
-    const canonicalCurrentPriceLookup: CanonicalCurrentPriceLookup = () => ({ priceUsd: 1, source: 'provider_supplied' })
+    const canonicalCurrentPriceLookup: CanonicalCurrentPriceLookup = (token) =>
+      token.toLowerCase() === TOKEN ? { priceUsd: 1, source: 'provider_supplied' } : null
 
     const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => null, canonicalBalanceLookup, { canonicalCurrentPriceLookup })
 
-    assert.equal(unrealizedPnlUsd, 5, 'only the reconciled position (1*10-5=5) contributes — the unreconciled one is fully excluded')
+    assert.equal(unrealizedPnlUsd, 5, 'only the reconciled position (1*10-5=5) contributes — the unpriced one is fully excluded')
     assert.equal(unrealizedReconciliation.reconciledMarketValueUsd, 10, 'reconciledMarketValueUsd sums only reconciled positions')
     assert.equal(unrealizedReconciliation.reconciledCostBasisUsd, 5)
     assert.equal(unrealizedReconciliation.unrealizedCoveragePercent, 50)

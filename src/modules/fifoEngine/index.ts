@@ -282,6 +282,7 @@ function emptyReconciliationSummary(
     totalOpenPositions,
     reconciledOpenPositions: reconciliationStatus === 'not_reconciled' ? 0 : totalOpenPositions,
     excludedOpenPositions: 0,
+    cappedOpenPositions: 0,
     excludedCandidateMarketValueUsd: 0,
     excludedCandidateUnrealizedPnlUsd: 0,
     officialUnrealizedPnlUsd,
@@ -448,7 +449,13 @@ export function computePnl(
   //   3. synthetic_or_quarantined_position— the snapshot itself flags this position as not real
   //   4. invalid_decimals                 — the snapshot's normalization is untrustworthy, so its balance is too
   //   5. missing_canonical_balance        — no balance evidence at all
-  //   6. open_quantity_exceeds_balance    — balance known, FIFO quantity is larger (the ~$545k class)
+  //   6. open_quantity_exceeds_balance    — canonical balance is known but is 0/negative, so there
+  //                                         is nothing currently held to value. When balance is a
+  //                                         real positive amount SMALLER than FIFO open qty, the
+  //                                         position is NOT excluded: open qty is capped DOWN to
+  //                                         min(fifoOpen, canonicalBalance) for unrealized only
+  //                                         (Wallet PnL Item 3). Missing sells are never invented
+  //                                         into realized.
   //   7. missing_verified_current_price   — reconciled quantity, but nothing to value it with
   //   8. unverified_or_outlier_price      — a price exists but is outside the verified sane range
   //
@@ -464,6 +471,7 @@ export function computePnl(
   const unrealizedPnlExcludedTokens: string[] = []
   const unrealizedTerms: number[] = []
   let reconciledOpenPositions = 0
+  let cappedOpenPositions = 0
   let reconciledMarketValueUsd = 0
   let reconciledCostBasisUsd = 0
   const reconciledPositionsByPriceSource: Record<string, number> = {}
@@ -569,14 +577,27 @@ export function computePnl(
       exclude('invalid_decimals')
       continue
     }
-    // 5/6. The original, unchanged fail-closed reconciliation — now split into its two real reasons.
+    // 5. No canonical balance evidence at all — still fail closed.
     if (canonicalCurrentBalance == null) {
       exclude('missing_canonical_balance')
       continue
     }
-    if (openQuantityFromFifo > canonicalCurrentBalance * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+    // 6. CAP, DON'T EXCLUDE, DISCLOSED (Wallet PnL Item 3): a known positive canonical balance
+    //    smaller than FIFO open qty means the wallet currently holds `canonicalCurrentBalance`, not
+    //    the overstated FIFO remainder (missing sells/transfers never replayed). Using the full
+    //    FIFO qty produced the confirmed production shape (ETHY/FACY/USDC-class bags dropped from
+    //    unrealized entirely, official unrealized ~$19 vs a real portfolio). Cap quantity AND cost
+    //    basis by the same scale so unrealized is (price * held) - (cost * held/fifo) — never
+    //    FIFO-qty * price, never invent the missing remainder into realized. A zero/negative
+    //    canonical balance still excludes: there is nothing currently held to value.
+    let quantityScale = 1
+    if (!(canonicalCurrentBalance > 0)) {
       exclude('open_quantity_exceeds_balance')
       continue
+    }
+    if (openQuantityFromFifo > canonicalCurrentBalance * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+      quantityScale = canonicalCurrentBalance / openQuantityFromFifo
+      cappedOpenPositions += 1
     }
     // 7/8. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
     if (rawCurrentPrice == null) {
@@ -592,13 +613,14 @@ export function computePnl(
     // Scoped to pricedOpenQuantity (not openQuantityFromFifo) — see this position's own
     // AGGREGATE-ARITHMETIC FIX comment above. Consistent with reconciledCostBasisUsd/
     // unrealizedTerms: an unpriced lot contributes to neither, so it must not inflate this either.
-    reconciledMarketValueUsd += rawCurrentPrice * pricedOpenQuantity
-    if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd
+    // quantityScale is 1 for an already-consistent position and held/fifo when FIFO overstates.
+    reconciledMarketValueUsd += rawCurrentPrice * pricedOpenQuantity * quantityScale
+    if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd * quantityScale
     const sourceKey = currentPriceSource ?? 'unknown'
     reconciledPositionsByPriceSource[sourceKey] = (reconciledPositionsByPriceSource[sourceKey] ?? 0) + 1
     for (const lot of lots) {
       if (lot.costBasisUsd == null) continue
-      unrealizedTerms.push(rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd)
+      unrealizedTerms.push(rawCurrentPrice * lot.amountRemaining * quantityScale - lot.costBasisUsd * quantityScale)
     }
   }
 
@@ -647,6 +669,7 @@ export function computePnl(
       totalOpenPositions,
       reconciledOpenPositions,
       excludedOpenPositions: excludedPositions.length,
+      cappedOpenPositions,
       excludedCandidateMarketValueUsd,
       excludedCandidateUnrealizedPnlUsd,
       officialUnrealizedPnlUsd: unrealizedPnlUsd,

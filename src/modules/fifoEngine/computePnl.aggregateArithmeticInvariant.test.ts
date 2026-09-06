@@ -152,20 +152,20 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
     assert.equal(result.unrealizedPnlUsd, 30)
   })
 
-  it('does not alter FIFO matching, exclusion decisions, or fail-closed guards — only the aggregate multiplication scope changed', () => {
+  it('does not alter FIFO matching of priced vs unpriced lots — only the aggregate multiplication scope, plus Item 3 quantity cap', () => {
     const tokenA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    const excluded = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' // will fail balance reconciliation
+    const excluded = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' // no canonical balance — still excluded
     const lots: OpenLot[] = [
       openLot({ lotId: 'a-priced', token: tokenA, amountRemaining: 5, amountOpened: 5, costBasisUsd: 2 }),
       openLot({ lotId: 'a-unpriced', token: tokenA, amountRemaining: 3, amountOpened: 3, costBasisUsd: null, evidenceQuality: 'unpriced' }),
       openLot({ lotId: 'excluded', token: excluded, amountRemaining: 1_000_000, amountOpened: 1_000_000, costBasisUsd: 1 }),
     ]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 2
-    const canonicalBalanceLookup: CanonicalBalanceLookup = (token) => (token.toLowerCase() === tokenA ? 100 : 10)
+    const canonicalBalanceLookup: CanonicalBalanceLookup = (token) => (token.toLowerCase() === tokenA ? 100 : null)
 
     const result = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 1, 'the balance-mismatched position must still be excluded exactly as before')
+    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 1, 'a missing-balance position must still be excluded')
     assert.equal(result.unrealizedReconciliation.excludedPositions[0].tokenAddress, excluded)
     assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 1)
     // tokenA: market value from priced lot only (5*2=10), cost basis 2, unrealized 8.

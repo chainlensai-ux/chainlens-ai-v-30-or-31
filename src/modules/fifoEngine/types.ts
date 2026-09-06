@@ -227,6 +227,11 @@ export type UnrealizedReconciliationSummary = {
   totalOpenPositions: number
   reconciledOpenPositions: number
   excludedOpenPositions: number
+  // CAPPED-TO-BALANCE, DISCLOSED (Wallet PnL Item 3): count of reconciled positions whose FIFO
+  // open qty exceeded the known canonical current balance and was scaled DOWN to that balance for
+  // unrealized only. These are NOT exclusions — they contribute official unrealized at the held
+  // quantity. Optional so existing fixtures keep typechecking; computePnl always populates it.
+  cappedOpenPositions?: number
   excludedCandidateMarketValueUsd: number
   excludedCandidateUnrealizedPnlUsd: number
   // Exactly the same value as FifoOutput.unrealizedPnlUsd — restated here so a consumer reading
@@ -282,6 +287,7 @@ export function emptyUnrealizedReconciliation(): UnrealizedReconciliationSummary
     totalOpenPositions: 0,
     reconciledOpenPositions: 0,
     excludedOpenPositions: 0,
+    cappedOpenPositions: 0,
     excludedCandidateMarketValueUsd: 0,
     excludedCandidateUnrealizedPnlUsd: 0,
     officialUnrealizedPnlUsd: null,

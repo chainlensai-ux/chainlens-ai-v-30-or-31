@@ -45,47 +45,37 @@ function meta(chain: SupportedChain, token: string, overrides: Partial<Canonical
 }
 
 describe('computePnl reconciliation diagnostics — per-position detail', () => {
-  it('1. reports the EXACT open quantity from FIFO and the exact canonical balance (plus symbol/decimals from the snapshot)', () => {
-    // The original ~$545k-class inflation: 10,000,000 open units against a real balance of 100.
+  it('1. HARD ASSERTION (Wallet PnL Item 3): 10,000,000 FIFO open vs a real balance of 100 is CAPPED to 100, never excluded and never valued at the FIFO quantity', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 0.0545
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
 
-    const { unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup, {
-      positionMetadataLookup: metadataLookup({ [`base:${SHARED_ADDRESS}`]: meta('base', SHARED_ADDRESS, { symbol: 'SPAM', decimals: 9 }) }),
+    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup, {
+      positionMetadataLookup: metadataLookup({ [`base:${SHARED_ADDRESS}`]: meta('base', SHARED_ADDRESS, { symbol: 'ETHY', decimals: 18 }) }),
       currentPriceSourceLookup: () => 'dexscreener',
     })
 
-    assert.equal(unrealizedReconciliation.excludedPositions.length, 1)
-    const p = unrealizedReconciliation.excludedPositions[0]
-    assert.equal(p.chainId, 'base')
-    assert.equal(p.tokenAddress, SHARED_ADDRESS)
-    assert.equal(p.symbol, 'SPAM')
-    assert.equal(p.openQuantityFromFifo, 10_000_000, 'the exact FIFO-derived open quantity must be reported verbatim')
-    assert.equal(p.canonicalCurrentBalance, 100, 'the exact canonical balance must be reported verbatim')
-    assert.equal(p.decimalsUsed, 9)
-    assert.equal(p.currentPriceUsd, 0.0545)
-    assert.equal(p.currentPriceSource, 'dexscreener')
-    assert.equal(p.openCostBasisUsd, 100)
-    assert.equal(p.exclusionReason, 'open_quantity_exceeds_balance')
+    assert.equal(unrealizedReconciliation.excludedPositions.length, 0, 'a known positive balance must not drop the bag')
+    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 1)
+    assert.equal(unrealizedReconciliation.cappedOpenPositions, 1)
+    assert.equal(unrealizedReconciliation.excludedReasonCounts.open_quantity_exceeds_balance ?? 0, 0)
+    // scale = 100 / 10_000_000; market = 0.0545 * 10_000_000 * scale = 5.45; cost = 100 * scale = 0.001
+    const scale = 100 / 10_000_000
+    assert.equal(unrealizedPnlUsd, 0.0545 * 10_000_000 * scale - 100 * scale)
+    assert.ok((unrealizedPnlUsd ?? 0) < 10, 'official unrealized must be the held-quantity figure, never the ~$545k FIFO-qty candidate')
+    assert.equal(unrealizedReconciliation.officialUnrealizedPnlUsd, unrealizedPnlUsd)
   })
 
-  it('2. excess quantity and candidate inflation are calculated correctly', () => {
+  it('2. the uncapped FIFO-qty candidate is never restored into official unrealized', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 0.0545
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
 
-    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
-    const p = unrealizedReconciliation.excludedPositions[0]
-
-    assert.equal(p.excessOpenQuantity, 10_000_000 - 100, 'excess = FIFO open quantity - canonical balance')
-    assert.equal(p.candidateMarketValueUsd, 10_000_000 * 0.0545, 'candidate market value = price * FIFO open quantity')
-    assert.equal(p.candidateUnrealizedPnlUsd, 10_000_000 * 0.0545 - 100, 'candidate PnL = candidate market value - open cost basis')
-    // The candidate really is the ~$545k figure this whole fix exists to refuse.
-    assert.ok(p.candidateUnrealizedPnlUsd! > 544_000 && p.candidateUnrealizedPnlUsd! < 546_000, `expected the ~$545k candidate, got ${p.candidateUnrealizedPnlUsd}`)
-    // ...and it is reported, never counted.
-    assert.equal(unrealizedPnlUsd, null, 'official unrealized PnL must remain null — the candidate is never restored into it')
-    assert.equal(unrealizedReconciliation.officialUnrealizedPnlUsd, null)
+    const { unrealizedPnlUsd } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
+    const uncappedCandidate = 10_000_000 * 0.0545 - 100
+    assert.ok(uncappedCandidate > 544_000)
+    assert.ok((unrealizedPnlUsd ?? 0) < 10)
+    assert.notEqual(unrealizedPnlUsd, uncappedCandidate)
   })
 
   it('3. native ETH and WETH are separate positions and never collide', () => {
@@ -105,12 +95,12 @@ describe('computePnl reconciliation diagnostics — per-position detail', () => 
     })
 
     assert.equal(unrealizedReconciliation.totalOpenPositions, 2, 'native ETH and WETH must be two distinct positions, never merged into one')
-    assert.equal(unrealizedReconciliation.excludedOpenPositions, 1)
-    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 1)
-    assert.equal(unrealizedReconciliation.excludedPositions[0].tokenAddress, WETH_BASE, 'only WETH failed — native ETH must be untouched by it')
-    assert.equal(unrealizedReconciliation.excludedPositions[0].symbol, 'WETH')
-    // Native ETH still priced normally: 3000*5 - 10 = 14990.
-    assert.equal(unrealizedPnlUsd, 14_990, 'the reconciling native-ETH position must still be valued, unaffected by WETH failing')
+    assert.equal(unrealizedReconciliation.excludedOpenPositions, 0)
+    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 2)
+    assert.equal(unrealizedReconciliation.cappedOpenPositions, 1, 'only WETH is capped to its 1-token canonical balance')
+    // Native ETH: 3000*5 - 10 = 14990. WETH capped: scale = 1/5_000_000; 3000*5e6*scale - 10*scale = 3000 - 0.000002
+    const wethScale = 1 / 5_000_000
+    assert.equal(unrealizedPnlUsd, 14_990 + (3000 * 5_000_000 * wethScale - 10 * wethScale))
   })
 
   it('4. the same token address on different chains does not collide', () => {
@@ -125,12 +115,12 @@ describe('computePnl reconciliation diagnostics — per-position detail', () => 
     const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
     assert.equal(unrealizedReconciliation.totalOpenPositions, 2, 'the same address on two chains must be two distinct positions')
-    assert.equal(unrealizedReconciliation.excludedOpenPositions, 1)
-    const excluded = unrealizedReconciliation.excludedPositions[0]
-    assert.equal(excluded.chainId, 'eth', 'only the eth-chain position failed reconciliation')
-    assert.equal(excluded.canonicalCurrentBalance, 1)
-    // The base position reconciles: 2*100 - 50 = 150.
-    assert.equal(unrealizedPnlUsd, 150, 'the base-chain position must be valued independently of the eth-chain failure')
+    assert.equal(unrealizedReconciliation.excludedOpenPositions, 0)
+    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 2)
+    assert.equal(unrealizedReconciliation.cappedOpenPositions, 1, 'only the eth-chain overstated FIFO remainder is capped')
+    // Base: 2*100 - 50 = 150. Eth capped: scale = 1/999_999; 2*999_999*scale - 50*scale = 2 - 50/999_999
+    const ethScale = 1 / 999_999
+    assert.equal(unrealizedPnlUsd, 150 + (2 * 999_999 * ethScale - 50 * ethScale))
   })
 
   it('5. missing price and outlier price report DISTINCT typed reasons', () => {
@@ -198,7 +188,8 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
       openLot({ lotId: 'a', token: SHARED_ADDRESS, amountRemaining: 10_000, costBasisUsd: 10 }),
       openLot({ lotId: 'b', token: WETH_BASE, amountRemaining: 20_000, costBasisUsd: 20 }),
     ]
-    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => 1, () => 1)
+    // Missing price — still unreconcilable even after Item 3's quantity cap (no current price to value the held qty).
+    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => null, () => 1)
 
     assert.equal(unrealizedPnlUsd, null, 'official unrealized PnL must be null/unavailable, never a partial or clamped figure')
     assert.equal(unrealizedReconciliation.officialUnrealizedPnlUsd, null)
@@ -206,8 +197,7 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
     assert.equal(unrealizedReconciliation.totalOpenPositions, 2)
     assert.equal(unrealizedReconciliation.reconciledOpenPositions, 0)
     assert.equal(unrealizedReconciliation.excludedOpenPositions, 2)
-    assert.equal(unrealizedReconciliation.excludedCandidateMarketValueUsd, 30_000, 'excluded candidate market value sums the refused figures')
-    assert.equal(unrealizedReconciliation.excludedCandidateUnrealizedPnlUsd, 30_000 - 30)
+    assert.equal(unrealizedReconciliation.excludedPositions[0].exclusionReason, 'missing_verified_current_price')
   })
 
   it('reports "partial" when some positions reconcile and some do not, and "ok" when all reconcile', () => {
@@ -217,7 +207,7 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
         openLot({ lotId: 'good', token: SHARED_ADDRESS, amountRemaining: 10, costBasisUsd: 5 }),
         openLot({ lotId: 'bad', token: WETH_BASE, amountRemaining: 10_000, costBasisUsd: 5 }),
       ],
-      () => 1,
+      (token) => (token.toLowerCase() === SHARED_ADDRESS ? 1 : null),
       (token) => (token.toLowerCase() === SHARED_ADDRESS ? 10 : 1),
     )
     assert.equal(mixed.unrealizedReconciliation.reconciliationStatus, 'partial')

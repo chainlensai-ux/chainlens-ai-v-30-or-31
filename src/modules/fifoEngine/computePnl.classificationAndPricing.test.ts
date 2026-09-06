@@ -89,15 +89,28 @@ describe('computePnl — Wallet Scanner improvement audit (classification, addit
     assert.notEqual(pos.classification, 'missing_price', 'missing balance and missing price must be distinguishable, never conflated')
   })
 
-  it('5. an open quantity greater than the real balance is classified balance_less_than_fifo_open with a clear reason', () => {
+  it('5. an open quantity greater than a known positive balance is capped to that balance for unrealized, never excluded (Wallet PnL Item 3)', () => {
     const lots = [openLot({ amountRemaining: 100, costBasisUsd: 50 })]
-    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 10 // real balance is far smaller than FIFO's open quantity
-    const result = computePnl([], lots, () => null, canonicalBalanceLookup)
+    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 10
+    const result = computePnl([], lots, () => 2, canonicalBalanceLookup)
+
+    assert.equal(result.unrealizedReconciliation.excludedPositions.length, 0, 'a known positive balance must not drop the bag from unrealized')
+    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 1)
+    assert.equal(result.unrealizedReconciliation.cappedOpenPositions, 1)
+    // held 10 / fifo 100 = 0.1 scale; market = 2*100*0.1 = 20; cost = 50*0.1 = 5; unrealized = 15
+    assert.equal(result.unrealizedPnlUsd, 15)
+    assert.equal(result.realizedPnlUsd, null, 'capping unrealized must never invent missing sells into realized')
+  })
+
+  it('5b. a zero canonical balance is still excluded as open_quantity_exceeds_balance — nothing currently held', () => {
+    const lots = [openLot({ amountRemaining: 100, costBasisUsd: 50 })]
+    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 0
+    const result = computePnl([], lots, () => 2, canonicalBalanceLookup)
 
     const pos = result.unrealizedReconciliation.excludedPositions[0]
     assert.equal(pos.exclusionReason, 'open_quantity_exceeds_balance')
     assert.equal(pos.classification, 'balance_less_than_fifo_open')
-    assert.equal(pos.excessOpenQuantity, 90)
+    assert.equal(result.unrealizedPnlUsd, null)
   })
 
   it('6a. dead/spam tokens (promotional symbol) are classified dust_spam, separately from genuine missing-price gaps', () => {
