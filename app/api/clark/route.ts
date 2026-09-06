@@ -89,6 +89,7 @@ import {
   isWalletComparePrompt,
   isWalletPnlFollowupPrompt,
   formatWalletPnlRead,
+  formatCanonicalPnlEvidence,
   type ClarkWalletPnlRead,
   type ClarkAction,
   formatTokenSafetyAnswer,
@@ -3521,20 +3522,27 @@ function buildWalletAnalysisFallback(walletData: unknown, address: string): stri
   const holdings = holdingsTop10 ? holdingsTop10.length : (Array.isArray((w as Record<string, unknown>).holdings) ? ((w as Record<string, unknown>).holdings as unknown[]).length : 0);
   const totalValueRaw = (w as Record<string, unknown>).totalValue;
   const totalValue = typeof totalValueRaw === "number" ? formatUsdShort(totalValueRaw) : "n/a";
-  // CANONICAL PNL, DISCLOSED (Clark/CORTEX audit, Item 11 — "unavailable PnL != $0"): read the real
-  // canonicalPnl field when present rather than defaulting to any invented value; a pnlStatus of
-  // 'unavailable'/'unsupported' is stated as such, never shown as $0.
-  const canonicalPnl = (w as Record<string, unknown>).canonicalPnl as { pnlStatus?: string; realizedPnlUsd?: number | null } | null | undefined;
-  const pnlLine = canonicalPnl
-    ? (canonicalPnl.pnlStatus === "available" && canonicalPnl.realizedPnlUsd != null
-      ? `Realized PnL: ${formatUsdShort(canonicalPnl.realizedPnlUsd)}`
-      : `Realized PnL: unavailable (${canonicalPnl.pnlStatus ?? "unknown"})`)
-    : "Realized PnL: not read in this pass";
+  // CANONICAL PNL, DISCLOSED (Clark/CORTEX audit, Item 11 — "unavailable PnL != $0"):
+  // always render the canonical lane read. Never coerce unavailable to $0.
+  const canonicalPnl = (w as Record<string, unknown>).canonicalPnl as NonNullable<ClarkToolEvidence["walletSnapshot"]>["canonicalPnl"];
+  const pnlLines = canonicalPnl
+    ? formatCanonicalPnlEvidence({
+        pnlStatus: canonicalPnl.pnlStatus,
+        realizedPnlUsd: canonicalPnl.realizedPnlUsd,
+        unrealizedPnlUsd: canonicalPnl.unrealizedPnlUsd,
+        evmPnlLaneStatus: (canonicalPnl.evmPnlLaneStatus as "verified" | "partial" | "unavailable") || "unavailable",
+        robinhoodPnlLaneStatus: (canonicalPnl.robinhoodPnlLaneStatus as "verified" | "not_verified" | "unavailable") || "unavailable",
+        verifiedCoveragePercent: canonicalPnl.verifiedCoveragePercent,
+        blockingReason: canonicalPnl.blockingReason ?? null,
+        missingEvidence: canonicalPnl.missingEvidence ?? [],
+        scanMode: "preview",
+      })
+    : ["Realized PnL: Unavailable: not read in this pass"];
   return buildStructuredVerdict(
     "SCAN DEEPER",
     "Low",
     `Wallet ${address} was detected and basic portfolio data is available.`,
-    [`Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`, pnlLine],
+    [`Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`, ...pnlLines],
     ["Behavioral and counterpart risk requires deeper scanner context.", "Single-pass wallet data is not enough for a strong trust call."],
     "Run Wallet Scanner for deeper behavior and transfer-risk analysis."
   );
@@ -3626,6 +3634,8 @@ function buildWalletQualityVerdict(
       ? "Monitor this wallet's next moves — behavior pattern suggests active on-chain presence."
       : "Track this wallet's future entries/exits before treating it as a lead wallet.";
 
+  const pnlBlock = formatSnapshotCanonicalPnl(snapshot);
+
   return enforceWalletAssetLabel(
     buildStructuredVerdict(
       verdict,
@@ -3638,7 +3648,7 @@ function buildWalletQualityVerdict(
       "Next check:"
     ),
     address
-  ) + "\n\n" + formatWalletPnlRead(snapshot.walletPnlRead ?? null);
+  ) + "\n\n" + pnlBlock;
 }
 
 function formatInt(value: number | null | undefined): string {
@@ -3692,8 +3702,28 @@ function normalizeCanonicalWalletSnapshotEvidence(result: CanonicalWalletScanRes
       verifiedCoveragePercent: result.verifiedCoveragePercent,
       evmPnlLaneStatus: result.evmPnlLaneStatus,
       robinhoodPnlLaneStatus: result.robinhoodPnlLaneStatus,
+      blockingReason: result.missingEvidence[0] ?? null,
+      missingEvidence: result.missingEvidence,
     },
   };
+}
+
+function formatSnapshotCanonicalPnl(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>): string {
+  if (snapshot.canonicalPnl) {
+    const c = snapshot.canonicalPnl;
+    return formatCanonicalPnlEvidence({
+      pnlStatus: c.pnlStatus,
+      realizedPnlUsd: c.realizedPnlUsd,
+      unrealizedPnlUsd: c.unrealizedPnlUsd,
+      evmPnlLaneStatus: (c.evmPnlLaneStatus as "verified" | "partial" | "unavailable") || "unavailable",
+      robinhoodPnlLaneStatus: (c.robinhoodPnlLaneStatus as "verified" | "not_verified" | "unavailable") || "unavailable",
+      verifiedCoveragePercent: c.verifiedCoveragePercent,
+      blockingReason: c.blockingReason ?? null,
+      missingEvidence: c.missingEvidence ?? [],
+      scanMode: "preview",
+    }).join("\n");
+  }
+  return formatWalletPnlRead(snapshot.walletPnlRead ?? null);
 }
 
 function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["walletSnapshot"]>): string {
@@ -3749,7 +3779,7 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
     "Next check:",
     "Monitor entries/exits before trusting this wallet. Run token scans on major holdings. No trade call.",
     "",
-    formatWalletPnlRead(snapshot.walletPnlRead ?? null),
+    formatSnapshotCanonicalPnl(snapshot),
   ].join("\n");
 }
 
@@ -4293,6 +4323,7 @@ async function buildClarkWalletReadResponse(params: {
     verifiedSwapCount: result.verifiedSwapCount,
     verifiedCoveragePercent: result.verifiedCoveragePercent,
     openPositionCoveragePercent: result.openPositionCoveragePercent,
+    blockingReason: result.missingEvidence[0] ?? null,
   });
 
   const existing = sessionMem.lastWalletSubject;
@@ -4801,10 +4832,10 @@ function buildWalletPnlFollowupFromEvidence(address: string, ev: Record<string, 
       `- Base/ETH: ${evm}`,
       `- Robinhood: ${rhLabel}`,
     ];
-    if ((evm === "verified" || evm === "partial" || rh === "verified") && ev.realizedPnlUsd != null) {
+    if ((evm === "verified" || evm === "partial") && ev.realizedPnlUsd != null && Number.isFinite(Number(ev.realizedPnlUsd))) {
       lines.push(`- Realized PnL: $${Number(ev.realizedPnlUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
     } else {
-      lines.push("- Realized PnL: not verified");
+      lines.push("- Realized PnL: Unavailable: not verified");
     }
     if (rh === "verified" && ev.robinhoodPnlProof) {
       const proof = ev.robinhoodPnlProof as { source?: string; verifiedSwapCount?: number; fifoClosedLots?: number };
@@ -6189,6 +6220,8 @@ type ClarkToolEvidence = {
       verifiedCoveragePercent: number | null;
       evmPnlLaneStatus: string;
       robinhoodPnlLaneStatus: string;
+      blockingReason?: string | null;
+      missingEvidence?: string[];
     } | null;
   };
   walletQuality?: {

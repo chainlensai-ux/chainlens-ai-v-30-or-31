@@ -163,7 +163,7 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
     robinhoodPnlLaneStatus: 'unavailable',
   })
   assert.match(noPnl, /Base\/ETH: unavailable/)
-  assert.match(noPnl, /Realized PnL: not verified/)
+  assert.match(noPnl, /Realized PnL: Unavailable: not verified/)
   assert.ok(!/Realized PnL \(verified\)/.test(noPnl), 'must never print a verified PnL line when pnl is not verified')
 
   // Deep scan must keep a PnL Evidence section and never claim a fabricated completed result.

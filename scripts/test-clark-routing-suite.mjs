@@ -14,6 +14,7 @@ const tests = [
   'test-clark-session-memory-precedence.mjs',
   'test-clark-daily-quota.mjs',
   'test-clark-canonical-token-risk.mjs',
+  'test-clark-wallet-pnl-consistency.mjs',
   'test-clark-history.mjs',
   'test-clark-intent.mjs',
   'test-clark-market-metric-routing.mjs',

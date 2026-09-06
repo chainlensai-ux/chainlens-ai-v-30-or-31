@@ -130,6 +130,8 @@ const rhVerified = {
   check('PnL Evidence section exists', preview.includes('PnL Evidence'))
   check('Base/ETH lane shown', preview.includes('Base/ETH: unavailable'))
   check('Robinhood verified compact proof', preview.includes('Robinhood PnL: Verified') && preview.includes('Source: Robinhood Phase 3 sidecar') && preview.includes('Verified swaps: 4') && preview.includes('Closed lots: 3') && preview.includes('Price evidence: both legs verified'))
+  check('unavailable EVM does not print Robinhood realized as generic Realized PnL', !/Realized PnL: \$27,542/.test(preview) && preview.includes('Realized PnL: Unavailable: not verified'))
+  check('public PnL status is unavailable, not $0', preview.includes('Public PnL status: unavailable') && !/Realized PnL: \$0(?!\.)/.test(preview))
   check('Next includes Deep Scan / Explain PnL / Open Wallet Scanner', preview.includes('Run Deep Scan Wallet') && preview.includes('Explain PnL') && preview.includes('Open Wallet Scanner'))
   check('does not list Arbitrum unless scanned', !/Arbitrum/i.test(preview))
 

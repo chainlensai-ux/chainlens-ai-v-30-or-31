@@ -1779,10 +1779,18 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
   const open = result.openLots ?? result.walletLotSummary?.openLots ?? "unverified";
   const topLines = top.length ? top.map((h, i) => `${i + 1}. ${String(h.symbol ?? "?").toUpperCase()}${h.chain ? ` [${chainDisplayName(h.chain)}]` : ""} — ${fmtUsdShort(h.value)}`) : ["none returned with value"];
   const canProfit = pnlStatus === "Verified";
+  const realizedRaw = canProfit ? walletEvidenceValue(result as any, ["realizedPnlUsd", "walletTokenPnlSummary.realizedPnlUsd"]) : null;
+  const unrealizedRaw = canProfit ? walletEvidenceValue(result as any, ["unrealizedPnlUsd", "walletTokenPnlSummary.unrealizedPnlUsd"]) : null;
+  const realizedLine = typeof realizedRaw === "number" && Number.isFinite(realizedRaw)
+    ? `Realized PnL: ${fmtUsdShort(realizedRaw as number)}`
+    : `Realized PnL: ${pnlStatus === "Partial" ? `Partial: ${q.reason}` : `Unavailable: ${q.reason}`}`;
+  const unrealizedLine = typeof unrealizedRaw === "number" && Number.isFinite(unrealizedRaw)
+    ? `Unrealized/Open PnL: ${fmtUsdShort(unrealizedRaw as number)}`
+    : `Unrealized/Open PnL: ${pnlStatus === "Partial" ? `Partial: ${q.reason}` : `Unavailable: ${q.reason}`}`;
   if (kind === "wallet_profitability") return [
     "WALLET PROFITABILITY", `Status: ${pnlStatus === "Verified" ? "Verified" : pnlStatus === "Partial" ? `Partial: ${q.reason}` : `Unavailable: ${q.reason}`}`,
-    `Realized PnL: ${walletEvidenceValue(result as any, ["realizedPnlUsd", "walletTokenPnlSummary.realizedPnlUsd", "walletTradeStatsSummary.realizedPnlUsd"]) ?? "unavailable"}`,
-    `Unrealized/Open PnL: ${walletEvidenceValue(result as any, ["unrealizedPnlUsd", "walletTokenPnlSummary.unrealizedPnlUsd", "walletTradeStatsSummary.unrealizedPnlUsd"]) ?? "unavailable"}`,
+    realizedLine,
+    unrealizedLine,
     `Closed lots: ${closed}`, `Open lots: ${open}`, `PnL confidence: ${pnlStatus}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : (pnlStatus === "Partial" ? "Profitability is partial — cost basis / closed lots are incomplete." : "Clark can assess portfolio exposure, but not profitability yet."),
     ...(canProfit ? [] : [`Reason: ${q.reason}`])
   ].join("\n");
@@ -2029,6 +2037,7 @@ export type CanonicalWalletReadInput = {
   openPositionCoveragePercent?: number | null;
   behaviorLabel?: string | null;
   behaviorWhy?: string[];
+  blockingReason?: string | null;
 };
 
 function fmtUsd(v: number | null | undefined): string {
@@ -2090,13 +2099,101 @@ function rhLaneLabel(status: CanonicalWalletReadInput["robinhoodPnlLaneStatus"])
   return "not verified";
 }
 
+/**
+ * Canonical Wallet Scanner PnL evidence for Clark. Never prints a dollar amount
+ * when the EVM lane / public status is unavailable — Unavailable PnL is not $0.
+ * Robinhood stays in its own lane and is never blended into the generic realized line.
+ */
+export function formatCanonicalPnlEvidence(r: Pick<
+  CanonicalWalletReadInput,
+  | "pnlStatus"
+  | "realizedPnlUsd"
+  | "unrealizedPnlUsd"
+  | "evmPnlLaneStatus"
+  | "robinhoodPnlLaneStatus"
+  | "robinhoodPnlProof"
+  | "verifiedCoveragePercent"
+  | "openPositionCoveragePercent"
+  | "verifiedSwapCount"
+  | "missingEvidence"
+  | "scanMode"
+  | "jobStatus"
+  | "jobId"
+  | "blockingReason"
+>): string[] {
+  const evmLane = evmLaneLabel(r.evmPnlLaneStatus, r.pnlStatus);
+  const rhLane = rhLaneLabel(r.robinhoodPnlLaneStatus);
+  const lines: string[] = [
+    "PnL Evidence",
+    `- Public PnL status: ${r.pnlStatus}`,
+    `- Base/ETH: ${evmLane}`,
+    `- Robinhood: ${rhLane}`,
+  ];
+
+  const evmPublishesNumber = (r.evmPnlLaneStatus === "verified" || r.evmPnlLaneStatus === "partial")
+    && (r.pnlStatus === "available" || r.pnlStatus === "partial");
+  const realizedOk = evmPublishesNumber && typeof r.realizedPnlUsd === "number" && Number.isFinite(r.realizedPnlUsd);
+  if (realizedOk) {
+    lines.push(`- Realized PnL: ${fmtUsd(r.realizedPnlUsd)}`);
+  } else if (r.pnlStatus === "unsupported") {
+    lines.push("- Realized PnL: Unsupported: this path does not publish realized PnL");
+  } else {
+    lines.push("- Realized PnL: Unavailable: not verified");
+  }
+
+  const unrealizedOk = evmPublishesNumber && typeof r.unrealizedPnlUsd === "number" && Number.isFinite(r.unrealizedPnlUsd);
+  if (unrealizedOk) {
+    lines.push(`- Unrealized PnL: ${fmtUsd(r.unrealizedPnlUsd)}`);
+  } else {
+    lines.push("- Unrealized PnL: Unavailable: not verified");
+  }
+
+  if (r.verifiedCoveragePercent != null) {
+    lines.push(`- Coverage: ${Math.round(r.verifiedCoveragePercent)}%`);
+  } else if (r.scanMode === "deep" && r.jobStatus === "queued") {
+    lines.push("- Coverage: pending — deep scan still running");
+  } else {
+    lines.push("- Coverage: not rated — verified trade coverage was not published for this pass");
+  }
+  if (r.openPositionCoveragePercent != null) {
+    lines.push(`- Open-position coverage: ${Math.round(r.openPositionCoveragePercent)}%`);
+  }
+  if (typeof r.verifiedSwapCount === "number") {
+    lines.push(`- Verified trades: ${r.verifiedSwapCount}`);
+  }
+
+  if (r.robinhoodPnlLaneStatus === "verified" && r.robinhoodPnlProof) {
+    lines.push("- Robinhood PnL: Verified");
+    lines.push(`- Source: ${r.robinhoodPnlProof.source}`);
+    lines.push(`- Verified swaps: ${r.robinhoodPnlProof.verifiedSwapCount}`);
+    lines.push(`- Closed lots: ${r.robinhoodPnlProof.fifoClosedLots}`);
+    lines.push("- Price evidence: both legs verified");
+  } else if (r.robinhoodPnlLaneStatus === "not_verified") {
+    lines.push("- Robinhood PnL: Not verified");
+    lines.push("- Requires verified Robinhood swaps + both-leg price evidence.");
+  } else if (r.robinhoodPnlLaneStatus === "unavailable") {
+    lines.push("- Robinhood PnL: unavailable");
+  }
+
+  const blocking = r.blockingReason
+    ?? (Array.isArray(r.missingEvidence) && r.missingEvidence[0] ? r.missingEvidence[0] : null);
+  if (r.scanMode === "deep" && r.jobStatus === "queued" && r.jobId) {
+    lines.push(`- Blocking reason: Deep scan job ${r.jobId} is still running — Base/ETH PnL may update in Wallet Scanner.`);
+  } else if (blocking && (r.pnlStatus === "unavailable" || r.pnlStatus === "unsupported" || r.pnlStatus === "partial" || evmLane !== "verified")) {
+    lines.push(`- Blocking reason: ${blocking}`);
+  } else if (evmLane === "unavailable" && rhLane !== "verified") {
+    lines.push("- Blocking reason: PnL could not be verified from the evidence available.");
+  } else if (evmLane === "partial") {
+    lines.push("- Blocking reason: Partial evidence only — not enough verified swaps to confirm official PnL.");
+  }
+  return lines;
+}
+
 export function formatCanonicalWalletRead(address: string, r: CanonicalWalletReadInput): string {
   const topHoldings = [...r.holdings].sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0)).slice(0, 5);
   const priced = r.pricedHoldingsCount ?? r.holdings.filter((h) => h.valueUsd != null).length;
   const unpriced = r.unpricedHoldingsCount ?? r.holdings.filter((h) => h.valueUsd == null).length;
   const behavior = deriveClarkWalletBehaviorLabel(r);
-  const evmLane = evmLaneLabel(r.evmPnlLaneStatus, r.pnlStatus);
-  const rhLane = rhLaneLabel(r.robinhoodPnlLaneStatus);
   const chainList = r.chainsScanned.length > 0 ? r.chainsScanned.map(chainReadLabel).join(", ") : "none";
   const topLine = topHoldings.length > 0
     ? topHoldings.map((h) => `${h.symbol} ${h.valueUsd != null ? fmtUsd(h.valueUsd) : "unpriced"}`).join(", ")
@@ -2119,57 +2216,8 @@ export function formatCanonicalWalletRead(address: string, r: CanonicalWalletRea
     `- Label: ${behavior.label}`,
     ...behavior.why.map((w) => `- Why: ${w}`),
     "",
-    "PnL Evidence",
-    `- Base/ETH: ${evmLane}`,
-    `- Robinhood: ${rhLane}`,
+    ...formatCanonicalPnlEvidence(r),
   ];
-
-  const showRealized = (r.evmPnlLaneStatus === "verified" || r.evmPnlLaneStatus === "partial" || r.robinhoodPnlLaneStatus === "verified")
-    && r.realizedPnlUsd != null;
-  if (showRealized) {
-    lines.push(`- Realized PnL: ${fmtUsd(r.realizedPnlUsd)}`);
-  } else {
-    lines.push("- Realized PnL: not verified");
-  }
-  if (r.verifiedCoveragePercent != null) {
-    lines.push(`- Coverage: ${Math.round(r.verifiedCoveragePercent)}%`);
-  } else if (r.scanMode === "deep" && r.jobStatus === "queued") {
-    lines.push("- Coverage: pending — deep scan still running");
-  } else {
-    lines.push("- Coverage: not rated — verified trade coverage was not published for this pass");
-  }
-  if (r.unrealizedPnlUsd != null && (r.evmPnlLaneStatus === "verified" || r.evmPnlLaneStatus === "partial")) {
-    lines.push(`- Unrealized PnL: ${fmtUsd(r.unrealizedPnlUsd)}`);
-  } else {
-    lines.push("- Unrealized PnL: unavailable");
-  }
-  if (r.openPositionCoveragePercent != null) {
-    lines.push(`- Open-position coverage: ${Math.round(r.openPositionCoveragePercent)}%`);
-  }
-  if (typeof r.verifiedSwapCount === "number") {
-    lines.push(`- Verified trades: ${r.verifiedSwapCount}`);
-  }
-
-  if (r.robinhoodPnlLaneStatus === "verified" && r.robinhoodPnlProof) {
-    lines.push(`- Robinhood PnL: Verified`);
-    lines.push(`- Source: ${r.robinhoodPnlProof.source}`);
-    lines.push(`- Verified swaps: ${r.robinhoodPnlProof.verifiedSwapCount}`);
-    lines.push(`- Closed lots: ${r.robinhoodPnlProof.fifoClosedLots}`);
-    lines.push(`- Price evidence: both legs verified`);
-  } else if (r.robinhoodPnlLaneStatus === "not_verified") {
-    lines.push("- Robinhood PnL: Not verified");
-    lines.push("- Requires verified Robinhood swaps + both-leg price evidence.");
-  } else if (r.robinhoodPnlLaneStatus === "unavailable") {
-    lines.push("- Robinhood PnL: unavailable");
-  }
-
-  if (r.scanMode === "deep" && r.jobStatus === "queued" && r.jobId) {
-    lines.push(`- Reason if not official: Deep scan job ${r.jobId} is still running — Base/ETH PnL may update in Wallet Scanner.`);
-  } else if (evmLane === "unavailable" && rhLane !== "verified") {
-    lines.push("- Reason if not official: PnL could not be verified from the evidence available.");
-  } else if (evmLane === "partial") {
-    lines.push("- Reason if not official: Partial evidence only — not enough verified swaps to confirm official PnL.");
-  }
 
   const missing = [...r.missingEvidence];
   if (r.scanMode === "preview") missing.push("Deep scan history (FIFO / Base-ETH realized PnL)");
