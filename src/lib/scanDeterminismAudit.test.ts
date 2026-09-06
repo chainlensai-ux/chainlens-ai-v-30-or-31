@@ -228,6 +228,21 @@ describe('checkFinalPnlSnapshotDivergence / logFinalPnlSnapshotDivergenceIfAny (
     assert.equal(check.pricingCoverageAgrees, true)
   })
 
+  it('empty-lot consumers agree on null coverage and never emit a vacuous divergence', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers({
+      publicGateVerifiedLots: 0,
+      publicGatePricingCoverage: null,
+      ayriFullyPricedLots: 0,
+      ayriVerifiedPricingCoverage: null,
+      canonicalVerifiedLots: 0,
+    }))
+    assert.equal(check.pricingCoverageAgrees, true)
+    assert.equal(check.divergent, false)
+    const errors: unknown[][] = []
+    logFinalPnlSnapshotDivergenceIfAny(check, { error: (...args: unknown[]) => { errors.push(args) } })
+    assert.equal(errors.length, 0)
+  })
+
   it('HARD ASSERTION: reproduces the exact confirmed production divergence — gate 19/70.37% vs AYRI 6/22.22% -> divergent', () => {
     const check = checkFinalPnlSnapshotDivergence(consumers({ ayriFullyPricedLots: 6, ayriVerifiedPricingCoverage: 0.2222 }))
     assert.equal(check.divergent, true)

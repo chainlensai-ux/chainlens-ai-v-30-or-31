@@ -37,12 +37,13 @@ const INTEGRITY_MEDIUM_THRESHOLD = 0.75
 // unavailable always overrides internal confidence labels" requirement) — a wallet's own internal
 // bookkeeping can never present a confident label the public PnL pipeline itself couldn't verify.
 export function deriveIntegrityTier(params: {
-  attributionCoveragePercent: number
-  verifiedPricingCoveragePercent: number
+  attributionCoveragePercent: number | null
+  verifiedPricingCoveragePercent: number | null
   criticalMismatchCount: number
   publicPnlStatus: 'available' | 'partial' | 'unavailable'
 }): AyriIntegrityTier {
   if (params.publicPnlStatus === 'unavailable') return 'low'
+  if (params.attributionCoveragePercent === null || params.verifiedPricingCoveragePercent === null) return 'low'
   if (
     params.attributionCoveragePercent >= INTEGRITY_HIGH_THRESHOLD
     && params.verifiedPricingCoveragePercent >= INTEGRITY_HIGH_THRESHOLD
@@ -84,7 +85,7 @@ export type AyriAttributionSummary = {
   // can legitimately show 100% attributionCoveragePercent while its real pricing coverage is poor or
   // zero (confirmed real production evidence: coveragePercent: 1, integrityTier: 'high' shown
   // alongside realizedPnlUsd: 0 with zero fully priced lots).
-  attributionCoveragePercent: number
+  attributionCoveragePercent: number | null
   integrityTier: AyriIntegrityTier
   primaryCount: number
   fallbackCount: number
@@ -99,13 +100,13 @@ export type AyriAttributionSummary = {
   // fullyPricedLots / totalLots — real historical-pricing completeness (ANY priced source, including
   // reconstructed/estimated ones like syntheticPrice/recoveredPrice) — never to be confused with
   // attributionCoveragePercent above, and distinct again from verifiedPricingCoveragePercent below.
-  historicalPricingCoveragePercent: number
+  historicalPricingCoveragePercent: number | null
   // ADDED, DISCLOSED (this task's explicit requirement): the fraction of totalLots priced by a
   // genuinely VERIFIED, market-observed source — primaryPrice / fallbackPrice / ratioPrice — never
   // counting syntheticPrice/recoveredPrice, which are internal reconstructions rather than directly
   // observed market prices. This is the strictest of the three coverage figures and is the one
   // integrityTier's "high" tier is gated on below — see that derivation's own header.
-  verifiedPricingCoveragePercent: number
+  verifiedPricingCoveragePercent: number | null
   // REQUIREMENT #6/#7: the count above, restated as the exact set it came from, plus a full
   // breakdown of why any lot in this scan fails the ONE canonical published-verified predicate.
   canonicalVerifiedLots: number
@@ -271,7 +272,7 @@ export function createAyriAttribution(config: Config = {}) {
 
       const totalLots = Math.max(input.reconciledPnL.closedLots, lots.length)
       const attributedLots = records.length
-      const attributionCoveragePercent = totalLots === 0 ? 1 : round(attributedLots / totalLots)
+      const attributionCoveragePercent = totalLots === 0 ? null : round(attributedLots / totalLots)
       // FALSE-ZERO FIX, DISCLOSED (confirmed bug, real production evidence: realizedPnlUsd: 0 shown
       // with totalLots: 290, attributedLots: 290, but zero lots actually fully priced). The previous
       // `records.length ? records.reduce((sum, r) => sum + (r.realizedUsd ?? 0), 0) : null` only
@@ -284,7 +285,7 @@ export function createAyriAttribution(config: Config = {}) {
       // "nothing priced"); one or more -> the real sum, which may legitimately equal 0.
       const pricedRecords = records.filter((r) => r.realizedUsd !== undefined)
       const fullyPricedLots = pricedRecords.length
-      const historicalPricingCoveragePercent = totalLots === 0 ? 1 : round(fullyPricedLots / totalLots)
+      const historicalPricingCoveragePercent = totalLots === 0 ? null : round(fullyPricedLots / totalLots)
       // VERIFIED PRICING COVERAGE, DISCLOSED (this task's explicit requirement): a strict subset of
       // fullyPricedLots — only lots priced via a directly-observed market source (see
       // VERIFIED_ATTRIBUTION_SOURCES's own header), never a syntheticPrice/recoveredPrice
@@ -307,7 +308,7 @@ export function createAyriAttribution(config: Config = {}) {
       // part of the canonical verified sample.
       const canonicalVerifiedLots = lots.filter(isCanonicalVerifiedPublishedLot)
       const verifiedPricedLots = canonicalVerifiedLots.length
-      const verifiedPricingCoveragePercent = totalLots === 0 ? 1 : round(verifiedPricedLots / totalLots)
+      const verifiedPricingCoveragePercent = totalLots === 0 ? null : round(verifiedPricedLots / totalLots)
       // REQUIREMENT #7: the exact lots that are fully priced yet fail the canonical predicate, with
       // the real per-lot reason — so any future gap is diagnosable from one log line instead of
       // re-derived by hand. Empty whenever the two agree, which is the expected steady state.
@@ -358,7 +359,8 @@ export function createAyriAttribution(config: Config = {}) {
       // described as 100% PnL coverage" requirement): a real, compact warning whenever the two could
       // plausibly be confused — attribution reads as complete while real pricing coverage lags well
       // behind it. Never blocks anything; purely so this specific misreading can never happen silently.
-      if (attributionCoveragePercent >= INTEGRITY_HIGH_THRESHOLD && verifiedPricingCoveragePercent < INTEGRITY_MEDIUM_THRESHOLD) {
+      if (attributionCoveragePercent !== null && verifiedPricingCoveragePercent !== null
+        && attributionCoveragePercent >= INTEGRITY_HIGH_THRESHOLD && verifiedPricingCoveragePercent < INTEGRITY_MEDIUM_THRESHOLD) {
         logger.warn('[ayri] attribution coverage must not be read as PnL coverage — verified pricing coverage is far lower', {
           attributionCoveragePercent, verifiedPricingCoveragePercent, historicalPricingCoveragePercent,
         })

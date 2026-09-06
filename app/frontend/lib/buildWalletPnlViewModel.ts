@@ -177,6 +177,7 @@ function canonicalClosedLotCounts(summary: PnlReconciliationSummary | null | und
 function formatNamedGateBlocker(rule: string): string | null {
   if (rule === 'fifo_result_hard_invalid') return 'FIFO result is hard-invalid.'
   if (rule === 'window_boundary_proven') return 'Window boundary is not proven.'
+  if (rule === 'window_boundary_unproven_for_unmatched_sells') return 'Unmatched sells cannot be resolved because the transaction-history boundary is not proven.'
   if (rule === 'realized_pnl_present') return 'Canonical realized PnL is not present.'
   return null
 }

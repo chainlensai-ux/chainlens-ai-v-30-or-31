@@ -59,6 +59,10 @@ export type CandidateTxEvidence = {
   // An earlier inbound event for the same chain/token exists. This only prioritizes a receipt
   // attempt; it never proves the outbound was a sale by itself.
   hasPriorBuyInventory?: boolean
+  // A wallet-facing outbound whose transaction has no recorded inbound leg. This is a hard receipt
+  // audit candidate: the receipt decides whether it was a factory-validated swap or an ordinary
+  // transfer. The flag never classifies the event as a sell by itself.
+  isUnmatchedOutboundExit?: boolean
 }
 
 export type RejectReason =
@@ -162,7 +166,7 @@ export type Tier1SelectionDiagnostics = {
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v8-missing-sell-side-priority'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v9-unmatched-outbound-seed'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -387,6 +391,7 @@ function evaluateEligibility(
     // qualifiesForCompletionTier's own header above.
     || qualifiesForCompletionTier(evidence, strictSeeds)
     || (evidence.missingClosedLotSide === 'exit' && evidence.hasPriorBuyInventory === true)
+    || evidence.isUnmatchedOutboundExit === true
 
   if (!positiveSignal) return { eligible: false, reason: 'ordinary_transfer' }
   return { eligible: true }
@@ -402,6 +407,9 @@ function priorityFor(
   }
   if (evidence.missingClosedLotSide === 'exit' && evidence.hasPriorBuyInventory === true) {
     return { tier: 1, reason: 'unmatched_outbound_with_prior_inventory' }
+  }
+  if (evidence.isUnmatchedOutboundExit === true) {
+    return { tier: 1, reason: 'unmatched_outbound_receipt_audit' }
   }
   if (evidence.isExistingSwapCandidate) return { tier: 2, reason: 'existing_one_leg_swap_candidate' }
   if (evidence.hasVerifiedQuoteAddress) return { tier: 3, reason: 'verified_quote_address' }

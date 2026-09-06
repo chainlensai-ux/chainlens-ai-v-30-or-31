@@ -104,6 +104,13 @@ export type CandidateEvaluation = {
   coverageMateriality?: { sellCount: number; cumulativeBuyUsd: number }
 }
 
+export type TargetedUnmatchedExit = {
+  token: string
+  chain: SupportedChain
+  txHash: string
+  timestamp: number
+}
+
 // PURE. Evaluates the three OR-combined trigger rules for every distinct (chain, token) pair
 // found across buyTimeline + sellTimeline. Never reads distributionTimeline — it is never passed
 // in, so it structurally cannot influence this evaluation (Architecture Step 3 §2).
@@ -112,12 +119,33 @@ export function evaluateRecoveryTriggers(
   sellTimeline: SellTimeline,
   holdings: HoldingInput[],
   triggerConfig: RecoveryPolicyTriggerConfig = DEFAULT_TRIGGER_RECOVERY_WHEN,
+  targetedUnmatchedExits: readonly TargetedUnmatchedExit[] = [],
 ): CandidateEvaluation[] {
   const tokens = distinctTokensFromTimelines(buyTimeline.entries, sellTimeline.entries)
+  const seenTokens = new Set(tokens.map(({ chain, token }) => `${chain}:${token.toLowerCase()}`))
+  for (const exit of targetedUnmatchedExits) {
+    const key = `${exit.chain}:${exit.token.toLowerCase()}`
+    if (!seenTokens.has(key)) {
+      seenTokens.add(key)
+      tokens.push({ chain: exit.chain, token: exit.token.toLowerCase() })
+    }
+  }
   const top3 = top3HoldingTokens(holdings)
 
   return tokens.map(({ token, chain }) => {
     const triggeredBy: RecoveryTriggeredBy[] = []
+
+    const matchingTargetedExits = targetedUnmatchedExits.filter(
+      (exit) => exit.chain === chain && exit.token.toLowerCase() === token,
+    )
+    if (matchingTargetedExits.length > 0) {
+      triggeredBy.push({
+        rule: 'verified_unmatched_exit_without_earlier_buy',
+        evidenceSource: 'verifiedReceiptSwap',
+        evidenceEntryRefs: matchingTargetedExits.map((exit) => ({ txHash: exit.txHash, timestamp: exit.timestamp })),
+        detail: `${matchingTargetedExits.length} factory-validated exit(s) have no earlier same-token buy in the fetched window`,
+      })
+    }
 
     const cumulativeUsd = cumulativeBuyValueUsd(buyTimeline.entries, token, chain)
     if (cumulativeUsd >= triggerConfig.token_value_usd_gte) {
@@ -156,7 +184,7 @@ export function evaluateRecoveryTriggers(
       triggeredBy,
       recoveryTriggered: triggeredBy.length > 0,
       // Reuses the two figures already computed above for the trigger rules — not a second pass.
-      coverageMateriality: { sellCount, cumulativeBuyUsd: cumulativeUsd },
+      coverageMateriality: { sellCount: Math.max(sellCount, matchingTargetedExits.length), cumulativeBuyUsd: cumulativeUsd },
     }
   })
 }
@@ -349,11 +377,18 @@ export async function buildRecoveryPolicyObject(params: {
   walletAddress: string
   triggerConfig?: RecoveryPolicyTriggerConfig
   caps?: RecoveryPolicyCaps
+  targetedUnmatchedExits?: readonly TargetedUnmatchedExit[]
 }): Promise<RecoveryPolicyResult> {
   const triggerConfig = params.triggerConfig ?? DEFAULT_TRIGGER_RECOVERY_WHEN
   const caps = params.caps ?? DEFAULT_RECOVERY_CAPS
 
-  const candidates = evaluateRecoveryTriggers(params.buyTimeline, params.sellTimeline, params.holdings, triggerConfig)
+  const candidates = evaluateRecoveryTriggers(
+    params.buyTimeline,
+    params.sellTimeline,
+    params.holdings,
+    triggerConfig,
+    params.targetedUnmatchedExits,
+  )
 
   // CU-RISK: MEDIUM (bounded, not unbounded) — this is the one real per-token, multi-page deep
   // historical fetch loop in this codebase (CU-AUDIT, docs/CU_AUDIT.md). It IS capped

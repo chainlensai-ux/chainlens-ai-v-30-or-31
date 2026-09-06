@@ -144,6 +144,19 @@ describe('ayriAttribution', () => {
     assert.equal(output.realizedPnlUsd, 0, 'a real priced lot summing to exactly 0 must report 0, not null')
   })
 
+  it('zero closed lots reports null for every coverage denominator, never vacuous 100%', () => {
+    const output = createAyriAttribution({ logger: quiet }).build({
+      reconciledPnL: reconciled({ closedLots: 0, realizedPnlUsd: null }),
+      reconciledLots: [],
+      pricingSourceBreakdown: {},
+    })
+    assert.equal(output.totalLots, 0)
+    assert.equal(output.attributionCoveragePercent, null)
+    assert.equal(output.historicalPricingCoveragePercent, null)
+    assert.equal(output.verifiedPricingCoveragePercent, null)
+    assert.equal(output.integrityTier, 'low')
+  })
+
   it('regression guard: attributionCoveragePercent and historicalPricingCoveragePercent are distinct fields', () => {
     // Confirmed real production evidence: coveragePercent: 1 / integrityTier: 'high' shown alongside
     // realizedPnlUsd: 0 with poor real pricing coverage — this test proves the two percentages can
