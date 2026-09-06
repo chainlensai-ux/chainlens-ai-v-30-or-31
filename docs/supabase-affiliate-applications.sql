@@ -12,6 +12,7 @@ create extension if not exists pgcrypto;
 -- ────────────────────────────────────────────────────────────
 create table if not exists public.affiliates (
   id             uuid        primary key default gen_random_uuid(),
+  user_id        uuid        references auth.users(id) on delete set null,
   name           text,
   email          text,
   x_handle       text,
@@ -28,6 +29,7 @@ create table if not exists public.affiliates (
 );
 
 -- Back-fill new columns for installs that ran v1
+alter table public.affiliates add column if not exists user_id uuid references auth.users(id) on delete set null;
 alter table public.affiliates add column if not exists audience_type text;
 alter table public.affiliates add column if not exists approved_at timestamptz;
 -- Correct the commission rate default from the old 0.30
@@ -126,6 +128,7 @@ create unique index if not exists affiliate_commissions_payment_id_uidx
   on public.affiliate_commissions(payment_id)
   where payment_id is not null;
 
+create unique index if not exists affiliates_user_id_uidx on public.affiliates(user_id);
 create index if not exists affiliates_referral_code_idx on public.affiliates(referral_code);
 create index if not exists affiliates_status_idx        on public.affiliates(status);
 create index if not exists crypto_payments_order_id_idx on public.crypto_payments(order_id);
