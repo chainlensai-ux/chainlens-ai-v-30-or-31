@@ -4,9 +4,9 @@
 //
 // WHAT ALREADY WORKED BEFORE THIS FILE: a unique referral code IS generated at application time
 // (app/api/affiliate/apply/route.ts) and the full ?ref= attribution pipeline is real end-to-end —
-// components/AffiliateRefCapture.tsx stores the code for 60 days, app/api/checkout/crypto resolves
-// it to an affiliate with first-referral-wins, and app/api/webhooks/crypto writes the commission
-// row at that affiliate's own rate.
+// components/AffiliateRefCapture.tsx stores the code for 60 days and the server locks it with
+// first-referral-wins. Verified PayPal sales create recurring commissions; each paid crypto invoice
+// creates one commission at that affiliate's own rate.
 //
 // WHAT DID NOT: the code was returned exactly ONCE, in the apply response, and rendered as plain
 // un-copyable text. A refresh lost it permanently — there was no endpoint, page, or email that
@@ -145,23 +145,24 @@ export async function GET(req: NextRequest) {
 
   const sum = (rows: typeof allCommissionRows) => rows.reduce((t, r) => t + Number(r.commission_amount ?? 0), 0)
   const paidRows = allCommissionRows.filter((r) => r.status === 'paid')
-  const pendingRows = allCommissionRows.filter((r) => r.status !== 'paid')
+  const pendingRows = allCommissionRows.filter((r) => r.status === 'pending')
+  const earnedRows = [...paidRows, ...pendingRows]
 
   const stats = (allCommissionsRes.error || recentRes.error)
     ? { unavailable: true as const, reason: 'Commission history could not be loaded this request.' }
     : {
         unavailable: false as const,
-        conversions: allCommissionRows.length,
-        earnedTotalUsd: sum(allCommissionRows),
+        conversions: earnedRows.length,
+        earnedTotalUsd: sum(earnedRows),
         earnedPaidUsd: sum(paidRows),
         earnedPendingUsd: sum(pendingRows),
-        revenueGeneratedUsd: allCommissionRows.reduce((t, r) => t + Number(r.payment_amount_usd ?? 0), 0),
+        revenueGeneratedUsd: earnedRows.reduce((t, r) => t + Number(r.payment_amount_usd ?? 0), 0),
         // Most recent conversions only — enough to recognise activity without shipping a full ledger.
         recent: recentRows.map((r) => ({
           plan: r.plan,
           paymentUsd: Number(r.payment_amount_usd ?? 0),
           commissionUsd: Number(r.commission_amount ?? 0),
-          status: r.status === 'paid' ? 'paid' : 'pending',
+          status: r.status === 'paid' || r.status === 'reversed' ? r.status : 'pending',
           createdAt: r.created_at,
           paidAt: r.paid_at,
         })),

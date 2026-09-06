@@ -148,12 +148,12 @@ export async function GET(req: NextRequest) {
 
     // Pending commissions — total owed + per-affiliate breakdown
     sb.from('affiliate_commissions')
-      .select('affiliate_id, commission_amount')
+      .select('affiliate_id, commission_amount, payment_amount_usd')
       .eq('status', 'pending'),
 
     // Paid commissions — total paid + per-affiliate paid total
     sb.from('affiliate_commissions')
-      .select('affiliate_id, commission_amount')
+      .select('affiliate_id, commission_amount, payment_amount_usd')
       .eq('status', 'paid'),
 
     // Payments attributed to an affiliate — per-affiliate checkout + revenue stats.
@@ -194,8 +194,8 @@ export async function GET(req: NextRequest) {
 
   const referredUsers        = (referredUsersRes.data ?? []) as ReferredUser[]
   const allPaymentsAgg       = (allPaymentsAggRes.data ?? []) as Array<{ user_email: unknown; status: unknown; plan: unknown; amount_usd: unknown }>
-  const allPendingComms      = (allPendingCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown }>
-  const allPaidComms         = (allPaidCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown }>
+  const allPendingComms      = (allPendingCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown; payment_amount_usd: unknown }>
+  const allPaidComms         = (allPaidCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown; payment_amount_usd: unknown }>
   const allAffiliatePayments = (allAffiliatePaymentsRes.data ?? []) as Array<{ affiliate_id: unknown; amount_usd: unknown; status: unknown; user_email: unknown }>
 
   // ── Aggregate all metrics in a single pass ────────────────────────────────
@@ -265,10 +265,17 @@ export async function GET(req: NextRequest) {
     if (!affId || isInternal) continue
     if (!affStats[affId]) affStats[affId] = { checkouts: 0, revenue: 0, confirmedCount: 0 }
     affStats[affId].checkouts++
-    if (CONFIRMED_STATUSES.has(String(p.status ?? '').toLowerCase())) {
-      affStats[affId].revenue += Number(p.amount_usd) || 0
-      affStats[affId].confirmedCount++
-    }
+  }
+
+  // Commission rows are the provider-neutral source of truth for attributed successful sales:
+  // they include PayPal first charges/renewals as well as paid crypto invoices. Reversed rows are
+  // intentionally absent because only pending and paid commissions feed this view.
+  for (const c of [...allPendingComms, ...allPaidComms]) {
+    const id = String(c.affiliate_id ?? '')
+    if (!id) continue
+    if (!affStats[id]) affStats[id] = { checkouts: 0, revenue: 0, confirmedCount: 0 }
+    affStats[id].revenue += Number(c.payment_amount_usd) || 0
+    affStats[id].confirmedCount++
   }
 
   const idPending: Record<string, number> = {}

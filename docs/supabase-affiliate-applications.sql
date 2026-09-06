@@ -174,9 +174,8 @@ create policy "crypto_payments_service_role_all"
 -- Recurring affiliate attribution — v3
 -- Adds referred_by_affiliate_id to user_settings so future
 -- payments from the same buyer carry the original affiliate.
--- Also makes affiliate_commissions.referral_code nullable so
--- recurring payments without a referral code can still create
--- a commission row.
+-- Legacy compatibility: older commission writers did not always stamp a referral code. Current
+-- PayPal renewals and one-time crypto invoice commissions both stamp it from the affiliate row.
 -- ────────────────────────────────────────────────────────────
 
 -- Store the original referring affiliate on the buyer's account.

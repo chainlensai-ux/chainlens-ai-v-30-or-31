@@ -65,8 +65,10 @@ check('no admin action update omits the count option', !/\.update\(\{[^}]*\}\)\s
 // ─── 3. Affiliate dashboard totals are not capped by the display-list limit ─────────────────────
 check('a separate, high-ceiling query drives the earnings totals', /allCommissionsRes[\s\S]{0,250}limit\(20_000\)/.test(affiliateMe))
 check('the recent-conversions display query is the ONLY one capped at 10', /recentRes[\s\S]{0,250}limit\(10\)/.test(affiliateMe))
-check('totals are summed from the uncapped row set, not the display-limited one', /sum\(allCommissionRows\)/.test(affiliateMe))
-check('conversions count comes from the uncapped row set', /conversions: allCommissionRows\.length/.test(affiliateMe))
+check('totals are summed from the uncapped payable row set, not the display-limited one', /sum\(earnedRows\)/.test(affiliateMe))
+check('conversions count comes from the uncapped payable row set', /conversions: earnedRows\.length/.test(affiliateMe))
+check('only literal pending commissions count as awaiting payout', /r\.status === 'pending'/.test(affiliateMe))
+check('reversed commissions remain visible with their honest status', /r\.status === 'reversed'/.test(affiliateMe))
 
 // ─── 4. Affiliate lookup picks the row that matters, not just the oldest ────────────────────────
 check('the lookup no longer silently takes only the single oldest row', !affiliateMe.includes(".order('created_at', { ascending: true })\n    .limit(1)"))
