@@ -210,6 +210,7 @@ import {
   CLARK_HOLDERS_SOURCE_TIMEOUT_MS,
   type ClarkCommandIdentity,
 } from "@/lib/server/clarkRequestLifecycle";
+import { buildClarkPipelineAudit } from "@/lib/server/clarkPipelineAudit";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
 import { isRobinhoodChainAvailable, getRobinhoodRpcUrl, ROBINHOOD_CHAIN_ID } from "@/lib/server/robinhoodChainConfig";
@@ -16482,6 +16483,21 @@ export async function POST(req: NextRequest) {
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(moreResult, body) } as Record<string, unknown>
     ;(normalized.data as Record<string, unknown>).clarkAudit = buildClarkAudit({ result: moreResult, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
     if (clarkInternalCtx.entityAudit) (normalized.data as Record<string, unknown>).clarkEntityRoutingAudit = { ...clarkInternalCtx.entityAudit, cacheKey: earlyCacheKey }
+    attachClarkPipelineAudit(normalized.data as Record<string, unknown>, {
+      prompt: earlyPrompt,
+      body,
+      result: moreResult,
+      identity: clarkCommandIdentity,
+      requestId,
+      sessionMem,
+      tokenBefore: previousActiveTokenAddress,
+      walletBefore: activeWalletBefore,
+      entityAudit: clarkInternalCtx.entityAudit,
+      clarkAudit: (normalized.data as Record<string, unknown>).clarkAudit,
+      timedOut: false,
+      staleResponseIgnored: false,
+      selectedRank: earlyRank,
+    })
     if (debugMemory) normalized._debug = {
       memory: {
         messageCount: sessionMem.conversationHistory.length,
@@ -16930,6 +16946,21 @@ export async function POST(req: NextRequest) {
         timedOut,
         fallbackReason: timedOut ? "timeout_partial" : (sfMeta?.cacheHit ? "singleflight_cache" : null),
       })
+      attachClarkPipelineAudit(normData, {
+        prompt: body.prompt ?? "",
+        body,
+        result,
+        identity: clarkCommandIdentity,
+        requestId,
+        sessionMem,
+        tokenBefore: previousActiveTokenAddress,
+        walletBefore: activeWalletBefore,
+        entityAudit: clarkInternalCtx.entityAudit,
+        clarkAudit: normData.clarkAudit,
+        timedOut,
+        staleResponseIgnored: Boolean(sfMeta?.cacheHit),
+        selectedRank: earlyRank,
+      })
     }
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     // Never cache free/memory-sourced responses (quotaConsumed === false): the cache key has no
@@ -17075,32 +17106,45 @@ export async function POST(req: NextRequest) {
       fallbackRoutesAttempted: isTokenFallback ? ["token_scan"] : [],
     });
 
+    const catchData: Record<string, unknown> = {
+      requestId,
+      messageId,
+      reply: safeMsg, response: safeMsg, message: safeMsg, text: safeMsg, analysis: safeMsg,
+      verdict: "SCAN DEEPER", source: "fallback",
+      intentBadge, actions: catchActions,
+      ui: { intentBadge, actions: catchActions },
+      clarkRequestLifecycleAudit: catchLifecycle,
+      clarkCommandFallbackAudit: catchFallback,
+      ...(debugReceipt ? { clarkDebugReceipt: debugReceipt } : {}),
+      clarkAudit: {
+        intent: intentBadge, routesCalled: [intentBadge], providersAttempted: [], providersSucceeded: [], providersFailed: [],
+        contextInjected: Boolean((body.appContext && Object.keys(body.appContext).length > 0) || (body.clientContext && Object.keys(body.clientContext).length > 0) || (Array.isArray(body.history) && body.history.length > 0)),
+        scannerDataUsed: false, cacheUsed: false, fallbackUsed: true, missingFields: [],
+        unavailableReason: `${isTimeout ? "timed out" : "failed"}: ${errMsg}`,
+        responseTimeMs: Date.now() - clarkAuditRequestStartedAt,
+      },
+    };
+    attachClarkPipelineAudit(catchData, {
+      prompt,
+      body,
+      result: { intent: intentBadge, toolsUsed: [], analysis: safeMsg },
+      identity: clarkCommandIdentity,
+      requestId,
+      sessionMem,
+      tokenBefore: previousActiveTokenAddress,
+      walletBefore: activeWalletBefore,
+      entityAudit: clarkInternalCtx.entityAudit,
+      clarkAudit: catchData.clarkAudit,
+      timedOut: isTimeout,
+      staleResponseIgnored: false,
+      selectedRank: earlyRank,
+    });
+
     return NextResponse.json({
       ok: true,
       requestId,
       feature: "clark-ai",
-      data: {
-        requestId,
-        messageId,
-        reply: safeMsg, response: safeMsg, message: safeMsg, text: safeMsg, analysis: safeMsg,
-        verdict: "SCAN DEEPER", source: "fallback",
-        intentBadge, actions: catchActions,
-        ui: { intentBadge, actions: catchActions },
-        clarkRequestLifecycleAudit: catchLifecycle,
-        clarkCommandFallbackAudit: catchFallback,
-        ...(debugReceipt ? { clarkDebugReceipt: debugReceipt } : {}),
-        // A thrown exception interrupted the pipeline before any per-tool status could be recorded,
-        // so unlike the normal-path clarkAudit this can't enumerate individual providers — but it
-        // still carries the one thing this fix requires above all: the EXACT reason, not a vague
-        // "Unavailable". errMsg is the real caught error, never a placeholder string.
-        clarkAudit: {
-          intent: intentBadge, routesCalled: [intentBadge], providersAttempted: [], providersSucceeded: [], providersFailed: [],
-          contextInjected: Boolean((body.appContext && Object.keys(body.appContext).length > 0) || (body.clientContext && Object.keys(body.clientContext).length > 0) || (Array.isArray(body.history) && body.history.length > 0)),
-          scannerDataUsed: false, cacheUsed: false, fallbackUsed: true, missingFields: [],
-          unavailableReason: `${isTimeout ? "timed out" : "failed"}: ${errMsg}`,
-          responseTimeMs: Date.now() - clarkAuditRequestStartedAt,
-        },
-      },
+      data: catchData,
       quotaConsumed: false,
     }, { status: 200 });
   }
@@ -17142,6 +17186,43 @@ const CLARK_SCANNER_FEATURES = new Set([
   "token-scanner", "wallet-scanner", "dev-wallet-detector", "liquidity-safety",
   "whale-alerts", "pump-alerts", "base-radar",
 ]);
+
+function attachClarkPipelineAudit(target: Record<string, unknown>, input: {
+  prompt: string;
+  body: ClarkRequestBody;
+  result: unknown;
+  identity: ClarkCommandIdentity;
+  requestId: string;
+  sessionMem: ClarkSessionMemory;
+  tokenBefore: string | null;
+  walletBefore: string | null;
+  entityAudit?: ClarkEntityRoutingAudit | null;
+  clarkAudit: unknown;
+  timedOut: boolean;
+  staleResponseIgnored: boolean;
+  selectedRank: number | null;
+}): void {
+  const result = (input.result && typeof input.result === "object") ? input.result as Record<string, unknown> : {};
+  target.clarkPipelineAudit = buildClarkPipelineAudit({
+    prompt: input.prompt,
+    identity: input.identity,
+    body: input.body as unknown as Record<string, unknown>,
+    result,
+    requestId: input.requestId,
+    activeTokenBefore: input.tokenBefore,
+    activeTokenAfter: input.sessionMem.lastToken?.address ?? null,
+    activeWalletBefore: input.walletBefore,
+    activeWalletAfter: input.sessionMem.lastWallet?.address ?? null,
+    tickerSearchId: input.sessionMem.lastTickerSearchId ?? input.body.clientContext?.tickerSearchId ?? null,
+    tickerCandidates: input.sessionMem.lastTickerMatches ?? input.body.clientContext?.lastTickerMatches ?? null,
+    momentumListId: input.sessionMem.lastMomentumListId ?? input.body.clientContext?.lastMomentumListId ?? null,
+    selectedRank: input.selectedRank,
+    entityAudit: input.entityAudit ? { ...input.entityAudit } : null,
+    clarkAudit: (input.clarkAudit && typeof input.clarkAudit === "object") ? input.clarkAudit as Record<string, unknown> : null,
+    timedOut: input.timedOut,
+    staleResponseIgnored: input.staleResponseIgnored,
+  });
+}
 
 function buildClarkAudit(input: { result: unknown; body: ClarkRequestBody; responseTimeMs: number; cacheUsed: boolean }): ClarkAudit {
   const r = (input.result && typeof input.result === "object") ? input.result as Record<string, unknown> : {};
