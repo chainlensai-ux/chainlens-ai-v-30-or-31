@@ -3,6 +3,7 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { BASE_WHALE_CHAIN_ID, dedupeTrackedWallets, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
 
 type TrackedWallet = {
   address: string
@@ -575,19 +576,35 @@ export async function POST(request: Request) {
   const supabase = createClient(supabaseUrl, serviceRole)
   // Fetch all active wallets up-front so trackedWalletsTotal is exact and
   // progress math never depends on Supabase's count field (which can be null).
-  const { data: allWalletData, error: walletError } = await supabase
+  const scopedWalletResult = await supabase
     .from('tracked_wallets')
     .select('address,user_id,label,category,confidence,source,is_active')
-    .eq('user_id', authenticatedUser.userId)
-    .eq('chain_id', 8453)
+    .or(userOrSystemScope('user_id', authenticatedUser.userId))
+    .eq('chain_id', BASE_WHALE_CHAIN_ID)
     .eq('is_active', true)
     .order('created_at', { ascending: true })
+  let walletError = scopedWalletResult.error
+  let allWalletRows = (scopedWalletResult.data ?? []) as TrackedWallet[]
+
+  if (isMissingOwnershipColumn(walletError, ['user_id', 'chain_id'])) {
+    // Pre-migration compatibility. A schema without user_id cannot contain private FOMO rows, so
+    // the legacy table is necessarily the shared system set and is safe to scan for this user.
+    const legacy = await supabase
+      .from('tracked_wallets')
+      .select('address,label,category,confidence,source,is_active')
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+    allWalletRows = (legacy.data ?? []) as unknown as TrackedWallet[]
+    walletError = legacy.error
+    console.warn('[whale-alerts-sync] ownership columns unavailable; used legacy system-wallet set')
+  }
 
   if (walletError) {
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
-  const allWallets = (allWalletData ?? []) as TrackedWallet[]
+  // The user's private list may contain a wallet already present in the system set. Scan it once.
+  const allWallets = dedupeTrackedWallets(allWalletRows)
   const trackedWalletsTotal = allWallets.length
 
   if (trackedWalletsTotal === 0) {

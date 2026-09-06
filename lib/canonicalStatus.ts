@@ -1,8 +1,8 @@
 /**
- * Canonical UI/API status schema for ChainLens.
- * All public-facing status fields must use one of these five values.
+ * Canonical UI/API status schema for ChainLens Token Scanner public surfaces.
  * Raw machine states (burned, locked, team_controlled, etc.) are preserved
  * separately as rawState / rawLpState / rawReason.
+ * Final labels never emit "Open Check", "Model Open Check", or bare "Unknown".
  */
 export type CanonicalStatus =
   | "verified"           // direct evidence confirms the check passed
@@ -56,21 +56,33 @@ export function toCanonical(raw: string | null | undefined): CanonicalStatus {
     case 'unsupported':
     case 'needs_holder_confirmation':
     case 'no_signal_from_available_data':
+    case 'open_check':
     default:
       return 'unavailable_with_reason'
   }
 }
 
 /**
- * UI label for a CanonicalStatus — premium CORTEX wording only.
- * No provider names, no raw error strings.
+ * UI label for a CanonicalStatus.
+ * Unavailable always keeps a reason via canonicalLabelWithReason().
  */
 export function canonicalLabel(status: CanonicalStatus): string {
   switch (status) {
     case 'verified':              return 'Verified'
-    case 'inferred':              return 'Inferred'
-    case 'partial':               return 'Partial'
-    case 'not_applicable':        return 'Not applicable'
-    case 'unavailable_with_reason': return 'Open check'
+    case 'inferred':              return 'Partial: inferred from available evidence'
+    case 'partial':               return 'Partial: incomplete evidence'
+    case 'not_applicable':        return 'Not Applicable: protocol design'
+    case 'unavailable_with_reason': return 'Unavailable: evidence was not confirmed in this scan'
+  }
+}
+
+export function canonicalLabelWithReason(status: CanonicalStatus, reason?: string | null): string {
+  const cleaned = typeof reason === 'string' ? reason.trim() : ''
+  switch (status) {
+    case 'verified': return 'Verified'
+    case 'inferred': return cleaned ? `Partial: ${cleaned}` : canonicalLabel(status)
+    case 'partial': return cleaned ? `Partial: ${cleaned}` : canonicalLabel(status)
+    case 'not_applicable': return cleaned ? `Not Applicable: ${cleaned}` : canonicalLabel(status)
+    case 'unavailable_with_reason': return cleaned ? `Unavailable: ${cleaned}` : canonicalLabel(status)
   }
 }

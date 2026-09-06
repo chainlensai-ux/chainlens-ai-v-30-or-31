@@ -4,6 +4,7 @@ import { SCANHOOD_HONEYPOT_INIT_BYTECODE } from './robinhoodHoneypotSimBytecode'
 import { logRpcCall } from './rpcDebug'
 import { auditGlobalAlchemyCall } from './globalRpcAudit'
 import type { RobinhoodHoneypotSimStatus, RobinhoodTradingSimulationAudit } from '../tradingSimulation'
+import { robinhoodSimulationCacheTtlMs } from '../tradingSimulation'
 
 export const ROBINHOOD_HONEYPOT_CHAIN_ID = ROBINHOOD_CHAIN_ID
 export const ROBINHOOD_SIM_WETH = '0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73'
@@ -15,6 +16,7 @@ export const ROBINHOOD_SIM_FROM = '0x0000000000000000000000000000000000000001'
 export const ROBINHOOD_SIM_AMOUNT_IN_WEI = BigInt('10000000000000000') // 0.01 ETH
 export const ROBINHOOD_SIM_TIMEOUT_MS = 8_000
 export const ROBINHOOD_SIM_CACHE_TTL_MS = 10 * 60_000
+export const ROBINHOOD_SIM_FAILURE_CACHE_TTL_MS = 8_000
 const V3_FEE_TIERS = [10000, 3000, 500, 100] as const
 
 export type RobinhoodHoneypotStatus = RobinhoodHoneypotSimStatus
@@ -434,9 +436,10 @@ export async function simulateRobinhoodHoneypot(
   const now = input.nowMs ?? Date.now()
   if (!input.skipCache) {
     const hit = simCache.get(cacheKey)
+    const ttl = hit ? robinhoodSimulationCacheTtlMs(hit.result.honeypotStatus) : ROBINHOOD_SIM_CACHE_TTL_MS
     if (
       hit
-      && now - hit.at < ROBINHOOD_SIM_CACHE_TTL_MS
+      && now - hit.at < ttl
       && isRobinhoodHoneypotCacheKeyValid(
         { chainId: ROBINHOOD_HONEYPOT_CHAIN_ID, tokenAddress: hit.result.tokenAddress, poolAddress: hit.audit.poolAddress },
         { chainId: ROBINHOOD_HONEYPOT_CHAIN_ID, tokenAddress, poolAddress },

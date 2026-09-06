@@ -7,6 +7,7 @@ import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
+import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import {
@@ -572,6 +573,8 @@ type HolderDistribution = {
   /** How holderCount was derived — exact provider total, a fallback row count, or unavailable.
    * Never lets real holder rows be reported alongside a false holderCount: 0. */
   holderCountReason: "holder_count_from_provider_total" | "holder_count_from_normalized_rows" | "holder_count_from_resolver" | "holder_count_unavailable_with_reason"
+  holderCountExact?: boolean
+  holderCountCapped?: boolean
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
 type HolderDistributionStatus = {
@@ -2971,7 +2974,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
       return {
         title: "Liquidity detected — pool model not yet confirmed",
         meaning: "Market evidence shows active liquidity, but the pool model and LP control path could not be confirmed from current on-chain evidence.",
-        riskLevel: "Open Check",
+        riskLevel: "Unavailable: pool model not confirmed",
         whatWasFound: [...poolLine, "Liquidity detected from market evidence"],
         couldNotVerify: ["Pool model (V2 / concentrated)", "LP lock/burn proof", "LP control path"],
         nextAction: "Re-scan to confirm the pool model on-chain before relying on LP lock/burn proof.",
@@ -2981,7 +2984,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
       return {
         title: "Insufficient LP verification data",
         meaning: lp.status === "no_pool" ? "No usable liquidity pool address was found for LP verification." : "LP ownership could not be verified this scan.",
-        riskLevel: "Unknown",
+        riskLevel: "Unavailable: LP evidence was not confirmed",
         whatWasFound: lp.status === "no_pool" ? [] : [...poolLine, "Pool check attempted"],
         couldNotVerify: ["Burn proof", "Locker proof", "Dominant owner verification"],
         nextAction: lp.status === "no_pool" ? "Confirm token has an active pool with a usable on-chain pair address." : "Rescan and verify with additional on-chain LP ownership data.",
@@ -2991,7 +2994,7 @@ function computeLpControlRead(lp: LpControlResult, pairName?: string | null, con
         return {
           title: "Pool detected, lock/burn proof not confirmed",
           meaning: "Pool detected, lock/burn proof not confirmed.",
-          riskLevel: "Unknown",
+          riskLevel: "Unavailable: LP evidence was not confirmed",
           whatWasFound: [],
           couldNotVerify: ["LP token distribution", "Lock or burn status", "Liquidity pool existence"],
           nextAction: "Confirm the token is actively traded. No pool means no on-chain liquidity depth to exit through.",
@@ -3764,7 +3767,10 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugRequested, forceDexFallback: _forceDexFallback, mode: scanMode } = body;
+    const { contract: contractInput, debugHolder, debug: debugRequested, forceDexFallback: _forceDexFallback, mode: scanMode, skipCache: skipCacheRequested, forceRescan, requestId: requestIdInput } = body;
+    const skipCache = skipCacheRequested === true || forceRescan === true
+    const scanRequestId = typeof requestIdInput === 'string' && requestIdInput.trim() ? requestIdInput.trim() : `scan_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+    const scanRequestStartedAt = Date.now()
     // AUDIT FIX, DISCLOSED (token-scanner audit): debugMode now requires BOTH `debug: true` in the
     // body AND the admin override header — see isAdminOverride's own comment. Every one of the 40+
     // existing `debugMode` usages below is unchanged; only how this value gets set is different.
@@ -4037,13 +4043,13 @@ export async function POST(req: Request) {
             simulationSuccess: simResultFast?.simulationSuccess ?? null,
           },
         },
-        lpControl: { status: 'open_check', reason: 'LP lock/burn proof not run in Clark fast mode — open full Token Scanner for full LP verification.', confidence: 'open_check', poolType: null },
+        lpControl: { status: 'not_checked', reason: 'Not Checked: fast scan skipped LP proof', confidence: 'low', poolType: null },
         holderDistribution: null,
         sections: {
           market: { status: hasMarketFast ? 'ok' : 'unavailable', reason: hasMarketFast ? null : 'No active pool data found in fast mode.' },
-          security: { status: simResultFast ? 'ok' : 'pending', reason: simResultFast ? null : 'Security simulation unavailable in fast mode.' },
-          holders: { status: 'open_check', reason: 'Holder scan not run in Clark fast mode.' },
-          liquidity: { status: 'open_check', reason: 'Full LP proof not run in Clark fast mode.' },
+          security: { status: simResultFast ? 'ok' : 'not_checked', reason: simResultFast ? null : 'Not Checked: fast scan skipped security simulation' },
+          holders: { status: 'not_checked', reason: 'Not Checked: fast scan skipped holder scan' },
+          liquidity: { status: 'not_checked', reason: 'Not Checked: fast scan skipped LP proof' },
         },
       }
       if (debugMode === true || process.env.NODE_ENV !== 'production') {
@@ -4078,7 +4084,7 @@ export async function POST(req: Request) {
     // a second, independent guard so a cross-chain hit is rejected even in the hypothetical case of
     // a key collision, not just trusted because the key matched.
     const _tokenScanCacheKey = buildTokenScanCacheKey(chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug, CHAIN_ID_MAP[chain], contract)
-    if (debugMode !== true) {
+    if (debugMode !== true && !skipCache) {
       const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
       if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
         const _cachedChain = String((_cachedResponse as Record<string, unknown>).chain ?? '')
@@ -4237,6 +4243,7 @@ export async function POST(req: Request) {
       simulationSuccess: hpResult.simulationSuccess,
       honeypotStatus: hpResult.honeypotStatus,
       honeypotReason: hpResult.honeypotReason,
+      skipCache,
     })
     let robinhoodTradingSimulationAudit: RobinhoodTradingSimulationAudit | null = null
     const alchemyMandatoryReads = await Promise.all([
@@ -5325,6 +5332,7 @@ export async function POST(req: Request) {
         tokenAddress: contract,
         poolAddress: canonicalRobinhoodSelectedPool,
         poolType: _robinhoodLpProofResult.proofAudit.poolType ?? _lpProofType ?? lpPoolType,
+        skipCache,
       })
       const rhFailureReason = robinhoodPoolExistsButChainUnconfirmed
         ? (_robinhoodLpProofResult.reason || 'Selected Robinhood pool could not be confirmed as chainId 4663.')
@@ -5894,9 +5902,11 @@ export async function POST(req: Request) {
       : normalizedTop.length > 0 ? normalizedTop.length
       : holderResolverResult.holders.length > 0 ? holderResolverResult.holders.length
       : null
+    const holderCountExact = holderCountReason === "holder_count_from_provider_total"
+    const holderCountCapped = holderCountReason === "holder_count_from_normalized_rows" || holderCountReason === "holder_count_from_resolver"
     let holderDistribution: HolderDistribution = normalizedTop.length
-      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, topHolders: normalizedTop }
-      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: resolvedHolderCount, holderCountReason, topHolders: [] }
+      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, topHolders: normalizedTop }
+      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
@@ -7819,6 +7829,8 @@ export async function POST(req: Request) {
             others: top20 != null ? Math.max(0, 100 - top20) : null,
             holderCount: resolvedHolderCount,
             holderCountReason,
+            holderCountExact,
+            holderCountCapped,
             topHolders: normalizedTop,
           }
           holderDistributionStatus = {
@@ -9172,6 +9184,9 @@ export async function POST(req: Request) {
       sniperActivity: riskEngine.sniperActivity,
       holderIntelligence: riskEngine.holderIntelligence,
       supplyControl,
+      holderCountReason,
+      holderRowsStatus: holderDistributionStatus.status === 'ok' ? 'ok' : holderDistributionStatus.status === 'partial' ? 'partial' : 'unavailable',
+      concentrationStatus: holderDistributionStatus.status === 'ok' ? 'verified' : holderDistributionStatus.status === 'partial' ? 'partial' : 'unavailable',
     })
     ;(responsePayload as any).riskScore = tokenRiskScoreResult.riskScore
     ;(responsePayload as any).riskLabel = tokenRiskScoreResult.riskLabel
@@ -9180,10 +9195,16 @@ export async function POST(req: Request) {
     ;(responsePayload as any).riskScoreType = 'risk_score'
     ;(responsePayload as any).riskScoreDirection = tokenRiskScoreResult.scoreDirection
     ;(responsePayload as any).riskScoreDirectionAudit = tokenRiskScoreResult.riskScoreDirectionAudit
+    ;(responsePayload as any).riskScoreSource = tokenRiskScoreResult.riskScoreSource
+    ;(responsePayload as any).riskInputsUsed = tokenRiskScoreResult.riskInputsUsed
+    ;(responsePayload as any).riskInputStatuses = tokenRiskScoreResult.riskInputStatuses
     ;(responsePayload as any).riskEngine = {
       ...(responsePayload as any).riskEngine,
       riskScore: tokenRiskScoreResult.riskScore,
       riskLabel: tokenRiskScoreResult.riskLabel,
+      riskScoreSource: tokenRiskScoreResult.riskScoreSource,
+      riskInputsUsed: tokenRiskScoreResult.riskInputsUsed,
+      riskInputStatuses: tokenRiskScoreResult.riskInputStatuses,
       scoreDirection: tokenRiskScoreResult.scoreDirection,
       cortexSafetyScore: cortexScoreResult.cortexScore,
       cortexSafetyVerdict: cortexScoreResult.cortexVerdict,
@@ -9811,6 +9832,58 @@ export async function POST(req: Request) {
       ;(responsePayload as any).blockscoutFallbackDecisionAudit = _robinhoodLpProofResult.blockscoutFallbackDecisionAudit
     }
     ;(responsePayload as any).tradingSimulationAudit = tradingSimulationAudit
+    ;(responsePayload as any).scanRequestId = scanRequestId
+    ;(responsePayload as any).scanRequestStartedAt = scanRequestStartedAt
+    const _lpResolved = (responsePayload as any).lpSafetyResolution as { model?: string; status?: string; finalDecisionAudit?: { proofPathUsed?: string; detectedModel?: string } } | undefined
+    const _firstFailureStage =
+      marketStatus !== 'ok' && marketStatus !== 'fallback_ok' && marketStatus !== 'partial' ? 'market'
+      : (!hpResult.ok && tradingSimulationAudit.finalStatus !== 'verified_clear' && tradingSimulationAudit.finalStatus !== 'simulated' && tradingSimulationAudit.finalStatus !== 'risk_detected') ? 'simulation'
+      : (holdersStatus !== 'verified' && holdersStatus !== 'partial') ? 'holders'
+      : (liquidityStatus !== 'ok' && liquidityStatus !== 'partial' && liquidityStatus !== 'inferred') ? 'lp'
+      : null
+    ;(responsePayload as any).tokenScannerPipelineAudit = buildTokenScannerPipelineAudit({
+      requestId: scanRequestId,
+      chainSlug: chain,
+      chainId: CHAIN_ID_MAP[chain] ?? null,
+      tokenAddress: contract,
+      inputType: isAddressInput ? 'evm_contract' : 'resolved',
+      resolverSource: isAddressInput ? 'contract' : 'ticker',
+      tickerResolution: isAddressInput ? 'contract' : 'ticker',
+      selectedPool: (lpPoolAddress ?? (responsePayload as any).selectedPool?.address ?? null) as string | null,
+      marketSourcesTried: [
+        gtData != null ? 'geckoterminal' : null,
+        _dexFb != null ? 'dexscreener' : null,
+      ].filter((value): value is string => Boolean(value)),
+      marketSource: (responsePayload as any).marketDataSource ?? (gtData != null ? 'geckoterminal' : _dexFb != null ? 'dexscreener' : null),
+      marketStatus,
+      simulationAttempted: tradingSimulationAudit.attempted || tradingSimulationAudit.requestAttempted,
+      simulationProvider: tradingSimulationAudit.providerUsed,
+      simulationStatus: tradingSimulationAudit.finalStatus,
+      holdersSource: holderDistributionStatus.percentSource ?? null,
+      holderCount: resolvedHolderCount,
+      holderCountReason,
+      devResolved: Boolean((responsePayload as any).devIntel?.deployerAddress),
+      supplyControlStatus: (responsePayload as any).supplyControl?.status ?? null,
+      clusterStatus: (responsePayload as any).supplyControl?.clusterInfluence?.clusterRiskLabel ?? null,
+      lpProtocol: _lpResolved?.finalDecisionAudit?.detectedModel ?? _lpResolved?.model ?? lpControl.displayLpModel ?? null,
+      lpModel: _lpResolved?.model ?? lpControl.displayLpModel ?? null,
+      lpProofPath: _lpResolved?.finalDecisionAudit?.proofPathUsed ?? null,
+      lpSource: lpDiagnostics.poolSource ?? null,
+      lpStatus: _lpResolved?.status ?? lpControl.status ?? null,
+      positionProofAttempted: Boolean(concentratedPositionProof),
+      positionProofStatus: concentratedPositionProof?.status ?? null,
+      rpcAttempted: rpcCallsAttempted > 0,
+      proofAttempted: _proofApplicableEarly || Boolean(concentratedPositionProof),
+      riskInputsUsed: tokenRiskScoreResult.riskInputsUsed,
+      riskScore: tokenRiskScoreResult.riskScore,
+      cacheKey: _tokenScanCacheKey,
+      cacheHit: false,
+      cacheChainMatched: true,
+      skipCache,
+      staleResponseIgnored: false,
+      firstFailureStage: _firstFailureStage,
+      exactFailureReason: _firstFailureStage === 'simulation' ? tradingSimulationAudit.finalReason : (_lpResolved?.status && /Unavailable:/.test(_lpResolved.status) ? _lpResolved.status : null),
+    })
     if (chain === 'robinhood' && robinhoodTradingSimulationAudit) {
       ;(responsePayload as any).robinhoodTradingSimulationAudit = robinhoodTradingSimulationAudit
     }
@@ -9831,7 +9904,20 @@ export async function POST(req: Request) {
     // would incorrectly receive a free-gated response for up to the cache TTL. The plan gate is
     // applied only to the copy returned for THIS request, below.
     if (debugMode !== true) {
-      await setTokenCache(_tokenScanCacheKey, _sanitizedResponse, 45)
+      const _existingCached = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
+      const _existingStartedAt = typeof _existingCached?.scanRequestStartedAt === 'number' ? _existingCached.scanRequestStartedAt as number : 0
+      if (_existingStartedAt > scanRequestStartedAt) {
+        ;(responsePayload as any).tokenScannerPipelineAudit = {
+          ...(responsePayload as any).tokenScannerPipelineAudit,
+          staleResponseIgnored: true,
+        }
+      } else {
+        await setTokenCache(_tokenScanCacheKey, {
+          ..._sanitizedResponse,
+          scanRequestId,
+          scanRequestStartedAt,
+        }, 45)
+      }
     }
     return NextResponse.json(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan))
   } catch (err) {

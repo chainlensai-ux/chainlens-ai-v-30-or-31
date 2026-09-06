@@ -11,6 +11,7 @@ import { whaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
 import { getBaseStablecoinShortcut, priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 import { getPriceAtTime } from '@/src/modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
+import { BASE_WHALE_CHAIN_ID, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -903,7 +904,7 @@ export async function GET(req: NextRequest) {
     const internalLimit = Math.min(300, limit * 3)
     // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
     // only to that same user. This prevents a personal add from becoming another user's feed row.
-    const ownerScope = `owner_user_id.is.null,owner_user_id.eq.${userId}`
+    const ownerScope = userOrSystemScope('owner_user_id', userId)
 
     let query = supabase
       .from('whale_alerts')
@@ -913,11 +914,6 @@ export async function GET(req: NextRequest) {
       .or(ownerScope)
       .order('occurred_at', { ascending: false })
       .limit(internalLimit)
-
-    // minUsd filter is NOT applied at DB level because webhook rows have amount_usd=null
-    // and enrichment (WETH×price, USDC 1:1, etc.) runs JS-side after the fetch.
-    // Applying gte('amount_usd', n) in Supabase would exclude all unenriched rows.
-    // filterByValueFloor() handles this correctly after enrichment.
     if (type) query = query.eq('alert_type', type)
     if (side) query = query.eq('side', side)
     if (severity) query = query.eq('severity', severity)
@@ -925,15 +921,55 @@ export async function GET(req: NextRequest) {
     // Stats queries: include token_symbol, amount_token, amount_usd so each row
     // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
     const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd, token_address'
+    const majorPricesPromise = fetchMajorPrices()
 
-    const [alertsRes, stats15m, stats1h, stats24h, trackedCount, majorPrices] = await Promise.all([
+    let ownerScopeApplied = true
+    let [alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
       query,
       supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
       supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
       supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).or(ownerScope).not('tx_hash', 'is', null).limit(5000),
-      supabase.from('tracked_wallets').select('id', { count: 'exact', head: true }).eq('user_id', userId).eq('chain_id', 8453).eq('is_active', true),
-      fetchMajorPrices(),
     ])
+    const alertScopeErrors = [alertsRes.error, stats15m.error, stats1h.error, stats24h.error]
+    if (alertScopeErrors.some(error => isMissingOwnershipColumn(error, ['owner_user_id']))) {
+      // Safe legacy compatibility: when owner_user_id does not exist, private FOMO alert rows
+      // cannot exist either. Read the pre-migration system feed instead of taking the page down.
+      ownerScopeApplied = false
+      let legacyQuery = supabase
+        .from('whale_alerts')
+        .select('*')
+        .gte('occurred_at', windowStartIso)
+        .or(meaningfulFilter)
+        .order('occurred_at', { ascending: false })
+        .limit(internalLimit)
+      if (type) legacyQuery = legacyQuery.eq('alert_type', type)
+      if (side) legacyQuery = legacyQuery.eq('side', side)
+      if (severity) legacyQuery = legacyQuery.eq('severity', severity)
+      ;[alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
+        legacyQuery,
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['1h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+        supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - WINDOW_MS['24h']).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
+      ])
+      console.warn('[whale-alerts] owner_user_id unavailable; used legacy system-feed read')
+    }
+
+    let trackedScopeApplied = true
+    let trackedCount = await supabase
+      .from('tracked_wallets')
+      .select('id', { count: 'exact', head: true })
+      .or(userOrSystemScope('user_id', userId))
+      .eq('chain_id', BASE_WHALE_CHAIN_ID)
+      .eq('is_active', true)
+    if (isMissingOwnershipColumn(trackedCount.error, ['user_id', 'chain_id'])) {
+      trackedScopeApplied = false
+      trackedCount = await supabase
+        .from('tracked_wallets')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_active', true)
+      console.warn('[whale-alerts] tracked-wallet ownership columns unavailable; used legacy system count')
+    }
+    const majorPrices = await majorPricesPromise
 
     if (alertsRes.error) {
       console.error('[whale-alerts] query failed', alertsRes.error.message)
@@ -1049,13 +1085,13 @@ export async function GET(req: NextRequest) {
     let historyRowsUsed = 0
     if (needsHistory.length > 0) {
       try {
-        const histRes = await supabase
+        let histQuery = supabase
           .from('whale_alerts')
           .select('wallet_address, side, amount_usd, token_symbol, focus_token_symbol')
           .gte('occurred_at', new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
           .in('wallet_address', needsHistory)
-          .or(ownerScope)
-          .limit(500)
+        if (ownerScopeApplied) histQuery = histQuery.or(ownerScope)
+        const histRes = await histQuery.limit(500)
         if (!histRes.error && histRes.data) {
           historyRowsUsed = histRes.data.length
           const tempMap = new Map<string, RawRow[]>()
@@ -1250,6 +1286,8 @@ export async function GET(req: NextRequest) {
         randomTokenPriceMisses,
         cacheHit: false,
         providerStatus: 'ok',
+        ownerScopeApplied,
+        trackedScopeApplied,
         rateLimited: false,
         enrichmentBudget,
         ...(debugExtra ?? {}),

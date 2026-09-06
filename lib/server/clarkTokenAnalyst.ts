@@ -5,6 +5,7 @@
 import { normalizeRiskScore, type CanonicalRiskLabel } from "../riskScoreDirection.ts"
 import type { TokenScanEvidence } from "./clarkRouting.ts"
 import { computeClarkTokenVerdictCore, buildClarkTokenVerdictInputFromEvidence, hasUsableTokenEvidence } from "./clarkRouting.ts"
+import { rewriteForbiddenStatusVocab } from "../tokenScannerPublicStatus.ts"
 
 export type ClarkTokenAnalystTopic =
   | "safe"
@@ -234,7 +235,7 @@ function verdictWord(snap: ClarkTokenAnalystSnapshot, ev: TokenScanEvidence): st
   const scored = computeClarkTokenVerdictCore(input, snap.usable)
   if (scored.verdict === "Avoid") return "Avoid"
   if (scored.verdict === "High Risk") return "High Risk"
-  if (scored.verdict === "Partial Evidence") return "Open Check"
+  if (scored.verdict === "Partial Evidence") return "Partial"
   return "Caution"
 }
 
@@ -398,17 +399,17 @@ function verdictLine(snap: ClarkTokenAnalystSnapshot, ev: TokenScanEvidence, top
     return `Verdict: ${scoreBit}. Main drivers: ${drivers || "no confirmed risk driver in this read"}. Good signs: ${goods || "none confirmed"}.`
   }
   if (topic === "lp" || topic === "explain_lp") {
-    if (snap.family === "solana") return "Verdict: Open Check. Solana pool liquidity is not an ERC-20 LP lock/burn. I would not call LP safe from that wording."
+    if (snap.family === "solana") return "Verdict: Unsupported: Solana pool liquidity is not an ERC-20 LP lock/burn. I would not call LP safe from that wording."
     if (snap.lpConcentrated) {
       const owned = lpOwnershipCopy(snap).text
       return `Verdict: Caution. ${owned}. Standard ERC-20 LP lock/burn is not applicable to this V3/V4 pool.`
     }
     if (snap.lpStatus === "locked" || snap.lpStatus === "burned") return `Verdict: Caution. LP is ${snap.lpStatus} on current proof — that is not the same as the token being safe.`
     if (snap.lpStatus === "wallet_controlled" || snap.lpStatus === "team_controlled") return "Verdict: High Risk. LP appears wallet/team controlled, so liquidity can be pulled."
-    return "Verdict: Open Check. LP lock/control is not verified. I would not treat LP as safe."
+    return "Verdict: Unavailable: LP lock/control is not verified. I would not treat LP as safe."
   }
   if (topic === "holders" || topic === "explain_holders") {
-    if (!snap.holdersVerified) return "Verdict: Open Check. Holder concentration was not returned — missing rows are not distributed supply."
+    if (!snap.holdersVerified) return "Verdict: Unavailable: Holder concentration was not returned — missing rows are not distributed supply."
     const bad = (snap.top1Pct != null && snap.top1Pct >= 40) || (snap.top10Pct != null && snap.top10Pct >= 70)
     const mid = snap.top10Pct != null && snap.top10Pct >= 40
     if (bad) return `Verdict: High Risk. Holder concentration is verified and elevated — top-1 ${fmtPct(snap.top1Pct)}, top-10 ${fmtPct(snap.top10Pct)}.`
@@ -419,17 +420,17 @@ function verdictLine(snap: ClarkTokenAnalystSnapshot, ev: TokenScanEvidence, top
     if (snap.family === "solana") {
       if (snap.mintAuthorityActive === true) return "Verdict: Caution. Mint authority is active, so supply can still be increased."
       if (snap.mintAuthorityActive === false) return "Verdict: Caution. Mint authority is revoked on current evidence — freeze authority and holders still matter."
-      return "Verdict: Open Check. Who controls supply is unresolved — mint authority was not confirmed."
+      return "Verdict: Unavailable: Who controls supply is unresolved — mint authority was not confirmed."
     }
     if (snap.mintable === true && snap.ownerRenounced === false) return "Verdict: High Risk. Supply is mintable and owner control is still active."
     if (snap.ownerRenounced === true && snap.mintable === false) return "Verdict: Caution. Owner is renounced and mint was not detected — LP and holders are still separate checks."
-    return "Verdict: Open Check. Supply control is not fully verified."
+    return "Verdict: Unavailable: Supply control is not fully verified."
   }
   if (topic === "dev") {
     if (snap.rugHistoryCount != null && snap.rugHistoryCount > 0) return `Verdict: Avoid. Confirmed prior rug history (${snap.rugHistoryCount}).`
-    if (!snap.deployerResolved) return "Verdict: Open Check. Dev origin is unresolved — prior rug history is not confirmed."
+    if (!snap.deployerResolved) return "Verdict: Unavailable: Dev origin is unresolved — prior rug history is not confirmed."
     if (snap.rugHistoryCount === 0) return "Verdict: Caution. No confirmed prior rugs in this read. That is not a clean bill of health."
-    return "Verdict: Open Check. Dev rug history was not confirmed."
+    return "Verdict: Unavailable: Dev rug history was not confirmed."
   }
   if (topic === "pumping" || topic === "explain_market") {
     const chg = snap.change24h == null ? "24h change unverified" : `24h change ${snap.change24h >= 0 ? "+" : ""}${snap.change24h.toFixed(1)}%`
@@ -502,7 +503,7 @@ export function renderClarkTokenAnalystAnswer(ev: TokenScanEvidence, topic: Clar
   if (topic === "safe" || topic === "sell") {
     lines.push("", "This is a ChainLens risk read, not financial advice.")
   }
-  return lines.join("\n")
+  return rewriteForbiddenStatusVocab(lines.join("\n"))
 }
 
 export function renderClarkTokenAnalystFromEvidence(ev: TokenScanEvidence, prompt: string, chainLabel = "Base", fallback: ClarkTokenAnalystTopic = "safe"): string {

@@ -3,13 +3,12 @@ import {
   buildTradingSimulationCacheKey,
   classifyTradingSimulation,
   isTradingSimulationCacheHitValid,
+  tradingSimulationCacheTtlSeconds,
   tradingSimulationSupportFor,
   type ClassifyTradingSimulationInput,
   type TradingSimulationAudit,
   type TradingSimulationProvider,
 } from '../tradingSimulation'
-
-const SIM_CACHE_TTL_SECONDS = 120
 
 export interface ResolveTradingSimulationInput {
   chainSlug: string
@@ -48,12 +47,21 @@ export async function resolveTradingSimulationAudit(input: ResolveTradingSimulat
       provider: TradingSimulationProvider
       poolAddress?: string | null
       audit: TradingSimulationAudit
+      cachedAt?: number
     }>(cacheKey)
     if (
       cached?.audit
       && isTradingSimulationCacheHitValid(cached, selected)
     ) {
-      return { ...cached.audit, cacheHit: true, cacheChainMatches: true, cacheKey }
+      const cacheAgeMs = cached.cachedAt != null ? Math.max(0, Date.now() - cached.cachedAt) : 0
+      return {
+        ...cached.audit,
+        cacheHit: true,
+        cacheChainMatches: true,
+        cacheKey,
+        cachedStatus: cached.audit.finalStatus,
+        cacheAgeMs,
+      }
     }
   }
 
@@ -80,8 +88,9 @@ export async function resolveTradingSimulationAudit(input: ResolveTradingSimulat
     honeypotReason: input.honeypotReason ?? null,
   }
   const audit = classifyTradingSimulation(classifyInput)
-  if (!input.skipCache) {
-    await setTokenCache(cacheKey, { ...selected, audit }, SIM_CACHE_TTL_SECONDS)
+  const ttl = tradingSimulationCacheTtlSeconds(audit.finalStatus)
+  if (!input.skipCache && ttl > 0) {
+    await setTokenCache(cacheKey, { ...selected, audit, cachedAt: Date.now() }, ttl)
   }
   return audit
 }

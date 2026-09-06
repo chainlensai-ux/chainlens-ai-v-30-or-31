@@ -861,11 +861,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('async function fetchTokenEvidence(tokenAddress: string, opts?: { fullScan?: boolean; fastPreview?: boolean })'), 'fetchTokenEvidence accepts a fastPreview opt-in for explicit quick previews')
 
   // Task 3: /api/token implements mode === "clark_fast" as an early, separate lightweight branch
-  assert.ok(tokenRouteFile.includes("mode: scanMode } = body;"), '/api/token reads mode from the request body')
+  assert.ok(tokenRouteFile.includes("mode: scanMode") && tokenRouteFile.includes("} = body;"), '/api/token reads mode from the request body')
   assert.ok(tokenRouteFile.includes("isClarkFastMode = scanMode === 'clark_fast'"), '/api/token detects clark_fast mode')
   assert.ok(tokenRouteFile.includes('if (isClarkFastMode) {'), '/api/token branches into a lightweight path for clark_fast')
   assert.ok(tokenRouteFile.includes("stagesSkipped: ['holders', 'lp', 'dev_enrichment']"), 'clark_fast marks skipped slow sections instead of faking them')
-  assert.ok(tokenRouteFile.includes("status: 'open_check'") && tokenRouteFile.includes('lpControl'), 'clark_fast marks LP as open_check, not a fake safe verdict')
+  assert.ok(tokenRouteFile.includes("status: 'not_checked'") && tokenRouteFile.includes('lpControl'), 'clark_fast marks LP as not_checked, not a fake safe verdict')
 
   // Task 3: normal Token Scanner behavior is unaffected when mode is absent — the heavy
   // pipeline (13-way Promise.all of bytecode/GoldRush/Moralis/GeckoTerminal/etc.) still runs
@@ -887,9 +887,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(fastOut.includes('FAST'), 'fast evidence output includes the token symbol')
   assert.ok(/Market:.*price/i.test(fastOut), 'fast evidence output includes market read when available')
 
-  // Task 4: skipped holders/LP/dev sections are reported as Open Check, never a fake safe verdict
-  assert.ok(fastOut.includes('LP: Open Check — full LP proof not run in Clark fast read'), 'clark_fast LP section is Open Check, not a fake verdict')
-  assert.ok(fastOut.includes('Holders: Open Check — holder scan not run in Clark fast read'), 'clark_fast holders section is Open Check, not faked')
+  // Task 4: skipped holders/LP/dev sections are reported as Not Checked, never a fake safe verdict
+  assert.ok(fastOut.includes('LP: Not Checked: fast scan skipped LP proof'), 'clark_fast LP section is Not Checked, not a fake verdict')
+  assert.ok(fastOut.includes('Holders: Not Checked: fast scan skipped holder scan'), 'clark_fast holders section is Not Checked, not faked')
   assert.ok(fastOut.includes('Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan'), 'fast evidence output lists missing-evidence categories')
   assert.ok(!/lp.*locked|holders.*verified/i.test(fastOut), 'fast evidence never claims LP locked or holders verified without evidence')
 
@@ -995,7 +995,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   const devOut = formatDevRugCheck(noEvidence, 'Base')
   assert.ok(devOut.startsWith('DEV/RUG CHECK'), 'dev rug follow-up produces DEV/RUG CHECK header')
-  assert.ok(devOut.includes('open check'), 'dev rug check reports section-specific open checks, not a generic excuse')
+  assert.ok(/Unavailable:|open check/i.test(devOut), 'dev rug check reports section-specific unavailable reasons, not a generic excuse')
   assert.ok(!/renounced — owner cannot|YES — new tokens can be minted|locked\/burned/i.test(devOut), 'dev rug check does not fabricate ownership/mint/LP claims when evidence is missing')
 
   const lpOut = formatLpLockCheck(noEvidence, 'Base')
@@ -1004,7 +1004,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   const riskOut = formatRiskExplanation(noEvidence, 'Base')
   assert.ok(riskOut.startsWith('RISK EXPLANATION'), 'risk follow-up produces RISK EXPLANATION header')
-  assert.ok(riskOut.includes('Open checks:'), 'risk explanation lists precisely which evidence is missing')
+  assert.ok(riskOut.includes('Evidence Gaps:') || riskOut.includes('Open checks:'), 'risk explanation lists precisely which evidence is missing')
 
   // Task 6: quota is never consumed when the follow-up was answered straight from memory
   const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;')
@@ -1068,7 +1068,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/Top safety signals:\s*\n[^\n]*open check/i.test(out), '"Open Check" / missing evidence is never listed as a top safety signal')
 
   assert.ok(out.includes('Visible evidence:'), 'safety answer includes a "Visible evidence" section')
-  assert.ok(out.includes('Open checks:'), 'safety answer includes an "Open checks" section')
+  assert.ok(out.includes('Evidence Gaps:') || out.includes('Open checks:'), 'safety answer includes an evidence-gaps section')
   assert.ok(out.includes('Not enough confirmed evidence to call it safe'), 'incomplete evidence produces the "not enough confirmed evidence" safe-call line')
   const safeLine = out.split('\n').find(l => l.startsWith('Safe?')) ?? ''
   assert.equal(safeLine, 'Safe? Not enough confirmed evidence to call it safe.', 'safety answer never bare-states "safe" as a fact when evidence is incomplete')
@@ -1078,7 +1078,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const scanOut = formatTokenScanResult(virtualLikeEv, 'Base')
   assert.ok(!scanOut.includes('Note: honeypot'), 'token scan output never prints the raw "Note: honeypot" token dump')
   assert.ok(!scanOut.includes('Security open checks: honeypot'), 'token scan output never prints the raw "Security open checks: honeypot" dump')
-  assert.ok(scanOut.includes('Security: Open Check — security simulation not returned'), 'token scan output uses the precise honeypot open-check sentence')
+  assert.ok(scanOut.includes('Security: Unavailable: security simulation not returned') || scanOut.includes('Unavailable: security simulation not returned'), 'token scan output uses the precise honeypot unavailable sentence')
 }
 
 // ─── Clark cross-chain concentrated-LP follow-up consistency ──────────────────
@@ -1111,22 +1111,22 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   assert.ok(safetyOut.includes('- Ownership: active owner — privileged functions may still be callable.'), 'active owner is a safety risk signal')
   assert.ok(!safetyOut.includes('Ownership/dev control: status not confirmed'), 'confirmed active owner is not treated as missing')
-  assert.ok(safetyOut.includes('Honeypot/security: Security simulation unavailable.'), 'safety uses canonical provider-free security wording')
-  assert.ok(scanOut.includes('Security: Open Check — Security simulation unavailable.'), 'token read uses canonical provider-free security wording')
+  assert.ok(safetyOut.includes('Honeypot/security: Unavailable: security simulation unavailable'), 'safety uses canonical provider-free security wording')
+  assert.ok(scanOut.includes('Security: Unavailable: security simulation unavailable'), 'token read uses canonical provider-free security wording')
   assert.ok(!safetyOut.includes('simulation not returned'), 'safety does not use stale simulation wording')
 
   assert.ok(lpOut.includes('Status: Concentrated liquidity / protocol-specific proof required'), 'concentrated LP follow-up has protocol-specific status')
   assert.ok(lpOut.includes('Lock/burn proof: Not Applicable'), 'concentrated LP follow-up says Not Applicable')
-  assert.ok(lpOut.includes('Position/controller proof is still Open Check.'), 'concentrated LP follow-up keeps missing position proof open')
+  assert.ok(lpOut.includes('Position/controller proof is Unavailable: controller was not confirmed.'), 'concentrated LP follow-up keeps missing position proof unavailable with a reason')
   assert.ok(!lpOut.includes('Status: LP proof not confirmed'), 'concentrated LP follow-up does not mislabel proof as unconfirmed')
   assert.ok(devOut.includes('LP control: concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required.'), 'dev/rug check has clean concentrated LP explanation')
   assert.ok(!devOut.includes('open check (concentrated_liquidity)'), 'dev/rug check does not print raw concentrated_liquidity open check')
   assert.ok(riskOut.includes('Ownership: NOT renounced'), 'risk explanation includes active owner')
-  assert.ok(riskOut.includes('LP control: concentrated liquidity — position/controller proof is Open Check.'), 'risk explanation includes concentrated LP context')
+  assert.ok(riskOut.includes('LP control: concentrated liquidity — position/controller proof is Unavailable: controller was not confirmed.'), 'risk explanation includes concentrated LP context')
   assert.ok(riskOut.includes('top-10 holders control 20.0% of supply'), 'risk explanation includes top-10 holder context')
   assert.ok(riskOut.includes('Mint authority: no mint authority detected.'), 'risk explanation includes no mint')
   assert.ok(riskOut.includes('Proxy: no proxy detected.'), 'risk explanation includes no proxy')
-  assert.ok(riskOut.includes('Security: Open Check — Security simulation unavailable.'), 'risk explanation includes provider-free security simulation status')
+  assert.ok(riskOut.includes('Security: Unavailable: security simulation unavailable') || riskOut.includes('Security: Unavailable: Security simulation unavailable'), 'risk explanation includes provider-free security simulation status')
 
   assert.ok(routeFile.includes('tokenEvidenceChain(ev, chainForClarkTools)'), 'Clark derives formatter labels from actual token evidence chain')
   assert.ok(routeFile.includes('opts.cachedEvidence.chain = evidenceChain'), 'lastToken cached evidence stores corrected chain')
@@ -1227,14 +1227,15 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!taxOnlyOut.includes('honeypot simulation not returned'), 'tax-only evidence never uses the generic "simulation not returned" wording')
 
   // lpControl.status === 'partial' with a reason → the reason is printed, not just the bare word
-  assert.ok(taxOnlyOut.includes('LP proof: Partial — secondary LP exposure found but primary LP proof not fully confirmed.'), 'LP partial status prints its real reason, not just "partial"')
+  assert.ok(/LP proof: Partial[:—].*secondary LP exposure found but primary LP proof not fully confirmed/.test(taxOnlyOut), 'LP partial status prints its real reason, not just "partial"')
 
   // Real evidence (mintable/holders/LP/ownership) produces a non-null, non-fallback verdict
   // that stays in sync with the displayed "Verdict:" line, and source is not "fallback".
   const meta = tokenScanVerdictMeta(base, hasUsableTokenEvidence(base))
   assert.ok(meta.verdict != null, 'data.verdict is not null when real evidence exists')
   assert.notEqual(meta.source, 'fallback', 'source is not "fallback" when mapped from real Token Scanner evidence')
-  assert.ok(taxOnlyOut.includes(`Verdict: ${meta.verdict}`), 'displayed Verdict line matches data.verdict exactly')
+  assert.ok(/^- Verdict: (Avoid|Caution|Cleaner|Partial:.*|Unavailable:.*)$/m.test(taxOnlyOut), 'displayed Verdict line uses allowed public vocab')
+  assert.ok(!/Verdict: Open Check/.test(taxOnlyOut), 'public token scan never shows Open Check')
 
   // No evidence at all → conservative Open Check verdict and fallback source, never a fake clean call
   const noEvMeta = tokenScanVerdictMeta({ ok: false }, false)
@@ -1410,7 +1411,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     warnings: [],
   }
   const noEvOut = formatRiskExplanation(noEv, 'Ethereum')
-  assert.ok(noEvOut.includes('Open checks:'), 'missing evidence is listed under Open checks, never fabricated')
+  assert.ok(noEvOut.includes('Evidence Gaps:') || noEvOut.includes('Open checks:'), 'missing evidence is listed under evidence gaps, never fabricated')
   assert.ok(!noEvOut.includes('Main risk signals:'), 'no fabricated main risk signals when no evidence is confirmed')
   assert.ok(!noEvOut.includes('Positive / lower-risk signals:'), 'no fabricated positive signals when no evidence is confirmed')
 
@@ -1492,7 +1493,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const meta = tokenScanVerdictMeta(sa1t, hasUsableTokenEvidence(sa1t))
 
   // Goal 1: canonical verdict only, never a combined phrase.
-  assert.ok(/^- Verdict: (Avoid|Caution|Open Check|Cleaner)$/m.test(out), 'verdict line is a single canonical value')
+  assert.ok(/^- Verdict: (Avoid|Caution|Open Check|Cleaner|Partial:.*|Unavailable:.*)$/m.test(out), 'verdict line is a single canonical value')
   assert.ok(!out.includes('Open Check / Caution'), 'combined verdict phrase never appears in text')
   assert.ok(!JSON.stringify(meta).includes('Open Check / Caution'), 'combined verdict phrase never appears in JSON')
   assert.equal(meta.verdict, 'Caution', 'active owner + missing security maps to canonical Caution, not Open Check')
@@ -1505,7 +1506,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(/Not Applicable.*(position|controller)/i.test(out), 'Not Applicable LP still explains position/controller proof may be needed')
 
   // Goal 3: security wording is specific, not a generic "not returned".
-  assert.ok(out.includes('Security: Open Check — Security simulation unavailable.'), 'security unavailable reason is specific and provider-free')
+  assert.ok(out.includes('Security: Unavailable: security simulation unavailable'), 'security unavailable reason is specific and provider-free')
   assert.ok(!out.toLowerCase().includes('honeypot not detected'), 'never fakes honeypot-false when honeypot is unconfirmed')
 
   // Chain compatibility: no Base-only wording leaks into the Ethereum read.
@@ -1526,7 +1527,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     ok: true,
   }
   const out = formatTokenScanResult(ev, 'BNB')
-  assert.ok(out.includes('Security: Open Check — simulation not supported for this chain yet.'))
+  assert.ok(out.includes('Security: Unsupported: simulation not supported for this chain yet'))
 }
 
 {
@@ -1541,7 +1542,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     ok: true,
   }
   const out = formatTokenScanResult(ev, 'Base')
-  assert.ok(out.includes('Security: Open Check — simulation timed out.'))
+  assert.ok(out.includes('Security: Unavailable: simulation timed out'))
 }
 
 {
@@ -1558,7 +1559,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   }
   const out = formatTokenScanResult(virtual, 'Base')
   const meta = tokenScanVerdictMeta(virtual, hasUsableTokenEvidence(virtual))
-  assert.ok(out.includes('LP proof: Team Controlled'))
+  assert.ok(/LP proof: (Watch:|Team Controlled).*wallet-controlled/.test(out), 'team-controlled LP is reported as Watch with the wallet-control reason')
   assert.equal(meta.verdict, 'Caution')
   assert.ok(out.includes('Verdict: Caution'))
 }

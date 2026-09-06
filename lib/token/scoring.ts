@@ -13,7 +13,7 @@ export type CortexWeightedCategoryKey =
   | 'securityRiskChecks'
   | 'devControl'
 
-export type CortexVerdict = 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Open Check'
+export type CortexVerdict = 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Unavailable'
 export type CortexConfidence = 'high' | 'medium' | 'low' | 'insufficient'
 
 export type CortexScoreResultV2 = {
@@ -21,7 +21,7 @@ export type CortexScoreResultV2 = {
   mainScore: number | null
   displayScore: string
   isOpenCheck: boolean
-  verdict: 'CLEAN LOOKING' | 'WATCH' | 'CAUTION' | 'AVOID' | 'UNKNOWN' | 'OPEN CHECK'
+  verdict: 'CLEAN LOOKING' | 'WATCH' | 'CAUTION' | 'AVOID' | 'UNKNOWN' | 'UNAVAILABLE'
   confidence: 'HIGH' | 'MEDIUM' | 'LOW'
   scanQuality: 'FULL' | 'PARTIAL' | 'LIMITED'
   capReason: string | null
@@ -561,7 +561,7 @@ function hasUsableDevEvidence(result: AnyRecord, dev: Factor & { devBreakdown: C
 // CortexVerdict labels. A numeric score never maps to 'Open Check'; that
 // label is reserved for "no usable evidence across core categories".
 function verdictForScore(score: number | null): CortexVerdict {
-  if (score == null) return 'Open Check'
+  if (score == null) return 'Unavailable'
   if (score >= 75) return 'Strong'
   if (score >= 60) return 'Watch'
   if (score >= 40) return 'Caution'
@@ -689,8 +689,8 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
         : 'low'
   const cortexVerdict = verdictForScore(score)
 
-  const legacyVerdict: CortexScoreResultV2['verdict'] = cortexVerdict === 'Open Check'
-    ? 'OPEN CHECK'
+  const legacyVerdict: CortexScoreResultV2['verdict'] = cortexVerdict === 'Unavailable'
+    ? 'UNAVAILABLE'
     : cortexVerdict === 'Strong'
       ? 'CLEAN LOOKING'
       : cortexVerdict === 'High Risk'
@@ -728,7 +728,7 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   return {
     score,
     mainScore: score,
-    displayScore: score == null ? 'Open Check' : String(score),
+    displayScore: score == null ? 'Unavailable' : String(score),
     isOpenCheck: score == null,
     verdict: legacyVerdict,
     confidence: legacyConfidence,

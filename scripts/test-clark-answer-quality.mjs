@@ -221,8 +221,8 @@ function evmPayload(overrides = {}) {
   assert.ok(fast.startsWith('TOKEN READ — fast evidence'))
   assert.match(fast, /Meaning:/)
   assert.match(fast, /Next:/)
-  assert.match(fast, /LP: Open Check — full LP proof not run in Clark fast read/)
-  assert.match(fast, /Holders: Open Check — holder scan not run in Clark fast read/)
+  assert.match(fast, /LP: Not Checked: fast scan skipped LP proof/)
+  assert.match(fast, /Holders: Not Checked: fast scan skipped holder scan/)
   assert.doesNotMatch(fast, /lp lock\/burn proof confirmed/i)
   assert.doesNotMatch(fast, /walletScanHealth/)
 }

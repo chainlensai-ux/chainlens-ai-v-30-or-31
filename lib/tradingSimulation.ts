@@ -40,6 +40,11 @@ export const ROBINHOOD_SIM_TIMEOUT_LABEL = 'Simulation timed out'
 export const SOLANA_SIM_NOT_APPLICABLE_REASON =
   'EVM honeypot simulation is not applicable on Solana. Use Solana-native risk checks only.'
 
+export const TRADING_SIM_SUCCESS_TTL_SECONDS = 120
+export const TRADING_SIM_FAILURE_TTL_SECONDS = 8
+export const ROBINHOOD_SIM_SUCCESS_TTL_MS = 10 * 60_000
+export const ROBINHOOD_SIM_FAILURE_TTL_MS = 8_000
+
 export type RobinhoodHoneypotSimStatus = 'sellable' | 'blocked' | 'unsupported' | 'timeout' | 'unavailable'
 
 export interface RobinhoodTradingSimulationAudit {
@@ -57,16 +62,6 @@ export interface RobinhoodTradingSimulationAudit {
   finalStatus: RobinhoodHoneypotSimStatus
   failureReason: string | null
   cacheHit: boolean
-  // CANONICAL-SELECTED-POOL AUDIT, DISCLOSED (Robinhood trading-simulation diagnosis): traces
-  // exactly which pool candidate simulation received and where it came from, so a future
-  // "wrong/missing pool" report is diagnosable from this object alone instead of re-reading the
-  // route. selectedPoolFromMarket/selectedPoolFromLp are the two raw candidates that existed
-  // anywhere in the normalized scan result BEFORE canonicalization; canonicalSelectedPool /
-  // selectedPoolAddress are the one pool actually used (identical, since LP Safety's own
-  // resolveRobinhoodLpProof already IS the canonicalization step — see app/api/token/route.ts's
-  // ROBINHOOD-SELECTED-POOL-TIMING FIX comment). selectedPoolChainOk is only ever true once
-  // selectedRobinhoodPoolChainOk() independently confirmed chainId 4663 — false or null here
-  // means simulation deliberately received no pool rather than risk a wrong-chain address.
   selectedPoolFromMarket: string | null
   selectedPoolFromLp: string | null
   canonicalSelectedPool: string | null
@@ -84,13 +79,19 @@ export interface TradingSimulationAudit {
   chainSlug: TradingSimulationChainSlug | string
   tokenAddress: string
   poolAddress: string | null
+  providersTried: TradingSimulationProvider[]
+  providerUsed: TradingSimulationProvider
   providerSelected: TradingSimulationProvider
   providerSupportsChain: boolean
+  attempted: boolean
   requestAttempted: boolean
   requestChainId: number | null
+  responseReceived: boolean
   cacheKey: string
   cacheHit: boolean
   cacheChainMatches: boolean
+  cachedStatus: TradingSimulationFinalStatus | null
+  cacheAgeMs: number | null
   responseStatus: number | null
   responseError: string | null
   timedOut: boolean
@@ -101,6 +102,7 @@ export interface TradingSimulationAudit {
   source: string | null
   finalStatus: TradingSimulationFinalStatus
   finalReason: string
+  exactReason: string
 }
 
 export interface TradingSimulationUi {
@@ -122,11 +124,14 @@ export interface ClassifyTradingSimulationInput {
   tokenAddress: string
   poolAddress?: string | null
   providerSelected?: TradingSimulationProvider | null
+  providersTried?: TradingSimulationProvider[] | null
   requestAttempted?: boolean
   requestChainId?: number | null
   cacheKey?: string | null
   cacheHit?: boolean
   cacheChainMatches?: boolean
+  cachedStatus?: TradingSimulationFinalStatus | null
+  cacheAgeMs?: number | null
   responseStatus?: number | null
   responseError?: string | null
   timedOut?: boolean
@@ -175,9 +180,7 @@ export function buildTradingSimulationCacheKey(
   provider: TradingSimulationProvider,
   poolAddress?: string | null,
 ): string {
-  const pool = provider === 'chainlens_robinhood_sim'
-    ? `:${(poolAddress ?? 'none').toLowerCase()}`
-    : ''
+  const pool = `:${(poolAddress ?? 'none').toLowerCase()}`
   return `sim:${provider}:${chainId ?? 'none'}:${tokenAddress.toLowerCase()}${pool}`
 }
 
@@ -188,10 +191,19 @@ export function isTradingSimulationCacheHitValid(
   if (cached.chainId !== selected.chainId) return false
   if (cached.provider !== selected.provider) return false
   if (cached.tokenAddress.toLowerCase() !== selected.tokenAddress.toLowerCase()) return false
-  if (selected.provider === 'chainlens_robinhood_sim') {
-    return (cached.poolAddress ?? '').toLowerCase() === (selected.poolAddress ?? '').toLowerCase()
-  }
-  return true
+  return (cached.poolAddress ?? '').toLowerCase() === (selected.poolAddress ?? '').toLowerCase()
+}
+
+export function isTradingSimulationSuccessCacheable(status: TradingSimulationFinalStatus): boolean {
+  return status === 'verified_clear' || status === 'risk_detected' || status === 'simulated' || status === 'not_applicable'
+}
+
+export function tradingSimulationCacheTtlSeconds(status: TradingSimulationFinalStatus): number {
+  return isTradingSimulationSuccessCacheable(status) ? TRADING_SIM_SUCCESS_TTL_SECONDS : TRADING_SIM_FAILURE_TTL_SECONDS
+}
+
+export function robinhoodSimulationCacheTtlMs(status: RobinhoodHoneypotSimStatus): number {
+  return status === 'sellable' || status === 'blocked' ? ROBINHOOD_SIM_SUCCESS_TTL_MS : ROBINHOOD_SIM_FAILURE_TTL_MS
 }
 
 function taxLooksRisky(buyTax: number | null, sellTax: number | null): boolean {
@@ -211,12 +223,17 @@ export function classifyTradingSimulation(input: ClassifyTradingSimulationInput)
   const providerSelected: TradingSimulationProvider =
     input.providerSelected
     ?? (support.robinhoodSim ? 'chainlens_robinhood_sim' : support.honeypotIs ? 'honeypot_is' : support.goplus ? 'goplus' : 'none')
+  const providersTried = input.providersTried?.length
+    ? input.providersTried
+    : providerSelected === 'none' ? [] : [providerSelected]
   const providerSupportsChain = providerSupportsTradingSimulation(support, providerSelected)
   const requestChainId = input.requestChainId ?? (input.requestAttempted ? chainId : null)
   const cacheKey = input.cacheKey ?? buildTradingSimulationCacheKey(chainId, tokenAddress, providerSelected, poolAddress)
   const sellable = input.sellable ?? null
   const source = providerSelected === 'chainlens_robinhood_sim' ? ROBINHOOD_SIM_SOURCE : null
   const status = input.honeypotStatus ?? null
+  const attempted = Boolean(input.requestAttempted) && providerSupportsChain
+  const responseReceived = input.responseStatus != null || input.honeypotResult != null || sellable != null || Boolean(status && status !== 'timeout' && status !== 'unavailable' && status !== 'failed')
 
   let finalStatus: TradingSimulationFinalStatus
   let finalReason: string
@@ -292,24 +309,31 @@ export function classifyTradingSimulation(input: ClassifyTradingSimulationInput)
     chainId,
     chainSlug,
     tokenAddress,
-    poolAddress: isRobinhood ? poolAddress : null,
+    poolAddress,
+    providersTried,
+    providerUsed: providerSelected,
     providerSelected,
     providerSupportsChain,
-    requestAttempted: Boolean(input.requestAttempted) && providerSupportsChain,
+    attempted,
+    requestAttempted: attempted,
     requestChainId: providerSupportsChain ? requestChainId : null,
+    responseReceived,
     cacheKey,
     cacheHit: Boolean(input.cacheHit),
     cacheChainMatches: input.cacheChainMatches !== false,
+    cachedStatus: input.cacheHit ? (input.cachedStatus ?? finalStatus) : null,
+    cacheAgeMs: input.cacheHit ? (input.cacheAgeMs ?? 0) : null,
     responseStatus: input.responseStatus ?? null,
     responseError: input.responseError ?? null,
     timedOut,
     honeypotResult: input.honeypotResult ?? null,
     buyTax: input.buyTax ?? null,
     sellTax: input.sellTax ?? null,
-    sellable: isRobinhood ? sellable : null,
+    sellable,
     source,
     finalStatus,
     finalReason,
+    exactReason: finalReason,
   }
 }
 
@@ -324,6 +348,7 @@ export function classifyFromRobinhoodHoneypotSim(args: {
   failureReason: string | null
   rawProviderError: string | null
   cacheHit?: boolean
+  cacheAgeMs?: number | null
 }): TradingSimulationAudit {
   return classifyTradingSimulation({
     chainSlug: 'robinhood',
@@ -334,6 +359,7 @@ export function classifyFromRobinhoodHoneypotSim(args: {
     requestAttempted: args.attempted || args.honeypotStatus === 'unsupported' || args.honeypotStatus === 'not_supported',
     requestChainId: ROBINHOOD_SIM_CHAIN_ID,
     cacheHit: args.cacheHit,
+    cacheAgeMs: args.cacheAgeMs ?? null,
     timedOut: args.honeypotStatus === 'timeout',
     honeypotResult: args.honeypotStatus === 'blocked' ? true : args.honeypotStatus === 'sellable' ? false : null,
     buyTax: args.buyTaxPct,
@@ -366,20 +392,20 @@ export function buildTradingSimulationUi(audit: TradingSimulationAudit): Trading
   }
   if (audit.finalStatus === 'not_applicable') {
     return {
-      statusLabel: 'Not applicable',
+      statusLabel: 'Not Applicable: EVM honeypot simulation is not applicable on Solana',
       reason: audit.finalReason,
       impact: null,
       badge: 'NOT APPLICABLE',
-      honeypotValue: 'Not applicable',
-      buyTaxValue: 'Not applicable',
-      sellTaxValue: 'Not applicable',
+      honeypotValue: 'Not Applicable: EVM honeypot simulation is not applicable on Solana',
+      buyTaxValue: 'Not Applicable: EVM honeypot simulation is not applicable on Solana',
+      sellTaxValue: 'Not Applicable: EVM honeypot simulation is not applicable on Solana',
       source: null,
       showTaxRows: false,
       treatAsOpenRisk: false,
     }
   }
   if (audit.finalStatus === 'provider_timeout') {
-    const label = isRobinhood ? ROBINHOOD_SIM_TIMEOUT_LABEL : 'Timed out'
+    const label = `Unavailable: ${isRobinhood ? ROBINHOOD_SIM_TIMEOUT_LABEL : 'Trading simulation timed out'}`
     return {
       statusLabel: label,
       reason: audit.finalReason,
@@ -394,14 +420,15 @@ export function buildTradingSimulationUi(audit: TradingSimulationAudit): Trading
     }
   }
   if (audit.finalStatus === 'provider_unavailable') {
+    const label = `Unavailable: ${audit.finalReason}`
     return {
-      statusLabel: 'Provider unavailable',
+      statusLabel: label,
       reason: audit.finalReason,
       impact: 'Taxes and sell-block simulation could not be verified. Treat as an open risk.',
       badge: 'UNAVAILABLE',
-      honeypotValue: 'Provider unavailable',
-      buyTaxValue: 'Provider unavailable',
-      sellTaxValue: 'Provider unavailable',
+      honeypotValue: label,
+      buyTaxValue: label,
+      sellTaxValue: label,
       source: audit.source,
       showTaxRows: false,
       treatAsOpenRisk: true,
@@ -452,7 +479,7 @@ export function buildTradingSimulationUi(audit: TradingSimulationAudit): Trading
     }
   }
   return {
-    statusLabel: 'Verified clear',
+    statusLabel: 'Verified',
     reason: audit.finalReason,
     impact: null,
     badge: 'VERIFIED CLEAR',

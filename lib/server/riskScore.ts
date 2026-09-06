@@ -22,6 +22,9 @@ export interface RiskScoreResult {
   riskLabel: RiskLabel
   rawScoreType: 'safety_score'
   scoreDirection: 'higher_is_riskier'
+  riskScoreSource: 'lib/server/riskScore.calculateTokenRiskScore'
+  riskInputsUsed: string[]
+  riskInputStatuses: Record<string, string>
   riskScoreDirectionAudit: RiskScoreDirectionAudit
   riskBreakdown: {
     marketMaturity: RiskScoreSectionResult
@@ -110,6 +113,10 @@ export interface RiskScoreInput {
       clusterRiskLabel?: string | null
     } | null
   } | null
+
+  holderCountReason?: string | null
+  holderRowsStatus?: string | null
+  concentrationStatus?: string | null
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -193,6 +200,12 @@ function scoreMarketMaturity(input: RiskScoreInput): RiskScoreSectionResult {
   // average, when liquidityUsd is null). Missing holder data isn't evidence of moderate safety; it's
   // an absence of evidence, so this now scores 0 like the rest of the file's unknown-data handling.
   let holderScore: number
+  const concentrationIncomplete =
+    input.concentrationStatus === 'partial'
+    || input.holderRowsStatus === 'partial'
+    || (input.holderCountReason != null
+      && input.holderCountReason !== 'holder_count_from_provider_total'
+      && input.holderCountReason !== 'ok')
   if (top1 == null && top5 == null && top10 == null) {
     holderScore = 0
     reasons.push('holder_distribution_unavailable')
@@ -205,6 +218,9 @@ function scoreMarketMaturity(input: RiskScoreInput): RiskScoreSectionResult {
   } else if (top10 != null && top10 > 80) {
     holderScore = 4
     reasons.push('top10_holders_own_over_80_percent')
+  } else if (concentrationIncomplete) {
+    holderScore = Math.min(5, top10 != null && top10 < 40 ? 5 : 4)
+    reasons.push('holder_concentration_partial_rows')
   } else if (top10 != null && top10 < 40) {
     holderScore = 10
     reasons.push('top10_holders_under_40_percent')
@@ -529,6 +545,33 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
     displayLocation: 'token_api',
   })
   const riskScore = normalized.riskScore0To100 ?? 50
+  const riskInputsUsed = [
+    marketMaturity.score > 0 || marketMaturity.reasons.length > 0 ? 'marketMaturity' : null,
+    liquiditySafety.score > 0 || liquiditySafety.reasons.length > 0 ? 'liquiditySafety' : null,
+    contractSafety.score > 0 || contractSafety.reasons.length > 0 ? 'contractSafety' : null,
+    behavioralRisk.score > 0 || behavioralRisk.reasons.length > 0 ? 'behavioralRisk' : null,
+  ].filter((value): value is string => Boolean(value))
+  const statusOf = (section: RiskScoreSectionResult): string => {
+    if (section.reasons.some((reason) => /unavailable|not_applicable|incomplete|partial|unknown|unverified/.test(reason))) {
+      return section.reasons.some((reason) => /unavailable/.test(reason)) ? 'unavailable' : 'partial'
+    }
+    return 'verified'
+  }
+  const riskInputStatuses: Record<string, string> = {
+    marketMaturity: statusOf(marketMaturity),
+    liquiditySafety: statusOf(liquiditySafety),
+    contractSafety: statusOf(contractSafety),
+    behavioralRisk: statusOf(behavioralRisk),
+    marketCap: input.marketCapUsd != null || input.displayMarketValue != null ? 'verified' : 'unavailable',
+    liquidity: input.liquidityUsd != null ? 'verified' : 'unavailable',
+    holders: input.holderDistribution?.top10 != null || input.holderDistribution?.top1 != null
+      ? (input.concentrationStatus === 'partial' || input.holderRowsStatus === 'partial' ? 'partial' : 'verified')
+      : 'unavailable',
+    lpControl: input.lpControl?.status ? String(input.lpControl.status) : 'unavailable',
+    simulation: input.honeypot?.isHoneypot != null || input.honeypot?.buyTax != null || input.honeypot?.sellTax != null
+      ? 'verified'
+      : 'unavailable',
+  }
 
   return {
     riskScore,
@@ -536,6 +579,9 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
     riskLabel: normalized.riskLabel ?? 'Moderate Risk',
     rawScoreType: 'safety_score',
     scoreDirection: 'higher_is_riskier',
+    riskScoreSource: 'lib/server/riskScore.calculateTokenRiskScore',
+    riskInputsUsed,
+    riskInputStatuses,
     riskScoreDirectionAudit: normalized.audit,
     riskBreakdown: {
       marketMaturity,
