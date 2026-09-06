@@ -32,7 +32,7 @@ describe('finalReportAssembler — ayriAttribution\'s own internal PnL figures s
     const start = source.indexOf('function buildReconciledPnlSummary')
     const end = source.indexOf('function buildPricingSummary')
     const fnBody = source.slice(start, end)
-    assert.match(fnBody, /return input\.pnlSummaryV2/)
+    assert.match(fnBody, /return \{ \.\.\.input\.pnlSummaryV2, diagnosticOnly: true \}/)
     assert.ok(!fnBody.includes('input.reconciledPnL.realizedPnlUsd'))
     assert.ok(!fnBody.includes('input.reconciledPnL.missingEvidenceCount'))
   })

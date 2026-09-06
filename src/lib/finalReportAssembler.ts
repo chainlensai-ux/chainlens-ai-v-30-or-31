@@ -85,7 +85,9 @@ function buildReconciledPnlSummary(input: BuildInput): PnlSummaryResult {
   // pnlSummaryV2 is the alternate sell-entry read model. Its total, rows, and evidence count must
   // remain one internally-consistent unit. Canonical FIFO values are already published separately
   // through fifoAndPnl/reconciliationSummary and must never overwrite only part of this object.
-  return input.pnlSummaryV2
+  // DIAGNOSTIC-ONLY, DISCLOSED (Wallet PnL Item 2): stamp the flag here so every published report
+  // marks pnlEngine as a cross-check, never a competing official realized headline.
+  return { ...input.pnlSummaryV2, diagnosticOnly: true }
 }
 
 function buildPricingSummary(ayri: AyriAttributionOutput) {

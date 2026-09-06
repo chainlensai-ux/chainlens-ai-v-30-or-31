@@ -100,4 +100,33 @@ describe('finalReportAssembler', () => {
     assert.equal(report.pnlSummaryV2.realizedPnlUsd, 2, 'alternate rows keep their own alternate total')
     assert.equal(report.fifoAndPnl.realizedPnlUsd, 123.45, 'canonical public FIFO output is unchanged')
   })
+
+  it('HARD ASSERTION (Wallet PnL Item 2): when fifoEngine and pnlSummaryV2 disagree, published realizedPnlUsd equals the canonical fifo/reconciliation source, never pnlEngine', () => {
+    const report = createFinalReportAssembler({ logger: quiet }).assemble(baseInput({
+      fifoAndPnl: {
+        matchedLots: [], unmatchedBuys: 99, unmatchedSells: 88,
+        realizedPnlUsd: 174.01, unrealizedPnlUsd: 0, costBasisUsd: null,
+        publicPnlStatus: 'unavailable',
+        integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
+      },
+      reconciledPnL: {
+        closedLots: 7, unmatchedBuys: 2, unmatchedSells: 1,
+        realizedPnlUsd: 174.01, unrealizedPnlUsd: 67.89,
+        priceRecoveredCount: 3, routerCorrectedCount: 4, syntheticAlignedCount: 5,
+        missingEvidenceCount: 6, publicPnlStatus: 'partial', mismatches: [],
+      },
+      pnlSummaryV2: {
+        realizedPnlUsd: 270.02, closedLots: [],
+        winLossRate: { wins: 0, losses: 0, evaluated: 0, rate: null },
+        chainBreakdown: [], confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'low' },
+        evidenceMissingCount: 99, diagnosticOnly: true,
+      },
+    }))
+    assert.equal(report.fifoAndPnl.realizedPnlUsd, 174.01)
+    assert.equal(report.reconciliationSummary.realizedPnlUsd, 174.01)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 270.02, 'pnlEngine keeps its own independent total')
+    assert.notEqual(report.fifoAndPnl.realizedPnlUsd, report.pnlSummaryV2.realizedPnlUsd)
+    assert.equal(report.pnlSummaryV2.diagnosticOnly, true, 'the disagreeing engine must be marked diagnostic-only')
+    assert.equal(report.fifoAndPnl.realizedPnlUsd, report.reconciliationSummary.realizedPnlUsd, 'published realized equals the canonical fifo/reconciliation source')
+  })
 })

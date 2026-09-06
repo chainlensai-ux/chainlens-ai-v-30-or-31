@@ -188,16 +188,16 @@ export function PnlSummaryV2View({ pnl }: PnlSummaryV2ViewProps) {
 
       <div style={{ marginBottom: '14px' }}>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-          PnL Summary (V2)
+          PnL Summary (V2) — diagnostic only
         </h3>
         <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-          Real evidence · No fabricated USD values
+          Independent pnlEngine cross-check · Not the official realized total
         </p>
       </div>
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
         <MetricCard
-          label="Realized PnL"
+          label="Diagnostic realized (pnlEngine)"
           value={fmtUsd(realizedPnlUsd)}
           valueColor={realizedPnlUsd == null ? 'rgba(148,163,184,0.55)' : realizedPnlUsd >= 0 ? '#4ade80' : '#f87171'}
         />

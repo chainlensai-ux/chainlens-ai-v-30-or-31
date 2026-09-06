@@ -12,4 +12,6 @@ it('pipeline never overwrites alternate pnlSummaryV2 totals with canonical recon
   assert.match(block, /\.\.\.adaptedPnlSummary/)
   assert.ok(!block.includes('reconciledPnlSummary.realizedPnlUsd'))
   assert.ok(!block.includes('reconciledPnlSummary.missingEvidenceCount'))
+  assert.match(block, /diagnosticOnly:\s*true/, 'pnlSummaryV2 must be stamped diagnostic-only so it cannot headline as official')
 })
+

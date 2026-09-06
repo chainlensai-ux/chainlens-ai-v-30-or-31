@@ -2647,12 +2647,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     resolveCostUsdEstimate: pnlResolvers.resolveCostUsdEstimate,
     resolveProceedsUsdEstimate: pnlResolvers.resolveProceedsUsdEstimate,
   })
-  // Diagnostic log — real pnlSummaryV2 output counts.
+  // Diagnostic log — pnlSummaryV2 is an independent cross-check, NEVER the official total.
   // eslint-disable-next-line no-console
-  console.warn('[pipeline] pnlSummaryV2 result', {
+  console.warn('[pipeline] pnlSummaryV2 result (diagnostic-only, not official)', {
     closedLots: pnlSummaryV2.closedLots.length,
     evidenceMissingCount: pnlSummaryV2.evidenceMissingCount,
     realizedPnlUsd: pnlSummaryV2.realizedPnlUsd,
+    diagnosticOnly: true,
+    canonicalSource: 'fifoEngine',
   })
   // ENGINE-DIVERGENCE DIAGNOSTIC, DISCLOSED, ADDITIVE (confirmed real bug this makes visible instead
   // of confusing: real production evidence showed a "[pipeline] pnlSummaryV2 result" log reporting
@@ -3434,6 +3436,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   console.warn('[pipeline] scanDeterminismAudit', scanDeterminismAudit)
   const reconciledPnlSummaryV2: PnlSummaryResult = {
     ...adaptedPnlSummary,
+    diagnosticOnly: true,
   }
   const priceRecoveryMap = new Set(reconciledPnlSummary.mismatches.filter((m) => m.classification === 'priceRecovered').map((m) => m.key))
   const ayriAttribution = createAyriAttribution().build({
