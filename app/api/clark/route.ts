@@ -1564,17 +1564,6 @@ function extractLastWalletContext(historyLines: string[]): string | null {
   return null;
 }
 
-function extractLastTokenScanFromHistory(history: ClarkRequestBody["history"]): { contractAddress: string; scanText: string } | null {
-  const lines = getHistoryMessages(history);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const msg = lines[i] ?? "";
-    if (!msg.includes("TOKEN SCAN READ") && !msg.includes("CLARK TOKEN SCAN")) continue;
-    const m = msg.match(/Contract:\s*(0x[a-fA-F0-9]{40})/i);
-    if (m?.[1]) return { contractAddress: m[1], scanText: msg };
-  }
-  return null;
-}
-
 function isBareAddressPrompt(prompt: string): boolean {
   const stripped = prompt.replace(/0x[a-fA-F0-9]{40}/gi, "").trim();
   return /^(here|this|that|it|here it is|this is it)?[\s,.\-:]*$/i.test(stripped);
@@ -7397,10 +7386,9 @@ type TokenFollowupType = "lp" | "deployer" | "holders" | "combined";
 
 function detectTokenFollowup(
   prompt: string,
-  history: ClarkRequestBody["history"]
-): { type: TokenFollowupType; contractAddress: string; scanText: string } | null {
+  lastToken: { address: string } | null | undefined,
+): { type: TokenFollowupType; contractAddress: string } | null {
   const t = prompt.trim().toLowerCase();
-  const GENERIC_RE = /^(go|do it|run it|check that|next|continue|run follow[\s-]?up checks?|proceed|yes|yep)$/i;
   const LP_RE = /\b(check lp|what about lp|lp check|check liquidity|what about liquidity|lp control|liquidity check)\b/i;
   const DEPLOYER_RE = /\b(check deployer|what about deployer|check dev wallet|deployer check|deployer behavior|check dev)\b/i;
   const HOLDERS_RE = /\b(check holders?|what about holders?|holder check|holder distribution|who holds|holder concentration)\b/i;
@@ -7408,97 +7396,51 @@ function detectTokenFollowup(
   // If prompt names a specific token alongside the LP/deployer keyword, it's a new query — not a followup
   if ((LP_RE.test(t) || DEPLOYER_RE.test(t)) && extractTokenLookupQuery(prompt)) return null;
 
-  const isFollowup = GENERIC_RE.test(t) || LP_RE.test(t) || DEPLOYER_RE.test(t) || HOLDERS_RE.test(t);
+  const isFollowup = LP_RE.test(t) || DEPLOYER_RE.test(t) || HOLDERS_RE.test(t);
   if (!isFollowup) return null;
 
-  const lastScan = extractLastTokenScanFromHistory(history);
-  if (!lastScan) return null;
+  const contractAddress = lastToken?.address ?? null;
+  if (!contractAddress) return null;
 
   const type: TokenFollowupType = LP_RE.test(t) ? "lp" : DEPLOYER_RE.test(t) ? "deployer" : HOLDERS_RE.test(t) ? "holders" : "combined";
-  return { type, ...lastScan };
+  return { type, contractAddress };
 }
 
-function buildTokenFollowupReply(type: TokenFollowupType, contractAddress: string, scanText: string): string {
-  const ex = (label: string) => {
-    const m = scanText.match(new RegExp(`(?:^|\\n)[-\\s]*${label}:\\s*([^\\n]+)`, "i"));
-    return m?.[1]?.trim() ?? null;
+function buildTokenFollowupReply(type: TokenFollowupType, ev: TokenScanEvidence, chainLabel: string): string {
+  if (type === "lp") return formatLpLockCheck(ev, chainLabel);
+  if (type === "deployer") return formatDevRugCheck(ev, chainLabel);
+  if (type === "holders") return formatHoldersCheck(ev, chainLabel);
+  return formatTokenSafetyAnswer(ev, chainLabel);
+}
+
+function formatMissingChecksFromEvidence(ev: TokenScanEvidence, tokenLabel: string): string {
+  const coverage = tokenEvidenceCoverage(ev);
+  const labels: Record<string, string> = {
+    lpDepth: "Liquidity depth",
+    lpControl: "LP lock/control proof",
+    security: "Security / honeypot simulation",
+    honeypot: "Honeypot simulation",
+    deployerIdentity: "Deployer identity",
+    linkedWallets: "Linked wallets",
+    previousTokens: "Previous deployer tokens",
+    fundingPatterns: "Funding patterns",
+    holderDistribution: "Holder distribution",
+    ownership: "Ownership / mint / proxy",
   };
-  const nameRaw = ex("Asset") ?? "";
-  const tokenName = nameRaw.split("(")[0].trim() || "Unknown";
-  const symbol = nameRaw.match(/\(([^)]+)\)/)?.[1] ?? "?";
-  const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
-
-  if (type === "lp") {
-    const liq = ex("Liquidity") ?? ex("Pool depth") ?? "No signal in checked window";
-    const lpControl = ex("LP control");
-    return [
-      `Liquidity / LP — ${tokenName} (${symbol})`,
-      `Contract: ${short}`,
-      "",
-      `Pool depth: ${liq}`,
-      `LP control: ${lpControl ?? "Not confirmed from current data"}`,
-      "",
-      "LP lock and control are not verified in this scan. Use Liquidity Safety with this contract for confirmed LP control status.",
-      `Next: Liquidity Safety → ${contractAddress}`,
-    ].join("\n");
-  }
-
-  if (type === "deployer") {
-    return [
-      `Deployer check — ${tokenName} (${symbol})`,
-      `Contract: ${short}`,
-      "",
-      "Deployer behavior check is not fully wired in Clark chat follow-ups.",
-      "Current scan only covers owner/proxy/mint/security fields.",
-      "",
-      "To check the deployer cluster: use Dev Wallet Detector with this contract.",
-      `Next: Dev Wallet Detector → ${contractAddress}`,
-    ].join("\n");
-  }
-
-  if (type === "holders") {
-    const holderCount = ex("Holder count") ?? "No signal in checked window";
-    const topHolder = ex("Top holder") ?? "No signal in checked window";
-    const top10 = ex("Top 10") ?? "No signal in checked window";
-    const status = ex("Status") ?? "unavailable";
-    const top10Num = parseFloat(top10.replace("%", ""));
-    const conc = Number.isFinite(top10Num) ? (top10Num >= 60 ? "High" : top10Num >= 30 ? "Medium" : "Low") : "Unknown";
-    return [
-      `Holder distribution — ${tokenName} (${symbol})`,
-      `Contract: ${short}`,
-      "",
-      `Holder count: ${holderCount}`,
-      `Top holder: ${topHolder}`,
-      `Top 10 holders: ${top10}`,
-      `Concentration: ${conc}`,
-      `Data status: ${status}`,
-      "",
-      "Holder identity is not verified — these are on-chain distribution counts only.",
-    ].join("\n");
-  }
-
-  // combined
-  const liq = ex("Liquidity") ?? ex("Pool depth") ?? "Not available";
-  const lpControl = ex("LP control") ?? "Not confirmed";
-  const holderCount = ex("Holder count") ?? "Not available";
-  const top10 = ex("Top 10") ?? "Not available";
-  const missingMatch = scanText.match(/Missing checks:\n([\s\S]*?)(?:\n\n|\nWatch next:|\nNext action:|$)/i);
-  const missingLines = missingMatch?.[1]
-    ?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 3).map(l => l.trim()).join("\n")
-    ?? "- LP control\n- Deployer behavior";
-  return [
-    `Follow-up — ${tokenName} (${symbol})`,
-    `Contract: ${short}`,
+  const missing = [...new Set(
+    Object.entries(coverage)
+      .filter(([, status]) => status !== "verified")
+      .map(([key]) => labels[key] ?? key),
+  )];
+  return rewriteForbiddenStatusVocab([
+    `MISSING CHECKS — ${tokenLabel}`,
     "",
-    `LP check: pool depth ${liq}, LP control ${lpControl}`,
-    `Holder check: count ${holderCount}, top 10 at ${top10}`,
-    "Deployer check: not wired in Clark chat — use Dev Wallet Detector for confirmed deployer analysis.",
+    missing.length ? missing.map((item) => `- ${item}`).join("\n") : "No explicit missing checks in canonical scan evidence.",
     "",
-    "Still missing from this scan:",
-    missingLines,
+    "Why it matters: each missing check is a confidence gap. The fewer confirmed signals, the lower the conviction.",
     "",
-    "Next: Dev Wallet Detector for deployer, Liquidity Safety for LP control confirmation.",
-  ].join("\n");
+    "To fill gaps: run Token Scanner → Liquidity Safety → Dev Wallet Detector.",
+  ].join("\n"));
 }
 
 function buildHolderFocusedReply(report: ClarkFullReportEvidence): string {
@@ -7531,140 +7473,40 @@ function buildHolderFocusedReply(report: ClarkFullReportEvidence): string {
   ].join("\n");
 }
 
-function buildCasualContextualReply(prompt: string, lastScanText: string | null, recentContext: string): string {
+function buildCasualContextualReply(prompt: string, ev: TokenScanEvidence | null): string {
   const t = prompt.trim().toLowerCase();
+  const meta = ev ? tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev)) : null;
+  const name = ev?.token?.symbol ?? ev?.token?.name ?? "that token";
+  const verdict = meta?.verdict ?? null;
+  const verdictNote = (v: string) => {
+    if (v === "Avoid") return "Risk flags are confirmed — I'd stay out.";
+    if (v === "Caution" || v === "Partial") return "Watch-only. LP control and deployer still need confirmation.";
+    if (v === "Cleaner") return "No confirmed red flags, but verify LP and deployer independently before sizing.";
+    return "Coverage is thin — not enough to call it safe or unsafe yet.";
+  };
   if (/what do you think|is that bad|risky\??$/i.test(t)) {
-    if (lastScanText) {
-      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
-      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that token";
-      return `Last scan for ${name}: ${verdict}. ${
-        verdict === "AVOID" ? "Risk flags are confirmed — I'd stay out." :
-        verdict === "WATCH" ? "Watch-only. LP control and deployer are still unverified." :
-        verdict === "TRUSTWORTHY" ? "No confirmed red flags, but verify LP and deployer independently before sizing." :
-        "Coverage is thin — not enough to call it safe or unsafe yet."
-      } What specifically do you want to dig into?`;
+    if (verdict) {
+      return rewriteForbiddenStatusVocab(`Last scan for ${name}: ${verdict}. ${verdictNote(verdict)} What specifically do you want to dig into?`);
     }
-    return "Share the contract or scan result and I can give you a clearer read.";
+    return "Share the contract or scan a token and I can give you a clearer read.";
   }
   if (/^why$/i.test(t)) {
-    if (lastScanText) {
-      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
-      return `The ${verdict} verdict comes from what the scanner could and couldn't verify. ${
-        verdict === "AVOID" ? "The bear case signals are confirmed enough to flag it." :
-        verdict === "WATCH" ? "No confirmed red flag, but LP control and deployer are unverified — that's the gap." :
-        "The scanner didn't have enough data coverage for a stronger call."
-      } What part do you want broken down?`;
+    if (verdict) {
+      return rewriteForbiddenStatusVocab(`The ${verdict} verdict comes from what the scanner could and couldn't verify. What part do you want broken down?`);
     }
     return "Why what? Share context or a contract and I can break it down.";
   }
   if (/^explain this$/i.test(t)) {
-    if (recentContext.includes("TOKEN SCAN READ") || recentContext.includes("CLARK TOKEN SCAN")) {
-      const verdict = recentContext.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
-      return `The token came back ${verdict}. ${
-        verdict === "AVOID" ? "Confirmed risk flags from security simulation or contract checks." :
-        verdict === "WATCH" ? "No confirmed red flags yet, but LP lock, deployer cluster, and some contract fields are unverified." :
-        verdict === "TRUSTWORTHY" ? "No major flags in this scan — still verify LP and deployer before conviction." :
-        "Not enough evidence for a confident call."
-      } What part do you want me to break down?`;
+    if (verdict) {
+      return rewriteForbiddenStatusVocab(`The token came back ${verdict}. ${verdictNote(verdict)} What part do you want me to break down?`);
     }
-    return "Explain what? Paste a scan result or contract and I'll break it down.";
+    return "Explain what? Paste a contract and I'll break it down.";
   }
   if (/^(yo|hey|bro|man|dude)\b/i.test(t)) {
-    if (lastScanText) {
-      const name = lastScanText.match(/Asset:\s*([^(\n]+)/i)?.[1]?.trim() ?? "that last token";
-      const verdict = lastScanText.match(/Verdict:\s*(\w[\w ]*)/i)?.[1]?.trim() ?? "UNKNOWN";
-      return `Still on ${name} (${verdict}). Want to go deeper on something specific?`;
-    }
+    if (verdict) return rewriteForbiddenStatusVocab(`Still on ${name} (${verdict}). Want to go deeper on something specific?`);
     return "Clark here. What are we looking at?";
   }
   return "What do you want me to look at? Paste a contract, wallet, or ask about something specific.";
-}
-
-function buildWatchVerdictFromScan(scanText: string, contractAddress: string): string {
-  const ex = (label: string) => {
-    const m = scanText.match(new RegExp(`(?:^|\\n)[-\\s]*${label}:\\s*([^\\n]+)`, "i"));
-    return m?.[1]?.trim() ?? null;
-  };
-  const nameRaw = ex("Asset") ?? "";
-  const tokenName = nameRaw.split("(")[0].trim() || "Unknown";
-  const symbol = nameRaw.match(/\(([^)]+)\)/)?.[1] ?? "?";
-  const verdict = ex("Verdict") ?? "UNKNOWN";
-  const liquidity = ex("Liquidity") ?? ex("Pool depth") ?? null;
-  const volume = ex("Volume") ?? ex("24h volume") ?? null;
-  const topHolder = ex("Top holder") ?? null;
-  const top10 = ex("Top 10") ?? null;
-  const lpControl = ex("LP control") ?? null;
-  const honeypot = ex("Honeypot") ?? null;
-  const sellTax = ex("Sell tax") ?? null;
-  const buyTax = ex("Buy tax") ?? null;
-  const short = `${contractAddress.slice(0, 6)}...${contractAddress.slice(-4)}`;
-
-  // Choose watch decision based on verdict
-  const decision =
-    verdict === "AVOID" ? "AVOID FOR NOW" :
-    verdict === "WATCH" ? "WATCH" :
-    verdict === "TRUSTWORTHY" ? "WATCH" :
-    verdict === "SCAN DEEPER" ? "SCAN DEEPER" :
-    "LOW SIGNAL";
-
-  // Intro line varies by decision
-  const intro =
-    decision === "WATCH" ? "Worth watching, not enough for conviction." :
-    decision === "AVOID FOR NOW" ? "Risk flags present. Monitor only — no entry without clean checks." :
-    decision === "SCAN DEEPER" ? "Signal exists but coverage is too thin. Deeper checks needed before watchlist." :
-    "Not enough signal yet. This read is too incomplete for confidence.";
-
-  // Build why bullets from available data
-  const why: string[] = [];
-  if (liquidity) {
-    const nearZero = /\$-?0(?:\.0+)?\b|\$0\b/i.test(liquidity);
-    why.push(`Liquidity: ${nearZero ? "near-zero / unverified" : liquidity}`);
-  }
-  if (volume) why.push(`Volume: ${volume}`);
-  if (topHolder) why.push(`Top holder: ${topHolder}`);
-  if (top10) why.push(`Top 10 holders: ${top10}`);
-  if (lpControl) why.push(`LP control: ${lpControl}`);
-  else why.push("LP lock/control: unverified");
-  if (honeypot && !/unverified/i.test(honeypot)) why.push(`Honeypot: ${honeypot}`);
-  if (sellTax && !/unverified/i.test(sellTax)) why.push(`Sell tax: ${sellTax}`);
-  if (buyTax && !/unverified/i.test(buyTax)) why.push(`Buy tax: ${buyTax}`);
-
-  // Main risk
-  const riskMatch = scanText.match(/Bear case:\n([\s\S]*?)(?:\n\n|\nMissing|$)/i);
-  const bearLines = riskMatch?.[1]?.split("\n").filter(l => l.trim().startsWith("-")).slice(0, 2).map(l => l.trim().replace(/^-\s*/, "")) ?? [];
-  const mainRisk = bearLines.length
-    ? bearLines.join(". ")
-    : "LP control and deployer behavior are not fully verified — treat as incomplete until confirmed.";
-
-  // What would change my mind
-  const changeMyMind = [
-    "Verified LP lock or confirmed LP control status",
-    "Holder concentration below 30% for top 10",
-    "Volume sustaining after initial momentum",
-  ];
-
-  return [
-    "WATCH VERDICT",
-    "",
-    `Token: ${tokenName} (${symbol})`,
-    `Contract: ${short}`,
-    "",
-    `Decision: ${decision}`,
-    "",
-    intro,
-    "",
-    "Why:",
-    ...why.slice(0, 5).map(b => `- ${b}`),
-    "",
-    "Main risk:",
-    mainRisk,
-    "",
-    "What would change my read:",
-    ...changeMyMind.map(c => `- ${c}`),
-    "",
-    "Next action:",
-    "Run liquidity + holder + dev wallet checks before conviction. No trade call.",
-  ].join("\n");
 }
 
 // ---------- Feature handlers ----------
@@ -11665,10 +11507,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (THIS_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const histLinesForThis = getHistoryMessages(body.history);
     const lastTokenCtx = extractLastTokenContext(histLinesForThis);
-    const lastScanCtx = extractLastTokenScanFromHistory(body.history);
     const memToken = sessionMem.lastToken;
-    const thisAddress = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.address : null) ?? lastTokenCtx.address ?? lastScanCtx?.contractAddress ?? null;
-    const thisSymbol = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.symbol : null) ?? lastTokenCtx.symbol ?? null;
+    const subjectToken = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
+    const thisAddress = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.address : null)
+      ?? subjectToken?.address
+      ?? lastTokenCtx.address
+      ?? null;
+    const thisSymbol = (memToken && (Date.now() - memToken.ts) < SESSION_MEMORY_TTL_MS ? memToken.symbol : null)
+      ?? subjectToken?.symbol
+      ?? lastTokenCtx.symbol
+      ?? null;
     if (!thisAddress && !thisSymbol) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "unknown", toolsUsed: [], analysis: "Which token should I check? Send a symbol or contract." };
     }
@@ -14728,46 +14576,73 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: "I couldn't pull wallet data for that address right now. Try pasting again or use Wallet Scanner directly." };
   }
 
-  // Follow-up action — intercept before plan execution to avoid re-running the full scan
-  const tokenFollowup = detectTokenFollowup(prompt, body.history);
+  // Follow-up action — intercept leftover LP/holders/deployer phrases using canonical token evidence,
+  // never regex-parsed assistant prose. Identity comes from lastToken / lastClarkSubject.
+  const tokenFollowup = detectTokenFollowup(
+    prompt,
+    sessionMem.lastToken
+      ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? { address: sessionMem.lastClarkSubject!.address } : null)
+      ?? body.clientContext?.lastToken
+      ?? null,
+  );
   if (tokenFollowup) {
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai",
+        chain,
+        mode: "analysis",
+        intent: "token_analysis",
+        toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        quotaConsumed: false,
+      };
+    }
+    const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools));
+    const analysis = buildTokenFollowupReply(tokenFollowup.type, r.ev, followupChainLabel);
+    if (!r.fromMemory) {
+      updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
+        normalizedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
+        cachedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
+      });
+    }
+    updateMemIntent(sessionMem, "token_analysis");
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
       intent: "token_analysis",
-      toolsUsed: [],
-      analysis: buildTokenFollowupReply(tokenFollowup.type, tokenFollowup.contractAddress, tokenFollowup.scanText),
+      toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      analysis,
+      quotaConsumed: !r.fromMemory,
     };
   }
   // Watch verdict follow-up — after a token scan, user asks whether to watch
   const WATCH_VERDICT_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
   if (WATCH_VERDICT_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
-    const lastScan = extractLastTokenScanFromHistory(body.history);
-    const memTokenVerdict = sessionMem.lastToken;
-    if (lastScan) {
-      updateMemIntent(sessionMem, "token_analysis");
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
-        analysis: buildWatchVerdictFromScan(lastScan.scanText, lastScan.contractAddress),
+        feature: "clark-ai", chain, mode: "analysis", intent: "casual", toolsUsed: [],
+        analysis: "I need a token first. Send a symbol/contract or say 'scan BRETT'.",
+        quotaConsumed: false,
       };
     }
-    if (memTokenVerdict?.scanSummary && (Date.now() - memTokenVerdict.ts) < SESSION_MEMORY_TTL_MS) {
-      updateMemIntent(sessionMem, "token_analysis");
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
-        analysis: buildWatchVerdictFromScan(memTokenVerdict.scanSummary, memTokenVerdict.address),
-      };
-    }
+    updateMemIntent(sessionMem, "token_analysis");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "casual", toolsUsed: [],
-      analysis: "I need a token first. Send a symbol/contract or say 'scan BRETT'.",
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis",
+      toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      analysis: formatTokenAnalystFollowup(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))),
+      quotaConsumed: !r.fromMemory,
     };
   }
 
   if (isHolderQuestion(prompt) && !extractTokenLookupQuery(prompt) && !hasAnyAddress(prompt)) {
-    const lastScan = extractLastTokenScanFromHistory(body.history);
-    if (!lastScan) {
+    const holderTarget = sessionMem.lastToken?.address
+      ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject!.address : null)
+      ?? body.clientContext?.lastToken?.address
+      ?? null;
+    if (!holderTarget) {
       return {
         feature: "clark-ai",
         chain,
@@ -14779,92 +14654,72 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
   }
 
-  // "why is it risky" — pull risk section from scan summary
+  // "why is it risky" — canonical risk formatter from cached/fresh Token Scanner evidence
   const WHY_RISKY_RE = /\b(why\s+is\s+it\s+risky|what\s+makes\s+it\s+risky|why\s+is\s+(?:it|this|that)\s+(?:a\s+)?risk(?:y)?|explain\s+the\s+risk|why\s+(?:avoid|risky))\b/i;
   if (WHY_RISKY_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
-    const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
-    const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"} (${sessionMem.lastToken.address.slice(0, 6)}...${sessionMem.lastToken.address.slice(-4)})` : "Last scanned token";
-    if (scanSrc) {
-      const riskMatch = scanSrc.match(/(?:Risks?|Risk\s+flags?|Red\s+flags?):\s*\n([\s\S]*?)(?:\n\n|\nWatch\s+next|\nNext\s+action|\nMissing|\nWatch|$)/i);
-      const riskLines = riskMatch ? riskMatch[1].trim() : null;
-      const avoidMatch = scanSrc.includes("AVOID") || scanSrc.includes("Avoid");
-      const watchMatch = scanSrc.includes("WATCH") || scanSrc.includes("Watch");
-      const verdict = avoidMatch ? "AVOID" : watchMatch ? "WATCH" : "SCAN DEEPER";
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
-        analysis: [
-          `RISK READ — ${tokenLabel}`,
-          "",
-          `Verdict: ${verdict}`,
-          "",
-          `Why: ${verdict === "AVOID" ? "Too many unresolved/negative safety signals in the current CORTEX read." : verdict === "WATCH" ? "Mixed signals — monitor, do not blindly size in." : "Incomplete evidence; needs deeper checks before conviction."}`,
-          "",
-          `Signals: ${riskLines ? "Risk signals were found in the last CORTEX scan." : "No explicit risk block was found in the last scan text."}`,
-          "",
-          `Risks:\n${riskLines ?? "- Missing/unclear risk lines in the last scan output."}`,
-          "",
-          "Watch next: Verify holder concentration, LP control/lock state, and deployer-wallet behavior before treating setup as safe.",
-          "",
-          "These are the signals from the last CORTEX read only — not a guarantee.",
-        ].join("\n"),
-      };
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token first. Scan one and then ask again." };
     }
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token first. Scan one and then ask again." };
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis",
+      toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      analysis: formatRiskExplanation(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))),
+      quotaConsumed: !r.fromMemory,
+    };
   }
 
-  // "show me the missing checks" — extract from scan summary
+  // "show me the missing checks" — canonical coverage from Token Scanner evidence
   const MISSING_CHECKS_RE = /\b(show\s+(?:me\s+)?(?:the\s+)?missing\s+checks?|what\s+(?:checks?\s+)?(?:are\s+)?missing|what\s+is\s+missing|which\s+checks?\s+(?:are\s+)?missing|what\s+(?:data\s+)?(?:is\s+)?incomplete|incomplete\s+checks?)\b/i;
   if (MISSING_CHECKS_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
-    const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
-    const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"}` : "Last scanned token";
-    if (scanSrc) {
-      const missingMatch = scanSrc.match(/(?:Missing\s+checks?|Missing\s+data|Not\s+verified):\s*\n([\s\S]*?)(?:\n\n|\nWatch\s+next|\nNext\s+action|\nWatch|$)/i);
-      const missingLines = missingMatch ? missingMatch[1].trim() : null;
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
-        analysis: [
-          `MISSING CHECKS — ${tokenLabel}`,
-          "",
-          missingLines ?? "Missing checks not explicitly listed in last scan — run Token Scanner for full coverage.",
-          "",
-          "Why it matters: each missing check is a confidence gap. The fewer confirmed signals, the lower the conviction.",
-          "",
-          "To fill gaps: run Token Scanner → Liquidity Safety → Dev Wallet Detector.",
-        ].join("\n"),
-      };
+    const r = await resolveTokenForFollowup();
+    const tokenLabel = sessionMem.lastToken?.symbol ?? sessionMem.lastToken?.name ?? "Last scanned token";
+    if ("needsAddress" in r) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token scan first. Scan a token and then ask which checks are missing." };
     }
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: "I need a token scan first. Scan a token and then ask which checks are missing." };
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis",
+      toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      analysis: formatMissingChecksFromEvidence(r.ev, tokenLabel),
+      quotaConsumed: !r.fromMemory,
+    };
   }
 
-  // "compare to last one" — compare last 2 tokens in session memory
+  // "compare to last one" — compare last 2 tokens from canonical cached evidence
   const COMPARE_LAST_RE = /\b(compare\s+(?:this\s+)?to\s+(?:the\s+)?last\s+one|compare\s+(?:it\s+)?to\s+(?:the\s+)?previous|how\s+does\s+(?:it|this)\s+compare\s+to\s+(?:the\s+)?last|vs\.?\s+(?:the\s+)?last\s+(?:one|token|scan)|versus\s+(?:the\s+)?last)\b/i;
   if (COMPARE_LAST_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const current = sessionMem.lastToken;
     const prev = sessionMem.prevToken;
     if (current && prev) {
-      const fmtToken = (t: NonNullable<ClarkSessionMemory['lastToken']>) => {
+      const fmtToken = (t: {
+        address: string;
+        symbol: string | null;
+        name: string | null;
+        cachedEvidence?: TokenScanEvidence | null;
+        normalizedEvidence?: TokenScanEvidence | null;
+      }) => {
         const short = `${t.address.slice(0, 6)}...${t.address.slice(-4)}`;
         const label = `${t.symbol ?? "?"}${t.name && t.name !== t.symbol ? ` (${t.name})` : ""} — ${short}`;
-        if (!t.scanSummary) return `${label}\nNo scan data available.`;
-        const verdict = t.scanSummary.match(/Verdict:\s*([^\n]+)/i)?.[1]?.trim() ?? "Unknown";
-        const confidence = t.scanSummary.match(/Confidence:\s*([^\n]+)/i)?.[1]?.trim() ?? "Unknown";
-        const liq = t.scanSummary.match(/Liquidity:\s*([^\n]+)/i)?.[1]?.trim() ?? "n/a";
-        const score = t.scanSummary.match(/Score:\s*([^\n]+)/i)?.[1]?.trim() ?? "n/a";
-        return [label, `  Verdict: ${verdict}`, `  Confidence: ${confidence}`, `  Liquidity: ${liq}`, `  Score: ${score}`].join("\n");
+        const ev = t.cachedEvidence ?? t.normalizedEvidence ?? null;
+        if (!ev) return `${label}\nNo scan evidence available.`;
+        const meta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
+        const liq = ev.market?.liquidity != null ? `$${ev.market.liquidity.toLocaleString()}` : "n/a";
+        const score = ev.riskScore != null ? String(ev.riskScore) : "n/a";
+        return [label, `  Verdict: ${meta.verdict}`, `  Confidence: ${meta.confidence}`, `  Liquidity: ${liq}`, `  Score: ${score}`].join("\n");
       };
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [],
-        analysis: [
+        feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: ["memory"],
+        analysis: rewriteForbiddenStatusVocab([
           "COMPARISON — Last 2 Scans",
           "",
           "Current:",
           fmtToken(current),
           "",
           "Previous:",
-          fmtToken(prev),
+          fmtToken(prev as typeof current),
           "",
-          "Note: comparison uses last CORTEX scan data. Re-scan for fresh signals.",
-        ].join("\n"),
+          "Note: comparison uses canonical cached scan evidence. Re-scan for fresh signals.",
+        ].join("\n")),
       };
     }
     if (current && !prev) return { feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], analysis: `Only one token in memory (${current.symbol ?? current.address.slice(0, 8)}). Scan a second token and then ask again.` };
@@ -14919,14 +14774,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Casual chat — short-circuit before plan execution
   const CASUAL_CHAT_RE = /^(yo|hey|bro|man|dude)\b|^what do you think(\s+about this)?$|^is that bad\??$|^risky\??$|^why$|^explain this$|^can you help\??$/i;
   if (CASUAL_CHAT_RE.test(prompt.trim()) && !hasAnyAddress(prompt)) {
-    const lastScan = extractLastTokenScanFromHistory(body.history);
+    const cached = sessionMem.lastToken?.cachedEvidence
+      ?? sessionMem.lastToken?.normalizedEvidence
+      ?? body.clientContext?.lastToken?.cachedEvidence
+      ?? null;
     return {
       feature: "clark-ai",
       chain,
       mode: "casual_help",
       intent: "casual",
-      toolsUsed: [],
-      analysis: buildCasualContextualReply(prompt, lastScan?.scanText ?? null, historyContext),
+      toolsUsed: cached ? ["memory"] : [],
+      analysis: buildCasualContextualReply(prompt, cached),
     };
   }
 
