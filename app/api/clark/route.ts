@@ -117,6 +117,7 @@ import {
   resolveSlashCommandMemoryTarget,
   type ClarkIntentLockAudit,
   type TokenScanEvidence,
+  canonicalTokenRiskFromEvidence,
   getClarkAddressRouteHint,
   isWalletFollowupPrompt,
   classifyWalletFollowupKind,
@@ -11713,6 +11714,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }).catch(() => null);
     const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
     const solData = solJson && typeof solJson === "object" ? (solJson as Record<string, unknown>) : null;
+    const solRiskScore = typeof solData?.riskScore === "number" ? solData.riskScore : null;
+    const solRiskLabel = typeof solData?.riskLabel === "string" ? solData.riskLabel : null;
+    const solRiskScoreType = solData?.riskScoreType === "safety_score" ? "safety_score" as const : (solRiskScore != null ? "risk_score" as const : null);
+    const solRiskScoreSource = typeof solData?.riskScoreSource === "string" ? solData.riskScoreSource : null;
+    const solRiskInputsUsed = Array.isArray(solData?.riskInputsUsed) ? solData.riskInputsUsed.filter((x): x is string => typeof x === "string") : null;
     // MERGED-RESULT-WRONG-NESTING FIX, DISCLOSED (Clark full-system audit, requested: "audit the
     // whole clark system"): live reproduction — "is this token safe" on a real, live pump.fun mint
     // answered "Mint authority: revoked or unresolved" / "Creator/fee payer: Not resolved" / "Solana
@@ -11781,6 +11787,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             likelyCreator,
             rugHistoryCount: typeof rugHistoryRaw === "number" ? rugHistoryRaw : null,
             usable: hasUsableData,
+            riskScore: solRiskScore,
+            riskLabel: solRiskLabel,
+            riskScoreType: solRiskScoreType,
+            riskScoreSource: solRiskScoreSource,
+            riskInputsUsed: solRiskInputsUsed,
           }), solanaAnalystTopic, "Solana").split("\n")
       : renderClarkTokenVerdictForSolana({
           tokenAddress,
@@ -11803,6 +11814,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           creatorConfidenceTier: (creatorConfidence?.tier as string) ?? null,
           deployerRugHistoryCount: typeof rugHistoryRaw === "number" ? rugHistoryRaw : null,
           usableEvidence: hasUsableData,
+          riskScore: solRiskScore,
+          riskLabel: solRiskLabel,
+          riskScoreType: solRiskScoreType,
+          riskScoreSource: solRiskScoreSource,
+          riskInputsUsed: solRiskInputsUsed,
         }).split("\n");
     // SOLANA-MEMORY-BLIND FIX, DISCLOSED (Clark full-system audit, requested: "improve memory"):
     // this answer resolved real Solana evidence (mint/freeze authority, Helius creator trace) but
@@ -12962,6 +12978,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       riskScore: typeof t.riskScore === "number" ? t.riskScore : null,
       riskLabel: typeof t.riskLabel === "string" ? t.riskLabel : null,
       riskScoreType: t.riskScoreType === "safety_score" ? "safety_score" : "risk_score",
+      riskScoreSource: typeof t.riskScoreSource === "string" ? t.riskScoreSource : null,
+      riskInputsUsed: Array.isArray(t.riskInputsUsed) ? t.riskInputsUsed.filter((x): x is string => typeof x === "string") : null,
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
         change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : (typeof tSectMarket.change24h === "number" ? tSectMarket.change24h : null),
@@ -14792,7 +14810,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         if (!ev) return `${label}\nNo scan evidence available.`;
         const meta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
         const liq = ev.market?.liquidity != null ? `$${ev.market.liquidity.toLocaleString()}` : "n/a";
-        const score = ev.riskScore != null ? String(ev.riskScore) : "n/a";
+        const risk = canonicalTokenRiskFromEvidence(ev);
+        const score = risk ? `${risk.score}/100 — ${risk.label}` : "n/a";
         return [label, `  Verdict: ${meta.verdict}`, `  Confidence: ${meta.confidence}`, `  Liquidity: ${liq}`, `  Score: ${score}`].join("\n");
       };
       return {

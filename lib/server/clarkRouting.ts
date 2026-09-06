@@ -4,9 +4,10 @@
 export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent } from "../clarkIntent.ts";
 import { isValidSolanaMintAddress } from "../solanaAddress.ts";
 import { classifyClarkMarketIntent } from "./clarkMarketIntent.ts";
-import { normalizeRiskScore } from "../riskScoreDirection.ts";
+import { coerceCanonicalRiskLabel, normalizeRiskScore, riskLabelFromCanonicalScore } from "../riskScoreDirection.ts";
 import { clarkTokenReadHeading } from "../clark/commandFormats.ts";
 import { toCanonical, canonicalLabelWithReason } from "../canonicalStatus.ts";
+import { TOKEN_SCANNER_RISK_SCORE_SOURCE } from "../tokenScannerPipelineAudit.ts";
 import {
   clarkPartialMustNotBecomeOpenCheck,
   composeTokenScannerPublicStatus,
@@ -3145,6 +3146,8 @@ export type TokenScanEvidence = {
   riskScore?: number | null;
   riskLabel?: string | null;
   riskScoreType?: 'risk_score' | 'safety_score' | null;
+  riskScoreSource?: string | null;
+  riskInputsUsed?: string[] | null;
   market?: {
     price?: number | null;
     change24h?: number | null;
@@ -3211,6 +3214,52 @@ export type TokenScanEvidence = {
     reason?: string | null;
   } | null;
 };
+
+/** Canonical Token Scanner risk as consumed by Clark — never re-scored here. */
+export type CanonicalTokenRisk = {
+  score: number;
+  label: string;
+  source: string;
+  inputsUsed: string[];
+};
+
+/**
+ * Consume Token Scanner's already-computed riskScore/riskLabel/riskScoreSource/riskInputsUsed.
+ * Clark must not independently re-score scanner risk or re-threshold a scanner label into a different one.
+ * Invert once only for legacy cached evidence that stored a safety_score (higher = safer).
+ */
+export function canonicalTokenRiskFromEvidence(
+  ev: Pick<TokenScanEvidence, "riskScore" | "riskLabel" | "riskScoreType" | "riskScoreSource" | "riskInputsUsed"> | null | undefined,
+): CanonicalTokenRisk | null {
+  if (!ev) return null;
+  const raw = ev.riskScore;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+
+  let score: number;
+  if (ev.riskScoreType === "safety_score") {
+    const inverted = normalizeRiskScore({
+      rawScore: raw,
+      rawScoreType: "safety_score",
+      source: "clark_legacy_safety_score_consume",
+      displayLocation: "clark_canonical_token_risk",
+    });
+    if (inverted.riskScore0To100 == null) return null;
+    score = inverted.riskScore0To100;
+  } else {
+    score = Math.max(0, Math.min(100, Math.round(raw)));
+  }
+
+  const scannerLabel = typeof ev.riskLabel === "string" ? ev.riskLabel.trim() : "";
+  const coerced = coerceCanonicalRiskLabel(scannerLabel);
+  const label = coerced ?? (scannerLabel || riskLabelFromCanonicalScore(score) || "Unavailable: risk label was not returned");
+  const source = typeof ev.riskScoreSource === "string" && ev.riskScoreSource.trim()
+    ? ev.riskScoreSource.trim()
+    : TOKEN_SCANNER_RISK_SCORE_SOURCE;
+  const inputsUsed = Array.isArray(ev.riskInputsUsed)
+    ? ev.riskInputsUsed.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    : [];
+  return { score, label, source, inputsUsed };
+}
 
 // Returns true only if at least one useful evidence section is present —
 // token identity, market data, holders, LP control, security/honeypot, or
@@ -3701,7 +3750,7 @@ export function renderClarkTokenVerdict(opts: {
   top1Pct: number | null;
   top10Pct: number | null;
   lpStatusLabel: string; // pre-formatted, chain-appropriate LP status text
-  canonicalRisk?: { score: number; label: string } | null;
+  canonicalRisk?: { score: number; label: string; source?: string; inputsUsed?: string[] } | null;
   evmFields?: { ownershipStatus: string; proxyStatus: string; mintability: string; honeypotTaxResult: string } | null;
   // SOLANA-VOCABULARY FIX, DISCLOSED (hard rule: "Do NOT use EVM wording for Solana-only checks —
   // no proxy, ownership renounced, EVM deployer, or EVM honeypot unless the Solana module actually
@@ -3762,6 +3811,10 @@ export function renderClarkTokenVerdict(opts: {
   ];
   if (opts.canonicalRisk) {
     lines.push(`- Risk Score: ${opts.canonicalRisk.score}/100 — ${opts.canonicalRisk.label} (higher = riskier)`);
+    if (opts.canonicalRisk.source) lines.push(`- Risk score source: ${opts.canonicalRisk.source}`);
+    if (opts.canonicalRisk.inputsUsed && opts.canonicalRisk.inputsUsed.length > 0) {
+      lines.push(`- Risk inputs used: ${opts.canonicalRisk.inputsUsed.join(", ")}`);
+    }
   }
   if (opts.evmFields) {
     lines.push(
@@ -3809,12 +3862,7 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
       : (ev.token?.symbol ?? null),
     tokenAddress,
   );
-  const canonicalRisk = normalizeRiskScore({
-    rawScore: ev.riskScore,
-    rawScoreType: ev.riskScoreType ?? 'risk_score',
-    source: 'clark_token_answer',
-    displayLocation: 'clark_token_read',
-  });
+  const canonicalRisk = canonicalTokenRiskFromEvidence(ev);
   return renderClarkTokenVerdict({
     symbolOrName: heading,
     chainLabel,
@@ -3829,8 +3877,8 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
     top1Pct: ev.holders?.top1 ?? null,
     top10Pct: ev.holders?.top10 ?? null,
     lpStatusLabel: lpStatusLine(ev).replace(/^LP proof:\s*/, ""),
-    canonicalRisk: canonicalRisk.riskScore0To100 != null && canonicalRisk.riskLabel
-      ? { score: canonicalRisk.riskScore0To100, label: canonicalRisk.riskLabel }
+    canonicalRisk: canonicalRisk
+      ? { score: canonicalRisk.score, label: canonicalRisk.label, source: canonicalRisk.source, inputsUsed: canonicalRisk.inputsUsed }
       : null,
     evmFields: {
       ownershipStatus: ev.security?.ownerRenounced === true ? "Renounced" : ev.security?.ownerRenounced === false ? "Active (not renounced)" : composeTokenScannerPublicStatus("unavailable", "ownership status was not returned"),
@@ -3870,6 +3918,11 @@ export function renderClarkTokenVerdictForSolana(params: {
   creatorConfidenceTier: string | null;
   deployerRugHistoryCount: number | null;
   usableEvidence: boolean;
+  riskScore?: number | null;
+  riskLabel?: string | null;
+  riskScoreType?: 'risk_score' | 'safety_score' | null;
+  riskScoreSource?: string | null;
+  riskInputsUsed?: string[] | null;
 }): string {
   const input: ClarkTokenVerdictInput = {
     honeypot: null, // Solana has no honeypot simulation — never asserted (SOLANA_UNSUPPORTED_CHECKS)
@@ -3914,6 +3967,16 @@ export function renderClarkTokenVerdictForSolana(params: {
     lpStatusLabel: params.primaryDexLabel
       ? `Pool found on ${params.primaryDexLabel}${params.primaryPoolAddress ? ` (${params.primaryPoolAddress})` : ""} — LP lock/burn proof is not supported on Solana yet.`
       : "No pool identified — LP lock/burn proof is not supported on Solana yet.",
+    canonicalRisk: (() => {
+      const risk = canonicalTokenRiskFromEvidence({
+        riskScore: params.riskScore,
+        riskLabel: params.riskLabel,
+        riskScoreType: params.riskScoreType,
+        riskScoreSource: params.riskScoreSource,
+        riskInputsUsed: params.riskInputsUsed,
+      });
+      return risk ? { score: risk.score, label: risk.label, source: risk.source, inputsUsed: risk.inputsUsed } : null;
+    })(),
     solanaFields: {
       mintAuthority: !params.mintAuthorityResolved ? "Unresolved" : params.mintAuthority ? `${params.mintAuthority} (active — supply can be increased)` : "Revoked",
       freezeAuthority: !params.freezeAuthorityResolved ? "Unresolved" : params.freezeAuthority ? `${params.freezeAuthority} (active — accounts can be frozen)` : "Revoked",
@@ -3983,6 +4046,11 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
     ? clarkPartialMustNotBecomeOpenCheck(verdict === "Partial" ? "Partial Evidence" : "Unavailable", "insufficient evidence for a decisive token verdict")
     : verdict;
   lines.push(`- Verdict: ${publicVerdict}`);
+  const canonicalRisk = canonicalTokenRiskFromEvidence(ev);
+  if (canonicalRisk) {
+    lines.push(`- Risk Score: ${canonicalRisk.score}/100 — ${canonicalRisk.label} (higher = riskier)`);
+    lines.push(`- Risk score source: ${canonicalRisk.source}`);
+  }
   if (verdict === "Unavailable" || verdict === "Partial") {
     const reasons: string[] = [];
     if (!sec || sec.honeypot == null) reasons.push("Security simulation unavailable");
@@ -4853,6 +4921,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   const lp = ev.lpControl;
 
   const verdict = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev)).verdict;
+  const canonicalRisk = canonicalTokenRiskFromEvidence(ev);
 
   // Main risk signals: the confirmed evidence that actually drives the verdict —
   // never inferred, never present unless the underlying field has a real value.
@@ -4899,6 +4968,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
     `RISK EXPLANATION — ${sym} (${chain})`,
     "",
     `Verdict: ${verdict}`,
+    ...(canonicalRisk ? [`Token Scanner Risk Score: ${canonicalRisk.score}/100 — ${canonicalRisk.label} (higher = riskier)`, `Risk score source: ${canonicalRisk.source}`] : []),
     ...(h?.top10 != null ? [`Holder evidence: top-10 holders control ${h.top10.toFixed(1)}% of supply.`] : []),
     "",
   ];

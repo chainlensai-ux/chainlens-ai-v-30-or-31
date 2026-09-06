@@ -2,9 +2,9 @@
 // Answers stay short: Verdict, Key reasons, Verified evidence, Missing/unsupported, Next action.
 // Missing data is never treated as safe. This is a risk read, not financial advice.
 
-import { normalizeRiskScore, type CanonicalRiskLabel } from "../riskScoreDirection.ts"
+import { coerceCanonicalRiskLabel, type CanonicalRiskLabel } from "../riskScoreDirection.ts"
 import type { TokenScanEvidence } from "./clarkRouting.ts"
-import { computeClarkTokenVerdictCore, buildClarkTokenVerdictInputFromEvidence, hasUsableTokenEvidence } from "./clarkRouting.ts"
+import { computeClarkTokenVerdictCore, buildClarkTokenVerdictInputFromEvidence, hasUsableTokenEvidence, canonicalTokenRiskFromEvidence } from "./clarkRouting.ts"
 import { rewriteForbiddenStatusVocab } from "../tokenScannerPublicStatus.ts"
 
 export type ClarkTokenAnalystTopic =
@@ -35,6 +35,8 @@ export type ClarkTokenAnalystSnapshot = {
   address: string | null
   riskScore: number | null
   riskLabel: CanonicalRiskLabel | null
+  riskScoreSource: string | null
+  riskInputsUsed: string[]
   liquidityUsd: number | null
   volume24h: number | null
   change24h: number | null
@@ -159,12 +161,7 @@ export function classifyClarkTokenAnalystTopic(prompt: string): ClarkTokenAnalys
 
 export function buildClarkTokenAnalystSnapshot(ev: TokenScanEvidence, chainLabel = "Base"): ClarkTokenAnalystSnapshot {
   const family = chainFamily(ev.chain ?? chainLabel)
-  const risk = normalizeRiskScore({
-    rawScore: ev.riskScore,
-    rawScoreType: ev.riskScoreType ?? "risk_score",
-    source: "clark_token_analyst",
-    displayLocation: "clark_token_analyst",
-  })
+  const risk = canonicalTokenRiskFromEvidence(ev)
   const sim = ev.tradingSimulation
   const rug = ev.deployerProfile && typeof ev.deployerProfile === "object"
     ? (ev.deployerProfile as Record<string, unknown>).rugHistory
@@ -185,8 +182,10 @@ export function buildClarkTokenAnalystSnapshot(ev: TokenScanEvidence, chainLabel
     family,
     symbol: String(ev.token?.symbol ?? "?").toUpperCase(),
     address: ev.token?.address ?? null,
-    riskScore: risk.riskScore0To100,
-    riskLabel: risk.riskLabel,
+    riskScore: risk?.score ?? null,
+    riskLabel: coerceCanonicalRiskLabel(risk?.label) ?? coerceCanonicalRiskLabel(ev.riskLabel),
+    riskScoreSource: risk?.source ?? null,
+    riskInputsUsed: risk?.inputsUsed ?? [],
     liquidityUsd: ev.market?.liquidity ?? null,
     volume24h: ev.market?.volume24h ?? null,
     change24h: ev.market?.change24h ?? null,
@@ -537,6 +536,11 @@ export function tokenScanEvidenceFromSolanaScan(input: {
   likelyCreator?: string | null
   rugHistoryCount?: number | null
   usable?: boolean
+  riskScore?: number | null
+  riskLabel?: string | null
+  riskScoreType?: "risk_score" | "safety_score" | null
+  riskScoreSource?: string | null
+  riskInputsUsed?: string[] | null
 }): TokenScanEvidence {
   const mintResolved = input.mintAuthorityResolved === true
   const freezeResolved = input.freezeAuthorityResolved === true
@@ -544,6 +548,11 @@ export function tokenScanEvidenceFromSolanaScan(input: {
     ok: input.usable !== false,
     token: { name: input.tokenName ?? null, symbol: input.tokenSymbol ?? null, address: input.tokenAddress },
     chain: "solana",
+    riskScore: input.riskScore ?? null,
+    riskLabel: input.riskLabel ?? null,
+    riskScoreType: input.riskScoreType ?? (input.riskScore != null ? "risk_score" : null),
+    riskScoreSource: input.riskScoreSource ?? null,
+    riskInputsUsed: input.riskInputsUsed ?? null,
     market: {
       price: null,
       change24h: null,
