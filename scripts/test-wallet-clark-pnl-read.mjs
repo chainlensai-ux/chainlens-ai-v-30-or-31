@@ -8,7 +8,14 @@ const route = fs.readFileSync('app/api/clark/route.ts', 'utf8')
 // buildWalletPnlRead reads estimatedPerformanceRead off the raw /api/wallet response and the
 // derived field is wired onto the Clark-facing wallet snapshot.
 assert.match(routing, /const rawEstimated = raw\.estimatedPerformanceRead && typeof raw\.estimatedPerformanceRead === 'object'/, 'buildWalletPnlRead reads estimatedPerformanceRead from the raw /api/wallet response')
-assert.match(route, /walletPnlRead: buildWalletPnlRead\(rawWallet\),/, 'normalizeWalletSnapshotEvidence attaches walletPnlRead to the Clark wallet snapshot')
+// CLARK/CORTEX AUDIT, Item 1, DISCLOSED: normalizeWalletSnapshotEvidence (built for the deleted V1
+// /api/wallet response shape) was removed once every call site was rewired to
+// normalizeCanonicalWalletSnapshotEvidence(), which reads the real runWalletScan() canonical result
+// instead. walletPnlRead stays honestly null there (the legacy V1 fields it needs don't exist on the
+// canonical shape) — canonicalPnl carries the real, unmodified PnL-lane read instead.
+assert.match(route, /function normalizeCanonicalWalletSnapshotEvidence\(result: CanonicalWalletScanResult\)/, 'the canonical wallet snapshot adapter reads the real runWalletScan() result')
+assert.ok(!/function normalizeWalletSnapshotEvidence\(/.test(route), 'the dead V1-shaped wallet snapshot normalizer has been removed, not left as unreachable code')
+assert.match(route, /canonicalPnl:\s*\{/, 'the canonical adapter attaches a real, unmodified canonicalPnl read')
 assert.match(route, /walletPnlRead\?: ClarkWalletPnlRead \| null;/, 'ClarkToolEvidence walletSnapshot type carries walletPnlRead')
 
 // 2. Clark wallet context includes walletPnlRead when /api/wallet returns publicSamplePerformanceRead.

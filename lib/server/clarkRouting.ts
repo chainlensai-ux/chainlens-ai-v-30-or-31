@@ -2720,6 +2720,10 @@ export type ClarkFollowupMarketItem = {
   name?: string | null;
   scanTarget?: string | null;
   tokenAddress?: string | null;
+  // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/5 — hardcoded chain:"base" assumptions):
+  // the real chain this ranked item belongs to. Never guessed downstream — a caller building a
+  // forcedTokenScan from a resolved rank must use THIS field, never assume Base.
+  chain?: string | null;
 };
 
 export type ClarkFollowupAppContext = {
@@ -2739,6 +2743,9 @@ export type ClarkFollowupCommandResult = {
   address: string | null;
   ambiguousMatches: Array<{ rank: number; symbol: string; name: string | null }>;
   omittedReason: string | null;
+  // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/5): the resolved item's real chain, when
+  // one was found — carried straight from the matched ClarkFollowupMarketItem, never guessed.
+  chain: string | null;
 };
 
 const ORDINAL_WORD_MAP: Record<string, number> = {
@@ -2800,7 +2807,7 @@ export function resolveClarkFollowupCommand(
   const t = String(prompt ?? "").trim();
   const empty: ClarkFollowupCommandResult = {
     intent: "unknown", resolvedFrom: "none", rank: null, symbol: null, address: null,
-    ambiguousMatches: [], omittedReason: null,
+    ambiguousMatches: [], omittedReason: null, chain: null,
   };
   if (!t) return empty;
 
@@ -2817,8 +2824,8 @@ export function resolveClarkFollowupCommand(
     const isWalletRoute = /wallet/.test(routeTag);
     const isTokenRoute = /token|pump/.test(routeTag);
     if (isWalletRoute && ac.walletSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
-    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
-    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context", chain: ac.tokenSummary.chain ?? null };
+    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context", chain: ac.tokenSummary.chain ?? null };
     if (ac.walletSummary?.address && !ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
     return { ...empty, omittedReason: "ambiguous_scan_target" };
   }
@@ -2835,8 +2842,8 @@ export function resolveClarkFollowupCommand(
     const match = list.find((m) => m.rank === riskRank) ?? null;
     if (!match) return { ...empty, intent: "explain_rank_risk", rank: riskRank, omittedReason: "rank_not_in_list" };
     const addr = match.scanTarget ?? match.tokenAddress ?? null;
-    if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank" };
-    return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource };
+    if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null };
+    return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null };
   }
 
   const momentumRankMatch = t.match(EXPLAIN_RANK_MOMENTUM_RE);
@@ -2849,6 +2856,7 @@ export function resolveClarkFollowupCommand(
       symbol: match.symbol ?? null, address: match.scanTarget ?? match.tokenAddress ?? null,
       resolvedFrom: listSource,
       omittedReason: match.scanTarget || match.tokenAddress ? null : "no_scan_target_for_rank",
+      chain: match.chain ?? null,
     };
   }
 
@@ -2857,8 +2865,8 @@ export function resolveClarkFollowupCommand(
     const isWalletRoute = /wallet/.test(routeTag);
     const isTokenRoute = /token/.test(routeTag);
     if (isWalletRoute && ac.walletSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
-    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
-    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context", chain: ac.tokenSummary.chain ?? null };
+    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context", chain: ac.tokenSummary.chain ?? null };
     if (ac.walletSummary?.address && !ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
     return { ...empty, intent: "unknown", omittedReason: "ambiguous_rescan_target" };
   }
@@ -2871,8 +2879,8 @@ export function resolveClarkFollowupCommand(
     const match = list.find((m) => m.rank === rank) ?? null;
     if (!match) return { ...empty, intent, rank, resolvedFrom: listSource, omittedReason: "rank_not_in_list" };
     const addr = match.scanTarget ?? match.tokenAddress ?? null;
-    if (!addr) return { ...empty, intent, rank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank" };
-    return { ...empty, intent, rank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource };
+    if (!addr) return { ...empty, intent, rank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank", chain: match.chain ?? null };
+    return { ...empty, intent, rank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource, chain: match.chain ?? null };
   }
 
   // 5. Symbol-based scan/check/open ("scan velvet", "check VELVET", "open O") — exact match only.
@@ -2887,8 +2895,8 @@ export function resolveClarkFollowupCommand(
     if (matches.length === 1) {
       const m = matches[0];
       const addr = m.scanTarget ?? m.tokenAddress ?? null;
-      if (!addr) return { ...empty, intent: "scan_symbol", symbol: rawSymbol, resolvedFrom: listSource, omittedReason: "no_scan_target_for_symbol" };
-      return { ...empty, intent: "scan_symbol", symbol: rawSymbol, address: addr, resolvedFrom: listSource };
+      if (!addr) return { ...empty, intent: "scan_symbol", symbol: rawSymbol, resolvedFrom: listSource, omittedReason: "no_scan_target_for_symbol", chain: m.chain ?? null };
+      return { ...empty, intent: "scan_symbol", symbol: rawSymbol, address: addr, resolvedFrom: listSource, chain: m.chain ?? null };
     }
     if (matches.length > 1) {
       return {

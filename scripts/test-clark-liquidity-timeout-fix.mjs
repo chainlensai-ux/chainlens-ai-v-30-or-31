@@ -72,7 +72,7 @@ console.log('\nSection 6: "Liquidity check AERO" and any other symbol/CA go thro
 {
   check('a bare EVM address is resolved directly, never round-tripped through /api/resolve unnecessarily', /if \(\/\^0x\[a-fA-F0-9\]\{40\}\$\/\.test\(sym\.trim\(\)\)\) return \{ address: sym\.trim\(\)/.test(routeSrc))
   check('a Solana mint is resolved directly too', /if \(isValidSolanaMintAddress\(sym\.trim\(\)\)\) return \{ address: sym\.trim\(\), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: "solana"/.test(routeSrc))
-  check('an ambiguous symbol (matches on more than one chain) asks the user instead of guessing', /return \{ address: "", name: sym, symbol: sym\.toUpperCase\(\), status: "ambiguous", matches: uniqueExact, matchesCount: uniqueExact\.length \}/.test(routeSrc))
+  check('an ambiguous symbol (matches on more than one chain) asks the user instead of guessing', /status: "ambiguous", matches: uniqueExact\.length \? uniqueExact : matches, matchesCount: matches\.length/.test(routeSrc))
   check('a timed-out resolve is reported honestly as timed_out, never silently treated as not_found', /status: "timed_out", matchesCount: 0/.test(routeSrc))
   check('liquidity_scan honestly rejects a chain Liquidity Safety does not cover instead of silently defaulting', /Liquidity Safety doesn't have full \$\{chainDisplayLabel\(chainForClarkTools\)\} support yet — it currently covers Base, Ethereum, Robinhood, and Solana\./.test(routeSrc))
 }

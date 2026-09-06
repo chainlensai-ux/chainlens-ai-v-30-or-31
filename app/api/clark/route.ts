@@ -21,7 +21,7 @@ import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayer
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
 import { getWalletFromV2 } from "@/lib/server/v2Adapters";
-import { runWalletScan } from "@/lib/server/walletScanOrchestrator";
+import { runWalletScan, type CanonicalWalletScanResult } from "@/lib/server/walletScanOrchestrator";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import {
   classifyClarkMarketIntent as classifyClarkCanonicalMarketIntent,
@@ -87,7 +87,6 @@ import {
   extractAllAddressesForRouting,
   isWalletComparePrompt,
   isWalletPnlFollowupPrompt,
-  buildWalletPnlRead,
   formatWalletPnlRead,
   type ClarkWalletPnlRead,
   type ClarkAction,
@@ -354,6 +353,10 @@ type ClarkSessionMemory = {
     lastScannedAt?: number;
     ts: number;
   } | null;
+  // LIST IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 5 — momentum/radar list identity): every
+  // item now carries its own real chain (never assumed Base) plus poolAddress when the source
+  // provided one; lastMomentumListId (below) is the generation identity every "scan N"/"open N"/
+  // "explain rank risk" follow-up must match against before trusting a rank number.
   lastMomentumList: Array<{
     rank: number;
     symbol: string;
@@ -363,7 +366,10 @@ type ClarkSessionMemory = {
     volume24h: number | null;
     change24h: number | null;
     tag: string | null;
+    chain: SupportedChain | "robinhood";
+    poolAddress: string | null;
   }>;
+  lastMomentumListId: string | null;
   lastMomentumTs: number;
   lastIntent: string | null;
   lastIntentTs: number;
@@ -463,7 +469,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
+    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumListId: null, lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -771,8 +777,13 @@ function buildCompactAppContext(mem: ClarkSessionMemory, body: ClarkRequestBody,
   return { text, chars: text.length, usedCachedContext: !evidence.tokenScan && !evidence.walletSnapshot && !evidence.devWallet }
 }
 
+// LIST IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 5 — momentum/radar list identity, reusing the
+// existing tickerSearchId design): every fresh momentum/radar list gets its own generation id.
+// "scan N"/"open N"/"explain rank risk" must resolve against THIS list's rank+chain+address, never a
+// bare rank number replayed against whatever list happens to be in memory when a stale request lands.
 function updateMemMomentum(mem: ClarkSessionMemory, items: ClarkSessionMemory['lastMomentumList']) {
   mem.lastMomentumList = items;
+  mem.lastMomentumListId = generateTickerSearchId();
   mem.lastMomentumTs = Date.now();
   mem.lastMomentumShownCount = 0;
   // A new movers list owns "scan 1". Stale ticker-picker numbered scans must not steal it.
@@ -884,6 +895,22 @@ function checkClarkLowCostRate(actor: string, planKey: string): ClarkRateResult 
 // ---------- Types ----------
 
 type SupportedChain = "base" | "ethereum" | "polygon" | "bnb";
+
+// CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3 — hardcoded chain:"base" assumptions in
+// scan_rank/rescan_current_token followups): maps a resolved follow-up command's real chain (from
+// resolveClarkFollowupCommand's ClarkFollowupCommandResult.chain, itself carried straight from the
+// matched momentum/radar list item — never re-guessed) onto Clark's local SupportedChain union.
+// Falls back to "base" ONLY when the value is missing or not one of this union's representable
+// values (e.g. "robinhood", which forcedTokenScan cannot carry yet) — never silently overwrites a
+// real, different resolved chain.
+function normalizeFollowupChain(chain: string | null | undefined): SupportedChain {
+  const c = String(chain ?? "").toLowerCase();
+  if (c === "eth" || c === "ethereum") return "ethereum";
+  if (c === "polygon") return "polygon";
+  if (c === "bnb") return "bnb";
+  if (c === "base") return "base";
+  return "base";
+}
 
 const CLARK_LIQ_CACHE_TTL_MS = 10 * 60 * 1000
 const clarkLiquidityResultCache = new Map<string, { exp: number; result: ClarkLiquidityCheckResult }>()
@@ -3259,6 +3286,9 @@ async function handleBaseRadarSnapshot(origin: string, prompt = "") {
     liquidity: t.liquidity != null ? Number(t.liquidity) : null,
     volume24h: t.volume != null ? Number(t.volume) : null,
     change24h: t.change24h != null ? Number(t.change24h) : null,
+    // handleBaseRadarSnapshot is genuinely Base-only by construction (filters ch === 'base' above).
+    chain: "base" as const,
+    poolAddress: null as string | null,
     tag: (() => {
       const liqNum = t.liquidity != null ? Number(t.liquidity) : null;
       const volNum = t.volume != null ? Number(t.volume) : null;
@@ -3403,14 +3433,25 @@ function inferAssetLine(userContent: string, isDevWalletMode: boolean): string {
 }
 
 function buildWalletAnalysisFallback(walletData: unknown, address: string): string {
-  const w = walletData as Record<string, unknown>;
-  const holdings = Array.isArray(w.holdings) ? w.holdings.length : 0;
-  const totalValue = typeof w.totalValue === "number" ? formatUsdShort(w.totalValue) : "n/a";
+  const w = walletData as (NonNullable<ClarkToolEvidence["walletSnapshot"]> | Record<string, unknown>);
+  const holdingsTop10 = Array.isArray((w as Record<string, unknown>).holdingsTop10) ? (w as Record<string, unknown>).holdingsTop10 as unknown[] : null;
+  const holdings = holdingsTop10 ? holdingsTop10.length : (Array.isArray((w as Record<string, unknown>).holdings) ? ((w as Record<string, unknown>).holdings as unknown[]).length : 0);
+  const totalValueRaw = (w as Record<string, unknown>).totalValue;
+  const totalValue = typeof totalValueRaw === "number" ? formatUsdShort(totalValueRaw) : "n/a";
+  // CANONICAL PNL, DISCLOSED (Clark/CORTEX audit, Item 11 — "unavailable PnL != $0"): read the real
+  // canonicalPnl field when present rather than defaulting to any invented value; a pnlStatus of
+  // 'unavailable'/'unsupported' is stated as such, never shown as $0.
+  const canonicalPnl = (w as Record<string, unknown>).canonicalPnl as { pnlStatus?: string; realizedPnlUsd?: number | null } | null | undefined;
+  const pnlLine = canonicalPnl
+    ? (canonicalPnl.pnlStatus === "available" && canonicalPnl.realizedPnlUsd != null
+      ? `Realized PnL: ${formatUsdShort(canonicalPnl.realizedPnlUsd)}`
+      : `Realized PnL: unavailable (${canonicalPnl.pnlStatus ?? "unknown"})`)
+    : "Realized PnL: not read in this pass";
   return buildStructuredVerdict(
     "SCAN DEEPER",
     "Low",
     `Wallet ${address} was detected and basic portfolio data is available.`,
-    [`Wallet recognized on Base-compatible flow`, `Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`],
+    [`Holdings detected: ${holdings}`, `Estimated total value: ${totalValue}`, pnlLine],
     ["Behavioral and counterpart risk requires deeper scanner context.", "Single-pass wallet data is not enough for a strong trust call."],
     "Run Wallet Scanner for deeper behavior and transfer-risk analysis."
   );
@@ -3522,33 +3563,35 @@ function formatInt(value: number | null | undefined): string {
   return value.toLocaleString("en-US");
 }
 
-function normalizeWalletSnapshotEvidence(rawWallet: Record<string, unknown>, address: string): NonNullable<ClarkToolEvidence["walletSnapshot"]> {
-  const holdings = Array.isArray(rawWallet.holdings) ? (rawWallet.holdings as Array<Record<string, unknown>>) : [];
-  const totalValue = typeof rawWallet.totalValue === "number" ? rawWallet.totalValue : 0;
-  const ranked = [...holdings]
-    .map((h) => ({
-      symbol: String(h.symbol ?? "?"),
-      value: typeof h.value === "number" ? h.value : 0,
-      balance: typeof h.balance === "number" ? h.balance : 0,
-    }))
+// CANONICAL WALLET SNAPSHOT ADAPTER, DISCLOSED (Clark/CORTEX audit, Item 1 — "wallet route removed"
+// dead stub): the old normalizeWalletSnapshotEvidence() this function replaces was built for the
+// deleted V1 /api/wallet response shape (walletTradeStatsSummary/tradeIntelligence — see
+// buildWalletPnlRead's own header) and has been removed now that every call site that used to feed
+// it a stubbed `{ok:false, reason:"wallet route removed"}` object has been rewired here instead.
+// This adapter reads the REAL
+// canonical CanonicalWalletScanResult (runWalletScan()/walletScanOrchestrator.ts — the same engine
+// buildClarkWalletReadResponse and the Wallet Scanner page itself use) instead. walletPnlRead stays
+// honestly null here (the legacy V1 fields it needs don't exist on the canonical shape) — canonicalPnl
+// carries the real, unmodified PnL-lane read instead, never re-derived or coerced to $0.
+function normalizeCanonicalWalletSnapshotEvidence(result: CanonicalWalletScanResult): NonNullable<ClarkToolEvidence["walletSnapshot"]> {
+  const ranked = [...result.holdings]
+    .map((h) => ({ symbol: h.symbol, value: h.valueUsd ?? 0, balance: 0 }))
     .sort((a, b) => b.value - a.value);
-
   const topHoldings = ranked.filter((h) => h.value > 1 && h.symbol !== "?").slice(0, 8);
   const hiddenHoldingsCount = Math.max(ranked.length - topHoldings.length, 0);
   const dustOrUnpricedHidden = ranked.some((h) => h.value <= 1 || h.symbol === "?");
   const stablecoinExposureUsd = ranked
     .filter((h) => /^(USDC|USDT|DAI|LUSD|USDE|USDBC|EURC)$/i.test(h.symbol))
     .reduce((sum, h) => sum + h.value, 0);
+  const totalValue = result.totalValueUsd ?? 0;
+  const txCount = result.activitySummary.uniqueTransactions;
   const hasHoldings = ranked.length > 0;
   const hasValue = totalValue > 0;
-  const txCount = typeof rawWallet.txCount === "number" ? rawWallet.txCount : null;
-  const walletAgeDays = typeof rawWallet.walletAgeDays === "number" ? rawWallet.walletAgeDays : null;
-  const hasTxMeta = txCount !== null || walletAgeDays !== null;
-  const dataQuality: "Complete" | "Partial" | "Limited" = hasHoldings && hasValue && hasTxMeta ? "Complete" : (hasHoldings || hasValue ? "Partial" : "Limited");
+  const dataQuality: "Complete" | "Partial" | "Limited" = hasHoldings && hasValue && txCount !== null ? "Complete" : (hasHoldings || hasValue ? "Partial" : "Limited");
 
   return {
     ok: true,
-    address,
+    address: result.wallet,
     totalValue,
     holdingsTop10: topHoldings,
     hiddenHoldingsCount,
@@ -3556,9 +3599,17 @@ function normalizeWalletSnapshotEvidence(rawWallet: Record<string, unknown>, add
     stablecoinExposureUsd,
     tokenCount: ranked.length,
     txCount,
-    walletAgeDays,
+    walletAgeDays: null,
     dataQuality,
-    walletPnlRead: buildWalletPnlRead(rawWallet),
+    walletPnlRead: null,
+    canonicalPnl: {
+      pnlStatus: result.pnlStatus,
+      realizedPnlUsd: result.realizedPnlUsd ?? null,
+      unrealizedPnlUsd: result.unrealizedPnlUsd ?? null,
+      verifiedCoveragePercent: result.verifiedCoveragePercent,
+      evmPnlLaneStatus: result.evmPnlLaneStatus,
+      robinhoodPnlLaneStatus: result.robinhoodPnlLaneStatus,
+    },
   };
 }
 
@@ -6039,6 +6090,19 @@ type ClarkToolEvidence = {
     errorSafeMessage?: string;
     walletProfile?: Record<string, unknown> | null;
     walletPnlRead?: ClarkWalletPnlRead | null;
+    // CANONICAL PNL, DISCLOSED (Clark/CORTEX audit, Item 1/13): the real, unmodified PnL-lane read
+    // from runWalletScan() — never re-derived, never blended, never coerced to $0 when unavailable.
+    // walletPnlRead above stays null when this field is present (the legacy V1 shape it was built
+    // for no longer exists — see normalizeCanonicalWalletSnapshotEvidence's own header) rather than
+    // force-fitting canonical data into a shape that would silently misrepresent it.
+    canonicalPnl?: {
+      pnlStatus: "available" | "partial" | "unavailable" | "unsupported";
+      realizedPnlUsd: number | null;
+      unrealizedPnlUsd: number | null;
+      verifiedCoveragePercent: number | null;
+      evmPnlLaneStatus: string;
+      robinhoodPnlLaneStatus: string;
+    } | null;
   };
   walletQuality?: {
     ok: boolean;
@@ -6276,17 +6340,37 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "wallet_get_snapshot") {
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        // /api/wallet was deleted (V1 engine migration) — no longer calling it; this call always
-        // 404'd, wasting a request every time. Stubbed directly instead.
-        const walletRes = { ok: false, reason: "wallet route removed" };
-        const w = {} as Record<string, unknown>;
-        const normalized = normalizeWalletSnapshotEvidence(w, address);
-        evidence.walletSnapshot = {
-          ...normalized,
-          ok: walletRes.ok && !w.error,
-          errorSafeMessage: walletRes.ok ? undefined : "Wallet scan has no signal in the checked window.",
-          walletProfile: (w.walletProfile as Record<string, unknown> | null | undefined) ?? null,
-        };
+        // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1 — dead "wallet route
+        // removed" stub): rewired to the same runWalletScan()/walletScanOrchestrator.ts engine
+        // buildClarkWalletReadResponse and the Wallet Scanner page itself use. Preview depth here —
+        // this tool answers fast "what's in this wallet" questions, not an explicit deep scan.
+        const canonicalResult = address
+          ? await runWalletScan({ walletAddress: address, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+            console.warn("[clark] wallet_get_snapshot orchestrator failed", { address, error: err instanceof Error ? err.message : String(err) });
+            return null;
+          })
+          : null;
+        if (!canonicalResult) {
+          evidence.walletSnapshot = {
+            ok: false,
+            address,
+            totalValue: 0,
+            holdingsTop10: [],
+            hiddenHoldingsCount: 0,
+            dustOrUnpricedHidden: false,
+            stablecoinExposureUsd: 0,
+            tokenCount: 0,
+            txCount: null,
+            walletAgeDays: null,
+            dataQuality: "Limited",
+            errorSafeMessage: address ? "The Wallet Scanner engine is temporarily unavailable for this address." : "No wallet address was provided.",
+            walletProfile: null,
+            walletPnlRead: null,
+            canonicalPnl: null,
+          };
+        } else {
+          evidence.walletSnapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
+        }
         resolvedAddress = address;
         continue;
       }
@@ -6294,12 +6378,29 @@ async function executeClarkToolPlan(input: {
       if (tool.name === "wallet_analyze_quality") {
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const context: ClarkContext = { walletScan: evidence.walletSnapshot ?? {} };
+        // NEVER-STUB-TO-LLM FIX, DISCLOSED (Clark/CORTEX audit, Item 1/13): wallet_analyze_quality
+        // used to build its LLM context from `evidence.walletSnapshot ?? {}` — an empty object
+        // whenever wallet_get_snapshot hadn't run or had failed, so the model was asked to "analyze"
+        // a wallet it was given zero real data about and would invent a verdict. Now requires a real,
+        // ok:true canonical snapshot before calling the LLM at all; otherwise returns the exact
+        // Wallet Scanner failure reason, never an invented fallback metric.
+        const snapshot = evidence.walletSnapshot;
+        if (!snapshot || !snapshot.ok) {
+          evidence.walletQuality = {
+            ok: false,
+            analysis: snapshot?.errorSafeMessage
+              ? `WALLET QUALITY — UNAVAILABLE\n\n${snapshot.errorSafeMessage}`
+              : "WALLET QUALITY — UNAVAILABLE\n\nNo canonical wallet snapshot was available for this address (wallet_get_snapshot must run first).",
+            errorSafeMessage: snapshot?.errorSafeMessage ?? "No canonical wallet snapshot available.",
+          };
+          continue;
+        }
+        const context: ClarkContext = { walletScan: snapshot };
         let analysis = "";
         try {
           analysis = await callAnthropic(`Analyze wallet ${address}. Use the standard Clark verdict format and include uncertainty if smart-money proof is missing.`, context);
         } catch {
-          analysis = buildWalletAnalysisFallback(evidence.walletSnapshot ?? {}, address);
+          analysis = buildWalletAnalysisFallback(snapshot, address);
         }
         evidence.walletQuality = { ok: true, analysis };
         continue;
@@ -7613,12 +7714,15 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
   const isBalanceQuestion = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(t);
   const isQualityQuestion = /\b(good wallet|worth following|smart money|copy trad|is this|analyze|review|verdict)\b/i.test(t);
 
-  // /api/wallet was deleted (V1 engine migration) — no longer calling it; this call always
-  // 404'd, wasting a request every time. Stubbed directly instead.
-  const walletData: { ok: false; reason: string } = { ok: false, reason: "wallet route removed" };
-  const ok = walletData.ok;
+  // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1 — dead "wallet route removed"
+  // stub): rewired to the same runWalletScan()/walletScanOrchestrator.ts engine every other Clark
+  // wallet path now uses — never a duplicate/legacy Wallet Scanner implementation, never fake PnL.
+  const canonicalResult = await runWalletScan({ walletAddress, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+    console.warn("[clark] handleWalletScanner orchestrator failed", { walletAddress, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  });
 
-  if (!ok || (walletData as Record<string, unknown>)?.error) {
+  if (!canonicalResult) {
     return {
       feature: "wallet-scanner",
       chain,
@@ -7627,26 +7731,13 @@ async function handleWalletScanner(body: ClarkRequestBody, origin: string, authH
     };
   }
 
-  const w = walletData as unknown as {
-    address: string;
-    totalValue: number;
-    holdings: Array<{ name: string; symbol: string; balance: number; value: number; chain: string | null; change24h: number | null }>;
-    txCount: number | null;
-    walletAgeDays: number | null;
-    firstTxDate: string | null;
-  };
+  const normalized = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
 
   // Balance / holdings question — return plain summary, no verdict format
   if (isBalanceQuestion && !isQualityQuestion) {
-    const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
-    const asksPnl = /\b(pnl|profit|loss|cost[-\s]?basis|realized|unrealized)\b/i.test(userPrompt)
-    const pnlLine = asksPnl
-      ? 'PnL/cost-basis history is not enabled in this release view. Current holdings and concentration are available.'
-      : 'History not included in this release view. Current holdings, concentration, and Base activity summary are available.'
-    return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${pnlLine}` };
+    return { feature: "wallet-scanner", chain, walletAddress, analysis: `${formatWalletBalanceSummary(normalized)}\n\n${formatWalletPnlRead(normalized.walletPnlRead ?? null)}` };
   }
 
-  const normalized = normalizeWalletSnapshotEvidence(w as unknown as Record<string, unknown>, walletAddress);
   const analysis = buildWalletQualityVerdict(normalized, walletAddress, userPrompt);
   return { feature: "wallet-scanner", chain, walletAddress, analysis };
 }
@@ -8556,6 +8647,9 @@ async function handleClarkRadarToolCall(
   updateMemMomentum(sessionMem, ranked.map((c) => ({
     rank: c.rank, symbol: c.symbol, name: c.name, address: c.address,
     liquidity: c.liquidityUsd, volume24h: c.volume24hUsd, change24h: null, tag: c.riskLabel,
+    // LIST IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 5): this radar scan's own resolved chain
+    // (which may be Robinhood, per the actions below) — never assumed Base.
+    chain, poolAddress: null,
   })));
   updateMemIntent(sessionMem, "base_radar");
 
@@ -9522,7 +9616,7 @@ async function answerClarkMarketOrPumping(input: {
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory): Promise<Record<string, unknown>> {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
+  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumListId: null, lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   // Chain priority: 1) explicit chain named in the prompt, 2) explicit UI chain param,
   // 3) selectedChain from session memory, 4) base default. Prompt wording must never
@@ -10285,7 +10379,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           : sessionMem.lastToken?.address ? { address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol, name: sessionMem.lastToken.name, chain: sessionMem.lastToken.chain } : null,
         marketContext: extractStructuredMarketItems(body).length ? { items: extractStructuredMarketItems(body) } : null,
       };
-      const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address }));
+      const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address, chain: m.chain }));
       const cmd = resolveClarkFollowupCommand(prompt, followupAc, memMomentumForFollowup);
       const cmdDebug = {
         clarkFollowupCommandIntent: cmd.intent,
@@ -10308,20 +10402,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
       if ((cmd.intent === "scan_rank" || cmd.intent === "scan_symbol" || cmd.intent === "open_rank") && cmd.address) {
         updateMemIntent(sessionMem, "token_analysis");
+        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3): the real chain the resolved
+        // rank/symbol item actually belongs to — never hardcoded "base" regardless of source.
+        const followupChain = normalizeFollowupChain(cmd.chain);
         const statusLabel = cmd.symbol ? String(cmd.symbol).toUpperCase() : "this token";
-        const statusMessage = `Scanning ${statusLabel} on Base…\nContract: ${cmd.address}`;
+        const statusMessage = `Scanning ${statusLabel} on ${chainDisplayLabel(followupChain)}…\nContract: ${cmd.address}`;
         const scanSource = cmd.resolvedFrom === "market_context" ? "market_context" : "session_momentum";
         // Forced token_scan: a market-mover follow-up scan must never fall through to
         // wallet_scan, even though "scan <address>" alone would otherwise classify as a
         // plain EOA wallet read.
         const scanResult: unknown = await handleClarkAI(
-          { ...body, prompt: `scan ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: "base" } },
+          { ...body, prompt: `scan ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: followupChain } },
           origin, authHeader, verifiedPlan, sessionMem,
         );
         const { actions: scanActions } = buildClarkContextActions(
-          { tokenSummary: { address: cmd.address, chain: "base", symbol: cmd.symbol ?? null }, promptActionsEnabled: true },
+          { tokenSummary: { address: cmd.address, chain: followupChain, symbol: cmd.symbol ?? null }, promptActionsEnabled: true },
           "token_analysis",
-          { scanTarget: cmd.address, symbol: cmd.symbol, chain: "base" },
+          { scanTarget: cmd.address, symbol: cmd.symbol, chain: followupChain },
         );
         const resultObj: Record<string, unknown> = (scanResult && typeof scanResult === "object") ? scanResult as Record<string, unknown> : {};
         return {
@@ -10429,14 +10526,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
 
       if (cmd.intent === "rescan_current_token" && cmd.address) {
+        // CHAIN IDENTITY, DISCLOSED (Clark/CORTEX audit, Item 2/3): rescan the token's own real
+        // chain (carried from the active tokenSummary context), never hardcoded "base".
+        const rescanChain = normalizeFollowupChain(cmd.chain);
         const scanResult: Record<string, unknown> = await handleClarkAI(
-          { ...body, prompt: `scan token ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: "base" } },
+          { ...body, prompt: `scan token ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: rescanChain } },
           origin, authHeader, verifiedPlan, sessionMem,
         );
         const { actions: rescanActions } = buildClarkContextActions(
-          { tokenSummary: { address: cmd.address, chain: "base" }, promptActionsEnabled: true },
+          { tokenSummary: { address: cmd.address, chain: rescanChain }, promptActionsEnabled: true },
           "token_analysis",
-          { scanTarget: cmd.address, chain: "base" },
+          { scanTarget: cmd.address, chain: rescanChain },
         );
         return {
           ...scanResult,
@@ -11049,6 +11149,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         volume24h: c.volume24h ?? null,
         change24h: c.change24h ?? null,
         tag: c.reasonTags?.[0] ?? null,
+        // getBaseMarketUniverse is genuinely Base-only by construction (not a hardcode bug) —
+        // real per-item pool address preserved for exact CA+chain rank actions (Item 5).
+        chain: "base",
+        poolAddress: c.poolAddress ?? null,
       })));
       sessionMem.lastMomentumShownCount = top.length;
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
@@ -11152,6 +11256,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         rank: it.rank, symbol: it.symbol ?? "?", name: it.name ?? null,
         address: it.scanTarget ?? it.tokenAddress ?? null,
         liquidity: it.liquidity ?? null, volume24h: it.volume24h ?? null, change24h: it.change24h ?? null, tag: it.tag ?? null,
+        // handleBasePumpMap is genuinely Base-only by construction (not a hardcode bug).
+        chain: "base", poolAddress: null,
       })));
       sessionMem.lastMomentumShownCount = basePumpItems.length;
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
@@ -14491,12 +14597,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (ensName) {
       const resolved = await resolveEnsOrBasename(ensName)
       if (resolved) {
-        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
-        const walletRes = { ok: false, reason: "wallet route removed" }
-        const w = {} as Record<string, unknown>
+        // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1): rewired from the dead
+        // "wallet route removed" stub (an always-false `walletRes.ok` guard that never executed) to
+        // the real runWalletScan()/walletScanOrchestrator.ts canonical engine.
+        const canonicalResult = await runWalletScan({ walletAddress: resolved, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+          console.warn("[clark] ENS wallet_analysis orchestrator failed", { resolved, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        })
         const resolvedNote = `Resolved wallet: ${ensName} → \`${resolved}\`\n\n`
-        if (walletRes.ok && Object.keys(w).length > 0) {
-          const snapshot = normalizeWalletSnapshotEvidence(w, resolved)
+        if (canonicalResult) {
+          const snapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult)
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + formatWalletBalanceSummary(snapshot) }
         }
         return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: resolvedNote + "I couldn't pull wallet data for that address right now. Try pasting the 0x address directly or use Wallet Scanner." }
@@ -14510,13 +14620,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         if (/\bshould\s+i\s+copy\b/i.test(prompt)) {
           return { feature: "clark-ai", chain, mode: "casual_help", intent: "casual", toolsUsed: [], analysis: "I can't tell you to copy-trade it. I can tell you whether it is worth monitoring.\n\nSend the wallet address and I'll run a WALLET READ — holdings, activity, concentration, and what's missing. No copy-trade call." };
         }
-        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
-        const walletRes = { ok: false, reason: "wallet route removed" };
-        const w = {} as Record<string, unknown>;
-        if (walletRes.ok && Object.keys(w).length > 0) {
-          const snapshot = normalizeWalletSnapshotEvidence(w, sessionMem.lastWallet.address);
+        // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1): rewired from the dead
+        // "wallet route removed" stub to the real canonical engine.
+        const canonicalResult = await runWalletScan({ walletAddress: sessionMem.lastWallet.address, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+          console.warn("[clark] memory wallet_analysis orchestrator failed", { address: sessionMem.lastWallet?.address, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+        if (canonicalResult) {
+          const snapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
           const analysis = buildWalletQualityVerdict(snapshot, sessionMem.lastWallet.address, prompt);
-          updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis, w);
+          updateMemWallet(sessionMem, sessionMem.lastWallet.address, sessionMem.lastWallet.ensName, analysis, canonicalResult as unknown as Record<string, unknown>);
           updateMemIntent(sessionMem, "wallet_analysis");
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
         }
@@ -14530,14 +14643,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [],
         analysis: buildLockedResponse('wallet_scan', 'ask what makes a wallet worth monitoring.') };
     }
-    // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
-    const walletRes = { ok: false, reason: "wallet route removed" };
-    const w = {} as Record<string, unknown>;
-    if (walletRes.ok && Object.keys(w).length > 0) {
-      const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
+    // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1): rewired from the dead
+    // "wallet route removed" stub to the real canonical engine.
+    const canonicalResult = await runWalletScan({ walletAddress: directIntent.address, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+      console.warn("[clark] directIntent wallet_analysis orchestrator failed", { address: directIntent.address, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    if (canonicalResult) {
+      const snapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
       const isBalanceQ = /\b(balance|balances|holdings?|portfolio|what(?:'s| is) in|how much|show me)\b/i.test(prompt);
       const analysis = isBalanceQ ? formatWalletBalanceSummary(snapshot) : buildWalletQualityVerdict(snapshot, directIntent.address, prompt);
-      updateMemWallet(sessionMem, directIntent.address, null, analysis, w);
+      updateMemWallet(sessionMem, directIntent.address, null, analysis, canonicalResult as unknown as Record<string, unknown>);
       updateMemIntent(sessionMem, "wallet_analysis");
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis };
     }
@@ -14563,11 +14679,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Hard guard: bare 0x address after recent wallet-context turn → wallet analysis
   if (directIntent.address && isBareAddressPrompt(prompt) && hasRecentWalletContext(body.history) && routeHint !== 'token') {
     console.log("[clark-intent] detected=wallet_analysis reason=history_wallet_context");
-    // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
-    const walletRes = { ok: false, reason: "wallet route removed" };
-    const w = {} as Record<string, unknown>;
-    if (walletRes.ok && Object.keys(w).length > 0) {
-      const snapshot = normalizeWalletSnapshotEvidence(w, directIntent.address);
+    // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1): rewired from the dead
+    // "wallet route removed" stub to the real canonical engine. This is the "bare 0x address after
+    // recent wallet history" path named explicitly in the audit.
+    const canonicalResult = await runWalletScan({ walletAddress: directIntent.address, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+      console.warn("[clark] bare-address wallet_analysis orchestrator failed", { address: directIntent.address, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    if (canonicalResult) {
+      const snapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: formatWalletBalanceSummary(snapshot) };
     }
     return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"], analysis: "I couldn't pull wallet data for that address right now. Try pasting again or use Wallet Scanner directly." };
@@ -14843,6 +14963,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         liquidity: c.liquidityUsd ?? null,
         volume24h: c.volume24h ?? null,
         change24h: c.change24h ?? null,
+        chain: "base" as const, poolAddress: c.poolAddress ?? null,
         tag: c.reasonTags?.[0] ?? null,
       })));
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
@@ -15228,6 +15349,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         liquidity: c.liquidityUsd ?? null,
         volume24h: c.volume24h ?? null,
         change24h: c.change24h ?? null,
+        chain: "base" as const, poolAddress: c.poolAddress ?? null,
         tag: c.reasonTags?.[0] ?? null,
       })));
       sessionMem.allowedRankScanUntil = Date.now() + 60_000;
@@ -15325,6 +15447,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           rank: it.rank, symbol: it.symbol ?? "?", name: it.name ?? null,
           address: it.scanTarget ?? it.tokenAddress ?? null,
           liquidity: it.liquidity ?? null, volume24h: it.volume24h ?? null, change24h: it.change24h ?? null, tag: it.tag ?? null,
+          chain: "base" as const, poolAddress: null,
         })));
         sessionMem.lastMomentumShownCount = basePumpItems.length;
         sessionMem.allowedRankScanUntil = Date.now() + 60_000;
@@ -15803,19 +15926,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!token) {
       // Bare address paste — token scan found nothing. Try wallet scan before giving up.
       if (isBareAddressPrompt(prompt) && resolvedAddress) {
-        // /api/wallet was deleted (V1 engine migration) — stubbed directly, no wasted 404 call.
-        const walletRes = { ok: false, reason: "wallet route removed" };
-        const w = {} as Record<string, unknown>;
-        if (walletRes.ok && Array.isArray(w.holdings) && (w.holdings as unknown[]).length > 0) {
-          const snapshot = normalizeWalletSnapshotEvidence(w, resolvedAddress);
+        // CANONICAL WALLET ENGINE, DISCLOSED (Clark/CORTEX audit, Item 1): rewired from the dead
+        // "wallet route removed" stub to the real canonical engine.
+        const canonicalResult = await runWalletScan({ walletAddress: resolvedAddress, chainMode: "all_supported", scanDepth: "preview", source: "clark" }).catch((err) => {
+          console.warn("[clark] bare-address-fallback wallet_analysis orchestrator failed", { address: resolvedAddress, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+        if (canonicalResult && canonicalResult.holdings.length > 0) {
+          const snapshot = normalizeCanonicalWalletSnapshotEvidence(canonicalResult);
           const walletAnalysis = buildWalletQualityVerdict(snapshot, resolvedAddress, prompt);
-          updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis, w);
+          updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis, canonicalResult as unknown as Record<string, unknown>);
           updateMemIntent(sessionMem, "wallet_analysis");
           return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [...toolsUsed, "wallet_get_snapshot"], analysis: walletAnalysis };
         }
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: plan.intent, toolsUsed,
-          analysis: "I could not confirm a Base match from current checks. To be explicit: 'scan token 0x...' for tokens or 'scan wallet 0x...' for wallets.",
+          analysis: "I could not confirm a token match from current checks, and the wallet scan found no holdings. To be explicit: 'scan token 0x...' for tokens or 'scan wallet 0x...' for wallets.",
         };
       }
       if (resolvedAddress) {
