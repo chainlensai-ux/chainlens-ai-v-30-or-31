@@ -426,10 +426,12 @@ type ClarkSessionMemory = {
   lastWhaleAlerts: Array<{
     rank: number;
     tokenSymbol: string | null;
+    tokenAddress: string | null;
     walletLabel: string | null;
     walletAddress: string | null;
     side: string | null;
     amountUsd: number | null;
+    usdStatus: "verified" | "estimated" | "zero" | "unavailable" | null;
     signalScore: string | null;
     occurredAt: string | null;
   }>;
@@ -8011,21 +8013,36 @@ function formatWhaleAlertForClark(a: WhaleAlertRow): string {
   const tok    = a.token_symbol || "Unknown token";
   const side   = a.side ?? "move";
   const audit = primaryWhaleAudit(a)
-  const amtUsd = (a.amount_usd != null && a.amount_usd > 0)
-    ? `$${a.amount_usd.toFixed(0)} ${audit?.finalUsdStatus === 'estimated' ? 'estimated' : 'verified'}`
+  const usdStatus = audit?.finalUsdStatus ?? "unavailable"
+  const amtUsd = (a.amount_usd != null && a.amount_usd > 0 && (usdStatus === "verified" || usdStatus === "estimated"))
+    ? `$${a.amount_usd.toFixed(0)} ${usdStatus}`
     : whaleUsdUnavailableCopy(audit);
   const amtTok = a.amount_token != null ? `${a.amount_token} ${tok}`.trim() : null;
   const amtStr = amtTok ? `${amtTok} (${amtUsd})` : amtUsd;
   const sig    = a.signal_score ?? "LOW";
   const extra  = [
     (a.legs ?? 1) > 1    ? `${a.legs} legs`       : null,
-    (a.repeats ?? 1) > 1 ? `×${a.repeats} in 5m`  : null,
-  ].filter(Boolean).join(" | ");
+    (a.repeats ?? 1) > 1 ? `${a.repeats} in 5m`  : null,
+  ].filter(Boolean).join(", ");
   const ctx = a.walletContext;
   const ctxStr = ctx
-    ? ` | behavior=${ctx.behaviorType} score=${ctx.behaviorScore} conf=${ctx.confidence}${ctx.repeatedTokens.length ? ` repeats=${ctx.repeatedTokens.slice(0, 2).join(',')}` : ''}${(ctx.verifiedUsdFlow7d ?? 0) > 0 ? ` flow7d=$${Math.round(ctx.verifiedUsdFlow7d!)}` : ''}`
+    ? `; behavior=${ctx.behaviorType} score=${ctx.behaviorScore} conf=${ctx.confidence}${ctx.repeatedTokens.length ? ` repeats=${ctx.repeatedTokens.slice(0, 2).join(',')}` : ''}${(ctx.verifiedUsdFlow7d ?? 0) > 0 ? ` flow7d=$${Math.round(ctx.verifiedUsdFlow7d!)}` : ''}`
     : '';
-  return `[${sig}] ${label} ${side} ${amtStr}${extra ? ` | ${extra}` : ""}${ctxStr}`;
+  return `[${sig}] ${label} ${side} ${amtStr}${extra ? `; ${extra}` : ""}${ctxStr}`;
+}
+
+function clarkWhaleScanTokenAction(tokenAddress: string | null | undefined): ClarkUiAction[] {
+  const addr = typeof tokenAddress === "string" && /^0x[a-fA-F0-9]{40}$/i.test(tokenAddress) ? tokenAddress : null;
+  if (!addr) return [];
+  return [{ label: "Scan Token", prompt: `scan ${addr} on base`, kind: "prompt" as const }];
+}
+
+function clarkWhaleTokenIdentity(alert: Pick<WhaleAlertRow, "token_address" | "focus_token_symbol" | "token_symbol">): { key: string; label: string; address: string | null } {
+  const address = typeof alert.token_address === "string" && /^0x[a-fA-F0-9]{40}$/i.test(alert.token_address)
+    ? alert.token_address.toLowerCase()
+    : null;
+  const label = alert.focus_token_symbol ?? alert.token_symbol ?? "unknown token";
+  return { key: address ?? label, label, address };
 }
 
 // Dedicated Anthropic call for whale alert analysis with a whale-specific system prompt.
@@ -8266,7 +8283,7 @@ async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody,
                 repeatedTokens.length ? `repeats: ${repeatedTokens.slice(0, 2).join(', ')}` : null,
                 (w.verifiedUsdFlow24h ?? 0) > 0 ? `~$${Math.round(w.verifiedUsdFlow24h!).toLocaleString()} 24h flow` : null,
                 `confidence: ${w.confidence}`,
-              ].filter(Boolean).join(' | ');
+              ].filter(Boolean).join('; ');
               lines.push(`  Signals: ${signals}`);
               lines.push(`  Next watch: ${w.nextWatch ?? 'watch for continued activity'}`);
             }
@@ -8843,6 +8860,7 @@ function normalizeClarkWhaleSide(s: string | null | undefined): "buy" | "sell" |
 function groupClarkWhaleFlow(alerts: readonly WhaleAlertRow[], wantSide: "buy" | "sell") {
   const groups = new Map<string, {
     token: string
+    tokenAddress: string | null
     txHashes: Set<string>
     usd: number
     pricedRows: number
@@ -8856,13 +8874,14 @@ function groupClarkWhaleFlow(alerts: readonly WhaleAlertRow[], wantSide: "buy" |
     if (side === "unknown") { unknownSide += 1; continue }
     if (side !== wantSide) continue
     matching += 1
-    const token = a.focus_token_symbol ?? a.token_symbol ?? "unknown token"
-    const g = groups.get(token) ?? { token, txHashes: new Set<string>(), usd: 0, pricedRows: 0, unpricedRows: 0, wallets: new Set<string>() }
+    const identity = clarkWhaleTokenIdentity(a)
+    const g = groups.get(identity.key) ?? { token: identity.label, tokenAddress: identity.address, txHashes: new Set<string>(), usd: 0, pricedRows: 0, unpricedRows: 0, wallets: new Set<string>() }
     g.txHashes.add(a.tx_hash || `row:${matching}`)
-    if (a.amount_usd != null && a.amount_usd > 0) { g.usd += a.amount_usd; g.pricedRows += 1 }
+    const audit = primaryWhaleAudit(a)
+    if (a.amount_usd != null && a.amount_usd > 0 && audit?.finalUsdStatus === "verified") { g.usd += a.amount_usd; g.pricedRows += 1 }
     else g.unpricedRows += 1
     if (a.wallet_address) g.wallets.add(a.wallet_address.toLowerCase())
-    groups.set(token, g)
+    groups.set(identity.key, g)
   }
   const ranked = [...groups.values()].sort((a, b) => b.usd - a.usd || b.txHashes.size - a.txHashes.size || a.token.localeCompare(b.token))
   return { ranked, matching, unknownSide }
@@ -8937,8 +8956,10 @@ function buildClarkWhaleFlowRows(alerts: readonly WhaleAlertRow[], side?: 'buy' 
         walletLabel: alert.wallet_label ?? 'Tracked wallet',
         walletAddress: alert.wallet_address ?? null,
         txCount: Math.max(1, alert.repeats ?? 1),
-        usdValue: alert.amount_usd ?? audit?.estimatedUsdValue ?? null,
-        usdStatus: audit?.finalUsdStatus ?? (alert.amount_usd != null ? 'verified' : 'unavailable'),
+        usdValue: audit?.finalUsdStatus === 'verified' || audit?.finalUsdStatus === 'estimated' || audit?.finalUsdStatus === 'zero'
+          ? (alert.amount_usd ?? audit?.estimatedUsdValue ?? null)
+          : null,
+        usdStatus: audit?.finalUsdStatus ?? 'unavailable',
         usdReason: priced ? null : (audit?.failureReason ?? 'price missing'),
         confidence,
         lastSeen: alert.occurred_at ?? null,
@@ -9001,25 +9022,42 @@ async function handleClarkWhaleToolCall(
   }
 
   if (toolIntent === "whale_alerts_explain_signal") {
-    if (sessionMem.lastWhaleAlerts.length === 0) {
+    const WHALE_RANK_TTL_MS = 15 * 60 * 1000;
+    if (sessionMem.lastWhaleAlerts.length === 0 || Date.now() - (sessionMem.lastWhaleAlertsTs ?? 0) > WHALE_RANK_TTL_MS) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: [],
-        analysis: "I don't have a recent Whale Alerts read to explain yet. Ask me for whale alerts first, then I can walk you through a signal.",
+        analysis: "I don't have a current Whale Alerts read to explain. Ask me for whale alerts first, then pick a number from that list.",
         clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["no_whale_memory"], clarkToolLatencyMs: Date.now() - t0,
         ui: { intentBadge: "Whale Alerts", actions: [{ label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const }] },
         clarkWhaleRoutingAudit: buildClarkWhaleRoutingAudit({
           prompt, intent: toolIntent, userPlan: verifiedPlan, eliteAccess: true, sourceUsed: "session_memory",
           feedLoaded: false, feedLastSyncedAt: rememberedSyncAt, walletsReturned: 0,
-          actionTaken: "request_feed_context", failureReason: "no_whale_memory",
+          actionTaken: "request_feed_context", failureReason: "stale_or_missing_whale_memory",
         }),
       };
     }
-    const rankMatch = prompt.match(/\bnumber\s+([1-9]\d{0,2})\b/i) ?? prompt.match(/\b([1-9]\d{0,2})\b/);
+    const rankMatch = prompt.match(/\bnumber\s+([1-9]\d{0,2})\b/i) ?? prompt.match(/\b(?:alert|rank|#)\s*([1-9]\d{0,2})\b/i);
     const ordinalWord = prompt.match(/\b(first|second|third|fourth|fifth)\b/i)?.[1]?.toLowerCase();
     const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+    const rankSpecified = Boolean(rankMatch || ordinalWord);
     const rank = ordinalWord ? ordinalMap[ordinalWord] : (rankMatch ? Number(rankMatch[1]) : 1);
-    const a = sessionMem.lastWhaleAlerts.find((x) => x.rank === rank) ?? sessionMem.lastWhaleAlerts[0];
-    const sourceRow = sessionMem.lastWhaleAlertsRows?.[Math.max(0, rank - 1)] ?? sessionMem.lastWhaleAlertsRows?.[0]
+    const a = sessionMem.lastWhaleAlerts.find((x) => x.rank === rank) ?? null;
+    if (!a) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+        analysis: rankSpecified
+          ? `I don't have whale alert #${rank} in the current feed. Ask for whale alerts again, then pick a number from that list.`
+          : "I don't have a ranked whale alert to explain. Ask me for whale alerts first.",
+        clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "cached" }, clarkEvidenceMissing: ["stale_whale_rank"], clarkToolLatencyMs: Date.now() - t0,
+        ui: { intentBadge: "Whale Alerts", actions: [{ label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const }] },
+        clarkWhaleRoutingAudit: buildClarkWhaleRoutingAudit({
+          prompt, intent: toolIntent, userPlan: verifiedPlan, eliteAccess: true, sourceUsed: "session_memory",
+          feedLoaded: true, feedLastSyncedAt: rememberedSyncAt, walletsReturned: 0,
+          actionTaken: "explain_alert", failureReason: "stale_whale_rank",
+        }),
+      };
+    }
+    const sourceRow = sessionMem.lastWhaleAlertsRows?.[Math.max(0, rank - 1)] ?? sessionMem.lastWhaleAlertsRows?.find((row) => (row.token_address ?? "").toLowerCase() === (a.tokenAddress ?? "").toLowerCase()) ?? null
     const sourceAudit = sourceRow ? primaryWhaleAudit(sourceRow) : null
     const explainRows = sourceRow ? buildClarkWhaleFlowRows([sourceRow]) : []
     const whaleIntelligence = buildClarkWhaleUi({
@@ -9028,8 +9066,13 @@ async function handleClarkWhaleToolCall(
       lastSyncedAt: rememberedSyncAt,
       flowRows: explainRows,
     })
+    const usdText = a.usdStatus === "verified" && a.amountUsd != null
+      ? fmtUsd(a.amountUsd)
+      : a.usdStatus === "estimated" && a.amountUsd != null
+        ? `${fmtUsd(a.amountUsd)} estimated`
+        : whaleUsdUnavailableCopy(sourceAudit)
     const lines = [
-      `${a.walletLabel ?? "Tracked wallet"} ${a.side ?? "moved"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : whaleUsdUnavailableCopy(sourceAudit)} of ${a.tokenSymbol ?? "an unknown token"}.`,
+      `${a.walletLabel ?? "Tracked wallet"} ${a.side ?? "moved"} ${usdText} of ${a.tokenSymbol ?? "an unknown token"}${a.tokenAddress ? ` (${a.tokenAddress})` : ""}.`,
       `Signal: ${a.signalScore ?? "unrated"}.`,
       "wallet_label is an internal ChainLens tracking label, not a verified public identity. I'd review token liquidity and holder concentration before trusting the move.",
     ];
@@ -9040,7 +9083,7 @@ async function handleClarkWhaleToolCall(
       ui: { intentBadge: "Whale Alerts", whaleIntelligence, actions: [
         { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const },
         { label: "Open FOMO Board", href: "/terminal/whale-alerts?tab=fomo", kind: "link" as const },
-        ...(a.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${a.tokenSymbol}`, kind: "prompt" as const }] : []),
+        ...clarkWhaleScanTokenAction(a.tokenAddress),
       ] },
       clarkWhaleRoutingAudit: buildClarkWhaleRoutingAudit({
         prompt, intent: toolIntent, userPlan: verifiedPlan, eliteAccess: true, sourceUsed: "session_memory",
@@ -9153,16 +9196,23 @@ async function handleClarkWhaleToolCall(
     };
   }
 
-  const ranked = rawAlerts.slice(0, 10).map((a, i) => ({
-    rank: i + 1,
-    tokenSymbol: a.focus_token_symbol ?? a.token_symbol ?? null,
-    walletLabel: a.wallet_label ?? null,
-    walletAddress: a.wallet_address ?? null,
-    side: a.side ?? null,
-    amountUsd: (a.amount_usd != null && a.amount_usd > 0) ? a.amount_usd : null,
-    signalScore: a.signal_score ?? null,
-    occurredAt: a.occurred_at ?? null,
-  }));
+  const ranked = rawAlerts.slice(0, 10).map((a, i) => {
+    const identity = clarkWhaleTokenIdentity(a)
+    const audit = primaryWhaleAudit(a)
+    const usdStatus = audit?.finalUsdStatus ?? "unavailable"
+    return {
+      rank: i + 1,
+      tokenSymbol: identity.label === "unknown token" ? null : identity.label,
+      tokenAddress: identity.address,
+      walletLabel: a.wallet_label ?? null,
+      walletAddress: a.wallet_address ?? null,
+      side: a.side ?? null,
+      amountUsd: (usdStatus === "verified" || usdStatus === "estimated") && a.amount_usd != null && a.amount_usd > 0 ? a.amount_usd : null,
+      usdStatus,
+      signalScore: a.signal_score ?? null,
+      occurredAt: a.occurred_at ?? null,
+    }
+  });
   sessionMem.lastWhaleAlerts = ranked;
   sessionMem.lastWhaleAlertsTs = Date.now();
   sessionMem.lastWhaleAlertsRows = rawAlerts;
@@ -9330,7 +9380,7 @@ async function handleClarkWhaleToolCall(
   if (buys.ranked.length > 0) {
     lines.push("", "Top accumulation:");
     buys.ranked.slice(0, 5).forEach((g, i) => {
-      const unavailableAudit = rawAlerts.find(row => (row.focus_token_symbol ?? row.token_symbol ?? 'unknown token') === g.token && row.amount_usd == null)
+      const unavailableAudit = rawAlerts.find(row => clarkWhaleTokenIdentity(row).key === (g.tokenAddress ?? g.token) && row.amount_usd == null)
       lines.push(`${i + 1}. ${g.token} — ${g.wallets.size} whale${g.wallets.size === 1 ? "" : "s"}, ${g.txHashes.size} tx, ${g.pricedRows > 0 ? `${fmtUsd(g.usd)} priced` : whaleUsdUnavailableCopy(primaryWhaleAudit(unavailableAudit ?? {}))}`);
     });
     if (buys.unknownSide > 0) {
@@ -9349,7 +9399,7 @@ async function handleClarkWhaleToolCall(
     ...(feed.syncRan ? [] : [{ label: "Sync Whale Feed", prompt: "sync more wallets", kind: "prompt" as const }]),
     { label: "What are whales buying", prompt: "what are whales buying", kind: "prompt" as const },
     { label: "What are whales selling", prompt: "what are whales selling", kind: "prompt" as const },
-    ...(top.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${top.tokenSymbol}`, kind: "prompt" as const }] : []),
+    ...clarkWhaleScanTokenAction(top.tokenAddress),
   ];
 
   return {

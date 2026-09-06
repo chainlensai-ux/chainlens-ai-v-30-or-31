@@ -24,6 +24,7 @@ const tests = [
   'test-clark-wallet-analyze-quality-guard.mjs',
   'test-clark-supported-chain-consistency.mjs',
   'test-clark-fast-preview-not-checked.mjs',
+  'test-clark-whale-fomo-audit.mjs',
   'test-base-radar-chain-strict.mjs',
   'test-base-radar-provider-fallback.mjs',
   'test-base-radar-auto-retry.mjs',
