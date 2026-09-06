@@ -64,6 +64,9 @@ export type BuildSellTimelineParams = {
   // 2 and the "router verified" upgrade to mechanism 1 both honestly produce nothing until a real
   // registry is supplied.
   knownDexRouterAddresses?: ReadonlySet<string>
+  // Transaction keys (`${chain}:${txHash}`) whose receipt was decoded as an exact,
+  // factory-validated swap. This is stronger evidence than a router allowlist hit.
+  verifiedSwapTxKeys?: ReadonlySet<string>
 }
 
 // TODO: HyperEVM DEX router registry required for real swap detection
@@ -77,6 +80,7 @@ function buildEntriesFromOutboundEvents(
   events: NormalizedEvent[],
   chainSelection: ChainSelectionResult,
   knownDexRouterAddresses: ReadonlySet<string>,
+  verifiedSwapTxKeys: ReadonlySet<string>,
   confidenceOverride?: 'low',
 ): SellTimelineEntry[] {
   const activeChains = activeChainSet(chainSelection)
@@ -90,8 +94,9 @@ function buildEntriesFromOutboundEvents(
     const sameTxEvents = byTx.get(event.txHash) ?? [event]
     const sameTxPaired = isSellShaped(event, sameTxEvents)
     const counterpartyIsKnownRouter = knownDexRouterAddresses.has(event.toAddress.toLowerCase())
+    const receiptProvesSwap = verifiedSwapTxKeys.has(`${event.chain}:${event.txHash.toLowerCase()}`)
 
-    const confidence = outboundConfidence(sameTxPaired, counterpartyIsKnownRouter)
+    const confidence = receiptProvesSwap ? 'high' : outboundConfidence(sameTxPaired, counterpartyIsKnownRouter)
     if (!confidence) continue // no real evidence this outbound transfer was a sell — never guessed
 
     entries.push({
@@ -155,6 +160,7 @@ function buildRecoveryReconstructedEntries(
   chainSelection: ChainSelectionResult,
   walletAddress: string,
   knownDexRouterAddresses: ReadonlySet<string>,
+  verifiedSwapTxKeys: ReadonlySet<string>,
 ): SellTimelineEntry[] {
   const recoveredRawEvents = recoveryPolicy.evaluation
     .filter((e) => e.recoveryTriggered)
@@ -163,7 +169,7 @@ function buildRecoveryReconstructedEntries(
   if (recoveredRawEvents.length === 0) return []
 
   const { normalizedEvents: recoveredNormalized } = normalizeEvents(recoveredRawEvents, walletAddress)
-  return buildEntriesFromOutboundEvents(recoveredNormalized, chainSelection, knownDexRouterAddresses, 'low')
+  return buildEntriesFromOutboundEvents(recoveredNormalized, chainSelection, knownDexRouterAddresses, verifiedSwapTxKeys, 'low')
 }
 
 // PURE. Assembles the full sellTimeline, deduping across mechanisms so a single real transfer
@@ -171,10 +177,11 @@ function buildRecoveryReconstructedEntries(
 // same-tx/transfer-out (base window) > recovery-reconstructed (historical, lowest confidence).
 export function buildSellTimeline(params: BuildSellTimelineParams): SellTimelineResult {
   const knownDexRouterAddresses = params.knownDexRouterAddresses ?? new Set<string>()
+  const verifiedSwapTxKeys = params.verifiedSwapTxKeys ?? new Set<string>()
 
   const bridgeExitEntries = buildBridgeExitEntries(params.bridgeTimeline, params.normalizedEvents, params.chainSelection)
-  const baseWindowEntries = buildEntriesFromOutboundEvents(params.normalizedEvents, params.chainSelection, knownDexRouterAddresses)
-  const recoveryEntries = buildRecoveryReconstructedEntries(params.recoveryPolicy, params.chainSelection, params.walletAddress, knownDexRouterAddresses)
+  const baseWindowEntries = buildEntriesFromOutboundEvents(params.normalizedEvents, params.chainSelection, knownDexRouterAddresses, verifiedSwapTxKeys)
+  const recoveryEntries = buildRecoveryReconstructedEntries(params.recoveryPolicy, params.chainSelection, params.walletAddress, knownDexRouterAddresses, verifiedSwapTxKeys)
 
   const seen = new Set<string>()
   const entries: SellTimelineEntry[] = []

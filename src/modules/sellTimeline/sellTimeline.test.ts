@@ -76,6 +76,23 @@ describe('buildSellTimeline — mechanism 2 (transfer-out to a known router)', (
     assert.equal(result.totalSells, 1, 'a same-tx opposing leg of a different token proves a swap without any router evidence')
   })
 
+  it('classifies the two wallet regression outbounds only when exact receipt evidence proves their unknown-counterparty swaps', () => {
+    const tx1 = '0x84fa-exit-5576'
+    const tx2 = '0x84fa-exit-c063'
+    const events = [
+      event({ txHash: tx1, contract: '0x5576d6ed9181f2225aff5282ac0ed29f755437ea', toAddress: '0xd230967560b5f3a568414e790a72ea83312ce863', amount: 11306 }),
+      event({ txHash: tx2, contract: '0xc0634090f2fe6c6d75e61be2b949464abb498973', toAddress: '0x9b824dd3ec24280e40ef43015ccf3073bf4cc7a9', amount: 26664 }),
+    ]
+    const unproven = buildSellTimeline({ normalizedEvents: events, chainSelection: ACTIVE_CHAIN_SELECTION, bridgeTimeline: [], recoveryPolicy: EMPTY_RECOVERY, walletAddress: WALLET })
+    assert.equal(unproven.totalSells, 0)
+    const proven = buildSellTimeline({
+      normalizedEvents: events, chainSelection: ACTIVE_CHAIN_SELECTION, bridgeTimeline: [], recoveryPolicy: EMPTY_RECOVERY, walletAddress: WALLET,
+      verifiedSwapTxKeys: new Set([`base:${tx1}`, `base:${tx2}`]),
+    })
+    assert.equal(proven.totalSells, 2)
+    assert.deepEqual(proven.entries.map((entry) => entry.confidence), ['high', 'high'])
+  })
+
   it('same-tx pairing AND a known router together reach high confidence — tx/log proof stacks with router proof', () => {
     const result = buildSellTimeline({
       normalizedEvents: [

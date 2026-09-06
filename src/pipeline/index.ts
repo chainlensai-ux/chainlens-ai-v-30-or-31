@@ -364,6 +364,7 @@ async function safeRunRecoveryPolicy(params: {
   buyTimeline: BuyTimeline
   sellTimeline: SellTimeline
   walletAddress: string
+  verifiedSwapTxKeys?: ReadonlySet<string>
   scanMode: RunWalletScanParams['scanMode']
 }): Promise<RecoveryPolicyResult> {
   // Cost guarantee: recovery is a deep-scan-only capability. A 'normal' scan never reaches
@@ -633,6 +634,7 @@ function safeRunSellTimelineV2(params: {
   bridgeTimeline: BridgeCandidateEvent[]
   recoveryPolicy: RecoveryPolicyResult
   walletAddress: string
+  verifiedSwapTxKeys?: ReadonlySet<string>
 }): SellTimelineResult {
   try {
     return buildSellTimeline({
@@ -642,6 +644,7 @@ function safeRunSellTimelineV2(params: {
       recoveryPolicy: params.recoveryPolicy,
       walletAddress: params.walletAddress,
       knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES,
+      verifiedSwapTxKeys: params.verifiedSwapTxKeys,
     })
   } catch {
     return sellTimelineV2Fallback()
@@ -1797,6 +1800,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const routerOrCounterpartyAddress = counterpartyAddresses && counterpartyAddresses.size === 1
         ? [...counterpartyAddresses][0]
         : null
+      const txTimestamp = normalizedEvents.find((txEvent) => txEvent.chain === chainPart && txEvent.txHash === txHash)?.timestamp ?? ''
+      const hasPriorBuyInventory = legs.some((leg) => leg.direction === 'outbound' && normalizedEvents.some((candidate) =>
+        candidate.direction === 'inbound'
+        && candidate.chain === chainPart
+        && candidate.contract.toLowerCase() === leg.contract.toLowerCase()
+        && Date.parse(candidate.timestamp) <= Date.parse(txTimestamp),
+      ))
       evidence.push({
         chain: chainPart,
         txHash,
@@ -1816,8 +1826,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         // Real signal now, from the price-free structural pre-pass above — see
         // structuralCompletionSignal.ts's own header. null (never fabricated) when this transaction
         // is not the one-leg open/close boundary of any real structural lot.
-        missingClosedLotSide: missingClosedLotSideByGroupKey.get(groupKey) ?? null,
+        missingClosedLotSide: missingClosedLotSideByGroupKey.get(groupKey) ?? (hasPriorBuyInventory ? 'exit' : null),
         economicValueUsd: null,
+        hasPriorBuyInventory,
       })
     }
 
@@ -2022,7 +2033,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // 5b. sellTimelineV2 — additive, pure, zero-cost. Runs after recoveryPolicy since mechanism 4
   // (recovery-reconstructed sells) needs recoveryPolicy's real recoveredEvents. Never replaces or
   // reads from report.timelines.sellTimeline (timelineBuilder's own output, produced at stage 4).
-  const sellTimelineV2 = safeRunSellTimelineV2({
+  let sellTimelineV2 = safeRunSellTimelineV2({
     normalizedEvents,
     chainSelection,
     bridgeTimeline,
@@ -2107,6 +2118,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       recoveredEvents: recoveredNormalizedForPricing,
     })
     canonicalNormalizedEvents = receiptSwapPromotionResult.promotedEvents
+    // Re-run the pure sell read model with the exact receipt proof. Unknown
+    // counterparties remain excluded unless their transaction was independently decoded.
+    sellTimelineV2 = safeRunSellTimelineV2({
+      normalizedEvents: canonicalNormalizedEvents,
+      chainSelection,
+      bridgeTimeline,
+      recoveryPolicy,
+      walletAddress: params.walletAddress,
+      verifiedSwapTxKeys: new Set(receiptSwapPromotionResult.promotions.map((promotion) => `${promotion.chain}:${promotion.txHash.toLowerCase()}`)),
+    })
   }
 
   // PERF-SPRINT TASK, DISCLOSED: awaited here, at the exact point this stage's own result is first

@@ -56,6 +56,9 @@ export type CandidateTxEvidence = {
   missingClosedLotSide: 'entry' | 'exit' | null
   // Best-known USD magnitude, tie-break only — never a pricing input.
   economicValueUsd: number | null
+  // An earlier inbound event for the same chain/token exists. This only prioritizes a receipt
+  // attempt; it never proves the outbound was a sale by itself.
+  hasPriorBuyInventory?: boolean
 }
 
 export type RejectReason =
@@ -383,6 +386,7 @@ function evaluateEligibility(
     // CORRECTED, DISCLOSED: structural completion now requires TWO independent signals — see
     // qualifiesForCompletionTier's own header above.
     || qualifiesForCompletionTier(evidence, strictSeeds)
+    || (evidence.missingClosedLotSide === 'exit' && evidence.hasPriorBuyInventory === true)
 
   if (!positiveSignal) return { eligible: false, reason: 'ordinary_transfer' }
   return { eligible: true }
@@ -395,6 +399,9 @@ function priorityFor(
 ): { tier: 1 | 2 | 3 | 4 | 5; reason: string } {
   if (qualifiesForCompletionTier(evidence, strictSeeds)) {
     return { tier: 1, reason: `could_complete_missing_${evidence.missingClosedLotSide}` }
+  }
+  if (evidence.missingClosedLotSide === 'exit' && evidence.hasPriorBuyInventory === true) {
+    return { tier: 1, reason: 'unmatched_outbound_with_prior_inventory' }
   }
   if (evidence.isExistingSwapCandidate) return { tier: 2, reason: 'existing_one_leg_swap_candidate' }
   if (evidence.hasVerifiedQuoteAddress) return { tier: 3, reason: 'verified_quote_address' }

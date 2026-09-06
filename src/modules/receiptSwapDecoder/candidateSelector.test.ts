@@ -63,6 +63,21 @@ test('one-leg transaction with NO router-like counterparty and no other signal i
   assert.equal(result.rejectedSamples[0].reason, 'ordinary_transfer')
 })
 
+test('unmatched unknown-counterparty outbound with prior inventory is fetched first but not classified as a swap', () => {
+  const target = baseEvidence({
+    txHash: '0x84fa-target',
+    legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 11306 }],
+    missingClosedLotSide: 'exit',
+    hasPriorBuyInventory: true,
+  })
+  const ordinary = baseEvidence({ txHash: '0xordinary', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }] })
+  const result = selectBaseReceiptCandidates([ordinary, target])
+  assert.equal(result.selected[0].txHash, target.txHash)
+  assert.equal(result.selected[0].priorityTier, 1)
+  assert.equal(result.selected[0].priorityReason, 'unmatched_outbound_with_prior_inventory')
+  assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
+})
+
 test('known/high-confidence router transaction is eligible', () => {
   const evidence = baseEvidence({
     txHash: '0x1',
