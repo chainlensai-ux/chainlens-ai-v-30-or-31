@@ -307,6 +307,23 @@ test('two genuinely distinct legs through the same pool (different amounts) are 
   assert.equal(result.ok, false, 'two genuinely distinct legs through the same pool must never be silently merged/accepted by the dedup')
 })
 
+test('unambiguous wallet net exit survives a non-chainable two-pool route', async () => {
+  const tx = bundle({ logs: [
+    transferLog(0, TOKEN_X, wallet, poolA, BigInt('500000000000000000000')),
+    slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('500000000000000000000'), BigInt('-1000000000000000000')),
+    transferLog(2, USDC, poolA, ROUTER, BigInt('1000000000000000000')),
+    transferLog(3, '0x7777777777777777777777777777777777777777', ROUTER, poolB, BigInt('1000000000000000000')),
+    slipstreamSwapLog(4, poolB, wallet, wallet, BigInt('1000000000000000000'), BigInt('-900000000000000000')),
+    transferLog(5, WETH, poolB, wallet, BigInt('900000000000000000')),
+  ] })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.swap.tokenIn.address, TOKEN_X)
+  assert.equal(result.swap.tokenOut.address, WETH)
+  assert.equal(result.swap.walletDirection, 'wallet_sold_tokenIn')
+})
+
 test('deterministic output: identical input decodes to a byte-identical result across repeated runs', async () => {
   const tx = bundle({
     logs: [

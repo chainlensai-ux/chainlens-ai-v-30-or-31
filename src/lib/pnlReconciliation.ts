@@ -832,7 +832,19 @@ export function createPnlReconciliation(config: Config = {}) {
     detailedAttemptsObserved: number
     acceptedEvidenceAudit: AcceptedEvidenceAudit
   }> {
-    const { hydratedLots, audit: acceptedEvidenceAudit } = await hydrateFromAcceptedEvidence(lots)
+    // priceLotsForWallet is the canonical historical-price boundary: every finite value reaching
+    // FIFO through its lookup was accepted by a configured (non-synthetic) price source.  Older
+    // structural lots can nevertheless retain the pre-pricing `unpriced` label.  Normalize that
+    // stale label before recovery so a genuinely two-sided lot is not stranded outside every
+    // canonical verified consumer.  One-sided lots remain unpriced and are handled below.
+    const pricedStructuralLots = lots.map((lot) => {
+      const bothAccepted = lot.costBasisUsd !== null && Number.isFinite(lot.costBasisUsd)
+        && lot.proceedsUsd !== null && Number.isFinite(lot.proceedsUsd)
+      return bothAccepted && lot.evidenceQuality === 'unpriced'
+        ? { ...lot, realizedPnlUsd: lot.proceedsUsd! - lot.costBasisUsd!, evidenceQuality: 'verified' as const }
+        : lot
+    })
+    const { hydratedLots, audit: acceptedEvidenceAudit } = await hydrateFromAcceptedEvidence(pricedStructuralLots)
     // CANONICAL BASE, DISCLOSED (hydration-timing-and-canonical-precedence follow-up task):
     // `hydratedLots` — NOT the raw, un-hydrated `lots` — is now the base the caller's `updatedFifoLots`
     // merge builds from (see reconcile()'s own call site below). Every side accepted evidence covered

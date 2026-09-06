@@ -2146,7 +2146,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       bridgeTimeline,
       recoveryPolicy,
       walletAddress: params.walletAddress,
-      verifiedSwapTxKeys: new Set(receiptSwapPromotionResult.promotions.map((promotion) => `${promotion.chain}:${promotion.txHash.toLowerCase()}`)),
+      verifiedSwapTxKeys: new Set(shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)),
     })
   }
 
@@ -3530,7 +3530,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     manifestStoredRealizedPnlUsd: canonicalSampleManifestAudit.manifestApplied
       ? canonicalSampleManifestAudit.recomputedRealizedPnlUsd
       : undefined,
-    ayriRealizedPnlUsd: ayriAttribution.realizedPnlUsd,
+    // AYRI's attribution sum can remain useful diagnostically for unverified lots, but it is not
+    // a public snapshot peer while the canonical realized value is blocked.
+    ayriRealizedPnlUsd: reconciledPnlSummary.realizedPnlUsd === null ? undefined : ayriAttribution.realizedPnlUsd,
   }))
 
   // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on

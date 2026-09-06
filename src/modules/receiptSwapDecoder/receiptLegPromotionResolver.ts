@@ -64,10 +64,26 @@ export function resolvePromotableLeg(
   const txHashLower = decodedSwap.txHash.toLowerCase()
   const isMatch = (e: NormalizedEvent) => e.chain === decodedSwap.chain && e.txHash.toLowerCase() === txHashLower
 
-  const matchIndices: number[] = []
+  let matchIndices: number[] = []
   events.forEach((e, i) => { if (isMatch(e)) matchIndices.push(i) })
-  const additionalMatches = additionalKnownEvents.filter(isMatch)
-  const totalMatchCount = matchIndices.length + additionalMatches.length
+  let additionalMatches = additionalKnownEvents.filter(isMatch)
+  let totalMatchCount = matchIndices.length + additionalMatches.length
+
+  // A receipt may share its transaction with recovered inventory/noise legs. The exact decoded
+  // token pair makes only an outbound tokenIn or inbound tokenOut a possible anchor. When that
+  // filter leaves exactly one anchor, unrelated same-transaction transfers are not ambiguity.
+  if (totalMatchCount > 2) {
+    const isDecodedAnchor = (e: NormalizedEvent) =>
+      (e.direction === 'outbound' && e.contract.toLowerCase() === decodedSwap.tokenIn.address.toLowerCase())
+      || (e.direction === 'inbound' && e.contract.toLowerCase() === decodedSwap.tokenOut.address.toLowerCase())
+    const canonicalAnchors = matchIndices.filter((i) => isDecodedAnchor(events[i]))
+    const recoveredAnchors = additionalMatches.filter(isDecodedAnchor)
+    if (canonicalAnchors.length + recoveredAnchors.length === 1) {
+      matchIndices = canonicalAnchors
+      additionalMatches = recoveredAnchors
+      totalMatchCount = 1
+    }
+  }
 
   if (totalMatchCount === 0) return { ok: false, reason: 'no_matching_incomplete_transaction' }
   if (totalMatchCount > 2) return { ok: false, reason: 'multiple_incomplete_matches_ambiguous' }

@@ -53,6 +53,18 @@ describe('computePnl — canonical current-price provenance (missing_verified_cu
     assert.equal(unrealizedReconciliation.reconciliationStatus, 'ok')
   })
 
+  it('keeps a finite official Partial when three priced opens reconcile and another remains unpriced', () => {
+    const priced = [1, 2, 3].map((n) => openLot({ lotId: `priced-${n}`, token: `${TOKEN.slice(0, -1)}${n}`, amountRemaining: 10, amountOpened: 10, costBasisUsd: 8 }))
+    const missing = openLot({ lotId: 'missing', token: `${TOKEN.slice(0, -1)}4`, amountRemaining: 10, amountOpened: 10, costBasisUsd: 8 })
+    const result = computePnl([], [...priced, missing], () => null, () => 10, {
+      canonicalCurrentPriceLookup: (token) => token.endsWith('4') ? null : { priceUsd: 1, source: 'provider_supplied' },
+    })
+    assert.equal(result.unrealizedReconciliation.reconciliationStatus, 'partial')
+    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 3)
+    assert.equal(result.unrealizedReconciliation.reconciledMarketValueUsd, 30)
+    assert.equal(result.unrealizedReconciliation.officialUnrealizedPnlUsd, 6)
+  })
+
   it('price provenance is preserved: currentPriceSource reflects the REAL winning holdings source, never fabricated', () => {
     const lots = [openLot({ amountRemaining: 10, costBasisUsd: 5 })]
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 10

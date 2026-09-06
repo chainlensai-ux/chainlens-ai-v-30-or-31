@@ -461,11 +461,11 @@ export function computePnl(
   // Per-lot null costBasisUsd is still skipped per-lot below, unchanged.
   const excludedPositions: ExcludedUnrealizedPosition[] = []
   const unrealizedPnlExcludedTokens: string[] = []
-  const unrealizedTerms: number[] = []
   let reconciledOpenPositions = 0
   let cappedOpenPositions = 0
   let reconciledMarketValueUsd = 0
   let reconciledCostBasisUsd = 0
+  let reconciledPricedLotCount = 0
   const reconciledPositionsByPriceSource: Record<string, number> = {}
 
   for (const [key, lots] of openLotsByToken) {
@@ -577,6 +577,10 @@ export function computePnl(
       exclude('missing_canonical_balance')
       continue
     }
+    if (!Number.isFinite(canonicalCurrentBalance) || canonicalCurrentBalance <= 0) {
+      exclude('open_quantity_exceeds_balance')
+      continue
+    }
     const reconciledPricedQuantity = Math.min(pricedOpenQuantity, canonicalCurrentBalance)
     const pricedQuantityScale = pricedOpenQuantity > 0 ? reconciledPricedQuantity / pricedOpenQuantity : 0
     // 6/7. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
@@ -599,14 +603,19 @@ export function computePnl(
     reconciledPositionsByPriceSource[sourceKey] = (reconciledPositionsByPriceSource[sourceKey] ?? 0) + 1
     for (const lot of lots) {
       if (lot.costBasisUsd == null) continue
-      unrealizedTerms.push((rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd) * pricedQuantityScale)
+      reconciledPricedLotCount += 1
     }
   }
 
   // OFFICIAL TOTAL, DISCLOSED: computed strictly from RECONCILED positions' own lot terms — the
   // exact same expression the zero-change path above uses, just already filtered down to positions
   // that survived every reconciliation check. An excluded position contributes nothing here, ever.
-  const unrealizedPnlUsd = unrealizedTerms.length > 0 ? unrealizedTerms.reduce((sum, v) => sum + v, 0) : null
+  // Derive the official partial value from the same reconciled aggregate columns exposed in the
+  // report. This preserves a finite Partial whenever at least one priced open lot reconciled and
+  // guarantees market value - cost basis === official unrealized after closed-lot recovery.
+  const unrealizedPnlUsd = reconciledPricedLotCount > 0
+    ? reconciledMarketValueUsd - reconciledCostBasisUsd
+    : null
 
   // Excluded candidate totals sum ONLY over positions that had a computable candidate — a position
   // with no resolvable price contributes nothing here rather than a fabricated 0. These totals are
