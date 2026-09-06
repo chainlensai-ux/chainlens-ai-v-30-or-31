@@ -23,8 +23,9 @@ const {
   buildWalletPnlViewModel,
   buildOfficialUnavailableReason,
   isV2ZeroLotUnavailableCopy,
+  resolveOfficialUnrealizedBoxStatus,
 } = await import('../app/frontend/lib/buildWalletPnlViewModel.ts')
-const { PNL_UNAVAILABLE_MESSAGE } = await import('../app/frontend/components/PnlStatusCard.tsx')
+const { PNL_UNAVAILABLE_MESSAGE, GUARDRAIL_ABS_LIMIT } = await import('../app/frontend/components/PnlStatusCard.tsx')
 
 const viewModelSrc = fs.readFileSync(new URL('../app/frontend/lib/buildWalletPnlViewModel.ts', import.meta.url), 'utf8')
 
@@ -184,6 +185,109 @@ function canonicalUnavailableRecon(overrides = {}) {
     viewModelSrc.includes('buildOfficialUnavailableReason({ reconciliationSummary, walletPnlEvidenceAudit })')
       && !viewModelSrc.includes('walletPnlEvidenceAudit?.failureReason ?? PNL_UNAVAILABLE_MESSAGE'),
   )
+}
+
+function failedOfficialUnrealized(overrides = {}) {
+  return {
+    totalOpenPositions: 117,
+    reconciledOpenPositions: 1,
+    excludedOpenPositions: 116,
+    cappedOpenPositions: 1,
+    excludedCandidateMarketValueUsd: 0,
+    excludedCandidateUnrealizedPnlUsd: 0,
+    officialUnrealizedPnlUsd: -68.96,
+    reconciliationStatus: 'failed',
+    excludedPositions: [],
+    reconciledPositionsByPriceSource: { provider_supplied: 1 },
+    excludedReasonCounts: {},
+    excludedClassificationCounts: { missing_price: 100, dust_spam: 16 },
+    deadOrSpamPositionsCount: 16,
+    reconciledMarketValueUsd: 40,
+    reconciledCostBasisUsd: 108.96,
+    unrealizedCoveragePercent: 0.85,
+    openPositionCoveragePercent: 50,
+    ...overrides,
+  }
+}
+
+function hugeV2() {
+  return {
+    realizedPnlUsd: 2e9,
+    unrealizedPnlUsd: 5e9,
+    costBasis: [{ tokenAddress: '0xa', chainId: 8453, totalQuantity: 1, totalCostUsd: 2e9, averageCostUsd: 2e9 }],
+    realized: [],
+    unrealized: [],
+    chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 2e9, unrealizedPnlUsd: 5e9, costBasisUsd: 2e9 }],
+  }
+}
+
+// 9. Item 2 — finite official unrealized with failed recon + unavailable realized gate is Partial, not Locked.
+{
+  const vm = buildWalletPnlViewModel({
+    pnlV2: emptyPnlV2(),
+    publicPnlStatus: 'unavailable',
+    reconciliationSummary: canonicalUnavailableRecon(),
+    unrealizedReconciliation: failedOfficialUnrealized(),
+    walletPnlEvidenceAudit: audit({ closedLots: 0, failureReason: V2_ZERO_LOT_REASON }),
+  })
+  check('Item 2: combinedStatus stays unavailable (realized gates not lowered)', vm.combinedStatus === 'unavailable')
+  check('Item 2: unrealized is Partial, not Locked', vm.unrealizedBox.status === 'Partial')
+  check('Item 2: unrealized shows the official reconciled number', vm.unrealizedBox.value === '-$68.96')
+  check('Item 2: unrealized reason is not the magnitude/stability lock copy', !/Magnitude\/stability guard blocked this figure/.test(vm.unrealizedBox.reason))
+  check('Item 2: unrealized reason discloses failed recon', /failed/.test(vm.unrealizedBox.reason))
+  check('Item 2: unrealized reason discloses excluded count', /116 of 117 positions excluded/.test(vm.unrealizedBox.reason))
+  check('Item 2: unrealized reason discloses capped-to-balance count', /1 capped to canonical balance/.test(vm.unrealizedBox.reason))
+}
+
+// 10. Item 2 — V2's huge raw FIFO×price candidate must not lock a finite official unrealized.
+{
+  const vm = buildWalletPnlViewModel({
+    pnlV2: hugeV2(),
+    publicPnlStatus: 'unavailable',
+    unrealizedReconciliation: failedOfficialUnrealized({ officialUnrealizedPnlUsd: -19.02 }),
+  })
+  check('Item 2: huge V2 magnitude does not Lock official unrealized', vm.unrealizedBox.status === 'Partial')
+  check('Item 2: displayed unrealized is the official figure, not V2 5e9', vm.unrealizedBox.value === '-$19.02')
+}
+
+// 11. Item 2 — official magnitude itself above $1e9 still Locks (corruption threshold).
+{
+  const vm = buildWalletPnlViewModel({
+    pnlV2: emptyPnlV2(),
+    publicPnlStatus: 'ok',
+    unrealizedReconciliation: failedOfficialUnrealized({
+      officialUnrealizedPnlUsd: GUARDRAIL_ABS_LIMIT + 1,
+      reconciliationStatus: 'ok',
+      excludedOpenPositions: 0,
+      totalOpenPositions: 1,
+      reconciledOpenPositions: 1,
+    }),
+  })
+  check('Item 2: corrupt official magnitude stays Locked', vm.unrealizedBox.status === 'Locked')
+  check('Item 2: lock reason documents the $1e9 official-magnitude threshold', vm.unrealizedBox.reason.includes(String(GUARDRAIL_ABS_LIMIT)))
+  check('Item 2: corrupt official number is not shown', vm.unrealizedBox.value === null)
+}
+
+// 12. Item 2 — no official figure + blocked still Locks (true missing).
+{
+  const vm = buildWalletPnlViewModel({
+    pnlV2: emptyPnlV2(),
+    publicPnlStatus: 'unavailable',
+    unrealizedReconciliation: failedOfficialUnrealized({ officialUnrealizedPnlUsd: null, reconciliationStatus: 'not_reconciled' }),
+  })
+  check('Item 2: missing official unrealized stays Locked or Unavailable, never Partial-with-a-number', vm.unrealizedBox.status === 'Locked' || vm.unrealizedBox.status === 'Unavailable')
+  check('Item 2: missing official unrealized shows no dollar figure', vm.unrealizedBox.value === null)
+}
+
+// 13. Item 2 helper: finite official + blocked realized gate → Partial.
+{
+  const status = resolveOfficialUnrealizedBoxStatus({
+    canonicalSampleUnavailable: false,
+    blocked: true,
+    confidenceUnrealized: 'Partial',
+    unrealizedReconciliation: failedOfficialUnrealized(),
+  })
+  check('Item 2 helper: blocked realized gate does not override finite official unrealized', status === 'Partial')
 }
 
 console.log(`${passed} passed, ${failed} failed`)
