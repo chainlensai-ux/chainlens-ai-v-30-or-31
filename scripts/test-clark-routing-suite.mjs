@@ -21,6 +21,7 @@ const tests = [
   'test-clark-market-persistence.mjs',
   'test-clark-pump-intent.mjs',
   'test-clark-pump-chain.mjs',
+  'test-clark-wallet-analyze-quality-guard.mjs',
   'test-base-radar-chain-strict.mjs',
   'test-base-radar-provider-fallback.mjs',
   'test-base-radar-auto-retry.mjs',

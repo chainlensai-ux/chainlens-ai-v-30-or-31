@@ -7937,7 +7937,6 @@ async function handleBaseRadar(_body: ClarkRequestBody, origin: string, verified
     trending: trendingData,
     gtPools,
     tokenData: {},
-    walletScan: {},
   };
 
   const analysis = await callAnthropic(
