@@ -13,14 +13,25 @@ create table if not exists public.paypal_subscriptions (
   id                     uuid        primary key default gen_random_uuid(),
   user_id                uuid        not null references auth.users(id) on delete cascade,
   paypal_subscription_id text        not null unique,
+  replaces_paypal_subscription_id text,
   plan                   text        not null, -- 'pro' | 'elite' — which ChainLens plan this subscription grants
-  status                 text        not null default 'pending', -- 'pending' | 'active' | 'cancelled' | 'suspended' | 'expired' | 'refunded'
+  status                 text        not null default 'pending', -- 'pending' | 'active' | 'cancelled' | 'suspended' | 'expired' | 'refunded' | 'failed'
   next_billing_date      timestamptz,
   created_at             timestamptz not null default now(),
   updated_at             timestamptz not null default now()
 );
 
+alter table public.paypal_subscriptions
+  add column if not exists replaces_paypal_subscription_id text;
+
 create index if not exists paypal_subscriptions_user_id_idx on public.paypal_subscriptions(user_id);
+
+-- Serializes checkout creation per user. The API inserts a local pending reservation before it
+-- calls PayPal, so concurrent clicks cannot both create billable subscriptions. Active rows are
+-- deliberately excluded because a plan replacement temporarily has one active and one pending row.
+create unique index if not exists paypal_subscriptions_one_pending_per_user_idx
+  on public.paypal_subscriptions(user_id)
+  where status = 'pending';
 
 alter table public.paypal_subscriptions enable row level security;
 
@@ -53,5 +64,24 @@ alter table public.paypal_webhook_events enable row level security;
 
 create policy "paypal_webhook_events_service_role_all"
   on public.paypal_webhook_events for all
+  using (auth.role() = 'service_role')
+  with check (auth.role() = 'service_role');
+
+-- Durable sale-to-subscription mapping. Refund events often carry only sale_id/parent_payment;
+-- retaining the successful charge mapping lets the webhook revoke the correct entitlement.
+create table if not exists public.paypal_payments (
+  payment_id              text primary key,
+  paypal_subscription_id  text not null,
+  user_id                  uuid not null references auth.users(id) on delete cascade,
+  created_at               timestamptz not null default now()
+);
+
+create index if not exists paypal_payments_subscription_idx
+  on public.paypal_payments(paypal_subscription_id);
+
+alter table public.paypal_payments enable row level security;
+
+create policy "paypal_payments_service_role_all"
+  on public.paypal_payments for all
   using (auth.role() = 'service_role')
   with check (auth.role() = 'service_role');

@@ -34,7 +34,10 @@ function planIds(): Record<'pro' | 'elite', string | undefined> {
 export type CreateSubscriptionDeps = {
   getAnonClient?: () => ReturnType<typeof createAnonSupabaseClient>
   getServiceClient?: () => ReturnType<typeof createServiceRoleClient>
+  createSubscription?: typeof createPayPalSubscription
 }
+
+const PENDING_RESERVATION_TTL_MS = 30 * 60 * 1000
 
 // Thin wrapper, DISCLOSED: Next.js's generated route-handler type requires POST's signature to be
 // exactly `(request, context: { params: Promise<{}> }) => ...` for a route with no dynamic segments
@@ -162,9 +165,22 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
     finalizeAudit('failed', 'service_client_unavailable')
     return NextResponse.json({ error: 'Service temporarily unavailable.' }, { status: 500 })
   }
+  const staleBefore = new Date(Date.now() - PENDING_RESERVATION_TTL_MS).toISOString()
+  const { error: staleError } = await serviceClient
+    .from('paypal_subscriptions')
+    .update({ status: 'expired', updated_at: new Date().toISOString() })
+    .eq('user_id', userId)
+    .eq('status', 'pending')
+    .lt('created_at', staleBefore)
+  if (staleError) {
+    audit.failureReason = 'stale_pending_cleanup_failed'
+    finalizeAudit('failed', 'stale_pending_cleanup_failed')
+    return NextResponse.json({ error: 'Could not recover stale checkout state. Try again.' }, { status: 500 })
+  }
+
   const { data: existingSubscription, error: existingError } = await serviceClient
     .from('paypal_subscriptions')
-    .select('status')
+    .select('status, plan, paypal_subscription_id')
     .eq('user_id', userId)
     .in('status', ['pending', 'active'])
     .limit(1)
@@ -193,13 +209,36 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
     }
     return NextResponse.json({ error: 'Could not verify existing subscription state. Try again.' }, { status: 500 })
   }
-  if (existingSubscription) {
+  const isProToEliteReplacement = existingSubscription?.status === 'active'
+    && existingSubscription.plan === 'pro'
+    && plan === 'elite'
+  if (existingSubscription && !isProToEliteReplacement) {
     audit.failureReason = 'duplicate_subscription'
     finalizeAudit('blocked', 'duplicate_subscription')
     return NextResponse.json(
-      { error: `You already have a ${existingSubscription.status} PayPal subscription. Cancel it in your PayPal account before starting a new one.` },
+      { error: `You already have a ${existingSubscription.status} PayPal subscription for this plan.` },
       { status: 409 },
     )
+  }
+
+
+  // Reserve locally before making the external API call. The partial unique index on pending
+  // user_id turns simultaneous requests into one winner even when both passed the read above.
+  const reservationId = `reservation:${userId}`
+  const { error: reservationError } = await serviceClient.from('paypal_subscriptions').insert({
+    user_id: userId,
+    paypal_subscription_id: reservationId,
+    plan,
+    status: 'pending',
+    replaces_paypal_subscription_id: isProToEliteReplacement
+      ? existingSubscription.paypal_subscription_id
+      : null,
+    updated_at: new Date().toISOString(),
+  })
+  if (reservationError) {
+    audit.failureReason = 'pending_reservation_conflict'
+    finalizeAudit('blocked', 'pending_reservation_conflict')
+    return NextResponse.json({ error: 'A PayPal checkout is already being created for this account.' }, { status: 409 })
   }
 
   const appUrl = resolveAppUrl(request)
@@ -207,7 +246,7 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
   // client sends) attributes BILLING.SUBSCRIPTION.* events back to the right ChainLens account.
   const customId = `${plan}:${userId}`
 
-  const result = await createPayPalSubscription(
+  const result = await (deps.createSubscription ?? createPayPalSubscription)(
     planId,
     customId,
     `${appUrl}/pricing?paypal_subscription=approved`,
@@ -215,10 +254,25 @@ export async function handleCreateSubscription(request: NextRequest, deps: Creat
   )
 
   if (!result.ok) {
+    await serviceClient
+      .from('paypal_subscriptions')
+      .update({ status: 'failed', updated_at: new Date().toISOString() })
+      .eq('paypal_subscription_id', reservationId)
     audit.failureReason = `checkout_${result.reason}`
     finalizeAudit('failed', `checkout_${result.reason}`)
     const status = result.reason === 'not_configured' ? 503 : result.reason === 'auth_failed' ? 502 : 502
     return NextResponse.json({ error: `PayPal subscription creation failed (${result.reason}).` }, { status })
+  }
+
+
+  const { error: finalizeReservationError } = await serviceClient
+    .from('paypal_subscriptions')
+    .update({ paypal_subscription_id: result.subscriptionId, updated_at: new Date().toISOString() })
+    .eq('paypal_subscription_id', reservationId)
+  if (finalizeReservationError) {
+    audit.failureReason = 'pending_reservation_finalize_failed'
+    finalizeAudit('failed', 'pending_reservation_finalize_failed')
+    return NextResponse.json({ error: 'PayPal checkout was created but could not be recorded. Try again.' }, { status: 500 })
   }
 
   audit.checkoutCreated = true

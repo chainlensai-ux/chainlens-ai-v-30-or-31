@@ -26,7 +26,7 @@ create policy "Users can select own settings"
   for select
   using (auth.uid() = user_id);
 
--- INSERT — own row only; plan must be 'free' and payment fields must be null.
+-- INSERT — own row only; plan must be 'free', payment/trial/referral fields must be inert.
 -- Prevents a user from creating a row with plan='elite' on first sign-in.
 drop policy if exists "Users can insert own settings" on public.user_settings;
 create policy "Users can insert own settings"
@@ -40,6 +40,16 @@ create policy "Users can insert own settings"
     and lemon_subscription_id is null
     and lemon_variant_id is null
     and current_period_end is null
+    and trial_started_at is null
+    and trial_ends_at is null
+    -- Existing schema defaults trial_plan to 'elite'; without dates/usage it grants nothing.
+    and (trial_plan is null or trial_plan = 'elite')
+    and coalesce(trial_used, false) = false
+    and trial_granted_reason is null
+    and trial_email_hash is null
+    and trial_claim_ip_hash is null
+    and trial_claim_user_agent_hash is null
+    and referred_by_affiliate_id is null
   );
 
 -- UPDATE — own row only; plan and payment columns must be unchanged.
@@ -73,6 +83,35 @@ create policy "Users can update own preference fields"
     )
     and current_period_end is not distinct from (
       select current_period_end from public.user_settings where user_id = auth.uid() limit 1
+    )
+    -- Trial state is written only by the service-role trial claim endpoint.
+    and trial_started_at is not distinct from (
+      select trial_started_at from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_ends_at is not distinct from (
+      select trial_ends_at from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_plan is not distinct from (
+      select trial_plan from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_used is not distinct from (
+      select trial_used from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_granted_reason is not distinct from (
+      select trial_granted_reason from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_email_hash is not distinct from (
+      select trial_email_hash from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_claim_ip_hash is not distinct from (
+      select trial_claim_ip_hash from public.user_settings where user_id = auth.uid() limit 1
+    )
+    and trial_claim_user_agent_hash is not distinct from (
+      select trial_claim_user_agent_hash from public.user_settings where user_id = auth.uid() limit 1
+    )
+    -- Attribution is first-write-wins through service-role affiliate/checkout endpoints.
+    and referred_by_affiliate_id is not distinct from (
+      select referred_by_affiliate_id from public.user_settings where user_id = auth.uid() limit 1
     )
   );
 
