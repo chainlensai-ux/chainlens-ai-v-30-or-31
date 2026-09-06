@@ -32,6 +32,7 @@ import {
   type AcceptedEvidenceKvLike,
 } from './acceptedEvidenceStore.ts'
 import type { MatchedLot } from '../modules/fifoEngine/types'
+import { buildCanonicalPnlDiffAudit } from './canonicalPnlDiffAudit.ts'
 
 const NOW = 1_000_000
 const roundCents = (n: number) => Math.round(n * 100) / 100
@@ -162,6 +163,24 @@ function replay(manifest: CanonicalPnlSampleManifest, allCandidateLots: readonly
 }
 
 describe('canonicalPnlSampleManifest — lot identity (float-free, partial-fill ordinals)', () => {
+  it('excludes a verified partial fill when its accepted side is shared with an unverified sibling', async () => {
+    const verified = lot({ lotId: 'verified', amount: 4, closedTxHash: '0xsell-a' })
+    const unverifiedSibling = lot({
+      lotId: 'unverified', amount: 6, closedTxHash: '0xsell-b', closedAt: 3,
+      proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const { loader } = seededEvidence([verified])
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: [verified, unverifiedSibling], candidateVerifiedLots: [verified],
+      structuralLotCount: 2, fingerprints: computeFingerprints([verified], 2), realizedPnlUsd: 2,
+      verifiedPricingCoverage: 0.5, now: NOW, loadEvidence: loader, computeFingerprints,
+    })
+
+    assert.equal(manifest.verifiedLotCount, 0, 'an incomplete evidence side must be demoted from the canonical sample')
+    const audit = buildCanonicalPnlDiffAudit({ currentRecords: manifest.verifiedLotRecords, previousRecords: [] })
+    assert.equal(audit.findings.filter((finding) => finding.severity === 'critical').length, 0)
+  })
+
   it('HARD ASSERTION: a float-noise difference in a partial fill\'s amount never changes the identity key', () => {
     const clean = lot({ amount: 0.3 })
     const noisy = lot({ amount: 0.1 + 0.2 })

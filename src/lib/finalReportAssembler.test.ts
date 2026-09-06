@@ -82,7 +82,7 @@ describe('finalReportAssembler', () => {
     assert.equal(report.walletConditionInputs.currentPnL, 123.45)
   })
 
-  it('keeps pnlSummaryV2 alternate rows and alternate total internally consistent', () => {
+  it('publishes one canonical realized total while retaining the alternate total as diagnostic-only', () => {
     const closedLots = [
       { lotId: 'alt-a', matchedBuyLotId: null, token: '0xa', symbol: 'A', chain: 'base', timestamp: 1, txHash: '0xsa', amount: '1', costUsdEstimate: 10, proceedsUsdEstimate: 14, realizedPnlUsd: 4, confidence: 'high', evidence: 'complete' },
       { lotId: 'alt-b', matchedBuyLotId: null, token: '0xb', symbol: 'B', chain: 'base', timestamp: 2, txHash: '0xsb', amount: '1', costUsdEstimate: 8, proceedsUsdEstimate: 6, realizedPnlUsd: -2, confidence: 'high', evidence: 'complete' },
@@ -98,10 +98,10 @@ describe('finalReportAssembler', () => {
       },
     }))
 
-    const rowTotal = report.pnlSummaryV2.closedLots.reduce((sum, row) => sum + (row.realizedPnlUsd ?? 0), 0)
-    assert.equal(report.pnlSummaryV2.realizedPnlUsd, rowTotal)
-    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 2, 'alternate rows keep their own alternate total')
-    assert.equal(report.fifoAndPnl.realizedPnlUsd, 123.45, 'canonical public FIFO output is unchanged')
+    assert.equal(report.pnlSummaryV2.diagnosticRealizedPnlUsd, 2, 'alternate result remains available for audits')
+    assert.equal(report.pnlSummaryV2.diagnosticOnly, true)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 123.45)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, report.fifoAndPnl.realizedPnlUsd, 'both published surfaces use canonical reconciliation')
   })
 
   it('HARD ASSERTION (Wallet PnL Item 2): when fifoEngine and pnlSummaryV2 disagree, published realizedPnlUsd equals the canonical fifo/reconciliation source, never pnlEngine', () => {

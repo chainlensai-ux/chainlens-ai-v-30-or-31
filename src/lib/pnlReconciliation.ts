@@ -465,7 +465,6 @@ export type PnlReconciliationSummary = {
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
-const tokenKey = (chain: string, token: string) => `${chain}:${token.toLowerCase()}`
 const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt'>) => [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt].join(':')
 
 // CANONICAL VERIFIED-LOT PREDICATE, DISCLOSED (accepted-evidence-canonical-seeding-eligibility
@@ -854,7 +853,25 @@ export function createPnlReconciliation(config: Config = {}) {
       return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
     }
     const priceKvClient = config.priceKvClient
-    const sorted = rankMissingLotsForRecovery(hydratedLots)
+    // Within the existing fixed attempt budget, prefer tokens whose missing side blocks the most
+    // closed lots. Historical/provider work is naturally reusable by token, and completing a major
+    // token's exact-evidence lots raises the verified sample more than spending the same bounded
+    // slots on isolated one-off tokens. One-side-missing remains the primary priority because it
+    // still yields one completed lot per successful lookup; this only replaces the arbitrary
+    // lexical tie-break with measured closed-lot coverage yield.
+    const missingLotsPerToken = new Map<string, number>()
+    for (const lot of missingLots) {
+      const key = `${lot.chain}:${lot.token.toLowerCase()}`
+      missingLotsPerToken.set(key, (missingLotsPerToken.get(key) ?? 0) + 1)
+    }
+    const tokenYield = (lot: MatchedLot) => missingLotsPerToken.get(`${lot.chain}:${lot.token.toLowerCase()}`) ?? 0
+    const sorted = [...missingLots].sort((a, b) => {
+      const aOneSide = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
+      const bOneSide = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
+      if (aOneSide !== bOneSide) return aOneSide - bOneSide
+      const yieldDelta = tokenYield(b) - tokenYield(a)
+      return yieldDelta !== 0 ? yieldDelta : lotKey(a).localeCompare(lotKey(b))
+    })
     const candidates = sorted.slice(0, MAX_RECOVERY_ATTEMPTS)
     // RECOVERY LANE BUDGET, DISCLOSED (this task's explicit requirement): derived strictly from the
     // existing MAX_RECOVERY_ATTEMPTS candidate cap — worst case, every candidate needs BOTH legs
