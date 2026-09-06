@@ -110,6 +110,7 @@ export type CanonicalWalletScanResult = {
 
 export type RunWalletScanParams = {
   walletAddress: string
+  userId?: string
   chainMode: ChainMode
   scanDepth: ScanDepth
   source: string
@@ -289,10 +290,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   }
 
   if (params.scanDepth === 'deep' && evmChains.length > 0) {
+    if (!params.userId) throw new Error('Authenticated userId is required to enqueue a deep wallet scan.')
     jobId = crypto.randomUUID()
     try {
       await enqueueWalletScanJob(jobId, {
         jobId,
+        userId: params.userId,
         walletAddress,
         chains: evmChains,
         scanMode: 'deep',

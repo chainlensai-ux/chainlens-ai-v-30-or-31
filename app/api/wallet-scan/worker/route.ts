@@ -1,4 +1,5 @@
 import { runWalletScanWorker } from '@/src/modules/walletScanWorker'
+import { timingSafeEqual } from 'node:crypto'
 
 // DEPLOYMENT CONFIG, FIXED (audit: route/deployment correctness): this is the route that actually
 // runs the long V2 pipeline (up to WORKER_GLOBAL_TIMEOUT_MS = 270s inside workers/walletScanV2.ts),
@@ -12,6 +13,19 @@ export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
 export const maxDuration = 300
 
+export function isAuthorizedWalletScanWorkerRequest(req: Request): boolean {
+  const secret = process.env.WALLET_SCAN_WORKER_SECRET
+  const authorization = req.headers.get('authorization') ?? ''
+  if (!secret || !authorization.startsWith('Bearer ')) return false
+  const provided = authorization.slice(7)
+  const expectedBuffer = Buffer.from(secret)
+  const providedBuffer = Buffer.from(provided)
+  return providedBuffer.length === expectedBuffer.length && timingSafeEqual(providedBuffer, expectedBuffer)
+}
+
 export async function POST(req: Request) {
+  if (!isAuthorizedWalletScanWorkerRequest(req)) {
+    return Response.json({ error: 'unauthorized' }, { status: 401 })
+  }
   return await runWalletScanWorker(req)
 }

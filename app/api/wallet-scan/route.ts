@@ -76,7 +76,8 @@ export async function POST(req: Request): Promise<Response> {
   // after the infra-availability check above (a KV outage is independent of who's asking, per this
   // route's own pre-existing ordering disclosure) but before plan/quota resolution — an anonymous
   // caller is rejected before any job is enqueued.
-  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
+  const authUser = await requireAuthenticatedUser(req)
+  if (!authUser) return unauthorizedResponse()
 
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {
@@ -129,7 +130,7 @@ export async function POST(req: Request): Promise<Response> {
     // itself run a real scanRobinhoodWallet() call as part of processing the queued deep-scan job —
     // not just this route's own non-blocking cache-warm below, which only warms the shared cache and
     // never becomes part of the job's own published result.
-    await enqueueWalletScanJob(jobId, { jobId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
+    await enqueueWalletScanJob(jobId, { jobId, userId: authUser.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
   } catch (err) {
     console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
     if (err instanceof WalletScanQueueUnavailableError) {

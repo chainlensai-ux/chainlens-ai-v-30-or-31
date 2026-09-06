@@ -3,8 +3,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { hasRecoveryIntent, resolveSupabaseAuthCallback } from '@/lib/authFlow';
+import { hasRecoveryIntent, resolveSupabaseAuthCallback, setSignedInPresenceCookie } from '@/lib/authFlow';
 import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy';
+import { clearPlanCache } from '@/lib/usePlan';
 
 type Status = 'loading' | 'ready' | 'success' | 'error';
 
@@ -80,7 +81,14 @@ export default function ResetPasswordPage() {
       setError('Unable to update password. The reset link may have expired — please request a new one.');
     } else {
       try { sessionStorage.removeItem('cl_password_recovery') } catch {}
-      await supabase.auth.signOut({ scope: 'local' });
+      clearPlanCache();
+      setSignedInPresenceCookie(false);
+      const { error: signOutError } = await supabase.auth.signOut({ scope: 'global' });
+      if (signOutError) {
+        setError('Password updated, but we could not sign out every device. Please try signing out again.');
+        setSubmitting(false);
+        return;
+      }
       setStatus('success');
       setTimeout(() => router.replace('/auth?message=password-updated'), 2000);
     }

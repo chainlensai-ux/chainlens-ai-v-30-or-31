@@ -1,8 +1,10 @@
 import { WALLET_SCAN_STATUS_UNAVAILABLE, walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobProgress, WalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { kv } from '@/lib/server/kv'
+import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 type WalletScanJobState = {
+  userId?: string
   status?: string
   error?: string
   // STAGE PROGRESS / PARTIAL SNAPSHOT, DISCLOSED (perceived-speed + fast-snapshot follow-up tasks):
@@ -14,7 +16,10 @@ type WalletScanJobState = {
   partial?: WalletScanPartialSnapshot
 }
 
-export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
+export async function GET(req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
+  const auth = await requireAuthenticatedUser(req)
+  if (!auth) return unauthorizedResponse()
+
   const { jobId } = await context.params
   const jobKey = walletScanJobKey(jobId)
   const resultKey = walletScanResultKey(jobId)
@@ -30,7 +35,7 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
     return Response.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
   }
 
-  if (!job) {
+  if (!job || job.userId !== auth.userId) {
     return Response.json({ status: 'not-found' }, { status: 404 })
   }
 

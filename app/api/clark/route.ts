@@ -278,7 +278,7 @@ type ClarkEntityRoutingAudit = {
   // necessarily because it was verified against every real candidate.
   chainsSkipped: string[];
 }
-let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string; entityAudit?: ClarkEntityRoutingAudit } = {}
+let clarkInternalCtx: { authToken?: string; userId?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string; entityAudit?: ClarkEntityRoutingAudit } = {}
 
 // Plan feature access matrix
 function planAllows(plan: string | undefined, feature: 'token_full_report' | 'wallet_scan' | 'liquidity_check' | 'dev_wallet' | 'whale_alerts' | 'pump_alerts' | 'base_radar_full' | 'base_market_preview'): boolean {
@@ -4259,6 +4259,7 @@ async function buildClarkWalletReadResponse(params: {
   const sourceRoute = params.sourceRoute ?? "buildClarkWalletReadResponse";
   const result = await runWalletScan({
     walletAddress: address,
+    userId: clarkInternalCtx.userId,
     chainMode: "all_supported",
     scanDepth: deepScan ? "deep" : "preview",
     source: "clark",
@@ -16624,7 +16625,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: errMsg, ...debugInfo }, { status: 429 })
   }
   try {
-    clarkInternalCtx = { authToken: token || undefined, verifiedPlan: effectivePlan, cookie: req.headers.get('cookie') || undefined }
+    clarkInternalCtx = { authToken: token || undefined, userId: verifiedIdentity.userId, verifiedPlan: effectivePlan, cookie: req.headers.get('cookie') || undefined }
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)

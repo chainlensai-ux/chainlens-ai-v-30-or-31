@@ -42,7 +42,7 @@ async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
 }
 
 function runningJob(overrides: Partial<WalletScanJobMetadata> = {}): WalletScanJobMetadata {
-  return { jobId: 'job-partial', wallet: '0xabc', status: 'running', createdAt: 1, updatedAt: 1, ...overrides }
+  return { userId: 'user-a', jobId: 'job-partial', wallet: '0xabc', status: 'running', createdAt: 1, updatedAt: 1, ...overrides }
 }
 
 function snapshot(overrides: Partial<WalletScanPartialSnapshot> = {}): WalletScanPartialSnapshot {
@@ -80,7 +80,7 @@ describe('publishWalletScanPartialSnapshot — real early portfolio/holdings, wi
     await publishWalletScanPartialSnapshot('job-partial', snapshot({ portfolioTotalValueUsd: 999 }))
 
     const finalResult = { success: true, data: { portfolioV2: { totalValueUsd: 1234.56 } } }
-    await publishFinal('job-partial', { status: 'done', startedAt: 1, finishedAt: 2, durationMs: 1, pipelineDiagnostics: null }, finalResult)
+    await publishFinal('job-partial', { userId: 'user-a', status: 'done', startedAt: 1, finishedAt: 2, durationMs: 1, pipelineDiagnostics: null }, finalResult)
 
     const response = await poll('job-partial')
     assert.equal(response.status, 200)
