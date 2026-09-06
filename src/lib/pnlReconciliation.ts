@@ -208,6 +208,7 @@ export type StructuralCoverageDenominatorAudit = {
   // reason `preWindowInventoryExits` is — excluded from `genuineUnmatchedSells`/blocking, but never
   // conflated with a PROVEN pre-window exit.
   preWindowInventoryExitsUnprovenDueToTruncation?: number
+  sellsBlockedSolelyByUnprovenBoundary?: number
   scanWindowDays?: number
   // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
   // eventClassification's computeUnmatchedEvidenceAudit.historyCoverageStatus — see its own header.
@@ -317,6 +318,7 @@ export type PublicPnlGateAudit = {
   // from denomAudit.preWindowInventoryExitsUnprovenDueToTruncation — see its own header. 0 when the
   // caller didn't supply it (never estimated).
   preWindowInventoryExitsUnprovenDueToTruncation: number
+  sellsBlockedSolelyByUnprovenBoundary?: number
   // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
   // denomAudit.historyCoverageStatus — null when the caller didn't supply it (never guessed).
   historyCoverageStatus: 'exhaustive' | 'truncated' | 'partial' | 'unknown' | null
@@ -1618,11 +1620,14 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       // Name the boundary failure in the primary/public blocker list when it is the reason
       // unmatched exits cannot be proven as pre-window inventory. Never infer proof from span.
-      if (!windowBoundaryProven && (denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0) > 0) {
+      const boundaryBlockedSellCount = denomAudit?.sellsBlockedSolelyByUnprovenBoundary
+        ?? denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation
+        ?? 0
+      if (!windowBoundaryProven && boundaryBlockedSellCount > 0) {
         blockingReasons.push({
           rule: 'window_boundary_unproven_for_unmatched_sells',
           threshold: '0 exits blocked by boundary',
-          actualValue: String(denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0),
+          actualValue: String(boundaryBlockedSellCount),
         })
       }
       if (realizedPnlUsd === null) {
@@ -1673,6 +1678,7 @@ export function createPnlReconciliation(config: Config = {}) {
         openPositionBuys: denomAudit?.openPositionBuys ?? 0,
         preWindowInventoryExits: denomAudit?.preWindowInventoryExits ?? 0,
         preWindowInventoryExitsUnprovenDueToTruncation: denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0,
+        sellsBlockedSolelyByUnprovenBoundary: boundaryBlockedSellCount,
         historyCoverageStatus: denomAudit?.historyCoverageStatus ?? null,
         invalidOrUnknownUnmatchedEvents: gateUnmatchedBuys + gateUnmatchedSells,
         scanWindowDays: denomAudit?.scanWindowDays ?? null,

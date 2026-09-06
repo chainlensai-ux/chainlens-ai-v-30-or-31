@@ -94,6 +94,27 @@ function mockGoldrushPageWithAllEightTokens(): { getCallCount: () => number } {
 }
 
 describe('buildRecoveryPolicyObject — free-riding zero-budget candidates onto an already-paid shared page', () => {
+  it('targets a verified unmatched exit with no in-window buy and recovers an earlier inbound when present', async () => {
+    const token = tokenContract(1)
+    global.fetch = (async () => new Response(JSON.stringify({ data: { items: [{
+      tx_hash: '0xearlier-buy', block_signed_at: '2023-01-01T00:00:00Z', transfers: [{
+        from_address: '0xpool000000000000000000000000000000000', to_address: WALLET,
+        contract_address: token, contract_ticker_symbol: 'T1', delta: '1000', contract_decimals: 18,
+      }],
+    }] } }), { status: 200 })) as unknown as typeof fetch
+    const emptyBuy: BuyTimeline = { totalBuys: 0, chainContext: CHAIN_CONTEXT, entries: [] }
+    const emptySell: SellTimeline = { totalSells: 0, chainContext: CHAIN_CONTEXT, entries: [] }
+    const result = await buildRecoveryPolicyObject({
+      buyTimeline: emptyBuy, sellTimeline: emptySell, holdings: [], walletAddress: WALLET,
+      targetedUnmatchedExits: [{ token, chain: 'base', txHash: '0xexit', timestamp: 1_700_000_000 }],
+    })
+    assert.equal(result.evaluation.length, 1)
+    assert.equal(result.evaluation[0].recoveryTriggered, true)
+    assert.equal(result.evaluation[0].triggeredBy[0].rule, 'verified_unmatched_exit_without_earlier_buy')
+    assert.equal(result.evaluation[0].recoveredEvents.length, 1)
+    assert.equal(result.pnlRecoveryFlowAudit?.[0].entryLotsRecovered, 1)
+  })
+
   it('THE BUG: with DEFAULT_RECOVERY_CAPS, only 3 of 8 triggered candidates get real wallet-page budget', async () => {
     mockGoldrushPageWithAllEightTokens()
     const { buyTimeline, sellTimeline } = buildTimelines()

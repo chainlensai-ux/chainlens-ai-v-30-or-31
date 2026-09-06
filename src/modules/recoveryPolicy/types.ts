@@ -11,6 +11,7 @@ export type RecoveryTriggerRule =
   | 'token_value_usd_gte'
   | 'in_top_3_holdings'
   | 'repeated_in_sell_timeline_min_count'
+  | 'verified_unmatched_exit_without_earlier_buy'
 
 export type RecoveryTriggerEvidenceRef = {
   txHash: string
@@ -19,7 +20,7 @@ export type RecoveryTriggerEvidenceRef = {
 
 export type RecoveryTriggeredBy = {
   rule: RecoveryTriggerRule
-  evidenceSource: 'buyTimeline' | 'sellTimeline'
+  evidenceSource: 'buyTimeline' | 'sellTimeline' | 'verifiedReceiptSwap'
   evidenceEntryRefs: RecoveryTriggerEvidenceRef[]
   detail: string
 }

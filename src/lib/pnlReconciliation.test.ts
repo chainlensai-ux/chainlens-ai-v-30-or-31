@@ -1506,4 +1506,24 @@ describe('pnlReconciliation', () => {
       { rule: 'window_boundary_unproven_for_unmatched_sells', threshold: '0 exits blocked by boundary', actualValue: '2' },
     )
   })
+
+  it('names boundary-blocked sells even when the legacy pre-window truncation count is zero', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 2 }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 2,
+        windowBoundaryProven: false, boundedSampleWindowSafe: false,
+        preWindowInventoryExitsUnprovenDueToTruncation: 0,
+        sellsBlockedSolelyByUnprovenBoundary: 2,
+      },
+    })
+    assert.deepEqual(
+      summary.publicPnlGateAudit.blockingReasons.find((reason) => reason.rule === 'window_boundary_unproven_for_unmatched_sells'),
+      { rule: 'window_boundary_unproven_for_unmatched_sells', threshold: '0 exits blocked by boundary', actualValue: '2' },
+    )
+    assert.equal(summary.publicPnlGateAudit.sellsBlockedSolelyByUnprovenBoundary, 2)
+  })
 })

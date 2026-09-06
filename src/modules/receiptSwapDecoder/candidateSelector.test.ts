@@ -78,6 +78,20 @@ test('unmatched unknown-counterparty outbound with prior inventory is fetched fi
   assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
 })
 
+test('unmatched outbound is a hard receipt candidate even with no prior candidate set or weak signal', () => {
+  const exit = baseEvidence({
+    txHash: '0x84fa-no-candidate-set',
+    legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 11306 }],
+    isUnmatchedOutboundExit: true,
+  })
+  const result = selectBaseReceiptCandidates([exit])
+  assert.equal(result.baseSwapCandidates, 1)
+  assert.equal(result.selectorEligibleCandidates, 1)
+  assert.equal(result.selected[0].txHash, exit.txHash)
+  assert.equal(result.selected[0].priorityTier, 1)
+  assert.equal(result.selected[0].priorityReason, 'unmatched_outbound_receipt_audit')
+})
+
 test('known/high-confidence router transaction is eligible', () => {
   const evidence = baseEvidence({
     txHash: '0x1',

@@ -366,6 +366,7 @@ async function safeRunRecoveryPolicy(params: {
   walletAddress: string
   verifiedSwapTxKeys?: ReadonlySet<string>
   scanMode: RunWalletScanParams['scanMode']
+  targetedUnmatchedExits?: Parameters<typeof buildRecoveryPolicyObject>[0]['targetedUnmatchedExits']
 }): Promise<RecoveryPolicyResult> {
   // Cost guarantee: recovery is a deep-scan-only capability. A 'normal' scan never reaches
   // buildRecoveryPolicyObject at all, so it can never trigger a historical fetch, regardless of
@@ -380,6 +381,7 @@ async function safeRunRecoveryPolicy(params: {
       // fabricated (Architecture Step 7 §3's "uncomputable defaults to the conservative value").
       holdings: [],
       walletAddress: params.walletAddress,
+      targetedUnmatchedExits: params.targetedUnmatchedExits,
     })
   } catch {
     return recoveryPolicyFallback()
@@ -1829,6 +1831,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         missingClosedLotSide: missingClosedLotSideByGroupKey.get(groupKey) ?? (hasPriorBuyInventory ? 'exit' : null),
         economicValueUsd: null,
         hasPriorBuyInventory,
+        // Hard receipt-audit seed: a one-sided wallet outbound must not disappear merely because
+        // the pre-receipt selector has no router/quote signal. Decoding remains fail-closed.
+        isUnmatchedOutboundExit: legs.some((leg) => leg.direction === 'outbound')
+          && !legs.some((leg) => leg.direction === 'inbound'),
       })
     }
 
@@ -2017,14 +2023,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // result to the second. The codebase's own sibling cache (src/deployment/scanCache.ts's cacheKey)
   // already sorts+joins params.chains into its key — same convention applied here.
   const recoveryPolicyStart = performance.now()
+  const verifiedReceiptTxKeys = new Set(shadowExactReceiptSwaps.map((swap) => `base:${swap.txHash.toLowerCase()}`))
+  const targetedUnmatchedExits = normalizedEvents
+    .filter((event) => event.direction === 'outbound' && verifiedReceiptTxKeys.has(`${event.chain}:${event.txHash.toLowerCase()}`))
+    .filter((exit) => !normalizedEvents.some((candidate) => candidate.direction === 'inbound'
+      && candidate.chain === exit.chain
+      && candidate.contract.toLowerCase() === exit.contract.toLowerCase()
+      && Date.parse(candidate.timestamp) < Date.parse(exit.timestamp)))
+    .map((exit) => ({
+      token: exit.contract,
+      chain: exit.chain,
+      txHash: exit.txHash,
+      timestamp: Math.floor(Date.parse(exit.timestamp) / 1000),
+    }))
   const recoveryPolicy = await withStageCache(
-    `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${[...preScan.sanitizedChains].sort().join(',')}:${params.scanMode}`,
+    `v3:recoveryPolicy:${params.walletAddress.toLowerCase()}:${[...preScan.sanitizedChains].sort().join(',')}:${params.scanMode}:${targetedUnmatchedExits.map((exit) => `${exit.chain}:${exit.token.toLowerCase()}:${exit.txHash.toLowerCase()}`).sort().join(',')}`,
     REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS,
     () => safeRunRecoveryPolicy({
       buyTimeline: timelines.buyTimeline,
       sellTimeline: adaptSellTimelineV2ForRecoveryTrigger(preRecoverySellTimelineV2),
       walletAddress: params.walletAddress,
       scanMode: params.scanMode,
+      targetedUnmatchedExits,
     }),
     { trackHit: (hit) => { if (hit) cacheStats.recoveryPolicyHits += 1; else cacheStats.recoveryPolicyMisses += 1 } },
   )
@@ -3408,6 +3428,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       openPositionBuys: unmatchedEvidenceAudit.openPositionBuys,
       preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
       preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
+      sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
       historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
       scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,

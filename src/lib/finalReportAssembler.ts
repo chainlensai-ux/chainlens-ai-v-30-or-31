@@ -37,11 +37,11 @@ export type FinalReportAssemblerOutput = FinalReport & {
   // AyriAttributionSummary.attributionCoveragePercent's own rename — see that field's header in
   // ayriAttribution.ts for the full reasoning. Every consumer of the old top-level `coveragePercent`
   // name updated alongside this rename.
-  attributionCoveragePercent: number
+  attributionCoveragePercent: number | null
   // ADDED, DISCLOSED (this task's explicit "expose separately" requirement): passed through
   // unchanged from ayriAttribution's own output — see that module's own field-level disclosures.
-  historicalPricingCoveragePercent: number
-  verifiedPricingCoveragePercent: number
+  historicalPricingCoveragePercent: number | null
+  verifiedPricingCoveragePercent: number | null
   fullyPricedLots: number
   totalLots: number
   integrityTier: AyriAttributionOutput['integrityTier']
