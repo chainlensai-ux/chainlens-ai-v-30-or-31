@@ -25,4 +25,4 @@ These run as part of the above handlers, not as separately callable tools:
 
 ## Known unsupported / partial capabilities
 
-See [[Known-Gaps-and-Stubs]] for the authoritative list (wallet compare, Uniswap V4 LP-burn proof, non-Base/ETH chains, copy-trade advice).
+See [[Known-Gaps-and-Stubs]] for the authoritative list (wallet compare, Uniswap V4 LP-burn proof, Polygon/Solana/Arbitrum token scans, copy-trade advice). Token Scanner itself supports Base, Ethereum, BNB, and Robinhood — see [[Supported-Chains-Limitations]].

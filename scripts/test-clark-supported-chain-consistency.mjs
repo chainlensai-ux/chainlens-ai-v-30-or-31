@@ -41,4 +41,18 @@ assert.match(followupChainUnsupportedMessage('solana'), /Solana/)
 assert.doesNotMatch(followupChainUnsupportedMessage('polygon'), /Base scan|scanned as Base/i)
 assert.match(followupChainUnsupportedMessage('polygon'), /Base, Ethereum, BNB, or Robinhood Chain/)
 
+// Docs last (Clark/CORTEX audit Item 19): Known-Gaps / Supported-Chains must not still
+// claim Token Scanner is Base+Ethereum only. Runtime remains the source of truth.
+{
+  const gaps = fs.readFileSync(new URL('../Clark/Notes/Known-Gaps-and-Stubs.md', import.meta.url), 'utf8')
+  const limits = fs.readFileSync(new URL('../Clark/Backend/Supported-Chains-Limitations.md', import.meta.url), 'utf8')
+  const tokenCap = fs.readFileSync(new URL('../Clark/Capabilities/Token-Scanner.md', import.meta.url), 'utf8')
+  assert.match(limits, /BNB/)
+  assert.match(limits, /Robinhood/)
+  assert.match(tokenCap, /BNB/)
+  assert.match(tokenCap, /Robinhood/)
+  assert.doesNotMatch(gaps, /returns `null` for Polygon, BNB, Arbitrum/)
+  assert.match(gaps, /resolves Base, Ethereum, BNB, and Robinhood/)
+}
+
 console.log('test-clark-supported-chain-consistency.mjs: all assertions passed')

@@ -1,14 +1,22 @@
 # Backend — Supported Chains & Limitations
 
-**Source:** `app/api/clark/route.ts` (`toTokenApiChain()`, ~lines 767–771), `lib/server/lpProof.ts`
+**Source:** `app/api/clark/route.ts` (`toTokenApiChain()`), `lib/server/clarkRouting.ts` (`normalizeFollowupChain()`), `lib/server/lpProof.ts`
+
+Docs in this vault are **not** source of truth for runtime logic — re-read the functions named above before changing product behavior.
 
 ## Token Scanner (Token Core)
 
-`toTokenApiChain()` only resolves **Base** and **Ethereum**. Any other chain (Polygon, BNB/BSC, Arbitrum) returns `null`, and the token scan handler responds with an explicit "chain not yet supported" message — it does not attempt a best-effort scan on an unsupported chain.
+`toTokenApiChain()` resolves **Base**, **Ethereum** (`eth`), **BNB**, and **Robinhood**. It returns `null` for chains Token Core cannot scan (Polygon, Solana, Arbitrum, unknown). Callers must surface that as an explicit "chain not yet supported" / unsupported-follow-up message — they must **not** fall through to a Base scan.
+
+Clark's local `SupportedChain` for GoldRush/GoPlus is `"base" | "ethereum" | "bnb"`. Robinhood is a separate `ForcedTokenScanChain` (and `toTokenApiChain`) member, not a GoldRush map key. Polygon is a named identity used only for honest rejection.
 
 ## Wallet Scanner
 
-Wallet snapshot/PnL data is sourced from Moralis/GoldRush/Zerion, which have broader multi-chain coverage than the token scanner, but Clark's *chain detection* (`extractRequestedChainFromPrompt()` in `clarkRouting.ts`) only explicitly recognizes ETH, BNB/BSC, Polygon, and Base chain words for routing purposes.
+Wallet snapshot/PnL data is sourced from Moralis/GoldRush/Zerion, which have broader multi-chain coverage than the token scanner, but Clark's *chain detection* (`extractRequestedChainFromPrompt()` in `clarkRouting.ts`) only explicitly recognizes ETH, BNB/BSC, Polygon, and Base chain words for routing purposes. Robinhood wallet PnL is a separate lane (`robinhoodWalletScanner`) and is never blended into EVM realized totals.
+
+## Pump Intelligence
+
+Pump Intelligence list/API chain slugs are `base | eth | robinhood`. Solana/BNB pump prompts return Unsupported rather than scanning Base. Base remains the product default only when no identity carried a chain.
 
 ## LP Proof
 
@@ -20,4 +28,4 @@ Treated as `concentrated_liquidity`, not as an unsupported chain/protocol — se
 
 ## Net effect
 
-Clark's deepest, most-verified capabilities (token scan, LP proof, dev history) are effectively Base + Ethereum only today. This is a real, current limitation — not a temporary bug — and should be treated as ground truth when writing user-facing copy or onboarding docs.
+Token scans run on Base, Ethereum, BNB, and Robinhood. LP proof and the deepest concentrated-liquidity checks remain effectively Base + Ethereum. Polygon/Solana/Arbitrum token scans are honest-unsupported, not a silent Base fallback. Treat the runtime helpers as ground truth when writing user-facing copy.

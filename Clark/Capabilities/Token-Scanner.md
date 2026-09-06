@@ -17,7 +17,7 @@ Given a contract address (or a resolvable ticker like `$AERO`, `BRETT`), runs th
 
 ## Chain support
 
-`toTokenApiChain()` (route.ts) only resolves **Base** and **Ethereum**. Polygon, BNB, and Arbitrum tokens return a "chain not yet supported" response — Clark does not silently degrade or guess for unsupported chains. See [[Supported-Chains-Limitations]].
+`toTokenApiChain()` (route.ts) resolves **Base**, **Ethereum**, **BNB**, and **Robinhood**. Polygon, Solana, and Arbitrum tokens return a "chain not yet supported" response — Clark does not silently degrade or scan them as Base. See [[Supported-Chains-Limitations]].
 
 ## Routing into this capability
 
