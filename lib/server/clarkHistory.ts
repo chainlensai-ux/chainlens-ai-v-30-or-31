@@ -62,6 +62,33 @@ export type ClarkHistoryErrorCode =
   | "history_limit";
 
 /**
+ * Strips PostgREST `.or()` / ILIKE metacharacters from a user search string so it can be
+ * interpolated into a filter (or passed to `.ilike()`) without becoming extra syntax.
+ * Empty after sanitizing means "do not search" — never match-all via a leftover `%`.
+ */
+export function sanitizeClarkHistorySearchQuery(raw: string): string {
+  return String(raw ?? "")
+    .replace(/[,()%_\\*]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+}
+
+export type ClarkHistoryChatOrderFields = {
+  pinned?: boolean | null;
+  updated_at?: string | null;
+};
+
+/** Pinned first, then most recently updated — same order as the unsfiltered GET chat list. */
+export function sortClarkHistoryChats<T extends ClarkHistoryChatOrderFields>(chats: T[]): T[] {
+  return [...chats].sort((a, b) => {
+    const pin = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+    if (pin !== 0) return pin;
+    return String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? ""));
+  });
+}
+
+/**
  * Classifies a Postgres/Supabase error into a stable error code so the frontend can show a
  * specific, non-generic message instead of a blanket failure. Falls back to the caller-supplied
  * default when the error doesn't match a known missing-table or permission signature.

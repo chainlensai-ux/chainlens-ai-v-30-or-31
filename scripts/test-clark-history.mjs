@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { generateChatTitle, buildMessagePreview, sanitizeMessageMetadata, classifyDbError } from '../lib/server/clarkHistory.ts'
+import { generateChatTitle, buildMessagePreview, sanitizeMessageMetadata, classifyDbError, sanitizeClarkHistorySearchQuery, sortClarkHistoryChats } from '../lib/server/clarkHistory.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const sqlSrc = fs.readFileSync(path.join(__dirname, '../supabase/clark-chat-history.sql'), 'utf8')
@@ -159,11 +159,62 @@ assert.ok(/clarkChatHistoryLimit/.test(apiSrc), 'history cap is read from the ca
 assert.match(pageSrc, /historyAtLimit/, 'Clark AI page tracks when saved-chat history is full')
 assert.match(pageSrc, /if \(historyAtLimit && !opts\?\.ignoreLimit\) return/, 'New Chat is a no-op at the Pro/Free history cap')
 assert.match(panelSrc, /disabled=\{historyAtLimit\}/, 'New Chat button is disabled at the history cap')
-assert.match(panelSrc, /historyChatCount/)
+assert.match(pageSrc, /historyChatCount/)
 assert.match(pageSrc, /savedChatCount/)
 assert.match(apiSrc, /historyMeta/)
 assert.match(clientSrc, /chatCount/)
 assert.equal((await import('../lib/pricingPlans.ts')).clarkChatHistoryLimit('pro'), 10)
 assert.equal((await import('../lib/pricingPlans.ts')).clarkChatHistoryLimit('elite'), null)
+
+// 17. Search query is sanitized before hitting PostgREST — commas / parens / ILIKE wildcards
+//     cannot become extra filter syntax. Empty-after-sanitize does not match-all.
+{
+  assert.equal(sanitizeClarkHistorySearchQuery('velvet'), 'velvet')
+  assert.equal(sanitizeClarkHistorySearchQuery('foo,id.neq.0'), 'foo id.neq.0')
+  assert.equal(sanitizeClarkHistorySearchQuery('a) ,or(id.eq.1'), 'a or id.eq.1')
+  assert.equal(sanitizeClarkHistorySearchQuery('%%%'), '')
+  assert.equal(sanitizeClarkHistorySearchQuery('hold_ers'), 'hold ers')
+  assert.ok(!apiSrc.includes('.or(`title.ilike.%${query}%'), 'history search must not interpolate the raw q into PostgREST .or()')
+  assert.ok(/sanitizeClarkHistorySearchQuery/.test(apiSrc), 'history route sanitizes q before ilike')
+  assert.ok(/\.ilike\('title'/.test(apiSrc) && /\.ilike\('last_message_preview'/.test(apiSrc), 'title/preview search uses parameterized ilike, not or()-interpolation')
+}
+
+// 18. Search / list ordering is pinned desc then updated_at desc (same as the unfiltered GET).
+{
+  const sorted = sortClarkHistoryChats([
+    { id: 'old', pinned: false, updated_at: '2026-01-01T00:00:00.000Z' },
+    { id: 'new', pinned: false, updated_at: '2026-09-01T00:00:00.000Z' },
+    { id: 'pin', pinned: true, updated_at: '2026-02-01T00:00:00.000Z' },
+  ])
+  assert.deepEqual(sorted.map((c) => c.id), ['pin', 'new', 'old'])
+  assert.ok(/sortClarkHistoryChats/.test(apiSrc), 'search results are ordered the same way as the chat list')
+  assert.ok(/\.order\('pinned', \{ ascending: false \}\)/.test(apiSrc), 'unfiltered chat list pins first')
+  assert.ok(/\.order\('updated_at', \{ ascending: false \}\)/.test(apiSrc), 'unfiltered chat list is newest-updated next')
+  assert.ok(/\.order\('created_at', \{ ascending: true \}\)/.test(apiSrc), 'messages load oldest-first')
+}
+
+// 19. Proven ownership gaps (NOT an RLS leak — service-role is intentional and every query is
+//     already .eq('user_id', userId); policies in SQL are auth.uid() = user_id). Before insert/
+//     folder attach, the route now also verifies the target chat/folder row belongs to the caller
+//     so a guessed UUID cannot attach a message or chat to someone else's row.
+{
+  assert.ok(/requireOwnedChat/.test(apiSrc), 'message insert verifies the chat belongs to the caller')
+  assert.ok(/requireOwnedFolder/.test(apiSrc), 'folder_id attach verifies the folder belongs to the caller')
+  assert.ok(/folder not found/.test(apiSrc) && /chat not found/.test(apiSrc))
+  assert.ok(/folder_id: null/.test(apiSrc), 'deleting a folder nulls folder_id on that user\'s chats first')
+  assert.ok(/typeof body\?\.folderId === 'string' \? body\.folderId : null/.test(apiSrc) || /nextFolderId/.test(apiSrc), 'PATCH chat can set folder_id to null')
+}
+
+// 20. New-chat / switch-chat / duplicate-send: client already isolates these. Lock the wiring so
+//     a later edit cannot drop bumpSession, memory clear, or the request gate.
+{
+  assert.ok(/function handleNewChat/.test(pageSrc) && /setMessages\(\[\]\)/.test(pageSrc) && /setActiveChatId\(null\)/.test(pageSrc), 'New Chat clears the thread and active id')
+  assert.ok(/clearClarkMemory\(\)/.test(pageSrc), 'New Chat clears Clark memory')
+  assert.ok(/loadClarkMemoryForChat\(chatId, \{ missing: 'clear' \}\)/.test(pageSrc), 'switching chats loads that chat\'s memory (or clears if none)')
+  assert.ok(/requestGateRef\.current\.begin\(text\)/.test(pageSrc), 'sends go through the duplicate-click gate')
+  assert.ok(/requestGateRef\.current\.shouldApply\(requestId\)/.test(pageSrc), 'stale in-flight replies are not applied')
+  assert.ok(/requestGateRef\.current\.bumpSession\(\)/.test(pageSrc), 'new/switch chat bumps the request-gate session')
+  assert.ok(/if \(id === activeChatId\) handleNewChat/.test(pageSrc), 'deleting the active chat opens a fresh empty chat')
+}
 
 console.log('clark chat history checks passed')

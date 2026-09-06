@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
-import { sanitizeMessageMetadata, buildMessagePreview, classifyDbError, type ClarkHistoryErrorCode } from '@/lib/server/clarkHistory'
+import { sanitizeMessageMetadata, buildMessagePreview, classifyDbError, sanitizeClarkHistorySearchQuery, sortClarkHistoryChats, type ClarkHistoryErrorCode } from '@/lib/server/clarkHistory'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { clarkChatHistoryLimit, clarkChatHistoryLimitCopy, type UserPlan } from '@/lib/pricingPlans'
 
@@ -81,6 +81,28 @@ async function rejectIfHistoryLimitReached(req: NextRequest, db: NonNullable<Ret
   return null
 }
 
+async function requireOwnedChat(
+  db: NonNullable<ReturnType<typeof getServiceClient>>,
+  userId: string,
+  chatId: string,
+): Promise<{ ok: true } | { error: { code?: string | null; message?: string | null } } | { missing: true }> {
+  const { data, error } = await db.from('clark_chats').select('id').eq('id', chatId).eq('user_id', userId).maybeSingle()
+  if (error) return { error }
+  if (!data) return { missing: true }
+  return { ok: true }
+}
+
+async function requireOwnedFolder(
+  db: NonNullable<ReturnType<typeof getServiceClient>>,
+  userId: string,
+  folderId: string,
+): Promise<{ ok: true } | { error: { code?: string | null; message?: string | null } } | { missing: true }> {
+  const { data, error } = await db.from('clark_chat_folders').select('id').eq('id', folderId).eq('user_id', userId).maybeSingle()
+  if (error) return { error }
+  if (!data) return { missing: true }
+  return { ok: true }
+}
+
 export async function GET(req: NextRequest) {
   const auth = await authenticate(req)
   if ('errorCode' in auth) {
@@ -113,25 +135,39 @@ export async function GET(req: NextRequest) {
   if (foldersError) return errorResponse(classifyDbError(foldersError, 'select_failed'), foldersError.message, 500)
 
   if (query) {
-    const [byTitle, byContent] = await Promise.all([
-      db.from('clark_chats').select('*').eq('user_id', userId)
-        .or(`title.ilike.%${query}%,last_message_preview.ilike.%${query}%`)
-        .order('updated_at', { ascending: false }),
-      db.from('clark_chat_messages').select('chat_id').eq('user_id', userId)
-        .ilike('content', `%${query}%`),
+    const safeQuery = sanitizeClarkHistorySearchQuery(query)
+    if (!safeQuery) {
+      return NextResponse.json({ folders: folders ?? [], chats: [], ...(await historyMeta(req, db, userId)) })
+    }
+    const pattern = `%${safeQuery}%`
+    const [byTitle, byPreview, byContent] = await Promise.all([
+      db.from('clark_chats').select('*').eq('user_id', userId).ilike('title', pattern),
+      db.from('clark_chats').select('*').eq('user_id', userId).ilike('last_message_preview', pattern),
+      db.from('clark_chat_messages').select('chat_id').eq('user_id', userId).ilike('content', pattern),
     ])
     if (byTitle.error) return errorResponse(classifyDbError(byTitle.error, 'select_failed'), byTitle.error.message, 500)
+    if (byPreview.error) return errorResponse(classifyDbError(byPreview.error, 'select_failed'), byPreview.error.message, 500)
     if (byContent.error) return errorResponse(classifyDbError(byContent.error, 'select_failed'), byContent.error.message, 500)
 
-    const matchedIds = new Set((byTitle.data ?? []).map((c) => c.id))
+    const byId = new Map<string, Record<string, unknown>>()
+    for (const row of [...(byTitle.data ?? []), ...(byPreview.data ?? [])]) {
+      if (row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string') {
+        byId.set((row as { id: string }).id, row as Record<string, unknown>)
+      }
+    }
+    const matchedIds = new Set(byId.keys())
     const contentChatIds = [...new Set((byContent.data ?? []).map((m) => m.chat_id))].filter((id) => !matchedIds.has(id))
-    let extraChats: unknown[] = []
     if (contentChatIds.length > 0) {
       const { data, error } = await db.from('clark_chats').select('*').eq('user_id', userId).in('id', contentChatIds)
       if (error) return errorResponse(classifyDbError(error, 'select_failed'), error.message, 500)
-      extraChats = data ?? []
+      for (const row of data ?? []) {
+        if (row && typeof row === 'object' && typeof (row as { id?: unknown }).id === 'string') {
+          byId.set((row as { id: string }).id, row as Record<string, unknown>)
+        }
+      }
     }
-    return NextResponse.json({ folders: folders ?? [], chats: [...(byTitle.data ?? []), ...extraChats], ...(await historyMeta(req, db, userId)) })
+    const chats = sortClarkHistoryChats([...byId.values()] as Array<{ pinned?: boolean; updated_at?: string }>)
+    return NextResponse.json({ folders: folders ?? [], chats, ...(await historyMeta(req, db, userId)) })
   }
 
   const { data: chats, error: chatsError } = await db
@@ -174,6 +210,11 @@ export async function POST(req: NextRequest) {
     if (blocked) return blocked
     const title = typeof body?.title === 'string' && body.title.trim() ? body.title.trim() : 'New Clark Chat'
     const folderId = typeof body?.folderId === 'string' ? body.folderId : null
+    if (folderId) {
+      const owned = await requireOwnedFolder(db, userId, folderId)
+      if ('error' in owned) return errorResponse(classifyDbError(owned.error, 'select_failed'), owned.error.message ?? 'Could not verify folder.', 500)
+      if ('missing' in owned) return NextResponse.json({ error: 'folder not found' }, { status: 404 })
+    }
     const { data, error } = await db
       .from('clark_chats')
       .insert({ user_id: userId, title, folder_id: folderId })
@@ -190,6 +231,9 @@ export async function POST(req: NextRequest) {
     if (!chatId || (role !== 'user' && role !== 'assistant' && role !== 'system') || !content) {
       return NextResponse.json({ error: 'chatId, role, and content are required' }, { status: 400 })
     }
+    const owned = await requireOwnedChat(db, userId, chatId)
+    if ('error' in owned) return errorResponse(classifyDbError(owned.error, 'select_failed'), owned.error.message ?? 'Could not verify chat.', 500)
+    if ('missing' in owned) return NextResponse.json({ error: 'chat not found' }, { status: 404 })
     const metadata = sanitizeMessageMetadata(body?.rawPayload ?? body?.metadata ?? {})
     const { data: message, error } = await db
       .from('clark_chat_messages')
@@ -247,7 +291,15 @@ export async function PATCH(req: NextRequest) {
   if (type === 'chat') {
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if (typeof body?.title === 'string' && body.title.trim()) updates.title = body.title.trim()
-    if ('folderId' in (body ?? {})) updates.folder_id = typeof body?.folderId === 'string' ? body.folderId : null
+    if ('folderId' in (body ?? {})) {
+      const nextFolderId = typeof body?.folderId === 'string' ? body.folderId : null
+      if (nextFolderId) {
+        const owned = await requireOwnedFolder(db, userId, nextFolderId)
+        if ('error' in owned) return errorResponse(classifyDbError(owned.error, 'select_failed'), owned.error.message ?? 'Could not verify folder.', 500)
+        if ('missing' in owned) return NextResponse.json({ error: 'folder not found' }, { status: 404 })
+      }
+      updates.folder_id = nextFolderId
+    }
     if (typeof body?.pinned === 'boolean') updates.pinned = body.pinned
     if (typeof body?.archived === 'boolean') updates.archived = body.archived
     const { data, error } = await db
