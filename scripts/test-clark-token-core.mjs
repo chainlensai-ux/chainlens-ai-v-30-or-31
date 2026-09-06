@@ -53,8 +53,8 @@ assert.ok(route.includes('toolsUsed: ["memory"]'), 'follow-up responses must ide
 assert.ok(route.includes('tokenFollowupRefreshRequested'), 'refresh gate must control rescans')
 
 // 7. No fake “safe” / “locked LP” when security or controller proof is missing.
-assert.ok(routing.includes('Safe? Not enough confirmed evidence to call it safe'), 'safety answer should stay Open Check when evidence is missing')
-assert.ok(routing.includes('Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}'), 'concentrated LP without controller proof must be open_check')
+assert.ok(routing.includes('Safe? Not enough confirmed evidence to call it safe'), 'safety answer should stay unavailable when evidence is missing')
+assert.ok(routing.includes('hasControllerProof ? (lp?.confidence ?? "partial") : clarkPublicStatus("unavailable", "controller was not confirmed")'), 'concentrated LP without controller proof must be Unavailable, not a fake confidence')
 assert.ok(!routing.includes('lp?.confidence ?? "medium"'), 'concentrated LP without controller proof must not default to medium confidence')
 assert.ok(routing.includes('standard LP-token lock/burn proof does not apply'), 'concentrated LP must not be called a normal locked LP')
 

@@ -99,8 +99,8 @@ const walletProfileRead = formatWalletFollowupFromMemory(wallet, {
   walletProfile: { walletCategory: 'Whale', portfolioConfidence: 'high', tradingConfidence: 'low' },
 }, 'wallet_profile')
 assert.match(walletProfileRead, /Whale: Yes/)
-assert.match(walletProfileRead, /Sniper: Open Check/)
-assert.match(walletProfileRead, /Dev wallet: Open Check/)
+assert.match(walletProfileRead, /Sniper: Unavailable/)
+assert.match(walletProfileRead, /Dev wallet: Unavailable/)
 
 // Token questions bind to token evidence, never wallet scanning.
 for (const prompt of ['Is this token safe to ape?', 'Is this token a rug risk?', 'Who controls supply?', 'Is liquidity locked?', 'Can the dev dump?', 'Are holders concentrated?', 'Explain contract risk.']) {

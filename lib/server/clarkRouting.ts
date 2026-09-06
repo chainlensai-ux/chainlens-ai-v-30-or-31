@@ -6,6 +6,7 @@ import { isValidSolanaMintAddress } from "../solanaAddress.ts";
 import { classifyClarkMarketIntent } from "./clarkMarketIntent.ts";
 import { normalizeRiskScore } from "../riskScoreDirection.ts";
 import { clarkTokenReadHeading } from "../clark/commandFormats.ts";
+import { toCanonical, canonicalLabelWithReason } from "../canonicalStatus.ts";
 import {
   clarkPartialMustNotBecomeOpenCheck,
   composeTokenScannerPublicStatus,
@@ -13,6 +14,18 @@ import {
   rewriteForbiddenStatusVocab,
 } from "../tokenScannerPublicStatus.ts";
 export { rewriteForbiddenStatusVocab };
+
+/** Public Clark status from a machine/raw label. Reuses Token Scanner toCanonical() — never a second mapping. */
+function clarkPublicStatus(raw: string | null | undefined, reason?: string | null): string {
+  const key = String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (key === "not_checked" || key === "skipped" || key === "pending") {
+    return formatTokenScannerPublicStatus(raw, reason ?? "this check was not run in this scan");
+  }
+  if (key === "watch") return composeTokenScannerPublicStatus("watch", reason);
+  if (key === "locked") return composeTokenScannerPublicStatus("locked", reason);
+  if (key === "unsupported" || key === "not_supported") return composeTokenScannerPublicStatus("unsupported", reason);
+  return canonicalLabelWithReason(toCanonical(raw), reason);
+}
 
 export type DashboardMarketRow = {
   symbol: string;
@@ -1241,11 +1254,16 @@ export function chainDisplayName(chain: string): string {
 
 /** Maps the internal PnL quality label to the public "PnL status: <X>" wording. Never
  * implies profitable/unprofitable — only reports whether PnL evidence was resolved. */
-function pnlStatusLabel(label: string): "Verified" | "Partial" | "Unavailable" | "Open Check" {
-  if (label === "ok") return "Verified";
-  if (label === "unavailable") return "Unavailable";
-  if (label === "open_check") return "Open Check";
-  return "Partial";
+function pnlStatusLabel(label: string): "Verified" | "Partial" | "Unavailable" {
+  const key = String(label ?? "").trim().toLowerCase();
+  if (key === "ok" || key === "verified") return "Verified";
+  // Clark's own quality labels ("attempted: limited", "locked_no_closed_lots") are not
+  // CanonicalStatus raw keys — they mean real but incomplete PnL evidence.
+  if (/partial|limited|incomplete|locked|attempted|inferred/.test(key)) return "Partial";
+  const mapped = toCanonical(label);
+  if (mapped === "verified") return "Verified";
+  if (mapped === "partial" || mapped === "inferred") return "Partial";
+  return "Unavailable";
 }
 
 function describePnlQuality(result: WalletApiResult): { label: string; reason: string } {
@@ -1309,7 +1327,7 @@ function explainWalletMeaning(
   } else {
     parts.push(`${holdings.length} holding${holdings.length === 1 ? "" : "s"} priced.`);
   }
-  if (pnlStatusLabel(pnlQ.label) === "Partial" || pnlStatusLabel(pnlQ.label) === "Open Check" || pnlStatusLabel(pnlQ.label) === "Unavailable") {
+  if (pnlStatusLabel(pnlQ.label) === "Partial" || pnlStatusLabel(pnlQ.label) === "Unavailable") {
     parts.push(`PnL is partial because ${pnlQ.reason}.`);
   } else {
     parts.push("PnL evidence is complete enough for a verified read.");
@@ -1424,7 +1442,10 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   // walletTradeStatsSummary) directly into the user-facing reply — a debug dump, not an answer.
   // Same underlying evidence, converted to plain wording; nothing that was previously visible is
   // now hidden, it just no longer reads like an internal API response.
-  if (health) lines.push(`- Scan health: ${health.status === "ok" ? "complete" : health.status === "limited_pnl" ? "partial (PnL evidence limited)" : String(health.status ?? "unknown")}${health.summary ? ` — ${health.summary}` : ""}`);
+  if (health) {
+    const healthLabel = health.status === "ok" ? "complete" : health.status === "limited_pnl" ? "partial (PnL evidence limited)" : clarkPublicStatus(health.status, "scan health was not confirmed");
+    lines.push(`- Scan health: ${healthLabel}${health.summary ? ` — ${health.summary}` : ""}`);
+  }
   if (coverage) {
     const modulesLimited: string[] = [];
     if (coverage.portfolio?.status && coverage.portfolio.status !== "ok") modulesLimited.push("portfolio");
@@ -1439,7 +1460,8 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   const pnlQ = describePnlQuality(result);
   lines.push(`- PnL status: ${pnlStatusLabel(pnlQ.label)}`);
   lines.push(`- Reason: ${pnlQ.reason}`);
-  lines.push(`- Historical recovery status: ${String(result.walletHistoricalCoverageSummary?.status ?? result.historicalRecoveryStatus ?? (deep ? "open check" : "portfolio preview"))}`);
+  const histRaw = result.walletHistoricalCoverageSummary?.status ?? result.historicalRecoveryStatus ?? null;
+  lines.push(`- Historical recovery status: ${histRaw != null && String(histRaw).trim() !== "" ? clarkPublicStatus(String(histRaw)) : (deep ? composeTokenScannerPublicStatus("unavailable", "historical recovery was not confirmed in this scan") : composeTokenScannerPublicStatus("partial", "portfolio preview"))}`);
   if (result.walletTokenPnlSummary) {
     const tp = result.walletTokenPnlSummary;
     lines.push(`- Token-level PnL: ${tp.status === "ok" ? "available" : `partial${tp.reason ? ` — ${tp.reason}` : ""}`}`);
@@ -1462,7 +1484,7 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
       else if (m === "priceEvidence" && priceDown) labels.push("price evidence unavailable");
       else if (m === "fifoPnL") labels.push("PnL is partial because closed lots/cost basis evidence is incomplete");
       else if (m === "tradeStats") labels.push("trade stats need more closed trades");
-      else labels.push(`${m} pending`);
+      else labels.push(`${m} was not confirmed`);
     }
     lines.push(`- Module status: ${labels.join(" / ")}`);
   }
@@ -1489,7 +1511,7 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   lines.push("- Explain PnL");
   lines.push("");
   lines.push(`CTA: Open Wallet Scanner${deep ? "" : " / Deep Scan Wallet"}`);
-  return lines.join("\n");
+  return rewriteForbiddenStatusVocab(lines.join("\n"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1643,7 +1665,7 @@ export function formatWalletPnlRead(read: ClarkWalletPnlRead | null): string {
       "WALLET PNL",
       "Status: Estimated only — not verified",
       `Estimated realized PnL: ${e?.realizedPnlUsd != null ? fmtUsdShort(e.realizedPnlUsd) : "unavailable"}`,
-      `Source lots: ${e?.sourceLots ?? "unknown"} / Confidence: ${e?.confidence ?? "unknown"}`,
+      `Source lots: ${e?.sourceLots ?? composeTokenScannerPublicStatus("unavailable", "source lots were not confirmed")} / Confidence: ${e?.confidence ?? composeTokenScannerPublicStatus("unavailable", "estimated confidence was not confirmed")}`,
       "Estimated PnL exists, but it is not verified and is excluded from win rate, profit skill, wallet score, and verified PnL.",
       "Profit skill remains locked.",
       "Wallet score remains locked.",
@@ -1710,7 +1732,7 @@ function walletEvidenceReasons(result: WalletApiResult): string[] {
 /** Structured, evidence-backed gap flags shared by the deep-scan-advice and evidence-gaps
  * follow-up formatters — only ever derived from cached wallet evidence, never invented. */
 function walletEvidenceGapFlags(result: WalletApiResult): {
-  pnlStatus: "Verified" | "Partial" | "Open Check" | "Unavailable";
+  pnlStatus: "Verified" | "Partial" | "Unavailable";
   pnlGap: boolean;
   lotsGap: boolean;
   histGap: boolean;
@@ -1735,13 +1757,13 @@ function walletEvidenceGapFlags(result: WalletApiResult): {
   };
 }
 
-function walletPnlStatus(result: WalletApiResult): "Verified" | "Partial" | "Open Check" | "Unavailable" {
+function walletPnlStatus(result: WalletApiResult): "Verified" | "Partial" | "Unavailable" {
   const q = describePnlQuality(result);
   if (q.label === "ok") return "Verified";
   const text = JSON.stringify([q, result.walletModuleCoverage, result.walletTokenPnlSummary]).toLowerCase();
   if (/unavailable|provider_unavailable|not available/.test(text)) return "Unavailable";
   if (/partial|limited|incomplete|locked|attempted/.test(text)) return "Partial";
-  return "Open Check";
+  return "Unavailable";
 }
 
 export function formatWalletFollowupFromMemory(address: string, result: WalletApiResult, kind: WalletFollowupKind): string {
@@ -1757,7 +1779,7 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
   const topLines = top.length ? top.map((h, i) => `${i + 1}. ${String(h.symbol ?? "?").toUpperCase()}${h.chain ? ` [${chainDisplayName(h.chain)}]` : ""} — ${fmtUsdShort(h.value)}`) : ["none returned with value"];
   const canProfit = pnlStatus === "Verified";
   if (kind === "wallet_profitability") return [
-    "WALLET PROFITABILITY", `Status: ${pnlStatus === "Verified" ? "Verified" : pnlStatus === "Partial" ? "Partial" : "Open Check"}`,
+    "WALLET PROFITABILITY", `Status: ${pnlStatus === "Verified" ? "Verified" : pnlStatus === "Partial" ? `Partial: ${q.reason}` : `Unavailable: ${q.reason}`}`,
     `Realized PnL: ${walletEvidenceValue(result as any, ["realizedPnlUsd", "walletTokenPnlSummary.realizedPnlUsd", "walletTradeStatsSummary.realizedPnlUsd"]) ?? "unavailable"}`,
     `Unrealized/Open PnL: ${walletEvidenceValue(result as any, ["unrealizedPnlUsd", "walletTokenPnlSummary.unrealizedPnlUsd", "walletTradeStatsSummary.unrealizedPnlUsd"]) ?? "unavailable"}`,
     `Closed lots: ${closed}`, `Open lots: ${open}`, `PnL confidence: ${pnlStatus}`, "Read:", canProfit ? "Clark can judge profitability because verified PnL evidence is present." : (pnlStatus === "Partial" ? "Profitability is partial — cost basis / closed lots are incomplete." : "Clark can assess portfolio exposure, but not profitability yet."),
@@ -1820,7 +1842,7 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
     const recommend = whyLines.length > 0 ? "Yes" : (hasHoldings ? "No" : "Maybe");
     return [
       "DEEP SCAN ADVICE", `Recommended: ${recommend}`, "",
-      "Why:", ...(whyLines.length ? whyLines : ["Cached evidence does not show major gaps beyond normal open checks"]).map(r => `- ${r}`), "",
+      "Why:", ...(whyLines.length ? whyLines : ["Cached evidence does not show major remaining gaps"]).map(r => `- ${r}`), "",
       "Cost note:", "Deep scan may use more provider credits. Use it when PnL/trade history matters.",
     ].join("\n");
   }
@@ -1881,9 +1903,9 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
     return [
       "WALLET PROFILE",
       `Category: ${category}`,
-      `Whale: ${category === "Whale" ? "Yes — portfolio value meets the Wallet Scanner whale threshold." : category === "Not Yet Classified" ? "Open Check — portfolio value is missing." : "No — current portfolio value is below the whale threshold."}`,
-      "Sniper: Open Check — verified acquisition-timing identity evidence is not available in this read.",
-      "Dev wallet: Open Check — verified deployer/link evidence is not available in this read.",
+      `Whale: ${category === "Whale" ? "Yes — portfolio value meets the Wallet Scanner whale threshold." : category === "Not Yet Classified" ? "Unavailable: portfolio value is missing." : "No — current portfolio value is below the whale threshold."}`,
+      "Sniper: Unavailable: verified acquisition-timing identity evidence is not available in this read.",
+      "Dev wallet: Unavailable: verified deployer/link evidence is not available in this read.",
       `Portfolio Behavior: ${portfolioBehavior}`,
       `Trading Behavior: ${tradingBehavior}`,
       `Portfolio Confidence: ${portfolioConfidence}`,
@@ -3248,8 +3270,8 @@ function lpStatusLine(ev: TokenScanEvidence): string {
 }
 
 // Canonical verdict values — Clark must never emit any other string (and never a
-// combined phrase like "Open Check / Caution based on available evidence").
-export type ClarkVerdict = "Avoid" | "Caution" | "Open Check" | "Cleaner";
+// combined phrase). "Open Check" is banned from public output.
+export type ClarkVerdict = "Avoid" | "Caution" | "Unavailable" | "Cleaner" | "Partial";
 
 function verdictLabel(ev: TokenScanEvidence): ClarkVerdict {
   const sec = ev.security;
@@ -3263,15 +3285,14 @@ function verdictLabel(ev: TokenScanEvidence): ClarkVerdict {
   // confirmed mint flag — the owner can still change behavior the token can't undo.
   if (sec?.ownerRenounced === false) return "Caution";
   if (h?.top10 != null && h.top10 > 80) return "Caution";
-  if (isConcentratedLp(lp) && !concentratedControllerProofStatus(lp).hasProof) return "Open Check";
+  if (isConcentratedLp(lp) && !concentratedControllerProofStatus(lp).hasProof) return "Partial";
   if (sec?.honeypot === false && sec?.ownerRenounced === true && (lp?.status === "locked" || lp?.status === "burned")) return "Cleaner";
-  return "Open Check";
+  return "Partial";
 }
 
 // Public, structured verdict for the JSON response (data.verdict/data.confidence/data.source).
 // Must stay in sync with the human-readable "Verdict:" line produced by verdictLabel() above —
-// both read the same TokenScanEvidence fields, so they can never disagree. Always one of the
-// four canonical ClarkVerdict values — never a combined phrase.
+// both read the same TokenScanEvidence fields, so they can never disagree.
 export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: boolean): {
   verdict: ClarkVerdict;
   confidence: "full" | "partial" | "none";
@@ -3279,7 +3300,7 @@ export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: bool
 } {
   const label = verdictLabel(ev);
   const confidence: "full" | "partial" | "none" = ev.ok ? "full" : usableEvidence ? "partial" : "none";
-  const verdict: ClarkVerdict = !usableEvidence ? "Open Check" : label;
+  const verdict: ClarkVerdict = !usableEvidence ? "Unavailable" : label;
   return {
     verdict,
     confidence,
@@ -3883,11 +3904,11 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
   }
 
   const { verdict } = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
-  const publicVerdict = verdict === "Open Check"
-    ? clarkPartialMustNotBecomeOpenCheck(hasUsableTokenEvidence(ev) ? "Partial Evidence" : "Unavailable", "insufficient evidence for a decisive token verdict")
+  const publicVerdict = verdict === "Unavailable" || verdict === "Partial"
+    ? clarkPartialMustNotBecomeOpenCheck(verdict === "Partial" ? "Partial Evidence" : "Unavailable", "insufficient evidence for a decisive token verdict")
     : verdict;
   lines.push(`- Verdict: ${publicVerdict}`);
-  if (verdict === "Open Check") {
+  if (verdict === "Unavailable" || verdict === "Partial") {
     const reasons: string[] = [];
     if (!sec || sec.honeypot == null) reasons.push("Security simulation unavailable");
     if (isConcentratedLp(ev.lpControl) && !concentratedControllerProofStatus(ev.lpControl).hasProof) reasons.push("Concentrated LP position/controller proof unavailable");
@@ -3910,7 +3931,7 @@ export function formatTokenScanResult(ev: TokenScanEvidence, chain = "Base"): st
 
 // Clark fast-mode reply: used when /api/token was called with mode "clark_fast"
 // and returned market/pool identity but skipped the slow holders/deep-LP/dev
-// enrichment sections. Those sections are reported as Open Check, never as fake
+// enrichment sections. Those sections are reported as Not Checked, never as fake
 // safe/verified values.
 export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): string {
   const sym = String(ev.token?.symbol ?? "?").toUpperCase();
@@ -4001,7 +4022,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     openChecks.push("Honeypot: tax data returned, honeypot simulation unavailable.");
     openTopics.push("honeypot");
   } else {
-    openChecks.push(`Honeypot/security: ${sec ? formatTokenSecurityStatus(sec).replace(/^Open Check — /, "") : "Security simulation unavailable."}`);
+    openChecks.push(`Honeypot/security: ${sec ? formatTokenSecurityStatus(sec) : composeTokenScannerPublicStatus("unavailable", "security simulation unavailable")}`);
     openTopics.push("honeypot/security");
   }
 
@@ -4012,7 +4033,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     visible.push("LP: concentrated pool; standard LP-token lock/burn proof does not apply.");
     const proof = concentratedControllerProofStatus(lp);
     if (proof.hasProof) visible.push(`LP controller/position evidence: ${proof.state}.`);
-    else openChecks.push("LP proof is open check — position/controller proof is unavailable in this read.");
+    else openChecks.push(`LP proof: ${composeTokenScannerPublicStatus("unavailable", "position/controller proof is unavailable in this read")}`);
   } else if (lp && lp.status && lp.status !== "open_check" && lp.status !== "unverified") {
     visible.push(`${lpStatusLine(ev)}.`);
   } else {
@@ -4058,7 +4079,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     if (!whyBits.includes(r)) whyBits.push(r);
   }
   if (openChecks.length > 0 && risks.length === 0) {
-    whyBits.push(`Open checks remain: ${openTopics.length ? openTopics.join(", ") : "security, LP, or holders"}.`);
+    whyBits.push(`Evidence gaps remain: ${openTopics.length ? openTopics.join(", ") : "security, LP, or holders"}.`);
   }
   if (whyBits.length > 0) {
     lines.push("", "Why:");
@@ -4074,7 +4095,7 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
     risks.forEach(r => lines.push(`- ${r}`));
   }
   if (openChecks.length > 0) {
-    lines.push("", "Open checks:");
+    lines.push("", "Evidence Gaps:");
     openChecks.forEach(o => lines.push(`- ${o}`));
   }
 
@@ -4124,7 +4145,7 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
   const biggestRisk = watchFor[0] ?? gaps[0] ?? "No single confirmed red flag in cached evidence.";
   const shouldWatch = meta.verdict === "Avoid" ? "No — confirmed avoid-level risk. Watch only if you are tracking the failure mode."
     : watchFor.length > 0 ? "Yes, with caution — confirmed risk signals exist."
-    : gaps.length > 0 ? "Watch as an open check — do not treat it as safe yet."
+    : gaps.length > 0 ? "Watch: evidence gaps remain — do not treat it as safe yet."
     : "Optional watch — no confirmed red flags in cached evidence.";
 
   return rewriteForbiddenStatusVocab([
@@ -4132,7 +4153,7 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
     `Should you watch it? ${shouldWatch}`,
     "",
     "Why watch:",
-    ...(watchBecause.length ? watchBecause.map(x => `- ${x}`) : ["- No confirmed watch-reason from cached evidence beyond the open checks below."]),
+    ...(watchBecause.length ? watchBecause.map(x => `- ${x}`) : ["- No confirmed watch-reason from cached evidence beyond the evidence gaps below."]),
     "",
     "Watch for (risks):",
     ...(watchFor.length ? watchFor.map(x => `- ${x}`) : ["- No confirmed risk signal in cached evidence."]),
@@ -4145,7 +4166,7 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
     "",
     ...(gaps.length ? ["Missing evidence:", ...gaps.slice(0, 3).map(g => `- ${g}`), ""] : []),
     "Next:",
-    `- ${gaps.length ? `Resolve open checks: ${gaps.slice(0, 3).join("; ")}` : "Use Token Scanner / LP Check before making any trade decision."}`,
+    `- ${gaps.length ? `Resolve evidence gaps: ${gaps.slice(0, 3).join("; ")}` : "Use Token Scanner / LP Check before making any trade decision."}`,
     "- /lp",
     "- /holders",
     "- /deployer",
@@ -4168,23 +4189,23 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
   const lines = [`DEV/RUG CHECK — ${sym} (${chain})`, "", conclusion, ""];
 
   if (sec?.ownerRenounced != null) lines.push(`- Ownership: ${sec.ownerRenounced ? "renounced — owner cannot call privileged functions" : "NOT renounced — active owner present"}`);
-  else lines.push("- Ownership: open check — renounce status not confirmed");
+  else lines.push(`- Ownership: ${composeTokenScannerPublicStatus("unavailable", "renounce status not confirmed")}`);
 
   if (sec?.mintable != null) lines.push(`- Mint authority: ${sec.mintable ? "YES — new tokens can be minted" : "no mint authority detected"}`);
-  else lines.push("- Mint authority: open check");
+  else lines.push(`- Mint authority: ${composeTokenScannerPublicStatus("unavailable", "mint authority was not confirmed")}`);
 
   if (sec?.proxy != null) lines.push(`- Proxy/upgradeable: ${sec.proxy ? "YES — contract logic can be replaced" : "no proxy detected"}`);
-  else lines.push("- Proxy/upgradeable: open check");
+  else lines.push(`- Proxy/upgradeable: ${composeTokenScannerPublicStatus("unavailable", "proxy status was not confirmed")}`);
 
   if (lp) {
     const controlled = lp.status === "wallet_controlled" || lp.status === "team_controlled";
-    lines.push(`- LP control: ${controlled ? "wallet/team controlled — dev can pull liquidity" : isConcentratedLp(lp) ? "concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required." : (lp.status === "locked" || lp.status === "burned" ? "locked/burned — pull risk reduced" : `open check (${lp.status ?? "unverified"})`)}`);
+    lines.push(`- LP control: ${controlled ? "wallet/team controlled — dev can pull liquidity" : isConcentratedLp(lp) ? "concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required." : (lp.status === "locked" || lp.status === "burned" ? "locked/burned — pull risk reduced" : clarkPublicStatus(lp.status, lp.reason ?? "LP control was not confirmed"))}`);
   } else {
-    lines.push("- LP control: open check — not verified");
+    lines.push(`- LP control: ${composeTokenScannerPublicStatus("unavailable", "LP control was not confirmed")}`);
   }
 
   if (h?.top1 != null) lines.push(`- Top-1 holder: ${h.top1.toFixed(1)}% of supply`);
-  else lines.push("- Top-1 holder: open check");
+  else lines.push(`- Top-1 holder: ${composeTokenScannerPublicStatus("unavailable", "top-1 holder share was not confirmed")}`);
 
   if (h?.top10 != null) lines.push(`- Top-10 holders: ${h.top10.toFixed(1)}% of supply${h.top10 >= 40 ? " — elevated concentration" : ""}`);
 
@@ -4218,7 +4239,7 @@ export function formatHoldersCheck(ev: TokenScanEvidence, chain = "Base"): strin
     : "Moderate — no extreme concentration in returned holder rows.";
   const confidence = (top1 != null || top10 != null) && count != null ? "Medium"
     : (top1 != null || top10 != null) ? "Low"
-    : "open_check";
+    : clarkPublicStatus("unavailable", "holder concentration was not returned");
   const meaning = top1 == null && top10 == null
     ? "Holder concentration was not returned in this pass. Do not treat missing holder data as distributed supply."
     : "Returned holder rows are on-chain distribution counts only. Wallet identities are not verified here.";
@@ -4249,11 +4270,11 @@ export function formatHoldersCheck(ev: TokenScanEvidence, chain = "Base"): strin
 // Maps a canonical ClarkVerdict to an "ape risk" label. Cleaner -> Low, everything that isn't
 // a confirmed-clean read defaults toward higher caution; Open Check (insufficient evidence) is
 // reported as Unknown, never as a false "Low".
-function apeRiskFromVerdict(verdict: ClarkVerdict): "Low" | "Medium" | "High" | "Unknown" {
+function apeRiskFromVerdict(verdict: ClarkVerdict): "Low" | "Medium" | "High" | "Unavailable" {
   if (verdict === "Avoid") return "High";
   if (verdict === "Caution") return "Medium";
   if (verdict === "Cleaner") return "Low";
-  return "Unknown";
+  return "Unavailable";
 }
 
 // CORTEX-facing verdict label — same four-value ClarkVerdict, just the trader-facing word for
@@ -4725,16 +4746,16 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     }
     lines.push("- Exit risk: Monitor / Watch based on current LP evidence.");
     if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)}`);
-    else lines.push("- Liquidity depth: open check");
+    else lines.push("- Liquidity depth: Unavailable: pool liquidity was not confirmed");
     const hasControllerProof = concentratedControllerProofStatus(lp).hasProof;
-    lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}`);
+    lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : clarkPublicStatus("unavailable", "controller was not confirmed")}`);
     lines.push("", "Next:", "- /holders", "- /deployer", "- /explain lp", "- Open Token Scanner");
     lines.push("", "CTA: Run LP Check");
     return rewriteForbiddenStatusVocab(lines.join("\n"));
   }
 
   if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)} (not the same as lock safety)`);
-  else lines.push("- Liquidity depth: open check");
+  else lines.push("- Liquidity depth: Unavailable: pool liquidity was not confirmed");
 
   if (lp?.reason && !chainIsSolana && !chainIsRobinhood) lines.push(`- Lock/burn detail: ${lp.reason}`);
   if (lp?.confidence) lines.push(`- Confidence: ${lp.confidence}`);
@@ -4820,7 +4841,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   }
 
   if (openChecks.length > 0) {
-    lines.push("Open checks:");
+    lines.push("Evidence Gaps:");
     openChecks.forEach((s) => lines.push(`- ${s}`));
     lines.push("");
   }
@@ -4836,7 +4857,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
     readParts.push("Clark has not confirmed a specific risk driver from the evidence collected so far.");
   }
   if (positiveSignals.length > 0) readParts.push(`${positiveSignals.length > 1 ? "Some checks" : "One check"} look${positiveSignals.length > 1 ? "" : "s"} cleaner, but that does not offset the open risk above.`);
-  if (openChecks.length > 0) readParts.push("Some evidence is still an open check rather than confirmed safe.");
+  if (openChecks.length > 0) readParts.push("Some evidence is still Unavailable: not confirmed safe.");
   lines.push("Read:", readParts.join(" "), "");
 
   lines.push("Next:");

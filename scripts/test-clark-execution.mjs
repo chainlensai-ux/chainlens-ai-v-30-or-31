@@ -644,15 +644,15 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('_honeypotStatus'), 'fetchTokenEvidence returns _honeypotStatus')
   assert.ok(routeFile.includes('_honeypotDurationMs'), 'fetchTokenEvidence returns _honeypotDurationMs')
 
-  // Task 3: public missing evidence messages use open_check language
-  assert.ok(routeFile.includes('timed out / Open Check'), 'timeout uses Open Check language')
-  assert.ok(routeFile.includes('network error / Open Check'), 'network error uses Open Check language')
-  assert.ok(routeFile.includes('Security simulation: timed out / Open Check'), 'honeypot timeout says Open Check')
+  // Task 3: public missing evidence messages use Unavailable with a reason
+  assert.ok(routeFile.includes('Unavailable: scan timed out'), 'timeout uses Unavailable language')
+  assert.ok(routeFile.includes('Unavailable: network error'), 'network error uses Unavailable language')
+  assert.ok(routeFile.includes('Security simulation: Unavailable: scan timed out'), 'honeypot timeout says Unavailable with reason')
 
   // Task 4: formatPartialTokenRead exists and has correct output structure
   assert.ok(routeFile.includes('formatPartialTokenRead'), 'partial token read formatter exists')
   assert.ok(routeFile.includes('TOKEN READ — ${title}'), 'partial formatter header uses the section-aware status title')
-  assert.ok(routeFile.includes('Open Check'), 'partial formatter emits Open Check for missing sections')
+  assert.ok(routeFile.includes('Unavailable:'), 'partial formatter emits Unavailable for missing sections')
   assert.ok(routeFile.includes('Missing evidence:'), 'partial formatter lists missing evidence')
 
   // Task 1 partial behavior: /api/token success + honeypot timeout → partial TOKEN READ
@@ -662,8 +662,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // /api/token timeout + honeypot success → partial with market/LP/holders open_check
   assert.ok(routeFile.includes('tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable"'), 'market/holders missing reason references token route status')
 
-  // Total/no-usable-evidence failure → TOKEN READ — open check (quota-safe, never charged)
-  assert.ok(routeFile.includes('if (!usableEvidence) return "open check"'), 'no-usable-evidence outputs an Open Check header')
+  // Total/no-usable-evidence failure → TOKEN READ — unavailable (quota-safe, never charged)
+  assert.ok(routeFile.includes('if (!usableEvidence) return "unavailable"'), 'no-usable-evidence outputs an Unavailable header')
 
   // No fake safe/clean/LP locked when evidence missing
   const partialReadStart = routeFile.indexOf('formatPartialTokenRead')
@@ -1004,7 +1004,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   const riskOut = formatRiskExplanation(noEvidence, 'Base')
   assert.ok(riskOut.startsWith('RISK EXPLANATION'), 'risk follow-up produces RISK EXPLANATION header')
-  assert.ok(riskOut.includes('Evidence Gaps:') || riskOut.includes('Open checks:'), 'risk explanation lists precisely which evidence is missing')
+  assert.ok(/Evidence [Gg]aps:/.test(riskOut) || riskOut.includes('Open checks:'), 'risk explanation lists precisely which evidence is missing')
 
   // Task 6: quota is never consumed when the follow-up was answered straight from memory
   const memoryFollowupIdx = routeFile.indexOf('const quotaConsumed = fromMemory ? false : safetyFetchReturnedNonTaxCoreEvidence;')
@@ -1068,7 +1068,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/Top safety signals:\s*\n[^\n]*open check/i.test(out), '"Open Check" / missing evidence is never listed as a top safety signal')
 
   assert.ok(out.includes('Visible evidence:'), 'safety answer includes a "Visible evidence" section')
-  assert.ok(out.includes('Evidence Gaps:') || out.includes('Open checks:'), 'safety answer includes an evidence-gaps section')
+  assert.ok(/Evidence [Gg]aps:/.test(out) || out.includes('Open checks:'), 'safety answer includes an evidence-gaps section')
   assert.ok(out.includes('Not enough confirmed evidence to call it safe'), 'incomplete evidence produces the "not enough confirmed evidence" safe-call line')
   const safeLine = out.split('\n').find(l => l.startsWith('Safe?')) ?? ''
   assert.equal(safeLine, 'Safe? Not enough confirmed evidence to call it safe.', 'safety answer never bare-states "safe" as a fact when evidence is incomplete')
@@ -1239,7 +1239,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // No evidence at all → conservative Open Check verdict and fallback source, never a fake clean call
   const noEvMeta = tokenScanVerdictMeta({ ok: false }, false)
-  assert.equal(noEvMeta.verdict, 'Open Check', 'no evidence produces a conservative Open Check verdict')
+  assert.equal(noEvMeta.verdict, 'Unavailable', 'no evidence produces a conservative Unavailable verdict')
   assert.equal(noEvMeta.source, 'fallback', 'no evidence reports source as fallback')
 
   // Follow-up safety answer surfaces mintable/holders/LP/security evidence, never fakes safe/locked/honeypot

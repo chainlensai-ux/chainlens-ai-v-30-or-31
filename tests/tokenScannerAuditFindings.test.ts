@@ -37,10 +37,16 @@ import {
   classifyTokenScannerEvidence,
 } from '../lib/tokenScannerEvidence.ts'
 import {
+  formatDevRugCheck,
   formatFastTokenRead,
+  formatRiskExplanation,
+  formatTokenSafetyAnswer,
   formatTokenScanResult,
   formatTokenSecurityStatus,
+  formatWalletFollowupFromMemory,
+  formatWalletScanResult,
   renderClarkTokenVerdictForEvm,
+  tokenScanVerdictMeta,
   type TokenScanEvidence,
 } from '../lib/server/clarkRouting.ts'
 import { calculateCortexScoreV2 } from '../lib/token/scoring.ts'
@@ -120,6 +126,27 @@ test('Clark Partial Evidence and token formatters never become Open Check', () =
   assert.match(fast, /Not Checked: fast scan skipped/)
   assert.match(formatTokenSecurityStatus({ simulationStatus: 'timeout' }), /^Unavailable:/)
   assert.match(formatTokenSecurityStatus({ simulationStatus: 'not_supported' }), /^Unsupported:/)
+  const emptyEv: TokenScanEvidence = { ok: false }
+  assert.doesNotMatch(formatDevRugCheck(emptyEv, 'Base'), /open check/i)
+  assert.doesNotMatch(formatTokenSafetyAnswer(emptyEv, 'Base'), /open check/i)
+  assert.doesNotMatch(formatRiskExplanation(emptyEv, 'Base'), /open check/i)
+  assert.equal(tokenScanVerdictMeta(emptyEv, false).verdict, 'Unavailable')
+  const walletOut = formatWalletScanResult('0x0000000000000000000000000000000000000001', { ok: true }, false)
+  assert.doesNotMatch(walletOut, /open check/i)
+  const profile = formatWalletFollowupFromMemory(
+    '0x0000000000000000000000000000000000000001',
+    {
+      ok: true,
+      totalValue: 300_000,
+      holdings: [{ symbol: 'USDC', value: 300_000, chain: 'base' }],
+      chainsActive: ['base'],
+      walletProfile: { walletCategory: 'Whale' },
+    } as any,
+    'wallet_profile',
+  )
+  assert.doesNotMatch(profile, /open check/i)
+  assert.match(profile, /Sniper: Unavailable:/)
+  assert.match(profile, /Dev wallet: Unavailable:/)
 })
 
 test('canonical risk source is calculateTokenRiskScore for all public surfaces', () => {

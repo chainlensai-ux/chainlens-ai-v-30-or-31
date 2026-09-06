@@ -2851,7 +2851,7 @@ async function handlePumpIntelligenceQuestion(
   }
   if (/organic|fake/.test(t)) {
     const knownRisks = risks.filter((r) => r.status === "confirmed" || r.status === "possible").slice(0, 3);
-    lines.push(`Organic vs fake: ${market.buySellRatio == null ? "Open Check" : "Evidence mixed"} — no unsupported binary claim.`);
+    lines.push(`Organic vs fake: ${market.buySellRatio == null ? "Unavailable: buy/sell ratio was not confirmed" : "Evidence mixed"} — no unsupported binary claim.`);
     lines.push(`Evidence: buy/sell ratio ${market.buySellRatio != null ? Number(market.buySellRatio).toFixed(2) : "Not detected"}; ${knownRisks.length ? knownRisks.map((r) => `${r.label}: ${r.status}`).join("; ") : "wash/bot/cluster evidence not detected"}.`);
   }
   if (/watch\s+next|what\s+should\s+i\s+watch/.test(t)) {
@@ -5244,13 +5244,17 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- Dev Control: deployer wallet, linked wallets, prior rug history\n" +
         "- Risk Checks: honeypot flag, buy/sell tax, contract flags (mint/blacklist/pause/proxy), simulation result\n" +
         "- Sniper Activity: pool age, early buy pressure, holder concentration at launch\n\n" +
-        "DATA STATE LANGUAGE — use these precisely:\n" +
-        "- 'verified' = CORTEX confirmed it with proof\n" +
+        "DATA STATE LANGUAGE — use these precisely. Never emit 'Open Check', 'Model Open Check', bare 'Unknown', or 'Pending':\n" +
+        "- 'Verified' = CORTEX confirmed it with proof\n" +
         "- 'not detected' = CORTEX checked and found nothing\n" +
-        "- 'open check' = CORTEX could not verify — not a green flag, not a red flag\n" +
-        "- 'partial' = some data returned but not complete\n" +
-        "- 'unavailable' = the check was not possible (no pool, no bytecode, no sim result)\n" +
-        "Never upgrade an open check to a pass. Never treat unavailable as not detected.\n\n" +
+        "- 'Unavailable: reason' = CORTEX could not verify — not a green flag, not a red flag\n" +
+        "- 'Not Checked: reason' = this check was not run in this scan\n" +
+        "- 'Partial: reason' = some data returned but not complete\n" +
+        "- 'Not Applicable: reason' = this check does not apply to the pool or chain model\n" +
+        "- 'Unsupported: reason' = this check is not supported for the selected chain or pool model\n" +
+        "- 'Watch: reason' = evidence supports a watch-level state\n" +
+        "- 'Locked: reason' = lock proof is present\n" +
+        "Never upgrade Unavailable, Not Checked, or Partial to a pass. Never treat unavailable as not detected.\n\n" +
         "KNOWLEDGE:\n" +
         "You know crypto deeply: DeFi, memecoins, AI agents, Base ecosystem, liquidity mechanics, holder dynamics, whale behavior, token launches, rug patterns, LP locks, deployer risk, market cap vs FDV, sniper activity, trading psychology.\n\n" +
         "You know Base ecosystem deeply: ETH/WETH, USDC, BRETT (leading Base memecoin), AERO/Aerodrome (dominant Base DEX, ve(3,3) model), VIRTUAL/Virtuals Protocol (AI agent infrastructure on Base), TOSHI, DEGEN, HIGHER, NORMIE, cbETH, BASE itself. Also: Uniswap v3/v4, Aerodrome CL pools, Base bridge, cbETH, SuperBridge.\n\n" +
@@ -5289,7 +5293,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- Say 'Dev Control' when discussing deployer/origin wallet\n" +
         "- Say 'Risk Checks' when discussing honeypot/tax/contract flags\n" +
         "- Say 'Sniper Activity' when discussing early buy pressure and launch-phase wallet clustering\n" +
-        "- Say 'not confirmed' / 'open check' / 'incomplete read' / 'needs verification'\n\n" +
+        "- Say 'not confirmed' / 'Unavailable: reason' / 'Not Checked: reason' / 'incomplete read' / 'needs verification'\n\n" +
         "MEMORY RULES — WALLET INTELLIGENCE:\n" +
         "1. You ALWAYS remember the structured wallet data provided earlier in the scan.\n" +
         "2. You NEVER forget wallet-level facts unless the user explicitly resets context.\n" +
@@ -5297,7 +5301,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "   - wallet summary stats (win rate, PnL, trade count, timeframe)\n" +
         "   - behavior patterns and wallet personality\n" +
         "   - whale tier and size classification\n" +
-        "   - risk flags and open checks from the scan\n" +
+        "   - risk flags and evidence gaps from the scan\n" +
         "   - cluster/deployer context if present\n" +
         "   - recent trades and their outcomes\n" +
         "   - performance windows and activity frequency\n" +
@@ -5316,10 +5320,10 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "- Do not mention sources that are not present.\n" +
         "- Do not claim LP is unlocked unless LP lock data is explicitly present and false.\n" +
         "- Do not claim holder concentration unless Holder Map data is explicitly present.\n" +
-        "- If key data is missing: name the specific open check, do not generalize.\n" +
+        "- If key data is missing: name the specific Unavailable, Not Checked, or Partial reason, do not generalize.\n" +
         "- If dataFillScore is present and <60: acknowledge scan is partial and weight verdict accordingly.\n\n" +
         "OUTPUT FORMAT — TOKEN SCAN:\n" +
-        "Verdict: WATCH / AVOID / SCAN DEEPER / TRUSTWORTHY / UNKNOWN\n" +
+        "Verdict: WATCH / AVOID / SCAN DEEPER / TRUSTWORTHY / UNAVAILABLE\n" +
         "Confidence: Low / Medium / High\n\n" +
         "Why:\n" +
         "1-2 short sentences explaining the verdict. Name the deciding factor.\n\n" +
@@ -5335,7 +5339,7 @@ async function callAnthropic(prompt: string, context: ClarkContext | null) {
         "Signals:\n" +
         "- up to 3 bullets from CORTEX wallet data (win rate, PnL, trade patterns, behavior score)\n\n" +
         "Risks:\n" +
-        "- up to 3 bullets on concentration, missing data, unverified claims, open checks\n\n" +
+        "- up to 3 bullets on concentration, missing data, unverified claims, evidence gaps\n\n" +
         "Behavior read:\n" +
         "What pattern does this wallet fit — accumulator, rotator, sniper, copy-trader, whale? One sentence.\n\n" +
         "Worth monitoring?\n" +
@@ -12912,23 +12916,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         missingEvidence.push("Token Scanner authorization failed. Reconnect/sign in and try again.");
       } else if (tokenRouteStatus === "timed_out") {
         tokenScanFailureReason = "timeout";
-        missingEvidence.push("Market, LP, and holder data: timed out / Open Check");
+        missingEvidence.push("Market, LP, and holder data: Unavailable: scan timed out");
       } else if (tokenRouteStatus === "failed") {
         tokenScanFailureReason = "network_error";
-        missingEvidence.push("Market, LP, and holder data: network error / Open Check");
+        missingEvidence.push("Market, LP, and holder data: Unavailable: network error");
       } else if (tokenData !== null) {
-        missingEvidence.push(`Market, LP, and holder data: token route returned ${tokenRouteStatus} / Open Check`);
+        missingEvidence.push(`Market, LP, and holder data: Unavailable: token route returned ${tokenRouteStatus}`);
       } else {
-        missingEvidence.push("Market, LP, and holder data: no response from token route / Open Check");
+        missingEvidence.push("Market, LP, and holder data: Unavailable: no response from token route");
       }
     } else if (noPoolData) {
       missingEvidence.push(`Token not found on ${chainDisplayLabel(chainForClarkTools)} or no active pool data`);
     }
 
     if (!hasHoneypot) {
-      if (honeypotStatus === "timed_out") missingEvidence.push("Security simulation: timed out / Open Check");
-      else if (honeypotStatus === "failed") missingEvidence.push("Security simulation: network error / Open Check");
-      else missingEvidence.push("Security simulation: unavailable / Open Check");
+      if (honeypotStatus === "timed_out") missingEvidence.push("Security simulation: Unavailable: scan timed out");
+      else if (honeypotStatus === "failed") missingEvidence.push("Security simulation: Unavailable: network error");
+      else missingEvidence.push("Security simulation: Unavailable: simulation was not confirmed");
     }
 
     // ── Build debug object ──
@@ -13254,9 +13258,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const routeStatus = (ev as Record<string, unknown>)._tokenRouteStatus;
     const hpStatus = (ev as Record<string, unknown>)._honeypotStatus;
     if (!usableEvidence && (routeStatus === "timed_out" || hpStatus === "timed_out")) return "timed out";
-    if (!usableEvidence) return "open check";
+    if (!usableEvidence) return "unavailable";
     if (partial) return "partial evidence";
-    return confidence === "open_check" ? "open check" : "loaded";
+    return confidence === "open_check" ? "unavailable" : "loaded";
   }
 
   function missingNames(sectionsMissing: Array<{ section: string; reason: string }>): string[] {
@@ -13264,7 +13268,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     return sectionsMissing.map(s => labels[s.section] ?? s.section);
   }
 
-  // Build section-aware TOKEN READ output. Missing sections are always Open Check with a reason.
+  // Build section-aware TOKEN READ output. Missing sections are always Unavailable/Partial with a reason.
   function formatPartialTokenRead(ev: TokenScanEvidence, tokenAddress: string, evDebugRaw: Record<string, unknown>, confidence: TokenConfidenceLabel, usableEvidence = true): string {
     const pFmtUsd = (n: number | null | undefined): string => {
       if (n == null) return "N/A";
@@ -13310,17 +13314,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ? `loaded — top-10 ${h.top10.toFixed(1)}%${h.holderCount != null ? `, holders ${h.holderCount}` : ""}`
       : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "holders")?.reason ?? "Evidence unavailable.")}`;
     const devLine = sectionsPresent.includes("contract_flags")
-      ? `loaded — ownership ${sec?.ownerRenounced === true ? "renounced" : sec?.ownerRenounced === false ? "active" : "open check"}${sec?.mintable != null ? `, mintable ${sec.mintable ? "yes" : "no"}` : ""}`
+      ? `loaded — ownership ${sec?.ownerRenounced === true ? "renounced" : sec?.ownerRenounced === false ? "active" : "Unavailable: ownership was not confirmed"}${sec?.mintable != null ? `, mintable ${sec.mintable ? "yes" : "no"}` : ""}`
       : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "contract_flags")?.reason ?? "Evidence unavailable.")}`;
     const securityLine = sectionsPresent.includes("security_sim") && (sec?.honeypot != null || sec?.buyTax != null || sec?.sellTax != null)
       ? `loaded — ${sec?.honeypot === true ? "honeypot flagged" : sec?.honeypot === false ? "no honeypot signal" : "simulation available"}${sec?.buyTax != null ? `, buy tax ${sec.buyTax.toFixed(1)}%, sell tax ${sec.sellTax?.toFixed(1) ?? "open"}%` : ""}`
       : `unavailable — ${publicReason(sectionsMissing.find(s => s.section === "security_sim")?.reason ?? "Security simulation unavailable.")}`;
 
-    return [
+    const publicConfidence = confidence === "open_check"
+      ? "Unavailable: core evidence was not confirmed"
+      : confidence === "failed"
+      ? "Unavailable: token scan failed"
+      : confidence === "high" ? "High" : confidence === "medium" ? "Medium" : confidence === "low" ? "Low" : confidence;
+    return rewriteForbiddenStatusVocab([
       `TOKEN READ — ${title}`,
       "",
       `Verdict: ${verdict}`,
-      `Confidence: ${confidence}.`,
+      `Confidence: ${publicConfidence}.`,
       `Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))}.`,
       `Market: ${marketLine}.`,
       `LP: ${lpLine}.`,
@@ -13329,7 +13338,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       `Security: ${securityLine}.`,
       `Missing evidence: ${missing.length ? sectionsMissing.map(s => `${s.section} (${publicReason(s.reason)})`).join("; ") : "none flagged"}.`,
       `Next action: ${missing.length ? "Open Token Scanner or run LP Check." : "Use Token Scanner / LP Check before making any trade decision."}`,
-    ].join("\n");
+    ].join("\n"));
   }
 
   async function resolveTokenForFollowup(opts?: { fromMemoryOnly?: boolean }): Promise<{ ev: TokenScanEvidence; address: string; fromMemory?: boolean } | { needsAddress: true }> {
@@ -14128,7 +14137,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           deployer: input.address,
           owner: null,
           linkedWallets: [],
-          confidence: "Open Check",
+          confidence: "Unavailable: confidence not confirmed",
           tokenLocalRiskSignals: [],
           previousLaunchedTokens: [],
           repeatedRiskyPatterns: [],
