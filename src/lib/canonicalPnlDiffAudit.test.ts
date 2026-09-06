@@ -555,6 +555,106 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
     assert.equal(replay.outcome, 'applied')
     assert.equal(replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 1)
   })
+
+  it('HARD ASSERTION (Wallet PnL Item 1): the mixed-quality shared-side violation shape is CRITICAL when published, and the canonical fixture demotes so the audit has zero Critical findings', async () => {
+    // THE VIOLATION SHAPE, DISCLOSED: schema-2 accepted evidence is a SIDE TOTAL ($100) for a buy
+    // consumed by two FIFO lots. Only one lot is verified. Publishing the verified lot's allocated
+    // fraction ($50) as the group's claimed total does not equal the evidence record's priceUsd —
+    // exactly `group_total_does_not_equal_accepted_side_total`.
+    const entryKey = 'v1:accepted-evidence:base:0xfacy:0xsharedbuy:entry:100'
+    const exitKey = 'v1:accepted-evidence:base:0xfacy:0xasell:exit:200'
+    const publishedFraction = record({
+      key: 'g:verified-slice', token: '0xfacy',
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xasell', openedAt: 100, closedAt: 200,
+      entryEvidenceKey: entryKey, exitEvidenceKey: exitKey,
+      groupCostBasisUsd: 50, groupProceedsUsd: 80, groupRealizedPnlUsd: 30,
+      acceptedEvidenceValueType: 'total_side_value_usd', evidenceSchemaVersion: 2,
+    })
+    const rawViolation = buildCanonicalPnlDiffAudit({
+      currentRecords: [publishedFraction],
+      previousRecords: [],
+      evidenceByKey: new Map([
+        [entryKey, { priceUsd: 100, valueUsd: 100, schemaVersion: 2 }],
+        [exitKey, { priceUsd: 80, valueUsd: 80, schemaVersion: 2 }],
+      ]),
+    })
+    const rawCritical = rawViolation.findings.filter((f) => f.severity === 'critical')
+    assert.ok(
+      rawCritical.some((f) => f.code === 'group_total_does_not_equal_accepted_side_total'),
+      'publishing a verified slice of a mixed-quality shared side must still be a Critical finding — the audit is not silenced',
+    )
+    const entryFinding = rawCritical.find((f) => f.code === 'group_total_does_not_equal_accepted_side_total' && f.evidenceKey === entryKey)!
+    assert.equal(entryFinding.observedUsd, 50)
+    assert.equal(entryFinding.expectedUsd, 100)
+
+    // THE FIXTURE, DISCLOSED: the same lots go through buildManifestFromCandidate. The incomplete
+    // shared side is demoted out of the canonical verified sample rather than published as a
+    // partial claim, so the audit has zero Critical findings and realized PnL is not invented.
+    const verified = lot({
+      lotId: 'priced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',
+      openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
+    })
+    const unpriced = lot({
+      lotId: 'unpriced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xbsell',
+      openedAt: 100, closedAt: 300, amount: 1,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const allLots = [verified, unpriced]
+    const store = new Map<string, string>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (JSON.parse(store.get(key)!) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, JSON.stringify(value)); return 'OK' },
+    }
+    for (const [lotRef, side, totalUsd] of [
+      [verified, 'entry', 100],
+      [verified, 'exit', 80],
+    ] as const) {
+      const identity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      await kv.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd: totalUsd, valueUsd: totalUsd,
+        source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    const computeFingerprints = (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => {
+      const a = buildScanDeterminismAudit({ matchedLots: lots, realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+      return {
+        verifiedLotIdentityFingerprint: a.verifiedLotIdentityFingerprint,
+        acceptedHistoricalPriceFingerprint: a.acceptedHistoricalPriceFingerprint,
+        realizedPnlFingerprint: a.realizedPnlFingerprint,
+        scanFingerprint: a.scanFingerprint,
+      }
+    }
+    const manifest = await buildManifestFromCandidate({
+      identity: buildManifestIdentity({ walletAddress: '0xw', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp-item1' }),
+      allCandidateLots: allLots, candidateVerifiedLots: [verified], structuralLotCount: allLots.length,
+      fingerprints: computeFingerprints(allLots, 30), realizedPnlUsd: 30,
+      verifiedPricingCoverage: 0.5, now: 1, loadEvidence: loader, computeFingerprints,
+    })
+    assert.equal(manifest.verifiedLotRecords.length, 0, 'demote, do not publish a partial claim')
+
+    const evidenceByKey = new Map<string, AcceptedEvidenceSideTotals>()
+    for (const [key, raw] of store) {
+      const envelope = JSON.parse(raw) as { priceUsd: number; valueUsd: number; schemaVersion?: number }
+      evidenceByKey.set(key, { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd, schemaVersion: envelope.schemaVersion ?? 2 })
+    }
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: manifest.verifiedLotRecords, previousRecords: [], evidenceByKey,
+    })
+    assert.deepEqual(
+      audit.findings.filter((f) => f.severity === 'critical'),
+      [],
+      'after demotion the canonical fixture must produce zero Critical findings',
+    )
+  })
 })
 
 describe('canonicalPnlDiffAudit — logging', () => {

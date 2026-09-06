@@ -8,7 +8,7 @@ import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
-import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, type SideAllocationShare } from './canonicalPnlSampleManifest'
+import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
@@ -1132,25 +1132,34 @@ export function createPnlReconciliation(config: Config = {}) {
           evidenceQuality: nowFullyPriced ? ('verified' as const) : lot.evidenceQuality,
         }
       })
+      // INCOMPLETE ACCEPTED SIDE, DISCLOSED (Wallet PnL Item 1): a verified lot that shares a
+      // transaction side with an unpriced sibling cannot claim a group total equal to the accepted
+      // evidence record for that side (allocation is over the full sibling set). Demote those lots
+      // out of the canonical verified sample rather than publish a partial claim or invent the
+      // missing siblings into realized PnL.
+      const consistentFifoLots = demoteLotsOnIncompleteAcceptedSides(updatedFifoLots)
       // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task):
-      // runs over `updatedFifoLots` — the FULLY RESOLVED lot list, after recovery has already merged
-      // in anything it found — so this pass sees every verified side regardless of whether it was
-      // priced upstream (before recoverPrices ever ran) or by recovery itself just above. See
-      // seedAcceptedEvidenceForVerifiedLots' own header for the full rationale.
-      const seeding = await seedAcceptedEvidenceForVerifiedLots(updatedFifoLots)
+      // runs over `consistentFifoLots` — the FULLY RESOLVED lot list, after recovery has already merged
+      // in anything it found and incomplete shared sides have been demoted — so this pass sees every
+      // verified side regardless of whether it was priced upstream (before recoverPrices ever ran) or
+      // by recovery itself just above. See seedAcceptedEvidenceForVerifiedLots' own header for the
+      // full rationale.
+      const seeding = await seedAcceptedEvidenceForVerifiedLots(consistentFifoLots)
       // CANONICAL SAMPLE SELECTION, DISCLOSED (requirement #5's exact required order: reconcile
       // accepted evidence -> resolve manifest -> validate -> construct final canonical published lot
       // array -> calculate gate/AYRI/fingerprints from THAT array). Runs AFTER accepted-evidence
       // hydration/recovery/seeding above (so the manifest replays against fully-reconciled evidence)
       // and BEFORE the realized-PnL sum and every gate computation below — every figure this
       // function reports is derived from `publishedFifoLots` from here on. Accepted-evidence
-      // persistence itself deliberately still runs over the unfiltered `updatedFifoLots`: withholding
-      // a lot from PUBLICATION must never also stop its genuinely-resolved evidence from being
-      // persisted (that would make the next scan worse, not more deterministic).
+      // withholding a lot from PUBLICATION must never also stop its genuinely-resolved evidence from
+      // being persisted (that would make the next scan worse, not more deterministic). Incomplete
+      // shared sides are already demoted on `consistentFifoLots`, so they are not seeded as verified.
       const canonicalSampleSelection = input.canonicalSampleSelector
-        ? await input.canonicalSampleSelector(updatedFifoLots)
+        ? await input.canonicalSampleSelector(consistentFifoLots)
         : null
-      const publishedFifoLots = canonicalSampleSelection ? canonicalSampleSelection.publishedLots : updatedFifoLots
+      const publishedFifoLots = demoteLotsOnIncompleteAcceptedSides(
+        canonicalSampleSelection ? canonicalSampleSelection.publishedLots : consistentFifoLots,
+      )
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
         acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
@@ -1171,10 +1180,10 @@ export function createPnlReconciliation(config: Config = {}) {
       // store is either unconfigured, unreachable, or was never seeded for this wallet/window at all.
       // Logged as an error (not warn) — this is exactly the condition that reproduces the
       // determinism failure this whole feature exists to close.
-      const hasVerifiedSides = updatedFifoLots.some(isCanonicalVerifiedLotForPnl)
+      const hasVerifiedSides = consistentFifoLots.some(isCanonicalVerifiedLotForPnl)
       if (hasVerifiedSides && acceptedEvidenceAudit.persistedAcceptedSidesLoaded === 0 && acceptedEvidenceAudit.canonicalSeedingWriteSuccesses === 0) {
         logger.warn('accepted_evidence_store_unseeded', {
-          verifiedLotCount: updatedFifoLots.filter(isCanonicalVerifiedLotForPnl).length,
+          verifiedLotCount: consistentFifoLots.filter(isCanonicalVerifiedLotForPnl).length,
           persistedAcceptedSidesLoaded: acceptedEvidenceAudit.persistedAcceptedSidesLoaded,
           canonicalSeedingWriteSuccesses: acceptedEvidenceAudit.canonicalSeedingWriteSuccesses,
           verifiedSidesEligibleForPersistence: acceptedEvidenceAudit.verifiedSidesEligibleForPersistence,
@@ -1190,7 +1199,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // alreadyPersisted === 0 AND skippedInvalid === 0 — reproduces exactly this task's own
       // confirmed bug (a real eligibility predicate defect silently dropping verified sides) and must
       // never pass unnoticed again.
-      const verifiedLotCountForMismatchCheck = updatedFifoLots.filter(isCanonicalVerifiedLotForPnl).length
+      const verifiedLotCountForMismatchCheck = consistentFifoLots.filter(isCanonicalVerifiedLotForPnl).length
       if (
         verifiedLotCountForMismatchCheck > 0
         && acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite > 0

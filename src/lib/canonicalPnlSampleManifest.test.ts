@@ -21,6 +21,7 @@ import {
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
+  demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -1361,5 +1362,154 @@ describe('stablecoinNormalizedGroupTotal — deterministic $1/token normalizatio
     const record = manifest.verifiedLotRecords[0]
     assert.equal(record.groupCostBasisUsd, 1194.1715, 'the manifest stores the deterministic $1/token total, never the stale wrong figure')
     assert.equal(record.costBasisUsd, 1194.1715)
+  })
+})
+
+describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wallet PnL Item 1)', () => {
+  it('HARD ASSERTION: a verified lot sharing a buy with an unpriced sibling is demoted, never left in the verified sample', () => {
+    const verified = lot({
+      lotId: 'a', amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30, evidenceQuality: 'verified',
+    })
+    const unpriced = lot({
+      lotId: 'b', amount: 1, closedTxHash: '0xsell-b', closedAt: 3,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const demote = lotsOnIncompleteAcceptedSides([verified, unpriced])
+    assert.equal(demote.has(verified), true, 'the verified sibling of an unpriced lot on the same buy must be demoted')
+    assert.equal(demote.has(unpriced), false, 'the already-unpriced sibling is not the demotion target')
+    const demoted = demoteLotsOnIncompleteAcceptedSides([verified, unpriced])
+    assert.equal(demoted[0].evidenceQuality, 'unpriced')
+    assert.equal(isCanonicalVerifiedPublishedLot(demoted[0]), false)
+    assert.equal(isCanonicalVerifiedPublishedLot(demoted[1]), false)
+  })
+
+  it('two fully verified siblings sharing a side are not demoted', () => {
+    const a = lot({ lotId: 'a', amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30 })
+    const b = lot({ lotId: 'b', amount: 1, closedTxHash: '0xsell-b', closedAt: 3, costBasisUsd: 50, proceedsUsd: 90, realizedPnlUsd: 40 })
+    assert.equal(lotsOnIncompleteAcceptedSides([a, b]).size, 0)
+    const demoted = demoteLotsOnIncompleteAcceptedSides([a, b])
+    assert.equal(demoted[0].evidenceQuality, 'verified')
+    assert.equal(demoted[1].evidenceQuality, 'verified')
+    assert.equal(isCanonicalVerifiedPublishedLot(demoted[0]), true)
+    assert.equal(isCanonicalVerifiedPublishedLot(demoted[1]), true)
+  })
+
+  it('an isolated verified lot with no siblings is untouched', () => {
+    const only = lot({ lotId: 'solo' })
+    assert.equal(lotsOnIncompleteAcceptedSides([only]).size, 0)
+    assert.equal(demoteLotsOnIncompleteAcceptedSides([only])[0].evidenceQuality, 'verified')
+  })
+
+  it('HARD ASSERTION (end-to-end): mixed-quality shared side is excluded from the canonical verified sample rather than published as a partial claim of the accepted side total', async () => {
+    // Production shape: one buy consumed by two FIFO lots, only one of which is priced. Schema-2
+    // accepted evidence is a SIDE TOTAL ($100). Allocation over the full sibling set would give the
+    // verified lot $50 — publishing that $50 as the group's claimed total is exactly
+    // `group_total_does_not_equal_accepted_side_total`. Fail closed: demote, never invent the
+    // unpriced sibling into realized PnL.
+    const verified = lot({
+      lotId: 'priced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',
+      openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
+    })
+    const unpriced = lot({
+      lotId: 'unpriced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xbsell',
+      openedAt: 100, closedAt: 300, amount: 1,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const allLots = [verified, unpriced]
+
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const seedSide = async (lotRef: MatchedLot, side: 'entry' | 'exit', totalUsd: number) => {
+      const identity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd: totalUsd, valueUsd: totalUsd,
+        source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    await seedSide(verified, 'entry', 100)
+    await seedSide(verified, 'exit', 80)
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('incomplete-side'),
+      allCandidateLots: allLots,
+      candidateVerifiedLots: [verified],
+      structuralLotCount: allLots.length,
+      fingerprints: computeFingerprints(allLots, 30),
+      realizedPnlUsd: 30,
+      verifiedPricingCoverage: 0.5,
+      now: 1000,
+      loadEvidence: loader,
+      computeFingerprints,
+    })
+
+    assert.equal(manifest.verifiedLotRecords.length, 0, 'the incomplete shared side must not appear in the canonical verified sample')
+    assert.equal(manifest.verifiedLotCount, 0)
+    assert.equal(manifest.realizedPnlUsd, null, 'fail closed: do not invent the unpriced sibling into realized PnL')
+  })
+
+  it('HARD ASSERTION (control): two verified lots sharing a schema-2 side stay published and their claimed totals sum to the accepted side total', async () => {
+    const a = lot({
+      lotId: 'a', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',
+      openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
+    })
+    const b = lot({
+      lotId: 'b', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xbsell',
+      openedAt: 100, closedAt: 300, amount: 1, costBasisUsd: 50, proceedsUsd: 90, realizedPnlUsd: 40,
+    })
+    const allLots = [a, b]
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const seedSide = async (lotRef: MatchedLot, side: 'entry' | 'exit', totalUsd: number) => {
+      const identity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd: totalUsd, valueUsd: totalUsd,
+        source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    await seedSide(a, 'entry', 100)
+    await seedSide(a, 'exit', 80)
+    await seedSide(b, 'exit', 90)
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('complete-side'),
+      allCandidateLots: allLots,
+      candidateVerifiedLots: allLots,
+      structuralLotCount: allLots.length,
+      fingerprints: computeFingerprints(allLots, 70),
+      realizedPnlUsd: 70,
+      verifiedPricingCoverage: 1,
+      now: 1000,
+      loadEvidence: loader,
+      computeFingerprints,
+    })
+
+    assert.equal(manifest.verifiedLotRecords.length, 2)
+    assert.equal(manifest.verifiedLotCount, 2)
+    const claimedEntry = Math.round(manifest.verifiedLotRecords.reduce((s, r) => s + (r.groupCostBasisUsd ?? 0), 0) * 1e8) / 1e8
+    assert.equal(claimedEntry, 100, 'verified group claims on a complete shared side must sum to the accepted side total')
   })
 })
