@@ -62,7 +62,7 @@ console.log('\nSection 2: logged-out user cannot call scan APIs — every protec
   check('token scans (POST /api/token) require a verified user before any provider work runs', /if \(!\(await requireAuthenticatedUser\(req\)\)\) return unauthorizedResponse\(\)/.test(tokenRouteSrc))
 
   const walletScanRouteSrc = read('app/api/wallet-scan/route.ts')
-  check('wallet scans (POST /api/wallet-scan) require a verified user before a job is enqueued', /if \(!\(await requireAuthenticatedUser\(req\)\)\) return unauthorizedResponse\(\)/.test(walletScanRouteSrc))
+  check('wallet scans (POST /api/wallet-scan) require a verified user before a job is enqueued', /const authUser = await requireAuthenticatedUser\(req\)\s*\n\s*if \(!authUser\) return unauthorizedResponse\(\)/.test(walletScanRouteSrc))
 
   const clarkRouteSrc = read('app/api/clark/route.ts')
   check('Clark (POST /api/clark) requires a verified identity, not just a bearer-token-shaped string', clarkRouteSrc.includes('if (!verifiedIdentity?.userId) return unauthorizedResponse('))

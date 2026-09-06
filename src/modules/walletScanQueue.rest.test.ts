@@ -31,6 +31,7 @@ function restore(): void {
 function configureRestEnv(): void {
   process.env.KV_REST_API_URL = 'https://settled-iad1-example.upstash.io'
   process.env.KV_REST_API_TOKEN = 'test-token'
+  process.env.WALLET_SCAN_WORKER_SECRET = 'test-worker-secret'
 }
 
 function installMemoryKv(): Map<string, Stored> {
@@ -58,7 +59,7 @@ describe('wallet scan queue with KV', () => {
     }
 
     await assert.rejects(
-      () => enqueueWalletScanJob('timeout-job', { jobId: 'timeout-job', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' }),
+      () => enqueueWalletScanJob('timeout-job', { userId: 'user-a', jobId: 'timeout-job', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' }),
       /redis rest request timed out/,
     )
     assert.equal(store.get(walletScanPendingKey())?.value, undefined)
@@ -67,23 +68,23 @@ describe('wallet scan queue with KV', () => {
   it('simulates KV success for enqueue and claim', async () => {
     installMemoryKv()
 
-    await enqueueWalletScanJob('job-success', { jobId: 'job-success', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    await enqueueWalletScanJob('job-success', { userId: 'user-a', jobId: 'job-success', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
     const payload = await claimNextWalletScanPayload()
 
-    assert.deepEqual(payload, { jobId: 'job-success', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    assert.deepEqual(payload, { userId: 'user-a', jobId: 'job-success', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1', includeRobinhoodRequested: false })
   })
 
   it('transitions a claimed job from queued to running to done', async () => {
     const store = installMemoryKv()
 
-    await enqueueWalletScanJob('job-flow', { jobId: 'job-flow', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    await enqueueWalletScanJob('job-flow', { userId: 'user-a', jobId: 'job-flow', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
     const payload = await claimNextWalletScanPayload()
     assert.equal(payload?.jobId, 'job-flow')
 
     const running = await readWalletScanJob('job-flow')
     assert.equal(running?.status, 'running')
 
-    await publishFinal('job-flow', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true })
+    await publishFinal('job-flow', { userId: 'user-a', status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true })
     const done = await readWalletScanJob('job-flow')
     const result = await readWalletScanResult('job-flow')
 
@@ -95,7 +96,7 @@ describe('wallet scan queue with KV', () => {
   it('final publish writes result and job keys without TTL', async () => {
     const store = installMemoryKv()
 
-    const outcome = await publishFinal('final-job', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { ok: true })
+    const outcome = await publishFinal('final-job', { userId: 'user-a', status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { ok: true })
 
     assert.equal(outcome, undefined)
     assert.deepEqual(store.get(walletScanResultKey('final-job')), { value: { ok: true }, opts: undefined })
@@ -105,11 +106,11 @@ describe('wallet scan queue with KV', () => {
   it('a repeated worker invocation for an already-done job is NOT re-claimed and its published result survives untouched', async () => {
     installMemoryKv()
 
-    await enqueueWalletScanJob('job-idem', { jobId: 'job-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    await enqueueWalletScanJob('job-idem', { userId: 'user-a', jobId: 'job-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
     const first = await claimWalletScanPayload('job-idem')
     assert.equal(first?.jobId, 'job-idem')
 
-    await publishFinal('job-idem', { status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true, real: 'result' })
+    await publishFinal('job-idem', { userId: 'user-a', status: 'done', startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }, { success: true, real: 'result' })
 
     const second = await claimWalletScanPayload('job-idem')
     assert.equal(second, null, 'expected a done job to never be re-claimed by a duplicate worker invocation')
@@ -123,8 +124,8 @@ describe('wallet scan queue with KV', () => {
   it('a failed job is likewise never re-claimed', async () => {
     installMemoryKv()
 
-    await enqueueWalletScanJob('job-failed-idem', { jobId: 'job-failed-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
-    await kv.set(walletScanJobKey('job-failed-idem'), { jobId: 'job-failed-idem', wallet: '0x1', status: 'failed', createdAt: 1, updatedAt: 2 })
+    await enqueueWalletScanJob('job-failed-idem', { userId: 'user-a', jobId: 'job-failed-idem', walletAddress: '0x1', chains: ['base'], scanMode: 'normal', ip: '127.0.0.1' })
+    await kv.set(walletScanJobKey('job-failed-idem'), { userId: 'user-a', jobId: 'job-failed-idem', wallet: '0x1', status: 'failed', createdAt: 1, updatedAt: 2 })
 
     const claimed = await claimWalletScanPayload('job-failed-idem')
     assert.equal(claimed, null)

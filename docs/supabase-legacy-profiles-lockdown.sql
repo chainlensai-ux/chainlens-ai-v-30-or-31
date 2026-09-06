@@ -21,13 +21,16 @@
 -- whether the app itself calls it, since any authenticated client can hit the
 -- Supabase REST API directly with its own anon-key + JWT.
 --
--- FIX: replace the single FOR ALL policy with column-restricted SELECT/INSERT/UPDATE
+-- FIX: replace every existing policy (not only the historically known name) with
+-- column-restricted SELECT/INSERT/UPDATE
 -- policies mirroring user_settings' pattern (plan is a plain text column here rather
 -- than a fixed set of payment columns, so the fix locks `plan` specifically). No
 -- DELETE policy is added — none existed before either. Service role (used by any
 -- future webhook activation) bypasses RLS entirely and is unaffected.
 
 do $$
+declare
+  existing_policy record;
 begin
   if to_regclass('public.profiles') is null then
     raise notice 'public.profiles does not exist in this database — nothing to lock down.';
@@ -36,10 +39,17 @@ begin
 
   alter table public.profiles enable row level security;
 
-  execute 'drop policy if exists "profiles_own" on public.profiles';
+  -- Remove every legacy policy. Dropping only `profiles_own` would leave a deployment-specific
+  -- permissive policy active, and PostgreSQL ORs permissive policies together.
+  for existing_policy in
+    select policyname
+    from pg_policies
+    where schemaname = 'public' and tablename = 'profiles'
+  loop
+    execute format('drop policy if exists %I on public.profiles', existing_policy.policyname);
+  end loop;
 
   -- SELECT — own row only.
-  execute 'drop policy if exists "profiles_select_own" on public.profiles';
   execute $q$
     create policy "profiles_select_own"
       on public.profiles
@@ -48,7 +58,6 @@ begin
   $q$;
 
   -- INSERT — own row only; plan must be 'free' on first insert.
-  execute 'drop policy if exists "profiles_insert_own" on public.profiles';
   execute $q$
     create policy "profiles_insert_own"
       on public.profiles
@@ -58,7 +67,6 @@ begin
 
   -- UPDATE — own row only; plan (and the Stripe subscription reference columns, which
   -- only a trusted payment/webhook path should ever set) must stay unchanged.
-  execute 'drop policy if exists "profiles_update_own" on public.profiles';
   execute $q$
     create policy "profiles_update_own"
       on public.profiles

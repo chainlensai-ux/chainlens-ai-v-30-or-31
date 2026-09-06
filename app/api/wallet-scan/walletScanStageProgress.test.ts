@@ -45,7 +45,7 @@ async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
 }
 
 function runningJob(overrides: Partial<WalletScanJobMetadata> = {}): WalletScanJobMetadata {
-  return { jobId: 'job-progress', wallet: '0xabc', status: 'running', createdAt: 1, updatedAt: 1, ...overrides }
+  return { userId: 'user-a', jobId: 'job-progress', wallet: '0xabc', status: 'running', createdAt: 1, updatedAt: 1, ...overrides }
 }
 
 describe('updateWalletScanJobProgress — real stage checkpoints, wired to the live poll route', () => {
@@ -95,7 +95,7 @@ describe('updateWalletScanJobProgress — real stage checkpoints, wired to the l
     store.set(walletScanJobKey('job-progress'), { value: runningJob() })
     await updateWalletScanJobProgress('job-progress', { stage: 'smartMoney', label: 'Building Smart Money...', elapsedMs: 9000 })
 
-    await publishFinal('job-progress', { status: 'done', startedAt: 1, finishedAt: 2, durationMs: 1, pipelineDiagnostics: null }, { success: true, data: {} })
+    await publishFinal('job-progress', { userId: 'user-a', status: 'done', startedAt: 1, finishedAt: 2, durationMs: 1, pipelineDiagnostics: null }, { success: true, data: {} })
     const response = await poll('job-progress')
 
     assert.equal(response.status, 200)

@@ -30,7 +30,7 @@ function installMemoryKv(): Map<string, Stored> {
 
 
 function doneState() {
-  return { status: 'done' as const, startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }
+  return { userId: 'user-a', status: 'done' as const, startedAt: 1, finishedAt: 3, durationMs: 2, pipelineDiagnostics: null }
 }
 
 async function publishFinalResultForTest(jobId: string, result: unknown): Promise<void> {

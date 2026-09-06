@@ -76,7 +76,7 @@ function run() {
     check('claimWalletScanPayload reads it back with a safe false default', /claimWalletScanPayload[\s\S]*?includeRobinhoodRequested: job\.includeRobinhoodRequested \?\? false/.test(queueSrc))
     check('claimNextWalletScanPayload reads it back with a safe false default', /claimNextWalletScanPayload[\s\S]*?includeRobinhoodRequested: job\.includeRobinhoodRequested \?\? false/.test(queueSrc))
     check('enqueueWalletScanJob writes it into the stored job record', /includeRobinhoodRequested: payload\.includeRobinhoodRequested \?\? false,/.test(queueSrc))
-    check('app/api/wallet-scan/route.ts passes its own includeRobinhoodRequested decision into enqueueWalletScanJob', /await enqueueWalletScanJob\(jobId, \{ jobId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested \}\)/.test(routeSrc))
+    check('app/api/wallet-scan/route.ts passes its owner and includeRobinhoodRequested decision into enqueueWalletScanJob', /await enqueueWalletScanJob\(jobId, \{ jobId, userId: authUser\.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested \}\)/.test(routeSrc))
     check('src/modules/walletScanWorker.ts passes payload.includeRobinhoodRequested as runWalletScanV2Worker\'s 4th arg', /payload\.includeRobinhoodRequested,\s*\n\s*\)/.test(workerModuleSrc))
   }
 

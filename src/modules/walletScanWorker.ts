@@ -8,6 +8,7 @@ import {
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 
 type WalletScanJobState = {
+  userId: string
   status: 'done' | 'failed'
   startedAt: number
   finishedAt: number
@@ -380,6 +381,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
 
   const finishedAt = Date.now()
   const jobState: WalletScanJobState = {
+    userId: payload.userId,
     status: 'done',
     startedAt,
     finishedAt,

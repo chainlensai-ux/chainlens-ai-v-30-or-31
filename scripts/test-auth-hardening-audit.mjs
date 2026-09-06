@@ -101,7 +101,8 @@ console.log('\nSection 4: forgot-password sends a reset email; reset-password va
   check('reset-password page requires real recovery intent (URL param or forwarded marker) before ever showing the form', resetPageSrc.includes('hasRecoveryIntent(url)') && resetPageSrc.includes("sessionStorage.getItem('cl_password_recovery')"))
   check('reset-password page has a bounded timeout so an invalid/expired link cannot spin forever', /setTimeout\(\(\) => \{[\s\S]*?setStatus\('error'\)/.test(resetPageSrc) && /,\s*8000\)/.test(resetPageSrc))
   check('reset-password page shows a clean, actionable error for an invalid/expired link', /invalid or has expired/.test(resetPageSrc))
-  check('reset-password page signs out the recovery session after a successful password change (cannot be replayed)', resetPageSrc.includes("signOut({ scope: 'local' })"))
+  check('reset-password page globally revokes every session after a successful password change', resetPageSrc.includes("signOut({ scope: 'global' })"))
+  check('reset-password page clears recovery, plan-cache, and presence state during the forced logout', resetPageSrc.includes("sessionStorage.removeItem('cl_password_recovery')") && resetPageSrc.includes('clearPlanCache()') && resetPageSrc.includes('setSignedInPresenceCookie(false)'))
   check('reset-password page enforces the same password policy as signup', /meetsPasswordPolicy|checkPasswordPolicy/.test(resetPageSrc))
 }
 
@@ -154,7 +155,7 @@ console.log('\nSection 7: RLS prevents reading/writing another user\'s data; pla
 
   const legacyLockdownSrc = read('../docs/supabase-legacy-profiles-lockdown.sql')
   check('legacy profiles lockdown migration exists and is safe to re-run (guards on table existence)', legacyLockdownSrc.includes("to_regclass('public.profiles') is null"))
-  check('legacy profiles lockdown drops the old unrestricted FOR ALL policy', legacyLockdownSrc.includes('drop policy if exists "profiles_own" on public.profiles'))
+  check('legacy profiles lockdown drops every old policy, including deployment-specific permissive FOR ALL policies', legacyLockdownSrc.includes("from pg_policies") && legacyLockdownSrc.includes("tablename = 'profiles'") && legacyLockdownSrc.includes("format('drop policy if exists %I on public.profiles'"))
   check('legacy profiles lockdown UPDATE policy blocks changing plan directly', /plan is not distinct from \(select plan from public\.profiles where id = auth\.uid\(\) limit 1\)/.test(legacyLockdownSrc))
 }
 

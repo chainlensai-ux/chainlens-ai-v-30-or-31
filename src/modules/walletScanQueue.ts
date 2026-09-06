@@ -42,6 +42,7 @@ export type WalletScanPartialSnapshot = {
 
 export type WalletScanJobMetadata = {
   jobId: string
+  userId: string
   wallet: string
   status: WalletScanJobStatus
   createdAt: number
@@ -64,6 +65,7 @@ export type WalletScanJobMetadata = {
 
 export type WalletScanJobPayload = {
   jobId: string
+  userId: string
   walletAddress: string
   chains: string[]
   scanMode: 'normal' | 'deep'
@@ -228,6 +230,7 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
 
   return {
     jobId,
+    userId: job.userId,
     walletAddress: job.wallet,
     chains: job.chains ?? ['base', 'eth'],
     scanMode: job.scanMode ?? 'normal',
@@ -255,10 +258,11 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
 
   try { await kv.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-job-failure', err); throw queueUnavailable(err) }
 
-  try { await kv.set(walletScanJobKey(jobId), { jobId, status: 'running' }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
+  try { await kv.set(walletScanJobKey(jobId), { ...job, status: 'running', updatedAt: Date.now() }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
 
   return {
     jobId,
+    userId: job.userId,
     walletAddress: job.wallet,
     chains: job.chains ?? ['base', 'eth'],
     scanMode: job.scanMode ?? 'normal',
@@ -273,9 +277,15 @@ async function triggerWalletScanWorker(jobId: string): Promise<void> {
       ? `https://${process.env.VERCEL_URL}`
       : 'http://localhost:3000'
 
+    const workerSecret = process.env.WALLET_SCAN_WORKER_SECRET
+    if (!workerSecret) {
+      console.error('[walletScanQueue] WALLET_SCAN_WORKER_SECRET is not configured; worker trigger denied')
+      return
+    }
+
     await fetch(`${base}/api/wallet-scan/worker`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${workerSecret}` },
       body: JSON.stringify({ jobId }),
     })
   } catch (err) {
@@ -290,6 +300,7 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
   const now = Date.now()
   await writeWalletScanJob({
     jobId,
+    userId: payload.userId,
     wallet: payload.walletAddress,
     status: 'queued',
     createdAt: now,
