@@ -683,6 +683,21 @@ export async function buildManifestFromCandidate(params: {
     exitGroups.set(exitKey, [...(exitGroups.get(exitKey) ?? []), lot])
   }
 
+  // A side-scoped accepted-evidence total can only be represented algebraically by the manifest
+  // when every FIFO slice that consumed that side is itself publishable. If an unverified sibling
+  // is omitted, allocating over the full side (correctly) and then persisting only the verified
+  // shares makes the manifest claim less than the evidence total. Allocating over only the
+  // verified siblings would be worse: it would silently transfer the unverified sibling's value
+  // into the official sample. Fail closed instead. A lot is eligible only when BOTH of its shared
+  // sides are completely contained in the verified candidate set.
+  const verifiedCandidateSet = new Set(params.candidateVerifiedLots)
+  const hasCompleteVerifiedSide = (group: readonly MatchedLot[] | undefined) =>
+    Boolean(group?.length) && group!.every((member) => verifiedCandidateSet.has(member))
+  const algebraicallyVerifiableLots = params.candidateVerifiedLots.filter((lot) => {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    return hasCompleteVerifiedSide(entryGroups.get(entryKey)) && hasCompleteVerifiedSide(exitGroups.get(exitKey))
+  })
+
   // Load each group's evidence ONCE (never once per sibling) and compute its allocation once.
   const entryEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
   const exitEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
@@ -718,7 +733,7 @@ export async function buildManifestFromCandidate(params: {
     proceedsUsd: number | null
   }
   const allocated: AllocatedLot[] = []
-  for (const lot of params.candidateVerifiedLots) {
+  for (const lot of algebraicallyVerifiableLots) {
     const identity = identities.get(lot)
     if (!identity) continue
     const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(lot)

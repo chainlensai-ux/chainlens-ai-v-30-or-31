@@ -256,7 +256,6 @@ type PnlSummary = {
 // balances and event-replayed quantities can differ by dust-level floating-point noise even when
 // genuinely consistent (e.g. a token with many small partial fills); this is NOT a loophole for a
 // meaningfully wrong quantity to sneak through — anything beyond this tiny slack fails closed.
-const CANONICAL_BALANCE_RECONCILIATION_TOLERANCE = 1.001
 
 // SANE-PRICE RANGE, DISCLOSED: the SAME ($0, $1e6] bound this codebase already applies to every
 // other price it accepts (src/pipeline/pricingAtTimeAdapter.ts's own MIN/MAX_VALID_USD_PRICE, and
@@ -448,9 +447,8 @@ export function computePnl(
   //   3. synthetic_or_quarantined_position— the snapshot itself flags this position as not real
   //   4. invalid_decimals                 — the snapshot's normalization is untrustworthy, so its balance is too
   //   5. missing_canonical_balance        — no balance evidence at all
-  //   6. open_quantity_exceeds_balance    — balance known, FIFO quantity is larger (the ~$545k class)
-  //   7. missing_verified_current_price   — reconciled quantity, but nothing to value it with
-  //   8. unverified_or_outlier_price      — a price exists but is outside the verified sane range
+  //   6. missing_verified_current_price   — reconciled quantity, but nothing to value it with
+  //   7. unverified_or_outlier_price      — a price exists but is outside the verified sane range
   //
   // OFFICIAL-TOTAL EQUIVALENCE, DISCLOSED: reasons 7 and 8 are reported at POSITION level, which is
   // exactly equivalent to the previous per-lot skip for the official number — currentPriceUsdLookup
@@ -569,16 +567,17 @@ export function computePnl(
       exclude('invalid_decimals')
       continue
     }
-    // 5/6. The original, unchanged fail-closed reconciliation — now split into its two real reasons.
+    // 5. A missing balance remains fail-closed. A KNOWN smaller balance is different: it is direct
+    // current-state evidence, so unrealized valuation is capped to that quantity. This does not
+    // synthesize sells or alter realized FIFO; it only scales the still-open priced cost basis to
+    // the fraction of FIFO quantity that can exist now.
     if (canonicalCurrentBalance == null) {
       exclude('missing_canonical_balance')
       continue
     }
-    if (openQuantityFromFifo > canonicalCurrentBalance * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
-      exclude('open_quantity_exceeds_balance')
-      continue
-    }
-    // 7/8. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
+    const reconciledPricedQuantity = Math.min(pricedOpenQuantity, canonicalCurrentBalance)
+    const pricedQuantityScale = pricedOpenQuantity > 0 ? reconciledPricedQuantity / pricedOpenQuantity : 0
+    // 6/7. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
     if (rawCurrentPrice == null) {
       exclude('missing_verified_current_price')
       continue
@@ -592,13 +591,13 @@ export function computePnl(
     // Scoped to pricedOpenQuantity (not openQuantityFromFifo) — see this position's own
     // AGGREGATE-ARITHMETIC FIX comment above. Consistent with reconciledCostBasisUsd/
     // unrealizedTerms: an unpriced lot contributes to neither, so it must not inflate this either.
-    reconciledMarketValueUsd += rawCurrentPrice * pricedOpenQuantity
-    if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd
+    reconciledMarketValueUsd += rawCurrentPrice * reconciledPricedQuantity
+    if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd * pricedQuantityScale
     const sourceKey = currentPriceSource ?? 'unknown'
     reconciledPositionsByPriceSource[sourceKey] = (reconciledPositionsByPriceSource[sourceKey] ?? 0) + 1
     for (const lot of lots) {
       if (lot.costBasisUsd == null) continue
-      unrealizedTerms.push(rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd)
+      unrealizedTerms.push((rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd) * pricedQuantityScale)
     }
   }
 

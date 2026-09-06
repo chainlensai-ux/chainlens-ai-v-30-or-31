@@ -152,7 +152,7 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
     assert.equal(result.unrealizedPnlUsd, 30)
   })
 
-  it('does not alter FIFO matching, exclusion decisions, or fail-closed guards — only the aggregate multiplication scope changed', () => {
+  it('keeps missing-evidence guards while reconciling a known smaller balance', () => {
     const tokenA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     const excluded = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' // will fail balance reconciliation
     const lots: OpenLot[] = [
@@ -165,12 +165,11 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
 
     const result = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 1, 'the balance-mismatched position must still be excluded exactly as before')
-    assert.equal(result.unrealizedReconciliation.excludedPositions[0].tokenAddress, excluded)
-    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 1)
+    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 0)
+    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 2)
     // tokenA: market value from priced lot only (5*2=10), cost basis 2, unrealized 8.
-    assert.equal(result.unrealizedReconciliation.reconciledMarketValueUsd, 10)
-    assert.equal(result.unrealizedReconciliation.reconciledCostBasisUsd, 2)
-    assert.equal(result.unrealizedPnlUsd, 8)
+    assert.equal(result.unrealizedReconciliation.reconciledMarketValueUsd, 30)
+    assert.equal(result.unrealizedReconciliation.reconciledCostBasisUsd, 2.00001)
+    assert.ok(Math.abs((result.unrealizedPnlUsd ?? 0) - 27.99999) < 1e-9)
   })
 })

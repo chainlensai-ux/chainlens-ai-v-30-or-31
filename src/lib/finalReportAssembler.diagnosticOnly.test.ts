@@ -28,13 +28,13 @@ describe('finalReportAssembler — ayriAttribution\'s own internal PnL figures s
     assert.ok(!fnBody.includes('ayriAttribution'), 'the public fifoAndPnl figures must never be sourced from ayriAttribution\'s own internal recomputation')
   })
 
-  it('pnlSummaryV2 never mixes canonical reconciliation fields into alternate rows', () => {
+  it('pnlSummaryV2 labels its alternate aggregate diagnostic-only and publishes canonical reconciliation', () => {
     const start = source.indexOf('function buildReconciledPnlSummary')
     const end = source.indexOf('function buildPricingSummary')
     const fnBody = source.slice(start, end)
-    assert.match(fnBody, /return input\.pnlSummaryV2/)
-    assert.ok(!fnBody.includes('input.reconciledPnL.realizedPnlUsd'))
-    assert.ok(!fnBody.includes('input.reconciledPnL.missingEvidenceCount'))
+    assert.match(fnBody, /diagnosticRealizedPnlUsd: input\.pnlSummaryV2\.realizedPnlUsd/)
+    assert.match(fnBody, /diagnosticOnly: true/)
+    assert.match(fnBody, /realizedPnlUsd: input\.reconciledPnL\.realizedPnlUsd/)
   })
 
   it('the top-level assembled report never assigns ayriAttribution.realizedPnlUsd/unrealizedPnlUsd to fifoAndPnl', () => {

@@ -226,6 +226,35 @@ describe('pnlReconciliation', () => {
     assert.equal(summary.realizedPnlUsd, -5)
   })
 
+  it('prioritizes the token that completes the most closed lots within the unchanged recovery cap', async () => {
+    const dominantToken = '0xffffffffffffffffffffffffffffffffffffffff'
+    const dominant = Array.from({ length: 5 }, (_, i) => lot({
+      lotId: `dominant-${i}`, token: dominantToken, openedTxHash: `0xdominant-buy-${i}`,
+      closedTxHash: `0xdominant-sell-${i}`, costBasisUsd: 10, proceedsUsd: null,
+      realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const singletons = Array.from({ length: 40 }, (_, i) => lot({
+      lotId: `singleton-${i}`, token: `0x${i.toString(16).padStart(40, '0')}`,
+      openedTxHash: `0xsingleton-buy-${i}`, closedTxHash: `0xsingleton-sell-${i}`,
+      costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const attemptedTokens: string[] = []
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPricePrimary: async (token) => { attemptedTokens.push(token); return token === dominantToken ? 15 : null } },
+      priceSources: { primary: async () => null },
+    })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...singletons, ...dominant], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(45), syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.deepEqual(attemptedTokens.slice(0, 5), Array(5).fill(dominantToken))
+    assert.equal(attemptedTokens.length, 40, 'the existing candidate cap is unchanged')
+    assert.equal(summary.priceRecoveredCount, 5)
+    assert.equal(summary.publicPnlGateAudit.verifiedLotCount, 5)
+  })
+
   it('regression guard: a successfully recovered price actually flows into the official realizedPnlUsd — recovery is no longer cosmetic-only', async () => {
     // Confirmed real bug fix: recovery previously fetched a real price, then DISCARDED it — only
     // affecting evidence-count optics, never the official sum. This proves the recovered price now

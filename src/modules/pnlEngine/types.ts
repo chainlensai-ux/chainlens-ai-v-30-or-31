@@ -66,7 +66,12 @@ export type PnlConfidenceBasis = {
 }
 
 export type PnlSummaryResult = {
+  // The report assembler replaces this headline with canonical reconciled FIFO realized PnL.
+  // The sell-entry model's independently computed figure remains available only in the explicitly
+  // labelled diagnostic field below, so API/UI consumers never see two competing official totals.
   realizedPnlUsd: number | null
+  diagnosticRealizedPnlUsd?: number | null
+  diagnosticOnly?: boolean
   closedLots: ClosedLot[]
   winLossRate: WinLossRate
   chainBreakdown: ChainBreakdownEntry[]

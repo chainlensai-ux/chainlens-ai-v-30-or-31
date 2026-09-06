@@ -82,10 +82,15 @@ function buildReconciledFifo(input: BuildInput): FifoOutput {
 }
 
 function buildReconciledPnlSummary(input: BuildInput): PnlSummaryResult {
-  // pnlSummaryV2 is the alternate sell-entry read model. Its total, rows, and evidence count must
-  // remain one internally-consistent unit. Canonical FIFO values are already published separately
-  // through fifoAndPnl/reconciliationSummary and must never overwrite only part of this object.
-  return input.pnlSummaryV2
+  // The sell-entry rows remain useful diagnostics, but their independently derived aggregate is
+  // not an official second PnL engine. Preserve that aggregate under an explicit diagnostic name
+  // and make every public realized-PnL headline resolve to reconciled canonical FIFO.
+  return {
+    ...input.pnlSummaryV2,
+    diagnosticRealizedPnlUsd: input.pnlSummaryV2.realizedPnlUsd,
+    diagnosticOnly: true,
+    realizedPnlUsd: input.reconciledPnL.realizedPnlUsd,
+  }
 }
 
 function buildPricingSummary(ayri: AyriAttributionOutput) {
