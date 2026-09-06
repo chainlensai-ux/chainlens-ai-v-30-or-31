@@ -156,6 +156,10 @@ function scanUnavailableResponse(): ScanWalletApiResponse {
   return { success: false, degraded: true, error: { message: 'Scan is currently unavailable. Please try again later.', category: 'network' } }
 }
 
+function scanAuthenticationResponse(): ScanWalletApiResponse {
+  return { success: false, error: { message: 'Your session has expired. Please sign in again.', category: 'auth' } }
+}
+
 // JOB/POLL SCAN PATH: POST returns immediately with a jobId, then this client polls the status
 // endpoint every 2.5s until the background worker stores the full scan response. The heavy
 // runWalletScanV2Worker call is never made by this client-facing HTTP request.
@@ -170,12 +174,18 @@ export async function scanWalletV2(
   // would be rejected even though the page already confirmed their access client-side.
   accessToken?: string | null,
 ): Promise<ScanWalletApiResponse> {
+  // Both the enqueue and status routes are user-authenticated. Refuse to start a job that this
+  // client cannot subsequently poll rather than leaving the UI indefinitely showing "queued".
+  if (!accessToken) {
+    return scanAuthenticationResponse()
+  }
+
   try {
     const startRes = await fetch(WALLET_SCAN_ROUTE, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
@@ -199,8 +209,16 @@ export async function scanWalletV2(
 
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
-      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`)
+      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
+
+      // Authentication failures cannot recover by retrying the same credential. Stop immediately
+      // so callers can prompt for a fresh session instead of spinning until the poll timeout.
+      if (pollRes.status === 401 || pollRes.status === 403) {
+        return scanAuthenticationResponse()
+      }
 
       if (isTerminalScanUnavailable(pollBody)) {
         return scanUnavailableResponse()

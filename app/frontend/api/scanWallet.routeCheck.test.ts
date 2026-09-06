@@ -10,11 +10,13 @@ const originalSetTimeout = global.setTimeout
 describe('scanWalletV2 (wallet-scan background job + polling)', () => {
   it('enqueues via /api/wallet-scan, polls by jobId, and returns the completed full scan result', async () => {
     const calls: string[] = []
+    const authorizationHeaders: Array<string | null> = []
     const updates: string[] = []
     global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
     const originalFetch = global.fetch
-    global.fetch = mock.fn(async (url: string) => {
+    global.fetch = mock.fn(async (url: string, init?: RequestInit) => {
       calls.push(url)
+      authorizationHeaders.push(new Headers(init?.headers).get('Authorization'))
       if (url === '/api/wallet-scan') {
         return new Response(JSON.stringify({ jobId: 'job-1', status: 'queued' }), { status: 200 })
       }
@@ -23,9 +25,10 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status), 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-1'])
+      assert.deepEqual(authorizationHeaders, ['Bearer test-access-token', 'Bearer test-access-token'])
       assert.deepEqual(updates, ['queued', 'done'])
       assert.equal(result.success, true)
       assert.deepEqual(result.data, { fromJob: true })
@@ -35,13 +38,59 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
     }
   })
 
+  it('fails before enqueue when no access token is available', async () => {
+    const originalFetch = global.fetch
+    const fetchMock = mock.fn(async () => new Response(null, { status: 500 }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base'])
+
+      assert.equal(fetchMock.mock.callCount(), 0)
+      assert.equal(result.success, false)
+      assert.equal(result.error?.category, 'auth')
+      assert.equal(result.error?.message, 'Your session has expired. Please sign in again.')
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  for (const status of [401, 403]) {
+    it(`stops polling immediately when the status route returns HTTP ${status}`, async () => {
+      const calls: string[] = []
+      global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+      const originalFetch = global.fetch
+      global.fetch = mock.fn(async (url: string) => {
+        calls.push(url)
+        if (url === '/api/wallet-scan') {
+          return new Response(JSON.stringify({ jobId: 'job-auth', status: 'queued' }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ error: 'unauthorized' }), { status })
+      }) as unknown as typeof fetch
+
+      try {
+        const { scanWalletV2 } = await import('./scanWallet.ts')
+        const result = await scanWalletV2('0xabc', ['base'], 'normal', undefined, 'expired-token')
+
+        assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-auth'])
+        assert.equal(result.success, false)
+        assert.equal(result.error?.category, 'auth')
+        assert.equal(result.error?.message, 'Your session has expired. Please sign in again.')
+      } finally {
+        global.fetch = originalFetch
+        global.setTimeout = originalSetTimeout
+      }
+    })
+  }
+
   it('returns a structured error when enqueue fails validation/server-side', async () => {
     const originalFetch = global.fetch
     global.fetch = mock.fn(async () => new Response(JSON.stringify({ error: { message: 'Invalid wallet address' } }), { status: 400 })) as unknown as typeof fetch
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('bad', ['base'], 'normal')
+      const result = await scanWalletV2('bad', ['base'], 'normal', undefined, 'test-access-token')
 
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'Invalid wallet address')
@@ -62,7 +111,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'deep')
+      const result = await scanWalletV2('0xabc', ['base'], 'deep', undefined, 'test-access-token')
 
       assert.equal(result.success, false)
       assert.equal(result.error?.message, 'provider failure')
@@ -84,7 +133,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', undefined, 'test-access-token')
 
       assert.equal(result.degraded, true)
       assert.equal(result.success, false)
@@ -115,7 +164,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status), 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-transient', '/api/wallet-scan/job-transient'])
       assert.deepEqual(updates, ['queued', 'done'])
@@ -143,7 +192,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status), 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan'])
       assert.deepEqual(updates, ['done'])
@@ -165,7 +214,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal')
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', undefined, 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan'])
       assert.equal(result.success, false)
@@ -200,7 +249,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status), 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-transient-503', '/api/wallet-scan/job-transient-503'])
       assert.equal(result.success, true)
@@ -226,7 +275,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
 
     try {
       const { scanWalletV2 } = await import('./scanWallet.ts')
-      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status))
+      const result = await scanWalletV2('0xabc', ['base'], 'normal', ({ status }) => updates.push(status), 'test-access-token')
 
       assert.deepEqual(calls, ['/api/wallet-scan', '/api/wallet-scan/job-unavailable'])
       assert.deepEqual(updates, ['queued'])
@@ -268,7 +317,7 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
       const { scanWalletV2 } = await import('./scanWallet.ts')
       const result = await scanWalletV2('0xabc', ['base', 'eth'], 'deep', ({ partial }) => {
         if (partial) partials.push(partial)
-      })
+      }, 'test-access-token')
       assert.equal(partials.length, 1)
       assert.equal(partials[0]?.holdingsCount, 4)
       assert.equal(partials[0]?.portfolioTotalValueUsd, 14940.03)
