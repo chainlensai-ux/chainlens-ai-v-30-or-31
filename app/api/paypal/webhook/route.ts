@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyPayPalWebhookSignature, type PayPalWebhookSignatureHeaders } from '@/lib/paypal'
 import { createServiceRoleClient, activateUserPlanServerSide } from '@/lib/supabase/userSettings'
 import { emptyPaypalPaymentAudit, logPaypalPaymentAudit, type PaypalPaymentAudit } from '@/lib/server/paypalAudit'
+import { getPricingPlan } from '@/lib/pricingPlans'
+import { getAffiliateCommissionRate } from '@/lib/affiliate/commission'
 
 // PayPal recurring-Subscriptions webhook. Reconciles real Subscriptions API events (created via
 // /api/paypal/create-subscription) into Supabase — see docs/paypal-verification.md.
@@ -18,8 +20,11 @@ type PayPalWebhookBody = {
     id?: string // subscription id for BILLING.SUBSCRIPTION.*, sale id for PAYMENT.SALE.*
     custom_id?: string
     billing_agreement_id?: string // PAYMENT.SALE.* references the subscription this way
+    parent_payment?: string // refunds can reference the original sale with this field
+    sale_id?: string
     status?: string
     plan_id?: string
+    amount?: { total?: string; currency?: string }
     billing_info?: { next_billing_time?: string }
   }
 }
@@ -46,6 +51,52 @@ export function userIdFromCustomId(customId: string | undefined): string | null 
   // custom_id is formatted as "<plan>:<userId>" by /api/paypal/create-subscription.
   const parts = customId.split(':')
   return parts.length === 2 ? parts[1] : null
+}
+
+async function createPayPalCommission(
+  client: NonNullable<ReturnType<typeof createServiceRoleClient>>,
+  saleId: string,
+  userId: string,
+  plan: 'pro' | 'elite',
+  amount: { total?: string; currency?: string } | undefined,
+) {
+  const { data: settings, error: settingsError } = await client
+    .from('user_settings')
+    .select('referred_by_affiliate_id')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (settingsError) return settingsError
+
+  const affiliateId = settings?.referred_by_affiliate_id
+  if (!affiliateId) return null
+
+  const { data: affiliate, error: affiliateError } = await client
+    .from('affiliates')
+    .select('id, referral_code, status, commission_rate')
+    .eq('id', affiliateId)
+    .maybeSingle()
+  if (affiliateError) return affiliateError
+  if (!affiliate || affiliate.status !== 'approved') return null
+
+  const chargedUsd = amount?.currency === 'USD' ? Number(amount.total) : Number.NaN
+  // Commission base is the checkout's gross USD charge; the server-side plan price is only a
+  // fallback for PayPal events that omit a usable USD amount.
+  const paymentAmountUsd = Number.isFinite(chargedUsd) && chargedUsd > 0
+    ? chargedUsd
+    : getPricingPlan(plan).priceMonthly
+  const commissionRate = getAffiliateCommissionRate(affiliate)
+  const { error } = await client.from('affiliate_commissions').insert({
+    affiliate_id: affiliate.id,
+    buyer_user_id: userId,
+    payment_id: saleId,
+    referral_code: affiliate.referral_code,
+    plan,
+    payment_amount_usd: paymentAmountUsd,
+    commission_rate: commissionRate,
+    commission_amount: paymentAmountUsd * commissionRate,
+    status: 'pending',
+  })
+  return error?.code === '23505' ? null : error
 }
 
 // TESTABILITY, DISCLOSED (PayPal payments audit): optional dependency-injection seam — defaults to
@@ -216,15 +267,22 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     }
 
     case 'PAYMENT.SALE.COMPLETED': {
-      // Recurring renewal payments reference the subscription via billing_agreement_id, not
-      // custom_id — look up the existing row (created by CREATED/ACTIVATED above) to find the user.
+      // This is the sole commission trigger for both the first successful charge and renewals.
+      // ACTIVATED grants access but creates no commission, because it does not prove money moved.
+      // Recurring payments reference the subscription via billing_agreement_id, not custom_id.
       const subscriptionId = resource.billing_agreement_id
-      if (!subscriptionId) break
-      const { data: existing } = await client
+      const saleId = resource.id
+      if (!subscriptionId || !saleId) break
+      const { data: existing, error: subscriptionError } = await client
         .from('paypal_subscriptions')
         .select('user_id, plan')
         .eq('paypal_subscription_id', subscriptionId)
         .maybeSingle()
+      if (subscriptionError) {
+        audit.failureReason = 'subscription_lookup_failed'
+        logPaypalPaymentAudit(audit)
+        return NextResponse.json({ error: 'Failed to resolve subscription.' }, { status: 500 })
+      }
       if (!existing) break
       audit.userId = existing.user_id as string
       // NULL-PLAN FIX, DISCLOSED (payments audit): previously defaulted a missing/invalid `plan`
@@ -257,6 +315,18 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         audit.failureReason = 'write_failed'
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
+      }
+      const commissionError = await createPayPalCommission(
+        client,
+        saleId,
+        existing.user_id as string,
+        renewalPlan,
+        resource.amount,
+      )
+      if (commissionError) {
+        audit.failureReason = 'commission_write_failed'
+        logPaypalPaymentAudit(audit)
+        return NextResponse.json({ error: 'Failed to record affiliate commission.' }, { status: 500 })
       }
       break
     }
@@ -322,7 +392,22 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     // resolvable; an unresolvable refund is logged (failureReason) rather than silently ignored.
     case 'PAYMENT.SALE.REFUNDED':
     case 'PAYMENT.SALE.REVERSED': {
-      const subscriptionId = eventType === 'BILLING.SUBSCRIPTION.CANCELLED' ? resource.id : resource.billing_agreement_id
+      const isCancellation = eventType === 'BILLING.SUBSCRIPTION.CANCELLED'
+      const subscriptionId = isCancellation ? resource.id : resource.billing_agreement_id
+      if (!isCancellation) {
+        const originalSaleId = resource.sale_id ?? resource.parent_payment ?? resource.id
+        if (originalSaleId) {
+          const { error: reversalError } = await client
+            .from('affiliate_commissions')
+            .update({ status: 'reversed' })
+            .eq('payment_id', originalSaleId)
+          if (reversalError) {
+            audit.failureReason = 'commission_reversal_failed'
+            logPaypalPaymentAudit(audit)
+            return NextResponse.json({ error: 'Failed to reverse affiliate commission.' }, { status: 500 })
+          }
+        }
+      }
       if (!subscriptionId) {
         audit.failureReason = 'no_subscription_reference'
         break
@@ -333,7 +418,7 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         .eq('paypal_subscription_id', subscriptionId)
         .maybeSingle()
 
-      const newStatus = eventType === 'BILLING.SUBSCRIPTION.CANCELLED' ? 'cancelled' : 'refunded'
+      const newStatus = isCancellation ? 'cancelled' : 'refunded'
       const { error: cancelledError } = await client
         .from('paypal_subscriptions')
         .update({ status: newStatus, updated_at: new Date().toISOString() })

@@ -48,7 +48,8 @@ export async function POST(req: NextRequest) {
   // ── Affiliate resolution (first-referral-wins) ──────────────
   // Step 1: check whether the buyer already has a stored original affiliate.
   // If yes, use that and ignore the referral code in this request so that
-  // the original affiliate always earns on future recurring payments.
+  // the original affiliate remains attributed on future purchases. Crypto commissions are one per
+  // paid invoice; recurring monthly commissions come from verified PayPal sale webhooks.
   const { data: settingsRow } = await supabase
     .from('user_settings')
     .select('referred_by_affiliate_id')

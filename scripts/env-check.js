@@ -60,6 +60,7 @@ const REQUIRED = [
 
 // ── Strongly recommended — degraded functionality without these ───────────────
 const RECOMMENDED = [
+  ['ADMIN_EMAILS',                       'Admin allowlist; empty intentionally denies every admin action'],
   ['ALCHEMY_ETHEREUM_KEY',              'ETH wallet history (optional Alchemy key)'],
   ['RESEND_API_KEY',                    'Affiliate confirmation emails'],
   ['LEMONSQUEEZY_WEBHOOK_SECRET',       'LemonSqueezy fiat payment webhooks'],

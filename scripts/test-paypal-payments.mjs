@@ -67,6 +67,7 @@ function uniqueKeyFor(table) {
   if (table === 'paypal_webhook_events') return 'event_id'
   if (table === 'paypal_subscriptions') return 'paypal_subscription_id'
   if (table === 'user_settings') return 'user_id'
+  if (table === 'affiliate_commissions') return 'payment_id'
   return null
 }
 
@@ -75,6 +76,8 @@ function makeFakeServiceClient(seed = {}) {
     paypal_subscriptions: seed.paypal_subscriptions ?? [],
     paypal_webhook_events: seed.paypal_webhook_events ?? [],
     user_settings: seed.user_settings ?? [],
+    affiliates: seed.affiliates ?? [],
+    affiliate_commissions: seed.affiliate_commissions ?? [],
   }
   return {
     _db: db,
@@ -298,7 +301,7 @@ async function run() {
 
   // ── 6. Valid webhook upgrades user ────────────────────────────────────────────────────────────
   {
-    const calls = mockPayPalFetch({ verifySuccess: true })
+    mockPayPalFetch({ verifySuccess: true })
     const service = makeFakeServiceClient()
     let activateCalls = []
     const activatePlan = async (userId, plan, subscriptionId) => {
@@ -317,6 +320,53 @@ async function run() {
     check('a signature-verified ACTIVATED event returns 200', res.status === 200)
     check('a verified webhook activates the correct plan for the correct user', activateCalls.length === 1 && activateCalls[0].userId === 'user-1' && activateCalls[0].plan === 'elite')
     check('the subscription row is recorded active', service._db.paypal_subscriptions.find((r) => r.paypal_subscription_id === 'SUB-1')?.status === 'active')
+    restoreFetch()
+  }
+
+  // ── 6b. Only successful sales create first-charge and renewal commissions ────────────────────
+  {
+    mockPayPalFetch({ verifySuccess: true })
+    const service = makeFakeServiceClient({
+      paypal_subscriptions: [{ user_id: 'user-aff', paypal_subscription_id: 'SUB-AFF', plan: 'elite', status: 'active' }],
+      user_settings: [{ user_id: 'user-aff', referred_by_affiliate_id: 'aff-1' }],
+      affiliates: [{ id: 'aff-1', referral_code: 'PARTNER20', status: 'approved', commission_rate: 0.25 }],
+    })
+    const activatePlan = async () => ({ error: null })
+
+    const activated = await handlePayPalWebhook(
+      webhookRequest({ id: 'evt-aff-activated', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-AFF', custom_id: 'elite:user-aff' } }),
+      { getServiceClient: () => service, activatePlan },
+    )
+    check('ACTIVATED grants access but never creates a commission before a successful sale', activated.status === 200 && service._db.affiliate_commissions.length === 0)
+
+    const firstSale = {
+      id: 'evt-aff-sale-1',
+      event_type: 'PAYMENT.SALE.COMPLETED',
+      resource: { id: 'SALE-1', billing_agreement_id: 'SUB-AFF', amount: { total: '60.00', currency: 'USD' } },
+    }
+    const first = await handlePayPalWebhook(webhookRequest(firstSale), { getServiceClient: () => service, activatePlan })
+    const firstCommission = service._db.affiliate_commissions[0]
+    check('the first successful PayPal sale creates one affiliate commission', first.status === 200 && service._db.affiliate_commissions.length === 1)
+    check('commission uses the durable sale id, approved affiliate rate, and actual USD charge', firstCommission?.payment_id === 'SALE-1' && firstCommission?.commission_rate === 0.25 && firstCommission?.commission_amount === 15)
+    check('commission stamps the approved affiliate referral code rather than client checkout data', firstCommission?.referral_code === 'PARTNER20')
+
+    for (let replay = 0; replay < 5; replay++) {
+      const replayed = await handlePayPalWebhook(webhookRequest(firstSale), { getServiceClient: () => service, activatePlan })
+      check(`sale event replay ${replay + 1}/5 is idempotent`, replayed.status === 200 && service._db.affiliate_commissions.length === 1)
+    }
+    const duplicateSaleNewEvent = await handlePayPalWebhook(
+      webhookRequest({ ...firstSale, id: 'evt-aff-sale-1-redelivery' }),
+      { getServiceClient: () => service, activatePlan },
+    )
+    check('the durable sale id prevents duplicates even under a different webhook event id', duplicateSaleNewEvent.status === 200 && service._db.affiliate_commissions.length === 1)
+
+    const renewal = await handlePayPalWebhook(
+      webhookRequest({ id: 'evt-aff-sale-2', event_type: 'PAYMENT.SALE.COMPLETED', resource: { id: 'SALE-2', billing_agreement_id: 'SUB-AFF' } }),
+      { getServiceClient: () => service, activatePlan },
+    )
+    const renewalCommission = service._db.affiliate_commissions.find((row) => row.payment_id === 'SALE-2')
+    check('a renewal creates a separate commission', renewal.status === 200 && service._db.affiliate_commissions.length === 2)
+    check('a sale without an amount falls back to the canonical Elite plan price', renewalCommission?.payment_amount_usd === 60 && renewalCommission?.commission_amount === 15)
     restoreFetch()
   }
 
@@ -372,14 +422,20 @@ async function run() {
     const service = makeFakeServiceClient({
       paypal_subscriptions: [{ user_id: 'user-1', paypal_subscription_id: 'SUB-5', plan: 'elite', status: 'active' }],
       user_settings: [{ user_id: 'user-1', plan: 'elite', lemon_subscription_id: 'SUB-5' }],
+      affiliate_commissions: [{ payment_id: 'SALE-REFUND', status: 'pending' }],
     })
-    const resource = eventType === 'BILLING.SUBSCRIPTION.CANCELLED' ? { id: 'SUB-5' } : { billing_agreement_id: 'SUB-5' }
+    const resource = eventType === 'BILLING.SUBSCRIPTION.CANCELLED'
+      ? { id: 'SUB-5' }
+      : { billing_agreement_id: 'SUB-5', sale_id: 'SALE-REFUND' }
     const res = await handlePayPalWebhook(
       webhookRequest({ id: `evt-${eventType}`, event_type: eventType, resource }),
       { getServiceClient: () => service },
     )
     check(`${eventType} returns 200`, res.status === 200)
     check(`${eventType} downgrades the user back to free`, service._db.user_settings.find((r) => r.user_id === 'user-1')?.plan === 'free')
+    if (eventType !== 'BILLING.SUBSCRIPTION.CANCELLED') {
+      check(`${eventType} preserves commission history but makes it non-payable`, service._db.affiliate_commissions[0]?.status === 'reversed')
+    }
     restoreFetch()
   }
   {

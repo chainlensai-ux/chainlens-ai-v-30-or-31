@@ -413,7 +413,7 @@ function AffiliateLeaderboardTable({ rows }: { rows: AffiliateWithStats[] }) {
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['#', 'Email', 'Code', 'Rate', 'Status', 'Checkouts', 'Confirmed Sales', 'Revenue', 'Pending Owed', 'Paid Total', 'Conv.'].map((h) => (
+            {['#', 'Email', 'Code', 'Rate', 'Status', 'Crypto Invoices', 'Commissioned Sales', 'Attributed Revenue', 'Pending Owed', 'Paid Total', 'Conv.'].map((h) => (
               <th key={h} style={th}>{h}</th>
             ))}
           </tr>

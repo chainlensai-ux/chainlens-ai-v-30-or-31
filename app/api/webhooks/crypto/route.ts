@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 import { activateUserPlanServerSide } from '@/lib/supabase/userSettings'
+import { getAffiliateCommissionRate } from '@/lib/affiliate/commission'
 
 export const dynamic = 'force-dynamic'
 const PLAN_AMOUNTS: Record<string, number> = { pro: 30, elite: 60 }
@@ -30,7 +31,15 @@ export async function POST(req: NextRequest) {
   if (INACTIVE_STATUSES.has(paymentStatus)) {
     const { data: pay } = await supabase.from('crypto_payments').select('id').eq('order_id', orderId).maybeSingle()
     if (pay?.id) {
-      await supabase.from('crypto_payments').update({ status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
+      const { error: paymentUpdateError } = await supabase.from('crypto_payments').update({ status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
+      if (paymentUpdateError) return NextResponse.json({ ok: false }, { status: 500 })
+      if (paymentStatus === 'refunded') {
+        const reversal = supabase.from('affiliate_commissions').update({ status: 'reversed' })
+        const { error: reversalError } = paymentId
+          ? await reversal.eq('payment_id', paymentId)
+          : await reversal.eq('crypto_payment_id', pay.id)
+        if (reversalError) return NextResponse.json({ ok: false }, { status: 500 })
+      }
     }
     return NextResponse.json({ ok: true })
   }
@@ -63,36 +72,37 @@ export async function POST(req: NextRequest) {
     console.error('[webhooks/crypto] order_id userId does not match crypto_payments row — refusing to activate', { orderId })
     return NextResponse.json({ ok: true })
   }
-  // AUDIT FIX, DISCLOSED (crypto-payment audit): DB-backed dedupe — the in-memory Set above is
-  // per-instance and resets on every cold start/redeploy, so it cannot be the only guard against
-  // NOWPayments re-delivering the same IPN (or sending both 'confirmed' and 'finished' for one real
-  // payment) on a different instance. If this row was already moved into an activation status by an
-  // earlier delivery, skip straight to success without re-running activation/commission logic again.
-  if (ACTIVATION_STATUSES.has(String(pay.status ?? ''))) {
-    if (paymentId) processedPaymentIds.add(paymentId)
-    return NextResponse.json({ ok: true })
+  // The payment-row status only dedupes plan activation. Commission reconciliation must still run:
+  // an earlier delivery may have activated without a payment_id, or failed before its commission
+  // write. affiliate_commissions.payment_id remains the durable, cross-instance commission gate.
+  if (!ACTIVATION_STATUSES.has(String(pay.status ?? ''))) {
+    const { error } = await activateUserPlanServerSide(parsed.userId, storedPlan as 'pro' | 'elite', paymentId || undefined)
+    if (error) return NextResponse.json({ ok: false }, { status: 500 })
   }
 
-  const { error } = await activateUserPlanServerSide(parsed.userId, storedPlan as 'pro' | 'elite', paymentId || undefined)
-  if (error) return NextResponse.json({ ok: false }, { status: 500 })
-
   if (pay?.id) {
-    await supabase.from('crypto_payments').update({ payment_id: paymentId || null, status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
+    const { error: paymentUpdateError } = await supabase.from('crypto_payments').update({ payment_id: paymentId || null, status: paymentStatus, raw_status: paymentStatus, updated_at: new Date().toISOString() }).eq('id', pay.id)
+    if (paymentUpdateError) return NextResponse.json({ ok: false }, { status: 500 })
   }
 
   if (pay?.affiliate_id && paymentId) {
-    const { data: exists } = await supabase.from('affiliate_commissions').select('id').eq('payment_id', paymentId).maybeSingle()
+    const { data: exists, error: commissionReadError } = await supabase.from('affiliate_commissions').select('id').eq('payment_id', paymentId).maybeSingle()
+    if (commissionReadError) return NextResponse.json({ ok: false }, { status: 500 })
     if (!exists) {
-      const { data: aff } = await supabase.from('affiliates').select('commission_rate').eq('id', pay.affiliate_id).maybeSingle()
-      const rate = Number(aff?.commission_rate ?? 0.20)
+      const { data: aff, error: affiliateReadError } = await supabase.from('affiliates').select('commission_rate,referral_code,status').eq('id', pay.affiliate_id).maybeSingle()
+      if (affiliateReadError) return NextResponse.json({ ok: false }, { status: 500 })
+      if (!aff || aff.status !== 'approved') return NextResponse.json({ ok: true })
+      const rate = getAffiliateCommissionRate(aff)
       const amount = Number(pay.amount_usd ?? PLAN_AMOUNTS[parsed.plan])
-      // referral_code may be null for recurring payments with no active referral link
-      const referralCode = (pay as Record<string, unknown>).referral_code ?? null
+      // Older payment rows can lack the checkout-time code; the affiliate row is authoritative and
+      // keeps affiliate_commissions.referral_code's NOT NULL contract intact.
+      const referralCode = (pay as Record<string, unknown>).referral_code ?? aff.referral_code
       const { error: commissionInsertError } = await supabase.from('affiliate_commissions').insert({ affiliate_id: pay.affiliate_id, crypto_payment_id: pay.id ?? null, buyer_user_id: parsed.userId, buyer_email: (pay as Record<string, unknown>).user_email ?? null, payment_id: paymentId, referral_code: referralCode, plan: parsed.plan, payment_amount_usd: amount, commission_rate: rate, commission_amount: amount * rate, status: 'pending' })
       if (commissionInsertError?.code === '23505') {
         console.warn('commission_insert_duplicate')
       } else if (commissionInsertError) {
         console.error('commission_insert_failed', { code: commissionInsertError.code })
+        return NextResponse.json({ ok: false }, { status: 500 })
       }
     }
     // Safety net: persist original affiliate to buyer account.

@@ -53,6 +53,21 @@ export async function POST(req: Request) {
 
     const supabase = createClient(supabaseUrl, serviceRole)
 
+    const { data: existingApplication, error: existingError } = await supabase
+      .from('affiliates')
+      .select('id, status')
+      .ilike('email', email)
+      .in('status', ['pending', 'approved'])
+      .limit(1)
+      .maybeSingle()
+    if (existingError) return unavailableResponse(500)
+    if (existingApplication) {
+      return NextResponse.json(
+        { error: existingApplication.status === 'approved' ? 'This email already has an approved affiliate account.' : 'An application for this email is already pending review.' },
+        { status: 409 },
+      )
+    }
+
     // Generate a code and retry once on unique-constraint collision (Postgres error 23505).
     // Primary code: 'cl' + 8 hex chars (e.g. cl1a2b3c4d).
     // On collision: append 4 more hex chars as suffix (e.g. cl1a2b3c4d-5e6f).

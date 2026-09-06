@@ -37,7 +37,7 @@ type RecentRow = {
   plan: string | null
   paymentUsd: number
   commissionUsd: number
-  status: 'paid' | 'pending'
+  status: 'paid' | 'pending' | 'reversed'
   createdAt: string | null
   paidAt: string | null
 }
@@ -324,8 +324,8 @@ export default function AffiliateDashboardPage() {
                     <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-muted)', fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.paymentUsd)}</td>
                     <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-teal)', fontWeight: 700, fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.commissionUsd)}</td>
                     <td style={{ padding: '12px 0' }}>
-                      <span className="affd-tag" style={{ color: r.status === 'paid' ? '#7ce8d8' : '#fbbf24', background: r.status === 'paid' ? 'var(--affd-teal-soft)' : 'rgba(251,191,36,.1)', border: `1px solid ${r.status === 'paid' ? 'rgba(45,212,191,.3)' : 'rgba(251,191,36,.3)'}` }}>
-                        {r.status === 'paid' ? `Paid ${shortDate(r.paidAt)}` : 'Pending'}
+                      <span className="affd-tag" style={{ color: r.status === 'paid' ? '#7ce8d8' : r.status === 'reversed' ? '#f87171' : '#fbbf24', background: r.status === 'paid' ? 'var(--affd-teal-soft)' : r.status === 'reversed' ? 'rgba(248,113,113,.1)' : 'rgba(251,191,36,.1)', border: `1px solid ${r.status === 'paid' ? 'rgba(45,212,191,.3)' : r.status === 'reversed' ? 'rgba(248,113,113,.3)' : 'rgba(251,191,36,.3)'}` }}>
+                        {r.status === 'paid' ? `Paid ${shortDate(r.paidAt)}` : r.status === 'reversed' ? 'Reversed' : 'Pending'}
                       </span>
                     </td>
                   </tr>
