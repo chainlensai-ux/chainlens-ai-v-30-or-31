@@ -64,20 +64,20 @@ export function getClarkSessionId(): string {
 
 export type ClarkClientContext = {
   lastWallet?: unknown | null
-  recentWallets?: unknown[]
+  recentWallets?: unknown[] | null
   lastToken?: unknown | null
-  recentTokens?: unknown[]
-  lastMomentumList?: unknown[]
+  recentTokens?: unknown[] | null
+  lastMomentumList?: unknown[] | null
   lastMomentumListId?: string | null
   lastMomentumShownCount?: number
   lastDeployer?: unknown | null
-  lastRadarList?: unknown[]
+  lastRadarList?: unknown[] | null
   lastRadarChain?: string | null
   lastRadarTs?: number
   lastChain?: string | null
   lastClarkSubject?: unknown | null
   prevClarkSubject?: unknown | null
-  lastTickerMatches?: unknown[]
+  lastTickerMatches?: unknown[] | null
   tickerSearchId?: string | null
 }
 
@@ -94,22 +94,22 @@ function readJson(key: string): unknown {
 export function readClarkClientContext(): ClarkClientContext {
   if (typeof window === 'undefined') return {}
   return {
-    lastWallet: readJson(LAST_WALLET_KEY) ?? undefined,
-    recentWallets: (readJson(RECENT_WALLETS_KEY) as unknown[] | null) ?? undefined,
-    lastToken: readJson(LAST_TOKEN_KEY) ?? undefined,
-    recentTokens: (readJson(RECENT_TOKENS_KEY) as unknown[] | null) ?? undefined,
-    lastMomentumList: (readJson(LAST_MOMENTUM_LIST_KEY) as unknown[] | null) ?? undefined,
-    lastMomentumListId: sessionStorage.getItem(LAST_MOMENTUM_LIST_ID_KEY) ?? undefined,
+    lastWallet: readJson(LAST_WALLET_KEY) ?? null,
+    recentWallets: (readJson(RECENT_WALLETS_KEY) as unknown[] | null) ?? null,
+    lastToken: readJson(LAST_TOKEN_KEY) ?? null,
+    recentTokens: (readJson(RECENT_TOKENS_KEY) as unknown[] | null) ?? null,
+    lastMomentumList: (readJson(LAST_MOMENTUM_LIST_KEY) as unknown[] | null) ?? null,
+    lastMomentumListId: sessionStorage.getItem(LAST_MOMENTUM_LIST_ID_KEY) ?? null,
     lastMomentumShownCount: Number(sessionStorage.getItem(LAST_MOMENTUM_SHOWN_COUNT_KEY) ?? '0') || 0,
-    lastDeployer: readJson(LAST_DEPLOYER_KEY) ?? undefined,
-    lastRadarList: (readJson(LAST_RADAR_LIST_KEY) as unknown[] | null) ?? undefined,
-    lastRadarChain: sessionStorage.getItem(LAST_RADAR_CHAIN_KEY) ?? undefined,
+    lastDeployer: readJson(LAST_DEPLOYER_KEY) ?? null,
+    lastRadarList: (readJson(LAST_RADAR_LIST_KEY) as unknown[] | null) ?? null,
+    lastRadarChain: sessionStorage.getItem(LAST_RADAR_CHAIN_KEY) ?? null,
     lastRadarTs: Number(sessionStorage.getItem(LAST_RADAR_TS_KEY) ?? '0') || undefined,
-    lastChain: sessionStorage.getItem(LAST_CHAIN_KEY) ?? undefined,
-    lastClarkSubject: readJson(LAST_CLARK_SUBJECT_KEY) ?? undefined,
-    prevClarkSubject: readJson(PREV_CLARK_SUBJECT_KEY) ?? undefined,
-    lastTickerMatches: (readJson(LAST_TICKER_MATCHES_KEY) as unknown[] | null) ?? undefined,
-    tickerSearchId: sessionStorage.getItem(TICKER_SEARCH_ID_KEY) ?? undefined,
+    lastChain: sessionStorage.getItem(LAST_CHAIN_KEY) ?? null,
+    lastClarkSubject: readJson(LAST_CLARK_SUBJECT_KEY) ?? null,
+    prevClarkSubject: readJson(PREV_CLARK_SUBJECT_KEY) ?? null,
+    lastTickerMatches: (readJson(LAST_TICKER_MATCHES_KEY) as unknown[] | null) ?? null,
+    tickerSearchId: sessionStorage.getItem(TICKER_SEARCH_ID_KEY) ?? null,
   }
 }
 

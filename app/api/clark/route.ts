@@ -491,6 +491,102 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   return existing;
 }
 
+function clientContextHas(ctx: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ctx, key);
+}
+
+/** Client chat memoryEcho beats process-local SESSION_MEMORY when the field is present (including null).
+ *  Omitted fields still gap-fill so a cold start / partial clientContext cannot wipe unrelated state. */
+function applyClientContextMemoryPrecedence(
+  sessionMem: ClarkSessionMemory,
+  clientCtx: NonNullable<ClarkRequestBody["clientContext"]> | undefined,
+  explicitTokenCommand: unknown,
+): void {
+  if (!clientCtx) return;
+
+  if (!explicitTokenCommand && clientContextHas(clientCtx, "lastToken")) {
+    const incoming = clientCtx.lastToken;
+    sessionMem.lastToken = incoming && typeof incoming.address === "string" && incoming.address.trim() ? incoming : null;
+    if (!sessionMem.lastToken) {
+      sessionMem.lastTokenAddress = null;
+      sessionMem.lastTokenSymbol = null;
+      sessionMem.lastTokenName = null;
+      sessionMem.lastTokenSummary = null;
+    }
+  }
+
+  if (clientContextHas(clientCtx, "lastWallet")) {
+    const incoming = clientCtx.lastWallet;
+    sessionMem.lastWallet = incoming && typeof incoming.address === "string" && incoming.address.trim() ? incoming : null;
+  }
+
+  if (!explicitTokenCommand && clientContextHas(clientCtx, "lastClarkSubject")) {
+    const incoming = clientCtx.lastClarkSubject;
+    sessionMem.lastClarkSubject = incoming && typeof incoming.address === "string" && incoming.address.trim() ? incoming : null;
+  }
+
+  if (clientContextHas(clientCtx, "prevClarkSubject")) {
+    const incoming = clientCtx.prevClarkSubject;
+    sessionMem.prevClarkSubject = incoming && typeof incoming.address === "string" && incoming.address.trim() ? incoming : null;
+  }
+
+  if (clientContextHas(clientCtx, "lastWalletSubject")) {
+    const incoming = clientCtx.lastWalletSubject;
+    sessionMem.lastWalletSubject = incoming && typeof incoming.walletAddress === "string" && incoming.walletAddress.trim() ? incoming : null;
+  }
+
+  if (clientContextHas(clientCtx, "lastMomentumList")) {
+    if (Array.isArray(clientCtx.lastMomentumList) && clientCtx.lastMomentumList.length > 0) {
+      sessionMem.lastMomentumList = clientCtx.lastMomentumList.slice(0, 20);
+      sessionMem.lastMomentumTs = Date.now();
+      sessionMem.lastMomentumListId = clientCtx.lastMomentumListId ?? sessionMem.lastMomentumListId ?? generateTickerSearchId();
+    } else {
+      sessionMem.lastMomentumList = [];
+      sessionMem.lastMomentumListId = typeof clientCtx.lastMomentumListId === "string" && clientCtx.lastMomentumListId.trim()
+        ? clientCtx.lastMomentumListId
+        : null;
+      sessionMem.lastMomentumTs = 0;
+    }
+  }
+
+  if (clientContextHas(clientCtx, "lastDeployer")) {
+    if (clientCtx.lastDeployer?.address) {
+      const d = clientCtx.lastDeployer;
+      rememberClarkDeployer(sessionMem, d.address, {
+        chain: normalizeClarkChain(d.chain),
+        sourceTokenAddress: d.sourceTokenAddress ?? null,
+        confidence: d.confidence ?? "medium",
+      });
+      if (sessionMem.lastDevWallet && typeof d.ts === "number") sessionMem.lastDevWallet.ts = d.ts;
+    } else {
+      sessionMem.lastDevWallet = null;
+    }
+  }
+
+  if (clientContextHas(clientCtx, "lastRadarList")) {
+    if (Array.isArray(clientCtx.lastRadarList) && clientCtx.lastRadarList.length > 0) {
+      sessionMem.lastRadarList = clientCtx.lastRadarList;
+      const echoedRadarChain = clientCtx.lastRadarChain;
+      sessionMem.lastRadarChain = echoedRadarChain === "robinhood" || echoedRadarChain === "base" ? echoedRadarChain : sessionMem.lastRadarChain;
+      sessionMem.lastRadarTs = typeof clientCtx.lastRadarTs === "number" ? clientCtx.lastRadarTs : Date.now();
+    } else {
+      sessionMem.lastRadarList = [];
+      sessionMem.lastRadarChain = null;
+      sessionMem.lastRadarTs = 0;
+    }
+  }
+
+  if (!explicitTokenCommand && clientContextHas(clientCtx, "lastTickerMatches")) {
+    if (Array.isArray(clientCtx.lastTickerMatches) && clientCtx.lastTickerMatches.length > 0) {
+      sessionMem.lastTickerMatches = clientCtx.lastTickerMatches;
+      sessionMem.lastTickerSearchId = clientCtx.tickerSearchId ?? null;
+    } else {
+      sessionMem.lastTickerMatches = undefined;
+      sessionMem.lastTickerSearchId = null;
+    }
+  }
+}
+
 function setMemPage(mem: ClarkSessionMemory, uiModeHint: string | null | undefined) {
   mem.currentPage = uiModeHint ?? null;
 }
@@ -16086,6 +16182,9 @@ export async function POST(req: NextRequest) {
     sessionMem.lastTokenName = null
     sessionMem.lastTokenSummary = null
   }
+  // Precedence: explicit prompt (above) > current chat memoryEcho > process-local SESSION_MEMORY.
+  // Present clientContext fields — including null after a new/switched chat — beat the process Map.
+  applyClientContextMemoryPrecedence(sessionMem, body.clientContext, explicitTokenCommand);
   if (sessionMem.lastMomentumList.length === 0 && Array.isArray(body.clientContext?.lastMomentumList) && body.clientContext!.lastMomentumList!.length > 0) {
     sessionMem.lastMomentumList = body.clientContext!.lastMomentumList!.slice(0, 20);
     sessionMem.lastMomentumTs = Date.now();
@@ -16109,9 +16208,8 @@ export async function POST(req: NextRequest) {
     sessionMem.lastTickerSearchId = body.clientContext.tickerSearchId ?? sessionMem.lastTickerSearchId ?? null;
   }
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
-  // Restore the deployer and Radar list the same way token/wallet already were — see the
-  // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
-  // in this process is newer and always wins over the client's echo.
+  // COLD-START REHYDRATION: omitted clientContext fields still gap-fill so a lost process Map
+  // cannot break Clark. Present fields were already applied above and beat process-local memory.
   if (!sessionMem.lastDevWallet?.address && body.clientContext?.lastDeployer?.address) {
     const d = body.clientContext.lastDeployer;
     rememberClarkDeployer(sessionMem, d.address, {
