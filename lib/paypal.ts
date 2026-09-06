@@ -115,8 +115,42 @@ export async function createPayPalSubscription(
   }
 }
 
+export async function cancelPayPalSubscription(subscriptionId: string): Promise<boolean> {
+  const token = await getPayPalAccessToken()
+  if (!token) return false
+  try {
+    const res = await fetch(`${PAYPAL_API_BASE}/v1/billing/subscriptions/${encodeURIComponent(subscriptionId)}/cancel`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'Replaced by a new ChainLens plan subscription.' }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 function sanitizeCustomId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32)
+}
+
+// Refund payloads do not consistently include billing_agreement_id. The original sale resource
+// does, so webhook reconciliation can recover the subscription without guessing from the refund id.
+export async function getPayPalSaleSubscriptionId(saleId: string): Promise<string | null> {
+  const token = await getPayPalAccessToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${PAYPAL_API_BASE}/v1/payments/sale/${encodeURIComponent(saleId)}`, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!res.ok) return null
+    const sale = await res.json() as { billing_agreement_id?: string }
+    return sale.billing_agreement_id ?? null
+  } catch {
+    return null
+  }
 }
 
 export type PayPalWebhookSignatureHeaders = {

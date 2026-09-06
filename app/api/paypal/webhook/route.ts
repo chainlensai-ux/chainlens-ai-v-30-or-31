@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifyPayPalWebhookSignature, type PayPalWebhookSignatureHeaders } from '@/lib/paypal'
+import { cancelPayPalSubscription, getPayPalSaleSubscriptionId, verifyPayPalWebhookSignature, type PayPalWebhookSignatureHeaders } from '@/lib/paypal'
 import { createServiceRoleClient, activateUserPlanServerSide } from '@/lib/supabase/userSettings'
 import { emptyPaypalPaymentAudit, logPaypalPaymentAudit, type PaypalPaymentAudit } from '@/lib/server/paypalAudit'
 import { getPricingPlan } from '@/lib/pricingPlans'
@@ -28,6 +28,15 @@ type PayPalWebhookBody = {
     billing_info?: { next_billing_time?: string }
   }
 }
+
+// Only events whose semantics cannot grant, renew, revoke, or refund access may be acknowledged
+// without a state transition. Everything else fails closed so a newly-enabled PayPal event cannot
+// be silently lost merely because this deployment does not handle it yet.
+const IGNORABLE_EVENT_TYPES = new Set([
+  'BILLING.SUBSCRIPTION.APPROVAL.PENDING',
+  'PAYMENT.SALE.PENDING',
+  'PAYMENT.SALE.DENIED',
+])
 
 export function planFromCustomId(customId: string | undefined): 'pro' | 'elite' {
   return customId?.startsWith('elite:') ? 'elite' : 'pro'
@@ -108,6 +117,8 @@ export type PayPalWebhookDeps = {
   getServiceClient?: () => ReturnType<typeof createServiceRoleClient>
   activatePlan?: typeof activateUserPlanServerSide
   verifySignature?: typeof verifyPayPalWebhookSignature
+  resolveSaleSubscription?: typeof getPayPalSaleSubscriptionId
+  cancelSubscription?: typeof cancelPayPalSubscription
 }
 
 // Thin wrapper, DISCLOSED: Next.js's generated route-handler type requires POST's signature to be
@@ -122,6 +133,8 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
   const getServiceClient = deps.getServiceClient ?? createServiceRoleClient
   const activatePlan = deps.activatePlan ?? activateUserPlanServerSide
   const verifySignature = deps.verifySignature ?? verifyPayPalWebhookSignature
+  const resolveSaleSubscription = deps.resolveSaleSubscription ?? getPayPalSaleSubscriptionId
+  const cancelSubscription = deps.cancelSubscription ?? cancelPayPalSubscription
 
   const audit: PaypalPaymentAudit = { ...emptyPaypalPaymentAudit(), webhookReceived: true }
 
@@ -175,6 +188,12 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     return NextResponse.json({ error: 'Service role client unavailable.' }, { status: 500 })
   }
 
+  function recoverableFailure(reason: string, message: string) {
+    audit.failureReason = reason
+    logPaypalPaymentAudit(audit)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+
   // REPLAY-PROTECTION: a row means the event finished successfully. Never reserve an event before
   // its side effects: otherwise a transient activation failure leaves a row that makes PayPal's
   // retry look processed and strands the customer on Free. The writes below are idempotent upserts/
@@ -203,10 +222,9 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
       const userId = userIdFromCustomId(resource.custom_id)
       const subscriptionId = resource.id
       audit.userId = userId
-      if (!userId || !subscriptionId) break
+      if (!userId || !subscriptionId) return recoverableFailure('missing_required_ids', 'Subscription event is missing required identifiers.')
       if (!planMatchesPlanId(planFromCustomId(resource.custom_id), resource.plan_id)) {
-        audit.failureReason = 'plan_id_mismatch'
-        break
+        return recoverableFailure('plan_id_mismatch', 'Subscription plan does not match configured plan.')
       }
       const { error: createdError } = await client.from('paypal_subscriptions').upsert(
         {
@@ -232,20 +250,36 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
       const userId = userIdFromCustomId(resource.custom_id)
       const subscriptionId = resource.id
       audit.userId = userId
-      if (!userId || !subscriptionId) break
+      if (!userId || !subscriptionId) return recoverableFailure('missing_required_ids', 'Subscription event is missing required identifiers.')
       const plan = planFromCustomId(resource.custom_id)
       audit.newPlan = plan
       if (!planMatchesPlanId(plan, resource.plan_id)) {
-        audit.failureReason = 'plan_id_mismatch'
-        break
+        return recoverableFailure('plan_id_mismatch', 'Subscription plan does not match configured plan.')
       }
       const nextBillingDate = resource.billing_info?.next_billing_time ?? null
+
+      const { data: pendingReplacement, error: replacementLookupError } = await client
+        .from('paypal_subscriptions')
+        .select('replaces_paypal_subscription_id')
+        .eq('paypal_subscription_id', subscriptionId)
+        .maybeSingle()
+      if (replacementLookupError) return recoverableFailure('replacement_lookup_failed', 'Failed to resolve plan replacement.')
 
       const { error: activateError } = await activatePlan(userId, plan, subscriptionId)
       if (activateError) {
         audit.failureReason = 'activate_failed'
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to activate plan.' }, { status: 500 })
+      }
+      const replacedSubscriptionId = pendingReplacement?.replaces_paypal_subscription_id as string | null | undefined
+      if (replacedSubscriptionId) {
+        const cancelled = await cancelSubscription(replacedSubscriptionId)
+        if (!cancelled) return recoverableFailure('replacement_cancel_failed', 'Failed to cancel replaced PayPal subscription.')
+        const { error: replacedStatusError } = await client
+          .from('paypal_subscriptions')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .eq('paypal_subscription_id', replacedSubscriptionId)
+        if (replacedStatusError) return recoverableFailure('replacement_write_failed', 'Failed to record replaced subscription.')
       }
       const { error: activatedError } = await client.from('paypal_subscriptions').upsert(
         {
@@ -272,7 +306,7 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
       // Recurring payments reference the subscription via billing_agreement_id, not custom_id.
       const subscriptionId = resource.billing_agreement_id
       const saleId = resource.id
-      if (!subscriptionId || !saleId) break
+      if (!subscriptionId || !saleId) return recoverableFailure('missing_required_ids', 'Sale event is missing required identifiers.')
       const { data: existing, error: subscriptionError } = await client
         .from('paypal_subscriptions')
         .select('user_id, plan')
@@ -283,7 +317,7 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to resolve subscription.' }, { status: 500 })
       }
-      if (!existing) break
+      if (!existing) return recoverableFailure('subscription_not_found', 'Sale subscription could not be resolved.')
       audit.userId = existing.user_id as string
       // NULL-PLAN FIX, DISCLOSED (payments audit): previously defaulted a missing/invalid `plan`
       // column to 'pro', which would silently downgrade an elite subscriber on every renewal if the
@@ -316,6 +350,15 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
       }
+      const { error: paymentWriteError } = await client.from('paypal_payments').upsert(
+        { payment_id: saleId, paypal_subscription_id: subscriptionId, user_id: existing.user_id },
+        { onConflict: 'payment_id' },
+      )
+      if (paymentWriteError) {
+        audit.failureReason = 'payment_mapping_write_failed'
+        logPaypalPaymentAudit(audit)
+        return NextResponse.json({ error: 'Failed to record PayPal payment.' }, { status: 500 })
+      }
       const commissionError = await createPayPalCommission(
         client,
         saleId,
@@ -340,7 +383,7 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     case 'BILLING.SUBSCRIPTION.SUSPENDED':
     case 'BILLING.SUBSCRIPTION.EXPIRED': {
       const subscriptionId = resource.id
-      if (!subscriptionId) break
+      if (!subscriptionId) return recoverableFailure('missing_required_ids', 'Subscription event is missing its identifier.')
       const status = eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ? 'suspended' : 'expired'
       const { error: statusError } = await client
         .from('paypal_subscriptions')
@@ -393,9 +436,24 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     case 'PAYMENT.SALE.REFUNDED':
     case 'PAYMENT.SALE.REVERSED': {
       const isCancellation = eventType === 'BILLING.SUBSCRIPTION.CANCELLED'
-      const subscriptionId = isCancellation ? resource.id : resource.billing_agreement_id
+      let subscriptionId = isCancellation ? resource.id : resource.billing_agreement_id
       if (!isCancellation) {
         const originalSaleId = resource.sale_id ?? resource.parent_payment ?? resource.id
+        if (!subscriptionId && originalSaleId) {
+          const { data: payment, error: paymentLookupError } = await client
+            .from('paypal_payments')
+            .select('paypal_subscription_id')
+            .eq('payment_id', originalSaleId)
+            .maybeSingle()
+          if (paymentLookupError) return recoverableFailure('payment_mapping_lookup_failed', 'Refund subscription lookup failed.')
+          subscriptionId = payment?.paypal_subscription_id as string | undefined
+        }
+        if (!subscriptionId && originalSaleId) {
+          subscriptionId = await resolveSaleSubscription(originalSaleId) ?? undefined
+        }
+        if (!subscriptionId) {
+          return recoverableFailure('no_subscription_reference', 'Refund subscription could not be resolved.')
+        }
         if (originalSaleId) {
           const { error: reversalError } = await client
             .from('affiliate_commissions')
@@ -408,15 +466,14 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
           }
         }
       }
-      if (!subscriptionId) {
-        audit.failureReason = 'no_subscription_reference'
-        break
-      }
-      const { data: existing } = await client
+      if (!subscriptionId) return recoverableFailure('missing_required_ids', 'Cancellation is missing its subscription identifier.')
+      const { data: existing, error: existingError } = await client
         .from('paypal_subscriptions')
         .select('user_id')
         .eq('paypal_subscription_id', subscriptionId)
         .maybeSingle()
+      if (existingError) return recoverableFailure('subscription_lookup_failed', 'Subscription lookup failed.')
+      if (!existing) return recoverableFailure('subscription_not_found', 'Subscription could not be resolved.')
 
       const newStatus = isCancellation ? 'cancelled' : 'refunded'
       const { error: cancelledError } = await client
@@ -433,11 +490,12 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
       // plan — a user who separately paid via crypto or the manual PayPal flow keeps their plan.
       if (existing?.user_id) {
         audit.userId = existing.user_id as string
-        const { data: settingsRow } = await client
+        const { data: settingsRow, error: settingsLookupError } = await client
           .from('user_settings')
           .select('plan, lemon_subscription_id')
           .eq('user_id', existing.user_id as string)
           .maybeSingle()
+        if (settingsLookupError) return recoverableFailure('settings_lookup_failed', 'Subscription entitlement lookup failed.')
         if (settingsRow?.lemon_subscription_id === subscriptionId) {
           audit.previousPlan = (settingsRow.plan as 'free' | 'pro' | 'elite' | undefined) ?? null
           audit.newPlan = 'free'
@@ -456,7 +514,9 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     }
 
     default:
-      // Ignore event types we don't act on — still a 200 so PayPal doesn't keep retrying.
+      if (!eventType || !IGNORABLE_EVENT_TYPES.has(eventType)) {
+        return recoverableFailure('unsupported_event_type', 'Webhook event type is not safely ignorable.')
+      }
       break
   }
 

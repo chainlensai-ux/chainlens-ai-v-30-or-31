@@ -4,14 +4,6 @@ import { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 
-const ADMIN_EMAIL = 'chainlensai@gmail.com'
-
-type UserSettingsResponse = {
-  email?: string
-  plan?: string
-  effectivePlan?: string
-}
-
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -27,23 +19,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           return
         }
 
-        const res = await fetch('/api/user-settings', {
+        // Use the same server-side ADMIN_EMAILS gate as every admin mutation/read API. Never ship
+        // the allowlist to the browser and never infer admin privileges from a paid/trial plan.
+        const res = await fetch('/api/admin/data', {
           headers: { Authorization: `Bearer ${session.access_token}` },
           cache: 'no-store',
         })
-        const json = (await res.json().catch(() => ({}))) as UserSettingsResponse
-        const email = String(json.email ?? '').toLowerCase()
-        const plan = String(json.effectivePlan ?? json.plan ?? '').toLowerCase()
-        const isAdminEmail = email === ADMIN_EMAIL
-        const adminAccessGranted = isAdminEmail || plan === 'elite'
+        const email = String(session.user.email ?? '').toLowerCase()
+        const adminAccessGranted = res.ok
 
         if (searchParams.get('debug') === 'true') {
-          // eslint-disable-next-line no-console
           console.log({
             email,
-            plan,
-            effectivePlan: json.effectivePlan,
-            isAdminEmail,
             adminAccessGranted,
           })
         }
