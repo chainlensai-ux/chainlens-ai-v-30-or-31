@@ -115,6 +115,27 @@ function chainLegs(rawLegs: PoolLeg[]): PoolLeg[] | null {
   return ordered.length === legs.length ? ordered : null
 }
 
+// Exact wallet-level fallback for multi-pool routes whose internal router inventory does not form
+// a simple token chain. Only accepts one unambiguous net debit and one unambiguous net credit in
+// the receipt's real wallet transfers. Pool validation still runs for every decoded leg below.
+function netWalletEconomicLeg(tx: ReceiptTxBundle, decoded: DecodedLogs, legs: PoolLeg[]): PoolLeg[] | null {
+  if (legs.length < 2) return null
+  const wallet = tx.walletAddress.toLowerCase()
+  const net = new Map<string, bigint>()
+  for (const transfer of decoded.transfers) {
+    if (transfer.from === wallet) net.set(transfer.token, (net.get(transfer.token) ?? BigInt(0)) - transfer.value)
+    if (transfer.to === wallet) net.set(transfer.token, (net.get(transfer.token) ?? BigInt(0)) + transfer.value)
+  }
+  const debits = [...net.entries()].filter(([, amount]) => amount < BigInt(0))
+  const credits = [...net.entries()].filter(([, amount]) => amount > BigInt(0))
+  if (debits.length !== 1 || credits.length !== 1 || debits[0][0] === credits[0][0]) return null
+  return [{
+    swap: legs[0].swap,
+    tokenIn: debits[0][0], tokenOut: credits[0][0],
+    amountIn: -debits[0][1], amountOut: credits[0][1],
+  }]
+}
+
 // CONTRADICTORY-LEGS DIAGNOSTIC, DISCLOSED (evidence-first PnL completion follow-up task,
 // requirement #2): logged whenever this receipt is about to be rejected as `contradictory_legs` —
 // every ordered Swap event, the pool it touched, the exact signed amount0/amount1 it reported,
@@ -306,20 +327,11 @@ export async function decodeReceiptSwap(
     legs.push(resolution.leg)
   }
 
-  const chained = chainLegs(legs)
-  if (!chained) {
-    logContradictoryLegsAudit(tx, decoded)
-    return {
-      ok: false,
-      rejection: { txHash: tx.txHash, reason: 'contradictory_legs', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
-    }
-  }
-
   // FACTORY VALIDATION, DISCLOSED: every pool in the chain must be confirmed by its protocol's real
   // factory for the exact token pair the leg claims — an unvalidated pool (a look-alike contract, a
   // custom/forked pool never deployed by the canonical factory) fails closed to inference rather
   // than being trusted on log shape alone.
-  for (const leg of chained) {
+  for (const leg of dedupeExactLegs(legs)) {
     const isValid = await validator.isValidPool(leg.swap.protocol, leg.swap.poolAddress, leg.tokenIn, leg.tokenOut)
     if (!isValid) {
       // UNISWAP V3 FALLBACK, DISCLOSED: only reachable for a single concentrated-liquidity-shaped
@@ -327,7 +339,7 @@ export async function decodeReceiptSwap(
       // function's own header. A multi-hop/mixed chain never reaches here (chained.length > 1
       // simply falls through to the original rejection below), so "multiple incompatible pools"
       // fails closed by construction, not by an extra check.
-      if (uniswapV3Validator && chained.length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
+      if (uniswapV3Validator && legs.length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
         const v3 = resolveUniswapV3Leg(leg.swap, decoded)
         if (!v3.ok) {
           return { ok: false, rejection: { txHash: tx.txHash, reason: v3.reason, uniswapV3: v3.diagnostics } }
@@ -354,6 +366,16 @@ export async function decodeReceiptSwap(
         ok: false,
         rejection: { txHash: tx.txHash, reason: 'pool_not_validated_by_factory', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
       }
+    }
+  }
+
+  const directlyChained = chainLegs(legs)
+  const chained = directlyChained ?? netWalletEconomicLeg(tx, decoded, legs)
+  if (!chained) {
+    logContradictoryLegsAudit(tx, decoded)
+    return {
+      ok: false,
+      rejection: { txHash: tx.txHash, reason: 'contradictory_legs', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
     }
   }
 
@@ -397,11 +419,11 @@ export async function decodeReceiptSwap(
     normalizedAmountIn: toNormalized(first.amountIn, tokenInMeta.decimals),
     normalizedAmountOut: toNormalized(last.amountOut, tokenOutMeta.decimals),
     walletDirection: classifyDirection(first.tokenIn, last.tokenOut),
-    evidenceSource: chained.length > 1 ? 'receipt_pool_swap_event_multi_hop' : 'receipt_pool_swap_event',
+    evidenceSource: legs.length > 1 ? 'receipt_pool_swap_event_multi_hop' : 'receipt_pool_swap_event',
     confidence: 'exact',
     meta: {
-      hops: chained.length,
-      poolsVisited: chained.map((l) => l.swap.poolAddress),
+      hops: legs.length,
+      poolsVisited: dedupeExactLegs(legs).map((l) => l.swap.poolAddress),
       nativeWrapDetected,
       refundDetected,
       feeLegsExcluded: Math.max(0, feeLegsExcluded),

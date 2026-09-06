@@ -184,6 +184,18 @@ describe('checkFinalPnlSnapshotDivergence — realized-PnL agreement (canonical-
     assert.equal(check.divergent, false)
   })
 
+  it('a blocked public null does not diverge from diagnostic-only AYRI realized PnL when AYRI is omitted as a peer', () => {
+    const check = checkFinalPnlSnapshotDivergence({
+      publicGateVerifiedLots: 0, publicGatePricingCoverage: 0,
+      ayriFullyPricedLots: 0, ayriVerifiedPricingCoverage: 0,
+      smartMoneyVerifiedLots: null, smartMoneyVerifiedPricingCoverage: null,
+      canonicalVerifiedLots: 0, publicRealizedPnlUsd: null,
+      publishedLotsRealizedPnlSum: null, ayriRealizedPnlUsd: undefined,
+    })
+    assert.equal(check.realizedPnlAgrees, true)
+    assert.equal(check.divergent, false)
+  })
+
   it('an explicit null realized total disagreeing with a real one is still caught', () => {
     const check = checkFinalPnlSnapshotDivergence({
       ...base, publicRealizedPnlUsd: null, publishedLotsRealizedPnlSum: 1791.71,

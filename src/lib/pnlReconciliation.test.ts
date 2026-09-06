@@ -274,6 +274,20 @@ describe('pnlReconciliation', () => {
     assert.equal(summary.realizedPnlUsd, 5, 'recovered proceeds (15) - existing cost (10) = 5, must reach the official total, not be discarded')
   })
 
+  it('promotes a structural closed lot with both accepted historical sides into verified coverage', async () => {
+    const staleStructuralLot = lot({
+      costBasisUsd: 10, proceedsUsd: 15, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const summary = await createPnlReconciliation({ logger: quiet }).reconcile({
+      fifoEngineResult: fifo({ matchedLots: [staleStructuralLot], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.publicPnlGateAudit.verifiedLotCount, 1)
+    assert.equal(summary.publicPnlGateAudit.verifiedPricingCoverage, 1)
+    assert.equal(summary.publishedMatchedLots[0].evidenceQuality, 'verified')
+    assert.equal(summary.realizedPnlUsd, 5)
+  })
+
   it('regression guard: a provider returning null for the missing side leaves the lot honestly unpriced — never a fabricated value', async () => {
     const partiallyPriced = lot({ costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
     const r = createPnlReconciliation({

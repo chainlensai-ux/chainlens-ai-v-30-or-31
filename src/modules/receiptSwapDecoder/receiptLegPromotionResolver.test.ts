@@ -72,6 +72,19 @@ test('three total matches (split across both arrays) is ambiguous, never guessed
   assert.equal(result.reason, 'multiple_incomplete_matches_ambiguous')
 })
 
+test('one exact decoded anchor is promotable despite unrelated recovered inventory in the same transaction', () => {
+  const events = [
+    baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH }),
+    baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }),
+    baseEvent({ txHash: 'buy_tx', direction: 'inbound', contract: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }),
+  ]
+  const result = resolvePromotableLeg(events, WALLET, exactSwap(), PROTOCOLS)
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.missingEvent.contract, TOKEN_X)
+  assert.equal(result.missingEvent.direction, 'inbound')
+})
+
 test('the proposed missing leg already present in additionalKnownEvents (not events) is still detected as a duplicate', () => {
   const events = [baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH })]
   const additional = [baseEvent({ txHash: 'buy_tx', direction: 'inbound', contract: TOKEN_X, fromAddress: POOL_A, toAddress: WALLET, amount: 100, amountRaw: '100000000000000000000', symbol: 'X' })]
