@@ -1616,6 +1616,15 @@ export function createPnlReconciliation(config: Config = {}) {
       if (missingEvidenceCount > 0) {
         blockingReasons.push({ rule: 'missing_evidence_count', threshold: '0', actualValue: String(missingEvidenceCount) })
       }
+      // Name the boundary failure in the primary/public blocker list when it is the reason
+      // unmatched exits cannot be proven as pre-window inventory. Never infer proof from span.
+      if (!windowBoundaryProven && (denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0) > 0) {
+        blockingReasons.push({
+          rule: 'window_boundary_unproven_for_unmatched_sells',
+          threshold: '0 exits blocked by boundary',
+          actualValue: String(denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0),
+        })
+      }
       if (realizedPnlUsd === null) {
         blockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
       }

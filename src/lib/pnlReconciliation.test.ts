@@ -1495,10 +1495,15 @@ describe('pnlReconciliation', () => {
       structuralCoverageDenominatorAudit: {
         genuineUnmatchedBuys: 0, genuineUnmatchedSells: 116,
         windowBoundaryProven: false, boundedSampleWindowSafe: false, historyCoverageStatus: 'unknown',
+        preWindowInventoryExitsUnprovenDueToTruncation: 2,
       },
       // No canonicalSampleSelector wired at all — no manifest applied signal available.
     })
 
     assert.equal(summary.publicPnlStatus, 'unavailable', 'without a genuinely applied manifest, a real unproven/blocked structural state still fails closed')
+    assert.deepEqual(
+      summary.publicPnlGateAudit.blockingReasons.find((reason) => reason.rule === 'window_boundary_unproven_for_unmatched_sells'),
+      { rule: 'window_boundary_unproven_for_unmatched_sells', threshold: '0 exits blocked by boundary', actualValue: '2' },
+    )
   })
 })
