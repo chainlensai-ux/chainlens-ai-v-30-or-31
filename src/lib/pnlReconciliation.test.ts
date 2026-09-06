@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
-import { createPnlReconciliation, classifyRecoveryFailureReason } from './pnlReconciliation'
+import { createPnlReconciliation, classifyRecoveryFailureReason, rankMissingLotsForRecovery } from './pnlReconciliation'
 import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }
@@ -224,6 +224,85 @@ describe('pnlReconciliation', () => {
     // recovered proceeds(5) - existing cost(10) = -5; bothSidesMissing = recovered proceeds(5) -
     // recovered cost(5) = 0. Sum = -5.
     assert.equal(summary.realizedPnlUsd, -5)
+  })
+
+  it('HARD ASSERTION (Item 4): rankMissingLotsForRecovery spends scarce slots on tokens that dominate unpriced closed lots, not on singleton one-side-missing distractors', () => {
+    const dominantToken = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const dominant = Array.from({ length: 8 }, (_, i) => lot({
+      lotId: `dom-${i}`, token: dominantToken, openedTxHash: `0xdbuy${i}`, closedTxHash: `0xdsell${i}`,
+      openedAt: 1000 + i, closedAt: 2000 + i, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const distractors = Array.from({ length: 40 }, (_, i) => lot({
+      lotId: `dist-${i}`, token: `0x${(i + 1).toString(16).padStart(40, '0')}`, openedTxHash: `0xnbuy${i}`, closedTxHash: `0xnsell${i}`,
+      openedAt: i, closedAt: 500 + i, costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const ranked = rankMissingLotsForRecovery([...distractors, ...dominant])
+    const firstEightTokens = ranked.slice(0, 8).map((l) => l.token)
+    assert.deepEqual(firstEightTokens, Array(8).fill(dominantToken), 'the 8 unpriced lots of the dominant token must occupy the first 8 recovery slots')
+    assert.equal(ranked.length, 48)
+  })
+
+  it('HARD ASSERTION (Item 4): an unpriced sibling on a mixed-quality shared side ranks ahead of a one-side-missing singleton — pricing it unlocks Item 1 demote', () => {
+    const sharedExit = '0xsharedexit'
+    const verified = lot({
+      lotId: 'verified-sib', token: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      openedTxHash: '0xbuy-a', closedTxHash: sharedExit, openedAt: 10, closedAt: 50,
+      amount: 1, costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2, evidenceQuality: 'verified',
+    })
+    const unpricedSibling = lot({
+      lotId: 'unpriced-sib', token: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      openedTxHash: '0xbuy-b', closedTxHash: sharedExit, openedAt: 20, closedAt: 50,
+      amount: 1, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const singleton = lot({
+      lotId: 'singleton', token: '0xcccccccccccccccccccccccccccccccccccccccc',
+      openedTxHash: '0xbuy-c', closedTxHash: '0xsell-c', openedAt: 1, closedAt: 2,
+      costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const ranked = rankMissingLotsForRecovery([singleton, verified, unpricedSibling])
+    assert.equal(ranked[0].lotId, 'unpriced-sib', 'the unpriced sibling on the mixed-quality side must be attempted first')
+    assert.equal(ranked[1].lotId, 'singleton')
+    assert.equal(ranked.length, 2, 'already-verified lots are not recovery candidates')
+  })
+
+  it('HARD ASSERTION (Item 4): recovery still attempts the dominant-token lots under the unchanged 40-candidate cap, even when 40 one-side-missing distractors are listed first', async () => {
+    const dominantToken = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const dominant = Array.from({ length: 5 }, (_, i) => lot({
+      lotId: `dom-${i}`, token: dominantToken, openedTxHash: `0xdbuy${i}`, closedTxHash: `0xdsell${i}`,
+      openedAt: 10_000 + i, closedAt: 20_000 + i, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const distractors = Array.from({ length: 40 }, (_, i) => lot({
+      lotId: `dist-${i}`, token: `0x${(i + 1).toString(16).padStart(40, '0')}`, openedTxHash: `0xnbuy${i}`, closedTxHash: `0xnsell${i}`,
+      openedAt: i, closedAt: 500 + i, costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const historicalTokens: string[] = []
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: {
+        getPriceHistorical: async (token) => { historicalTokens.push(token); return 5 },
+        getPricePrimary: async () => 5,
+      },
+      priceSources: { primary: async () => 5 },
+    })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...distractors, ...dominant], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(45),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.ok(historicalTokens.includes(dominantToken), 'the dominant token must receive recovery attempts — it is both-sides-missing so it uses the historical lane')
+    assert.equal(historicalTokens.filter((t) => t === dominantToken).length, 5, 'all 5 dominant lots must be inside the unchanged 40-candidate cap')
+    assert.ok(summary.priceRecoveredCount >= 5, 'dominant lots that recovery reached must actually contribute recovered prices')
+  })
+
+  it('HARD ASSERTION (Item 4): public gate thresholds stay 10 verified lots and 50% coverage — ranking must not lower the gate', () => {
+    const sourcePath = fileURLToPath(new URL('./pnlReconciliation.ts', import.meta.url))
+    const source = readFileSync(sourcePath, 'utf8')
+    assert.ok(source.includes('const MIN_VERIFIED_CLOSED_LOTS = 10'), 'Item 4 must not lower the 10-lot verified bar')
+    assert.ok(source.includes('const MIN_VERIFIED_PRICING_COVERAGE = 0.5'), 'Item 4 must not lower the 50% coverage bar')
+    const fifoGatePath = fileURLToPath(new URL('../modules/fifoEngine/index.ts', import.meta.url))
+    const fifoGate = readFileSync(fifoGatePath, 'utf8')
+    assert.ok(fifoGate.includes('if (verifiedMatchedCount < 10) return \'limited_verified_sample\''), 'fifoEngine 10-lot bar unchanged')
+    assert.ok(fifoGate.includes('if (verifiedCoverageRatio < 0.5) return \'limited_verified_sample\''), 'fifoEngine 50% coverage bar unchanged')
   })
 
   it('regression guard: a successfully recovered price actually flows into the official realizedPnlUsd — recovery is no longer cosmetic-only', async () => {

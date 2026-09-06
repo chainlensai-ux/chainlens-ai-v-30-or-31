@@ -8,7 +8,7 @@ import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
-import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, type SideAllocationShare } from './canonicalPnlSampleManifest'
+import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
@@ -494,6 +494,67 @@ export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQual
   return isCanonicalVerifiedPublishedLot(lot)
 }
 
+// CLOSED-LOT COVERAGE RANKING, DISCLOSED (Wallet PnL Item 4): recoverPrices previously sorted
+// missing lots as one-side-missing first, then lotKey. That is still a real completable-first
+// signal, but it spent the scarce MAX_RECOVERY_ATTEMPTS=40 slots on whichever one-side-missing
+// lots happened to sort first alphabetically — often singleton dust/spam — while the tokens that
+// dominate the unverified CLOSED-LOT sample (many unpriced lots of one traded asset) starved.
+// Item 1 then demotes every verified lot that still shares a side with an unpriced sibling, so
+// leaving those siblings unattempted is a double hit: the sibling stays unverified AND the
+// already-priced lots on that side fall out of the published sample.
+//
+// Ranking (same 40-lot cap, same fetchers, never a fabricated price):
+//   1. Unpriced lots on a mixed-quality accepted-evidence side (pricing them completes the side
+//      so Item 1 no longer demotes the already-verified siblings).
+//   2. Tokens with the most unpriced closed lots (lots-completable-per-token — FACY/ETHY/NOX-class
+//      majors rise because they dominate missing evidence, never because an address is hardcoded).
+//   3. One-side-missing before both-sides-missing (one lookup can finish the lot).
+//   4. lotKey for determinism.
+// TEST-SUPPORT EXPORT: so a test can assert this order without constructing a full recoverPrices
+// pass. recoverPrices below is the only production caller.
+function unpricedSiblingsOnIncompleteSides(lots: readonly MatchedLot[]): Set<MatchedLot> {
+  const groups = new Map<string, MatchedLot[]>()
+  for (const lot of lots) {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    for (const key of [entryKey, exitKey]) {
+      const existing = groups.get(key)
+      if (existing) existing.push(lot)
+      else groups.set(key, [lot])
+    }
+  }
+  const unlock = new Set<MatchedLot>()
+  for (const members of groups.values()) {
+    const verifiedCount = members.filter(isCanonicalVerifiedPublishedLot).length
+    if (verifiedCount === 0 || verifiedCount === members.length) continue
+    for (const lot of members) {
+      if (!isCanonicalVerifiedPublishedLot(lot)) unlock.add(lot)
+    }
+  }
+  return unlock
+}
+
+export function rankMissingLotsForRecovery(allLots: readonly MatchedLot[]): MatchedLot[] {
+  const missing = allLots.filter((lot) => lot.costBasisUsd === null || lot.proceedsUsd === null)
+  const incompleteUnlock = unpricedSiblingsOnIncompleteSides(allLots)
+  const unpricedCountByToken = new Map<string, number>()
+  for (const lot of missing) {
+    const key = `${lot.chain}:${lot.token.toLowerCase()}`
+    unpricedCountByToken.set(key, (unpricedCountByToken.get(key) ?? 0) + 1)
+  }
+  return [...missing].sort((a, b) => {
+    const aUnlock = incompleteUnlock.has(a) ? 0 : 1
+    const bUnlock = incompleteUnlock.has(b) ? 0 : 1
+    if (aUnlock !== bUnlock) return aUnlock - bUnlock
+    const aCount = unpricedCountByToken.get(`${a.chain}:${a.token.toLowerCase()}`) ?? 0
+    const bCount = unpricedCountByToken.get(`${b.chain}:${b.token.toLowerCase()}`) ?? 0
+    if (aCount !== bCount) return bCount - aCount
+    const aOne = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
+    const bOne = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
+    if (aOne !== bOne) return aOne - bOne
+    return lotKey(a).localeCompare(lotKey(b))
+  })
+}
+
 // CONFIRMED ROOT CAUSE, DISCLOSED (real production evidence): recoverPrices previously ran a
 // FULLY SEQUENTIAL for-loop — one lot at a time, each `await`ing a real KV-backed price lookup
 // (falling through to a real provider fetcher on a KV miss) — over every lot missing a price, with
@@ -566,6 +627,12 @@ export function createPnlReconciliation(config: Config = {}) {
   // fixed candidate budget, completing one-side-missing lots first yields more newly-fully-priced
   // lots per attempt than starting new lots from zero — sorted first (tie-broken by lotKey for
   // determinism), never changing which fetchers or how many attempts are used per lot.
+  //
+  // CLOSED-LOT COVERAGE RANKING, DISCLOSED (Wallet PnL Item 4): one-side-missing is now the THIRD
+  // key, after (1) unpriced siblings on mixed-quality accepted-evidence sides (Item 1 unlock) and
+  // (2) tokens that dominate the unpriced closed-lot sample. Same MAX_RECOVERY_ATTEMPTS cap, same
+  // fetchers — only the order of the already-bounded candidate list changes. See
+  // rankMissingLotsForRecovery.
   type RecoveredPrice = { costBasisUsd: number | null; proceedsUsd: number | null }
   // WIRING DIAGNOSTIC COUNTERS, DISCLOSED (this task's explicit requirement): distinguishes THREE
   // real, distinct things that a bare "recovered: 0" summary conflates:
@@ -787,11 +854,7 @@ export function createPnlReconciliation(config: Config = {}) {
       return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
     }
     const priceKvClient = config.priceKvClient
-    const sorted = [...missingLots].sort((a, b) => {
-      const aOneSide = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
-      const bOneSide = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
-      return aOneSide !== bOneSide ? aOneSide - bOneSide : lotKey(a).localeCompare(lotKey(b))
-    })
+    const sorted = rankMissingLotsForRecovery(hydratedLots)
     const candidates = sorted.slice(0, MAX_RECOVERY_ATTEMPTS)
     // RECOVERY LANE BUDGET, DISCLOSED (this task's explicit requirement): derived strictly from the
     // existing MAX_RECOVERY_ATTEMPTS candidate cap — worst case, every candidate needs BOTH legs
