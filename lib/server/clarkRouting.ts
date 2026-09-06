@@ -107,6 +107,57 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
   if (BASE_CHAIN_WORD_RE.test(t)) return "base";
   return null;
 }
+
+/** Pump Intelligence /api/pump-alerts/intelligence supports Base, Ethereum, Robinhood only. */
+export type PumpIntelligenceChain = "base" | "eth" | "robinhood";
+
+export function toPumpIntelligenceChain(raw: string | null | undefined): PumpIntelligenceChain | "unsupported" | null {
+  const c = String(raw ?? "").toLowerCase().trim();
+  if (!c) return null;
+  if (c === "base") return "base";
+  if (c === "eth" || c === "ethereum") return "eth";
+  if (c === "robinhood") return "robinhood";
+  if (c === "solana" || c === "bnb" || c === "bsc" || c === "polygon" || c === "matic" || c === "arbitrum") return "unsupported";
+  return null;
+}
+
+/**
+ * Resolve the chain for a Pump Intelligence read from the exact asset/list identity.
+ * Never overwrite a known ETH/Robinhood/Solana/BNB identity with Base.
+ * Base is the product default only when no identity carried a chain.
+ */
+export function resolvePumpIntelligenceChain(opts: {
+  prompt?: string | null;
+  contract: string;
+  lastToken?: { address?: string | null; chain?: string | null } | null;
+  lastMomentumList?: Array<{ address?: string | null; chain?: string | null }> | null;
+  lastClarkSubject?: { address?: string | null; chain?: string | null } | null;
+  tokenSummary?: { address?: string | null; chain?: string | null } | null;
+  appContextChain?: string | null;
+  requestChain?: string | null;
+}): PumpIntelligenceChain | "unsupported" {
+  const addr = String(opts.contract ?? "").toLowerCase();
+  const promptMapped = toPumpIntelligenceChain(extractRequestedChainFromPrompt(String(opts.prompt ?? "")));
+  if (promptMapped) return promptMapped;
+
+  const identity: Array<string | null | undefined> = [];
+  if (opts.lastToken?.address && opts.lastToken.address.toLowerCase() === addr) identity.push(opts.lastToken.chain);
+  const memItem = opts.lastMomentumList?.find((m) => m.address && m.address.toLowerCase() === addr);
+  if (memItem) identity.push(memItem.chain);
+  if (opts.lastClarkSubject?.address && opts.lastClarkSubject.address.toLowerCase() === addr) identity.push(opts.lastClarkSubject.chain);
+  if (opts.tokenSummary?.address && opts.tokenSummary.address.toLowerCase() === addr) identity.push(opts.tokenSummary.chain);
+  for (const raw of identity) {
+    const mapped = toPumpIntelligenceChain(raw);
+    if (mapped) return mapped;
+  }
+
+  for (const raw of [opts.appContextChain, opts.requestChain]) {
+    const mapped = toPumpIntelligenceChain(raw);
+    if (mapped) return mapped;
+  }
+  return "base";
+}
+
 // KEYWORD-NOT-EXACT-PHRASING FIX, DISCLOSED: reported live — "0x... is it safe" worked but a
 // natural variant like "0x... safe" (no "is") or "safe 0x..." fell through every branch here to a
 // wrong/garbled generic response, because every alternative below required the full "is (it|this)

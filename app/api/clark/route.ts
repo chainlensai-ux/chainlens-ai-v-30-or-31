@@ -160,6 +160,7 @@ import {
   formatPumpAnalysisRead,
   isPumpAnalysisPrompt,
   extractAddressForRouting,
+  resolvePumpIntelligenceChain,
   renderClarkTokenVerdictForEvm,
   renderClarkTokenVerdictForSolana,
   buildClarkTokenAnswerActions,
@@ -2859,8 +2860,9 @@ async function handlePumpIntelligenceQuestion(
   contract: string,
   prompt: string,
   authHeader?: string | null,
+  chain: "base" | "eth" | "robinhood" = "base",
 ): Promise<{ analysis: string; missing: string[]; status: "ok" | "partial" | "failed"; symbol: string | null }> {
-  const qs = new URLSearchParams({ contract, chain: "base" });
+  const qs = new URLSearchParams({ contract, chain });
   const inlineFields: Array<[string, string]> = [
     ["symbol", "Token"], ["reason", "Signal"], ["riskLevel", "Risk"],
     ["change24h", "24h Change"], ["volume24hUsd", "Volume 24h"],
@@ -2907,7 +2909,8 @@ async function handlePumpIntelligenceQuestion(
   const fmtNum = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? String(v) : "Not detected";
   const fmtMoneyLocal = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? formatUsdShort(v) : "Not detected";
   const t = prompt.toLowerCase();
-  const lines: string[] = [`PUMP INTELLIGENCE — ${symbol}`, `Contract: ${contract}`];
+  const chainLabel = chain === "eth" ? "Ethereum" : chain === "robinhood" ? "Robinhood Chain" : "Base";
+  const lines: string[] = [`PUMP INTELLIGENCE — ${symbol}`, `Contract: ${contract}`, `Chain: ${chainLabel}`];
 
   if (/why\s+is|why\s+did|\[mode:\s*pump-alerts\]/i.test(prompt)) {
     lines.push("Why it pumped:");
@@ -2942,7 +2945,7 @@ async function handlePumpIntelligenceQuestion(
     if (watchlist.length) for (const w of watchlist.slice(0, 4)) lines.push(`- ${w.label ?? "Signal"}: ${w.threshold ?? "No threshold available"}`);
     else lines.push("- No verified watch thresholds returned; refresh the report before acting.");
   }
-  if (lines.length === 2) lines.push(`Momentum ${executive.momentumScore ?? "Not detected"} / Continuation ${executive.continuationScore ?? "Not detected"} / Pullback risk ${executive.pullbackRiskScore ?? "Not detected"} / Confidence ${executive.confidenceScore ?? "Not detected"}`);
+  if (lines.length === 3) lines.push(`Momentum ${executive.momentumScore ?? "Not detected"} / Continuation ${executive.continuationScore ?? "Not detected"} / Pullback risk ${executive.pullbackRiskScore ?? "Not detected"} / Confidence ${executive.confidenceScore ?? "Not detected"}`);
   if (gaps.length) lines.push(`Missing: ${gaps.slice(0, 3).join("; ")}`);
   lines.push("CTA: Open Pump Alerts report / Scan Token");
   return { analysis: lines.join("\n"), missing: gaps, status: gaps.length ? "partial" : "ok", symbol };
@@ -10119,7 +10122,36 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: buildLockedResponse("pump_alerts", "open the token in Token Scanner for contract, LP, and holder checks."),
       };
     }
-    const pumpRead = await handlePumpIntelligenceQuestion(origin, target, prompt, authHeader ?? null);
+    const pumpChain = resolvePumpIntelligenceChain({
+      prompt,
+      contract: target,
+      lastToken: sessionMem.lastToken,
+      lastMomentumList: sessionMem.lastMomentumList,
+      lastClarkSubject: sessionMem.lastClarkSubject
+        ? { address: sessionMem.lastClarkSubject.address, chain: sessionMem.lastClarkSubject.chainSlug }
+        : null,
+      tokenSummary: body.appContext?.tokenSummary ? { address: body.appContext.tokenSummary.address, chain: body.appContext.tokenSummary.chain } : null,
+      appContextChain: typeof body.appContext?.chain === "string" ? body.appContext.chain : null,
+      requestChain: chain,
+    });
+    if (pumpChain === "unsupported") {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: [],
+        analysis: [
+          "PUMP INTELLIGENCE",
+          `Contract: ${target}`,
+          "Status: Unsupported: Pump Intelligence reports Base, Ethereum, and Robinhood Chain only.",
+          "This token's chain is not a Pump Intelligence chain — I will not silently read it as Base.",
+          "Next: open Token Scanner on the token's real chain, or ask about a Base/ETH/Robinhood pump.",
+        ].join("\n"),
+        clarkEvidenceMissing: ["pump_intelligence_unsupported_chain"],
+        quotaConsumed: false,
+        ui: { intentBadge: "Pump Intelligence", actions: [
+          { label: "Scan Token", href: `/terminal/token-scanner?contract=${target}`, kind: "link" as const },
+        ] },
+      };
+    }
+    const pumpRead = await handlePumpIntelligenceQuestion(origin, target, prompt, authHeader ?? null, pumpChain);
     const sameTokenInMemory = sessionMem.lastToken?.address.toLowerCase() === target.toLowerCase();
     updateMemToken(sessionMem, target, pumpRead.symbol ?? (sameTokenInMemory ? sessionMem.lastToken?.symbol ?? null : null), sameTokenInMemory ? sessionMem.lastToken?.name ?? null : null, pumpRead.analysis);
     updateMemIntent(sessionMem, "pump_analysis");
@@ -10131,7 +10163,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkEvidenceMissing: pumpRead.missing,
       quotaConsumed: pumpRead.status !== "failed",
       ui: { intentBadge: "Pump Intelligence", actions: [
-        { label: "Open Pump Report", href: `/terminal/pump-alerts/report?contract=${target}&chain=base`, kind: "link" as const },
+        { label: "Open Pump Report", href: `/terminal/pump-alerts/report?contract=${target}&chain=${pumpChain}`, kind: "link" as const },
         { label: "Scan Token", href: `/terminal/token-scanner?contract=${target}`, kind: "link" as const },
       ] },
     };
