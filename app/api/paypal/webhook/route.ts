@@ -124,21 +124,23 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     return NextResponse.json({ error: 'Service role client unavailable.' }, { status: 500 })
   }
 
-  // REPLAY-PROTECTION FIX, DISCLOSED: record this event's id before acting on it. A unique-
-  // constraint violation means PayPal redelivered an event we already processed — return 200
-  // immediately without re-running any billing-state change, rather than relying on every branch
-  // below staying accidentally idempotent forever.
+  // REPLAY-PROTECTION: a row means the event finished successfully. Never reserve an event before
+  // its side effects: otherwise a transient activation failure leaves a row that makes PayPal's
+  // retry look processed and strands the customer on Free. The writes below are idempotent upserts/
+  // updates, so concurrent first deliveries are safe; the unique insert after the switch makes all
+  // later deliveries no-ops.
   if (body.id) {
-    const { error: dedupeError } = await client
+    const { data: processedEvent, error: dedupeReadError } = await client
       .from('paypal_webhook_events')
-      .insert({ event_id: body.id, event_type: eventType ?? 'unknown' })
-    // Postgres unique-violation code specifically means "we've already recorded this exact event
-    // id" — a real duplicate delivery, safe to skip. Any OTHER insert error (transient connection
-    // issue, etc.) must NOT be treated as "already processed" — that would silently drop a
-    // legitimate first-time event (e.g. a real plan activation) on an unrelated DB hiccup instead
-    // of letting PayPal's own retry mechanism paper over it. Only skip on the specific duplicate
-    // case; any other error just proceeds to process the event normally (without a dedupe record).
-    if (dedupeError?.code === '23505') {
+      .select('event_id')
+      .eq('event_id', body.id)
+      .maybeSingle()
+    if (dedupeReadError) {
+      audit.failureReason = 'idempotency_read_failed'
+      logPaypalPaymentAudit(audit)
+      return NextResponse.json({ error: 'Failed to check webhook status.' }, { status: 500 })
+    }
+    if (processedEvent) {
       audit.idempotencyHit = true
       logPaypalPaymentAudit(audit)
       return NextResponse.json({ received: true, deduped: true }, { status: 200 })
@@ -165,9 +167,8 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         },
         { onConflict: 'paypal_subscription_id' },
       )
-      // WRITE-FAILURE FIX, DISCLOSED: a failed Supabase write must NOT return 200 — the dedupe row
-      // for this event is already committed above, so a silent 200 here means PayPal never retries
-      // and this event is lost forever. Returning 500 lets PayPal's own retry mechanism recover it.
+      // A failed write must not return 200 or mark the event processed. Returning 500 lets PayPal's
+      // retry mechanism recover it.
       if (createdError) {
         audit.failureReason = 'write_failed'
         logPaypalPaymentAudit(audit)
@@ -264,9 +265,8 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     // subscription after repeated failed renewal charges via BILLING.SUBSCRIPTION.SUSPENDED (not
     // CANCELLED) — previously this fell into `default` and was silently ignored, leaving
     // paypal_subscriptions.status stuck on 'active' forever even though PayPal stopped billing.
-    // activateUserPlanServerSide's rolling current_period_end still lazily expires access, so this
-    // was never a full access-control gap — but the status row was misleading. Marked explicitly so
-    // any admin/support tooling reading paypal_subscriptions reflects PayPal's real state.
+    // Access remains available only through current_period_end; unlike cancellation/refund, a
+    // suspension does not wipe the paid plan immediately.
     case 'BILLING.SUBSCRIPTION.SUSPENDED':
     case 'BILLING.SUBSCRIPTION.EXPIRED': {
       const subscriptionId = resource.id
@@ -280,6 +280,30 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
         audit.failureReason = 'write_failed'
         logPaypalPaymentAudit(audit)
         return NextResponse.json({ error: 'Failed to record subscription status.' }, { status: 500 })
+      }
+      const { data: existing } = await client
+        .from('paypal_subscriptions')
+        .select('user_id')
+        .eq('paypal_subscription_id', subscriptionId)
+        .maybeSingle()
+      if (existing?.user_id) {
+        audit.userId = existing.user_id as string
+        const { data: settingsRow } = await client
+          .from('user_settings')
+          .select('lemon_subscription_id')
+          .eq('user_id', existing.user_id as string)
+          .maybeSingle()
+        if (settingsRow?.lemon_subscription_id === subscriptionId) {
+          const { error: settingsStatusError } = await client
+            .from('user_settings')
+            .update({ subscription_status: status, updated_at: new Date().toISOString() })
+            .eq('user_id', existing.user_id as string)
+          if (settingsStatusError) {
+            audit.failureReason = 'write_failed'
+            logPaypalPaymentAudit(audit)
+            return NextResponse.json({ error: 'Failed to sync subscription status.' }, { status: 500 })
+          }
+        }
       }
       break
     }
@@ -349,6 +373,20 @@ export async function handlePayPalWebhook(request: NextRequest, deps: PayPalWebh
     default:
       // Ignore event types we don't act on — still a 200 so PayPal doesn't keep retrying.
       break
+  }
+
+  // Commit the idempotency marker only after every required side effect above succeeded. If this
+  // insert itself fails, return 500: replaying the idempotent side effects is safer than losing the
+  // event. A 23505 can occur when concurrent deliveries both completed; that is also success.
+  if (body.id) {
+    const { error: markProcessedError } = await client
+      .from('paypal_webhook_events')
+      .insert({ event_id: body.id, event_type: eventType ?? 'unknown' })
+    if (markProcessedError && markProcessedError.code !== '23505') {
+      audit.failureReason = 'idempotency_write_failed'
+      logPaypalPaymentAudit(audit)
+      return NextResponse.json({ error: 'Failed to record webhook completion.' }, { status: 500 })
+    }
   }
 
   logPaypalPaymentAudit(audit)

@@ -16,6 +16,7 @@ import {
 import {
   handlePayPalWebhook, planFromCustomId, planMatchesPlanId, userIdFromCustomId,
 } from '../app/api/paypal/webhook/route.ts'
+import { resolveEffectivePlan } from '../lib/supabase/userSettings.ts'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -401,13 +402,21 @@ async function run() {
     // the existing current_period_end expiry instead (never a fabricated instant downgrade here).
     for (const eventType of ['BILLING.SUBSCRIPTION.SUSPENDED', 'BILLING.SUBSCRIPTION.EXPIRED']) {
       const calls = mockPayPalFetch({ verifySuccess: true })
-      const service = makeFakeServiceClient({ paypal_subscriptions: [{ user_id: 'user-3', paypal_subscription_id: 'SUB-7', plan: 'pro', status: 'active' }] })
+      const periodEnd = new Date(Date.now() + 60_000).toISOString()
+      const service = makeFakeServiceClient({
+        paypal_subscriptions: [{ user_id: 'user-3', paypal_subscription_id: 'SUB-7', plan: 'pro', status: 'active' }],
+        user_settings: [{ user_id: 'user-3', plan: 'pro', lemon_subscription_id: 'SUB-7', subscription_status: 'active', current_period_end: periodEnd }],
+      })
       const res = await handlePayPalWebhook(
         webhookRequest({ id: `evt-${eventType}`, event_type: eventType, resource: { id: 'SUB-7' } }),
         { getServiceClient: () => service },
       )
       const expectedStatus = eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ? 'suspended' : 'expired'
       check(`${eventType} marks the subscription row ${expectedStatus}`, service._db.paypal_subscriptions.find((r) => r.paypal_subscription_id === 'SUB-7')?.status === expectedStatus)
+      const settings = service._db.user_settings.find((r) => r.user_id === 'user-3')
+      check(`${eventType} syncs user_settings status without wiping the paid plan`, settings?.subscription_status === expectedStatus && settings?.plan === 'pro')
+      check(`${eventType} keeps access through current_period_end`, resolveEffectivePlan(settings) === 'pro')
+      check(`${eventType} expires access after current_period_end`, resolveEffectivePlan(settings, Date.parse(periodEnd) + 1) === 'free')
       restoreFetch()
     }
   }
@@ -433,12 +442,23 @@ async function run() {
   {
     const calls = mockPayPalFetch({ verifySuccess: true })
     const service = makeFakeServiceClient()
-    const activatePlan = async () => ({ error: 'simulated DB failure' })
+    let attempts = 0
+    const activatePlan = async () => {
+      attempts++
+      return attempts === 1 ? { error: 'simulated DB failure' } : { error: null }
+    }
+    const event = { id: 'evt-writefail', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-9', custom_id: 'pro:user-1' } }
     const res = await handlePayPalWebhook(
-      webhookRequest({ id: 'evt-writefail', event_type: 'BILLING.SUBSCRIPTION.ACTIVATED', resource: { id: 'SUB-9', custom_id: 'pro:user-1' } }),
+      webhookRequest(event),
       { getServiceClient: () => service, activatePlan },
     )
     check('a failed plan activation returns 500 so PayPal retries, never a silent 200', res.status === 500)
+    check('a failed activation is not permanently marked processed', service._db.paypal_webhook_events.length === 0)
+    const retry = await handlePayPalWebhook(webhookRequest(event), { getServiceClient: () => service, activatePlan })
+    check('retry after transient activation failure runs again and succeeds', retry.status === 200 && attempts === 2)
+    const replay = await handlePayPalWebhook(webhookRequest(event), { getServiceClient: () => service, activatePlan })
+    const replayJson = await replay.json()
+    check('successful replay is a no-op', replay.status === 200 && replayJson.deduped === true && attempts === 2)
     restoreFetch()
   }
 

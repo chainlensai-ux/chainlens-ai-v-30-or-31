@@ -291,14 +291,20 @@ export function resolveEffectivePlan(settings: Partial<UserSettings> | null | un
   // HAVE an explicit period end in the past lapse. activateUserPlanServerSide stamps this on every
   // real activation (crypto one-time grant, PayPal's per-cycle renewal) going forward.
   const periodEnd = settings?.current_period_end ?? null
+  const parsedPeriodEnd = periodEnd ? Date.parse(periodEnd) : NaN
   const periodExpired =
     paidPlan !== 'free' &&
     Boolean(periodEnd) &&
-    Number.isFinite(Date.parse(periodEnd ?? '')) &&
-    Date.parse(periodEnd ?? '') <= nowMs
-  const paidPlanActive = paidPlan !== 'free' && !periodExpired
+    Number.isFinite(parsedPeriodEnd) &&
+    parsedPeriodEnd <= nowMs
+  // PayPal suspension/expiry preserves access only through the already-paid period. A null period
+  // is a never-expiring admin grant only when deliberately marked active.
+  const statusAllowsPaid = settings?.subscription_status === 'active' ||
+    ((settings?.subscription_status === 'suspended' || settings?.subscription_status === 'expired') &&
+      Number.isFinite(parsedPeriodEnd) && parsedPeriodEnd > nowMs)
+  const paidPlanActive = paidPlan !== 'free' && !periodExpired && statusAllowsPaid
 
-  const paidEliteActive = paidPlan === 'elite' && settings?.subscription_status === 'active' && paidPlanActive
+  const paidEliteActive = paidPlan === 'elite' && paidPlanActive
   if (paidEliteActive) return 'elite'
   const trialActive =
     settings?.trial_plan === 'elite' &&

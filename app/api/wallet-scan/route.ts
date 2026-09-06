@@ -108,16 +108,16 @@ export async function POST(req: Request): Promise<Response> {
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
   }
-  let deepScanQuota = snapshotDailyScan(plan, ip)
+  let deepScanQuota = await snapshotDailyScan(plan, ip)
   if (wantsDeep) {
-    const scanQuota = consumeDailyScan(plan, ip)
+    const scanQuota = await consumeDailyScan(plan, ip)
     if (!scanQuota.allowed) {
       return NextResponse.json({
         error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' },
-        scanQuota: snapshotDailyScan(plan, ip),
+        scanQuota: await snapshotDailyScan(plan, ip),
       }, { status: 429 })
     }
-    deepScanQuota = snapshotDailyScan(plan, ip)
+    deepScanQuota = await snapshotDailyScan(plan, ip)
   }
 
   const jobId = crypto.randomUUID()
