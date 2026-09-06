@@ -5,6 +5,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildFifoOutput, buildLots, matchLotsFIFO } from './index'
+import { mergeNormalizedEvents } from './utils'
 import type { NormalizedEvent } from '../normalization/types'
 
 let seq = 0
@@ -111,4 +112,25 @@ test('matchLotsFIFO directly returns unmatchedSellEvents alongside the existing 
   assert.equal(result.unmatchedSells, 1)
   assert.equal(result.unmatchedSellEvents.length, 1)
   assert.equal(result.unmatchedSellEvents[0].amount, 9)
+})
+
+test('HARD ASSERTION (Item 4): a recovered receipt/swap sell of the same tx/token/amount as a canonical sell must not become a second unmatched sell', () => {
+  const canonical = evt({
+    txHash: '0xswapdup', direction: 'outbound', contract: '0xtoken', amount: 5,
+    fromAddress: '0xwallet', toAddress: '0xrouter', amountRaw: '5000000000000000000',
+    timestamp: String(1_700_000_010_000),
+  })
+  const recoveredReceipt = evt({
+    txHash: '0xswapdup', direction: 'outbound', contract: '0xtoken', amount: 5,
+    fromAddress: '0xwallet', toAddress: '0xpool', amountRaw: '5000000000000000000',
+    timestamp: String(1_700_000_010_000),
+  })
+  const withoutDedupeWouldBeTwo = [canonical, recoveredReceipt]
+  const merged = mergeNormalizedEvents([canonical], [recoveredReceipt])
+  assert.equal(merged.length, 1)
+  const withFalseDuplicate = buildFifoOutput({ normalizedEvents: withoutDedupeWouldBeTwo, recoveredRawEvents: [], walletAddress: '0xwallet' })
+  const honest = buildFifoOutput({ normalizedEvents: merged, recoveredRawEvents: [], walletAddress: '0xwallet' })
+  assert.equal(withFalseDuplicate.unmatchedSells, 2, 'sanity: feeding both copies to FIFO would double-count the sell')
+  assert.equal(honest.unmatchedSells, 1, 'exact recovered receipt/swap evidence of the same sell must not inflate unmatchedSells')
+  assert.equal(honest.unmatchedSellEvents.length, 1)
 })

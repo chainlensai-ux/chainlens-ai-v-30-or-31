@@ -43,22 +43,18 @@ describe('computePnl — canonical-balance reconciliation (false ~$545k unrealiz
   it('1. corrected unrealized PnL reconciles the open lot down to a real smaller canonical balance', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup = () => 0.0545
-    // The wallet's REAL, independently-fetched current balance for this token is only 100 —
-    // 100,000x smaller than fifoEngine's own event-replay-derived open quantity.
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
 
-    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
+    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
     assert.ok(Math.abs((unrealizedPnlUsd ?? 0) - 5.449) < 1e-12, '100 held tokens at $0.0545 less the proportionally retained $0.001 cost basis')
     assert.deepEqual(unrealizedPnlExcludedTokens, [])
   })
 
-  it('2. malformed decimals cannot inflate value — a raw-unit-scaled quantity (10^18x too large) is excluded even with a tiny per-unit price', () => {
-    // Simulates a token whose amount was accidentally left in raw (undecimalized) units upstream —
-    // amountRemaining is ~10^18x what the real (decimal-adjusted) balance actually is.
+  it('2. malformed decimals cannot inflate value — a raw-unit-scaled quantity is capped to the real decimal-adjusted balance', () => {
     const lots = [openLot({ amountRemaining: 3_000_000_000_000, amountOpened: 3_000_000_000_000, costBasisUsd: 5 })]
     const currentPriceUsdLookup = () => 0.001
-    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 3_000 // real decimal-adjusted balance
+    const canonicalBalanceLookup: CanonicalBalanceLookup = () => 3_000
 
     const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
@@ -75,10 +71,9 @@ describe('computePnl — canonical-balance reconciliation (false ~$545k unrealiz
       openLot({ lotId: 'lot-b', openedTxHash: '0xbuy-b', amountRemaining: 600, amountOpened: 600, costBasisUsd: 60 }),
     ]
     const currentPriceUsdLookup = () => 1
-    // Real balance is only 600 — exactly ONE of the two duplicated lots, not both summed.
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 600
 
-    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
+    const { unrealizedPnlUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
     assert.equal(unrealizedPnlUsd, 540, '600 canonical units at $1 less half of the FIFO cost basis')
     assert.equal(unrealizedPnlExcludedTokens.length, 0)

@@ -77,6 +77,12 @@ export type PnlSummaryResult = {
   chainBreakdown: ChainBreakdownEntry[]
   confidenceBasis: PnlConfidenceBasis
   evidenceMissingCount: number
+  // DIAGNOSTIC-ONLY FLAG, DISCLOSED (Wallet PnL Item 2): pnlEngine is an independent sell-entry
+  // read model, never the official realized total. Official realized is fifoEngine + reconciliation
+  // (`fifoAndPnl` / `reconciliationSummary`). When this flag is true, UI/report must not headline
+  // `realizedPnlUsd` as if it were the canonical number. Optional so existing fixtures keep
+  // typechecking; the real pipeline always sets it.
+  diagnosticOnly?: boolean
 }
 
 export type ResolveCostUsdEstimate = (sell: SellTimelineEntry, buyEntries: BuyTimelineEntry[]) => number | null

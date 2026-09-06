@@ -281,6 +281,7 @@ function emptyReconciliationSummary(
     totalOpenPositions,
     reconciledOpenPositions: reconciliationStatus === 'not_reconciled' ? 0 : totalOpenPositions,
     excludedOpenPositions: 0,
+    cappedOpenPositions: 0,
     excludedCandidateMarketValueUsd: 0,
     excludedCandidateUnrealizedPnlUsd: 0,
     officialUnrealizedPnlUsd,
@@ -462,6 +463,7 @@ export function computePnl(
   const unrealizedPnlExcludedTokens: string[] = []
   const unrealizedTerms: number[] = []
   let reconciledOpenPositions = 0
+  let cappedOpenPositions = 0
   let reconciledMarketValueUsd = 0
   let reconciledCostBasisUsd = 0
   const reconciledPositionsByPriceSource: Record<string, number> = {}
@@ -646,6 +648,7 @@ export function computePnl(
       totalOpenPositions,
       reconciledOpenPositions,
       excludedOpenPositions: excludedPositions.length,
+      cappedOpenPositions,
       excludedCandidateMarketValueUsd,
       excludedCandidateUnrealizedPnlUsd,
       officialUnrealizedPnlUsd: unrealizedPnlUsd,

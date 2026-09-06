@@ -104,6 +104,15 @@ function buildPricingSummary(ayri: AyriAttributionOutput) {
 }
 
 function buildWalletConditionInputs(input: BuildInput): WalletConditionInput {
+  const audit = input.reconciledPnL.publicPnlGateAudit
+  const verified = audit?.verifiedClosedLots
+    ?? input.walletConditionInputs?.verifiedClosedLots
+    ?? input.walletConditionInputs?.closedLots
+    ?? 0
+  const structural = audit?.structuralClosedLots
+    ?? input.walletConditionInputs?.structuralClosedLots
+    ?? input.walletConditionInputs?.totalSells
+    ?? 0
   return {
     tokenCount: input.walletConditionInputs?.tokenCount ?? 0,
     deadTokens: input.walletConditionInputs?.deadTokens ?? 0,
@@ -113,13 +122,20 @@ function buildWalletConditionInputs(input: BuildInput): WalletConditionInput {
     fallbackAttempts: input.walletConditionInputs?.fallbackAttempts ?? 0,
     providerErrors: input.walletConditionInputs?.providerErrors ?? 0,
     suppressionSkipped: input.walletConditionInputs?.suppressionSkipped ?? 0,
-    closedLots: input.reconciledPnL.closedLots,
-    totalSells: input.walletConditionInputs?.totalSells ?? 0,
+    // Wallet PnL publish Item 4: never mix reconciledPnL.closedLots (structural) with
+    // sell-timeline totalSells — that inverted pair is the live "586 of 184 (318%)" bug.
+    closedLots: verified,
+    totalSells: structural,
+    verifiedClosedLots: verified,
+    structuralClosedLots: structural,
     previousPnL: input.walletConditionInputs?.previousPnL,
     currentPnL: input.reconciledPnL.realizedPnlUsd,
     lowLiquidityTokens: input.walletConditionInputs?.lowLiquidityTokens,
     microcaps: input.walletConditionInputs?.microcaps,
     excludedTokens: input.walletConditionInputs?.excludedTokens,
+    publicPnlStatus: input.walletConditionInputs?.publicPnlStatus,
+    rateLimitDetected: input.walletConditionInputs?.rateLimitDetected,
+    transactionHistoryPartial: input.walletConditionInputs?.transactionHistoryPartial,
   }
 }
 

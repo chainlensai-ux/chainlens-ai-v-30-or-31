@@ -18,7 +18,7 @@
 // (Phase 3 sidecar, verifiedSwapCount > 0) the main card and CORTEX already required.
 import type { PnlV2, WalletPnlEvidenceAudit } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
-import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+import type { PnlReconciliationSummary, PublicPnlGateBlockingReason } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
@@ -31,8 +31,10 @@ import {
   selectBoundedSampleDisclosure,
   resolveEffectivePublicPnlStatus,
   buildRealizedVerifiedMessage,
+  buildUnrealizedPartialReasonMessage,
   PNL_UNAVAILABLE_MESSAGE,
   CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL,
+  GUARDRAIL_ABS_LIMIT,
 } from '@/app/frontend/components/PnlStatusCard'
 
 export type WalletPnlBoxStatus = 'Verified' | 'Partial' | 'Locked' | 'Unavailable'
@@ -137,6 +139,197 @@ export function shouldSuppressUnverifiedZeroPnl(
   return !verified && realizedPnlUsd === 0
 }
 
+// OFFICIAL UNAVAILABLE COPY, DISCLOSED (Wallet PnL publish Item 1 — confirmed production lie:
+// Combined UNAVAILABLE headline/sidebar used V2 `wallet-pnl-evidence-audit.failureReason`
+// "Sell activity was found but did not match any earlier buy — no verified closed lot could be
+// built" while canonical recon already counted 586 closed lots / 242 verified / 41.3% coverage
+// and blocked publication on the real 50% pricing-coverage gate).
+//
+// ONE official publish path for publicPnlStatus, headline, combined-box reason, and CORTEX
+// sidebar: canonical fifo + reconciliation + publicPnlGateAudit. V2/pnlSummaryV2/
+// walletPnlEvidenceAudit is diagnostic-only. Its closedLots:0 failureReason is used ONLY when
+// canonical recon has zero closed lots (or recon isn't wired) — never as an override of a
+// canonical gate that already counted lots. Does NOT change combinedStatus (still
+// resolveEffectivePublicPnlStatus). Does NOT lower the 10-lot / 50% bars. Does NOT invent a
+// verified sample.
+const V2_ZERO_LOT_COPY_RE = /no verified closed lot could be built|did not match any earlier buy/i
+const OFFICIAL_MIN_VERIFIED_PRICING_COVERAGE = 0.5
+const OFFICIAL_MIN_VERIFIED_CLOSED_LOTS = 10
+
+function formatCoveragePercent(ratio: number | null | undefined): string | null {
+  if (ratio == null || !Number.isFinite(ratio)) return null
+  const pct = Math.min(100, Math.max(0, ratio * 100))
+  return Number.isInteger(pct) ? `${pct}%` : `${pct.toFixed(1)}%`
+}
+
+function canonicalClosedLotCounts(summary: PnlReconciliationSummary | null | undefined): {
+  verified: number
+  structural: number
+} | null {
+  const audit = summary?.publicPnlGateAudit
+  if (!audit) return null
+  const verified = audit.verifiedClosedLots
+  const structural = audit.structuralClosedLots
+  if (!(structural > 0 || verified > 0)) return null
+  return { verified, structural }
+}
+
+function formatNamedGateBlocker(rule: string): string | null {
+  if (rule === 'fifo_result_hard_invalid') return 'FIFO result is hard-invalid.'
+  if (rule === 'window_boundary_proven') return 'Window boundary is not proven.'
+  if (rule === 'realized_pnl_present') return 'Canonical realized PnL is not present.'
+  return null
+}
+
+function collectNamedBlockers(reasons: readonly PublicPnlGateBlockingReason[] | undefined, seen: Set<string>): string[] {
+  const out: string[] = []
+  for (const reason of reasons ?? []) {
+    if (seen.has(reason.rule)) continue
+    seen.add(reason.rule)
+    const phrase = formatNamedGateBlocker(reason.rule)
+    if (phrase) out.push(phrase)
+  }
+  return out
+}
+
+export function formatCanonicalUnavailableReason(summary: PnlReconciliationSummary): string {
+  const audit = summary.publicPnlGateAudit
+  const verified = audit.verifiedClosedLots
+  const structural = audit.structuralClosedLots
+  const coverageRatio = audit.verifiedPricingCoverage != null && Number.isFinite(audit.verifiedPricingCoverage)
+    ? audit.verifiedPricingCoverage
+    : (structural > 0 ? verified / structural : null)
+  const coveragePct = formatCoveragePercent(coverageRatio)
+
+  const sentences: string[] = [
+    `PnL unavailable — ${verified} of ${structural} closed lots verified${coveragePct != null ? ` (${coveragePct} coverage)` : ''}.`,
+  ]
+
+  if (coverageRatio != null && coverageRatio < OFFICIAL_MIN_VERIFIED_PRICING_COVERAGE) {
+    sentences.push(`Verified pricing coverage ${coveragePct} is below the 50% gate.`)
+  } else if (verified < OFFICIAL_MIN_VERIFIED_CLOSED_LOTS) {
+    sentences.push(`Verified closed lots ${verified} is below the ${OFFICIAL_MIN_VERIFIED_CLOSED_LOTS}-lot gate.`)
+  }
+
+  const unmatchedSells = audit.unmatchedSellCount
+  const unmatchedBuys = audit.unmatchedBuyCount
+  if (unmatchedSells > 0) sentences.push(`${unmatchedSells} unmatched sell${unmatchedSells === 1 ? '' : 's'}.`)
+  if (unmatchedBuys > 0) sentences.push(`${unmatchedBuys} unmatched buy${unmatchedBuys === 1 ? '' : 's'}.`)
+
+  const missing = summary.missingEvidenceCount
+  if (missing > 0) sentences.push(`Missing evidence on ${missing} lot side${missing === 1 ? '' : 's'}.`)
+
+  const seen = new Set([
+    'minimum_verified_pricing_coverage',
+    'minimum_verified_closed_lots',
+    'unmatched_buys',
+    'unmatched_sells',
+    'missing_evidence_count',
+  ])
+  sentences.push(
+    ...collectNamedBlockers(audit.boundedSampleBlockingReasons, seen),
+    ...collectNamedBlockers(audit.blockingReasons, seen),
+    ...collectNamedBlockers(audit.fullAvailabilityBlockingReasons, seen),
+  )
+
+  return sentences.join(' ')
+}
+
+export function buildOfficialUnavailableReason(params: {
+  reconciliationSummary?: PnlReconciliationSummary | null
+  walletPnlEvidenceAudit?: WalletPnlEvidenceAudit | null
+}): string {
+  const summary = params.reconciliationSummary ?? null
+  if (canonicalClosedLotCounts(summary) && summary) {
+    return formatCanonicalUnavailableReason(summary)
+  }
+  const v2Reason = params.walletPnlEvidenceAudit?.failureReason
+  if (typeof v2Reason === 'string' && v2Reason.trim() !== '') return v2Reason
+  return PNL_UNAVAILABLE_MESSAGE
+}
+
+export function isV2ZeroLotUnavailableCopy(reason: string | null | undefined): boolean {
+  return typeof reason === 'string' && V2_ZERO_LOT_COPY_RE.test(reason)
+}
+
+function officialUnrealizedIsFinite(unrealizedReconciliation: UnrealizedReconciliationSummary | null | undefined): boolean {
+  const value = unrealizedReconciliation?.officialUnrealizedPnlUsd
+  return value != null && Number.isFinite(value)
+}
+
+function officialUnrealizedMagnitudeCorrupt(unrealizedReconciliation: UnrealizedReconciliationSummary | null | undefined): boolean {
+  const value = unrealizedReconciliation?.officialUnrealizedPnlUsd
+  return value != null && Number.isFinite(value) && Math.abs(value) > GUARDRAIL_ABS_LIMIT
+}
+
+function mapConfidenceToUnrealizedBoxStatus(
+  v: 'Verified' | 'Partial' | 'Locked' | 'Full' | 'Unavailable',
+): WalletPnlBoxStatus {
+  if (v === 'Full') return 'Verified'
+  if (v === 'Partial') return 'Partial'
+  if (v === 'Verified') return 'Verified'
+  if (v === 'Locked') return 'Locked'
+  return 'Unavailable'
+}
+
+// OFFICIAL UNREALIZED BOX, DISCLOSED (Wallet PnL publish Item 2 — confirmed production bug:
+// officialUnrealizedPnlUsd was a finite reconciled figure (~-$68.96, reconciliationStatus
+// partial/failed, cappedOpenPositions present) but the Unrealized tile rendered LOCKED
+// "Magnitude/stability guard blocked this figure" because `blocked` is computed from pnlV2
+// magnitude + isStablePnl, and isStablePnl fails whenever publicPnlStatus === 'unavailable').
+//
+// A finite official reconciled unrealized is Partial (or Verified when recon is ok) — never
+// Locked merely because the realized gate is unavailable, and never Locked because V2's raw
+// FIFO×price candidate is huge. LOCK remains only for: canonical-sample replay failure, no
+// official figure, or the published official magnitude itself exceeding GUARDRAIL_ABS_LIMIT
+// ($1e9) — a corruption threshold, documented, applied to the official number only. Does NOT
+// invent prices, does NOT force unrealized = portfolio − cost, does NOT publish realized.
+export function resolveOfficialUnrealizedBoxStatus(params: {
+  canonicalSampleUnavailable: boolean
+  blocked: boolean
+  confidenceUnrealized: 'Verified' | 'Partial' | 'Locked' | 'Full' | 'Unavailable'
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null
+}): WalletPnlBoxStatus {
+  if (params.canonicalSampleUnavailable) return 'Unavailable'
+  if (officialUnrealizedMagnitudeCorrupt(params.unrealizedReconciliation)) return 'Locked'
+  if (officialUnrealizedIsFinite(params.unrealizedReconciliation)) {
+    const mapped = mapConfidenceToUnrealizedBoxStatus(params.confidenceUnrealized)
+    if (mapped === 'Verified') return 'Verified'
+    return 'Partial'
+  }
+  if (params.blocked) return 'Locked'
+  return mapConfidenceToUnrealizedBoxStatus(params.confidenceUnrealized)
+}
+
+export function buildOfficialUnrealizedBoxReason(params: {
+  status: WalletPnlBoxStatus
+  canonicalSampleUnavailable: boolean
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null
+}): string {
+  if (params.canonicalSampleUnavailable) return CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
+  if (params.status === 'Locked') {
+    if (officialUnrealizedMagnitudeCorrupt(params.unrealizedReconciliation)) {
+      return `Magnitude guard blocked this figure — official unrealized exceeds the ${GUARDRAIL_ABS_LIMIT} USD integrity threshold.`
+    }
+    return 'Magnitude/stability guard blocked this figure.'
+  }
+  if (params.status === 'Verified') return 'Open-position estimate reconciled with live prices.'
+  if (params.status === 'Partial') {
+    const specific = buildUnrealizedPartialReasonMessage(params.unrealizedReconciliation)
+    if (specific) return specific
+    const recon = params.unrealizedReconciliation
+    const excluded = recon?.excludedOpenPositions ?? 0
+    const total = recon?.totalOpenPositions ?? 0
+    const capped = recon?.cappedOpenPositions ?? 0
+    const reconWord = recon?.reconciliationStatus === 'failed' ? 'failed' : 'partial'
+    const bits: string[] = [`Open-position estimate is ${reconWord}`]
+    if (total > 0) bits.push(`${excluded} of ${total} positions excluded`)
+    if (capped > 0) bits.push(`${capped} capped to canonical balance`)
+    return `${bits.join(' — ')}.`
+  }
+  return 'No reconciled open-position evidence.'
+}
+
 export type BuildWalletPnlViewModelParams = {
   pnlV2: PnlV2 | null | undefined
   publicPnlStatus?: PublicPnlStatus | null
@@ -147,11 +340,10 @@ export type BuildWalletPnlViewModelParams = {
   chainsScanned?: string[]
   // WALLET SCANNER PNL EVIDENCE FIX, DISCLOSED: does NOT change combinedStatus/blocked/any gating —
   // officialPnlStatus (publicPnlStatus above) stays the sole authority for verified/partial/
-  // unavailable, per this file's own "NO NEW PNL MATH" rule. Only replaces the generic, unspecific
-  // PNL_UNAVAILABLE_MESSAGE wording with the real blocker (e.g. "Open position only — no verified
-  // closed trades.", "No verified swaps found.", "Swap found, quote leg missing.") when the V2
-  // engine's own evidence audit recorded one — never fabricated, never shown while combinedStatus is
-  // anything other than 'unavailable'. Optional and omittable: no reason text changes if absent.
+  // unavailable, per this file's own "NO NEW PNL MATH" rule. V2 walletPnlEvidenceAudit.failureReason
+  // is diagnostic-only and is used as unavailable copy ONLY when canonical recon has zero closed
+  // lots (or recon isn't wired). When publicPnlGateAudit has real closed lots, official copy comes
+  // from that gate (coverage, unmatched, missing evidence) — never V2's closedLots:0 line.
   walletPnlEvidenceAudit?: WalletPnlEvidenceAudit | null
 }
 
@@ -161,7 +353,7 @@ function box(value: string | null, status: WalletPnlBoxStatus, reason: string): 
 
 export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): WalletPnlViewModel {
   const { pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned, walletPnlEvidenceAudit } = params
-  const specificUnavailableReason = walletPnlEvidenceAudit?.failureReason ?? PNL_UNAVAILABLE_MESSAGE
+  const specificUnavailableReason = buildOfficialUnavailableReason({ reconciliationSummary, walletPnlEvidenceAudit })
 
   const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
   const effectiveStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
@@ -178,9 +370,6 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // SAME blocked GUARD PnlStatusCard.tsx's own render uses (magnitude heuristic + stability guard),
   // never recomputed differently — a bounded sample is exempt (reads reconciliationSummary instead).
   const blocked = isBoundedSample ? false : isActive && (pnl.unreliable || !pnl.stable)
-
-  const confidenceToBoxStatus = (v: 'Verified' | 'Partial' | 'Locked' | 'Full' | 'Unavailable'): WalletPnlBoxStatus =>
-    v === 'Full' ? 'Verified' : v
 
   // COMBINED, DISCLOSED, MOVED EARLIER (PnL Evidence UI cleanup follow-up — this task's own explicit
   // requirement: "Combined Realized PnL" box status must ALWAYS match the header badge): describes
@@ -257,28 +446,23 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // CORTEX both already use.
   const robinhoodBoxStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified' : robinhoodLane === 'not_verified' ? 'Not verified' : 'Unavailable'
 
-  // UNREALIZED, DISCLOSED: reuses confidence.unrealized ('Full'/'Partial'/'Unavailable' — mapped to
-  // 'Verified'/'Partial'/'Unavailable') — the SAME reconciliation-status-derived classification the
-  // card's own confidence row already shows, never a new derivation. A genuinely separate concern
-  // from combinedStatus — an open-position estimate can be partial even when realized PnL is fully
-  // verified, and vice versa.
-  const unrealizedStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
-    ? 'Unavailable'
-    : blocked
-      ? 'Locked'
-      : confidenceToBoxStatus(confidence.unrealized)
+  // UNREALIZED, DISCLOSED: a finite officialUnrealizedPnlUsd is Partial/Verified from the
+  // reconciliation itself — never Locked just because realized publicPnlStatus is unavailable or
+  // because pnlV2's raw magnitude tripped the combined guard. See resolveOfficialUnrealizedBoxStatus.
+  const unrealizedStatus = resolveOfficialUnrealizedBoxStatus({
+    canonicalSampleUnavailable,
+    blocked,
+    confidenceUnrealized: confidence.unrealized,
+    unrealizedReconciliation,
+  })
   const unrealizedBox = box(
     displayed.unrealizedPnlUsd == null || unrealizedStatus === 'Unavailable' || unrealizedStatus === 'Locked' || shouldSuppressUnverifiedZeroPnl(unrealizedStatus, displayed.unrealizedPnlUsd) ? null : fmtSignedUsd(displayed.unrealizedPnlUsd),
     unrealizedStatus,
-    canonicalSampleUnavailable
-      ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-      : unrealizedStatus === 'Locked'
-        ? 'Magnitude/stability guard blocked this figure.'
-        : unrealizedStatus === 'Verified'
-          ? 'Open-position estimate reconciled with live prices.'
-          : unrealizedStatus === 'Partial'
-            ? 'Some open positions could not be independently verified this scan.'
-            : 'No reconciled open-position evidence.',
+    buildOfficialUnrealizedBoxReason({
+      status: unrealizedStatus,
+      canonicalSampleUnavailable,
+      unrealizedReconciliation,
+    }),
   )
 
   // ROI, DISCLOSED, SIMPLIFIED (this task's own explicit spec — "ROI: Locked until combined PnL is

@@ -263,13 +263,15 @@ export async function computePnl(
   //
   // CANONICAL-BALANCE RECONCILIATION, DISCLOSED — see ExcludedUnrealizedPosition's own header in
   // types.ts for the full production trace (a fabricated -$545,833.02 unrealized PnL on chain
-  // 8453). Before this fix, `match.totalCostUsd` (this module's own event-replay-derived FIFO
-  // remaining quantity's cost basis) was subtracted from `holding.valueUsd` (the REAL current
-  // balance's market value) with NO check that the two figures even referred to the same quantity.
-  // Now: `match.totalQuantity` must reconcile against `holding.quantity` (the real, independently-
-  // fetched canonical balance) before this position is ever allowed to contribute to official
-  // unrealizedPnlUsd — a mismatched position is EXCLUDED entirely (never clamped/blended) and
-  // reported, with its refused candidate figure, in unrealizedExcludedPositions.
+  // 8453). Before the original fail-closed fix, `match.totalCostUsd` (this module's own event-
+  // replay-derived FIFO remaining quantity's cost basis) was subtracted from `holding.valueUsd`
+  // (the REAL current balance's market value) with NO check that the two figures even referred to
+  // the same quantity. Wallet PnL Item 3: when FIFO remaining is LARGER than the known canonical
+  // balance, do NOT exclude the whole bag and do NOT invent the missing remainder into realized.
+  // Cap cost basis to the held fraction (`canonicalQuantity / fifoRemaining`) so unrealized is
+  // (holdings market value) - (cost of the still-held quantity). A zero/invalid canonical quantity
+  // still excludes: there is nothing currently held to value. The uncapped FIFO-qty candidate is
+  // never restored into official unrealizedPnlUsd.
   const costBasisByKey = new Map(costBasis.map((c) => [tokenKey(c.tokenAddress, c.chainId), c]))
   const unrealized: TokenUnrealizedPnl[] = []
   const unrealizedExcludedPositions: ExcludedUnrealizedPosition[] = []
@@ -299,7 +301,7 @@ export async function computePnl(
       })
       continue
     }
-    if (match.totalQuantity > canonicalQuantity * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+    if (!(canonicalQuantity > 0)) {
       unrealizedExcludedPositions.push({
         chainId: holding.chainId,
         tokenAddress: holding.tokenAddress,
@@ -309,6 +311,15 @@ export async function computePnl(
         canonicalValueUsd: holding.valueUsd,
         candidateUnrealizedPnlUsd,
         exclusionReason: 'quantity_exceeds_balance',
+      })
+      continue
+    }
+    if (match.totalQuantity > canonicalQuantity * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+      const quantityScale = canonicalQuantity / match.totalQuantity
+      unrealized.push({
+        tokenAddress: holding.tokenAddress,
+        chainId: holding.chainId,
+        unrealizedPnlUsd: holding.valueUsd - match.totalCostUsd * quantityScale,
       })
       continue
     }

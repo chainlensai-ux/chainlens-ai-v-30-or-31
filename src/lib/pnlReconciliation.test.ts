@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
-import { createPnlReconciliation, classifyRecoveryFailureReason } from './pnlReconciliation'
+import { createPnlReconciliation, classifyRecoveryFailureReason, rankMissingLotsForRecovery } from './pnlReconciliation'
 import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }

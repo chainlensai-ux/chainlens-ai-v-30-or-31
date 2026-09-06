@@ -345,6 +345,41 @@ export type SideAllocationShare = {
 // `groupLots` must be the FULL set of matched lots drawing from that transaction side — including
 // any not currently verified/priced — so a verified sibling is never over-credited a share that
 // rightly belongs to an unpriced one (see this module's own header on the allocation population).
+export function lotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[]): Set<MatchedLot> {
+  // A verified lot that shares an accepted-evidence side (same chain/token/txHash/side/timestamp)
+  // with ANY lot that is not itself in the verified sample cannot contribute a group total that
+  // equals the accepted side's stored priceUsd/valueUsd. Allocation is over the FULL sibling set
+  // (see allocateSideValueAcrossGroup) so the verified slice is a proper fraction of the side;
+  // publishing that slice as "verified" is exactly `group_total_does_not_equal_accepted_side_total`.
+  // Fail closed: return the original lot objects that must be demoted, never invent the missing
+  // siblings into realized PnL.
+  const groups = new Map<string, MatchedLot[]>()
+  for (const lot of lots) {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    for (const key of [entryKey, exitKey]) {
+      const existing = groups.get(key)
+      if (existing) existing.push(lot)
+      else groups.set(key, [lot])
+    }
+  }
+  const demote = new Set<MatchedLot>()
+  for (const members of groups.values()) {
+    const verifiedCount = members.filter(isCanonicalVerifiedPublishedLot).length
+    if (verifiedCount > 0 && verifiedCount < members.length) {
+      for (const lot of members) {
+        if (isCanonicalVerifiedPublishedLot(lot)) demote.add(lot)
+      }
+    }
+  }
+  return demote
+}
+
+export function demoteLotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[]): MatchedLot[] {
+  const demote = lotsOnIncompleteAcceptedSides(lots)
+  if (demote.size === 0) return [...lots]
+  return lots.map((lot) => (demote.has(lot) ? { ...lot, evidenceQuality: 'unpriced' as const } : lot))
+}
+
 export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], totalValueUsd: number): SideAllocationShare[] {
   // Stable sort key: identity fields + canonical (float-noise-free) amount — the same fields
   // buildCanonicalLotIdentities' own ordinal assignment sorts by, without needing the full-array
@@ -671,6 +706,8 @@ export async function buildManifestFromCandidate(params: {
   computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
 }): Promise<CanonicalPnlSampleManifest> {
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
+  const incompleteSideLots = lotsOnIncompleteAcceptedSides(params.allCandidateLots)
+  const verifiedForManifest = params.candidateVerifiedLots.filter((lot) => !incompleteSideLots.has(lot))
 
   // GROUP BY SHARED EVIDENCE SIDE, DISCLOSED (Part A): populated from `allCandidateLots` — every
   // structurally-matched lot drawing from a transaction side, whether currently verified or not —
@@ -761,7 +798,6 @@ export async function buildManifestFromCandidate(params: {
   }
 
   const records: CanonicalManifestLotRecord[] = []
-  const rawEvidenceKeys: string[] = []
   // Maps each occurrence-group key to the exact per-occurrence values the manifest freezes, so the
   // corrected array below (and therefore the stored fingerprints) is built from the SAME
   // deterministic split replay will later reproduce — never from the raw per-lot allocation, whose
@@ -841,12 +877,11 @@ export async function buildManifestFromCandidate(params: {
       allocatedCostBasisUsd: groupCostBasisUsd,
       allocatedProceedsUsd: groupProceedsUsd,
     })
-    for (const m of members) rawEvidenceKeys.push(m.entryEvidenceKey, m.exitEvidenceKey)
   }
 
   // CANONICALIZE -> SORT -> DEDUPE before persistence (requirement #2 of the prior task).
   const { unique: verifiedLotIdentityKeys } = dedupeKeys(records.map((r) => r.key))
-  const { unique: acceptedEvidenceIdentityKeys } = dedupeKeys(rawEvidenceKeys)
+  const { unique: acceptedEvidenceIdentityKeys } = dedupeKeys(records.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]))
   const dedupedRecords = verifiedLotIdentityKeys
     .map((key) => records.find((r) => r.key === key))
     .filter((r): r is CanonicalManifestLotRecord => r !== undefined)
@@ -859,7 +894,13 @@ export async function buildManifestFromCandidate(params: {
   for (const [key, members] of byOccurrenceKey) {
     const shares = frozenSharesByKey.get(key)!
     members.forEach((m, i) => {
-      correctedByLot.set(m.lot, { ...m.lot, costBasisUsd: shares.cost[i], proceedsUsd: shares.proceeds[i], realizedPnlUsd: shares.pnl[i] })
+      correctedByLot.set(m.lot, {
+        ...m.lot,
+        costBasisUsd: shares.cost[i],
+        proceedsUsd: shares.proceeds[i],
+        realizedPnlUsd: shares.pnl[i],
+        evidenceQuality: incompleteSideLots.has(m.lot) ? 'unpriced' : m.lot.evidenceQuality,
+      })
     })
   }
 
@@ -872,7 +913,10 @@ export async function buildManifestFromCandidate(params: {
   let realizedPnlUsd = params.realizedPnlUsd
   let fingerprints = params.fingerprints
   if (params.loadEvidence && params.computeFingerprints) {
-    const correctedAllLots = params.allCandidateLots.map((lot) => correctedByLot.get(lot) ?? lot)
+    const correctedAllLots = params.allCandidateLots.map((lot) => {
+      const corrected = correctedByLot.get(lot) ?? lot
+      return incompleteSideLots.has(lot) ? { ...corrected, evidenceQuality: 'unpriced' as const } : corrected
+    })
     const correctedVerified = correctedAllLots.filter(isCanonicalVerifiedPublishedLot)
     realizedPnlUsd = correctedVerified.length > 0
       ? sumQuantizedUsd(sortLotsByCanonicalIdentity(correctedVerified).map((l) => l.realizedPnlUsd))

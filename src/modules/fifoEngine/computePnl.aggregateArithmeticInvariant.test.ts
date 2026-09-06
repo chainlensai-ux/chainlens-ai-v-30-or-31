@@ -154,14 +154,14 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
 
   it('keeps missing-evidence guards while reconciling a known smaller balance', () => {
     const tokenA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-    const excluded = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' // will fail balance reconciliation
+    const excluded = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' // no canonical balance — still excluded
     const lots: OpenLot[] = [
       openLot({ lotId: 'a-priced', token: tokenA, amountRemaining: 5, amountOpened: 5, costBasisUsd: 2 }),
       openLot({ lotId: 'a-unpriced', token: tokenA, amountRemaining: 3, amountOpened: 3, costBasisUsd: null, evidenceQuality: 'unpriced' }),
       openLot({ lotId: 'excluded', token: excluded, amountRemaining: 1_000_000, amountOpened: 1_000_000, costBasisUsd: 1 }),
     ]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 2
-    const canonicalBalanceLookup: CanonicalBalanceLookup = (token) => (token.toLowerCase() === tokenA ? 100 : 10)
+    const canonicalBalanceLookup: CanonicalBalanceLookup = (token) => (token.toLowerCase() === tokenA ? 100 : null)
 
     const result = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 

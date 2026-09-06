@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeNormalizedEvents, normalizedDedupeKey } from './utils'
+import { mergeNormalizedEvents, normalizedDedupeKey, recoveredEconomicDedupeKey } from './utils'
 import type { NormalizedEvent } from '../normalization/types'
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
@@ -69,4 +69,41 @@ test('output order is base (deduped) first, then recovered (deduped, non-overlap
   const recovered = [event({ txHash: '0xr1' })]
   const merged = mergeNormalizedEvents(base, recovered)
   assert.deepEqual(merged.map((e) => e.txHash), ['0xb1', '0xb2', '0xr1'])
+})
+
+test('HARD ASSERTION (Item 4): a recovered sell that is the same tx/token/direction/amount as a canonical sell is dropped even when from/to differs (receipt/pool vs router)', () => {
+  const canonical = event({
+    txHash: '0xswap1', direction: 'outbound', contract: '0xtoken',
+    fromAddress: '0xwallet', toAddress: '0xrouter', amountRaw: '1000000000000000000',
+  })
+  const recoveredReceipt = event({
+    txHash: '0xswap1', direction: 'outbound', contract: '0xtoken',
+    fromAddress: '0xwallet', toAddress: '0xpool', amountRaw: '1000000000000000000',
+  })
+  assert.notEqual(normalizedDedupeKey(canonical), normalizedDedupeKey(recoveredReceipt), 'from/to differs so the exact key must not collide')
+  assert.equal(recoveredEconomicDedupeKey(canonical), recoveredEconomicDedupeKey(recoveredReceipt), 'economic identity is the same swap leg')
+  const merged = mergeNormalizedEvents([canonical], [recoveredReceipt])
+  assert.equal(merged.length, 1, 'the recovered copy must not become a second unmatched sell')
+  assert.equal(merged[0], canonical, 'the canonical provider event is kept')
+})
+
+test('HARD ASSERTION (Item 4): two genuine base events of the same token/tx/amount to different recipients still both survive — economic dedupe never collapses base', () => {
+  const a = event({ txHash: '0xbatch', direction: 'outbound', toAddress: '0xrecv1', amountRaw: '1000000000000000000' })
+  const b = event({ txHash: '0xbatch', direction: 'outbound', toAddress: '0xrecv2', amountRaw: '1000000000000000000' })
+  const merged = mergeNormalizedEvents([a, b], [])
+  assert.equal(merged.length, 2, 'a real same-tx batch of two equal-amount transfers is not a recovered duplicate')
+})
+
+test('HARD ASSERTION (Item 4): a recovered inbound of a DIFFERENT amount on the same tx is kept — not exact evidence of the same leg', () => {
+  const canonical = event({ txHash: '0xswap2', direction: 'outbound', amountRaw: '1000000000000000000' })
+  const recoveredOther = event({ txHash: '0xswap2', direction: 'inbound', amountRaw: '5000000000000000000', fromAddress: '0xpool', toAddress: '0xwallet' })
+  const merged = mergeNormalizedEvents([canonical], [recoveredOther])
+  assert.equal(merged.length, 2, 'the opposite recovered swap leg is new evidence, not a duplicate sell')
+})
+
+test('HARD ASSERTION (Item 4): a recovered event with a different amountRaw is kept even on the same tx/token/direction', () => {
+  const canonical = event({ txHash: '0xswap3', direction: 'outbound', amountRaw: '1000000000000000000' })
+  const recoveredDifferentAmount = event({ txHash: '0xswap3', direction: 'outbound', amountRaw: '2000000000000000000', toAddress: '0xother' })
+  const merged = mergeNormalizedEvents([canonical], [recoveredDifferentAmount])
+  assert.equal(merged.length, 2, 'different amountRaw is not exact evidence of the same recovered sell')
 })

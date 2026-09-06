@@ -33,6 +33,13 @@ export type WalletConditionInput = {
   fallbackAttempts: number
   providerErrors: number
   suppressionSkipped: number
+  // OFFICIAL COVERAGE PAIR, DISCLOSED (Wallet PnL publish Item 4): verifiedClosedLots /
+  // structuralClosedLots from publicPnlGateAudit. closedLots/totalSells remain as aliases so
+  // existing callers/tests keep typechecking; the formatter prefers the official pair when present.
+  // Never mix attributed-lot count with sell-timeline totalSells — that produced the live
+  // "586 of 184 closed lots verified (318% coverage)" inversion.
+  verifiedClosedLots?: number
+  structuralClosedLots?: number
   closedLots: number
   totalSells: number
   // Optional, DISCLOSED: not currently tracked anywhere in this pipeline. When omitted, section 5
@@ -65,6 +72,27 @@ export type WalletConditionSection = { id: string; text: string }
 
 function round(n: number): number {
   return Math.round(n)
+}
+
+export function resolvedVerifiedClosedLots(input: WalletConditionInput): number {
+  return input.verifiedClosedLots ?? input.closedLots
+}
+
+export function resolvedStructuralClosedLots(input: WalletConditionInput): number {
+  return input.structuralClosedLots ?? input.totalSells
+}
+
+export function cappedCoveragePercent(verified: number, structural: number): number {
+  if (!(structural > 0)) return 0
+  const raw = (verified / structural) * 100
+  if (!Number.isFinite(raw) || raw < 0) return 0
+  return Math.min(100, raw)
+}
+
+export function formatCoveragePercentLabel(pct: number): string {
+  const rounded = round(pct)
+  if (Math.abs(pct - rounded) < 0.005) return `${rounded}%`
+  return `${pct.toFixed(2)}%`
 }
 
 // WALLET HEALTH SCORE, DISCLOSED: the task specifies the trigger condition and message shape but
@@ -105,8 +133,11 @@ function deriveEvidenceQuality(input: WalletConditionInput): {
   coverageIssue: boolean
   isFull: boolean
 } {
-  const zeroEvaluated = input.closedLots === 0
-  const incompletePricing = input.closedLots < input.totalSells
+  const zeroEvaluated = resolvedVerifiedClosedLots(input) === 0
+  const verified = resolvedVerifiedClosedLots(input)
+  const structural = resolvedStructuralClosedLots(input)
+  const inverted = structural > 0 && verified > structural
+  const incompletePricing = verified < structural || inverted
   const coverageIssue = input.providerErrors > 0
     || input.rateLimitDetected === true
     || input.transactionHistoryPartial === true
@@ -147,19 +178,18 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
   } else if (evidence.zeroEvaluated) {
     sections.push({
       id: 'pnlEvidenceLevel',
-      text: `PnL Evidence Level: Insufficient evidence — 0 of ${input.totalSells} closed lots verified (0% coverage).`,
+      text: `PnL Evidence Level: Insufficient evidence — 0 of ${resolvedStructuralClosedLots(input)} closed lots verified (0% coverage).`,
     })
   } else {
-    // PNL-COVERAGE-RECOVERY-FIX-5, DISCLOSED (Wallet Scanner PnL coverage bottleneck task — bad UI
-    // copy fix): the prior wording ("X of Y sells had verifiable pricing") read as a plain fraction
-    // of sell EVENTS, but X (closedLots) and Y (totalSells) are actually "verified closed lots" over
-    // "total sell attempts" — the same numerator/denominator confusion this task named explicitly
-    // ("Never say '603 of 192 sells had verifiable pricing'"). Restated as an unambiguous "N of M
-    // closed lots verified (P% coverage)" — same real numbers, no wording that implies sells and
-    // lots are interchangeable or that the fraction could read as >100%.
+    // PNL-COVERAGE-RECOVERY-FIX-5 + Wallet PnL publish Item 4: numerator is verifiedClosedLots,
+    // denominator is structuralClosedLots. Percent = verified/structural capped at 100 — never the
+    // inverted attributedLots/totalSells pair that produced "586 of 184 (318%)".
+    const verified = resolvedVerifiedClosedLots(input)
+    const structural = resolvedStructuralClosedLots(input)
+    const pct = formatCoveragePercentLabel(cappedCoveragePercent(verified, structural))
     sections.push({
       id: 'pnlEvidenceLevel',
-      text: `PnL Evidence Level: Limited coverage — ${input.closedLots} of ${input.totalSells} closed lots verified (${input.totalSells > 0 ? round((input.closedLots / input.totalSells) * 100) : 0}% coverage).`,
+      text: `PnL Evidence Level: Limited coverage — ${verified} of ${structural} closed lots verified (${pct} coverage).`,
     })
   }
 
@@ -220,11 +250,11 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
   // coverage issue (provider errors, rate limiting, partial transaction history, or publicPnlStatus
   // unavailable) caps confidence below the "high confidence" range even when every KNOWN sell got
   // priced — a 100% closedLots/totalSells ratio does not mean the wallet's true sell set is complete.
+  const verified = resolvedVerifiedClosedLots(input)
+  const structural = resolvedStructuralClosedLots(input)
   let confidence = evidence.zeroEvaluated
     ? 0
-    : input.totalSells > 0
-      ? round((input.closedLots / input.totalSells) * 100)
-      : 0
+    : round(cappedCoveragePercent(verified, structural))
   if (evidence.coverageIssue) confidence = Math.min(confidence, 79)
   sections.push({ id: 'pnlConfidenceScore', text: `PnL Confidence: ${confidence}% — Based on available pricing evidence.` })
 
@@ -241,7 +271,7 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
   } else if (evidence.zeroEvaluated) {
     sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: Insufficient evidence — 0 closed lots verified.' })
   } else {
-    sections.push({ id: 'scanDepthIndicator', text: `Scan Depth: Limited coverage — Only ${input.closedLots} of ${input.totalSells} closed lots verified.` })
+    sections.push({ id: 'scanDepthIndicator', text: `Scan Depth: Limited coverage — Only ${resolvedVerifiedClosedLots(input)} of ${resolvedStructuralClosedLots(input)} closed lots verified.` })
   }
 
   return sections

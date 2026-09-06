@@ -167,12 +167,12 @@ export function PnLTab({ fifoAndPnl, pnlSummaryV2 }: PnLTabProps) {
           FIFO / PnL
         </h3>
         <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-          Real FIFO engine + real closed-lot evidence · No fabricated USD values
+          Official realized from FIFO engine · Closed lots below are a pnlEngine diagnostic
         </p>
       </div>
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '18px' }}>
-        <PnLHeaderCard label="Realized PnL" value={fmtSignedUsd(fifoAndPnl?.realizedPnlUsd ?? null)} tone={toneFromValue(fifoAndPnl?.realizedPnlUsd)} index={0} />
+        <PnLHeaderCard label="Realized PnL (official)" value={fmtSignedUsd(fifoAndPnl?.realizedPnlUsd ?? null)} tone={toneFromValue(fifoAndPnl?.realizedPnlUsd)} index={0} />
         <PnLHeaderCard label="Unrealized PnL" value={fmtSignedUsd(fifoAndPnl?.unrealizedPnlUsd ?? null)} tone={toneFromValue(fifoAndPnl?.unrealizedPnlUsd)} index={1} />
         <PnLHeaderCard label="ROI" value={roi.display} tone={toneFromValue(roi.value)} index={2} />
       </div>
@@ -183,7 +183,7 @@ export function PnLTab({ fifoAndPnl, pnlSummaryV2 }: PnLTabProps) {
 
       <div>
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-          Closed Lots
+          Closed Lots (pnlEngine diagnostic)
         </div>
         <ClosedLotsTable closedLots={closedLots} />
       </div>

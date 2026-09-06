@@ -45,14 +45,13 @@ function meta(chain: SupportedChain, token: string, overrides: Partial<Canonical
 }
 
 describe('computePnl reconciliation diagnostics — per-position detail', () => {
-  it('1. reports the EXACT open quantity from FIFO and the exact canonical balance (plus symbol/decimals from the snapshot)', () => {
-    // The original ~$545k-class inflation: 10,000,000 open units against a real balance of 100.
+  it('1. HARD ASSERTION (Wallet PnL Item 3): 10,000,000 FIFO open vs a real balance of 100 is CAPPED to 100, never excluded and never valued at the FIFO quantity', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 0.0545
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
 
-    const { unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup, {
-      positionMetadataLookup: metadataLookup({ [`base:${SHARED_ADDRESS}`]: meta('base', SHARED_ADDRESS, { symbol: 'SPAM', decimals: 9 }) }),
+    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup, {
+      positionMetadataLookup: metadataLookup({ [`base:${SHARED_ADDRESS}`]: meta('base', SHARED_ADDRESS, { symbol: 'ETHY', decimals: 18 }) }),
       currentPriceSourceLookup: () => 'dexscreener',
     })
 
@@ -61,7 +60,7 @@ describe('computePnl reconciliation diagnostics — per-position detail', () => 
     assert.ok(Math.abs(unrealizedReconciliation.reconciledMarketValueUsd - 5.45) < 1e-12)
   })
 
-  it('2. excess quantity and candidate inflation are calculated correctly', () => {
+  it('2. the uncapped FIFO-qty candidate is never restored into official unrealized', () => {
     const lots = [openLot({ amountRemaining: 10_000_000, amountOpened: 10_000_000, costBasisUsd: 100 })]
     const currentPriceUsdLookup: CurrentPriceUsdLookup = () => 0.0545
     const canonicalBalanceLookup: CanonicalBalanceLookup = () => 100
@@ -176,7 +175,8 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
       openLot({ lotId: 'a', token: SHARED_ADDRESS, amountRemaining: 10_000, costBasisUsd: 10 }),
       openLot({ lotId: 'b', token: WETH_BASE, amountRemaining: 20_000, costBasisUsd: 20 }),
     ]
-    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => 1, () => 1)
+    // Missing price — still unreconcilable even after Item 3's quantity cap (no current price to value the held qty).
+    const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => null, () => 1)
 
     assert.ok(Math.abs((unrealizedPnlUsd ?? 0) - 1.998) < 1e-12)
     assert.equal(unrealizedReconciliation.officialUnrealizedPnlUsd, unrealizedPnlUsd)
@@ -193,7 +193,7 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
         openLot({ lotId: 'good', token: SHARED_ADDRESS, amountRemaining: 10, costBasisUsd: 5 }),
         openLot({ lotId: 'bad', token: WETH_BASE, amountRemaining: 10_000, costBasisUsd: 5 }),
       ],
-      () => 1,
+      (token) => (token.toLowerCase() === SHARED_ADDRESS ? 1 : null),
       (token) => (token.toLowerCase() === SHARED_ADDRESS ? 10 : 1),
     )
     assert.equal(mixed.unrealizedReconciliation.reconciliationStatus, 'ok')

@@ -19,6 +19,20 @@ export function normalizedDedupeKey(event: NormalizedEvent): string {
   return `${event.txHash}|${event.contract.toLowerCase()}|${event.fromAddress.toLowerCase()}|${event.toAddress.toLowerCase()}|${event.amountRaw ?? event.amount}|${event.direction}`
 }
 
+// RECOVERED ECONOMIC IDENTITY, DISCLOSED (Wallet PnL Item 4): receipt-swap / historical-page
+// recovery often re-emits a sell (or buy) that the canonical provider stream already has, but with
+// a different from/to intermediary (pool address vs router address). normalizedDedupeKey includes
+// from/to, so that recovered copy survives as a SECOND outbound of the same token/tx/amount and
+// fifoEngine counts it as an extra unmatched sell — a false unmatched sell of a swap that was
+// already recovered. This looser key is EXACT evidence only: same chain, txHash, token, direction,
+// and amountRaw (or amount when amountRaw is absent). It is NEVER used to collapse two events
+// already in `base` (a genuine same-tx batch of two equal-amount transfers to different recipients
+// must still survive). Only recovered-vs-already-merged events are dropped on this key.
+export function recoveredEconomicDedupeKey(event: NormalizedEvent): string {
+  const amountPart = event.amountRaw != null && String(event.amountRaw).length > 0 ? String(event.amountRaw) : String(event.amount)
+  return `${event.chain}|${event.txHash.toLowerCase()}|${event.contract.toLowerCase()}|${event.direction}|${amountPart}`
+}
+
 // PURE. Merges base + recovered normalized events, deduplicating any overlap (a recovered event
 // that duplicates one already present in the base set is dropped in favor of the original —
 // mirrors Architecture Step 4 §4 / Step 9 §1: recovery must never overwrite an existing event).
@@ -37,18 +51,23 @@ export function normalizedDedupeKey(event: NormalizedEvent): string {
 // real transaction (same txHash/contract/from/to/amountRaw) is never counted twice, regardless of
 // which array it originated from.
 export function mergeNormalizedEvents(base: NormalizedEvent[], recovered: NormalizedEvent[]): NormalizedEvent[] {
-  const seen = new Set<string>()
+  const seenExact = new Set<string>()
+  const seenEconomic = new Set<string>()
   const merged: NormalizedEvent[] = []
   for (const event of base) {
     const key = normalizedDedupeKey(event)
-    if (seen.has(key)) continue
-    seen.add(key)
+    if (seenExact.has(key)) continue
+    seenExact.add(key)
+    seenEconomic.add(recoveredEconomicDedupeKey(event))
     merged.push(event)
   }
   for (const event of recovered) {
     const key = normalizedDedupeKey(event)
-    if (seen.has(key)) continue
-    seen.add(key)
+    if (seenExact.has(key)) continue
+    const economic = recoveredEconomicDedupeKey(event)
+    if (seenEconomic.has(economic)) continue
+    seenExact.add(key)
+    seenEconomic.add(economic)
     merged.push(event)
   }
   return merged
