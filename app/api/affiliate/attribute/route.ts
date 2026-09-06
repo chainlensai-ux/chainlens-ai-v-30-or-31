@@ -83,14 +83,14 @@ export async function POST(req: NextRequest) {
 
   // Resolve the code to a real, approved affiliate — two case variants for legacy pre-lowercase
   // codes, same dual lookup /api/checkout/crypto already does.
-  type AffRow = { id: string; email: string | null; status: string }
+  type AffRow = { id: string; user_id: string | null; email: string | null; status: string }
   let aff: AffRow | null = null
   for (const variant of [referralCode, referralCode.toUpperCase()]) {
-    const { data } = await supabase.from('affiliates').select('id,email,status').eq('referral_code', variant).maybeSingle()
+    const { data } = await supabase.from('affiliates').select('id,user_id,email,status').eq('referral_code', variant).maybeSingle()
     if (data?.id) { aff = data as AffRow; break }
   }
   const affEmail = String(aff?.email ?? '').toLowerCase()
-  const selfReferral = Boolean(userEmail && affEmail && affEmail === userEmail)
+  const selfReferral = aff?.user_id === userId || Boolean(userEmail && affEmail && affEmail === userEmail)
   if (!aff?.id || aff.status !== 'approved' || selfReferral) {
     return NextResponse.json({ attributed: false, reason: 'no_matching_approved_affiliate' })
   }

@@ -31,21 +31,13 @@ import { createClient } from '@supabase/supabase-js'
 import { createAnonSupabaseClient } from '@/lib/supabase/userSettings'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { buildAffiliateReferralLink } from '@/lib/affiliate/referral'
+import { ensureAffiliateForUser } from '@/lib/server/ensureAffiliate'
 
 export const dynamic = 'force-dynamic'
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
-type AffiliateRow = {
-  id: string
-  referral_code: string
-  status: string
-  commission_rate: number | null
-  created_at: string | null
-  approved_at: string | null
-}
-
-export async function GET(req: NextRequest) {
+async function handleMe(req: NextRequest) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests. Please try again shortly.' }, { status: 429 })
   }
@@ -67,34 +59,14 @@ export async function GET(req: NextRequest) {
   if (!supabaseUrl || !serviceRole) return NextResponse.json({ error: 'Service unavailable.' }, { status: 503 })
   const sb = createClient(supabaseUrl, serviceRole)
 
-  // Applications are stored with whatever casing the applicant typed, so match case-insensitively
-  // on the verified address. ilike with no wildcard characters is an exact, case-insensitive match.
-  //
-  // AUDIT FIX, DISCLOSED (affiliate system audit): affiliates.email carries NO unique constraint
-  // (only referral_code is unique — see docs/supabase-affiliate-applications.sql), so the same
-  // person genuinely can have more than one row: a real, plausible case is a first application
-  // rejected for being thin, then a second, better application later approved. This used to fetch
-  // `.order('created_at', { ascending: true }).limit(1)` — the OLDEST row — so that person's
-  // dashboard would show "Not approved" and their (working, approved) referral link would never
-  // even be surfaced, permanently, despite a real approved application existing. Fixed by fetching
-  // every row for the email (there are only ever a handful) and picking the one that actually
-  // matters: an approved row always wins if one exists (that is the live, earning application,
-  // full stop) — else the most recent pending, else the most recent rejected.
-  const { data: affRows, error: affErr } = await sb
-    .from('affiliates')
-    .select('id, referral_code, status, commission_rate, created_at, approved_at')
-    .ilike('email', email)
-    .order('created_at', { ascending: false })
-
-  if (affErr) {
-    console.error('affiliate_me_lookup_failed', { code: affErr.code, message: affErr.message })
+  let aff
+  try {
+    aff = await ensureAffiliateForUser(sb, { id: userData.user.id, email })
+  } catch (error) {
+    const dbError = error as { code?: string; message?: string }
+    console.error('affiliate_me_ensure_failed', { code: dbError.code, message: dbError.message })
     return NextResponse.json({ error: 'Could not load your affiliate account.' }, { status: 500 })
   }
-  // Not an affiliate — an ordinary, expected state, not an error. The dashboard renders a join CTA.
-  if (!affRows || affRows.length === 0) return NextResponse.json({ isAffiliate: false })
-
-  const rows = affRows as AffiliateRow[]
-  const aff = rows.find((r) => r.status === 'approved') ?? rows.find((r) => r.status === 'pending') ?? rows[0]
 
   // ── Real tracking numbers, each scoped to THIS affiliate id ────────────────────────────────────
   // Every figure below is a count/sum over rows the attribution pipeline actually wrote; nothing is
@@ -186,3 +158,6 @@ export async function GET(req: NextRequest) {
     stats,
   })
 }
+
+export const GET = handleMe
+export const POST = handleMe

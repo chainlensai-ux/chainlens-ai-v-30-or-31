@@ -199,9 +199,9 @@ export default function AffiliateDashboardPage() {
 
   if (signedOut) return shell(<>{heading}
     <div className="affd-surface" style={{ padding: '32px' }}>
-      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>Sign in to see your link</p>
+      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>Sign in to get your link</p>
       <p style={{ margin: '0 0 20px', color: 'var(--affd-muted)', fontSize: '13.5px', lineHeight: 1.7 }}>
-        Sign in with the same email address you used on your affiliate application, and your referral link and earnings will appear here.
+        Sign in to ChainLens and your live referral link and earnings dashboard will be ready automatically.
       </p>
       <Link href="/login" className="affd-btn-primary">Sign in →</Link>
     </div>
@@ -217,11 +217,11 @@ export default function AffiliateDashboardPage() {
   // Signed in, but this email has no affiliate application — an ordinary state, not an error.
   if (!data || data.isAffiliate === false) return shell(<>{heading}
     <div className="affd-surface" style={{ padding: '32px' }}>
-      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>No affiliate account on this email</p>
+      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>Affiliate account unavailable</p>
       <p style={{ margin: '0 0 20px', color: 'var(--affd-muted)', fontSize: '13.5px', lineHeight: 1.7 }}>
-        We could not find an affiliate application for the email you are signed in with. If you applied using a different address, sign in with that one — otherwise you can apply now and your referral link is created straight away.
+        We could not provision your affiliate account. Try again, or contact support if the issue continues.
       </p>
-      <Link href="/affiliate#apply" className="affd-btn-primary">Join the affiliate program →</Link>
+      <button onClick={retry} className="affd-btn-primary">Try again</button>
     </div>
   </>)
 
@@ -272,7 +272,7 @@ export default function AffiliateDashboardPage() {
         {!d.linkIsLive && d.status !== 'rejected' && (
           <div style={{ marginTop: '18px', padding: '13px 15px', background: 'rgba(251,191,36,.05)', borderLeft: '2px solid #fbbf24' }}>
             <p style={{ margin: 0, color: '#fcd34d', fontSize: '12.5px', lineHeight: 1.7 }}>
-              <strong>Your link is not tracking yet.</strong> Applications are reviewed manually, and referrals are only credited once your account is approved — usually within 24–72 hours. The link above is permanently yours and will not change, so you can set up your content now, but conversions before approval will not be counted.
+              <strong>Your link is not tracking yet.</strong> This legacy affiliate account is still pending. An admin can approve it to activate attribution; new affiliate accounts are live automatically.
             </p>
           </div>
         )}
@@ -302,7 +302,7 @@ export default function AffiliateDashboardPage() {
           <p style={{ margin: 0, color: 'var(--affd-muted)', fontSize: '13px' }}>{d.stats.reason} Refresh to try again — this does not affect what you have earned.</p>
         ) : d.stats.recent.length === 0 ? (
           <p style={{ margin: 0, color: 'var(--affd-muted)', fontSize: '13px', lineHeight: 1.7 }}>
-            No conversions yet.{d.linkIsLive ? ' Once someone subscribes through your link it appears here, usually within a few minutes of their payment confirming.' : ' Referrals start being recorded as soon as your account is approved.'}
+            No conversions yet.{d.linkIsLive ? ' Once someone subscribes through your link it appears here, usually within a few minutes of their payment confirming.' : ' This link is currently inactive.'}
           </p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
@@ -337,7 +337,7 @@ export default function AffiliateDashboardPage() {
       </div>
 
       <p style={{ margin: '24px 0 0', fontSize: '12px', color: '#526075', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono,monospace)' }}>
-        Applied {shortDate(d.appliedAt)}{d.approvedAt ? ` · approved ${shortDate(d.approvedAt)}` : ''} · referral code {d.referralCode}
+        Created {shortDate(d.appliedAt)}{d.approvedAt ? ` · approved ${shortDate(d.approvedAt)}` : ''} · referral code {d.referralCode}
       </p>
     </>
   )

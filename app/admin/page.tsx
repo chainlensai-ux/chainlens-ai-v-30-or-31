@@ -70,6 +70,7 @@ const STATUS_COLORS: Record<string, { color: string; bg: string; border: string 
   expired:    { color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.3)'  },
   cancelled:  { color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.2)'  },
   rejected:   { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.3)'  },
+  suspended:  { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.3)'  },
 }
 
 function StatusBadge({ status }: { status: unknown }) {
@@ -407,19 +408,23 @@ function AbandonmentTable({ rows }: { rows: Record<string, unknown>[] }) {
 
 // ─── Affiliate Leaderboard ────────────────────────────────────────────────────
 
-function AffiliateLeaderboardTable({ rows }: { rows: AffiliateWithStats[] }) {
+function AffiliateLeaderboardTable({ rows, onAction, pendingId }: {
+  rows: AffiliateWithStats[]
+  onAction: (action: string, id: string, confirmMsg: string) => void
+  pendingId: string | null
+}) {
   return (
     <div style={tableWrap}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['#', 'Email', 'Code', 'Rate', 'Status', 'Crypto Invoices', 'Commissioned Sales', 'Attributed Revenue', 'Pending Owed', 'Paid Total', 'Conv.'].map((h) => (
+            {['#', 'Email', 'Code', 'Rate', 'Status', 'Crypto Invoices', 'Commissioned Sales', 'Attributed Revenue', 'Pending Owed', 'Paid Total', 'Conv.', 'Action'].map((h) => (
               <th key={h} style={th}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 && <EmptyRow cols={11} />}
+          {rows.length === 0 && <EmptyRow cols={12} />}
           {rows.map((a, i) => (
             <tr key={i}>
               <td style={{ ...td, color: '#3a5268', fontWeight: 700 }}>{i + 1}</td>
@@ -433,6 +438,11 @@ function AffiliateLeaderboardTable({ rows }: { rows: AffiliateWithStats[] }) {
               <td style={{ ...td, color: Number(a.pendingCommissionOwed) > 0 ? '#fbbf24' : '#3a5268', fontWeight: 700 }}>{fmtUsd(a.pendingCommissionOwed)}</td>
               <td style={{ ...td, color: Number(a.paidCommissionUsd) > 0 ? '#67e8f9' : '#3a5268', fontWeight: 700 }}>{fmtUsd(a.paidCommissionUsd)}</td>
               <td style={{ ...td, color: Number(a.affiliateConversionRate) > 0 ? '#2DD4BF' : '#3a5268' }}>{fmtConv(a.affiliateConversionRate)}</td>
+              <td style={td}><button
+                disabled={pendingId === String(a.id ?? '')}
+                onClick={() => onAction('suspend_affiliate', String(a.id ?? ''), `Suspend affiliate ${String(a.email ?? a.id)} and disable their link?`)}
+                style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid rgba(248,113,113,.35)', background: 'rgba(248,113,113,.1)', color: '#f87171', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}
+              >SUSPEND</button></td>
             </tr>
           ))}
         </tbody>
@@ -865,7 +875,7 @@ function Dashboard({ data, adminEmail, onRefresh, lastRefresh, refreshing, token
           {/* ── 6. Affiliate Leaderboard ──────────────────────────────────── */}
           <div style={sec}>
             <SectionHeader label="Affiliate Leaderboard" count={approvedAffiliates.length} sub="ranked by confirmed revenue · real customers only" />
-            <AffiliateLeaderboardTable rows={approvedAffiliates} />
+            <AffiliateLeaderboardTable rows={approvedAffiliates} onAction={runAction} pendingId={pendingId} />
           </div>
 
           {/* ── 7. Pending Payouts ────────────────────────────────────────── */}

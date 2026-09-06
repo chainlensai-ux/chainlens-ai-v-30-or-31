@@ -72,11 +72,11 @@ async function createPayPalCommission(
 
   const { data: affiliate, error: affiliateError } = await client
     .from('affiliates')
-    .select('id, referral_code, status, commission_rate')
+    .select('id, user_id, referral_code, status, commission_rate')
     .eq('id', affiliateId)
     .maybeSingle()
   if (affiliateError) return affiliateError
-  if (!affiliate || affiliate.status !== 'approved') return null
+  if (!affiliate || affiliate.status !== 'approved' || affiliate.user_id === userId) return null
 
   const chargedUsd = amount?.currency === 'USD' ? Number(amount.total) : Number.NaN
   // Commission base is the checkout's gross USD charge; the server-side plan price is only a

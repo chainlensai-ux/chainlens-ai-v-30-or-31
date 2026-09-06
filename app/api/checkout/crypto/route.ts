@@ -61,27 +61,30 @@ export async function POST(req: NextRequest) {
     // Previously referred buyer — verify the affiliate is still active.
     const { data: storedAff } = await supabase
       .from('affiliates')
-      .select('id,status')
+      .select('id,user_id,email,status')
       .eq('id', storedAffId)
       .maybeSingle()
-    if ((storedAff as Record<string, unknown> | null)?.status === 'approved') {
+    const stored = storedAff as Record<string, unknown> | null
+    const storedEmail = String(stored?.email ?? '').toLowerCase()
+    const storedSelfReferral = stored?.user_id === userId || Boolean(userEmail && storedEmail && storedEmail === userEmail)
+    if (stored?.status === 'approved' && !storedSelfReferral) {
       affiliateId = storedAffId
     }
   } else if (referralCode) {
     // No stored affiliate — resolve from the referral code in this request.
     // Two sequential exact-match queries: lowercase first (new codes), uppercase second (legacy codes pre-case-fix).
     // Avoids .or() PostgREST edge cases with case-only value differences on UNIQUE text columns.
-    type AffRow = { id: string; email: string | null; status: string }
+    type AffRow = { id: string; user_id: string | null; email: string | null; status: string }
     let aff: AffRow | null = null
     for (const variant of [referralCode, referralCode.toUpperCase()]) {
-      const { data, error: lookupErr } = await supabase.from('affiliates').select('id,email,status').eq('referral_code', variant).maybeSingle()
+      const { data, error: lookupErr } = await supabase.from('affiliates').select('id,user_id,email,status').eq('referral_code', variant).maybeSingle()
       if (data?.id) { aff = data as AffRow; break }
       if (process.env.NODE_ENV !== 'production' && lookupErr) {
         console.warn('[checkout] affiliate lookup error', { variant, code: lookupErr.code })
       }
     }
     const affEmail = String(aff?.email ?? '').toLowerCase()
-    const selfReferral = Boolean(userEmail && affEmail && affEmail === userEmail)
+    const selfReferral = aff?.user_id === userId || Boolean(userEmail && affEmail && affEmail === userEmail)
     if (aff?.id && aff?.status === 'approved' && !selfReferral) affiliateId = aff.id
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[checkout] affiliate diagnostic', {
