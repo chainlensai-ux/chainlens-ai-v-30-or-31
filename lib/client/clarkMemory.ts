@@ -28,6 +28,29 @@ const PREV_CLARK_SUBJECT_KEY = 'chainlens:clark:prev-clark-subject'
 const LAST_TICKER_MATCHES_KEY = 'chainlens:clark:last-ticker-matches'
 const TICKER_SEARCH_ID_KEY = 'chainlens:clark:ticker-search-id'
 
+const SUBJECT_STORAGE_KEYS = [
+  LAST_WALLET_KEY,
+  RECENT_WALLETS_KEY,
+  LAST_TOKEN_KEY,
+  RECENT_TOKENS_KEY,
+  LAST_MOMENTUM_LIST_KEY,
+  LAST_MOMENTUM_LIST_ID_KEY,
+  LAST_MOMENTUM_SHOWN_COUNT_KEY,
+  LAST_DEPLOYER_KEY,
+  LAST_RADAR_LIST_KEY,
+  LAST_RADAR_CHAIN_KEY,
+  LAST_RADAR_TS_KEY,
+  LAST_CHAIN_KEY,
+  LAST_CLARK_SUBJECT_KEY,
+  PREV_CLARK_SUBJECT_KEY,
+  LAST_TICKER_MATCHES_KEY,
+  TICKER_SEARCH_ID_KEY,
+] as const
+
+function chatMemoryKey(chatId: string): string {
+  return `chainlens:clark:chat:${chatId}:memory`
+}
+
 /** Stable Clark session id. Created once per browser session, reused forever — never regenerated per message. */
 export function getClarkSessionId(): string {
   if (typeof window === 'undefined') return 'ssr'
@@ -90,8 +113,88 @@ export function readClarkClientContext(): ClarkClientContext {
   }
 }
 
+function writeJson(key: string, value: unknown): void {
+  if (value === undefined || value === null) {
+    sessionStorage.removeItem(key)
+    return
+  }
+  sessionStorage.setItem(key, JSON.stringify(value))
+}
+
+function writeString(key: string, value: string | null | undefined): void {
+  if (typeof value === 'string' && value.trim()) sessionStorage.setItem(key, value)
+  else sessionStorage.removeItem(key)
+}
+
+function writeClarkClientContext(ctx: ClarkClientContext): void {
+  clearClarkMemory()
+  if (ctx.lastWallet != null) writeJson(LAST_WALLET_KEY, ctx.lastWallet)
+  if (Array.isArray(ctx.recentWallets)) writeJson(RECENT_WALLETS_KEY, ctx.recentWallets)
+  if (ctx.lastToken != null) writeJson(LAST_TOKEN_KEY, ctx.lastToken)
+  if (Array.isArray(ctx.recentTokens)) writeJson(RECENT_TOKENS_KEY, ctx.recentTokens)
+  if (Array.isArray(ctx.lastMomentumList) && ctx.lastMomentumList.length > 0) {
+    writeJson(LAST_MOMENTUM_LIST_KEY, ctx.lastMomentumList)
+  }
+  if (typeof ctx.lastMomentumListId === 'string') writeString(LAST_MOMENTUM_LIST_ID_KEY, ctx.lastMomentumListId)
+  if (typeof ctx.lastMomentumShownCount === 'number' && ctx.lastMomentumShownCount >= 0) {
+    sessionStorage.setItem(LAST_MOMENTUM_SHOWN_COUNT_KEY, String(ctx.lastMomentumShownCount))
+  }
+  if (ctx.lastDeployer != null) writeJson(LAST_DEPLOYER_KEY, ctx.lastDeployer)
+  if (Array.isArray(ctx.lastRadarList) && ctx.lastRadarList.length > 0) {
+    writeJson(LAST_RADAR_LIST_KEY, ctx.lastRadarList)
+  }
+  writeString(LAST_RADAR_CHAIN_KEY, ctx.lastRadarChain)
+  if (typeof ctx.lastRadarTs === 'number' && ctx.lastRadarTs > 0) {
+    sessionStorage.setItem(LAST_RADAR_TS_KEY, String(ctx.lastRadarTs))
+  }
+  writeString(LAST_CHAIN_KEY, ctx.lastChain)
+  if (ctx.lastClarkSubject != null) writeJson(LAST_CLARK_SUBJECT_KEY, ctx.lastClarkSubject)
+  if (ctx.prevClarkSubject != null) writeJson(PREV_CLARK_SUBJECT_KEY, ctx.prevClarkSubject)
+  if (Array.isArray(ctx.lastTickerMatches)) {
+    if (ctx.lastTickerMatches.length > 0) writeJson(LAST_TICKER_MATCHES_KEY, ctx.lastTickerMatches)
+    else sessionStorage.removeItem(LAST_TICKER_MATCHES_KEY)
+  }
+  writeString(TICKER_SEARCH_ID_KEY, ctx.tickerSearchId)
+}
+
+/** Clears subject-specific Clark memory (token/wallet/list/ticker). Does not rotate the session id. */
+export function clearClarkMemory(): void {
+  if (typeof window === 'undefined') return
+  for (const key of SUBJECT_STORAGE_KEYS) sessionStorage.removeItem(key)
+}
+
+/** Snapshots the current working-set memory under this chat so switching back can restore it. */
+export function saveClarkMemoryForChat(chatId: string | null | undefined): void {
+  if (typeof window === 'undefined') return
+  const id = typeof chatId === 'string' ? chatId.trim() : ''
+  if (!id) return
+  try {
+    sessionStorage.setItem(chatMemoryKey(id), JSON.stringify(readClarkClientContext()))
+  } catch { /* quota / private mode */ }
+}
+
+/** Restores a chat's subject memory. missing:'clear' is required when switching chats so the previous subject cannot leak. */
+export function loadClarkMemoryForChat(chatId: string, opts?: { missing?: 'keep' | 'clear' }): void {
+  if (typeof window === 'undefined') return
+  const id = chatId.trim()
+  if (!id) return
+  const stored = readJson(chatMemoryKey(id))
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    writeClarkClientContext(stored as ClarkClientContext)
+    return
+  }
+  if ((opts?.missing ?? 'keep') === 'clear') clearClarkMemory()
+}
+
+export function deleteClarkMemoryForChat(chatId: string | null | undefined): void {
+  if (typeof window === 'undefined') return
+  const id = typeof chatId === 'string' ? chatId.trim() : ''
+  if (!id) return
+  sessionStorage.removeItem(chatMemoryKey(id))
+}
+
 /** Persists a Clark API response's memoryEcho into the shared sessionStorage keys every surface reads from. */
-export function persistClarkMemoryEcho(payload: unknown): void {
+export function persistClarkMemoryEcho(payload: unknown, chatId?: string | null): void {
   if (typeof window === 'undefined') return
   if (!payload || typeof payload !== 'object') return
   const memoryEcho = (payload as Record<string, unknown>).memoryEcho
@@ -174,6 +277,7 @@ export function persistClarkMemoryEcho(payload: unknown): void {
     sessionStorage.setItem(LAST_MOMENTUM_LIST_ID_KEY, echo.lastMomentumListId.trim())
   }
 
+  if (typeof chatId === 'string' && chatId.trim()) saveClarkMemoryForChat(chatId)
 }
 
 /** Persists the momentum/movers list a Clark response returns, shared across surfaces. */

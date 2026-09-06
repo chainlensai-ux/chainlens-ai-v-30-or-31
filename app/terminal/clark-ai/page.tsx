@@ -5,7 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
 import { useAccount } from '@/lib/usePlan'
-import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget, clearClarkMemory, saveClarkMemoryForChat, loadClarkMemoryForChat, deleteClarkMemoryForChat } from '@/lib/client/clarkMemory'
 import {
   CLARK_FETCH_TIMEOUT_MS,
   FALLBACK_ERROR_MESSAGE,
@@ -173,6 +173,15 @@ function ClarkAiContent() {
 
   async function loadChat(chatId: string, persistAsActive = true) {
     try {
+      const prev = activeChatIdRef.current
+      if (prev && prev !== chatId) {
+        saveClarkMemoryForChat(prev)
+        loadClarkMemoryForChat(chatId, { missing: 'clear' })
+      } else {
+        loadClarkMemoryForChat(chatId, { missing: 'keep' })
+      }
+      clarkContextRef.current = {}
+      setMemoryEpoch((n) => n + 1)
       const rows = await fetchClarkChatMessages(chatId)
       chatSessionTokenRef.current += 1
       requestGateRef.current.bumpSession()
@@ -183,8 +192,13 @@ function ClarkAiContent() {
     } catch (err) { reportHistoryFailure(err) }
   }
 
-  function handleNewChat(opts?: { ignoreLimit?: boolean }) {
+  function handleNewChat(opts?: { ignoreLimit?: boolean; skipSave?: boolean }) {
     if (historyAtLimit && !opts?.ignoreLimit) return
+    const prev = activeChatIdRef.current
+    if (prev && !opts?.skipSave) saveClarkMemoryForChat(prev)
+    clearClarkMemory()
+    clarkContextRef.current = {}
+    setMemoryEpoch((n) => n + 1)
     chatSessionTokenRef.current += 1
     requestGateRef.current.bumpSession()
     setLoading(false)
@@ -465,7 +479,7 @@ function ClarkAiContent() {
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
-      persistClarkMemoryEcho(payload)
+      persistClarkMemoryEcho(payload, activeChatIdRef.current)
       if (tokenCommand && !tokenPickerRequired) setActiveTokenPending(null)
       if (!tokenCommand && activeTokenPending && responseTokenAddress) setActiveTokenPending(null)
       setMemoryEpoch((n) => n + 1)
@@ -839,7 +853,11 @@ function ClarkAiContent() {
               onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(reportHistoryFailure) }}
               onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(reportHistoryFailure) }}
               onDeleteChat={(id) => {
-                deleteClarkChat(id).then(() => { if (id === activeChatId) handleNewChat({ ignoreLimit: true }); return refreshHistory() }).catch(reportHistoryFailure)
+                deleteClarkChat(id).then(() => {
+                  deleteClarkMemoryForChat(id)
+                  if (id === activeChatId) handleNewChat({ ignoreLimit: true, skipSave: true })
+                  return refreshHistory()
+                }).catch(reportHistoryFailure)
               }}
               onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
             />
