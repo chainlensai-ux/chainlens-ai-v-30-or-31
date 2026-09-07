@@ -90,6 +90,12 @@ import {
   planUnheldOpenBuySkip,
   type GoldRushHistoricalPricingEfficiencyAudit,
 } from './goldRushHistoricalPricingEfficiencyAudit'
+import {
+  resolveCoinPaprikaHistorical,
+  type CoinPaprikaHistoricalAudit,
+  type CoinPaprikaHistoricalEvidence,
+  type CoinPaprikaRequirement,
+} from '../../lib/server/coinPaprikaHistorical'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
@@ -299,6 +305,10 @@ export type WalletPriceLookups = {
   // set of fields and why every one is real/measured, not fabricated.
   historicalPricingPerformanceSummary: HistoricalPricingPerformanceSummary
   goldRushHistoricalPricingEfficiencyAudit: GoldRushHistoricalPricingEfficiencyAudit
+  // Diagnostic/partial evidence only. CoinPaprika daily candles deliberately do not enter the
+  // canonical priceUsdLookup, and therefore cannot increase verified FIFO/PnL coverage.
+  coinPaprikaHistoricalAudit: CoinPaprikaHistoricalAudit
+  coinPaprikaHistoricalEvidence: CoinPaprikaHistoricalEvidence[]
 }
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
@@ -481,6 +491,8 @@ export async function priceLotsForWallet(params: {
   // (every existing test/caller) keeps today's behavior: every open buy is still priced.
   canonicalHoldingKeys?: ReadonlySet<string>
   skipUnheldOpenBuys?: boolean
+  // Test seam only; production uses global fetch. It does not alter provider selection.
+  coinPaprikaFetchImpl?: typeof fetch
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
   // historicalPricingPerformanceSummary's own construction near this function's return for the
@@ -1928,6 +1940,73 @@ export async function priceLotsForWallet(params: {
     })
   }
 
+  // CoinPaprika is the final, per-requirement fallback in the canonical Wallet Scanner pricing
+  // path. Previously it existed only in lib/server/walletSnapshot.ts's alternate evidence path, so
+  // priceLotsForWallet could finish with unresolved closed-lot sides without ever invoking it.
+  // Build these requirements only after every stronger provider and Alchemy has had its chance.
+  // Daily candles remain partial evidence: they are exposed for inspection but are intentionally
+  // never written into atTradeTime, the canonical verified lookup consumed by FIFO.
+  const coinPaprikaGroups = new Map<string, { requirement: CoinPaprikaRequirement; lots: MatchedLot[] }>()
+  for (const lot of structuralMatchedLots) {
+    const sides: Array<{ side: 'entry' | 'exit'; txHash: string; timestamp: number; resolved: boolean; oppositeResolved: boolean }> = [
+      { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, resolved: atTradeTime.costUsd[lot.openedTxHash] != null, oppositeResolved: atTradeTime.proceedsUsd[lot.closedTxHash] != null },
+      { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, resolved: atTradeTime.proceedsUsd[lot.closedTxHash] != null, oppositeResolved: atTradeTime.costUsd[lot.openedTxHash] != null },
+    ]
+    for (const side of sides) {
+      if (side.resolved) continue
+      const key = `${lot.chain}:${side.txHash.toLowerCase()}:${side.side}`
+      const existing = coinPaprikaGroups.get(key)
+      if (existing) {
+        existing.lots.push(lot)
+        existing.requirement.lotCount += 1
+        if (side.oppositeResolved) existing.requirement.lotsCompletedIfResolved += 1
+        continue
+      }
+      coinPaprikaGroups.set(key, {
+        lots: [lot],
+        requirement: {
+          chainId: lot.chain,
+          contractAddress: lot.token,
+          symbol: merged.find((e) => e.chain === lot.chain && e.contract.toLowerCase() === lot.token.toLowerCase())?.symbol ?? null,
+          timestamp: new Date(side.timestamp).toISOString(),
+          lotCount: 1,
+          lotsCompletedIfResolved: side.oppositeResolved ? 1 : 0,
+          sidesCompleted: side.oppositeResolved ? 1 : 0,
+          coverageGain: structuralMatchedLots.length > 0 ? 1 / structuralMatchedLots.length : 0,
+          notionalUsd: 0,
+          hasRealTradeEvidence: true,
+          canCompleteClosedLot: true,
+          hasAcceptedEvidence: isSkippableByAcceptedEvidence(lot.chain, side.txHash, side.side),
+          // Per-side exhaustion: this exact dictionary slot is still empty after all stronger
+          // sources. No global/provider-wide exhaustion condition is required.
+          strongerSourcesExhausted: true,
+        },
+      })
+    }
+  }
+  const coinPaprikaResult = await resolveCoinPaprikaHistorical(
+    [...coinPaprikaGroups.values()].map((group) => group.requirement),
+    { fetchImpl: params.coinPaprikaFetchImpl },
+  )
+  const coinPaprikaHistoricalEvidence = [...coinPaprikaResult.evidence.values()]
+  const affectedLotKeys = new Set<string>()
+  for (const evidence of coinPaprikaHistoricalEvidence) {
+    for (const { requirement, lots } of coinPaprikaGroups.values()) {
+      if (requirement.chainId !== evidence.identityProof.chainId || requirement.contractAddress.toLowerCase() !== evidence.identityProof.contractAddress) continue
+      if (requirement.timestamp.slice(0, 10) !== evidence.requestedTimestamp.slice(0, 10)) continue
+      for (const lot of lots) affectedLotKeys.add(`${lot.chain}:${lot.openedTxHash}:${lot.closedTxHash}`)
+    }
+  }
+  const coinPaprikaHistoricalAudit = coinPaprikaResult.audit
+  coinPaprikaHistoricalAudit.pricesApplied = 0
+  coinPaprikaHistoricalAudit.partialLotsAffected = affectedLotKeys.size
+  if (coinPaprikaHistoricalEvidence.length > 0 && !coinPaprikaHistoricalAudit.firstDropStage) {
+    coinPaprikaHistoricalAudit.firstDropStage = 'canonical_application'
+    coinPaprikaHistoricalAudit.exactDropReason = 'daily_candle_partial_unverified_not_canonical'
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[coinPaprikaHistoricalAudit]', coinPaprikaHistoricalAudit)
+
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
   // per-event dump). Splits every structural closed lot by exactly which side(s) resolved a real
   // price, so "fullyPricedClosedLots" (both) is never confused with "attributed" (present) or with a
@@ -2138,7 +2217,9 @@ export async function priceLotsForWallet(params: {
     historicalPricingFailures,
     acceptedEvidenceSkipAudit,
     manifestFastPathAudit,
-    historicalPricingPerformanceSummary,
     goldRushHistoricalPricingEfficiencyAudit,
+    coinPaprikaHistoricalAudit,
+    coinPaprikaHistoricalEvidence,
+    historicalPricingPerformanceSummary,
   }
 }

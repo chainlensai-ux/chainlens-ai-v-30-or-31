@@ -2209,6 +2209,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (verification requirement: confirm the fan-out actually shrinks for dust-heavy wallets).
   // eslint-disable-next-line no-console
   console.warn('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
+  // Always present, including disabled/misconfigured/zero-candidate scans. This is emitted at the
+  // canonical production call site so live logs can identify the first fallback drop stage.
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] coinPaprikaHistoricalAudit', walletPriceLookups.coinPaprikaHistoricalAudit)
   // REPLAY-COVERED vs CURRENT-PRICE GOLDRUSH CALL SPLIT, DISCLOSED (cost-audit follow-up task):
   // proves, from a live scan's own logs, that the manifest-replay-covered historical/closed-lot
   // sample made zero live GoldRush calls, separately from whatever real, unavoidable live calls the
@@ -3884,6 +3888,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
     goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,
+    coinPaprikaHistoricalAudit: walletPriceLookups.coinPaprikaHistoricalAudit,
     walletScannerProviderSupportAudit,
     walletPnlCoverageRecoveryAudit,
     walletScannerPipelineAudit,

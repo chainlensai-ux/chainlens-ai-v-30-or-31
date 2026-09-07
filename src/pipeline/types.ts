@@ -71,6 +71,7 @@ export type RunWalletScanResult = FinalReport & {
   // full field list and why every one is real/measured, not fabricated.
   historicalPricingPerformanceSummary?: import('./priceLotsForWallet').HistoricalPricingPerformanceSummary
   goldRushHistoricalPricingEfficiencyAudit?: import('./goldRushHistoricalPricingEfficiencyAudit').GoldRushHistoricalPricingEfficiencyAudit
+  coinPaprikaHistoricalAudit?: import('../../lib/server/coinPaprikaHistorical').CoinPaprikaHistoricalAudit
   // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task): the real, measured historical-vs-
   // current-price GoldRush call split — see AcceptedEvidenceSkipAudit's own header on
   // priceLotsForWallet.ts. Read by walletScanWorker.ts to attribute [wallet-provider-cost-audit]'s
