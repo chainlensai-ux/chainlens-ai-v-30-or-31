@@ -339,7 +339,11 @@ export async function decodeReceiptSwap(
       // function's own header. A multi-hop/mixed chain never reaches here (chained.length > 1
       // simply falls through to the original rejection below), so "multiple incompatible pools"
       // fails closed by construction, not by an extra check.
-      if (uniswapV3Validator && legs.length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
+      // Some providers can return a byte-identical log twice. The decoder already treats those as
+      // one economic leg (dedupeExactLegs); use that same exact-only view for fallback eligibility
+      // rather than rejecting an otherwise single-emitter receipt before the canonical V3 factory
+      // gets a chance to prove it. Distinct legs still fail closed.
+      if (uniswapV3Validator && dedupeExactLegs(legs).length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
         const v3 = resolveUniswapV3Leg(leg.swap, decoded)
         if (!v3.ok) {
           return { ok: false, rejection: { txHash: tx.txHash, reason: v3.reason, uniswapV3: v3.diagnostics } }

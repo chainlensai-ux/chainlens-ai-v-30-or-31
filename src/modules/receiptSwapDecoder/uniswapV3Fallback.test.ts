@@ -14,6 +14,9 @@ const wallet = WALLET.toLowerCase()
 const router = ROUTER.toLowerCase()
 const poolA = POOL_A.toLowerCase()
 const tokenX = TOKEN_X.toLowerCase()
+const TARGET_EXIT_TX = '0x4b65f9e3a6ff94d554c85dcdcfb5df4bfc4b44953969e121e259240d8bad0c5d'
+const TARGET_EXIT_POOL = '0x7f31b371ac675bca3357fd9c26854fed067400c0'
+const TARGET_EXIT_TOKEN = '0x5576d6ed9181f2225aff5282ac0ed29f755437ea'
 
 function bundle(partial: Partial<ReceiptTxBundle>): ReceiptTxBundle {
   return {
@@ -83,6 +86,35 @@ test('production fixture: a concentrated-liquidity swap that fails Aerodrome val
   assert.equal(result.swap.confidence, 'exact')
   assert.equal(result.swap.meta.nativeWrapDetected, true)
   assert.equal(result.swap.meta.uniswapV3Fee, 3000)
+})
+
+test('0x4b65 exit: a Slipstream factory miss only promotes when canonical Uniswap V3 getPool returns the exact emitter', async () => {
+  const targetPool = TARGET_EXIT_POOL.toLowerCase()
+  const targetToken = TARGET_EXIT_TOKEN.toLowerCase()
+  const amountIn = BigInt('250000000000000000000')
+  const amountOut = BigInt('420000000000000000')
+  const tx = bundle({
+    txHash: TARGET_EXIT_TX,
+    tokenMeta: { [targetToken]: { symbol: '?', decimals: 18 }, [WETH]: { symbol: 'WETH', decimals: 18 } },
+    logs: [
+      transferLog(0, TARGET_EXIT_TOKEN, wallet, TARGET_EXIT_POOL, amountIn),
+      slipstreamSwapLog(1, TARGET_EXIT_POOL, wallet, wallet, amountIn, -amountOut),
+      transferLog(2, WETH_BASE_ADDRESS, TARGET_EXIT_POOL, wallet, amountOut),
+    ],
+  })
+
+  const rejected = await decodeReceiptSwap(tx, neverValidValidator(), fakeV3Validator(null))
+  assert.equal(rejected.ok, false, 'a wrong Slipstream factory is not accepted without canonical V3 proof')
+
+  const accepted = await decodeReceiptSwap(tx, neverValidValidator(), fakeV3Validator(3000))
+  assert.equal(accepted.ok, true)
+  if (!accepted.ok) return
+  assert.equal(accepted.swap.protocol, 'uniswap_v3')
+  assert.equal(accepted.swap.poolAddress, targetPool)
+  assert.equal(accepted.swap.tokenIn.address, targetToken)
+  assert.equal(accepted.swap.amountInRaw, amountIn.toString())
+  assert.equal(accepted.swap.walletDirection, 'wallet_sold_tokenIn')
+  assert.equal(accepted.swap.meta.uniswapV3Validation?.emitterMatchesResult, true)
 })
 
 test('reversed token direction resolves the same way through the fallback', async () => {

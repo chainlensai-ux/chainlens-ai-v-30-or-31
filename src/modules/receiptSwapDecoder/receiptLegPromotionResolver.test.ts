@@ -72,14 +72,29 @@ test('three total matches (split across both arrays) is ambiguous, never guessed
   assert.equal(result.reason, 'multiple_incomplete_matches_ambiguous')
 })
 
-test('unique exact receipt amount selects the canonical exit among same-tx fragments', () => {
+test('different same-token amounts that do not sum to the receipt amount remain ambiguous', () => {
   const exact = exactSwap({ txHash: '0x0f292521', amountInRaw: '1000' })
   const result = resolvePromotableLeg([
     baseEvent({ txHash: exact.txHash, direction: 'outbound', contract: exact.tokenIn.address, amountRaw: '250' }),
     baseEvent({ txHash: exact.txHash, direction: 'outbound', contract: exact.tokenIn.address, amountRaw: '1000' }),
   ], WALLET, exact, new Set([exact.protocol]))
+  assert.equal(result.ok, false)
+  if (!result.ok) assert.equal(result.reason, 'multiple_incomplete_matches_ambiguous')
+})
+
+test('FIFO fragments of the same exact exit resolve as one incomplete sell', () => {
+  const amountInRaw = '3199748709166425574338'
+  const exact = exactSwap({ txHash: '0x0f29252137c4385c4291a345925485f2e54d9565348672af5676e2da6a2bd359', amountInRaw })
+  const result = resolvePromotableLeg([
+    baseEvent({ txHash: exact.txHash, amountRaw: '3000000000000000000000', amount: 3000 }),
+    baseEvent({ txHash: exact.txHash, amountRaw: '199748709166425574338', amount: 199.74870916642557 }),
+  ], WALLET, exact, PROTOCOLS)
+
   assert.equal(result.ok, true)
-  if (result.ok) assert.equal(result.existingIndex, 1)
+  if (!result.ok) return
+  assert.equal(result.existingIndex, 1)
+  assert.equal(result.missingEvent.direction, 'inbound')
+  assert.equal(result.missingEvent.contract, TOKEN_X)
 })
 
 test('one exact decoded anchor is promotable despite unrelated recovered inventory in the same transaction', () => {

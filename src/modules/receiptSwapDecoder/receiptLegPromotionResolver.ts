@@ -84,7 +84,22 @@ export function resolvePromotableLeg(
       return event.amountRaw === expectedRaw
     })
     const oneAnchorDirection = new Set(anchors.map(({ event }) => event.direction)).size === 1
-    const selected = exactAmountAnchors.length === 1 && oneAnchorDirection ? exactAmountAnchors : anchors
+    const oneAnchorToken = new Set(anchors.map(({ event }) => event.contract.toLowerCase())).size === 1
+    const expectedRaw = anchors[0]?.event.direction === 'outbound' ? decodedSwap.amountInRaw : decodedSwap.amountOutRaw
+    const fragmentRawAmounts = anchors.map(({ event }) => event.amountRaw)
+    const fragmentsSumToExactAmount = oneAnchorDirection && oneAnchorToken && anchors.length > 1
+      && expectedRaw !== null && fragmentRawAmounts.every((raw) => raw !== null)
+      && fragmentRawAmounts.reduce((sum, raw) => sum + BigInt(raw!), BigInt(0)) === BigInt(expectedRaw)
+
+    // FIFO may split one provider-native transfer into multiple canonical fragments. They remain
+    // one anchor only when every fragment has the same side/token and their raw-unit sum equals the
+    // receipt's exact amount. Choosing the last canonical fragment preserves adjacency when the
+    // missing opposite leg is spliced. Any competing amount/token/direction remains ambiguous.
+    const selected = fragmentsSumToExactAmount
+      ? [anchors.reduce((last, candidate) => candidate.index > last.index ? candidate : last)]
+      : exactAmountAnchors.length === 1 && anchors.length === 1 && oneAnchorDirection
+        ? exactAmountAnchors
+        : anchors
     if (selected.length === 1) {
       const anchor = selected[0]
       matchIndices = anchor.index >= 0 ? [anchor.index] : []

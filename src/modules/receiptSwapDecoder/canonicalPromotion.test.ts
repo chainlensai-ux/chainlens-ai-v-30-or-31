@@ -238,3 +238,22 @@ test('omitting recoveredEvents entirely preserves original behavior (backward co
   const result = promoteVerifiedReceiptSwaps({ normalizedEvents: events, walletAddress: WALLET, acceptedExactSwaps: [exactSwap()] })
   assert.equal(result.addedLegs.length, 1)
 })
+
+test('0x0f292521 exact exit promotes once when its provider evidence was FIFO-split into same-exit fragments', () => {
+  const txHash = '0x0f29252137c4385c4291a345925485f2e54d9565348672af5676e2da6a2bd359'
+  const amountInRaw = '3199748709166425574338'
+  const events = [
+    baseEvent({ txHash, direction: 'outbound', contract: WETH, amountRaw: '3000000000000000000000', amount: 3000 }),
+    baseEvent({ txHash, direction: 'outbound', contract: WETH, amountRaw: '199748709166425574338', amount: 199.74870916642557 }),
+  ]
+  const result = promoteVerifiedReceiptSwaps({
+    normalizedEvents: events,
+    walletAddress: WALLET,
+    acceptedExactSwaps: [exactSwap({ txHash, amountInRaw, normalizedAmountIn: 3199.7487091664256 })],
+  })
+
+  assert.equal(result.rejections.length, 0)
+  assert.equal(result.addedLegs.length, 1)
+  assert.equal(result.addedLegs[0].direction, 'inbound')
+  assert.equal(result.promotions[0].txHash, txHash)
+})
