@@ -5,6 +5,7 @@ import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
 import { budgetedAlchemyCall, resetWalletSnapshotAlchemyBudget, getWalletSnapshotAlchemyCostDiagnostics } from './walletSnapshotAlchemyBudget'
 import { buildBuyTimeline, type BuyTimelineResult, type BuyTimelineSourceItem } from './buyTimeline'
+import { resolveCoinPaprikaHistorical, type CoinPaprikaHistoricalAudit, type CoinPaprikaHistoricalEvidence, type CoinPaprikaRequirement } from './coinPaprikaHistorical'
 
 
 export type WalletScanMode = 'normal' | 'deep' | 'full_recovery'
@@ -358,6 +359,9 @@ export type PnlCoverageRecoveryAudit = {
   thresholdReached: boolean
   exactRemainingBlocker: string | null
   pnlRecoveryFlowAudit: PnlRecoveryFlowAudit[]
+  coinPaprikaCalls: number
+  coinPaprikaLotsCompleted: number
+  coinPaprikaCoverageGain: number
 }
 
 export type WalletSnapshot = {
@@ -1933,6 +1937,7 @@ export type WalletSnapshot = {
       nativeQuoteProofsUsed: number
       quoteProofsRejected: number
       quoteProofsRejectedReasons: Record<string, number>
+      coinPaprikaHistoricalAudit?: CoinPaprikaHistoricalAudit
     }
     walletPriceBudgetDebug?: {
       baseBudget: number; expandedBudget: number; maxBudget: number
@@ -4057,7 +4062,7 @@ export type PriceAtTimeEvidence = {
   tokenSymbol?: string | null
   timestamp: string
   priceUsd: number | null
-  source: 'stable_leg' | 'weth_leg' | 'native_leg' | 'historical_price' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'fallback' | 'unavailable'
+  source: 'stable_leg' | 'weth_leg' | 'native_leg' | 'historical_price' | 'coinpaprika_historical' | 'swap_derived' | 'provider_event_usd' | 'current_holding_price_open_lot_estimate' | 'eth_native_value_router_reconstruction' | 'current_price_fallback_not_used' | 'swap_reconstruction_v1' | 'fallback' | 'unavailable'
   confidence: 'high' | 'medium' | 'low' | 'open_check'
   reason: string
 }
@@ -7047,7 +7052,7 @@ function lotConfidence(entrySource: string, exitSource: string): 'high' | 'mediu
 // so a closed lot whose entry and exit prices both come from one of these (and land on the exact
 // same number) is a fake break-even, not a verified zero-PnL trade.
 const CURRENT_PRICE_REUSE_SOURCES = new Set(['current_holding_price_open_lot_estimate', 'current_price_fallback_not_used'])
-const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'unavailable', 'synthetic', 'fallback'])
+const FALLBACK_PRICE_REUSE_SOURCES = new Set(['historical_price', 'coinpaprika_historical', 'unavailable', 'synthetic', 'fallback'])
 // CLOSED-LOT-PRICE-UPGRADE-FIX: receipt-derived quote-leg sources (same-tx wallet-side WETH/
 // stable/native transfer decoded directly from chain data) are genuinely independent per-event
 // evidence, same category as stable_leg/weth_leg above — additive only, never a relaxation.
@@ -7563,7 +7568,7 @@ function buildFifoLotEngine(
     stable_leg: 5, weth_leg: 5, native_leg: 5, swap_reconstruction_v1: 5,
     eth_native_value_router_reconstruction: 4, quote_leg_receipt_weth: 4, quote_leg_receipt_stable: 4, quote_leg_receipt_native: 4,
     historical_price: 3, swap_derived: 2, provider_event_usd: 1,
-    current_holding_price_open_lot_estimate: 0, current_price_fallback_not_used: 0, fallback: 0, unavailable: 0,
+    current_holding_price_open_lot_estimate: 0, current_price_fallback_not_used: 0, coinpaprika_historical: 0, fallback: 0, unavailable: 0,
   }
   const sourceRank = (e: WalletTxEvidence): number => PRICE_SOURCE_RANK[e.priceAtTime?.status === 'priced' ? e.priceAtTime.source : 'unavailable'] ?? 0
   {
@@ -9494,7 +9499,7 @@ async function buildPriceAtTimeEvidence(
 
   // ── Assemble final evidence in original order ─────────────────────────────────────────────
   // Any remaining unprocessed swap candidates get open_check (budget exhausted)
-  const evidenceWithPricing: WalletTxEvidence[] = evidenceWithDetection.map((e, i) => {
+  let evidenceWithPricing: WalletTxEvidence[] = evidenceWithDetection.map((e, i) => {
     if (!e.swapDetection?.isSwapCandidate) return e
     const r1 = _pass1ResultByIdx.get(i)
     if (r1) return r1
@@ -9537,6 +9542,67 @@ async function buildPriceAtTimeEvidence(
         e, syntheticPrice, 'swap_derived', 'low',
         `Swap-derived from ${cp.symbol} leg (${cpAmt.toFixed(4)} × $${cp.priceAtTime.priceUsd.toFixed(4)} / ${thisAmt.toFixed(4)})`
       )
+    }
+  }
+
+  // Final bounded historical fallback. At this point every candidate has passed the existing
+  // same-tx, GoldRush, Moralis and zero-credit swap-derived waterfall. Requirements are formed
+  // only for an exact contract+chain with real buy AND sell evidence, and daily candles remain
+  // low-confidence/partial so they cannot weaken canonical PnL verification.
+  let coinPaprikaHistoricalAudit: CoinPaprikaHistoricalAudit | undefined
+  if (deepScan) {
+    const groups = new Map<string, WalletTxEvidence[]>()
+    for (const ev of evidenceWithPricing) {
+      if (!ev.swapDetection?.isSwapCandidate || !ev.contract) continue
+      const key = `${normalizeChain(ev.chain)}:${ev.contract.toLowerCase()}`
+      groups.set(key, [...(groups.get(key) ?? []), ev])
+    }
+    const requirements: CoinPaprikaRequirement[] = []
+    for (const group of groups.values()) {
+      const buys = group.filter(ev => ev.direction === 'buy')
+      const sells = group.filter(ev => ev.direction === 'sell')
+      const completable = Math.min(buys.length, sells.length)
+      if (completable < 1) continue
+      const unresolved = group.filter(ev => ev.priceAtTime?.status !== 'priced' && Boolean(ev.timestamp))
+      for (const ev of unresolved) {
+        const knownNotional = ev.usdValue ?? 0
+        requirements.push({
+          chainId: ev.chain,
+          contractAddress: ev.contract,
+          symbol: ev.symbol,
+          timestamp: ev.timestamp!,
+          lotCount: completable,
+          lotsCompletedIfResolved: 1,
+          sidesCompleted: ev.direction === 'buy' || ev.direction === 'sell' ? 1 : 0,
+          coverageGain: group.length > 0 ? 100 / group.length : 0,
+          notionalUsd: knownNotional,
+          hasRealTradeEvidence: ev.swapDetection?.eventKind === 'swap_candidate' || ev.swapDetection?.eventKind === 'recovered_swap_context',
+          canCompleteClosedLot: true,
+          dustNonEconomic: knownNotional > 0 && knownNotional < dustThresholdUsdFor(totalValueUsd ?? 0),
+          airdropOnly: ev.swapDetection?.eventKind === 'airdrop_candidate',
+          ordinaryTransferOnly: ev.swapDetection?.eventKind === 'transfer',
+          strongerSourcesExhausted: true,
+        })
+      }
+    }
+    const resolved = await resolveCoinPaprikaHistorical(requirements)
+    coinPaprikaHistoricalAudit = resolved.audit
+    if (resolved.evidence.size > 0) {
+      let appliedCount = 0
+      const byIdentityAndTime = new Map<string, CoinPaprikaHistoricalEvidence>()
+      for (const item of resolved.evidence.values()) {
+        byIdentityAndTime.set(`${normalizeChain(item.identityProof.chainId)}:${item.identityProof.contractAddress}:${item.requestedTimestamp.slice(0, 10)}`, item)
+      }
+      evidenceWithPricing = evidenceWithPricing.map(ev => {
+        if (ev.priceAtTime?.status === 'priced' || !ev.timestamp) return ev
+        const item = byIdentityAndTime.get(`${normalizeChain(ev.chain)}:${ev.contract.toLowerCase()}:${ev.timestamp.slice(0, 10)}`)
+        if (!item) return ev
+        if (ev.priceAtTime?.status === 'open_check') openCheckEvents--
+        appliedCount++
+        return priced(ev, item.priceUsd, 'coinpaprika_historical', 'low',
+          `CoinPaprika daily historical candle (${item.coinPaprikaId}; ${item.timeDistance}s from trade) — partial/unverified`)
+      })
+      coinPaprikaHistoricalAudit.pricesApplied = appliedCount
     }
   }
 
@@ -9603,6 +9669,7 @@ async function buildPriceAtTimeEvidence(
       nativeQuoteProofsUsed,
       quoteProofsRejected,
       quoteProofsRejectedReasons,
+      coinPaprikaHistoricalAudit,
     },
     budgetDebug: {
       baseBudget: BASE_BUDGET, expandedBudget: EXPANDED_BUDGET, maxBudget: MAX_BUDGET,
@@ -18913,6 +18980,9 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
     thresholdReached: _pnlCoverageThresholdReached,
     exactRemainingBlocker: _pnlCoverageExactRemainingBlocker,
     pnlRecoveryFlowAudit: _pnlRecoveryFlowAudit,
+    coinPaprikaCalls: _priceAtTimeDebug?.coinPaprikaHistoricalAudit?.callsAttempted ?? 0,
+    coinPaprikaLotsCompleted: _priceAtTimeDebug?.coinPaprikaHistoricalAudit?.lotsCompleted ?? 0,
+    coinPaprikaCoverageGain: Math.max(0, (_priceAtTimeDebug?.coinPaprikaHistoricalAudit?.coverageAfter ?? 0) - (_priceAtTimeDebug?.coinPaprikaHistoricalAudit?.coverageBefore ?? 0)),
   }
 
   const snapshot: WalletSnapshot = {
