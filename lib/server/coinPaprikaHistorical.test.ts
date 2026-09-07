@@ -16,6 +16,65 @@ const requirement = (overrides: Partial<CoinPaprikaRequirement> = {}): CoinPapri
   hasRealTradeEvidence: true, canCompleteClosedLot: true, strongerSourcesExhausted: true, ...overrides,
 })
 
+test('no API key selects configured keyless Free mode without an Authorization header', async () => {
+  clearCoinPaprikaCachesForTests()
+  delete process.env.COINPAPRIKA_API_KEY
+  delete process.env.COINPAPRIKA_API_BASE_URL
+  delete process.env.COINPAPRIKA_ENABLED
+  delete process.env.COINPAPRIKA_HISTORICAL_ENABLED
+  let requestUrl = ''
+  let requestHeaders: HeadersInit | undefined
+  const result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl: async (input, init) => {
+    requestUrl = String(input)
+    requestHeaders = init?.headers
+    return new Response('', { status: 500 })
+  } })
+  assert.equal(result.audit.mode, 'keyless_free')
+  assert.equal(result.audit.apiKeyPresent, false)
+  assert.equal(result.audit.configured, true)
+  assert.equal(result.audit.baseUrlMode, 'free_default')
+  assert.match(requestUrl, /^https:\/\/api\.coinpaprika\.com\/v1\/contracts\//)
+  assert.equal(new Headers(requestHeaders).has('Authorization'), false)
+})
+
+test('API key selects authenticated mode and sends a Bearer header', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'paid-test-key'
+  delete process.env.COINPAPRIKA_API_BASE_URL
+  let requestUrl = ''
+  let authorization: string | null = null
+  const result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl: async (input, init) => {
+    requestUrl = String(input)
+    authorization = new Headers(init?.headers).get('Authorization')
+    return new Response('', { status: 500 })
+  } })
+  assert.equal(result.audit.mode, 'authenticated')
+  assert.equal(result.audit.apiKeyPresent, true)
+  assert.equal(result.audit.configured, true)
+  assert.equal(result.audit.baseUrlMode, 'paid_default')
+  assert.match(requestUrl, /^https:\/\/api-pro\.coinpaprika\.com\/v1\/contracts\//)
+  assert.equal(authorization, 'Bearer paid-test-key')
+})
+
+test('disabled flag and zero budget still prevent provider calls', async () => {
+  clearCoinPaprikaCachesForTests()
+  delete process.env.COINPAPRIKA_API_KEY
+  let calls = 0
+  const fetchImpl = async () => { calls++; return new Response() }
+  process.env.COINPAPRIKA_ENABLED = 'false'
+  let result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl })
+  assert.equal(result.audit.enabled, false)
+  assert.equal(calls, 0)
+
+  delete process.env.COINPAPRIKA_ENABLED
+  process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '0'
+  result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl })
+  assert.equal(result.audit.stoppedBecauseBudget, true)
+  assert.equal(result.audit.configured, false)
+  assert.equal(calls, 0)
+  delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
+})
+
 test('maps only supported exact Base and Ethereum platforms', () => {
   assert.equal(coinPaprikaPlatformForChain('8453'), 'base-base')
   assert.equal(coinPaprikaPlatformForChain('1'), 'eth-ethereum')

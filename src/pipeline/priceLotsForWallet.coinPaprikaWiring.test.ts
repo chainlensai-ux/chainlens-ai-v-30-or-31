@@ -50,13 +50,26 @@ describe('priceLotsForWallet CoinPaprika canonical fallback wiring', () => {
     assert.equal(result.coinPaprikaHistoricalAudit.exactDropReason, 'zero_unresolved_requirements_received')
   })
 
-  it('reports missing configuration without exposing a key or making HTTP calls', async () => {
+  it('passes 60 unresolved requirements into keyless eligibility and identity lookup', async () => {
     delete process.env.COINPAPRIKA_API_KEY
     let calls = 0
-    const result = await priceLotsForWallet({ normalizedEvents: [event(0, 'inbound'), event(0, 'outbound')], recoveredEvents: [], priceSources: misses, coinPaprikaFetchImpl: async () => { calls++; return new Response() } })
-    assert.equal(result.coinPaprikaHistoricalAudit.configured, false)
-    assert.equal(result.coinPaprikaHistoricalAudit.exactDropReason, 'COINPAPRIKA_API_KEY_not_configured')
-    assert.equal(calls, 0)
+    const events = Array.from({ length: 30 }, (_, i) => [event(i, 'inbound'), event(i, 'outbound')]).flat()
+    const result = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: misses, coinPaprikaFetchImpl: async () => { calls++; return new Response('', { status: 500 }) } })
+    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 60)
+    assert.equal(result.coinPaprikaHistoricalAudit.eligibleAfterFilters, 60)
+    assert.equal(result.coinPaprikaHistoricalAudit.mode, 'keyless_free')
+    assert.equal(result.coinPaprikaHistoricalAudit.configured, true)
+    assert.ok(result.coinPaprikaHistoricalAudit.identityLookupsAttempted > 0)
+    assert.ok(calls > 0)
+  })
+
+  it('contains CoinPaprika failures without failing Wallet Scanner pricing', async () => {
+    delete process.env.COINPAPRIKA_API_KEY
+    const events = [event(0, 'inbound'), event(0, 'outbound')]
+    const result = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: misses, coinPaprikaFetchImpl: async () => { throw new Error('provider unavailable') } })
+    assert.ok(result.coinPaprikaHistoricalAudit.callsFailed > 0)
+    assert.equal(result.coinPaprikaHistoricalAudit.pricesApplied, 0)
+    assert.equal(result.priceUsdLookup(events[0]), null)
   })
 
   it('does not invoke CoinPaprika for a side resolved by a stronger source', async () => {

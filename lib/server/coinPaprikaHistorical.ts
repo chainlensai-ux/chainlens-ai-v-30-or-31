@@ -53,7 +53,8 @@ export type CoinPaprikaAuditExample = {
 
 export type CoinPaprikaHistoricalAudit = {
   enabled: boolean; configured: boolean; disabledReason?: string
-  budgetResolved: number; baseUrlMode: 'default' | 'custom'
+  mode: 'keyless_free' | 'authenticated'; apiKeyPresent: boolean
+  budgetResolved: number; baseUrlMode: 'free_default' | 'paid_default' | 'custom'
   budgetMax: number; callsAttempted: number; callsSucceeded: number; callsFailed: number
   unresolvedRequirementsReceived: number; closedLotRequirementsReceived: number
   filteredDust: number; filteredSpam: number; filteredAirdrop: number; filteredNonTrade: number
@@ -112,10 +113,21 @@ function failure(audit: CoinPaprikaHistoricalAudit, reason: string) {
 function config() {
   const apiKey = process.env.COINPAPRIKA_API_KEY?.trim()
   const customBaseUrl = process.env.COINPAPRIKA_API_BASE_URL?.trim()
-  const baseUrl = (customBaseUrl || 'https://api-pro.coinpaprika.com/v1').replace(/\/$/, '')
+  const mode = apiKey ? 'authenticated' as const : 'keyless_free' as const
+  const defaultBaseUrl = mode === 'authenticated' ? 'https://api-pro.coinpaprika.com/v1' : 'https://api.coinpaprika.com/v1'
+  const baseUrl = (customBaseUrl || defaultBaseUrl).replace(/\/$/, '')
+  let baseUrlValid = false
+  try {
+    const parsed = new URL(baseUrl)
+    baseUrlValid = (parsed.protocol === 'https:' || parsed.protocol === 'http:') && Boolean(parsed.hostname)
+  } catch {
+    baseUrlValid = false
+  }
   const configuredMax = Number.parseInt(process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN || '130', 10)
-  const enabled = !['0', 'false', 'off'].includes((process.env.COINPAPRIKA_HISTORICAL_ENABLED ?? 'true').trim().toLowerCase())
-  return { apiKey, baseUrl, enabled, baseUrlMode: customBaseUrl ? 'custom' as const : 'default' as const, max: Math.min(COINPAPRIKA_HARD_MAX_CALLS, Number.isFinite(configuredMax) && configuredMax >= 0 ? configuredMax : COINPAPRIKA_HARD_MAX_CALLS) }
+  const enabledSetting = process.env.COINPAPRIKA_ENABLED ?? process.env.COINPAPRIKA_HISTORICAL_ENABLED ?? 'true'
+  const enabled = !['0', 'false', 'off'].includes(enabledSetting.trim().toLowerCase())
+  const baseUrlMode = customBaseUrl ? 'custom' as const : mode === 'authenticated' ? 'paid_default' as const : 'free_default' as const
+  return { apiKey, mode, baseUrl, baseUrlValid, enabled, baseUrlMode, max: Math.min(COINPAPRIKA_HARD_MAX_CALLS, Number.isFinite(configuredMax) && configuredMax >= 0 ? configuredMax : COINPAPRIKA_HARD_MAX_CALLS) }
 }
 
 async function singleflight<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -132,7 +144,8 @@ export async function resolveCoinPaprikaHistorical(
 ): Promise<{ evidence: Map<string, CoinPaprikaHistoricalEvidence>; audit: CoinPaprikaHistoricalAudit }> {
   const cfg = config()
   const audit: CoinPaprikaHistoricalAudit = {
-    enabled: cfg.enabled, configured: Boolean(cfg.apiKey), budgetResolved: cfg.max, baseUrlMode: cfg.baseUrlMode,
+    enabled: cfg.enabled, configured: cfg.enabled && cfg.baseUrlValid && cfg.max > 0, mode: cfg.mode,
+    apiKeyPresent: Boolean(cfg.apiKey), budgetResolved: cfg.max, baseUrlMode: cfg.baseUrlMode,
     budgetMax: cfg.max, callsAttempted: 0, callsSucceeded: 0, callsFailed: 0,
     unresolvedRequirementsReceived: requirements.length, closedLotRequirementsReceived: requirements.length,
     filteredDust: 0, filteredSpam: 0, filteredAirdrop: 0, filteredNonTrade: 0,
@@ -149,7 +162,7 @@ export async function resolveCoinPaprikaHistorical(
   const evidence = new Map<string, CoinPaprikaHistoricalEvidence>()
   const drop = (stage: string, reason: string) => { if (!audit.firstDropStage) { audit.firstDropStage = stage; audit.exactDropReason = reason } }
   if (!cfg.enabled) { audit.disabledReason = 'COINPAPRIKA_HISTORICAL_ENABLED_false'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
-  if (!cfg.apiKey) { audit.disabledReason = 'COINPAPRIKA_API_KEY_not_configured'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
+  if (!cfg.baseUrlValid) { audit.disabledReason = 'COINPAPRIKA_API_BASE_URL_invalid'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
   if (cfg.max === 0) { audit.stoppedBecauseBudget = true; failure(audit, 'budget_resolved_to_zero'); drop('configuration', 'budget_resolved_to_zero'); return { evidence, audit } }
   if (options.canonicalGateSatisfied) { audit.stoppedBecauseGateReached = true; failure(audit, 'canonical_gate_already_satisfied'); drop('eligibility', 'canonical_gate_already_satisfied'); return { evidence, audit } }
 
@@ -183,7 +196,8 @@ export async function resolveCoinPaprikaHistorical(
     if (audit.callsAttempted >= cfg.max) { audit.stoppedBecauseBudget = true; return { json: null, reason: 'budget_exhausted' } }
     audit.callsAttempted++
     try {
-      const response = await fetcher(url, { headers: { Authorization: `Bearer ${cfg.apiKey}` }, cache: 'no-store', signal: AbortSignal.timeout(6_000) })
+      const headers = cfg.mode === 'authenticated' ? { Authorization: `Bearer ${cfg.apiKey}` } : undefined
+      const response = await fetcher(url, { headers, cache: 'no-store', signal: AbortSignal.timeout(6_000) })
       if (response.status === 404) { audit.callsFailed++; return { json: null, reason: 'not_found_404' } }
       if (response.status === 429) { audit.callsFailed++; return { json: null, reason: 'rate_limited_429' } }
       if (response.status >= 500) { audit.callsFailed++; return { json: null, reason: `server_${response.status}` } }
