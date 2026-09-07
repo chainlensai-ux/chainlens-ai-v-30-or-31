@@ -394,6 +394,9 @@ export type ManifestFastPathAudit = {
   // UNCHANGED-RESCAN RESTRICTION COUNTERS, DISCLOSED (requirement #3) — see the restriction's own
   // header at the call site for exactly what is and is not suppressed, and why.
   allClosedLotSidesCovered: boolean
+  /** Record-presence is intentionally distinct from verified canonical coverage. */
+  allClosedLotSidesPresent: boolean
+  allClosedLotSidesVerified: boolean
   unmatchedSellRequirementsSuppressed: number
   // Real, measured count of inbound requirements DELIBERATELY retained because they carry open-lot
   // cost basis for unrealized PnL. Reported honestly rather than suppressed to reach a cosmetic zero.
@@ -414,6 +417,7 @@ export type ManifestFastPathAudit = {
 function emptyManifestFastPathAudit(): ManifestFastPathAudit {
   return {
     manifestLoadedBeforePricing: false, allClosedLotSidesCovered: false,
+    allClosedLotSidesPresent: false, allClosedLotSidesVerified: false,
     unmatchedSellRequirementsSuppressed: 0, openPositionRequirementsRetained: 0,
     manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
     manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, goldrushCallsPrevented: 0,
@@ -686,6 +690,10 @@ export async function priceLotsForWallet(params: {
   const everyMatchedLotSideCovered = matchedLotSideKeys.size > 0
     && [...matchedLotSideKeys].every((key) => skippableRequirementKeys.has(key))
   manifestFastPathAudit.allClosedLotSidesCovered = everyMatchedLotSideCovered
+  // The current store reader deliberately exposes only fail-closed verified records. Therefore
+  // presence is a conservative lower bound here; it is never used to suppress recovery.
+  manifestFastPathAudit.allClosedLotSidesPresent = everyMatchedLotSideCovered
+  manifestFastPathAudit.allClosedLotSidesVerified = everyMatchedLotSideCovered
   if (everyMatchedLotSideCovered) {
     const beforeSells = sells.length
     for (let i = sells.length - 1; i >= 0; i--) {
@@ -2029,6 +2037,10 @@ export async function priceLotsForWallet(params: {
     structuralClosedLots: structuralMatchedLots.length,
     distinctTokensWithClosedLots: new Set(structuralMatchedLots.map((l) => `${l.chain}:${l.token.toLowerCase()}`)).size,
     fullyPricedClosedLots: bothPriced,
+    numericPricedClosedLots: bothPriced,
+    verifiedPricedClosedLots: bothPriced,
+    partialPricedClosedLots: entryOnlyPriced + exitOnlyPriced,
+    unresolvedVerifiedClosedLots: structuralMatchedLots.length - bothPriced,
     entryOnlyPriced,
     exitOnlyPriced,
     neitherPriced,

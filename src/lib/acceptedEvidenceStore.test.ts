@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildAcceptedEvidenceKey, buildAcceptedEvidenceEnvelope, isValidAcceptedEvidence,
+  classifyAcceptedEvidence,
   readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
   type AcceptedEvidenceBatchIdentity,
@@ -59,6 +60,15 @@ describe('acceptedEvidenceStore', () => {
     kv.store.set(buildAcceptedEvidenceKey(IDENTITY), { priceUsd: 'not-a-number' })
     assert.equal(await readAcceptedEvidence(kv, IDENTITY, 100), null)
     assert.equal(isValidAcceptedEvidence({ garbage: true }, IDENTITY, 100), false)
+  })
+
+  it('classifies the live 270-side shape without equating record presence to verification', () => {
+    const valid = buildAcceptedEvidenceEnvelope({ identity: IDENTITY, priceUsd: 1, valueUsd: 1, source: 'goldrush', evidenceType: 'historical', providerTimestampBucket: 1000, now: 0 })
+    const records = Array.from({ length: 270 }, (_, index) => index < 112 ? valid : { ...valid, priceUsd: 0, valueUsd: 0 })
+    const states = records.map((record) => classifyAcceptedEvidence(record, IDENTITY, 1))
+    assert.equal(states.filter((result) => result.state === 'verified_valid').length, 112)
+    assert.equal(states.filter((result) => result.reason === 'invalidPrice').length, 158)
+    assert.equal(states.length, 270, 'all records are present, but only canonical verified records cover requirements')
   })
 
   it('a KV read failure fails open — returns null, never throws', async () => {

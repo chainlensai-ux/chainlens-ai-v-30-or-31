@@ -81,6 +81,31 @@ export type AcceptedEvidenceKvLike = {
   set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown>
 }
 
+export type AcceptedEvidenceState =
+  | 'verified_valid'
+  | 'partial_unverified'
+  | 'invalid'
+  | 'stale'
+  | 'identity_mismatch'
+  | 'missing_metadata'
+  | 'absent'
+
+export type InvalidAcceptedEvidenceReason =
+  | 'missingSourceQuality'
+  | 'unverifiedSource'
+  | 'invalidPrice'
+  | 'missingTimestamp'
+  | 'temporalMismatch'
+  | 'identityMismatch'
+  | 'missingSchemaMetadata'
+  | 'other'
+
+export type AcceptedEvidenceClassification = {
+  state: AcceptedEvidenceState
+  reason: InvalidAcceptedEvidenceReason | null
+  envelope: AcceptedEvidenceEnvelope | null
+}
+
 // LOT IDENTITY VERSION, DISCLOSED: the same composite fields this codebase already uses for lot
 // equality elsewhere (pnlReconciliation.ts's own `lotKey`, scanDeterminismAudit.ts's
 // `lotIdentityKey`) plus `amount` — reused here for consistency, not reinvented.
@@ -101,19 +126,32 @@ function isFiniteNumber(v: unknown): v is number {
 // (never triggered by provider availability, cooldown state, or wall-clock time alone beyond the
 // bounded TTL expiry itself).
 export function isValidAcceptedEvidence(raw: unknown, expected: AcceptedEvidenceIdentity, now: number): raw is AcceptedEvidenceEnvelope {
-  if (!raw || typeof raw !== 'object') return false
+  return classifyAcceptedEvidence(raw, expected, now).state === 'verified_valid'
+}
+
+/** The single fail-closed definition used by persistence, fast-path suppression and hydration. */
+export function classifyAcceptedEvidence(raw: unknown, expected: AcceptedEvidenceIdentity, now: number): AcceptedEvidenceClassification {
+  if (raw == null) return { state: 'absent', reason: null, envelope: null }
+  if (typeof raw !== 'object') return { state: 'invalid', reason: 'other', envelope: null }
   const e = raw as Partial<AcceptedEvidenceEnvelope>
-  if (e.schemaVersion !== ACCEPTED_EVIDENCE_SCHEMA_VERSION) return false
-  if (e.chain !== expected.chain) return false
-  if (typeof e.token !== 'string' || e.token.toLowerCase() !== expected.token.toLowerCase()) return false
-  if (e.txHash !== expected.txHash) return false
-  if (e.side !== expected.side) return false
-  if (e.timestamp !== expected.timestamp) return false
-  if (e.lotIdentityVersion !== expected.lotIdentityVersion) return false
-  if (e.verificationStatus !== 'verified') return false
-  if (!isFiniteNumber(e.priceUsd)) return false
-  if (!isFiniteNumber(e.expiresAt) || e.expiresAt <= now) return false
-  return true
+  if (!isFiniteNumber(e.schemaVersion) || typeof e.valueType !== 'string') return { state: 'missing_metadata', reason: 'missingSchemaMetadata', envelope: null }
+  if (e.schemaVersion !== ACCEPTED_EVIDENCE_SCHEMA_VERSION) return { state: 'invalid', reason: 'missingSchemaMetadata', envelope: null }
+  if (e.chain !== expected.chain || typeof e.token !== 'string' || e.token.toLowerCase() !== expected.token.toLowerCase()
+    || e.txHash !== expected.txHash || e.side !== expected.side || e.lotIdentityVersion !== expected.lotIdentityVersion) {
+    return { state: 'identity_mismatch', reason: 'identityMismatch', envelope: null }
+  }
+  if (!isFiniteNumber(e.timestamp)) return { state: 'missing_metadata', reason: 'missingTimestamp', envelope: null }
+  if (e.timestamp !== expected.timestamp) return { state: 'identity_mismatch', reason: 'temporalMismatch', envelope: null }
+  if (e.verificationStatus !== 'verified') return { state: 'partial_unverified', reason: 'unverifiedSource', envelope: null }
+  if (typeof e.source !== 'string' || e.source.trim() === '' || typeof e.evidenceType !== 'string' || e.evidenceType.trim() === '') {
+    return { state: 'missing_metadata', reason: 'missingSourceQuality', envelope: null }
+  }
+  if (!isFiniteNumber(e.priceUsd) || e.priceUsd <= 0 || !isFiniteNumber(e.valueUsd) || e.valueUsd <= 0) {
+    return { state: 'invalid', reason: 'invalidPrice', envelope: null }
+  }
+  if (!isFiniteNumber(e.acceptedAt) || !isFiniteNumber(e.expiresAt)) return { state: 'missing_metadata', reason: 'missingSchemaMetadata', envelope: null }
+  if (e.expiresAt <= now) return { state: 'stale', reason: 'other', envelope: null }
+  return { state: 'verified_valid', reason: null, envelope: e as AcceptedEvidenceEnvelope }
 }
 
 // PARTIAL-FILL DISCOVERY READ, DISCLOSED, ADDITIVE (canonical-price-replay follow-up task).
@@ -135,17 +173,8 @@ export function isValidAcceptedEvidence(raw: unknown, expected: AcceptedEvidence
 export function isValidAcceptedEvidenceIgnoringLotVersion(raw: unknown, expected: Omit<AcceptedEvidenceIdentity, 'lotIdentityVersion'>, now: number): raw is AcceptedEvidenceEnvelope {
   if (!raw || typeof raw !== 'object') return false
   const e = raw as Partial<AcceptedEvidenceEnvelope>
-  if (e.schemaVersion !== ACCEPTED_EVIDENCE_SCHEMA_VERSION) return false
-  if (e.chain !== expected.chain) return false
-  if (typeof e.token !== 'string' || e.token.toLowerCase() !== expected.token.toLowerCase()) return false
-  if (e.txHash !== expected.txHash) return false
-  if (e.side !== expected.side) return false
-  if (e.timestamp !== expected.timestamp) return false
   if (typeof e.lotIdentityVersion !== 'string') return false
-  if (e.verificationStatus !== 'verified') return false
-  if (!isFiniteNumber(e.priceUsd)) return false
-  if (!isFiniteNumber(e.expiresAt) || e.expiresAt <= now) return false
-  return true
+  return classifyAcceptedEvidence(raw, { ...expected, lotIdentityVersion: e.lotIdentityVersion }, now).state === 'verified_valid'
 }
 
 export async function readAcceptedEvidenceAnyLotVersion(

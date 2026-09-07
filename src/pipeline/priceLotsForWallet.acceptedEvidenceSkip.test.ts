@@ -44,6 +44,27 @@ function buildLotEvents(index: number): { buy: NormalizedEvent; sell: Normalized
 }
 
 describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduction follow-up task)', () => {
+  it('does not let a present but invalid zero-value record suppress canonical recovery', async () => {
+    const now = 1_000_000
+    const lot = buildLotEvents(999)
+    const kv = fakeAcceptedEvidenceKv()
+    const identity = {
+      chain: lot.buy.chain, token: lot.buy.contract, txHash: lot.buy.txHash, side: 'entry' as const,
+      timestamp: Date.parse(lot.buy.timestamp),
+      lotIdentityVersion: lotIdentityVersion({
+        chain: lot.buy.chain, token: lot.buy.contract, openedTxHash: lot.buy.txHash,
+        closedTxHash: lot.sell.txHash, openedAt: Date.parse(lot.buy.timestamp),
+        closedAt: Date.parse(lot.sell.timestamp), amount: lot.buy.amount,
+      }),
+    }
+    const invalid = buildAcceptedEvidenceEnvelope({ identity, priceUsd: 1, valueUsd: 1, source: 'test', evidenceType: 'historical', providerTimestampBucket: identity.timestamp, now })
+    await kv.set(`v1:accepted-evidence:${identity.chain}:${identity.token.toLowerCase()}:${identity.txHash}:entry:${identity.timestamp}`, { ...invalid, priceUsd: 0, valueUsd: 0 })
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({ normalizedEvents: [lot.buy, lot.sell], recoveredEvents: [], priceSources: counting.sources, acceptedEvidenceKv: kv, now: () => now })
+    assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 0)
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesVerified, false)
+    assert.ok(counting.calls() > 0, 'invalid presence must fall through to stronger provider recovery')
+  })
   it('HARD ASSERTION (required regression #7): the same lot events run twice — second run with accepted evidence seeded from the first — makes zero provider calls for the accepted lot while an unresolved lot still calls providers normally, with fewer total calls overall', async () => {
     const acceptedLot = buildLotEvents(1)
     const unresolvedLot = buildLotEvents(2)
