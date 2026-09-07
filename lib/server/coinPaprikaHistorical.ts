@@ -52,8 +52,15 @@ export type CoinPaprikaAuditExample = {
 }
 
 export type CoinPaprikaHistoricalAudit = {
-  enabled: boolean; disabledReason?: string
+  enabled: boolean; configured: boolean; disabledReason?: string
+  budgetResolved: number; baseUrlMode: 'default' | 'custom'
   budgetMax: number; callsAttempted: number; callsSucceeded: number; callsFailed: number
+  unresolvedRequirementsReceived: number; closedLotRequirementsReceived: number
+  filteredDust: number; filteredSpam: number; filteredAirdrop: number; filteredNonTrade: number
+  filteredAcceptedEvidence: number; filteredStrongerEvidenceAvailable: number
+  filteredCannotCompleteLot: number; filteredUnsupportedChain: number; eligibleAfterFilters: number
+  identityLookupsAttempted: number; historicalRequestsPlanned: number
+  partialLotsAffected: number; firstDropStage: string | null; exactDropReason: string | null
   rawCandidates: number; dustFiltered: number; spamFiltered: number; airdropFiltered: number
   nonTradeFiltered: number; strongerEvidenceFiltered: number; noIdentityMatchFiltered: number
   eligibleRequirements: number; uniqueRequestsAfterDedupe: number; candidatesRanked: number
@@ -83,7 +90,10 @@ export function isCoinPaprikaEligible(r: CoinPaprikaRequirement): { eligible: bo
   if (r.distributionOnly) return { eligible: false, reason: 'distribution_only' }
   if (r.ordinaryTransferOnly) return { eligible: false, reason: 'ordinary_transfer_only' }
   if (!r.hasRealTradeEvidence) return { eligible: false, reason: 'no_real_trade_evidence' }
-  if (!r.canCompleteClosedLot || r.lotsCompletedIfResolved < 1) return { eligible: false, reason: 'cannot_complete_closed_lot' }
+  // A side belonging to a real closed lot remains eligible even when its opposite side is also
+  // unresolved. Requiring this one request, by itself, to complete a lot made pairs with two
+  // stronger-source failures impossible to recover: both sides were filtered before identity.
+  if (!r.canCompleteClosedLot) return { eligible: false, reason: 'cannot_complete_closed_lot' }
   if (!coinPaprikaPlatformForChain(r.chainId) || !/^0x[a-fA-F0-9]{40}$/.test(r.contractAddress)) return { eligible: false, reason: 'missing_chain_or_contract' }
   if (r.hasAcceptedEvidence) return { eligible: false, reason: 'accepted_evidence_exists' }
   if (!r.strongerSourcesExhausted) return { eligible: false, reason: 'stronger_sources_not_exhausted' }
@@ -101,9 +111,11 @@ function failure(audit: CoinPaprikaHistoricalAudit, reason: string) {
 
 function config() {
   const apiKey = process.env.COINPAPRIKA_API_KEY?.trim()
-  const baseUrl = (process.env.COINPAPRIKA_API_BASE_URL?.trim() || 'https://api-pro.coinpaprika.com/v1').replace(/\/$/, '')
+  const customBaseUrl = process.env.COINPAPRIKA_API_BASE_URL?.trim()
+  const baseUrl = (customBaseUrl || 'https://api-pro.coinpaprika.com/v1').replace(/\/$/, '')
   const configuredMax = Number.parseInt(process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN || '130', 10)
-  return { apiKey, baseUrl, max: Math.min(COINPAPRIKA_HARD_MAX_CALLS, Number.isFinite(configuredMax) && configuredMax >= 0 ? configuredMax : COINPAPRIKA_HARD_MAX_CALLS) }
+  const enabled = !['0', 'false', 'off'].includes((process.env.COINPAPRIKA_HISTORICAL_ENABLED ?? 'true').trim().toLowerCase())
+  return { apiKey, baseUrl, enabled, baseUrlMode: customBaseUrl ? 'custom' as const : 'default' as const, max: Math.min(COINPAPRIKA_HARD_MAX_CALLS, Number.isFinite(configuredMax) && configuredMax >= 0 ? configuredMax : COINPAPRIKA_HARD_MAX_CALLS) }
 }
 
 async function singleflight<T>(key: string, operation: () => Promise<T>): Promise<T> {
@@ -120,7 +132,13 @@ export async function resolveCoinPaprikaHistorical(
 ): Promise<{ evidence: Map<string, CoinPaprikaHistoricalEvidence>; audit: CoinPaprikaHistoricalAudit }> {
   const cfg = config()
   const audit: CoinPaprikaHistoricalAudit = {
-    enabled: Boolean(cfg.apiKey), budgetMax: cfg.max, callsAttempted: 0, callsSucceeded: 0, callsFailed: 0,
+    enabled: cfg.enabled, configured: Boolean(cfg.apiKey), budgetResolved: cfg.max, baseUrlMode: cfg.baseUrlMode,
+    budgetMax: cfg.max, callsAttempted: 0, callsSucceeded: 0, callsFailed: 0,
+    unresolvedRequirementsReceived: requirements.length, closedLotRequirementsReceived: requirements.length,
+    filteredDust: 0, filteredSpam: 0, filteredAirdrop: 0, filteredNonTrade: 0,
+    filteredAcceptedEvidence: 0, filteredStrongerEvidenceAvailable: 0, filteredCannotCompleteLot: 0,
+    filteredUnsupportedChain: 0, eligibleAfterFilters: 0, identityLookupsAttempted: 0,
+    historicalRequestsPlanned: 0, partialLotsAffected: 0, firstDropStage: null, exactDropReason: null,
     rawCandidates: requirements.length, dustFiltered: 0, spamFiltered: 0, airdropFiltered: 0, nonTradeFiltered: 0,
     strongerEvidenceFiltered: 0, noIdentityMatchFiltered: 0, eligibleRequirements: 0, uniqueRequestsAfterDedupe: 0,
     candidatesRanked: 0, identityResolved: 0, identityRejected: 0, pricesResolved: 0, pricesApplied: 0,
@@ -129,24 +147,33 @@ export async function resolveCoinPaprikaHistorical(
     failuresByReason: {}, examples: [],
   }
   const evidence = new Map<string, CoinPaprikaHistoricalEvidence>()
-  if (!cfg.apiKey) { audit.disabledReason = 'COINPAPRIKA_API_KEY_not_configured'; audit.stoppedBecauseNoCandidates = true; return { evidence, audit } }
-  if (options.canonicalGateSatisfied) { audit.stoppedBecauseGateReached = true; return { evidence, audit } }
+  const drop = (stage: string, reason: string) => { if (!audit.firstDropStage) { audit.firstDropStage = stage; audit.exactDropReason = reason } }
+  if (!cfg.enabled) { audit.disabledReason = 'COINPAPRIKA_HISTORICAL_ENABLED_false'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
+  if (!cfg.apiKey) { audit.disabledReason = 'COINPAPRIKA_API_KEY_not_configured'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
+  if (cfg.max === 0) { audit.stoppedBecauseBudget = true; failure(audit, 'budget_resolved_to_zero'); drop('configuration', 'budget_resolved_to_zero'); return { evidence, audit } }
+  if (options.canonicalGateSatisfied) { audit.stoppedBecauseGateReached = true; failure(audit, 'canonical_gate_already_satisfied'); drop('eligibility', 'canonical_gate_already_satisfied'); return { evidence, audit } }
 
   const eligible: CoinPaprikaRequirement[] = []
   for (const r of requirements) {
     const check = isCoinPaprikaEligible(r)
     if (check.eligible) eligible.push(r)
     else {
-      if (check.reason === 'dust_non_economic') audit.dustFiltered++
-      else if (check.reason === 'spam_suppressed') audit.spamFiltered++
-      else if (check.reason === 'airdrop_only') audit.airdropFiltered++
-      else if (check.reason?.startsWith('stronger') || check.reason === 'accepted_evidence_exists') audit.strongerEvidenceFiltered++
-      else audit.nonTradeFiltered++
+      if (check.reason === 'dust_non_economic') { audit.dustFiltered++; audit.filteredDust++ }
+      else if (check.reason === 'spam_suppressed') { audit.spamFiltered++; audit.filteredSpam++ }
+      else if (check.reason === 'airdrop_only') { audit.airdropFiltered++; audit.filteredAirdrop++ }
+      else if (check.reason === 'accepted_evidence_exists') audit.filteredAcceptedEvidence++
+      else if (check.reason === 'stronger_sources_not_exhausted') { audit.strongerEvidenceFiltered++; audit.filteredStrongerEvidenceAvailable++ }
+      else if (check.reason === 'cannot_complete_closed_lot') audit.filteredCannotCompleteLot++
+      else if (check.reason === 'missing_chain_or_contract') audit.filteredUnsupportedChain++
+      else { audit.nonTradeFiltered++; audit.filteredNonTrade++ }
+      failure(audit, check.reason ?? 'unknown_filter')
+      drop('eligibility', check.reason ?? 'unknown_filter')
     }
   }
   audit.eligibleRequirements = eligible.length
+  audit.eligibleAfterFilters = eligible.length
   audit.stoppedBecauseNoCandidates = eligible.length === 0
-  if (!eligible.length) return { evidence, audit }
+  if (!eligible.length) { drop('eligibility', requirements.length ? 'all_candidates_filtered' : 'zero_unresolved_requirements_received'); return { evidence, audit } }
   const ranked = rankCoinPaprikaRequirements(eligible)
   audit.candidatesRanked = ranked.length
   const fetcher = options.fetchImpl ?? fetch
@@ -178,6 +205,7 @@ export async function resolveCoinPaprikaHistorical(
     let identity = cachedIdentity && cachedIdentity.expiresAt > Date.now() ? cachedIdentity.value : undefined
     let requestMade = false
     if (!identity) {
+      audit.identityLookupsAttempted++
       identity = await singleflight(`identity:${identityKey}`, async () => {
         requestMade = true
         const result = await callJson(`${cfg.baseUrl}/contracts/${encodeURIComponent(platform)}/${encodeURIComponent(address)}`)
@@ -201,6 +229,7 @@ export async function resolveCoinPaprikaHistorical(
       })
     }
     if (identity.identityStatus !== 'verified' || !identity.coinPaprikaId) {
+      drop('identity', identity.identityReason)
       audit.identityRejected++; audit.noIdentityMatchFiltered++; failure(audit, identity.identityReason)
       audit.examples.push({ chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: null, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'rejected', requestMade, priceResolved: false, lotsCompleted: 0, dropStage: 'identity', dropReason: identity.identityReason })
       continue
@@ -212,6 +241,7 @@ export async function resolveCoinPaprikaHistorical(
     const requirementKey = `${identity.coinPaprikaId}:${day}`
     if (seen.has(requirementKey)) continue
     seen.add(requirementKey); audit.uniqueRequestsAfterDedupe++
+    audit.historicalRequestsPlanned++
     const cachedPrice = priceCache.get(requirementKey)
     let priced = cachedPrice && cachedPrice.expiresAt > Date.now() ? cachedPrice.value : undefined
     if (priced === undefined) {
@@ -239,7 +269,7 @@ export async function resolveCoinPaprikaHistorical(
       // Daily CoinPaprika candles are intentionally partial/unverified under the canonical
       // Wallet Scanner policy. They may make an estimate inspectable, but cannot increase the
       // verified-lot numerator or claim that the 50% gate was crossed.
-    }
+    } else drop('http', 'historical_price_unavailable')
     audit.examples.push({ chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: identity.coinPaprikaId, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'verified', requestMade, priceResolved: Boolean(priced), lotsCompleted: 0, dropStage: priced ? 'evidence_quality' : 'price', dropReason: priced ? 'daily_candle_partial_unverified' : 'historical_price_unavailable' })
   }
   audit.examples = audit.examples.slice(0, 20)
