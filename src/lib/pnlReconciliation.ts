@@ -1,5 +1,5 @@
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
-import { isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
+import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
@@ -398,6 +398,16 @@ export type AcceptedEvidenceAudit = {
   verifiedSidesSkippedUnverified: number
   verifiedSidesSkippedInvalid: number
   missingVerifiedEvidenceMetadata: number
+  invalidAcceptedEvidenceReasons?: {
+    missingSourceQuality: number
+    unverifiedSource: number
+    invalidPrice: number
+    missingTimestamp: number
+    temporalMismatch: number
+    identityMismatch: number
+    missingSchemaMetadata: number
+    other: number
+  }
   // CANONICAL-PRECEDENCE COUNTERS, DISCLOSED (hydration-timing-and-canonical-precedence follow-up
   // task, requirements #5/#6 — confirmed root cause: an already-upstream-priced side was previously
   // "protected from overwrite" by simply never being checked against accepted evidence at all, so a
@@ -464,6 +474,16 @@ export type PnlReconciliationSummary = {
   // rationale (confirmed production case: a bounded-sample wallet whose canonical and alternate
   // engines disagreed by ~68% while presenting a headline as if it were fully verified).
   pnlDiscrepancyAudit: PnlDiscrepancyAudit
+  pnlVerificationTransitionAudit?: {
+    structuralLots: number
+    earlyNumericPricedLots: number
+    earlyVerifiedLots: number
+    finalVerifiedLots: number
+    downgradedLotCount: number
+    downgradeReasons: Record<string, number>
+    examples: Array<{ lotId: string; token: string; earlyLotStatus: string; finalLotStatus: string; downgradeStage: string; downgradeReason: string }>
+    invariantFailures: string[]
+  }
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -657,6 +677,10 @@ export function createPnlReconciliation(config: Config = {}) {
       verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
       verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
       missingVerifiedEvidenceMetadata: 0,
+      invalidAcceptedEvidenceReasons: {
+        missingSourceQuality: 0, unverifiedSource: 0, invalidPrice: 0, missingTimestamp: 0,
+        temporalMismatch: 0, identityMismatch: 0, missingSchemaMetadata: 0, other: 0,
+      },
       acceptedSidesRequestedBeforePricing: 0, acceptedSidesLoadedBeforePricing: 0, acceptedSidesAppliedBeforePricing: 0,
       upstreamLookupsSkippedByAcceptedEvidence: 0, upstreamPricesMatchingAcceptedEvidence: 0,
       upstreamPricesRejectedDueToAcceptedEvidence: 0, acceptedEvidenceIdentityMisses: 0,
@@ -1104,13 +1128,21 @@ export function createPnlReconciliation(config: Config = {}) {
     for (const lot of lots) {
       audit.matchedLotSidesTotal += 2
       if (!isCanonicalVerifiedLotForPnl(lot)) { audit.verifiedSidesSkippedUnverified += 2; continue }
-      if (!isStructurallyValidLot(lot)) { audit.verifiedSidesSkippedInvalid += 2; continue }
+      if (!isStructurallyValidLot(lot)) {
+        audit.verifiedSidesSkippedInvalid += 2
+        audit.invalidAcceptedEvidenceReasons!.identityMismatch += 2
+        continue
+      }
       const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; price: number | null }> = [
         { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, price: lot.costBasisUsd },
         { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, price: lot.proceedsUsd },
       ]
       for (const s of sides) {
-        if (!isPersistablePrice(s.price)) { audit.verifiedSidesSkippedInvalid += 1; continue }
+        if (!isPersistablePrice(s.price)) {
+          audit.verifiedSidesSkippedInvalid += 1
+          audit.invalidAcceptedEvidenceReasons!.invalidPrice += 1
+          continue
+        }
         audit.verifiedSidesEligibleForPersistence += 1
         addToGroup(lot, s.side, s.txHash, s.timestamp, s.price)
       }
@@ -1267,6 +1299,7 @@ export function createPnlReconciliation(config: Config = {}) {
         verifiedSidesSkippedUnverified: seeding.verifiedSidesSkippedUnverified,
         verifiedSidesSkippedInvalid: seeding.verifiedSidesSkippedInvalid,
         missingVerifiedEvidenceMetadata: seeding.missingVerifiedEvidenceMetadata,
+        invalidAcceptedEvidenceReasons: seeding.invalidAcceptedEvidenceReasons,
       }
       // PRODUCTION SAFETY WARNING, DISCLOSED (requirement #10): real verified sides exist
       // (updatedFifoLots has at least one verified lot) but NEITHER the hydration pass found any
@@ -1737,6 +1770,35 @@ export function createPnlReconciliation(config: Config = {}) {
         unmatchedSellEvents: input.fifoEngineResult.unmatchedSellEvents,
       })
 
+      const earlyVerifiedSet = new Set(consistentFifoLots.filter(isCanonicalVerifiedLotForPnl).map(lotKey))
+      const finalVerifiedSet = new Set(publishedFifoLots.filter(isCanonicalVerifiedLotForPnl).map(lotKey))
+      const downgraded = consistentFifoLots.filter((lot) => earlyVerifiedSet.has(lotKey(lot)) && !finalVerifiedSet.has(lotKey(lot)))
+      const downgradeReasons: Record<string, number> = {}
+      for (const lot of downgraded) {
+        const finalLot = publishedFifoLots.find((candidate) => lotKey(candidate) === lotKey(lot))
+        const reason = finalLot ? (canonicalVerifiedRejectionReason(finalLot) ?? 'canonical_sample_withheld') : 'canonical_sample_withheld'
+        downgradeReasons[reason] = (downgradeReasons[reason] ?? 0) + 1
+      }
+      const invariantFailures: string[] = []
+      if (finalVerifiedSet.size > earlyVerifiedSet.size) invariantFailures.push('final_verified_exceeds_early_verified')
+      if (canonicalSampleSelection?.manifestApplied === true && publicPnlGateAudit.excludedUnpricedLotCount > 0) {
+        invariantFailures.push('manifest_all_verified_but_final_missing_price')
+      }
+      const pnlVerificationTransitionAudit = {
+        structuralLots: fifoLots.length,
+        earlyNumericPricedLots: consistentFifoLots.filter((lot) => Number.isFinite(lot.costBasisUsd) && Number.isFinite(lot.proceedsUsd)).length,
+        earlyVerifiedLots: earlyVerifiedSet.size,
+        finalVerifiedLots: finalVerifiedSet.size,
+        downgradedLotCount: downgraded.length,
+        downgradeReasons,
+        examples: downgraded.slice(0, 10).map((lot) => ({
+          lotId: lot.lotId, token: lot.token, earlyLotStatus: 'verified', finalLotStatus: 'unverified',
+          downgradeStage: 'canonical_reconciliation', downgradeReason: Object.keys(downgradeReasons)[0] ?? 'canonical_sample_withheld',
+        })),
+        invariantFailures,
+      }
+      if (invariantFailures.length > 0) logger.warn('CRITICAL pnl_verification_invariant_failure', pnlVerificationTransitionAudit)
+
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
         unmatchedBuys: correctedUnmatchedBuys,
@@ -1755,6 +1817,7 @@ export function createPnlReconciliation(config: Config = {}) {
         acceptedEvidenceAudit,
         publishedMatchedLots: publishedFifoLots,
         pnlDiscrepancyAudit,
+        pnlVerificationTransitionAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

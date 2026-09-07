@@ -29,6 +29,7 @@ export type CanonicalVerifiedRejectionReason =
   | 'missing_proceeds'
   | 'missing_realized_pnl'
   | 'non_finite_value'
+  | 'non_positive_price'
   | 'invalid_chronology'
 
 export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRejectionReason[] = [
@@ -37,6 +38,7 @@ export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRej
   'missing_proceeds',
   'missing_realized_pnl',
   'non_finite_value',
+  'non_positive_price',
   'invalid_chronology',
 ]
 
@@ -66,6 +68,7 @@ export function canonicalVerifiedRejectionReason(lot: PublishableLot): Canonical
   if (lot.proceedsUsd === null) return 'missing_proceeds'
   if (lot.realizedPnlUsd === null) return 'missing_realized_pnl'
   if (!Number.isFinite(lot.costBasisUsd) || !Number.isFinite(lot.proceedsUsd) || !Number.isFinite(lot.realizedPnlUsd)) return 'non_finite_value'
+  if (lot.costBasisUsd <= 0 || lot.proceedsUsd <= 0) return 'non_positive_price'
   return null
 }
 
@@ -84,6 +87,7 @@ export function emptyCanonicalVerifiedPredicateReasonCounts(): CanonicalVerified
     missing_proceeds: 0,
     missing_realized_pnl: 0,
     non_finite_value: 0,
+    non_positive_price: 0,
     invalid_chronology: 0,
   }
 }

@@ -147,6 +147,7 @@ function classifyMissingLot(lot: MatchedLot): CoverageMissingLotReason | null {
     case 'missing_proceeds': return 'missing_exit_sell'
     case 'missing_realized_pnl': return 'missing_price'
     case 'non_finite_value': return 'missing_price'
+    case 'non_positive_price': return 'missing_price'
     // Both sides present and finite but the lot is still not marked verified — the remaining
     // difference is a pricing-quality judgement made upstream, not a structural gap.
     case 'evidence_quality_not_verified': return 'missing_price'
