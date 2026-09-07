@@ -628,6 +628,10 @@ test('HARD ASSERTION (production reproduction): a page-capped-but-healthy fetch 
   assert.equal(audit.unknownSells, 5)
   assert.equal(audit.structurallyInvalidOrUnknownSells, 5)
   assert.equal(audit.structuralCoverageDenominator, 23 + 0 + 5)
+  assert.equal(audit.boundaryProofDiagnostics.boundaryRequiredSells.length, 110)
+  assert.ok(audit.boundaryProofDiagnostics.boundaryRequiredSells.every((sell) => sell.reason === 'history_truncated_at_provider'))
+  assert.equal(audit.boundaryProofDiagnostics.boundaryIndependentSells.length, 5)
+  assert.ok(audit.boundaryProofDiagnostics.boundaryIndependentSells.every((sell) => sell.reason === 'earlier_buy_in_window'))
 })
 
 test('HARD ASSERTION: a genuine provider failure (partial) still hard-blocks even when a provider also happens to be at its event cap', () => {
@@ -654,6 +658,8 @@ test('a short real wallet history (no cap, no failure, boundary genuinely not re
   assert.equal(audit.boundedSampleWindowSafe, false)
   assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
   assert.equal(audit.unknownSells, 115)
+  assert.equal(audit.boundaryProofDiagnostics.boundaryRequiredSells.length, 110)
+  assert.equal(audit.boundaryProofDiagnostics.boundaryIndependentSells.length, 5)
 })
 
 test('a genuinely exhaustive fetch (no cap, no failure, boundary reached) is unaffected by this task — byte-for-byte prior behavior', () => {

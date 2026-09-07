@@ -2123,6 +2123,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // itself makes ZERO new provider calls.
   let canonicalNormalizedEvents: NormalizedEvent[] = normalizedEvents
   let receiptSwapPromotionResult: ReturnType<typeof promoteVerifiedReceiptSwaps> | null = null
+  let receiptPromotionFifoBefore: FifoOutput | null = null
   // PERF-SPRINT TASK, DISCLOSED: `receiptSwapCanonicalPromotionEnabled` is now declared earlier
   // (before the shadow receipt-decode block above), same value, same env var — reused here rather
   // than re-read, so there is exactly one source of truth for this flag within one scan.
@@ -2285,6 +2286,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
         })
       : fifoAndPnl
+    receiptPromotionFifoBefore = beforePromotion
     const verifiedCoverage = (matchedLots: typeof fifoAndPnl.matchedLots) =>
       matchedLots.length === 0 ? 0 : matchedLots.filter((l) => l.evidenceQuality === 'verified').length / matchedLots.length
     // eslint-disable-next-line no-console
@@ -3094,6 +3096,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       // classification/join pass is exonerated and the boundary flag is the entire cause.
       sellsBlockedSolelyByUnprovenBoundary: boundaryDiag.sellsBlockedSolelyByUnprovenBoundary,
       sellsWithEarlierBuyInWindow: boundaryDiag.sellsWithEarlierBuyInWindow,
+      boundaryRequiredSells: boundaryDiag.boundaryRequiredSells,
+      boundaryIndependentSells: boundaryDiag.boundaryIndependentSells,
       earliestFetchedEventTimestamp: boundaryDiag.earliestFetchedEventTimestamp,
       latestFetchedEventTimestamp: boundaryDiag.latestFetchedEventTimestamp,
       boundaryThresholdTimestamp: boundaryDiag.boundaryThresholdTimestamp,
@@ -3444,6 +3448,29 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     canonicalSampleSelector,
   })
+  // RECEIPT COMPLETION OUTCOME, DISCLOSED: one final gate-level before/after record. Unlike the
+  // earlier decoder/FIFO diagnostics, the after-side here is the reconciler's official public gate
+  // view, so recovered exact exits can be traced all the way through structural lots, canonical
+  // verification, genuine unmatched evidence, and the unchanged blocker thresholds.
+  if (receiptSwapCanonicalPromotionEnabled) {
+    const before = receiptPromotionFifoBefore ?? fifoAndPnl
+    const gate = reconciledPnlSummary.publicPnlGateAudit
+    // eslint-disable-next-line no-console
+    console.warn('[receipt-completion-gate-outcome]', {
+      before: {
+        verifiedLotCount: before.matchedLots.filter((lot) => lot.evidenceQuality === 'verified').length,
+        structuralClosedLots: before.matchedLots.length,
+        unmatchedSellCount: before.unmatchedSells,
+      },
+      after: {
+        verifiedLotCount: gate.verifiedClosedLots,
+        structuralClosedLots: gate.structuralClosedLots,
+        unmatchedSellCount: fifoAndPnl.unmatchedSells,
+        genuineUnmatchedSells: gate.genuineUnmatchedSells,
+        blockingReasons: gate.blockingReasons,
+      },
+    })
+  }
   // eslint-disable-next-line no-console
   console.warn('[pipeline] canonicalSampleManifestAudit', canonicalSampleManifestAudit)
   // ONE CANONICAL ARRAY, DISCLOSED (requirement #5/#10). CONFIRMED PRODUCTION BUG FIXED HERE: this

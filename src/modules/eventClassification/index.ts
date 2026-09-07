@@ -604,6 +604,11 @@ export type WindowBoundaryProofDiagnostics = {
   classifiedEventsConsidered: number
   sellsBlockedSolelyByUnprovenBoundary: number
   sellsWithEarlierBuyInWindow: number
+  // Per-sell audit: boundary-required exits are separated from sells whose failure is independent
+  // of the fetch boundary. These identifiers are public chain data and keep the gate attributable
+  // without changing any unmatched-sell decision.
+  boundaryRequiredSells: Array<{ chain: string; txHash: string; token: string; reason: 'history_truncated_at_provider' | 'window_boundary_unproven' }>
+  boundaryIndependentSells: Array<{ chain: string; txHash: string; token: string; reason: 'earlier_buy_in_window' | 'identity_join_failed' }>
 }
 
 const DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000
@@ -691,10 +696,17 @@ export function computeUnmatchedEvidenceAudit(
   // which branch is taken — see WindowBoundaryProofDiagnostics' own header.
   let sellsBlockedSolelyByUnprovenBoundary = 0
   let sellsWithEarlierBuyInWindow = 0
+  const boundaryRequiredSells: WindowBoundaryProofDiagnostics['boundaryRequiredSells'] = []
+  const boundaryIndependentSells: WindowBoundaryProofDiagnostics['boundaryIndependentSells'] = []
   const transferDistributionSells: Partial<Record<EventClassification, number>> = {}
   for (const identity of unmatchedSellEvents) {
     const resolved = resolveJoin(identity)
-    if (resolved === null) { unknownSells += 1; joinFailures += 1; continue }
+    if (resolved === null) {
+      unknownSells += 1
+      joinFailures += 1
+      boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'identity_join_failed' })
+      continue
+    }
     if (!isTradeEligibleBuyClassification(resolved)) {
       transferDistributionSells[resolved] = (transferDistributionSells[resolved] ?? 0) + 1
       continue
@@ -708,6 +720,7 @@ export function computeUnmatchedEvidenceAudit(
     if (earlierBuyExists) {
       unknownSells += 1
       sellsWithEarlierBuyInWindow += 1
+      boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'earlier_buy_in_window' })
     } else if (historyCoverageStatus === 'exhaustive') {
       // Only status that may grant a full, proven classification — unchanged from before this task.
       preWindowInventoryExits += 1
@@ -716,12 +729,14 @@ export function computeUnmatchedEvidenceAudit(
       // no longer collapses this whole population into `unknown`/hard-blocking — disclosed
       // separately, excluded from the blocking denominator below, never claimed as proven.
       preWindowInventoryExitsUnprovenDueToTruncation += 1
+      boundaryRequiredSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'history_truncated_at_provider' })
     } else {
       // 'partial' (a genuine provider failure) or 'unknown' (short real history / no timestamped
       // evidence) — fail closed exactly as before this task: cannot prove either a bounded-history
       // gap or a structural defect, stays `unknown` and continues blocking.
       unknownSells += 1
       sellsBlockedSolelyByUnprovenBoundary += 1
+      boundaryRequiredSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'window_boundary_unproven' })
     }
   }
 
@@ -763,6 +778,8 @@ export function computeUnmatchedEvidenceAudit(
       classifiedEventsConsidered: timestampedEventsConsidered,
       sellsBlockedSolelyByUnprovenBoundary,
       sellsWithEarlierBuyInWindow,
+      boundaryRequiredSells,
+      boundaryIndependentSells,
     },
   }
 }
