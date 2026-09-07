@@ -59,6 +59,57 @@ function withheld(l: MatchedLot): MatchedLot {
 }
 
 describe('pnlReconciliation — canonical sample selector (requirements #4/#5/#6)', () => {
+  it('does not reclassify selected verified lots after candidate-only lots are withheld', async () => {
+    const verified = Array.from({ length: 25 }, (_, i) => lot({
+      lotId: `verified-${i}`, token: `0xverified${i < 22 ? i : i - 22}`,
+      openedTxHash: `0xbuy${i < 22 ? i : i - 22}`, closedTxHash: `0xsell${i}`,
+      openedAt: 100 + (i < 22 ? i : i - 22), closedAt: 200 + i,
+      costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2,
+    }))
+    const missing = Array.from({ length: 108 }, (_, i) => lot({
+      lotId: `missing-${i}`, token: `0xmissing${i}`, openedTxHash: `0xmbuy${i}`, closedTxHash: `0xmsell${i}`,
+      openedAt: 300 + i, closedAt: 500 + i, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const zero = Array.from({ length: 2 }, (_, i) => lot({
+      lotId: `zero-${i}`, token: `0xzero${i}`, openedTxHash: `0xzbuy${i}`, closedTxHash: `0xzsell${i}`,
+      openedAt: 700 + i, closedAt: 800 + i, costBasisUsd: 0, proceedsUsd: 12, realizedPnlUsd: 12,
+    }))
+    const selectedIds = new Set(verified.slice(0, 22).map((item) => item.lotId))
+    const summary = await createPnlReconciliation({ logger: quiet }).reconcile({
+      fifoEngineResult: fifo([...verified, ...missing, ...zero]), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null,
+      canonicalSampleSelector: async (reconciled) => ({
+        publishedLots: reconciled.map((item) => selectedIds.has(item.lotId) ? item : {
+          ...item, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' as const,
+        }),
+        forcePublicPnlUnavailable: false, manifestApplied: true,
+      }),
+    })
+
+    assert.equal(summary.publishedMatchedLots.length, 135)
+    assert.equal(summary.publicPnlGateAudit.verifiedLotCount, 22, 'the canonical 22 must not collapse to zero')
+    assert.equal(summary.realizedPnlUsd, 44)
+    assert.equal(summary.publishedMatchedLots.some((item) => item.lotId.startsWith('zero-') && isCanonicalVerifiedLotForPnl(item)), false)
+    const audit = summary.canonicalVerificationConsistencyAudit!
+    assert.deepEqual({
+      pricingStageVerifiedLots: audit.pricingStageVerifiedLots,
+      canonicalSelectionVerifiedLots: audit.canonicalSelectionVerifiedLots,
+      reconciliationVerifiedLots: audit.reconciliationVerifiedLots,
+      finalPublicVerifiedLots: audit.finalPublicVerifiedLots,
+    }, { pricingStageVerifiedLots: 25, canonicalSelectionVerifiedLots: 22, reconciliationVerifiedLots: 22, finalPublicVerifiedLots: 22 })
+    assert.deepEqual(audit.droppedAtSelection, ['verified-22', 'verified-23', 'verified-24'])
+    assert.deepEqual(audit.droppedAtReconciliation, [])
+    assert.deepEqual(audit.droppedAtPublicGate, [])
+    assert.deepEqual(audit.invariantFailures, [])
+    const dropped = audit.examples.find((item) => item.lotId === 'verified-22')
+    assert.equal(dropped?.firstDowngradeStage, 'canonical_selection')
+    assert.equal(dropped?.exactDowngradeReason, 'evidence_quality_not_verified')
+    assert.deepEqual(dropped?.expectedMetadata, { evidenceQuality: 'verified' })
+    assert.deepEqual(dropped?.actualMetadata, { evidenceQuality: 'unpriced' })
+    const survivor = audit.examples.find((item) => item.lotId === 'verified-0')
+    assert.equal(survivor?.afterCanonicalSelection.verified, true)
+    assert.equal(survivor?.afterReconciliation.verified, true)
+    assert.equal(survivor?.finalGateVerified, true)
+  })
   it('with no selector wired, behavior is unchanged — the full candidate sample is published', async () => {
     const lots = productionShapedLots()
     const r = createPnlReconciliation({ logger: quiet })
