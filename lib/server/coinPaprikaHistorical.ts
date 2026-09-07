@@ -1,5 +1,6 @@
 export const COINPAPRIKA_HARD_MAX_CALLS = 130
 const DAY_SECONDS = 86_400
+const FREE_HISTORY_DAYS = 365
 const POSITIVE_TTL_MS = 6 * 60 * 60 * 1000
 const NEGATIVE_TTL_MS = 15 * 60 * 1000
 
@@ -39,9 +40,11 @@ export type CoinPaprikaHistoricalEvidence = {
   interval: '1d'
   requestedTimestamp: string
   resolvedTimestamp: string
+  returnedTimestamp: string
   priceUsd: number
   identityProof: CoinPaprikaIdentity
   timeDistance: number
+  deltaSeconds: number
   evidenceStatus: 'partial_unverified'
 }
 
@@ -61,6 +64,8 @@ export type CoinPaprikaHistoricalAudit = {
   filteredAcceptedEvidence: number; filteredStrongerEvidenceAvailable: number
   filteredCannotCompleteLot: number; filteredUnsupportedChain: number; eligibleAfterFilters: number
   identityLookupsAttempted: number; historicalRequestsPlanned: number
+  historicalEndpointUsed: 'ticker_historical_free' | 'ohlcv_historical_paid'
+  freeHistoryRequests: number; paidHistoryRequests: number; freeHistoryOutOfRange: number
   partialLotsAffected: number; firstDropStage: string | null; exactDropReason: string | null
   rawCandidates: number; dustFiltered: number; spamFiltered: number; airdropFiltered: number
   nonTradeFiltered: number; strongerEvidenceFiltered: number; noIdentityMatchFiltered: number
@@ -152,6 +157,8 @@ export async function resolveCoinPaprikaHistorical(
     filteredAcceptedEvidence: 0, filteredStrongerEvidenceAvailable: 0, filteredCannotCompleteLot: 0,
     filteredUnsupportedChain: 0, eligibleAfterFilters: 0, identityLookupsAttempted: 0,
     historicalRequestsPlanned: 0, partialLotsAffected: 0, firstDropStage: null, exactDropReason: null,
+    historicalEndpointUsed: cfg.mode === 'keyless_free' ? 'ticker_historical_free' : 'ohlcv_historical_paid',
+    freeHistoryRequests: 0, paidHistoryRequests: 0, freeHistoryOutOfRange: 0,
     rawCandidates: requirements.length, dustFiltered: 0, spamFiltered: 0, airdropFiltered: 0, nonTradeFiltered: 0,
     strongerEvidenceFiltered: 0, noIdentityMatchFiltered: 0, eligibleRequirements: 0, uniqueRequestsAfterDedupe: 0,
     candidatesRanked: 0, identityResolved: 0, identityRejected: 0, pricesResolved: 0, pricesApplied: 0,
@@ -224,8 +231,8 @@ export async function resolveCoinPaprikaHistorical(
         requestMade = true
         const result = await callJson(`${cfg.baseUrl}/contracts/${encodeURIComponent(platform)}/${encodeURIComponent(address)}`)
         if (result.reason) {
-          failure(audit, result.reason)
-          const rejected: CoinPaprikaIdentity = { chainId: r.chainId, contractAddress: address, coinPaprikaId: null, platform, identityStatus: 'rejected', identityReason: result.reason }
+          const identityReason = result.reason === 'not_found_404' ? 'identity_not_found' : result.reason
+          const rejected: CoinPaprikaIdentity = { chainId: r.chainId, contractAddress: address, coinPaprikaId: null, platform, identityStatus: 'rejected', identityReason }
           if (result.reason === 'not_found_404') identityCache.set(identityKey, { value: rejected, expiresAt: Date.now() + NEGATIVE_TTL_MS })
           return rejected
         }
@@ -256,25 +263,42 @@ export async function resolveCoinPaprikaHistorical(
     if (seen.has(requirementKey)) continue
     seen.add(requirementKey); audit.uniqueRequestsAfterDedupe++
     audit.historicalRequestsPlanned++
-    const cachedPrice = priceCache.get(requirementKey)
+    const priceCacheKey = `${cfg.mode}:${requirementKey}`
+    const cachedPrice = priceCache.get(priceCacheKey)
     let priced = cachedPrice && cachedPrice.expiresAt > Date.now() ? cachedPrice.value : undefined
     if (priced === undefined) {
-      priced = await singleflight(`price:${requirementKey}`, async () => {
-        requestMade = true
+      priced = await singleflight(`price:${priceCacheKey}`, async () => {
         const end = new Date(requestedMs + DAY_SECONDS * 1000).toISOString().slice(0, 10)
-        const result = await callJson(`${cfg.baseUrl}/coins/${encodeURIComponent(identity!.coinPaprikaId!)}/ohlcv/historical?start=${day}&end=${end}&interval=1d`)
+        if (cfg.mode === 'keyless_free' && requestedMs < Date.now() - FREE_HISTORY_DAYS * DAY_SECONDS * 1000) {
+          audit.freeHistoryOutOfRange++
+          failure(audit, 'free_history_out_of_range')
+          drop('price', 'coinpaprika_free_history_out_of_range')
+          return null
+        }
+        const historicalUrl = cfg.mode === 'keyless_free'
+          ? `${cfg.baseUrl}/tickers/${encodeURIComponent(identity!.coinPaprikaId!)}/historical?start=${day}&end=${end}&interval=1d`
+          : `${cfg.baseUrl}/coins/${encodeURIComponent(identity!.coinPaprikaId!)}/ohlcv/historical?start=${day}&end=${end}&interval=1d`
+        requestMade = true
+        if (cfg.mode === 'keyless_free') audit.freeHistoryRequests++
+        else audit.paidHistoryRequests++
+        const result = await callJson(historicalUrl)
         if (result.reason) { failure(audit, result.reason); return null }
         const rows = Array.isArray(result.json) ? result.json as Record<string, unknown>[] : []
-        if (!rows.length) { failure(audit, 'empty_series'); priceCache.set(requirementKey, { value: null, expiresAt: Date.now() + NEGATIVE_TTL_MS }); return null }
-        const row = rows[0]
-        const resolvedTimestamp = String(row.time_open ?? row.time_close ?? '')
+        if (!rows.length) { failure(audit, 'historical_price_unavailable'); priceCache.set(priceCacheKey, { value: null, expiresAt: Date.now() + NEGATIVE_TTL_MS }); return null }
+        const timestampFor = (row: Record<string, unknown>) => String(cfg.mode === 'keyless_free' ? row.timestamp ?? '' : row.time_open ?? row.time_close ?? '')
+        const row = cfg.mode === 'keyless_free' ? rows.reduce((nearest, candidate) => {
+          const nearestDelta = Math.abs(Date.parse(timestampFor(nearest)) - requestedMs)
+          const candidateDelta = Math.abs(Date.parse(timestampFor(candidate)) - requestedMs)
+          return Number.isFinite(candidateDelta) && (!Number.isFinite(nearestDelta) || candidateDelta < nearestDelta) ? candidate : nearest
+        }) : rows[0]
+        const resolvedTimestamp = timestampFor(row)
         const resolvedMs = Date.parse(resolvedTimestamp)
-        const priceUsd = Number(row.close)
+        const priceUsd = Number(cfg.mode === 'keyless_free' ? row.price : row.close)
         const deltaSeconds = Math.abs(resolvedMs - requestedMs) / 1000
-        if (!Number.isFinite(resolvedMs) || deltaSeconds > DAY_SECONDS) { failure(audit, 'timestamp_outside_daily_window'); return null }
+        if (!Number.isFinite(resolvedMs) || deltaSeconds > DAY_SECONDS) { failure(audit, 'timestamp_mismatch'); return null }
         if (!Number.isFinite(priceUsd) || priceUsd <= 0) { failure(audit, 'invalid_price'); return null }
-        const ev: CoinPaprikaHistoricalEvidence = { source: 'coinpaprika_historical', coinPaprikaId: identity!.coinPaprikaId!, interval: '1d', requestedTimestamp: r.timestamp, resolvedTimestamp, priceUsd, identityProof: identity!, timeDistance: deltaSeconds, evidenceStatus: 'partial_unverified' }
-        priceCache.set(requirementKey, { value: ev, expiresAt: Date.now() + POSITIVE_TTL_MS })
+        const ev: CoinPaprikaHistoricalEvidence = { source: 'coinpaprika_historical', coinPaprikaId: identity!.coinPaprikaId!, interval: '1d', requestedTimestamp: r.timestamp, resolvedTimestamp, returnedTimestamp: resolvedTimestamp, priceUsd, identityProof: identity!, timeDistance: deltaSeconds, deltaSeconds, evidenceStatus: 'partial_unverified' }
+        priceCache.set(priceCacheKey, { value: ev, expiresAt: Date.now() + POSITIVE_TTL_MS })
         return ev
       })
     }

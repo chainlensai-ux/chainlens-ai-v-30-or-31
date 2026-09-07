@@ -117,6 +117,71 @@ test('exact contract identity and daily timestamp produce partial evidence; dupl
   assert.equal(evidence.evidenceStatus, 'partial_unverified')
   assert.equal(result.audit.lotsCompleted, 0)
   assert.equal(result.audit.coverageAfter, result.audit.coverageBefore)
+  assert.equal(result.audit.historicalEndpointUsed, 'ohlcv_historical_paid')
+  assert.equal(result.audit.paidHistoryRequests, 1)
+  assert.equal(result.audit.freeHistoryRequests, 0)
+})
+
+test('keyless Free mode uses ticker history, parses price, and coalesces a coin/day', async () => {
+  clearCoinPaprikaCachesForTests(); delete process.env.COINPAPRIKA_API_KEY
+  delete process.env.COINPAPRIKA_API_BASE_URL
+  const requestedDay = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10)
+  const requestedTimestamp = `${requestedDay}T10:00:00Z`
+  const returnedTimestamp = `${requestedDay}T00:00:00Z`
+  const urls: string[] = []
+  const headers: HeadersInit[] = []
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input); urls.push(url); headers.push(init?.headers ?? {})
+    if (url.includes('/contracts/')) return Response.json({ id: 'same-coin', platform_id: 'base-base', contract_address: ADDRESS })
+    return Response.json([
+      { timestamp: new Date(Date.parse(returnedTimestamp) + 86_400_000).toISOString(), price: 9, close: 999 },
+      { timestamp: returnedTimestamp, price: 2.5, close: 999, volume_24h: 10, market_cap: 20 },
+    ])
+  }
+  const result = await resolveCoinPaprikaHistorical([
+    requirement({ timestamp: requestedTimestamp }),
+    requirement({ timestamp: requestedTimestamp }),
+  ], { fetchImpl })
+  const historicalUrls = urls.filter((url) => url.includes('/historical'))
+  assert.equal(historicalUrls.length, 1)
+  assert.match(historicalUrls[0], /\/v1\/tickers\/same-coin\/historical\?start=\d{4}-\d{2}-\d{2}&end=\d{4}-\d{2}-\d{2}&interval=1d$/)
+  assert.equal(urls.some((url) => url.includes('/ohlcv/historical')), false)
+  assert.equal(headers.some((value) => new Headers(value).has('Authorization')), false)
+  const evidence = [...result.evidence.values()][0]
+  assert.equal(evidence.priceUsd, 2.5)
+  assert.equal(evidence.returnedTimestamp, returnedTimestamp)
+  assert.equal(evidence.deltaSeconds, 36_000)
+  assert.equal(result.audit.historicalEndpointUsed, 'ticker_historical_free')
+  assert.equal(result.audit.freeHistoryRequests, 1)
+  assert.equal(result.audit.paidHistoryRequests, 0)
+  assert.equal(result.audit.uniqueRequestsAfterDedupe, 1)
+})
+
+test('keyless Free mode explicitly rejects requests outside its rolling history window', async () => {
+  clearCoinPaprikaCachesForTests(); delete process.env.COINPAPRIKA_API_KEY
+  let historicalCalls = 0
+  const result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl: async (input) => {
+    if (String(input).includes('/historical')) historicalCalls++
+    return Response.json({ id: 'same-coin', platform_id: 'base-base', contract_address: ADDRESS })
+  } })
+  assert.equal(historicalCalls, 0)
+  assert.equal(result.audit.freeHistoryOutOfRange, 1)
+  assert.equal(result.audit.failuresByReason.free_history_out_of_range, 1)
+  assert.equal(result.audit.exactDropReason, 'coinpaprika_free_history_out_of_range')
+  assert.equal(result.evidence.size, 0)
+})
+
+test('HTTP 402 remains explicitly classified and produces no historical evidence', async () => {
+  clearCoinPaprikaCachesForTests(); delete process.env.COINPAPRIKA_API_KEY
+  const timestamp = new Date(Date.now() - 10 * 86_400_000).toISOString()
+  const result = await resolveCoinPaprikaHistorical([requirement({ timestamp })], { fetchImpl: async (input) =>
+    String(input).includes('/contracts/')
+      ? Response.json({ id: 'same-coin', platform_id: 'base-base', contract_address: ADDRESS })
+      : new Response('', { status: 402 })
+  })
+  assert.equal(result.audit.failuresByReason.http_402, 1)
+  assert.equal(result.audit.freeHistoryRequests, 1)
+  assert.equal(result.evidence.size, 0)
 })
 
 test('same ticker cannot bypass wrong contract or wrong chain identity', async () => {
@@ -135,7 +200,7 @@ test('current or far-away prices are never accepted as historical', async () => 
     : Response.json([{ time_open: '2026-09-07T00:00:00Z', close: 999 }])
   const result = await resolveCoinPaprikaHistorical([requirement()], { fetchImpl })
   assert.equal(result.evidence.size, 0)
-  assert.equal(result.audit.failuresByReason.timestamp_outside_daily_window, 1)
+  assert.equal(result.audit.failuresByReason.timestamp_mismatch, 1)
 })
 
 test('hard request ceiling is never above 130 and provider failure is contained', async () => {
