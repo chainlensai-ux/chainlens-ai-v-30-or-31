@@ -484,6 +484,34 @@ export type PnlReconciliationSummary = {
     examples: Array<{ lotId: string; token: string; earlyLotStatus: string; finalLotStatus: string; downgradeStage: string; downgradeReason: string }>
     invariantFailures: string[]
   }
+  canonicalVerificationConsistencyAudit?: {
+    pricingStageVerifiedLots: number
+    canonicalSelectionVerifiedLots: number
+    reconciliationVerifiedLots: number
+    finalPublicVerifiedLots: number
+    droppedAtSelection: string[]
+    droppedAtReconciliation: string[]
+    droppedAtPublicGate: string[]
+    dropReasons: Record<string, number>
+    examples: Array<{
+      lotId: string
+      entryPrice: number | null
+      exitPrice: number | null
+      entrySource: string | null
+      exitSource: string | null
+      entryEvidenceStatusBefore: 'verified' | 'unpriced'
+      exitEvidenceStatusBefore: 'verified' | 'unpriced'
+      earlyCanonicalVerified: boolean
+      afterCanonicalSelection: { entrySource: string | null; exitSource: string | null; evidenceQuality: MatchedLot['evidenceQuality'] | null; verified: boolean }
+      afterReconciliation: { evidenceQuality: MatchedLot['evidenceQuality'] | null; verified: boolean }
+      finalGateVerified: boolean
+      firstDowngradeStage: 'canonical_selection' | 'reconciliation' | 'public_gate' | null
+      exactDowngradeReason: string | null
+      expectedMetadata: { evidenceQuality: 'verified' }
+      actualMetadata: { evidenceQuality: MatchedLot['evidenceQuality'] | null }
+    }>
+    invariantFailures: string[]
+  }
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -1283,9 +1311,15 @@ export function createPnlReconciliation(config: Config = {}) {
       const canonicalSampleSelection = input.canonicalSampleSelector
         ? await input.canonicalSampleSelector(consistentFifoLots)
         : null
-      const publishedFifoLots = demoteLotsOnIncompleteAcceptedSides(
-        canonicalSampleSelection ? canonicalSampleSelection.publishedLots : consistentFifoLots,
-      )
+      // `consistentFifoLots` has already had the shared-side integrity rule applied above, while
+      // every lot was still present with its real pricing classification. Do NOT apply that rule a
+      // second time after canonical selection. The selector intentionally marks candidate-only lots
+      // unpriced; treating those publication labels as missing side evidence makes their selected,
+      // verified siblings look like mixed-quality groups and demotes the entire manifest sample.
+      // This was the first loss in the live 22/25 -> 0 collapse: replay returned verified manifest
+      // lots, then this post-selection pass rewrote their evidenceQuality to `unpriced`.
+      const canonicalSelectedLots = canonicalSampleSelection ? canonicalSampleSelection.publishedLots : consistentFifoLots
+      const publishedFifoLots = [...canonicalSelectedLots]
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
         acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
@@ -1799,6 +1833,74 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       if (invariantFailures.length > 0) logger.warn('CRITICAL pnl_verification_invariant_failure', pnlVerificationTransitionAudit)
 
+      const verifiedCount = (lots: readonly MatchedLot[]) => lots.filter(isCanonicalVerifiedLotForPnl).length
+      const verifiedIds = (lots: readonly MatchedLot[]) => new Set(lots.filter(isCanonicalVerifiedLotForPnl).map((lot) => lot.lotId))
+      const pricingIds = verifiedIds(consistentFifoLots)
+      const selectionIds = verifiedIds(canonicalSelectedLots)
+      const reconciliationIds = verifiedIds(publishedFifoLots)
+      const publicIds = verifiedIds(verifiedUpdatedLots)
+      const dropped = (from: Set<string>, to: Set<string>) => [...from].filter((id) => !to.has(id)).sort()
+      const droppedAtSelection = dropped(pricingIds, selectionIds)
+      const droppedAtReconciliation = dropped(selectionIds, reconciliationIds)
+      const droppedAtPublicGate = dropped(reconciliationIds, publicIds)
+      const traceLots = consistentFifoLots.filter(isCanonicalVerifiedLotForPnl)
+      const dropReasons: Record<string, number> = {}
+      const examples = traceLots.map((earlyLot) => {
+        const selected = canonicalSelectedLots.find((lot) => lot.lotId === earlyLot.lotId)
+        const reconciled = publishedFifoLots.find((lot) => lot.lotId === earlyLot.lotId)
+        const selectedVerified = selected ? isCanonicalVerifiedLotForPnl(selected) : false
+        const reconciledVerified = reconciled ? isCanonicalVerifiedLotForPnl(reconciled) : false
+        const finalGateVerified = publicIds.has(earlyLot.lotId)
+        const firstDowngradeStage = !selectedVerified ? 'canonical_selection' as const
+          : !reconciledVerified ? 'reconciliation' as const
+            : !finalGateVerified ? 'public_gate' as const : null
+        const rejected = firstDowngradeStage === 'canonical_selection' ? selected
+          : firstDowngradeStage === 'reconciliation' ? reconciled : firstDowngradeStage === 'public_gate' ? reconciled : null
+        const exactDowngradeReason = firstDowngradeStage
+          ? rejected ? canonicalVerifiedRejectionReason(rejected) : 'lot_identity_not_found'
+          : null
+        if (exactDowngradeReason) dropReasons[`${firstDowngradeStage}:${exactDowngradeReason}`] = (dropReasons[`${firstDowngradeStage}:${exactDowngradeReason}`] ?? 0) + 1
+        return {
+          lotId: earlyLot.lotId,
+          entryPrice: earlyLot.costBasisUsd,
+          exitPrice: earlyLot.proceedsUsd,
+          // MatchedLot does not carry provider names. Verification is preserved by the canonical
+          // evidenceQuality field; claiming a source here would fabricate provenance.
+          entrySource: null,
+          exitSource: null,
+          entryEvidenceStatusBefore: earlyLot.evidenceQuality,
+          exitEvidenceStatusBefore: earlyLot.evidenceQuality,
+          earlyCanonicalVerified: true,
+          afterCanonicalSelection: { entrySource: null, exitSource: null, evidenceQuality: selected?.evidenceQuality ?? null, verified: selectedVerified },
+          afterReconciliation: { evidenceQuality: reconciled?.evidenceQuality ?? null, verified: reconciledVerified },
+          finalGateVerified,
+          firstDowngradeStage,
+          exactDowngradeReason,
+          expectedMetadata: { evidenceQuality: 'verified' as const },
+          actualMetadata: { evidenceQuality: rejected?.evidenceQuality ?? null },
+        }
+      })
+      const consistencyInvariantFailures: string[] = []
+      const pricingStageVerifiedLots = verifiedCount(consistentFifoLots)
+      const canonicalSelectionVerifiedLots = verifiedCount(canonicalSelectedLots)
+      const reconciliationVerifiedLots = verifiedCount(publishedFifoLots)
+      const finalPublicVerifiedLots = verifiedUpdatedLots.length
+      if (canonicalSelectionVerifiedLots !== reconciliationVerifiedLots) consistencyInvariantFailures.push('canonical_selection_verified_does_not_equal_reconciliation_verified')
+      if (reconciliationVerifiedLots !== finalPublicVerifiedLots) consistencyInvariantFailures.push('reconciliation_verified_does_not_equal_final_public_verified')
+      const canonicalVerificationConsistencyAudit = {
+        pricingStageVerifiedLots,
+        canonicalSelectionVerifiedLots,
+        reconciliationVerifiedLots,
+        finalPublicVerifiedLots,
+        droppedAtSelection,
+        droppedAtReconciliation,
+        droppedAtPublicGate,
+        dropReasons,
+        examples,
+        invariantFailures: consistencyInvariantFailures,
+      }
+      if (consistencyInvariantFailures.length > 0) logger.warn('CRITICAL canonical_verification_consistency_failure', canonicalVerificationConsistencyAudit)
+
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
         unmatchedBuys: correctedUnmatchedBuys,
@@ -1818,6 +1920,7 @@ export function createPnlReconciliation(config: Config = {}) {
         publishedMatchedLots: publishedFifoLots,
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,
+        canonicalVerificationConsistencyAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)
