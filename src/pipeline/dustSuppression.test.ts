@@ -15,6 +15,7 @@ import {
   buildFilteredEventsForPricing,
   computeHeavyWalletFlag,
   buildProviderFetchWindowDiagnostics,
+  buildWindowBoundaryProviderAudit,
   computeSlowProviderFlag,
   computeJitterFlag,
   computeColdStartFlag,
@@ -532,5 +533,31 @@ describe('computeRouterDistributorMode', () => {
   it('is false exactly at the 150 boundary — strict "exceeds" check, not >=', () => {
     assert.equal(computeRouterDistributorMode(150, 150), false)
     assert.equal(computeRouterDistributorMode(151, 151), true)
+  })
+})
+
+describe('buildWindowBoundaryProviderAudit', () => {
+  const result = (pagination: { paginationExhausted: boolean; nextPageKeyPresent: boolean; providerCapReached: boolean }) => ({
+    chain: 'base' as const,
+    providerStatus: 'ok' as const,
+    rawEvents: [],
+    providerFetchWindowDays: 90,
+    providerResults: {
+      goldrush: { provider: 'goldrush' as const, ok: true, events: [], errorReason: null, pagination: { pagesRequested: 1, pagesSucceeded: 1, ...pagination } },
+      alchemy: { provider: 'alchemy' as const, ok: true, events: [], errorReason: null, pagination: { pagesRequested: 2, pagesSucceeded: 2, ...pagination } },
+    },
+  })
+
+  it('proves the requested 90-day start when successful providers exhaust pagination', () => {
+    const audit = buildWindowBoundaryProviderAudit([result({ paginationExhausted: true, nextPageKeyPresent: false, providerCapReached: false })], Date.UTC(2026, 5, 1), Date.UTC(2026, 7, 30))
+    assert.ok(audit.every((provider) => provider.requestedWindowStartReached))
+    assert.ok(audit.every((provider) => provider.boundaryReason === 'provider_history_exhausted'))
+  })
+
+  it('does not prove the requested start when a continuation/page cap was not traversed', () => {
+    const audit = buildWindowBoundaryProviderAudit([result({ paginationExhausted: false, nextPageKeyPresent: true, providerCapReached: true })], Date.UTC(2026, 5, 1), Date.UTC(2026, 7, 30))
+    assert.ok(audit.every((provider) => !provider.requestedWindowStartReached))
+    assert.ok(audit.every((provider) => provider.boundaryStatus === 'truncated'))
+    assert.ok(audit.every((provider) => provider.boundaryReason === 'continuation_not_followed'))
   })
 })

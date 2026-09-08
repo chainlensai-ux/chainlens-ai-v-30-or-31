@@ -229,6 +229,7 @@ export async function fetchGoldrushRawEvents(
     if (!res.ok) return { provider: 'goldrush', ok: false, events: [], errorReason: `http_${res.status}` }
     const json = await res.json()
     const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
+    const hasMore = json?.data?.pagination?.has_more === true
     const cutoff = windowCutoffMs(windowDays)
     const events: RawProviderEvent[] = []
     for (const it of items) {
@@ -289,7 +290,16 @@ export async function fetchGoldrushRawEvents(
       }
       if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
     }
-    return { provider: 'goldrush', ok: true, events, errorReason: null }
+    return {
+      provider: 'goldrush', ok: true, events, errorReason: null,
+      pagination: {
+        pagesRequested: 1,
+        pagesSucceeded: 1,
+        paginationExhausted: !hasMore,
+        nextPageKeyPresent: hasMore,
+        providerCapReached: hasMore || events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
+      },
+    }
   } catch (err) {
     return { provider: 'goldrush', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error' }
   }
@@ -842,7 +852,18 @@ export async function fetchAlchemyRawEvents(
     }
     collect(fromResult)
     collect(toResult)
-    return { provider: 'alchemy', ok: true, events, errorReason: null, diagnostics }
+    const nextPageKeyPresent = [fromResult, toResult].some((result) =>
+      typeof result?.pageKey === 'string' && result.pageKey.length > 0)
+    return {
+      provider: 'alchemy', ok: true, events, errorReason: null, diagnostics,
+      pagination: {
+        pagesRequested: 2,
+        pagesSucceeded: Number(fromResult !== null) + Number(toResult !== null),
+        paginationExhausted: fromResult !== null && toResult !== null && !nextPageKeyPresent,
+        nextPageKeyPresent,
+        providerCapReached: nextPageKeyPresent || events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
+      },
+    }
   } catch (err) {
     return {
       provider: 'alchemy', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error',
