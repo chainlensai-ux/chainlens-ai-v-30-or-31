@@ -166,3 +166,10 @@ describe('readAcceptedEvidenceBatch — bounded-concurrency batch reads (canonic
     assert.equal(result.keysRequested, 0)
   })
 })
+
+it('lotIdentityVersion canonicalizes float representation without merging economic amounts', () => {
+  const base = { chain: 'base', token: '0xtoken', openedTxHash: '0xbuy', closedTxHash: '0xsell', openedAt: 1, closedAt: 2, amount: 0.3 }
+  assert.equal(lotIdentityVersion(base), lotIdentityVersion({ ...base, amount: 0.1 + 0.2 }))
+  assert.notEqual(lotIdentityVersion(base), lotIdentityVersion({ ...base, amount: 0.300001 }))
+  assert.equal(lotIdentityVersion({ ...base, amount: 1 }).endsWith(':1'), true, 'preserve existing exact integer identities')
+})

@@ -110,7 +110,8 @@ export type AcceptedEvidenceClassification = {
 // equality elsewhere (pnlReconciliation.ts's own `lotKey`, scanDeterminismAudit.ts's
 // `lotIdentityKey`) plus `amount` — reused here for consistency, not reinvented.
 export function lotIdentityVersion(lot: { chain: string; token: string; openedTxHash: string; closedTxHash: string; openedAt: number; closedAt: number; amount: number }): string {
-  return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, lot.amount].join(':')
+  const canonicalAmount = Number.isFinite(lot.amount) ? Number(lot.amount.toFixed(12)).toString() : 'invalid'
+  return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, canonicalAmount].join(':')
 }
 
 export function buildAcceptedEvidenceKey(identity: AcceptedEvidenceIdentity): string {

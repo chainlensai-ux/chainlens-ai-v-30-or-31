@@ -109,7 +109,12 @@ function withinTolerance(a: number | null, b: number | null, tolerance: number):
 // Bumped only when the CANONICAL SELECTION LOGIC changes (e.g. which accepted-evidence precedence
 // rule governs a lot's published price) — never for a provider-availability change, which is
 // precisely the class of change this whole module exists to make invisible to the published sample.
-export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
+// BUMPED 1 -> 2: quote-leg pricing now rejects amount provenance that proves the input was
+// already normalized. That changes which evidence can enter the canonical verified candidate set,
+// not merely provider availability. A v1 manifest can therefore contain evidence the v2 selector
+// intentionally rejects; keying v2 separately refreshes it rather than treating both policies as
+// equivalent or restoring the rejected double-normalized quote.
+export const CANONICAL_PRICING_METHODOLOGY_VERSION = 2
 // VALUE METHODOLOGY VERSION, DISCLOSED, GENUINELY REQUIRED (canonical-manifest-compatibility
 // follow-up task, issue #1 — confirmed production gap: the partial-fill allocation algorithm
 // changed the VALUES a manifest's per-lot records mean, but old schema-3 manifests built before
@@ -1050,6 +1055,8 @@ export type ManifestReplayReason =
 
 export type ManifestReplayReasonCounts = Record<ManifestReplayReason, number>
 
+function manifestKeySetForAudit(manifest: CanonicalPnlSampleManifest): Set<string> { return new Set(manifest.verifiedLotIdentityKeys) }
+
 function emptyReplayReasonCounts(): ManifestReplayReasonCounts {
   return {
     manifest_lot_identity_not_found: 0,
@@ -1070,6 +1077,33 @@ function emptyReplayReasonCounts(): ManifestReplayReasonCounts {
   }
 }
 
+export type ManifestMissingLotTrace = {
+  canonicalLotKey: string
+  oldManifestEvidenceQuality: MatchedLot['evidenceQuality'] | null
+  currentCandidatePresent: boolean
+  currentEvidenceQuality: MatchedLot['evidenceQuality'] | null
+  entryCurrentStatus: 'verified' | 'missing_or_invalid' | 'not_applicable'
+  exitCurrentStatus: 'verified' | 'missing_or_invalid' | 'not_applicable'
+  exactMissingReason: ManifestReplayReason
+  affectedByQuoteNormalization: boolean
+  affectedByAmountCanonicalization: boolean
+  affectedByIdentity: boolean
+  affectedByTimestamp: boolean
+  affectedBySourceQuality: boolean
+}
+
+export type ManifestLotIdentityAudit = {
+  txPair: { openedTxHash: string; closedTxHash: string }
+  token: string
+  rawAmount: number
+  decimals: number | null
+  normalizedAmount: number
+  canonicalAmount: string
+  generatedLotKey: string
+  previousLotKeyMatch: boolean
+  mismatchReason: string | null
+}
+
 export type ManifestReplayResult = {
   outcome: 'applied' | 'unavailable'
   // The ONE canonical array every downstream consumer publishes from (requirement #5/#10). Always
@@ -1084,6 +1118,9 @@ export type ManifestReplayResult = {
   selectedLotKeys: string[]
   candidateNewEvidenceLotKeys: string[]
   manifestLotsMissingCurrentEvidence: string[]
+  manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[]
+  manifestLotIdentityAudit: ManifestLotIdentityAudit[]
+  structuralIntegrityFailure: boolean
   reasonCounts: ManifestReplayReasonCounts
   duplicates: DuplicateIdentityCheck
   // REQUIREMENT #4/#5: the frozen total re-derived by SUMMING the reconstructed published lots —
@@ -1368,13 +1405,35 @@ export async function replayManifest(params: {
   const rebuiltByLot = new Map<MatchedLot, MatchedLot>()
   const selectedLotKeys: string[] = []
   const manifestLotsMissingCurrentEvidence: string[] = []
+  const manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[] = []
   const manifestReplayedButNotCanonicalVerifiedLotKeys: string[] = []
+
+  const recordMissingKeys = new Set<string>()
+  const traceMissing = (key: string, reason: ManifestReplayReason, occurrences: readonly MatchedLot[] | undefined, record: CanonicalManifestLotRecord | undefined, entryOk = false, exitOk = false) => {
+    if (manifestLotsMissingCurrentEvidenceDetails.some((row) => row.canonicalLotKey === key)) return
+    const current = occurrences?.[0]
+    manifestLotsMissingCurrentEvidenceDetails.push({
+      canonicalLotKey: key,
+      oldManifestEvidenceQuality: record?.evidenceQuality ?? null,
+      currentCandidatePresent: !!current,
+      currentEvidenceQuality: current?.evidenceQuality ?? null,
+      entryCurrentStatus: entryOk ? 'verified' : current ? 'missing_or_invalid' : 'not_applicable',
+      exitCurrentStatus: exitOk ? 'verified' : current ? 'missing_or_invalid' : 'not_applicable',
+      exactMissingReason: reason,
+      affectedByQuoteNormalization: !!current && current.evidenceQuality !== 'verified',
+      affectedByAmountCanonicalization: !current && [...candidateOccurrenceGroups.keys()].some((candidateKey) => candidateKey.split(':amt:')[0] === key.split(':amt:')[0]),
+      affectedByIdentity: !current,
+      affectedByTimestamp: false,
+      affectedBySourceQuality: !!current && current.evidenceQuality !== 'verified',
+    })
+  }
 
   for (const key of manifestDedupe.unique) {
     const occurrences = candidateOccurrenceGroups.get(key)
     if (!occurrences || occurrences.length === 0) {
       reasonCounts.manifest_lot_identity_not_found += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_lot_identity_not_found', occurrences, recordByKey.get(key))
       continue
     }
     const structuralLot = occurrences[0]
@@ -1384,6 +1443,8 @@ export async function replayManifest(params: {
       // A manifest that names a group but carries no canonical record for it cannot be value-replayed.
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      recordMissingKeys.add(key)
+      traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record)
       continue
     }
     // GROUP MULTIPLICITY CHECK, DISCLOSED (requirement #1's "fail only when current group count or
@@ -1393,11 +1454,13 @@ export async function replayManifest(params: {
     if (occurrences.length !== record.occurrenceCount) {
       reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_partial_fill_ordinal_mismatch', occurrences, record)
       continue
     }
     if (currentIdentity && record.canonicalAmount !== currentIdentity.canonicalAmount) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record)
       continue
     }
 
@@ -1412,11 +1475,13 @@ export async function replayManifest(params: {
       // genuinely fails that validation. Never substitute the manifest's stored number.
       reasonCounts.manifest_side_evidence_missing += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_side_evidence_missing', occurrences, record, !!entryEvidence, !!exitEvidence)
       continue
     }
     if (record.pricingMethodologyVersion !== params.manifest.pricingMethodologyVersion) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record, !!entryEvidence, !!exitEvidence)
       continue
     }
 
@@ -1429,6 +1494,7 @@ export async function replayManifest(params: {
       // allocation was computed over — fail closed rather than publish an unallocated share.
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record, !!entryEvidence, !!exitEvidence)
       continue
     }
     const liveGroupCostBasisUsd = Math.round(entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
@@ -1440,6 +1506,11 @@ export async function replayManifest(params: {
     if (record.evidenceQuality !== 'verified') { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
     if (mismatched) {
       manifestLotsMissingCurrentEvidence.push(key)
+      const mismatchReason: ManifestReplayReason = record.evidenceQuality !== 'verified'
+        ? 'manifest_evidence_quality_mismatch'
+        : !withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)
+          ? 'manifest_cost_basis_mismatch' : 'manifest_proceeds_mismatch'
+      traceMissing(key, mismatchReason, occurrences, record, true, true)
       continue
     }
 
@@ -1468,12 +1539,14 @@ export async function replayManifest(params: {
     if (!withinTolerance(rebuiltGroupPnl, record.groupRealizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) {
       reasonCounts.manifest_realized_pnl_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_realized_pnl_mismatch', occurrences, record, true, true)
       continue
     }
     if (!rebuiltOccurrences.every(isCanonicalVerifiedPublishedLot)) {
       reasonCounts.manifest_evidence_quality_mismatch += 1
       manifestReplayedButNotCanonicalVerifiedLotKeys.push(key)
       manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_evidence_quality_mismatch', occurrences, record, true, true)
       continue
     }
 
@@ -1483,6 +1556,31 @@ export async function replayManifest(params: {
     selectedLotKeys.push(key)
     rebuiltOccurrences.forEach((rebuilt, i) => rebuiltByLot.set(occurrences[i], rebuilt))
   }
+
+  // Every missing key receives one bounded, exact diagnostic row even when the failure happened
+  // in a value/predicate branch above. Detailed booleans are conservative: they never claim a
+  // provenance cause that cannot be proven from the current lot/evidence objects.
+  for (const key of manifestLotsMissingCurrentEvidence) {
+    if (manifestLotsMissingCurrentEvidenceDetails.some((row) => row.canonicalLotKey === key)) continue
+    const occurrences = candidateOccurrenceGroups.get(key)
+    const record = recordByKey.get(key)
+    const reason = !occurrences ? 'manifest_lot_identity_not_found'
+      : reasonCounts.manifest_side_evidence_missing > 0 ? 'manifest_side_evidence_missing'
+      : reasonCounts.manifest_evidence_quality_mismatch > 0 ? 'manifest_evidence_quality_mismatch'
+      : 'manifest_side_evidence_invalid'
+    traceMissing(key, reason, occurrences, record)
+  }
+
+  const manifestLotIdentityAudit: ManifestLotIdentityAudit[] = params.allCandidateLots.map((lot) => {
+    const identity = identities.get(lot)!
+    const previousLotKeyMatch = manifestKeySetForAudit(params.manifest).has(identity.key)
+    return {
+      txPair: { openedTxHash: lot.openedTxHash, closedTxHash: lot.closedTxHash }, token: lot.token,
+      rawAmount: lot.amount, decimals: null, normalizedAmount: lot.amount,
+      canonicalAmount: identity.canonicalAmount, generatedLotKey: identity.key, previousLotKeyMatch,
+      mismatchReason: previousLotKeyMatch ? null : ([...params.manifest.verifiedLotIdentityKeys].some((key) => key.split(':amt:')[0] === identity.key.split(':amt:')[0]) ? 'amount_representation_changed' : 'not_in_previous_manifest'),
+    }
+  })
 
   // 4. Candidate-only lots — real, newly-priceable evidence, never merged into the published sample.
   const manifestKeySet = new Set(manifestDedupe.unique)
@@ -1564,6 +1662,19 @@ export async function replayManifest(params: {
     selectedLotKeys: replayFailed ? [] : selectedLotKeys,
     candidateNewEvidenceLotKeys,
     manifestLotsMissingCurrentEvidence,
+    manifestLotsMissingCurrentEvidenceDetails,
+    manifestLotIdentityAudit,
+    structuralIntegrityFailure: duplicates.hasDuplicates || recordMissingKeys.size > 0
+      || reasonCounts.manifest_partial_fill_ordinal_mismatch > 0
+      || reasonCounts.manifest_side_evidence_invalid > 0
+      || reasonCounts.manifest_entry_price_mismatch > 0
+      || reasonCounts.manifest_exit_price_mismatch > 0
+      || reasonCounts.manifest_cost_basis_mismatch > 0
+      || reasonCounts.manifest_proceeds_mismatch > 0
+      || reasonCounts.manifest_realized_pnl_mismatch > 0
+      || reasonCounts.manifest_evidence_quality_mismatch > 0
+      || reasonCounts.manifest_realized_total_mismatch > 0
+      || reasonCounts.manifest_fingerprint_mismatch > 0,
     reasonCounts,
     duplicates,
     recomputedRealizedPnlUsd: replayFailed ? null : recomputedRealizedPnlUsd,
@@ -1572,6 +1683,18 @@ export async function replayManifest(params: {
     fingerprintMismatchDiagnostic,
     staleManifestCanonicalizationMismatch,
   }
+}
+
+/**
+ * Safe refresh policy for a partially unreproducible historical manifest. Current candidates are
+ * not published directly: the caller must rebuild, persist, and successfully replay a new manifest.
+ * Structural corruption/multiplicity failures remain unavailable.
+ */
+export function shouldRefreshPartiallyUnreproducibleManifest(replay: ManifestReplayResult, currentCandidateVerifiedLotCount: number): boolean {
+  return replay.outcome === 'unavailable'
+    && currentCandidateVerifiedLotCount > 0
+    && replay.manifestLotsMissingCurrentEvidence.length > 0
+    && !replay.structuralIntegrityFailure
 }
 
 // ============================================================================
@@ -1605,6 +1728,8 @@ export function buildLastKnownCanonicalSample(manifest: CanonicalPnlSampleManife
 export type CanonicalSampleManifestAudit = {
   manifestKey: string
   manifestFound: boolean
+  manifestCompatible: boolean
+  compatibilityReason: string
   manifestCreated: boolean
   manifestApplied: boolean
   manifestVersion: number | null
@@ -1614,6 +1739,15 @@ export type CanonicalSampleManifestAudit = {
   candidateNewEvidenceCount: number
   candidateNewEvidenceLotKeys: string[]
   manifestLotsMissingCurrentEvidence: string[]
+  manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[]
+  manifestLotIdentityAudit: ManifestLotIdentityAudit[]
+  manifestLotsStillValid: number
+  manifestLotsInvalidNow: number
+  currentNewVerifiedLots: number
+  selectedFromExistingManifest: number
+  selectedFromCurrentCandidates: number
+  manifestRefreshRequired: boolean
+  zeroPublicationReason: string | null
   manifestEvidenceHydrated: boolean
   manifestIdentityMismatches: number
   manifestValidationFailures: number
@@ -1651,6 +1785,8 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
   return {
     manifestKey,
     manifestFound: false,
+    manifestCompatible: false,
+    compatibilityReason: 'no_manifest',
     manifestCreated: false,
     manifestApplied: false,
     manifestVersion: null,
@@ -1660,6 +1796,15 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     candidateNewEvidenceCount: 0,
     candidateNewEvidenceLotKeys: [],
     manifestLotsMissingCurrentEvidence: [],
+    manifestLotsMissingCurrentEvidenceDetails: [],
+    manifestLotIdentityAudit: [],
+    manifestLotsStillValid: 0,
+    manifestLotsInvalidNow: 0,
+    currentNewVerifiedLots: 0,
+    selectedFromExistingManifest: 0,
+    selectedFromCurrentCandidates: 0,
+    manifestRefreshRequired: false,
+    zeroPublicationReason: null,
     manifestEvidenceHydrated: true,
     manifestIdentityMismatches: 0,
     manifestValidationFailures: 0,
