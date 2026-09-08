@@ -16,7 +16,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
-  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
+  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
@@ -1530,5 +1530,68 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
     assert.equal(manifest.verifiedLotCount, 2)
     const claimedEntry = Math.round(manifest.verifiedLotRecords.reduce((s, r) => s + (r.groupCostBasisUsd ?? 0), 0) * 1e8) / 1e8
     assert.equal(claimedEntry, 100, 'verified group claims on a complete shared side must sum to the accepted side total')
+  })
+})
+
+describe('canonical manifest partial reconciliation policy', () => {
+  it('refreshes the exact live 24-old/29-current shape without publishing invalid stale records', async () => {
+    const oldLots = buildLots(24, 24)
+    const currentLots = [...oldLots, ...Array.from({ length: 5 }, (_, offset) => {
+      const i = 24 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    // Models three old references that no longer satisfy CURRENT evidence identity. The current
+    // candidates and current accepted evidence remain valid; stale references themselves must not publish.
+    const stale = {
+      ...original,
+      verifiedLotRecords: original.verifiedLotRecords.map((record, i) => i < 3
+        ? { ...record, entryEvidenceLotIdentityVersion: `obsolete-${i}` }
+        : record),
+    }
+    const first = await replay(stale, currentLots, evidence.loader)
+    assert.equal(first.outcome, 'unavailable')
+    assert.equal(first.manifestLotsMissingCurrentEvidence.length, 3)
+    assert.equal(first.candidateNewEvidenceLotKeys.length, 5)
+    assert.equal(first.structuralIntegrityFailure, false)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(first, 29), true)
+    assert.equal(first.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'stale replay itself remains atomic and fail closed')
+
+    const refreshed = await buildRefreshedManifest({
+      priorManifest: stale, identity: identity(), allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'partially-unreproducible-manifest-current-evidence-refresh',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const second = await replay(refreshed, currentLots, evidence.loader)
+    assert.equal(second.outcome, 'applied')
+    assert.equal(second.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 29)
+    assert.equal(second.manifestLotsMissingCurrentEvidence.length, 0)
+  })
+
+  it('never refreshes a structurally incompatible manifest', async () => {
+    const lots = buildLots(2, 2)
+    const { manifest, evidence } = await manifestWithEvidence(lots)
+    const corrupt = { ...manifest, verifiedLotIdentityKeys: [...manifest.verifiedLotIdentityKeys, manifest.verifiedLotIdentityKeys[0]] }
+    const result = await replay(corrupt, lots, evidence.loader)
+    assert.equal(result.structuralIntegrityFailure, true)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(result, 2), false)
+  })
+})
+
+describe('canonical pricing methodology compatibility', () => {
+  it('uses methodology v2 so manifests that predate strict quote normalization miss cleanly', () => {
+    const current = identity()
+    const preNormalization = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 1 })
+    assert.equal(current.pricingMethodologyVersion, 2)
+    assert.notEqual(buildManifestKey(current), buildManifestKey(preNormalization))
+    assert.match(buildManifestKey(current), /methodology-v2/)
   })
 })

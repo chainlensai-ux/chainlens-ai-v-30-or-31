@@ -25,7 +25,7 @@ import {
 } from '../lib/scanDeterminismAudit'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
-  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
+  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
@@ -3250,6 +3250,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       canonicalSampleManifestAudit = {
         ...emptyCanonicalSampleManifestAudit(manifestKey),
         manifestFound: !!existingRead.manifest,
+        manifestCompatible: !!existingRead.manifest,
+        compatibilityReason: existingRead.manifest ? 'explicit_refresh_or_empty_bootstrap' : existingRead.validationFailure ? 'corrupted_manifest_treated_as_absent' : 'no_manifest',
         manifestCreated: !existingRead.manifest,
         manifestApplied: false,
         manifestVersion: newManifest.manifestVersion,
@@ -3292,9 +3294,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     let manifestRefreshAttempted = false
     let manifestRefreshApplied = false
     let manifestRefreshReason: string | null = null
-    if (firstReplay.staleManifestCanonicalizationMismatch) {
+    // A historically frozen manifest is authoritative only while its CURRENT accepted evidence
+    // remains reproducible. If individual old records legitimately expire or become invalid under
+    // today's canonical evidence policy, rebuild a bounded manifest from today's already-verified
+    // candidates. Corrupt/duplicate records and changed FIFO multiplicity remain hard integrity
+    // failures and never enter this path.
+    const partialReconciliationEligible = shouldRefreshPartiallyUnreproducibleManifest(
+      firstReplay, candidateVerifiedLots.length,
+    )
+    if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible) {
       manifestRefreshAttempted = true
-      manifestRefreshReason = 'stale-manifest-canonicalization-self-heal'
+      manifestRefreshReason = firstReplay.staleManifestCanonicalizationMismatch
+        ? 'stale-manifest-canonicalization-self-heal'
+        : 'partially-unreproducible-manifest-current-evidence-refresh'
       try {
         const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
         // Rebuilds the manifest exactly the way a first-qualifying scan does (buildRefreshedManifest
@@ -3320,6 +3332,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           })
           if (secondReplay.outcome === 'applied') {
             manifestRefreshApplied = true
+            sampleUpdated = true
             effectiveReplay = secondReplay
             effectiveManifest = refreshedManifest
           } else {
@@ -3396,6 +3409,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     canonicalSampleManifestAudit = {
       ...emptyCanonicalSampleManifestAudit(manifestKey),
       manifestFound: true,
+      manifestCompatible: true,
+      compatibilityReason: firstReplay.structuralIntegrityFailure ? 'structural_integrity_failure' : firstReplay.outcome === 'applied' ? 'fully_reproducible' : manifestRefreshApplied ? 'partially_reproducible_refreshed' : 'partially_reproducible_refresh_failed',
       manifestCreated: false,
       manifestApplied: replay.outcome === 'applied',
       manifestVersion: effectiveManifest.manifestVersion,
@@ -3404,7 +3419,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       publishedVerifiedLotCount,
       candidateNewEvidenceCount: replay.candidateNewEvidenceLotKeys.length,
       candidateNewEvidenceLotKeys: replay.candidateNewEvidenceLotKeys,
-      manifestLotsMissingCurrentEvidence: replay.manifestLotsMissingCurrentEvidence,
+      manifestLotsMissingCurrentEvidence: firstReplay.manifestLotsMissingCurrentEvidence,
+      manifestLotsMissingCurrentEvidenceDetails: firstReplay.manifestLotsMissingCurrentEvidenceDetails,
+      manifestLotIdentityAudit: firstReplay.manifestLotIdentityAudit,
+      manifestLotsStillValid: firstReplay.reasonCounts.manifest_replay_success,
+      manifestLotsInvalidNow: firstReplay.manifestLotsMissingCurrentEvidence.length,
+      currentNewVerifiedLots: firstReplay.candidateNewEvidenceLotKeys.length,
+      selectedFromExistingManifest: manifestRefreshApplied ? 0 : replay.reasonCounts.manifest_replay_success,
+      selectedFromCurrentCandidates: manifestRefreshApplied ? publishedVerifiedLotCount : 0,
+      manifestRefreshRequired: partialReconciliationEligible || firstReplay.staleManifestCanonicalizationMismatch,
+      zeroPublicationReason: publishedVerifiedLotCount === 0 && candidateVerifiedLots.length > 0
+        ? (firstReplay.structuralIntegrityFailure ? 'manifest_structural_integrity_failure' : manifestRefreshAttempted ? 'manifest_refresh_failed_or_unreplayable' : 'no_current_lot_safely_publishable')
+        : null,
       manifestEvidenceHydrated: replay.outcome === 'applied',
       manifestIdentityMismatches: replay.reasonCounts.manifest_lot_identity_not_found,
       canonicalSampleEvidenceUnavailable: replay.outcome === 'unavailable',
