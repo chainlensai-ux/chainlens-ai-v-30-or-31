@@ -36,7 +36,8 @@ import {
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceValueType,
 } from './acceptedEvidenceStore'
 import {
-  isCanonicalVerifiedPublishedLot, emptyCanonicalVerifiedPredicateReasonCounts,
+  isCanonicalVerifiedPublishedLot, canonicalVerifiedRejectionReason, emptyCanonicalVerifiedPredicateReasonCounts,
+  type CanonicalVerifiedRejectionReason,
   type CanonicalVerifiedPredicateReasonCounts,
 } from './canonicalVerifiedLot'
 import { sortLotsByCanonicalIdentity, sumQuantizedUsd } from './scanDeterminismAudit'
@@ -1050,6 +1051,7 @@ export type ManifestReplayReason =
   | 'manifest_proceeds_mismatch'
   | 'manifest_realized_pnl_mismatch'
   | 'manifest_evidence_quality_mismatch'
+  | 'manifest_canonical_verifier_rejection'
   | 'manifest_realized_total_mismatch'
   | 'manifest_fingerprint_mismatch'
 
@@ -1072,6 +1074,7 @@ function emptyReplayReasonCounts(): ManifestReplayReasonCounts {
     manifest_proceeds_mismatch: 0,
     manifest_realized_pnl_mismatch: 0,
     manifest_evidence_quality_mismatch: 0,
+    manifest_canonical_verifier_rejection: 0,
     manifest_realized_total_mismatch: 0,
     manifest_fingerprint_mismatch: 0,
   }
@@ -1090,6 +1093,40 @@ export type ManifestMissingLotTrace = {
   affectedByIdentity: boolean
   affectedByTimestamp: boolean
   affectedBySourceQuality: boolean
+}
+
+export type ManifestEvidenceQualityComparisonAudit = {
+  canonicalLotKey: string
+  manifest: { lotEvidenceQuality: MatchedLot['evidenceQuality'] | null; entryEvidenceStatus: 'verified' | 'missing_or_invalid'; exitEvidenceStatus: 'verified' | 'missing_or_invalid' }
+  current: { lotEvidenceQuality: MatchedLot['evidenceQuality'] | null; entryEvidenceStatus: 'verified' | 'missing_or_invalid'; exitEvidenceStatus: 'verified' | 'missing_or_invalid' }
+  normalizedManifestQuality: string | null
+  normalizedCurrentQuality: string | null
+  exactFieldCompared: string
+  equalityResult: boolean
+  mismatchReason: string | null
+}
+
+export type ManifestSideEvidenceAudit = {
+  canonicalLotKey: string
+  manifestEntryEvidenceKey: string
+  manifestExitEvidenceKey: string
+  currentEntryEvidenceFound: boolean
+  currentExitEvidenceFound: boolean
+  acceptedEvidenceStoreHit: boolean
+  canonicalCandidatePresent: boolean
+  currentLotVerified: boolean
+  exactMissingSide: 'entry' | 'exit' | 'both' | null
+  structuralOrEvidenceOnly: 'structural' | 'evidence_only'
+}
+
+export type ManifestStructuralFailureAudit = {
+  structuralFailure: boolean
+  actualStructuralReasons: Record<string, number>
+  staleEvidenceReasons: Record<string, number>
+  candidateEvolutionReasons: Record<string, number>
+  offendingLotKeys: string[]
+  refreshAllowed: boolean
+  refreshBlockedReason: string | null
 }
 
 export type ManifestLotIdentityAudit = {
@@ -1120,6 +1157,9 @@ export type ManifestReplayResult = {
   manifestLotsMissingCurrentEvidence: string[]
   manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[]
   manifestLotIdentityAudit: ManifestLotIdentityAudit[]
+  manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[]
+  manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
+  manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   structuralIntegrityFailure: boolean
   reasonCounts: ManifestReplayReasonCounts
   duplicates: DuplicateIdentityCheck
@@ -1407,6 +1447,15 @@ export async function replayManifest(params: {
   const manifestLotsMissingCurrentEvidence: string[] = []
   const manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[] = []
   const manifestReplayedButNotCanonicalVerifiedLotKeys: string[] = []
+  const manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[] = []
+  const manifestSideEvidenceAudit: ManifestSideEvidenceAudit[] = []
+  const structuralReasonKeys = new Map<string, Set<string>>()
+  const staleReasonKeys = new Map<string, Set<string>>()
+  const addClassifiedReason = (target: Map<string, Set<string>>, reason: string, key: string) => {
+    const keys = target.get(reason) ?? new Set<string>()
+    keys.add(key)
+    target.set(reason, keys)
+  }
 
   const recordMissingKeys = new Set<string>()
   const traceMissing = (key: string, reason: ManifestReplayReason, occurrences: readonly MatchedLot[] | undefined, record: CanonicalManifestLotRecord | undefined, entryOk = false, exitOk = false) => {
@@ -1434,6 +1483,7 @@ export async function replayManifest(params: {
       reasonCounts.manifest_lot_identity_not_found += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_lot_identity_not_found', occurrences, recordByKey.get(key))
+      addClassifiedReason(staleReasonKeys, 'stale_manifest_identity_not_reproduced', key)
       continue
     }
     const structuralLot = occurrences[0]
@@ -1444,6 +1494,7 @@ export async function replayManifest(params: {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       recordMissingKeys.add(key)
+      addClassifiedReason(structuralReasonKeys, 'manifest_record_missing', key)
       traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record)
       continue
     }
@@ -1455,12 +1506,14 @@ export async function replayManifest(params: {
       reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_partial_fill_ordinal_mismatch', occurrences, record)
+      addClassifiedReason(structuralReasonKeys, 'fifo_multiplicity_mismatch', key)
       continue
     }
     if (currentIdentity && record.canonicalAmount !== currentIdentity.canonicalAmount) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record)
+      addClassifiedReason(structuralReasonKeys, 'canonical_quantity_mismatch', key)
       continue
     }
 
@@ -1469,6 +1522,34 @@ export async function replayManifest(params: {
     //     provider values are diagnostic candidates only and are discarded below.
     const entryEvidence = evidenceByKey.get(record.entryEvidenceKey) ?? null
     const exitEvidence = evidenceByKey.get(record.exitEvidenceKey) ?? null
+    const current = occurrences[0]
+    const normalizeQuality = (quality: MatchedLot['evidenceQuality'] | null): string | null =>
+      typeof quality === 'string' ? quality.trim().toLowerCase() : null
+    const normalizedManifestQuality = normalizeQuality(record.evidenceQuality)
+    const normalizedCurrentQuality = normalizeQuality(current?.evidenceQuality ?? null)
+    const qualityEqual = normalizedManifestQuality === normalizedCurrentQuality
+    if (normalizedManifestQuality !== 'verified') addClassifiedReason(structuralReasonKeys, 'malformed_manifest_evidence_quality', key)
+    manifestEvidenceQualityComparisonAudit.push({
+      canonicalLotKey: key,
+      manifest: { lotEvidenceQuality: record.evidenceQuality, entryEvidenceStatus: entryEvidence ? 'verified' : 'missing_or_invalid', exitEvidenceStatus: exitEvidence ? 'verified' : 'missing_or_invalid' },
+      current: { lotEvidenceQuality: current?.evidenceQuality ?? null, entryEvidenceStatus: entryEvidence ? 'verified' : 'missing_or_invalid', exitEvidenceStatus: exitEvidence ? 'verified' : 'missing_or_invalid' },
+      normalizedManifestQuality, normalizedCurrentQuality,
+      exactFieldCompared: 'CanonicalManifestLotRecord.evidenceQuality === MatchedLot.evidenceQuality',
+      equalityResult: qualityEqual,
+      mismatchReason: qualityEqual ? null : 'normalized_lot_evidence_quality_differs',
+    })
+    manifestSideEvidenceAudit.push({
+      canonicalLotKey: key,
+      manifestEntryEvidenceKey: record.entryEvidenceKey,
+      manifestExitEvidenceKey: record.exitEvidenceKey,
+      currentEntryEvidenceFound: !!entryEvidence,
+      currentExitEvidenceFound: !!exitEvidence,
+      acceptedEvidenceStoreHit: !!entryEvidence && !!exitEvidence,
+      canonicalCandidatePresent: true,
+      currentLotVerified: occurrences.every(isCanonicalVerifiedPublishedLot),
+      exactMissingSide: !entryEvidence && !exitEvidence ? 'both' : !entryEvidence ? 'entry' : !exitEvidence ? 'exit' : null,
+      structuralOrEvidenceOnly: 'evidence_only',
+    })
     if (!entryEvidence || !exitEvidence) {
       // readAcceptedEvidence already enforces exact identity/side/timestamp/lot-identity-version/
       // schemaVersion matching and expiry, so a null here means the record is genuinely absent or
@@ -1476,12 +1557,14 @@ export async function replayManifest(params: {
       reasonCounts.manifest_side_evidence_missing += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_side_evidence_missing', occurrences, record, !!entryEvidence, !!exitEvidence)
+      addClassifiedReason(staleReasonKeys, 'accepted_side_evidence_unavailable', key)
       continue
     }
     if (record.pricingMethodologyVersion !== params.manifest.pricingMethodologyVersion) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record, !!entryEvidence, !!exitEvidence)
+      addClassifiedReason(staleReasonKeys, 'evidence_policy_version_changed', key)
       continue
     }
 
@@ -1495,6 +1578,7 @@ export async function replayManifest(params: {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record, !!entryEvidence, !!exitEvidence)
+      addClassifiedReason(structuralReasonKeys, 'evidence_allocation_membership_conflict', key)
       continue
     }
     const liveGroupCostBasisUsd = Math.round(entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
@@ -1503,14 +1587,16 @@ export async function replayManifest(params: {
     let mismatched = false
     if (!withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
     if (!withinTolerance(liveGroupProceedsUsd, record.groupProceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true }
-    if (record.evidenceQuality !== 'verified') { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
+    if (!qualityEqual) { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
     if (mismatched) {
       manifestLotsMissingCurrentEvidence.push(key)
-      const mismatchReason: ManifestReplayReason = record.evidenceQuality !== 'verified'
+      const mismatchReason: ManifestReplayReason = !qualityEqual
         ? 'manifest_evidence_quality_mismatch'
         : !withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)
           ? 'manifest_cost_basis_mismatch' : 'manifest_proceeds_mismatch'
       traceMissing(key, mismatchReason, occurrences, record, true, true)
+      if (!qualityEqual) addClassifiedReason(staleReasonKeys, 'normalized_evidence_quality_changed', key)
+      else addClassifiedReason(structuralReasonKeys, 'canonical_value_disagreement', key)
       continue
     }
 
@@ -1540,13 +1626,22 @@ export async function replayManifest(params: {
       reasonCounts.manifest_realized_pnl_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_realized_pnl_mismatch', occurrences, record, true, true)
+      addClassifiedReason(structuralReasonKeys, 'canonical_realized_value_disagreement', key)
       continue
     }
     if (!rebuiltOccurrences.every(isCanonicalVerifiedPublishedLot)) {
-      reasonCounts.manifest_evidence_quality_mismatch += 1
+      // This branch used to increment `manifest_evidence_quality_mismatch` for EVERY rejection by
+      // the shared verifier. That verifier also checks chronology, finite/non-null values and
+      // positive prices, so a manifest/current pair that both literally said `verified` was
+      // reported as a quality mismatch and, in turn, mislabeled as structural corruption. Preserve
+      // the verifier and fail-closed replay, but report its actual rejection independently; stale
+      // frozen values may then use the controlled persist-and-replay refresh path.
+      reasonCounts.manifest_canonical_verifier_rejection += 1
       manifestReplayedButNotCanonicalVerifiedLotKeys.push(key)
       manifestLotsMissingCurrentEvidence.push(key)
-      traceMissing(key, 'manifest_evidence_quality_mismatch', occurrences, record, true, true)
+      traceMissing(key, 'manifest_canonical_verifier_rejection', occurrences, record, true, true)
+      const rejectionReasons = [...new Set(rebuiltOccurrences.map(canonicalVerifiedRejectionReason).filter((reason): reason is CanonicalVerifiedRejectionReason => reason !== null))]
+      addClassifiedReason(staleReasonKeys, `stored_manifest_values_fail_current_verifier:${rejectionReasons.join(',')}`, key)
       continue
     }
 
@@ -1586,6 +1681,7 @@ export async function replayManifest(params: {
   const manifestKeySet = new Set(manifestDedupe.unique)
   const candidateNewEvidenceLotKeys = candidateDedupe.unique.filter((key) => !manifestKeySet.has(key))
   reasonCounts.manifest_candidate_only_lot = candidateNewEvidenceLotKeys.length
+  for (const key of candidateNewEvidenceLotKeys) addClassifiedReason(staleReasonKeys, 'candidate_evolution_new_verified_lot', key)
 
   // 5. Per-lot outcome is settled. Build the candidate published array ONCE (requirement #3).
   const perLotFailed = manifestLotsMissingCurrentEvidence.length > 0 || duplicates.hasDuplicates
@@ -1650,6 +1746,26 @@ export async function replayManifest(params: {
     && (recomputedFingerprints.acceptedHistoricalPriceFingerprint !== params.manifest.acceptedHistoricalPriceFingerprint
       || recomputedFingerprints.realizedPnlFingerprint !== params.manifest.realizedPnlFingerprint)
 
+  if (duplicates.hasDuplicates) {
+    for (const key of [...duplicates.manifestDuplicateLotKeys, ...duplicates.candidateDuplicateLotKeys, ...duplicates.manifestDuplicateEvidenceKeys]) {
+      addClassifiedReason(structuralReasonKeys, 'duplicate_canonical_identity', key)
+    }
+  }
+  if (reasonCounts.manifest_realized_total_mismatch > 0 || reasonCounts.manifest_fingerprint_mismatch > 0) {
+    addClassifiedReason(structuralReasonKeys, 'manifest_total_or_fingerprint_corruption', '<manifest>')
+  }
+  const structuralIntegrityFailure = structuralReasonKeys.size > 0
+  const toCounts = (source: Map<string, Set<string>>) => Object.fromEntries([...source].map(([reason, keys]) => [reason, keys.size]))
+  const manifestStructuralFailureAudit: ManifestStructuralFailureAudit = {
+    structuralFailure: structuralIntegrityFailure,
+    actualStructuralReasons: toCounts(structuralReasonKeys),
+    staleEvidenceReasons: toCounts(new Map([...staleReasonKeys].filter(([reason]) => !reason.startsWith('candidate_evolution_')))),
+    candidateEvolutionReasons: toCounts(new Map([...staleReasonKeys].filter(([reason]) => reason.startsWith('candidate_evolution_')))),
+    offendingLotKeys: [...new Set([...structuralReasonKeys.values()].flatMap((keys) => [...keys]))].sort(),
+    refreshAllowed: replayFailed && candidateVerifiedLots.length > 0 && manifestLotsMissingCurrentEvidence.length > 0 && !structuralIntegrityFailure,
+    refreshBlockedReason: structuralIntegrityFailure ? 'true_structural_or_value_integrity_failure' : candidateVerifiedLots.length === 0 ? 'no_current_verified_candidates' : null,
+  }
+
   return {
     outcome: replayFailed ? 'unavailable' : 'applied',
     publishedLots,
@@ -1664,17 +1780,10 @@ export async function replayManifest(params: {
     manifestLotsMissingCurrentEvidence,
     manifestLotsMissingCurrentEvidenceDetails,
     manifestLotIdentityAudit,
-    structuralIntegrityFailure: duplicates.hasDuplicates || recordMissingKeys.size > 0
-      || reasonCounts.manifest_partial_fill_ordinal_mismatch > 0
-      || reasonCounts.manifest_side_evidence_invalid > 0
-      || reasonCounts.manifest_entry_price_mismatch > 0
-      || reasonCounts.manifest_exit_price_mismatch > 0
-      || reasonCounts.manifest_cost_basis_mismatch > 0
-      || reasonCounts.manifest_proceeds_mismatch > 0
-      || reasonCounts.manifest_realized_pnl_mismatch > 0
-      || reasonCounts.manifest_evidence_quality_mismatch > 0
-      || reasonCounts.manifest_realized_total_mismatch > 0
-      || reasonCounts.manifest_fingerprint_mismatch > 0,
+    manifestEvidenceQualityComparisonAudit,
+    manifestSideEvidenceAudit,
+    manifestStructuralFailureAudit,
+    structuralIntegrityFailure,
     reasonCounts,
     duplicates,
     recomputedRealizedPnlUsd: replayFailed ? null : recomputedRealizedPnlUsd,
@@ -1741,6 +1850,9 @@ export type CanonicalSampleManifestAudit = {
   manifestLotsMissingCurrentEvidence: string[]
   manifestLotsMissingCurrentEvidenceDetails: ManifestMissingLotTrace[]
   manifestLotIdentityAudit: ManifestLotIdentityAudit[]
+  manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[]
+  manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
+  manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   manifestLotsStillValid: number
   manifestLotsInvalidNow: number
   currentNewVerifiedLots: number
@@ -1798,6 +1910,12 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestLotsMissingCurrentEvidence: [],
     manifestLotsMissingCurrentEvidenceDetails: [],
     manifestLotIdentityAudit: [],
+    manifestEvidenceQualityComparisonAudit: [],
+    manifestSideEvidenceAudit: [],
+    manifestStructuralFailureAudit: {
+      structuralFailure: false, actualStructuralReasons: {}, staleEvidenceReasons: {}, candidateEvolutionReasons: {},
+      offendingLotKeys: [], refreshAllowed: false, refreshBlockedReason: null,
+    },
     manifestLotsStillValid: 0,
     manifestLotsInvalidNow: 0,
     currentNewVerifiedLots: 0,
