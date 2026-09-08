@@ -96,6 +96,41 @@ import {
   type CoinPaprikaHistoricalEvidence,
   type CoinPaprikaRequirement,
 } from '../../lib/server/coinPaprikaHistorical'
+import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot } from '../lib/canonicalVerifiedLot'
+
+export type PriceLotsCanonicalGapAudit = {
+  structuralLots: number
+  numericPricedLots: number
+  locallyMarkedVerifiedLots: number
+  canonicalVerifiedLots: number
+  partialOnlyLots: number
+  unresolvedCanonicalLots: number
+  falseVerifiedLots: number
+  falseVerifiedReasons: Record<string, number>
+  examples: Array<{
+    lotId: string
+    token: string
+    entry: { price: number | null; evidenceQuality: string; sourceStatus: string; canonicalVerified: boolean; rejectionReason: string | null }
+    exit: { price: number | null; evidenceQuality: string; sourceStatus: string; canonicalVerified: boolean; rejectionReason: string | null }
+    localVerified: boolean
+    canonicalVerified: boolean
+    exactDifferenceReason: string | null
+  }>
+}
+
+export type SameTxQuoteNormalizationAudit = {
+  txHash: string
+  quoteToken: string | null
+  decimals: number | null
+  rawAmount: string | null
+  inputWasAlreadyNormalized: boolean
+  normalizedAmount: number | null
+  usdPrice: number | null
+  quoteValueUsd: number | null
+  targetQuantity: number
+  derivedPriceUsd: number | null
+  rejectionReason: string | null
+}
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
@@ -309,6 +344,8 @@ export type WalletPriceLookups = {
   // canonical priceUsdLookup, and therefore cannot increase verified FIFO/PnL coverage.
   coinPaprikaHistoricalAudit: CoinPaprikaHistoricalAudit
   coinPaprikaHistoricalEvidence: CoinPaprikaHistoricalEvidence[]
+  priceLotsCanonicalGapAudit: PriceLotsCanonicalGapAudit
+  sameTxQuoteNormalizationAudit: SameTxQuoteNormalizationAudit[]
 }
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
@@ -1559,6 +1596,8 @@ export async function priceLotsForWallet(params: {
   const quoteLegCache = new Map<string, QuoteLegPriceResult>()
   let sameTxStablePricesRecovered = 0
   let sameTxNativePricesRecovered = 0
+  const canonicalSameTxSideKeys = new Set<string>()
+  const sameTxQuoteNormalizationAudit: SameTxQuoteNormalizationAudit[] = []
   // Real attribution for the Phase 1 change specifically — how many native quote legs got their price
   // from the shared resolver rather than from an already-resolved dictionary slot.
   let nativePricesFromResolvedSlot = 0
@@ -1648,6 +1687,21 @@ export async function priceLotsForWallet(params: {
         historicalNativePrice,
       })
       quoteLegCache.set(cacheKey, result)
+      if (sameTxQuoteNormalizationAudit.length < 20) {
+        sameTxQuoteNormalizationAudit.push({
+          txHash: event.txHash,
+          quoteToken: result.evidence.quoteToken,
+          decimals: result.evidence.quoteDecimals,
+          rawAmount: result.evidence.rawAmount,
+          inputWasAlreadyNormalized: result.evidence.inputWasAlreadyNormalized,
+          normalizedAmount: result.evidence.normalizedAmount,
+          usdPrice: result.evidence.usdPrice,
+          quoteValueUsd: result.quoteValueUsd,
+          targetQuantity: event.amount,
+          derivedPriceUsd: result.priceUsd,
+          rejectionReason: result.evidence.rejectionReason,
+        })
+      }
     }
     if (result.evidence.rejectionReason !== 'no_opposite_leg_in_transaction') requirementsWithValidOppositeLeg += 1
     // costUsd/proceedsUsd store the TOTAL resolved USD value of a leg (resolvePricingAtTime's own
@@ -1657,6 +1711,7 @@ export async function priceLotsForWallet(params: {
     // quoteValueUsd is what must be stored to match every other value already in these dicts.
     if (result.priceUsd != null && isSanePrice(result.priceUsd)) {
       targetDict[event.txHash] = result.quoteValueUsd
+      canonicalSameTxSideKeys.add(`${event.chain}:${event.txHash.toLowerCase()}:${side}`)
       if (result.source === 'same_tx_stable_quote') sameTxStablePricesRecovered += 1
       else sameTxNativePricesRecovered += 1
       distinctTransactionsUsed.add(groupKey)
@@ -1954,11 +2009,44 @@ export async function priceLotsForWallet(params: {
   // Build these requirements only after every stronger provider and Alchemy has had its chance.
   // Daily candles remain partial evidence: they are exposed for inspection but are intentionally
   // never written into atTradeTime, the canonical verified lookup consumed by FIFO.
+  const canonicalSide = (lot: MatchedLot, side: 'entry' | 'exit') => {
+    const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
+    const price = side === 'entry' ? atTradeTime.costUsd[txHash] : atTradeTime.proceedsUsd[txHash]
+    const key = `${lot.chain}:${txHash.toLowerCase()}:${side}`
+    const accepted = isSkippableByAcceptedEvidence(lot.chain, txHash, side)
+    const sameTx = canonicalSameTxSideKeys.has(key)
+    const numeric = typeof price === 'number' && Number.isFinite(price) && price > 0
+    const verified = numeric && (accepted || sameTx)
+    return {
+      price: numeric ? price : null,
+      evidenceQuality: verified ? 'verified' : numeric ? 'partial' : 'unpriced',
+      sourceStatus: accepted ? 'accepted_evidence' : sameTx ? 'same_tx_verified_quote' : numeric ? 'unverified_source' : 'missing',
+      canonicalVerified: verified,
+      rejectionReason: verified ? null : numeric ? 'missing_canonical_verified_evidence' : 'missing_numeric_price',
+    }
+  }
+
+  const canonicalClassification = structuralMatchedLots.map((lot) => {
+    const entry = canonicalSide(lot, 'entry')
+    const exit = canonicalSide(lot, 'exit')
+    const numericPriced = entry.price !== null && exit.price !== null
+    const candidate: MatchedLot = {
+      ...lot,
+      costBasisUsd: entry.price,
+      proceedsUsd: exit.price,
+      realizedPnlUsd: numericPriced ? exit.price! - entry.price! : null,
+      evidenceQuality: entry.canonicalVerified && exit.canonicalVerified ? 'verified' : 'unpriced',
+    }
+    const canonicalVerified = isCanonicalVerifiedPublishedLot(candidate)
+    return { lot, entry, exit, numericPriced, canonicalVerified, rejectionReason: canonicalVerifiedRejectionReason(candidate) }
+  })
+
   const coinPaprikaGroups = new Map<string, { requirement: CoinPaprikaRequirement; lots: MatchedLot[] }>()
   for (const lot of structuralMatchedLots) {
+    const classification = canonicalClassification.find((item) => item.lot === lot)!
     const sides: Array<{ side: 'entry' | 'exit'; txHash: string; timestamp: number; resolved: boolean; oppositeResolved: boolean }> = [
-      { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, resolved: atTradeTime.costUsd[lot.openedTxHash] != null, oppositeResolved: atTradeTime.proceedsUsd[lot.closedTxHash] != null },
-      { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, resolved: atTradeTime.proceedsUsd[lot.closedTxHash] != null, oppositeResolved: atTradeTime.costUsd[lot.openedTxHash] != null },
+      { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, resolved: classification.entry.canonicalVerified, oppositeResolved: classification.exit.canonicalVerified },
+      { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, resolved: classification.exit.canonicalVerified, oppositeResolved: classification.entry.canonicalVerified },
     ]
     for (const side of sides) {
       if (side.resolved) continue
@@ -1984,7 +2072,7 @@ export async function priceLotsForWallet(params: {
           notionalUsd: 0,
           hasRealTradeEvidence: true,
           canCompleteClosedLot: true,
-          hasAcceptedEvidence: isSkippableByAcceptedEvidence(lot.chain, side.txHash, side.side),
+          hasAcceptedEvidence: false,
           // Per-side exhaustion: this exact dictionary slot is still empty after all stronger
           // sources. No global/provider-wide exhaustion condition is required.
           strongerSourcesExhausted: true,
@@ -2015,6 +2103,31 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[coinPaprikaHistoricalAudit]', coinPaprikaHistoricalAudit)
 
+  const falseVerifiedReasons: Record<string, number> = {}
+  const falseVerified = canonicalClassification.filter((item) => item.numericPriced && !item.canonicalVerified)
+  for (const item of falseVerified) {
+    const reasons = [item.entry.rejectionReason, item.exit.rejectionReason].filter(Boolean) as string[]
+    const reason = reasons.length === 0 ? (item.rejectionReason ?? 'canonical_predicate_rejected') : [...new Set(reasons)].join('+')
+    falseVerifiedReasons[reason] = (falseVerifiedReasons[reason] ?? 0) + 1
+  }
+  const priceLotsCanonicalGapAudit: PriceLotsCanonicalGapAudit = {
+    structuralLots: structuralMatchedLots.length,
+    numericPricedLots: canonicalClassification.filter((item) => item.numericPriced).length,
+    locallyMarkedVerifiedLots: canonicalClassification.filter((item) => item.numericPriced).length,
+    canonicalVerifiedLots: canonicalClassification.filter((item) => item.canonicalVerified).length,
+    partialOnlyLots: canonicalClassification.filter((item) => item.numericPriced && !item.canonicalVerified).length,
+    unresolvedCanonicalLots: canonicalClassification.filter((item) => !item.canonicalVerified).length,
+    falseVerifiedLots: falseVerified.length,
+    falseVerifiedReasons,
+    examples: falseVerified.slice(0, 10).map((item) => ({
+      lotId: item.lot.lotId, token: item.lot.token, entry: item.entry, exit: item.exit,
+      localVerified: item.numericPriced, canonicalVerified: item.canonicalVerified,
+      exactDifferenceReason: [item.entry.rejectionReason, item.exit.rejectionReason].filter(Boolean).join('+') || item.rejectionReason,
+    })),
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[priceLotsCanonicalGapAudit]', priceLotsCanonicalGapAudit)
+
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
   // per-event dump). Splits every structural closed lot by exactly which side(s) resolved a real
   // price, so "fullyPricedClosedLots" (both) is never confused with "attributed" (present) or with a
@@ -2038,9 +2151,9 @@ export async function priceLotsForWallet(params: {
     distinctTokensWithClosedLots: new Set(structuralMatchedLots.map((l) => `${l.chain}:${l.token.toLowerCase()}`)).size,
     fullyPricedClosedLots: bothPriced,
     numericPricedClosedLots: bothPriced,
-    verifiedPricedClosedLots: bothPriced,
+    verifiedPricedClosedLots: priceLotsCanonicalGapAudit.canonicalVerifiedLots,
     partialPricedClosedLots: entryOnlyPriced + exitOnlyPriced,
-    unresolvedVerifiedClosedLots: structuralMatchedLots.length - bothPriced,
+    unresolvedVerifiedClosedLots: priceLotsCanonicalGapAudit.unresolvedCanonicalLots,
     entryOnlyPriced,
     exitOnlyPriced,
     neitherPriced,
@@ -2232,6 +2345,8 @@ export async function priceLotsForWallet(params: {
     goldRushHistoricalPricingEfficiencyAudit,
     coinPaprikaHistoricalAudit,
     coinPaprikaHistoricalEvidence,
+    priceLotsCanonicalGapAudit,
+    sameTxQuoteNormalizationAudit,
     historicalPricingPerformanceSummary,
   }
 }

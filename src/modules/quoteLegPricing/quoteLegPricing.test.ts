@@ -55,6 +55,22 @@ describe('deriveSameTransactionQuotePrice — stablecoin quote', () => {
     assert.equal(result.priceUsd, 0.5)
     assert.equal(result.source, 'same_tx_stable_quote')
   })
+
+  it('normalizes a Base-style 6-decimal raw quote exactly once and rejects double-normalized provenance', () => {
+    const correctlyNormalized: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 100_000_000, direction: 'inbound', logIndex: 0 },
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 2.996415, rawAmount: '2996415', inputWasAlreadyNormalized: true, direction: 'outbound', logIndex: 1 },
+    ]
+    const accepted = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: correctlyNormalized, targetQuantity: 100_000_000 }))
+    assert.equal(accepted.evidence.normalizedAmount, 2.996415)
+    assert.equal(accepted.evidence.rawAmount, '2996415')
+    assert.equal(accepted.priceUsd, 2.996415e-8)
+
+    const doubleNormalized = correctlyNormalized.map((leg) => leg.contract === USDC_ETH ? { ...leg, amount: 2.996415e-6 } : leg)
+    const rejected = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: doubleNormalized, targetQuantity: 100_000_000 }))
+    assert.equal(rejected.priceUsd, null)
+    assert.equal(rejected.evidence.rejectionReason, 'quote_amount_normalization_mismatch')
+  })
 })
 
 describe('deriveSameTransactionQuotePrice — native/WETH quote', () => {

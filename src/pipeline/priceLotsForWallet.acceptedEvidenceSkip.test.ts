@@ -44,6 +44,44 @@ function buildLotEvents(index: number): { buy: NormalizedEvent; sell: Normalized
 }
 
 describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduction follow-up task)', () => {
+  it('classifies the 137-lot regression fixture with 29 canonical lots and 108 numeric-only unresolved lots', async () => {
+    const priorEnabled = process.env.COINPAPRIKA_HISTORICAL_ENABLED
+    process.env.COINPAPRIKA_HISTORICAL_ENABLED = 'false'
+    try {
+      const pairs = Array.from({ length: 137 }, (_, index) => buildLotEvents(index + 10_000))
+      const events = pairs.flatMap(({ buy, sell }) => [buy, sell])
+      const kv = fakeAcceptedEvidenceKv()
+      const now = 1_000_000
+      for (const { buy, sell } of pairs.slice(0, 29)) {
+        const version = lotIdentityVersion({
+          chain: buy.chain, token: buy.contract, openedTxHash: buy.txHash, closedTxHash: sell.txHash,
+          openedAt: Date.parse(buy.timestamp), closedAt: Date.parse(sell.timestamp), amount: buy.amount,
+        })
+        for (const side of ['entry', 'exit'] as const) {
+          const txHash = side === 'entry' ? buy.txHash : sell.txHash
+          const timestamp = Date.parse(side === 'entry' ? buy.timestamp : sell.timestamp)
+          const identity = { chain: buy.chain, token: buy.contract, txHash, side, timestamp, lotIdentityVersion: version }
+          await kv.set(
+            `v1:accepted-evidence:${identity.chain}:${identity.token.toLowerCase()}:${identity.txHash}:${side}:${timestamp}`,
+            buildAcceptedEvidenceEnvelope({ identity, priceUsd: side === 'entry' ? 2 : 3, valueUsd: side === 'entry' ? 2 : 3, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now }),
+          )
+        }
+      }
+      const numeric: PriceSourceFn = () => 2
+      const result = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: { primary: numeric, fallback: numeric }, acceptedEvidenceKv: kv, now: () => now })
+      assert.equal(result.priceLotsCanonicalGapAudit.structuralLots, 137)
+      assert.equal(result.priceLotsCanonicalGapAudit.numericPricedLots, 137)
+      assert.equal(result.priceLotsCanonicalGapAudit.canonicalVerifiedLots, 29)
+      assert.equal(result.priceLotsCanonicalGapAudit.falseVerifiedLots, 108)
+      assert.equal(result.priceLotsCanonicalGapAudit.unresolvedCanonicalLots, 108)
+      assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 216)
+      assert.equal(result.coinPaprikaHistoricalAudit.pricesApplied, 0)
+    } finally {
+      if (priorEnabled === undefined) delete process.env.COINPAPRIKA_HISTORICAL_ENABLED
+      else process.env.COINPAPRIKA_HISTORICAL_ENABLED = priorEnabled
+    }
+  })
+
   it('does not let a present but invalid zero-value record suppress canonical recovery', async () => {
     const now = 1_000_000
     const lot = buildLotEvents(999)
