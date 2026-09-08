@@ -514,6 +514,10 @@ export type UnmatchedEvidenceAuditContext = {
   // exactly as before, never a silently different classification.
   anyProviderAtEventCap?: boolean
   anyProviderFetchFailed?: boolean
+  // Positive provider-pagination proof that every successful bounded request either reached the
+  // requested start or exhausted the provider's history before it. Unlike the legacy timestamp
+  // heuristic, an exhausted short wallet is deterministic evidence rather than `unknown`.
+  boundedWindowStartProven?: boolean
 }
 
 export type UnmatchedEvidenceAudit = {
@@ -662,7 +666,7 @@ export function computeUnmatchedEvidenceAudit(
     ? 'partial'
     : context.anyProviderAtEventCap
       ? 'truncated'
-      : boundaryReached
+      : (context.boundedWindowStartProven ?? boundaryReached)
         ? 'exhaustive'
         : 'unknown'
   const boundedSampleWindowSafe = historyCoverageStatus === 'exhaustive' || historyCoverageStatus === 'truncated'

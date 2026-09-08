@@ -13,7 +13,7 @@
 import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters, MAX_RAW_EVENTS_PER_PROVIDER } from '../modules/providerFetchWindow/index'
 import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from '../lib/knownDexRouters'
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
-import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
+import type { ProviderFetchWindowResult, RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
@@ -858,6 +858,73 @@ export type ProviderFetchWindowDiagnostics = {
   perChain: Array<{ chain: SupportedChain; rawEventCount: number; inboundTransferCount: number }>
   pagesFetched: number | null
   perPageLatencyMs: number[] | null
+}
+
+export type WindowBoundaryProviderAudit = {
+  chain: SupportedChain
+  provider: 'goldrush' | 'alchemy'
+  requestedStart: string
+  requestedEnd: string
+  oldestEventTimestamp: string | null
+  newestEventTimestamp: string | null
+  pagesRequested: number | null
+  pagesSucceeded: number | null
+  paginationExhausted: boolean
+  nextPageKeyPresent: boolean
+  providerCapReached: boolean
+  providerFailed: boolean
+  requestedWindowStartReached: boolean
+  fullWalletHistoryProven: boolean
+  boundedWindowStartProven: boolean
+  boundaryStatus: 'proven' | 'truncated' | 'failed' | 'unknown'
+  boundaryReason: 'oldest_event_reached_start' | 'provider_history_exhausted' | 'continuation_not_followed' | 'provider_failed' | 'pagination_evidence_unavailable'
+}
+
+// PURE. A successful response alone is deliberately insufficient. The bounded start is proven
+// only by an event reaching it, or by positive pagination exhaustion (which proves there are no
+// older provider events to retrieve). This is distinct from proving wallet history to genesis.
+export function buildWindowBoundaryProviderAudit(
+  providerResults: ReadonlyArray<ProviderFetchWindowResult>,
+  requestedStartMs: number,
+  requestedEndMs: number,
+  toleranceMs = 3 * 24 * 60 * 60 * 1000,
+): WindowBoundaryProviderAudit[] {
+  return providerResults.flatMap((chainResult) => (['goldrush', 'alchemy'] as const).map((provider) => {
+    const result = chainResult.providerResults[provider]
+    const timestamps = result.events.map((event) => Date.parse(event.timestamp ?? '')).filter(Number.isFinite)
+    const oldestMs = timestamps.length > 0 ? Math.min(...timestamps) : null
+    const newestMs = timestamps.length > 0 ? Math.max(...timestamps) : null
+    const pagination = result.pagination
+    const providerFailed = !result.ok
+    const reachedByTimestamp = oldestMs !== null && oldestMs <= requestedStartMs + toleranceMs
+    const reachedByExhaustion = result.ok && pagination?.paginationExhausted === true
+    const requestedWindowStartReached = !providerFailed && (reachedByTimestamp || reachedByExhaustion)
+    const providerCapReached = pagination?.providerCapReached ?? result.events.length >= MAX_RAW_EVENTS_PER_PROVIDER
+    const boundaryStatus = providerFailed ? 'failed'
+      : requestedWindowStartReached ? 'proven'
+        : providerCapReached || pagination?.nextPageKeyPresent ? 'truncated'
+          : 'unknown'
+    const boundaryReason = providerFailed ? 'provider_failed'
+      : reachedByTimestamp ? 'oldest_event_reached_start'
+        : reachedByExhaustion ? 'provider_history_exhausted'
+          : providerCapReached || pagination?.nextPageKeyPresent ? 'continuation_not_followed'
+            : 'pagination_evidence_unavailable'
+    return {
+      chain: chainResult.chain, provider,
+      requestedStart: new Date(requestedStartMs).toISOString(),
+      requestedEnd: new Date(requestedEndMs).toISOString(),
+      oldestEventTimestamp: oldestMs === null ? null : new Date(oldestMs).toISOString(),
+      newestEventTimestamp: newestMs === null ? null : new Date(newestMs).toISOString(),
+      pagesRequested: pagination?.pagesRequested ?? null,
+      pagesSucceeded: pagination?.pagesSucceeded ?? null,
+      paginationExhausted: pagination?.paginationExhausted ?? false,
+      nextPageKeyPresent: pagination?.nextPageKeyPresent ?? false,
+      providerCapReached, providerFailed, requestedWindowStartReached,
+      fullWalletHistoryProven: reachedByExhaustion,
+      boundedWindowStartProven: requestedWindowStartReached,
+      boundaryStatus, boundaryReason,
+    }
+  }))
 }
 
 // PURE — extracted so this is directly unit-testable (item 8). See its own call site's comment for
@@ -3052,14 +3119,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // never derived from timestamps alone. `anyProviderFetchFailed` is checked separately (a genuine
   // failure, not a cap, is a different and still fail-closed case — see eventClassification's own
   // HistoryCoverageStatus header).
-  const anyProviderAtEventCap = providerResults.some((r) =>
-    r.providerResults.goldrush.events.length >= MAX_RAW_EVENTS_PER_PROVIDER || r.providerResults.alchemy.events.length >= MAX_RAW_EVENTS_PER_PROVIDER)
+  const requestedWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
+  const windowBoundaryProviderAudit = buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp))
+  const anyProviderAtEventCap = windowBoundaryProviderAudit.some((provider) => provider.providerCapReached)
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
+  const providerWindowStartReached = windowBoundaryProviderAudit.length > 0
+    && windowBoundaryProviderAudit.every((provider) => provider.requestedWindowStartReached)
   const unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
     {
-      windowStartTimestamp: Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
-      anyProviderAtEventCap, anyProviderFetchFailed,
+      windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
     },
   )
   // [window-boundary-proof-audit], DISCLOSED, DIAGNOSTIC ONLY (window-boundary-proof audit task).
@@ -3091,6 +3161,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
       anyProviderAtEventCap,
       anyProviderFetchFailed,
+      providerWindowStartReached,
+      windowBoundaryProviderAudit,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
       preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
       preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
@@ -3478,6 +3550,46 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     canonicalSampleSelector,
   })
+  {
+    const gate = reconciledPnlSummary.publicPnlGateAudit
+    const boundaryDependentSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary
+      + unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation
+    const boundaryResolvedByRecovery = targetedUnmatchedExits.filter((exit) => recoveryPolicy.evaluation.some((entry) =>
+      entry.chain === exit.chain && entry.token.toLowerCase() === exit.token.toLowerCase()
+      && entry.recoveredEvents.some((event) => event.toAddress?.toLowerCase() === params.walletAddress.toLowerCase()
+        && event.timestamp !== null && Date.parse(event.timestamp) < exit.timestamp * 1000))).length
+    // eslint-disable-next-line no-console
+    console.warn('[bounded-pnl-boundary-audit]', {
+      requestedWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      boundedWindowStart: new Date(requestedWindowStart).toISOString(),
+      providerWindowStartReached,
+      historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
+      windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
+      unmatchedSellsTotal: fifoAndPnl.unmatchedSellEvents.length,
+      sellsWithEarlierBuyInWindow: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow,
+      boundaryDependentSells,
+      boundaryResolvedByRecovery,
+      unmatchedSellAudit: {
+        total: fifoAndPnl.unmatchedSellEvents.length,
+        earlierBuyInWindow: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow,
+        boundaryDependent: boundaryDependentSells,
+        genuineTransfer: Object.values(unmatchedEvidenceAudit.transferDistributionSells).reduce((sum, count) => sum + (count ?? 0), 0),
+        unsupportedSwap: 0,
+        invalidIdentity: unmatchedEvidenceAudit.unmatchedIdentityJoinFailures,
+        duplicateFragment: 0,
+        recoveryFailed: 0,
+        other: unmatchedEvidenceAudit.structurallyInvalidSells,
+      },
+      boundedSampleVerifiedLots: gate.verifiedClosedLots,
+      boundedSampleCoverage: gate.verifiedPricingCoverage,
+      // Never leak a blocked internal candidate. The value is emitted only after this exact gate
+      // has legitimately admitted the bounded sample.
+      boundedSampleRealizedPnlCandidate: gate.boundedSampleEligible ? reconciledPnlSummary.realizedPnlUsd : null,
+      eligible: gate.boundedSampleEligible,
+      blockers: gate.boundedSampleBlockingReasons,
+      exactFailureReason: gate.boundedSampleBlockingReasons[0] ?? null,
+    })
+  }
   // RECEIPT COMPLETION OUTCOME, DISCLOSED: one final gate-level before/after record. Unlike the
   // earlier decoder/FIFO diagnostics, the after-side here is the reconciler's official public gate
   // view, so recovered exact exits can be traced all the way through structural lots, canonical

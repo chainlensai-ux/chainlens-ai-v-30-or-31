@@ -662,6 +662,21 @@ test('a short real wallet history (no cap, no failure, boundary genuinely not re
   assert.equal(audit.boundaryProofDiagnostics.boundaryIndependentSells.length, 5)
 })
 
+test('positive provider exhaustion proves the bounded start for a short wallet without claiming a timestamp at the boundary', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: false, anyProviderFetchFailed: false, boundedWindowStartProven: true,
+  })
+  assert.equal(audit.historyCoverageStatus, 'exhaustive')
+  assert.equal(audit.windowBoundaryProven, true)
+  assert.equal(audit.boundedSampleWindowSafe, true)
+  assert.equal(audit.preWindowInventoryExits, 110)
+  assert.equal(audit.unknownSells, 5, 'sells with an earlier in-window buy remain independently blocking')
+  assert.equal(audit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
+  assert.equal(audit.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5)
+})
+
 test('a genuinely exhaustive fetch (no cap, no failure, boundary reached) is unaffected by this task — byte-for-byte prior behavior', () => {
   const f = boundaryProofFixture()
   const classified = classifyEvents([f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents], noRouters)

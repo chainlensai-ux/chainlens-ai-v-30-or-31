@@ -53,6 +53,17 @@ export type SingleProviderFetchResult = {
   ok: boolean
   events: RawProviderEvent[]
   errorReason: string | null
+  // Pagination evidence from the exact bounded request. `paginationExhausted` is true only when
+  // the provider positively omitted/cleared its continuation marker; it is never inferred from a
+  // small event count. This lets downstream code prove a bounded window for a young/quiet wallet
+  // without falsely claiming that the wallet's complete lifetime history was traversed.
+  pagination?: {
+    pagesRequested: number
+    pagesSucceeded: number
+    paginationExhausted: boolean
+    nextPageKeyPresent: boolean
+    providerCapReached: boolean
+  }
   // ADDITIVE, OPTIONAL, DISCLOSED (Alchemy-history-ingestion-regression task): low-level per-call
   // outcome counts backing the [alchemy-history-ingestion-audit] diagnostic — populated only by
   // fetchAlchemyRawEvents today. Omitted (undefined) for every other/prior caller, so this is a
