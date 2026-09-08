@@ -485,7 +485,8 @@ describe('canonicalPnlSampleManifest — value replay + reason codes (requiremen
       'manifest_partial_fill_ordinal_mismatch', 'manifest_duplicate_identity', 'manifest_candidate_only_lot',
       'manifest_replay_success', 'manifest_entry_price_mismatch', 'manifest_exit_price_mismatch',
       'manifest_cost_basis_mismatch', 'manifest_proceeds_mismatch', 'manifest_realized_pnl_mismatch',
-      'manifest_evidence_quality_mismatch', 'manifest_realized_total_mismatch', 'manifest_fingerprint_mismatch',
+      'manifest_evidence_quality_mismatch', 'manifest_canonical_verifier_rejection',
+      'manifest_realized_total_mismatch', 'manifest_fingerprint_mismatch',
     ] as const) {
       assert.equal(typeof result.reasonCounts[code], 'number', `${code} must always be reported`)
     }
@@ -1534,6 +1535,52 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
 })
 
 describe('canonical manifest partial reconciliation policy', () => {
+  it('does not collapse the confirmed 97-old/108-current/37-replay-success shape', async () => {
+    const oldLots = buildLots(97, 97)
+    const newLots = Array.from({ length: 11 }, (_, offset) => {
+      const i = 97 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('live-97-108'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const stale = {
+      ...original,
+      verifiedLotRecords: original.verifiedLotRecords.map((record, i) => i < 60
+        ? { ...record, entryEvidenceLotIdentityVersion: `expired-${i}` }
+        : record),
+    }
+
+    const first = await replay(stale, currentLots, evidence.loader)
+    assert.equal(first.reasonCounts.manifest_replay_success, 37)
+    assert.equal(first.manifestLotsMissingCurrentEvidence.length, 60)
+    assert.equal(first.candidateNewEvidenceLotKeys.length, 11)
+    assert.equal(first.structuralIntegrityFailure, false)
+    assert.equal(first.manifestStructuralFailureAudit.refreshAllowed, true)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(first, 108), true)
+    assert.equal(first.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'the stale manifest remains fail-closed before durable refresh')
+
+    const kv = jsonKv()
+    const refreshed = await buildRefreshedManifest({
+      priorManifest: stale, identity: identity('live-97-108'), allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'partially-unreproducible-manifest-current-evidence-refresh',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, refreshed), true)
+    const reloaded = await readCanonicalPnlSampleManifest(kv, identity('live-97-108'))
+    assert.ok(reloaded.manifest)
+    const second = await replay(reloaded.manifest!, currentLots, evidence.loader)
+    assert.equal(second.outcome, 'applied')
+    assert.equal(second.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+  })
+
   it('refreshes the exact live 24-old/29-current shape without publishing invalid stale records', async () => {
     const oldLots = buildLots(24, 24)
     const currentLots = [...oldLots, ...Array.from({ length: 5 }, (_, offset) => {
@@ -1561,6 +1608,16 @@ describe('canonical manifest partial reconciliation policy', () => {
     assert.equal(first.candidateNewEvidenceLotKeys.length, 5)
     assert.equal(first.structuralIntegrityFailure, false)
     assert.equal(shouldRefreshPartiallyUnreproducibleManifest(first, 29), true)
+    assert.equal(first.manifestStructuralFailureAudit.structuralFailure, false)
+    assert.equal(first.manifestStructuralFailureAudit.refreshAllowed, true)
+    assert.equal(first.manifestStructuralFailureAudit.staleEvidenceReasons.accepted_side_evidence_unavailable, 3)
+    assert.equal(first.reasonCounts.manifest_evidence_quality_mismatch, 0)
+    assert.ok(first.manifestEvidenceQualityComparisonAudit.every((row) => row.normalizedManifestQuality === 'verified'
+      && row.normalizedCurrentQuality === 'verified' && row.equalityResult && row.mismatchReason === null),
+    'verified -> verified comparisons must never be called evidence-quality mismatches')
+    assert.equal(first.manifestSideEvidenceAudit.filter((row) => row.exactMissingSide !== null).length, 3)
+    assert.ok(first.manifestSideEvidenceAudit.filter((row) => row.exactMissingSide !== null)
+      .every((row) => row.structuralOrEvidenceOnly === 'evidence_only' && row.canonicalCandidatePresent && row.currentLotVerified))
     assert.equal(first.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'stale replay itself remains atomic and fail closed')
 
     const refreshed = await buildRefreshedManifest({
@@ -1574,6 +1631,7 @@ describe('canonical manifest partial reconciliation policy', () => {
     assert.equal(second.outcome, 'applied')
     assert.equal(second.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 29)
     assert.equal(second.manifestLotsMissingCurrentEvidence.length, 0)
+    assert.equal(second.manifestStructuralFailureAudit.structuralFailure, false)
   })
 
   it('never refreshes a structurally incompatible manifest', async () => {
@@ -1583,6 +1641,10 @@ describe('canonical manifest partial reconciliation policy', () => {
     const result = await replay(corrupt, lots, evidence.loader)
     assert.equal(result.structuralIntegrityFailure, true)
     assert.equal(shouldRefreshPartiallyUnreproducibleManifest(result, 2), false)
+    assert.equal(result.manifestStructuralFailureAudit.structuralFailure, true)
+    assert.equal(result.manifestStructuralFailureAudit.refreshAllowed, false)
+    assert.equal(result.manifestStructuralFailureAudit.refreshBlockedReason, 'true_structural_or_value_integrity_failure')
+    assert.ok(result.manifestStructuralFailureAudit.actualStructuralReasons.duplicate_canonical_identity > 0)
   })
 })
 
