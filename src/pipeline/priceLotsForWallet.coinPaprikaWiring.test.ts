@@ -72,12 +72,29 @@ describe('priceLotsForWallet CoinPaprika canonical fallback wiring', () => {
     assert.equal(result.priceUsdLookup(events[0]), null)
   })
 
-  it('does not invoke CoinPaprika for a side resolved by a stronger source', async () => {
+  it('keeps a numeric provider result unresolved until canonical evidence verifies that side', async () => {
     process.env.COINPAPRIKA_API_KEY = 'test'
     const buy = event(0, 'inbound'); const sell = event(0, 'outbound')
     const stronger: PriceSourceFn = (_token, _chain, timestamp) => timestamp === Date.parse(buy.timestamp) ? 3 : null
     const result = await priceLotsForWallet({ normalizedEvents: [buy, sell], recoveredEvents: [], priceSources: { primary: stronger, fallback: stronger }, coinPaprikaFetchImpl: paprikaFetch })
-    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 1)
+    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 2)
+    assert.equal(result.priceLotsCanonicalGapAudit.numericPricedLots, 0)
+    assert.equal(result.priceLotsCanonicalGapAudit.canonicalVerifiedLots, 0)
     assert.equal(result.priceUsdLookup(buy), 3)
+  })
+
+  it('separates numeric pricing from canonical verification and sends both unresolved sides to CoinPaprika', async () => {
+    process.env.COINPAPRIKA_API_KEY = 'test'
+    const events = [event(0, 'inbound'), event(0, 'outbound')]
+    const numeric: PriceSourceFn = () => 3
+    const result = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: { primary: numeric, fallback: numeric }, coinPaprikaFetchImpl: paprikaFetch })
+    assert.equal(result.priceLotsCanonicalGapAudit.structuralLots, 1)
+    assert.equal(result.priceLotsCanonicalGapAudit.numericPricedLots, 1)
+    assert.equal(result.priceLotsCanonicalGapAudit.locallyMarkedVerifiedLots, 1)
+    assert.equal(result.priceLotsCanonicalGapAudit.canonicalVerifiedLots, 0)
+    assert.equal(result.priceLotsCanonicalGapAudit.falseVerifiedLots, 1)
+    assert.equal(result.priceLotsCanonicalGapAudit.unresolvedCanonicalLots, 1)
+    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 2)
+    assert.equal(result.coinPaprikaHistoricalAudit.pricesApplied, 0)
   })
 })

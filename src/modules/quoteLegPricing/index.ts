@@ -23,6 +23,10 @@ export type SwapLeg = {
   symbol: string
   decimals: number
   amount: number
+  /** Raw integer amount retained by normalization. When present it must reproduce `amount`. */
+  rawAmount?: string | null
+  /** True only when `amount` has already been normalized exactly once by the canonical normalizer. */
+  inputWasAlreadyNormalized?: boolean
   direction: SwapLegDirection
   logIndex: number
   // Set by the caller when an upstream check has already identified this leg as NOT a genuine swap
@@ -43,6 +47,10 @@ export type QuoteLegEvidence = {
   quoteDecimals: number | null
   independentQuoteLeg: boolean
   rejectionReason: string | null
+  rawAmount: string | null
+  inputWasAlreadyNormalized: boolean
+  normalizedAmount: number | null
+  usdPrice: number | null
 }
 
 export type QuoteLegPriceSuccess = {
@@ -173,7 +181,7 @@ function isNativeOrCanonicalWeth(chain: SupportedChain, leg: SwapLeg): boolean {
   return isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'WETH'
 }
 
-function failure(params: DeriveSameTransactionQuotePriceParams, reason: string, targetDecimals: number | null): QuoteLegPriceFailure {
+function failure(params: DeriveSameTransactionQuotePriceParams, reason: string, targetDecimals: number | null, quoteLeg?: SwapLeg, usdPrice: number | null = null): QuoteLegPriceFailure {
   return {
     priceUsd: null,
     source: null,
@@ -186,13 +194,31 @@ function failure(params: DeriveSameTransactionQuotePriceParams, reason: string, 
       txHash: params.txHash,
       timestamp: params.timestamp,
       targetToken: params.targetToken,
-      quoteToken: null,
+      quoteToken: quoteLeg?.contract ?? null,
       targetDecimals,
-      quoteDecimals: null,
+      quoteDecimals: quoteLeg?.decimals ?? null,
       independentQuoteLeg: false,
       rejectionReason: reason,
+      rawAmount: quoteLeg?.rawAmount ?? null,
+      inputWasAlreadyNormalized: quoteLeg?.inputWasAlreadyNormalized === true,
+      normalizedAmount: quoteLeg && isFinitePositive(quoteLeg.amount) ? quoteLeg.amount : null,
+      usdPrice,
     },
   }
+}
+
+function normalizedLegAmount(leg: SwapLeg): { amount: number | null; reason: string | null } {
+  if (!isFinitePositive(leg.amount)) return { amount: null, reason: 'invalid_quote_amount' }
+  if (leg.rawAmount == null) return leg.inputWasAlreadyNormalized === false
+    ? { amount: null, reason: 'ambiguous_quote_amount_provenance' }
+    : { amount: leg.amount, reason: null }
+  if (!Number.isInteger(leg.decimals) || leg.decimals < 0) return { amount: null, reason: 'invalid_quote_decimals' }
+  const raw = Number(leg.rawAmount)
+  const normalized = Math.abs(raw) / Math.pow(10, leg.decimals)
+  if (!Number.isFinite(normalized) || normalized <= 0) return { amount: null, reason: 'invalid_raw_quote_amount' }
+  const tolerance = Math.max(Number.EPSILON, Math.abs(normalized) * 1e-12)
+  if (Math.abs(normalized - leg.amount) > tolerance) return { amount: null, reason: 'quote_amount_normalization_mismatch' }
+  return { amount: normalized, reason: null }
 }
 
 function tieBreakSort(legs: SwapLeg[]): SwapLeg[] {
@@ -258,7 +284,9 @@ export function deriveSameTransactionQuotePrice(
   const stableCandidates = candidateLegs.filter((leg) => stablecoinSymbolFor(chain, leg.contract) !== null)
   if (stableCandidates.length > 0) {
     const chosen = tieBreakSort(stableCandidates)[0]
-    const quoteQuantity = chosen.amount
+    const normalized = normalizedLegAmount(chosen)
+    if (normalized.amount === null) return failure(params, normalized.reason!, targetDecimals, chosen, 1)
+    const quoteQuantity = normalized.amount
     const quoteValueUsd = quoteQuantity // 1 verified stablecoin unit == $1, by definition
     const priceUsd = quoteValueUsd / targetQuantity
     if (!Number.isFinite(priceUsd) || priceUsd <= 0) return failure(params, 'non_finite_derived_price', targetDecimals)
@@ -279,6 +307,10 @@ export function deriveSameTransactionQuotePrice(
         quoteDecimals: chosen.decimals,
         independentQuoteLeg: true,
         rejectionReason: null,
+        rawAmount: chosen.rawAmount ?? null,
+        inputWasAlreadyNormalized: chosen.inputWasAlreadyNormalized !== false,
+        normalizedAmount: quoteQuantity,
+        usdPrice: 1,
       },
     }
   }
@@ -287,7 +319,9 @@ export function deriveSameTransactionQuotePrice(
   if (nativeCandidates.length > 0) {
     if (!isFinitePositive(historicalNativePrice)) return failure(params, 'missing_verified_native_price', targetDecimals)
     const chosen = tieBreakSort(nativeCandidates)[0]
-    const quoteQuantity = chosen.amount
+    const normalized = normalizedLegAmount(chosen)
+    if (normalized.amount === null) return failure(params, normalized.reason!, targetDecimals, chosen, historicalNativePrice)
+    const quoteQuantity = normalized.amount
     const quoteValueUsd = quoteQuantity * historicalNativePrice
     const priceUsd = quoteValueUsd / targetQuantity
     if (!Number.isFinite(priceUsd) || priceUsd <= 0) return failure(params, 'non_finite_derived_price', targetDecimals)
@@ -308,6 +342,10 @@ export function deriveSameTransactionQuotePrice(
         quoteDecimals: chosen.decimals,
         independentQuoteLeg: true,
         rejectionReason: null,
+        rawAmount: chosen.rawAmount ?? null,
+        inputWasAlreadyNormalized: chosen.inputWasAlreadyNormalized !== false,
+        normalizedAmount: quoteQuantity,
+        usdPrice: historicalNativePrice,
       },
     }
   }
@@ -328,6 +366,8 @@ export function groupSwapLegsByTransaction(events: readonly NormalizedEvent[]): 
       symbol: event.symbol,
       decimals: event.tokenDecimals,
       amount: event.amount,
+      rawAmount: event.amountRaw,
+      inputWasAlreadyNormalized: true,
       direction: event.direction,
       logIndex: list.length,
     })
