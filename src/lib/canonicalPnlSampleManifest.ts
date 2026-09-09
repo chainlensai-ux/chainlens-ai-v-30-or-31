@@ -344,6 +344,10 @@ export type SideAllocationShare = {
   allocatedValueUsd: number
   numerator: string
   denominator: string
+  // See allocateSideValueAcrossGroup's own header — true only when this lot's OWN exact rational
+  // share of the group total was itself below the smallest representable USD unit, never a
+  // byproduct of which lot happened to absorb a rounding remainder.
+  dustBelowPrecision: boolean
 }
 
 // PURE, DETERMINISTIC (requirement #6): allocates ONE shared transaction-side total across every
@@ -386,6 +390,24 @@ export function demoteLotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[])
   return lots.map((lot) => (demote.has(lot) ? { ...lot, evidenceQuality: 'unpriced' as const } : lot))
 }
 
+// LARGEST-REMAINDER ALLOCATION, DISCLOSED (canonical-manifest-shared-group-allocation follow-up
+// task — confirmed: the PRIOR "dump the whole truncation remainder onto whichever lot happens to
+// sort last" rule is not the source of a large per-group value gap (each individual floor share can
+// only ever lose LESS THAN ONE VALUE_SCALE unit — under $0.00000001 — relative to its own exact
+// rational share, so the total truncation across an entire group is bounded by
+// `group.length - 1` scale units, sub-cent even for hundreds of siblings). It is, however, an
+// unnecessary and UNFAIR concentration of that already-tiny truncation: one arbitrarily-chosen lot
+// (whichever sorts last) always absorbs 100% of it, rather than the group's real fractional
+// remainders deciding who receives the rounding. Replaced with the standard, deterministic
+// LARGEST-REMAINDER METHOD: every lot's exact rational share is floored first (this is where genuine
+// dust — a share whose TRUE value is itself below the smallest representable USD unit — floors to
+// zero, honestly, and stays zero: see this function's own `dustBelowPrecision` flag), then the
+// group's total leftover scale-units (always < group.length, by construction) are handed out ONE AT
+// A TIME to the lots with the LARGEST fractional remainder — the textbook value-conserving
+// distribution, never favoring array position. Ties are broken by a stable, canonical (never
+// input-order-dependent) sort key, so the result is bit-for-bit reproducible regardless of which
+// order `groupLots` arrives in — required so build and replay (which call this same function from
+// two independently-constructed arrays) always agree.
 export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], totalValueUsd: number): SideAllocationShare[] {
   // Stable sort key: identity fields + canonical (float-noise-free) amount — the same fields
   // buildCanonicalLotIdentities' own ordinal assignment sorts by, without needing the full-array
@@ -396,17 +418,47 @@ export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], t
   const totalRawQuantity = rawQuantities.reduce((sum, q) => sum + q, BigInt(0))
   const totalValueScaled = toScaledValue(totalValueUsd)
   if (totalRawQuantity <= BigInt(0) || ordered.length === 0) {
-    return ordered.map((lot) => ({ lot, allocatedValueUsd: 0, numerator: '0', denominator: totalRawQuantity.toString() }))
+    return ordered.map((lot) => ({ lot, allocatedValueUsd: 0, numerator: '0', denominator: totalRawQuantity.toString(), dustBelowPrecision: false }))
   }
-  const shares = rawQuantities.map((q) => (totalValueScaled * q) / totalRawQuantity)
-  const allocatedSoFar = shares.reduce((sum, s) => sum + s, BigInt(0))
-  const remainder = totalValueScaled - allocatedSoFar
-  shares[shares.length - 1] += remainder
+  // Exact rational share = (totalValueScaled * q) / totalRawQuantity. Floor (`base`) and the exact
+  // remainder (`remainder = numerator - base * totalRawQuantity`, always in [0, totalRawQuantity))
+  // are computed together with a single BigInt divmod so no precision is lost re-deriving one from
+  // the other.
+  const bases: bigint[] = []
+  const remainders: bigint[] = []
+  for (const q of rawQuantities) {
+    const numerator = totalValueScaled * q
+    const base = numerator / totalRawQuantity
+    bases.push(base)
+    remainders.push(numerator - base * totalRawQuantity)
+  }
+  const allocatedSoFar = bases.reduce((sum, s) => sum + s, BigInt(0))
+  // Always a small non-negative integer count of scale-units (< ordered.length) — the real,
+  // conserved leftover this group's exact rational shares could not floor-divide evenly.
+  let leftoverUnits = totalValueScaled - allocatedSoFar
+  const distributionOrder = ordered
+    .map((lot, i) => i)
+    .sort((a, b) => {
+      // Larger fractional remainder wins the next unit first — the textbook largest-remainder rule.
+      if (remainders[a] !== remainders[b]) return remainders[b] > remainders[a] ? 1 : -1
+      // Deterministic, canonical (never input-order-dependent) tie-break.
+      return sortKey(ordered[a]).localeCompare(sortKey(ordered[b]))
+    })
+  const shares = [...bases]
+  for (const index of distributionOrder) {
+    if (leftoverUnits <= BigInt(0)) break
+    shares[index] += BigInt(1)
+    leftoverUnits -= BigInt(1)
+  }
   return ordered.map((lot, i) => ({
     lot,
     allocatedValueUsd: fromScaledValue(shares[i]),
     numerator: rawQuantities[i].toString(),
     denominator: totalRawQuantity.toString(),
+    // Real, honest dust: this lot's OWN exact rational share (before any remainder unit) was itself
+    // zero — i.e. its true fractional value never reached the smallest representable USD unit, never
+    // a byproduct of remainder placement. See CanonicalAllocationOccurrenceAudit's own header.
+    dustBelowPrecision: bases[i] === BigInt(0) && shares[i] === BigInt(0),
   }))
 }
 
@@ -661,6 +713,43 @@ export type ManifestCanonicalVerifierAuditExample = {
   sourceStage: 'old_manifest_replay' | 'refresh_candidate' | 'refreshed_manifest_replay'
 }
 
+// GROUP-CONSERVATION AUDIT, DISCLOSED (canonical-manifest-shared-group-allocation follow-up task) —
+// see buildManifestFromCandidate's own "GROUP-CONSERVATION AUDIT" comment for the full disclosure.
+// Diagnostic only, bounded, never read by any publication decision.
+export type CanonicalAllocationOccurrenceAudit = {
+  lotKey: string
+  quantity: number
+  allocatedUsd: number
+  dustBelowPrecision: boolean
+  published: boolean
+}
+
+export type CanonicalAllocationGroupAudit = {
+  evidenceKey: string
+  side: 'entry' | 'exit'
+  acceptedEvidenceUsd: number
+  occurrenceCountBefore: number
+  allocatedUsdSum: number
+  publishedUsdSum: number
+  residualUsd: number
+  conservationSatisfied: boolean
+  allocations: CanonicalAllocationOccurrenceAudit[]
+}
+
+export type ManifestAllocationBuildAudit = {
+  inputCanonicalCandidates: number
+  groupsBuilt: number
+  occurrenceLocalRejects: number
+  occurrenceLocalRejectReasons: CanonicalVerifiedPredicateReasonCounts
+  validSiblingsPreserved: number
+  finalManifestLots: number
+  acceptedEvidenceTotalUsd: number
+  publishedAllocatedUsd: number
+  explicitResidualUsd: number
+  conservationFailures: number
+  groups: CanonicalAllocationGroupAudit[]
+}
+
 export type ManifestCanonicalVerifierAudit = {
   rejectedCount: number
   reasons: CanonicalVerifiedPredicateReasonCounts
@@ -690,6 +779,8 @@ export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
   // OPTIONAL, DIAGNOSTIC ONLY, DISCLOSED — see ManifestCanonicalVerifierAudit's own header. Absent
   // on a manifest built by any caller that predates this field; never required for validity.
   manifestCanonicalVerifierAudit?: ManifestCanonicalVerifierAudit
+  // OPTIONAL, DIAGNOSTIC ONLY, DISCLOSED — see ManifestAllocationBuildAudit's own header.
+  manifestAllocationBuildAudit?: ManifestAllocationBuildAudit
 }
 
 type DeterminismFingerprints = {
@@ -745,8 +836,6 @@ export async function buildManifestFromCandidate(params: {
   computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
 }): Promise<CanonicalPnlSampleManifest> {
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
-  const incompleteSideLots = lotsOnIncompleteAcceptedSides(params.allCandidateLots)
-  const verifiedForManifest = params.candidateVerifiedLots.filter((lot) => !incompleteSideLots.has(lot))
 
   // GROUP BY SHARED EVIDENCE SIDE, DISCLOSED (Part A): populated from `allCandidateLots` — every
   // structurally-matched lot drawing from a transaction side, whether currently verified or not —
@@ -759,38 +848,56 @@ export async function buildManifestFromCandidate(params: {
     exitGroups.set(exitKey, [...(exitGroups.get(exitKey) ?? []), lot])
   }
 
-  // A side-scoped accepted-evidence total can only be represented algebraically by the manifest
-  // when every FIFO slice that consumed that side is itself publishable. If an unverified sibling
-  // is omitted, allocating over the full side (correctly) and then persisting only the verified
-  // shares makes the manifest claim less than the evidence total. Allocating over only the
-  // verified siblings would be worse: it would silently transfer the unverified sibling's value
-  // into the official sample. Fail closed instead. A lot is eligible only when BOTH of its shared
-  // sides are completely contained in the verified candidate set.
-  const verifiedCandidateSet = new Set(params.candidateVerifiedLots)
-  const hasCompleteVerifiedSide = (group: readonly MatchedLot[] | undefined) =>
-    Boolean(group?.length) && group!.every((member) => verifiedCandidateSet.has(member))
-  const algebraicallyVerifiableLots = params.candidateVerifiedLots.filter((lot) => {
-    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
-    return hasCompleteVerifiedSide(entryGroups.get(entryKey)) && hasCompleteVerifiedSide(exitGroups.get(exitKey))
-  })
+  // WHOLE-GROUP DEMOTION REMOVED, DISCLOSED (canonical-manifest-shared-group-allocation follow-up
+  // task — confirmed root cause of a live 108-candidate -> 37-published collapse). The REMOVED rule
+  // required every sibling sharing a lot's entry/exit evidence side to ALSO be individually verified
+  // before that lot's own, correctly-allocated share could publish — reasoning it would otherwise
+  // "claim less than the evidence total". That reasoning does not hold: `allocateSideValueAcrossGroup`
+  // below already allocates the group's REAL accepted-evidence total across the FULL sibling set (see
+  // `entryGroups`/`exitGroups` above, unconditionally built from every candidate, verified or not),
+  // by raw quantity. A verified lot's resulting share is therefore an exact, conserving fraction of
+  // the real evidence total regardless of whether its siblings are themselves verified — publishing
+  // it never "claims" anything beyond that lot's own true, quantity-proportional entitlement, and an
+  // unverified sibling's own (also correctly computed) share simply never gets its own record. What
+  // WOULD be a real integrity problem — the group's total genuinely failing to reconcile against
+  // the accepted-evidence side total — is now caught directly and explicitly (see
+  // `canonicalAllocationGroupAudit`/the conservation check below), not inferred indirectly from
+  // sibling verification counts. Every canonical-verified candidate is therefore eligible for
+  // allocation; occurrence-LOCAL failures (a lot's own reconstructed share genuinely non-positive —
+  // see the build-time self-validation loop below) remain the only exclusion, scoped to that lot
+  // alone, never its unrelated siblings.
+  const algebraicallyVerifiableLots = params.candidateVerifiedLots
 
   // Load each group's evidence ONCE (never once per sibling) and compute its allocation once.
   const entryEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
   const exitEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
   const entryAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
   const exitAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
+  // GROUP-CONSERVATION AUDIT INPUT, DISCLOSED — the exact (stablecoin-normalized) total each side's
+  // allocation was actually computed from, captured once here so the conservation check below never
+  // re-derives it from a second, possibly-diverging call.
+  const entryGroupTotalByKey = new Map<string, number>()
+  const exitGroupTotalByKey = new Map<string, number>()
   if (params.loadEvidence) {
     for (const [key, groupLots] of entryGroups) {
       // eslint-disable-next-line no-await-in-loop
       const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'entry'), lotIdentityVersion: null })
       entryEvidenceByKey.set(key, evidence)
-      if (evidence) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)).map((s) => [s.lot, s])))
+      if (evidence) {
+        const groupTotal = stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)
+        entryGroupTotalByKey.set(key, groupTotal)
+        entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, groupTotal).map((s) => [s.lot, s])))
+      }
     }
     for (const [key, groupLots] of exitGroups) {
       // eslint-disable-next-line no-await-in-loop
       const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'exit'), lotIdentityVersion: null })
       exitEvidenceByKey.set(key, evidence)
-      if (evidence) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)).map((s) => [s.lot, s])))
+      if (evidence) {
+        const groupTotal = stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)
+        exitGroupTotalByKey.set(key, groupTotal)
+        exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, groupTotal).map((s) => [s.lot, s])))
+      }
     }
   }
 
@@ -864,6 +971,11 @@ export async function buildManifestFromCandidate(params: {
     groupCostBasisUsd: number | null; groupProceedsUsd: number | null; groupRealizedPnlUsd: number | null
     rejectionReason: CanonicalVerifiedRejectionReason
   }> = []
+  // GROUP-CONSERVATION AUDIT INPUT, DISCLOSED — every candidate lot that ends up with a PUBLISHED
+  // manifest record, tracked by object identity so the conservation check below can tell a group's
+  // real accepted-evidence total apart from the (honestly smaller, whenever a sibling is unverified
+  // or occurrence-locally rejected) sum this scan actually published for it.
+  const publishedLotSet = new Set<MatchedLot>()
 
   for (const [key, members] of byOccurrenceKey) {
     const representative = members[0]
@@ -910,6 +1022,7 @@ export async function buildManifestFromCandidate(params: {
     }
 
     frozenSharesByKey.set(key, { cost: costShares, proceeds: proceedsShares, pnl: pnlShares })
+    for (const member of members) publishedLotSet.add(member.lot)
 
     records.push({
       key,
@@ -970,6 +1083,88 @@ export async function buildManifestFromCandidate(params: {
   // number of records, which now counts GROUPS rather than lots.
   const verifiedLotCountFromGroups = dedupedRecords.reduce((sum, r) => sum + r.occurrenceCount, 0)
 
+  // GROUP-CONSERVATION AUDIT, DISCLOSED (canonical-manifest-shared-group-allocation follow-up task)
+  // — proves, per evidence-side group, that removing the old whole-group demotion (see
+  // `algebraicallyVerifiableLots`'s own header above) never let a published value diverge from the
+  // real accepted-evidence total. `allocatedUsdSum` (every group member's share, published or not)
+  // must equal `acceptedEvidenceUsd` — this holds BY CONSTRUCTION (`allocateSideValueAcrossGroup`'s
+  // BigInt exact split), so a failure here is a genuine, previously-impossible-to-detect corruption,
+  // never an expected outcome. `residualUsd` (accepted total minus PUBLISHED total) is EXPECTED to be
+  // non-zero whenever a sibling is unverified or was occurrence-locally rejected — that residual is
+  // real, honestly unpublished value, never silently erased: it is reported here explicitly rather
+  // than only implied by a lower final lot count.
+  const buildGroupConservationAudit = (
+    groups: ReadonlyMap<string, MatchedLot[]>,
+    groupTotalByKey: ReadonlyMap<string, number>,
+    allocationByKey: ReadonlyMap<string, Map<MatchedLot, SideAllocationShare>>,
+    side: 'entry' | 'exit',
+  ): CanonicalAllocationGroupAudit[] => {
+    const results: CanonicalAllocationGroupAudit[] = []
+    for (const [key, groupLots] of groups) {
+      const acceptedEvidenceUsd = groupTotalByKey.get(key)
+      if (acceptedEvidenceUsd === undefined) continue // no evidence loaded for this side — nothing to conserve
+      const shareByLot = allocationByKey.get(key)
+      const allocations: CanonicalAllocationOccurrenceAudit[] = groupLots.map((lot) => {
+        const share = shareByLot?.get(lot) ?? null
+        return {
+          lotKey: identities.get(lot)?.key ?? `${lot.chain}:${lot.token}:${lot.openedTxHash}:${lot.closedTxHash}`,
+          quantity: lot.amount,
+          allocatedUsd: share?.allocatedValueUsd ?? 0,
+          dustBelowPrecision: share?.dustBelowPrecision ?? false,
+          published: publishedLotSet.has(lot),
+        }
+      })
+      const allocatedUsdSum = Math.round(allocations.reduce((sum, a) => sum + a.allocatedUsd, 0) * 1e8) / 1e8
+      const publishedUsdSum = Math.round(allocations.filter((a) => a.published).reduce((sum, a) => sum + a.allocatedUsd, 0) * 1e8) / 1e8
+      const residualUsd = Math.round((allocatedUsdSum - publishedUsdSum) * 1e8) / 1e8
+      const conservationSatisfied = Math.abs(allocatedUsdSum - acceptedEvidenceUsd) <= CANONICAL_VALUE_TOLERANCE
+      results.push({
+        evidenceKey: key, side, acceptedEvidenceUsd, occurrenceCountBefore: groupLots.length,
+        allocatedUsdSum, publishedUsdSum, residualUsd, conservationSatisfied, allocations,
+      })
+    }
+    return results
+  }
+  const entryGroupAudits = buildGroupConservationAudit(entryGroups, entryGroupTotalByKey, entryAllocationByKey, 'entry')
+  const exitGroupAudits = buildGroupConservationAudit(exitGroups, exitGroupTotalByKey, exitAllocationByKey, 'exit')
+  const allGroupAudits = [...entryGroupAudits, ...exitGroupAudits]
+  const conservationFailures = allGroupAudits.filter((g) => !g.conservationSatisfied)
+  if (conservationFailures.length > 0) {
+    // A conservation failure here is a genuine, previously-invisible corruption (the allocation math
+    // itself disagreeing with its own accepted-evidence input) — never an expected residual from
+    // unverified siblings or occurrence-local rejections (those are captured, and explained, by
+    // `residualUsd` above without ever tripping this check). Logged loudly; never silently swallowed.
+    // eslint-disable-next-line no-console
+    console.error('[canonical-manifest] group_total_does_not_equal_accepted_side_total', {
+      manifestKey: buildManifestKey(params.identity),
+      failures: conservationFailures.slice(0, 10).map((g) => ({
+        evidenceKey: g.evidenceKey, side: g.side, acceptedEvidenceUsd: g.acceptedEvidenceUsd, allocatedUsdSum: g.allocatedUsdSum,
+      })),
+    })
+  }
+  const acceptedEvidenceTotalUsd = Math.round(allGroupAudits.reduce((sum, g) => sum + g.acceptedEvidenceUsd, 0) * 1e8) / 1e8
+  const publishedAllocatedUsd = Math.round(allGroupAudits.reduce((sum, g) => sum + g.publishedUsdSum, 0) * 1e8) / 1e8
+  const explicitResidualUsd = Math.round(allGroupAudits.reduce((sum, g) => sum + g.residualUsd, 0) * 1e8) / 1e8
+  const manifestAllocationBuildAudit: ManifestAllocationBuildAudit = {
+    inputCanonicalCandidates: params.candidateVerifiedLots.length,
+    groupsBuilt: allGroupAudits.length,
+    occurrenceLocalRejects: buildRejections.length,
+    occurrenceLocalRejectReasons: (() => {
+      const counts = emptyCanonicalVerifiedPredicateReasonCounts()
+      for (const rejection of buildRejections) counts[rejection.rejectionReason] += 1
+      return counts
+    })(),
+    validSiblingsPreserved: verifiedLotCountFromGroups,
+    finalManifestLots: verifiedLotCountFromGroups,
+    acceptedEvidenceTotalUsd,
+    publishedAllocatedUsd,
+    explicitResidualUsd,
+    conservationFailures: conservationFailures.length,
+    // Bounded — only the groups worth a human looking at (a real residual or, exceptionally, a
+    // conservation failure), never an unbounded per-group dump for a wallet with hundreds of lots.
+    groups: allGroupAudits.filter((g) => g.residualUsd !== 0 || !g.conservationSatisfied).slice(0, 10),
+  }
+
   // Per-lot corrected values, drawn from the same frozen per-occurrence shares stored above. A group
   // dropped by the build-time self-validation above has no frozen shares — it is honestly left
   // 'unpriced' here too, exactly like an incomplete-side lot, never defaulted to a fabricated value.
@@ -986,7 +1181,7 @@ export async function buildManifestFromCandidate(params: {
         costBasisUsd: shares.cost[i],
         proceedsUsd: shares.proceeds[i],
         realizedPnlUsd: shares.pnl[i],
-        evidenceQuality: incompleteSideLots.has(m.lot) ? 'unpriced' : m.lot.evidenceQuality,
+        evidenceQuality: m.lot.evidenceQuality,
       })
     })
   }
@@ -1000,10 +1195,7 @@ export async function buildManifestFromCandidate(params: {
   let realizedPnlUsd = params.realizedPnlUsd
   let fingerprints = params.fingerprints
   if (params.loadEvidence && params.computeFingerprints) {
-    const correctedAllLots = params.allCandidateLots.map((lot) => {
-      const corrected = correctedByLot.get(lot) ?? lot
-      return incompleteSideLots.has(lot) ? { ...corrected, evidenceQuality: 'unpriced' as const } : corrected
-    })
+    const correctedAllLots = params.allCandidateLots.map((lot) => correctedByLot.get(lot) ?? lot)
     const correctedVerified = correctedAllLots.filter(isCanonicalVerifiedPublishedLot)
     realizedPnlUsd = correctedVerified.length > 0
       ? sumQuantizedUsd(sortLotsByCanonicalIdentity(correctedVerified).map((l) => l.realizedPnlUsd))
@@ -1054,6 +1246,7 @@ export async function buildManifestFromCandidate(params: {
     refreshedAt: params.now,
     refreshReason: params.priorManifest ? (params.refreshReason ?? null) : null,
     manifestCanonicalVerifierAudit,
+    manifestAllocationBuildAudit,
   }
 }
 

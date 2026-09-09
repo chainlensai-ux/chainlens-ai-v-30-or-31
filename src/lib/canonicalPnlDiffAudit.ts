@@ -284,16 +284,28 @@ function checkSharedEvidenceAllocation(input: CanonicalPnlDiffInput): CanonicalP
       // the pre-existing "neither priceUsd nor valueUsd matches" shape. A non-stablecoin side still
       // independently checks the evidence record's own valueUsd, completely unchanged.
       const matchesValue = isStablecoinSide ? matchesExpected : Math.abs(claimedSum - evidence.valueUsd) <= PNL_DIFF_TOLERANCE_USD
-
-      if (!matchesExpected && !matchesValue) {
+      // UNDER-CLAIM IS NOT A VIOLATION, DISCLOSED (canonical-manifest-shared-group-allocation
+      // follow-up task — confirmed false positive: canonicalPnlSampleManifest.ts's own
+      // `algebraicallyVerifiableLots` no longer demotes a whole shared side merely because a sibling
+      // is unverified — a verified lot now legitimately publishes its own, smaller, quantity-
+      // proportional share, and the side's remaining value stays an explicit, accounted-for residual
+      // (never fabricated, never duplicated — see canonicalPnlSampleManifest.ts's own
+      // `manifestAllocationBuildAudit`/`conservationSatisfied`, which HAS visibility into that
+      // residual and is the authoritative conservation check). This function only ever sees
+      // PUBLISHED records, with no way to tell "a sibling is legitimately unpublished" apart from "a
+      // real bug lost value" — but the two directions carry opposite risk: `claimedSum` EXCEEDING the
+      // accepted total is a real, dangerous over-claim (fabrication/duplication — still caught below,
+      // unchanged), while `claimedSum` falling short is exactly the expected, SAFE shape of a
+      // correct partial publication. Only the dangerous direction is flagged here.
+      if (claimedSum > expected + PNL_DIFF_TOLERANCE_USD && !matchesExpected && !matchesValue) {
         findings.push({
           code: 'group_total_does_not_equal_accepted_side_total',
           severity: 'critical',
           canonicalGroupKeys: groupKeys,
           evidenceKey,
           detail: isStablecoinSide
-            ? `${side} side: the sum of every group's claimed total does not match the deterministic $1/token normalized total for this verified stablecoin side`
-            : `${side} side: the sum of every group's claimed total matches neither the evidence record's priceUsd nor its valueUsd`,
+            ? `${side} side: the sum of every group's claimed total EXCEEDS the deterministic $1/token normalized total for this verified stablecoin side`
+            : `${side} side: the sum of every group's claimed total EXCEEDS both the evidence record's priceUsd and its valueUsd`,
           observedUsd: claimedSum,
           expectedUsd: expected,
           differenceUsd: round8(claimedSum - expected),
@@ -317,15 +329,19 @@ function checkSharedEvidenceAllocation(input: CanonicalPnlDiffInput): CanonicalP
         })
       }
 
-      if (!matchesExpected && !matchesValue && records.length === 1) {
+      // Same UNDER-CLAIM IS NOT A VIOLATION reasoning as above: a single published group whose
+      // claimed total is LESS than the evidence total is exactly what a correct partial publication
+      // looks like (the side's remaining, unpublished siblings are simply not in `currentRecords`).
+      // Only an OVER-claim from the side's single published owner is a real allocation defect.
+      if (claimedSum > expected + PNL_DIFF_TOLERANCE_USD && !matchesExpected && !matchesValue && records.length === 1) {
         findings.push({
           code: 'shared_side_value_not_allocated_exactly_once',
           severity: 'critical',
           canonicalGroupKeys: groupKeys,
           evidenceKey,
           detail: isStablecoinSide
-            ? `${side} side's single owning group claims a total that does not match the deterministic $1/token normalized total — the side was not allocated exactly once`
-            : `${side} side's single owning group claims a total that is neither the evidence priceUsd nor its valueUsd — the side was not allocated exactly once`,
+            ? `${side} side's single owning group claims a total ABOVE the deterministic $1/token normalized total — the side was not allocated exactly once`
+            : `${side} side's single owning group claims a total ABOVE both the evidence priceUsd and its valueUsd — the side was not allocated exactly once`,
           observedUsd: claimedSum,
           expectedUsd: expected,
           differenceUsd: round8(claimedSum - expected),

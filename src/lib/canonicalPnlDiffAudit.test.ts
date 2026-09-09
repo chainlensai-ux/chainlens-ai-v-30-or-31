@@ -556,11 +556,17 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
     assert.equal(replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 1)
   })
 
-  it('HARD ASSERTION (Wallet PnL Item 1): the mixed-quality shared-side violation shape is CRITICAL when published, and the canonical fixture demotes so the audit has zero Critical findings', async () => {
-    // THE VIOLATION SHAPE, DISCLOSED: schema-2 accepted evidence is a SIDE TOTAL ($100) for a buy
-    // consumed by two FIFO lots. Only one lot is verified. Publishing the verified lot's allocated
-    // fraction ($50) as the group's claimed total does not equal the evidence record's priceUsd —
-    // exactly `group_total_does_not_equal_accepted_side_total`.
+  it('CORRECTED (canonical-manifest-shared-group-allocation follow-up task): an under-claiming shared-side publication is NOT flagged — only an OVER-claim is — and the real fixture publishes the verified slice with zero Critical findings', async () => {
+    // THE SHAPE, DISCLOSED: schema-2 accepted evidence is a SIDE TOTAL ($100) for a buy consumed by
+    // two FIFO lots. Only one lot is verified. Publishing the verified lot's own, correctly
+    // allocated fraction ($50) is a legitimate, conserving PARTIAL claim — not a violation. The old
+    // policy flagged ANY claimed sum short of the full evidence total as Critical
+    // (`group_total_does_not_equal_accepted_side_total`), which made a correct partial publication
+    // indistinguishable from a real bug. This function only ever sees PUBLISHED records, with no way
+    // to tell "a sibling is legitimately unpublished" apart from "a real bug lost value" — but the
+    // two directions carry opposite risk: under-claiming is always the safe direction (nothing was
+    // fabricated or duplicated), while OVER-claiming remains a real, dangerous defect and is still
+    // caught below, unchanged.
     const entryKey = 'v1:accepted-evidence:base:0xfacy:0xsharedbuy:entry:100'
     const exitKey = 'v1:accepted-evidence:base:0xfacy:0xasell:exit:200'
     const publishedFraction = record({
@@ -570,7 +576,7 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
       groupCostBasisUsd: 50, groupProceedsUsd: 80, groupRealizedPnlUsd: 30,
       acceptedEvidenceValueType: 'total_side_value_usd', evidenceSchemaVersion: 2,
     })
-    const rawViolation = buildCanonicalPnlDiffAudit({
+    const underClaim = buildCanonicalPnlDiffAudit({
       currentRecords: [publishedFraction],
       previousRecords: [],
       evidenceByKey: new Map([
@@ -578,18 +584,40 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
         [exitKey, { priceUsd: 80, valueUsd: 80, schemaVersion: 2 }],
       ]),
     })
-    const rawCritical = rawViolation.findings.filter((f) => f.severity === 'critical')
-    assert.ok(
-      rawCritical.some((f) => f.code === 'group_total_does_not_equal_accepted_side_total'),
-      'publishing a verified slice of a mixed-quality shared side must still be a Critical finding — the audit is not silenced',
+    assert.deepEqual(
+      underClaim.findings.filter((f) => f.severity === 'critical'),
+      [],
+      'a correct, smaller-than-the-full-side claim is never flagged — under-claiming is the safe direction',
     )
-    const entryFinding = rawCritical.find((f) => f.code === 'group_total_does_not_equal_accepted_side_total' && f.evidenceKey === entryKey)!
-    assert.equal(entryFinding.observedUsd, 50)
-    assert.equal(entryFinding.expectedUsd, 100)
 
-    // THE FIXTURE, DISCLOSED: the same lots go through buildManifestFromCandidate. The incomplete
-    // shared side is demoted out of the canonical verified sample rather than published as a
-    // partial claim, so the audit has zero Critical findings and realized PnL is not invented.
+    // The dangerous direction — claiming MORE than the accepted evidence side total — remains a real,
+    // caught defect.
+    const overClaimingFraction = record({
+      key: 'g:over-claim', token: '0xfacy',
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xasell', openedAt: 100, closedAt: 200,
+      entryEvidenceKey: entryKey, exitEvidenceKey: exitKey,
+      groupCostBasisUsd: 150, groupProceedsUsd: 80, groupRealizedPnlUsd: -70,
+      acceptedEvidenceValueType: 'total_side_value_usd', evidenceSchemaVersion: 2,
+    })
+    const overClaim = buildCanonicalPnlDiffAudit({
+      currentRecords: [overClaimingFraction],
+      previousRecords: [],
+      evidenceByKey: new Map([
+        [entryKey, { priceUsd: 100, valueUsd: 100, schemaVersion: 2 }],
+        [exitKey, { priceUsd: 80, valueUsd: 80, schemaVersion: 2 }],
+      ]),
+    })
+    const overClaimCritical = overClaim.findings.filter((f) => f.severity === 'critical')
+    assert.ok(
+      overClaimCritical.some((f) => f.code === 'group_total_does_not_equal_accepted_side_total' && f.evidenceKey === entryKey),
+      'claiming MORE than the accepted entry side total is still a Critical finding',
+    )
+
+    // THE FIXTURE, DISCLOSED: the same lots go through buildManifestFromCandidate. The verified lot
+    // now publishes its own, real, conserving share (see canonicalPnlSampleManifest.ts's own
+    // "WHOLE-GROUP DEMOTION REMOVED" header — the old blanket demotion here is exactly what collapsed
+    // a live 108-candidate scan to 37 published lots) — and the diff audit reports zero Critical
+    // findings for that correct, conserving partial claim.
     const verified = lot({
       lotId: 'priced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',
       openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
@@ -639,7 +667,8 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
       fingerprints: computeFingerprints(allLots, 30), realizedPnlUsd: 30,
       verifiedPricingCoverage: 0.5, now: 1, loadEvidence: loader, computeFingerprints,
     })
-    assert.equal(manifest.verifiedLotRecords.length, 0, 'demote, do not publish a partial claim')
+    assert.equal(manifest.verifiedLotRecords.length, 1, 'the verified lot publishes its own real, conserving share')
+    assert.equal(manifest.verifiedLotRecords[0].groupCostBasisUsd, 50)
 
     const evidenceByKey = new Map<string, AcceptedEvidenceSideTotals>()
     for (const [key, raw] of store) {
@@ -652,7 +681,7 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
     assert.deepEqual(
       audit.findings.filter((f) => f.severity === 'critical'),
       [],
-      'after demotion the canonical fixture must produce zero Critical findings',
+      'the correct partial publication produces zero Critical findings',
     )
   })
 })

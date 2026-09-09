@@ -163,7 +163,7 @@ function replay(manifest: CanonicalPnlSampleManifest, allCandidateLots: readonly
 }
 
 describe('canonicalPnlSampleManifest — lot identity (float-free, partial-fill ordinals)', () => {
-  it('excludes a verified partial fill when its accepted side is shared with an unverified sibling', async () => {
+  it('CORRECTED (canonical-manifest-shared-group-allocation follow-up task): a verified partial fill still publishes its own conserving share even when its entry side is shared with an unverified sibling', async () => {
     const verified = lot({ lotId: 'verified', amount: 4, closedTxHash: '0xsell-a' })
     const unverifiedSibling = lot({
       lotId: 'unverified', amount: 6, closedTxHash: '0xsell-b', closedAt: 3,
@@ -176,7 +176,17 @@ describe('canonicalPnlSampleManifest — lot identity (float-free, partial-fill 
       verifiedPricingCoverage: 0.5, now: NOW, loadEvidence: loader, computeFingerprints,
     })
 
-    assert.equal(manifest.verifiedLotCount, 0, 'an incomplete evidence side must be demoted from the canonical sample')
+    // `verified` (amount 4) shares its entry ($10 total) with `unverifiedSibling` (amount 6) —
+    // allocation gives `verified` its own real 4/10 share ($4), never the unverified sibling's $6,
+    // never the full $10. Exit is not shared (distinct closedTxHash), so verified's own $12 exit
+    // evidence publishes in full. This is a correct, conserving partial publication — not the
+    // `group_total_does_not_equal_accepted_side_total` failure the old blanket-demotion policy
+    // conflated it with (see canonicalPnlSampleManifest.ts's own "WHOLE-GROUP DEMOTION REMOVED"
+    // header — confirmed production regression: this exact pattern collapsed a live 108-candidate
+    // scan to 37 published lots).
+    assert.equal(manifest.verifiedLotCount, 1, 'the verified partial fill publishes its own real share')
+    assert.equal(manifest.verifiedLotRecords[0].costBasisUsd, 4)
+    assert.equal(manifest.verifiedLotRecords[0].proceedsUsd, 12)
     const audit = buildCanonicalPnlDiffAudit({ currentRecords: manifest.verifiedLotRecords, previousRecords: [] })
     assert.equal(audit.findings.filter((finding) => finding.severity === 'critical').length, 0)
   })
@@ -1420,12 +1430,16 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
     assert.equal(demoteLotsOnIncompleteAcceptedSides([only])[0].evidenceQuality, 'verified')
   })
 
-  it('HARD ASSERTION (end-to-end): mixed-quality shared side is excluded from the canonical verified sample rather than published as a partial claim of the accepted side total', async () => {
+  it('HARD ASSERTION (end-to-end, CORRECTED — canonical-manifest-shared-group-allocation follow-up task): a mixed-quality shared side publishes the verified sibling\'s own conserving share, never demotes it merely because an unrelated sibling is unpriced', async () => {
     // Production shape: one buy consumed by two FIFO lots, only one of which is priced. Schema-2
-    // accepted evidence is a SIDE TOTAL ($100). Allocation over the full sibling set would give the
-    // verified lot $50 — publishing that $50 as the group's claimed total is exactly
-    // `group_total_does_not_equal_accepted_side_total`. Fail closed: demote, never invent the
-    // unpriced sibling into realized PnL.
+    // accepted evidence is a SIDE TOTAL ($100). Allocation over the full sibling set gives the
+    // verified lot its own real, quantity-proportional $50 share — publishing exactly that $50 (never
+    // the unpriced sibling's $50, never the full $100) is NOT
+    // `group_total_does_not_equal_accepted_side_total`; it is a correct, conserving partial
+    // publication. Confirmed production regression this replaces (see
+    // canonicalPnlSampleManifest.ts's own "WHOLE-GROUP DEMOTION REMOVED" header): the prior blanket
+    // demotion here collapsed a live 108-candidate scan to 37 published lots purely because each
+    // demoted lot happened to share a transaction side with SOME unrelated, unverified sibling.
     const verified = lot({
       lotId: 'priced', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',
       openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
@@ -1474,9 +1488,21 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
       computeFingerprints,
     })
 
-    assert.equal(manifest.verifiedLotRecords.length, 0, 'the incomplete shared side must not appear in the canonical verified sample')
-    assert.equal(manifest.verifiedLotCount, 0)
-    assert.equal(manifest.realizedPnlUsd, null, 'fail closed: do not invent the unpriced sibling into realized PnL')
+    assert.equal(manifest.verifiedLotRecords.length, 1, 'the verified sibling still publishes its own real, conserving share')
+    assert.equal(manifest.verifiedLotCount, 1)
+    assert.equal(manifest.verifiedLotRecords[0].costBasisUsd, 50, 'exactly this lot\'s own proportional share of the $100 entry total — never the full $100, never fabricated')
+    assert.equal(manifest.verifiedLotRecords[0].proceedsUsd, 80, 'exit side is not shared — the lot\'s own exact accepted value')
+    assert.equal(manifest.realizedPnlUsd, 30, 'never null — the unpriced sibling never enters this lot\'s own realized figure')
+
+    // Never silently erased: the unpriced sibling's own $50 share of the shared $100 entry total is
+    // explicitly accounted for as a residual, not fabricated into `verified`'s own claim and not
+    // dropped from the record without explanation.
+    const entryGroupAudit = manifest.manifestAllocationBuildAudit?.groups.find((g) => g.side === 'entry')
+    assert.ok(entryGroupAudit, 'the entry group (shared with the unpriced sibling) is surfaced in the build audit')
+    assert.equal(entryGroupAudit!.acceptedEvidenceUsd, 100)
+    assert.equal(entryGroupAudit!.publishedUsdSum, 50)
+    assert.equal(entryGroupAudit!.residualUsd, 50, 'the unpriced sibling\'s own real share stays an explicit, accounted-for residual')
+    assert.equal(entryGroupAudit!.conservationSatisfied, true, 'allocatedUsdSum (published + residual) still equals the real accepted evidence total')
   })
 
   it('HARD ASSERTION (control): two verified lots sharing a schema-2 side stay published and their claimed totals sum to the accepted side total', async () => {
@@ -1797,5 +1823,176 @@ describe('canonical pricing methodology compatibility', () => {
     assert.equal(current.pricingMethodologyVersion, 2)
     assert.notEqual(buildManifestKey(current), buildManifestKey(preNormalization))
     assert.match(buildManifestKey(current), /methodology-v2/)
+  })
+})
+
+describe('canonical-manifest-shared-group-allocation follow-up task — production shape', () => {
+  // Live production shape this reproduces: 108 canonical-valid input candidates, 6 with a
+  // genuinely-dust ENTRY-side allocation (their true fractional share of a shared buy floors below
+  // the smallest representable USD unit) and 7 with a genuinely-dust EXIT-side allocation — none of
+  // which involve any OTHER structural defect. Before this fix, the (now-removed) whole-group
+  // demotion collapsed this shape to 37 published lots; the correct output preserves every valid
+  // sibling and excludes ONLY the 13 genuinely-dust occurrences.
+  function buildProductionShapeFixture() {
+    const hosts: MatchedLot[] = Array.from({ length: 95 }, (_, i) => lot({
+      lotId: `host-${i}`, token: `0xtok${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`,
+      openedAt: i, closedAt: 1000 + i, amount: 100,
+      costBasisUsd: 50 + i, proceedsUsd: 80 + i, realizedPnlUsd: 30,
+    }))
+    // Hosts 0..5 each get a dust ENTRY-side sibling (shares the host's OWN buy tx).
+    const tinyEntries: MatchedLot[] = Array.from({ length: 6 }, (_, i) => {
+      const host = hosts[i]
+      return lot({
+        lotId: `tiny-entry-${i}`, token: host.token, openedTxHash: host.openedTxHash, closedTxHash: `0xtinyentrysell${i}`,
+        openedAt: host.openedAt, closedAt: 2000 + i, amount: 0.000000001,
+        costBasisUsd: 0.000005, proceedsUsd: 0.000006, realizedPnlUsd: 0.000001,
+      })
+    })
+    // Hosts 6..12 (distinct from the entry-tiny hosts) each get a dust EXIT-side sibling (shares the
+    // host's OWN sell tx).
+    const tinyExits: MatchedLot[] = Array.from({ length: 7 }, (_, i) => {
+      const host = hosts[6 + i]
+      return lot({
+        lotId: `tiny-exit-${i}`, token: host.token, openedTxHash: `0xtinyexitbuy${i}`, closedTxHash: host.closedTxHash,
+        openedAt: i, closedAt: host.closedAt, amount: 0.000000001,
+        costBasisUsd: 0.000005, proceedsUsd: 0.000006, realizedPnlUsd: 0.000001,
+      })
+    })
+    return { hosts, tinyEntries, tinyExits, allLots: [...hosts, ...tinyEntries, ...tinyExits] }
+  }
+
+  function customEvidenceStore() {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const seedSide = (lotRef: MatchedLot, side: 'entry' | 'exit', totalUsd: number) => {
+      const sideIdentity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(sideIdentity), buildAcceptedEvidenceEnvelope({
+        identity: sideIdentity, priceUsd: totalUsd, valueUsd: totalUsd,
+        source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    return { seedSide, loader }
+  }
+
+  it('13 genuinely-dust local occurrences never cascade into the 71-lot loss the old whole-group demotion caused', async () => {
+    const { hosts, tinyEntries, tinyExits, allLots } = buildProductionShapeFixture()
+    const { seedSide, loader } = customEvidenceStore()
+
+    for (let i = 0; i < hosts.length; i++) {
+      const host = hosts[i]
+      if (i < 6) {
+        // Shared entry: the real total is host's real cost basis plus its dust sibling's real (tiny)
+        // cost basis — never fabricated, the true combined transaction-side value.
+        seedSide(host, 'entry', host.costBasisUsd! + tinyEntries[i].costBasisUsd!)
+        seedSide(host, 'exit', host.proceedsUsd!) // unshared
+      } else if (i < 13) {
+        seedSide(host, 'entry', host.costBasisUsd!) // unshared
+        seedSide(host, 'exit', host.proceedsUsd! + tinyExits[i - 6].proceedsUsd!) // shared
+      } else {
+        seedSide(host, 'entry', host.costBasisUsd!)
+        seedSide(host, 'exit', host.proceedsUsd!)
+      }
+    }
+    for (const t of tinyEntries) seedSide(t, 'exit', t.proceedsUsd!) // unshared own exit
+    for (const t of tinyExits) seedSide(t, 'entry', t.costBasisUsd!) // unshared own entry
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('production-shape-108'), allCandidateLots: allLots, candidateVerifiedLots: allLots,
+      structuralLotCount: allLots.length, fingerprints: computeFingerprints(allLots, realizedTotal(allLots)),
+      realizedPnlUsd: realizedTotal(allLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: loader, computeFingerprints,
+    })
+
+    // NEVER hardcoded to the old broken "37" — this exact figure is what THIS test's own group
+    // structure justifies: 108 input candidates minus exactly the 13 genuinely-dust occurrences
+    // (6 entry + 7 exit), with every OTHER sibling — including the 13 non-dust hosts those dust
+    // siblings shared a side with — still publishing its own real, conserving share.
+    assert.equal(manifest.verifiedLotCount, 95, '108 input candidates minus exactly the 13 genuinely-dust local occurrences')
+    assert.notEqual(manifest.verifiedLotCount, 37, 'must never reproduce the old whole-group-demotion collapse')
+
+    assert.ok(manifest.manifestCanonicalVerifierAudit)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.rejectedCount, 13)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.reasons.non_positive_entry_price, 6)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.reasons.non_positive_exit_price, 7)
+
+    assert.ok(manifest.manifestAllocationBuildAudit)
+    assert.equal(manifest.manifestAllocationBuildAudit!.inputCanonicalCandidates, 108)
+    assert.equal(manifest.manifestAllocationBuildAudit!.occurrenceLocalRejects, 13)
+    assert.equal(manifest.manifestAllocationBuildAudit!.finalManifestLots, 95)
+    assert.equal(manifest.manifestAllocationBuildAudit!.conservationFailures, 0, 'no group ever disagrees with its own accepted-evidence total')
+    // The 6 shared ENTRY groups (host + dust sibling) and 7 shared EXIT groups conserve exactly —
+    // the dust sibling's own allocated share is genuinely $0, so excluding it from publication loses
+    // nothing (residual 0, never flagged).
+    const sharedGroupResiduals = manifest.manifestAllocationBuildAudit!.groups
+      .filter((g) => g.allocations.length > 1)
+    assert.equal(sharedGroupResiduals.length, 0, 'every multi-member (shared) group conserves with zero residual — the dust member had no value to lose')
+    // Every OTHER reported group is a dust lot's own UNSHARED side — a real, individually-positive
+    // value that never publishes only because that same lot's OTHER side is the genuine dust one, so
+    // the whole occurrence is (correctly) excluded. Never silently erased: this is exactly why it
+    // is still reported here, not proof of a conservation bug.
+    for (const g of manifest.manifestAllocationBuildAudit!.groups) {
+      if (g.allocations.length === 1) assert.equal(g.publishedUsdSum, 0, 'the sole member is a rejected occurrence — its own otherwise-fine side stays unpublished with it')
+    }
+
+    // The 6 non-dust hosts sharing an entry side, and the 7 sharing an exit side, all still publish.
+    const publishedKeys = new Set(manifest.verifiedLotIdentityKeys)
+    for (let i = 0; i < 13; i++) {
+      const hostKey = [...buildCanonicalLotIdentities([hosts[i]]).values()][0].key
+      assert.ok(publishedKeys.has(hostKey), `host-${i} (sharing a side with a dust sibling) still publishes`)
+    }
+    for (const t of [...tinyEntries, ...tinyExits]) {
+      const tinyKey = [...buildCanonicalLotIdentities([t]).values()][0].key
+      assert.ok(!publishedKeys.has(tinyKey), `${t.lotId} (genuine dust) is excluded`)
+    }
+
+    // Build and replay must agree — refresh converges rather than reproducing the old collapse.
+    const result = await replay(manifest, allLots, loader)
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_canonical_verifier_rejection, 0)
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 95)
+  })
+
+  it('deterministic allocation is stable regardless of candidate array order', async () => {
+    const { allLots } = buildProductionShapeFixture()
+    const { seedSide, loader } = customEvidenceStore()
+    const hosts = allLots.slice(0, 95)
+    const tinyEntries = allLots.slice(95, 101)
+    const tinyExits = allLots.slice(101, 108)
+    for (let i = 0; i < hosts.length; i++) {
+      const host = hosts[i]
+      if (i < 6) { seedSide(host, 'entry', host.costBasisUsd! + tinyEntries[i].costBasisUsd!); seedSide(host, 'exit', host.proceedsUsd!) }
+      else if (i < 13) { seedSide(host, 'entry', host.costBasisUsd!); seedSide(host, 'exit', host.proceedsUsd! + tinyExits[i - 6].proceedsUsd!) }
+      else { seedSide(host, 'entry', host.costBasisUsd!); seedSide(host, 'exit', host.proceedsUsd!) }
+    }
+    for (const t of tinyEntries) seedSide(t, 'exit', t.proceedsUsd!)
+    for (const t of tinyExits) seedSide(t, 'entry', t.costBasisUsd!)
+
+    const forward = await buildManifestFromCandidate({
+      identity: identity('order-a'), allCandidateLots: allLots, candidateVerifiedLots: allLots,
+      structuralLotCount: allLots.length, fingerprints: computeFingerprints(allLots, realizedTotal(allLots)),
+      realizedPnlUsd: realizedTotal(allLots), verifiedPricingCoverage: 1, now: NOW, loadEvidence: loader, computeFingerprints,
+    })
+    const shuffled = [...allLots].reverse()
+    const backward = await buildManifestFromCandidate({
+      identity: identity('order-a'), allCandidateLots: shuffled, candidateVerifiedLots: shuffled,
+      structuralLotCount: shuffled.length, fingerprints: computeFingerprints(shuffled, realizedTotal(shuffled)),
+      realizedPnlUsd: realizedTotal(shuffled), verifiedPricingCoverage: 1, now: NOW, loadEvidence: loader, computeFingerprints,
+    })
+    assert.equal(forward.verifiedLotCount, backward.verifiedLotCount)
+    assert.equal(forward.verifiedLotIdentityFingerprint, backward.verifiedLotIdentityFingerprint)
+    assert.equal(forward.realizedPnlUsd, backward.realizedPnlUsd)
+    assert.deepEqual([...forward.verifiedLotIdentityKeys].sort(), [...backward.verifiedLotIdentityKeys].sort())
   })
 })
