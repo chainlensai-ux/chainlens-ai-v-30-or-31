@@ -639,6 +639,36 @@ export type CanonicalManifestLotRecord = {
   allocatedProceedsUsd: number | null
 }
 
+// MANIFEST BUILD-TIME CANONICAL-VERIFIER AUDIT, DISCLOSED (refreshed-canonical-manifest-replay-
+// failure follow-up task) — every occurrence-group `buildManifestFromCandidate` computed but refused
+// to persist because its OWN reconstructed (post-allocation) values would fail the shared canonical
+// predicate. Diagnostic only: never read by `replayManifest`, `isValidCanonicalPnlSampleManifest`, or
+// any publication decision — purely so a real production log can see WHY a manifest's verified count
+// is lower than its candidate input count, without needing to reproduce the allocation by hand.
+export type ManifestCanonicalVerifierAuditExample = {
+  canonicalLotKey: string
+  lotId: string
+  token: string
+  entryPriceUsd: number | null
+  exitPriceUsd: number | null
+  costBasisUsd: number | null
+  proceedsUsd: number | null
+  realizedPnlUsd: number | null
+  openedAt: number
+  closedAt: number
+  evidenceQuality: MatchedLot['evidenceQuality']
+  rejectionReason: CanonicalVerifiedRejectionReason
+  sourceStage: 'old_manifest_replay' | 'refresh_candidate' | 'refreshed_manifest_replay'
+}
+
+export type ManifestCanonicalVerifierAudit = {
+  rejectedCount: number
+  reasons: CanonicalVerifiedPredicateReasonCounts
+  examples: ManifestCanonicalVerifierAuditExample[]
+}
+
+const MANIFEST_CANONICAL_VERIFIER_AUDIT_MAX_EXAMPLES = 10
+
 export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
   lotIdentitySchemaVersion: number
   manifestVersion: number
@@ -657,6 +687,9 @@ export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
   createdAt: number
   refreshedAt: number
   refreshReason: string | null
+  // OPTIONAL, DIAGNOSTIC ONLY, DISCLOSED — see ManifestCanonicalVerifierAudit's own header. Absent
+  // on a manifest built by any caller that predates this field; never required for validity.
+  manifestCanonicalVerifierAudit?: ManifestCanonicalVerifierAudit
 }
 
 type DeterminismFingerprints = {
@@ -809,6 +842,28 @@ export async function buildManifestFromCandidate(params: {
   // deterministic split replay will later reproduce — never from the raw per-lot allocation, whose
   // remainder placement depends on evidence-group ordering rather than on this group alone.
   const frozenSharesByKey = new Map<string, { cost: Array<number | null>; proceeds: Array<number | null>; pnl: Array<number | null> }>()
+  // BUILD-TIME SELF-VALIDATION, DISCLOSED (refreshed-canonical-manifest-replay-failure follow-up
+  // task — confirmed root cause: `allocateSideValueAcrossGroup` proportionally re-derives a lot's
+  // costBasisUsd/proceedsUsd from its SHARE of a whole evidence-side group's total, using integer
+  // (BigInt) division. A structurally-verified candidate lot with a small quantity relative to its
+  // evidence-group siblings can legitimately floor to an allocated share of $0 — REGARDLESS of the
+  // candidate's own, already-valid pre-allocation values — and this loop previously froze that
+  // reconstruction into a manifest record unconditionally, with no check that the value it was about
+  // to persist could ever pass the SAME canonical predicate replay enforces on every later scan.
+  // Replay then correctly (and repeatedly, identically) rejects it as
+  // `manifest_canonical_verifier_rejection`, which a bare rebuild-and-rewrite refresh can never fix
+  // by itself, because it reproduces the identical zero-allocation from the identical evidence.
+  // FIX: reconstruct every occurrence exactly as `replayManifest` will (see its own rebuiltOccurrences
+  // — same deterministic split, same forced `evidenceQuality: 'verified'`) and run it through the ONE
+  // shared predicate BEFORE this record is ever persisted. A group with even one failing occurrence is
+  // dropped from the manifest entirely — never partially published — so a written manifest record is
+  // guaranteed, by construction, to replay successfully against this same evidence. Diagnostics for
+  // every dropped group are collected into `buildRejections` for `manifestCanonicalVerifierAudit`.
+  const buildRejections: Array<{
+    key: string; lot: MatchedLot; occurrenceCount: number
+    groupCostBasisUsd: number | null; groupProceedsUsd: number | null; groupRealizedPnlUsd: number | null
+    rejectionReason: CanonicalVerifiedRejectionReason
+  }> = []
 
   for (const [key, members] of byOccurrenceKey) {
     const representative = members[0]
@@ -833,8 +888,28 @@ export async function buildManifestFromCandidate(params: {
       const p = proceedsShares[i]
       return c === null || p === null ? null : Math.round((p - c) * 100) / 100
     })
-    frozenSharesByKey.set(key, { cost: costShares, proceeds: proceedsShares, pnl: pnlShares })
     const groupRealizedPnlUsd = sumOrNull(pnlShares)
+
+    // SELF-VALIDATE before freezing anything for this group — see this block's own header above.
+    const rebuiltOccurrenceRejection = members
+      .map((_, i) => canonicalVerifiedRejectionReason({
+        evidenceQuality: 'verified',
+        costBasisUsd: costShares[i],
+        proceedsUsd: proceedsShares[i],
+        realizedPnlUsd: pnlShares[i],
+        openedAt: lot.openedAt,
+        closedAt: lot.closedAt,
+      }))
+      .find((reason): reason is CanonicalVerifiedRejectionReason => reason !== null)
+    if (rebuiltOccurrenceRejection) {
+      buildRejections.push({
+        key, lot, occurrenceCount, groupCostBasisUsd, groupProceedsUsd, groupRealizedPnlUsd,
+        rejectionReason: rebuiltOccurrenceRejection,
+      })
+      continue
+    }
+
+    frozenSharesByKey.set(key, { cost: costShares, proceeds: proceedsShares, pnl: pnlShares })
 
     records.push({
       key,
@@ -895,10 +970,16 @@ export async function buildManifestFromCandidate(params: {
   // number of records, which now counts GROUPS rather than lots.
   const verifiedLotCountFromGroups = dedupedRecords.reduce((sum, r) => sum + r.occurrenceCount, 0)
 
-  // Per-lot corrected values, drawn from the same frozen per-occurrence shares stored above.
+  // Per-lot corrected values, drawn from the same frozen per-occurrence shares stored above. A group
+  // dropped by the build-time self-validation above has no frozen shares — it is honestly left
+  // 'unpriced' here too, exactly like an incomplete-side lot, never defaulted to a fabricated value.
   const correctedByLot = new Map<MatchedLot, MatchedLot>()
   for (const [key, members] of byOccurrenceKey) {
-    const shares = frozenSharesByKey.get(key)!
+    const shares = frozenSharesByKey.get(key)
+    if (!shares) {
+      members.forEach((m) => correctedByLot.set(m.lot, { ...m.lot, evidenceQuality: 'unpriced' }))
+      continue
+    }
     members.forEach((m, i) => {
       correctedByLot.set(m.lot, {
         ...m.lot,
@@ -930,6 +1011,28 @@ export async function buildManifestFromCandidate(params: {
     fingerprints = params.computeFingerprints(correctedAllLots, realizedPnlUsd)
   }
 
+  const buildRejectionReasonCounts = emptyCanonicalVerifiedPredicateReasonCounts()
+  for (const rejection of buildRejections) buildRejectionReasonCounts[rejection.rejectionReason] += 1
+  const manifestCanonicalVerifierAudit: ManifestCanonicalVerifierAudit = {
+    rejectedCount: buildRejections.length,
+    reasons: buildRejectionReasonCounts,
+    examples: buildRejections.slice(0, MANIFEST_CANONICAL_VERIFIER_AUDIT_MAX_EXAMPLES).map((rejection) => ({
+      canonicalLotKey: rejection.key,
+      lotId: rejection.lot.lotId,
+      token: rejection.lot.token,
+      entryPriceUsd: rejection.groupCostBasisUsd,
+      exitPriceUsd: rejection.groupProceedsUsd,
+      costBasisUsd: rejection.groupCostBasisUsd,
+      proceedsUsd: rejection.groupProceedsUsd,
+      realizedPnlUsd: rejection.groupRealizedPnlUsd,
+      openedAt: rejection.lot.openedAt,
+      closedAt: rejection.lot.closedAt,
+      evidenceQuality: rejection.lot.evidenceQuality,
+      rejectionReason: rejection.rejectionReason,
+      sourceStage: 'refresh_candidate',
+    })),
+  }
+
   return {
     ...params.identity,
     lotIdentitySchemaVersion: CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
@@ -950,6 +1053,7 @@ export async function buildManifestFromCandidate(params: {
     createdAt: params.priorManifest ? params.priorManifest.createdAt : params.now,
     refreshedAt: params.now,
     refreshReason: params.priorManifest ? (params.refreshReason ?? null) : null,
+    manifestCanonicalVerifierAudit,
   }
 }
 

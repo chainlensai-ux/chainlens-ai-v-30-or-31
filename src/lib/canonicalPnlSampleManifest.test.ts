@@ -21,7 +21,7 @@ import {
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
-  demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides,
+  demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -1645,6 +1645,148 @@ describe('canonical manifest partial reconciliation policy', () => {
     assert.equal(result.manifestStructuralFailureAudit.refreshAllowed, false)
     assert.equal(result.manifestStructuralFailureAudit.refreshBlockedReason, 'true_structural_or_value_integrity_failure')
     assert.ok(result.manifestStructuralFailureAudit.actualStructuralReasons.duplicate_canonical_identity > 0)
+  })
+})
+
+describe('refreshed canonical manifest replay failure — build-time self-validation (Wallet PnL manifest-refresh follow-up task)', () => {
+  // CONFIRMED ROOT CAUSE, DISCLOSED: two individually-verified sells (both costBasisUsd/proceedsUsd
+  // already positive BEFORE any evidence reallocation) funded by the SAME buy transaction, with
+  // wildly different amounts. `allocateSideValueAcrossGroup`'s proportional BigInt split gives the
+  // tiny-amount sibling a genuinely floored-to-zero share of that shared entry evidence total — a
+  // real, deterministic truncation, not a fluke — while the large sibling absorbs the whole
+  // remainder. Before this fix, `buildManifestFromCandidate` persisted that zero-valued
+  // reconstruction into the manifest unconditionally; `replayManifest` (which independently
+  // reconstructs and validates every occurrence) then correctly, and identically on every refresh,
+  // rejected it as `manifest_canonical_verifier_rejection` — reproducing the same broken count
+  // forever, since a rebuild-and-rewrite refresh recomputes the exact same allocation from the exact
+  // same evidence.
+  function sharedEntryGroupLots() {
+    const tiny = lot({
+      lotId: 'tiny', token: '0xshared', amount: 0.000001,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsellaaatiny', openedAt: 1, closedAt: 2,
+      costBasisUsd: 5, proceedsUsd: 6, realizedPnlUsd: 1,
+    })
+    const large = lot({
+      lotId: 'large', token: '0xshared', amount: 1000,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsellzzzlarge', openedAt: 1, closedAt: 3,
+      costBasisUsd: 4, proceedsUsd: 9, realizedPnlUsd: 5,
+    })
+    return { tiny, large }
+  }
+
+  it('never persists a manifest record whose reconstructed value would fail the shared canonical predicate — excludes the floored-to-zero sibling instead of freezing it', async () => {
+    const { tiny, large } = sharedEntryGroupLots()
+    const evidence = seededEvidence([tiny, large])
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: [tiny, large], candidateVerifiedLots: [tiny, large],
+      structuralLotCount: 2, fingerprints: computeFingerprints([tiny, large], realizedTotal([tiny, large])),
+      realizedPnlUsd: realizedTotal([tiny, large]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    // The genuinely floored-to-zero sibling never becomes a manifest record at all.
+    const largeIdentity = [...buildCanonicalLotIdentities([large]).values()][0]
+    const tinyIdentity = [...buildCanonicalLotIdentities([tiny]).values()][0]
+    assert.ok(manifest.verifiedLotIdentityKeys.includes(largeIdentity.key), 'the genuinely valid sibling is still published')
+    assert.ok(!manifest.verifiedLotIdentityKeys.includes(tinyIdentity.key), 'the floored-to-zero sibling is never frozen into the manifest')
+    assert.equal(manifest.verifiedLotCount, 1)
+
+    // Diagnosed, not silently dropped.
+    assert.ok(manifest.manifestCanonicalVerifierAudit)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.rejectedCount, 1)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.reasons.non_positive_entry_price, 1)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.examples[0].canonicalLotKey, tinyIdentity.key)
+    assert.equal(manifest.manifestCanonicalVerifierAudit!.examples[0].costBasisUsd, 0)
+
+    // A manifest containing ONLY records it has already proven pass the predicate must replay clean —
+    // never reproduce `manifest_canonical_verifier_rejection` on the exact evidence it was built from.
+    const result = await replay(manifest, [tiny, large], evidence.loader)
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_canonical_verifier_rejection, 0)
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 1)
+  })
+
+  it('a refresh built from the same degenerate evidence does not reproduce the same rejection forever — it converges instead of looping', async () => {
+    const { tiny, large } = sharedEntryGroupLots()
+    const currentLots = [tiny, large]
+    const evidence = seededEvidence(currentLots)
+    // First (pre-fix-shaped) manifest: simulate the historical bug by writing a record for BOTH
+    // siblings via a manifest built before this fix existed — i.e. skip self-validation by directly
+    // constructing a stale manifest whose `tiny` record still carries a zero group total, matching
+    // exactly what production observed.
+    const validManifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: currentLots, candidateVerifiedLots: currentLots,
+      structuralLotCount: 2, fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)),
+      realizedPnlUsd: realizedTotal(currentLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const tinyIdentity = [...buildCanonicalLotIdentities([tiny]).values()][0]
+    const [realEntryEvidenceKey, realExitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(tiny)
+    // The REAL entry evidence total for tiny's evidence group (shared with `large`) floors to exactly
+    // $0 under the genuine BigInt proportional allocation — matching what a pre-fix build would have
+    // frozen. Using the real keys (not a fake placeholder) is essential: replay must resolve real
+    // evidence and recompute the SAME live $0 total, so this record exercises the canonical-verifier
+    // rejection branch specifically, never the earlier missing-evidence branch.
+    const staleRecordShape = {
+      key: tinyIdentity.key, canonicalAmount: tinyIdentity.canonicalAmount, occurrenceCount: 1, partialFillGroupSize: 1,
+      groupCostBasisUsd: 0, groupProceedsUsd: 6, groupRealizedPnlUsd: 6,
+      chain: tiny.chain, token: tiny.token, openedTxHash: tiny.openedTxHash, closedTxHash: tiny.closedTxHash,
+      openedAt: tiny.openedAt, closedAt: tiny.closedAt, lotIdentityVersion: lotIdentityVersion(tiny),
+      entryEvidenceKey: realEntryEvidenceKey, exitEvidenceKey: realExitEvidenceKey,
+      entryEvidenceLotIdentityVersion: lotIdentityVersion(large), exitEvidenceLotIdentityVersion: lotIdentityVersion(tiny),
+      entryPriceUsd: 0, entryValueUsd: null, exitPriceUsd: 6, exitValueUsd: null,
+      costBasisUsd: 0, proceedsUsd: 6, realizedPnlUsd: 6, evidenceQuality: 'verified' as const,
+      entrySource: null, exitSource: null, pricingMethodologyVersion: 2, evidenceSchemaVersion: null,
+      acceptedEvidenceValueType: 'total_side_value_usd' as const,
+      entrySideGroupIdentity: 'stale-entry', entrySideGroupRawQuantity: '0', entryLotRawQuantity: '0',
+      entryAllocationNumerator: '0', entryAllocationDenominator: '0',
+      exitSideGroupIdentity: 'stale-exit', exitSideGroupRawQuantity: '0', exitLotRawQuantity: '0',
+      exitAllocationNumerator: '0', exitAllocationDenominator: '0',
+      allocatedCostBasisUsd: 0, allocatedProceedsUsd: 6,
+    }
+    const preFixShapedManifest: CanonicalPnlSampleManifest = {
+      ...validManifest,
+      verifiedLotIdentityKeys: [...validManifest.verifiedLotIdentityKeys, tinyIdentity.key],
+      verifiedLotRecords: [...validManifest.verifiedLotRecords, staleRecordShape],
+      verifiedLotCount: validManifest.verifiedLotCount + 1,
+    }
+
+    const firstReplay = await replay(preFixShapedManifest, currentLots, evidence.loader)
+    assert.equal(firstReplay.reasonCounts.manifest_canonical_verifier_rejection, 1, 'reproduces the confirmed production symptom')
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(firstReplay, currentLots.length), true)
+
+    // Refresh: rebuild FROM CURRENT CANDIDATES via this fix's own build-time self-validation.
+    const refreshed = await buildRefreshedManifest({
+      priorManifest: preFixShapedManifest, identity: identity(), allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'partially-unreproducible-manifest-current-evidence-refresh',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const secondReplay = await replay(refreshed, currentLots, evidence.loader)
+    // MUST NOT silently reproduce the old rejection — either it converges clean, or it fails with a
+    // genuinely different, honestly-diagnosed reason. It never loops on the identical broken shape.
+    assert.equal(secondReplay.reasonCounts.manifest_canonical_verifier_rejection, 0, 'the refreshed manifest never carries the floored-to-zero record forward')
+    assert.equal(secondReplay.outcome, 'applied')
+    assert.equal(secondReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 1, 'only the genuinely valid sibling publishes')
+  })
+
+  it('a current candidate marked verified but with a non-positive entry price is excluded before refresh, with the exact reason, and never promoted', async () => {
+    const zeroEntry = lot({
+      lotId: 'zero-entry', token: '0xzero', amount: 5, openedTxHash: '0xzerobuy', closedTxHash: '0xzerosell',
+      costBasisUsd: 0, proceedsUsd: 10, realizedPnlUsd: 10, evidenceQuality: 'verified',
+    })
+    assert.equal(isCanonicalVerifiedPublishedLot(zeroEntry), false, 'the shared predicate already rejects a zero entry price on its own')
+    const evidence = seededEvidence([])
+    // No accepted evidence exists for this lot (a zero-priced "verified" candidate is never a real
+    // accepted-evidence record) — build must still never promote it via the legacy no-evidence
+    // fallback path either.
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: [zeroEntry], candidateVerifiedLots: [zeroEntry],
+      structuralLotCount: 1, fingerprints: computeFingerprints([], null), realizedPnlUsd: null,
+      verifiedPricingCoverage: 0, now: NOW, loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(manifest.verifiedLotCount, 0)
+    assert.equal(manifest.verifiedLotIdentityKeys.length, 0)
   })
 })
 

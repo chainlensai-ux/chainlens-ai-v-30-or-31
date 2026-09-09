@@ -29,7 +29,14 @@ export type CanonicalVerifiedRejectionReason =
   | 'missing_proceeds'
   | 'missing_realized_pnl'
   | 'non_finite_value'
-  | 'non_positive_price'
+  // SPLIT, DISCLOSED (refreshed-canonical-manifest-replay-failure follow-up task — explicit
+  // requirement: distinguish which SIDE of a lot is non-positive, since a manifest occurrence
+  // rebuilt from a proportionally-allocated evidence-group share can independently floor either
+  // side to zero/negative while the other side stays valid). Never combined back into one
+  // `non_positive_price` reason — every consumer below is updated to the split pair; no caller was
+  // left reading the old, removed name.
+  | 'non_positive_entry_price'
+  | 'non_positive_exit_price'
   | 'invalid_chronology'
 
 export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRejectionReason[] = [
@@ -38,7 +45,8 @@ export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRej
   'missing_proceeds',
   'missing_realized_pnl',
   'non_finite_value',
-  'non_positive_price',
+  'non_positive_entry_price',
+  'non_positive_exit_price',
   'invalid_chronology',
 ]
 
@@ -68,7 +76,8 @@ export function canonicalVerifiedRejectionReason(lot: PublishableLot): Canonical
   if (lot.proceedsUsd === null) return 'missing_proceeds'
   if (lot.realizedPnlUsd === null) return 'missing_realized_pnl'
   if (!Number.isFinite(lot.costBasisUsd) || !Number.isFinite(lot.proceedsUsd) || !Number.isFinite(lot.realizedPnlUsd)) return 'non_finite_value'
-  if (lot.costBasisUsd <= 0 || lot.proceedsUsd <= 0) return 'non_positive_price'
+  if (lot.costBasisUsd <= 0) return 'non_positive_entry_price'
+  if (lot.proceedsUsd <= 0) return 'non_positive_exit_price'
   return null
 }
 
@@ -87,7 +96,8 @@ export function emptyCanonicalVerifiedPredicateReasonCounts(): CanonicalVerified
     missing_proceeds: 0,
     missing_realized_pnl: 0,
     non_finite_value: 0,
-    non_positive_price: 0,
+    non_positive_entry_price: 0,
+    non_positive_exit_price: 0,
     invalid_chronology: 0,
   }
 }
