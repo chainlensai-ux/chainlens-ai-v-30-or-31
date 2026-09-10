@@ -137,3 +137,23 @@ test('HARD ASSERTION: a deployment-proof audit (methodology/fingerprint-helper v
   assert.equal(logCallSites.length, 2, 'the deployment-proof audit must be logged on BOTH the manifest-creation return and the manifest-replay return')
   assert.ok(versionConstant >= 0)
 })
+
+// PARTIAL-SCAN BOOTSTRAP GUARD WIRING, DISCLOSED (v3->v4 schema-bump pre-merge safety audit —
+// confirmed gap: a manifest schema-version bump changes the manifest's own KV key, so an
+// established wallet's good manifest under the prior schema reads back as `null` under the new
+// schema — indistinguishable, from the bootstrap branch, from a genuinely brand-new wallet. Without
+// a guard, the FIRST scan under a new schema could durably persist a degraded/partial sample as the
+// new canonical floor). Static source-position/content assertions, same convention as this file.
+test('HARD ASSERTION: the manifest bootstrap-persist path is skipped for a provider-partial scan when no manifest exists yet, but never for an explicit refresh or an empty-bootstrap replacement', () => {
+  const guardStart = position('partial-scan bootstrap guard', 'const scanIsProviderPartialForBootstrap = providerDiagnostics.some((d) => d.providerStatus === \'partial\' || d.providerStatus === \'provider_unavailable\')')
+  const skipFlagStart = position('skip flag definition', 'const skipUnsafeBootstrapPersist = !existingRead.manifest && !refreshCanonicalSampleRequested')
+  const bootstrapBranchStart = position('bootstrap branch', 'if (!existingRead.manifest || refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) {')
+  const writeGuardStart = position('write guarded by skip flag', 'const writeSuccess = skipUnsafeBootstrapPersist ? false : await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, newManifest)')
+  assert.ok(guardStart < skipFlagStart)
+  assert.ok(skipFlagStart < bootstrapBranchStart, 'the skip flag must be computed before the branch it gates')
+  assert.ok(bootstrapBranchStart < writeGuardStart)
+
+  const skipFlagEnd = pipelineSource.indexOf('\n', pipelineSource.indexOf('scanIsProviderPartialForBootstrap', skipFlagStart + 1))
+  const skipFlagBody = pipelineSource.slice(skipFlagStart, skipFlagEnd)
+  assert.match(skipFlagBody, /!replaceEmptyBootstrapManifest/, 'replacing a genuinely empty bootstrap must never be blocked by this guard')
+})

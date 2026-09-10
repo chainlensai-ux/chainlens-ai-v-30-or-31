@@ -3269,6 +3269,27 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // Non-empty manifests retain the existing explicit-refresh-only policy.
     const replaceEmptyBootstrapManifest = existingRead.manifest?.verifiedLotCount === 0
       && candidateVerifiedLots.length > 0
+    // PARTIAL-SCAN BOOTSTRAP GUARD, DISCLOSED (canonical-manifest schema-bump pre-merge safety
+    // audit — confirmed gap: a manifest schema-version bump changes the manifest's own KV key (see
+    // buildManifestKey's own `s${manifestSchemaVersion}` segment), so a wallet with an established,
+    // good manifest under the PRIOR schema reads back as `existingRead.manifest === null` under the
+    // new schema — indistinguishable, from here, from a genuinely brand-new wallet that has never
+    // had ANY manifest. Both cases take the SAME "first qualifying scan" bootstrap branch below,
+    // which durably persists whatever THIS scan's own candidate verified sample happens to be, with
+    // no floor against that scan being degraded. If the very first scan a wallet runs under a new
+    // schema (or ever) happens to be provider-partial, the newly persisted "canonical" sample can
+    // legitimately be smaller than what a complete scan would have found, and every later scan then
+    // treats that smaller sample as the durable floor — a real, silent regression a schema bump
+    // could otherwise trigger for every previously-healthy wallet on its first post-deploy scan.
+    // Bootstrap PERSISTENCE is skipped here — never this scan's own PUBLICATION, which is always
+    // `[...reconciledLots]` (see the unconditional return two lines below this block, identical
+    // whether or not the write runs) — while any chain's provider fetch this scan was
+    // partial/unavailable. An explicit refresh (`refreshCanonicalSampleRequested`) or replacing a
+    // genuinely EMPTY bootstrap (`replaceEmptyBootstrapManifest`, a strict improvement over zero
+    // lots) are both deliberate, narrower operations and are never blocked by this guard.
+    const scanIsProviderPartialForBootstrap = providerDiagnostics.some((d) => d.providerStatus === 'partial' || d.providerStatus === 'provider_unavailable')
+    const skipUnsafeBootstrapPersist = !existingRead.manifest && !refreshCanonicalSampleRequested
+      && !replaceEmptyBootstrapManifest && scanIsProviderPartialForBootstrap
     if (!existingRead.manifest || refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) {
       // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #9 — never an automatic refresh
       // because replay failed). The manifest records THIS scan's own candidate verified sample, and
@@ -3316,8 +3337,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
             computeFingerprints: computeManifestFingerprints,
           })
       // AWAITED before this scan reports success — the durable record either lands or is honestly
-      // marked failed; it is never fire-and-forget.
-      const writeSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, newManifest)
+      // marked failed; it is never fire-and-forget. `skipUnsafeBootstrapPersist` (see its own header
+      // above) deliberately withholds this write — never a network/KV failure — when this would be
+      // the FIRST manifest ever persisted for this identity and this scan's own provider fetch was
+      // partial/unavailable; THIS scan's own publication is completely unaffected either way.
+      if (skipUnsafeBootstrapPersist) {
+        console.warn('[canonical-manifest] skipped unsafe bootstrap persist — provider-partial scan, no prior manifest to fall back on', { manifestKey })
+      }
+      const writeSuccess = skipUnsafeBootstrapPersist ? false : await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, newManifest)
       sampleUpdated = refreshCanonicalSampleRequested && !!existingRead.manifest
       canonicalSampleManifestAudit = {
         ...emptyCanonicalSampleManifestAudit(manifestKey),

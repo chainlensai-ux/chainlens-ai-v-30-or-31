@@ -290,6 +290,60 @@ describe('canonicalPnlSampleManifest — read/write, fail-closed', () => {
     assert.equal(result.validationFailure, false)
   })
 
+  // V3 -> V4 MIGRATION SAFETY, DISCLOSED (pre-merge schema-bump audit): proves the EXACT production
+  // shape — a literal, persisted 37-lot v3 manifest for the regression wallet — entering v4 code.
+  it('HARD ASSERTION (pre-merge v3->v4 migration safety): a literal persisted v3 37-lot manifest is never read, mutated, or deleted by v4 code — it orphans cleanly under a distinct key, coexists untouched, and a fresh v4 manifest can be built independently alongside it', async () => {
+    const kv = fakeKv()
+    const v3Identity = buildManifestIdentity({
+      walletAddress: '0x4dbb3835744b2976560e0259cb218cab89abef96', chains: ['base'], configuredWindowDays: 90,
+      matchedLotFingerprint: 'fp-v3-production', manifestSchemaVersion: 3,
+    })
+    const v4Identity = buildManifestIdentity({
+      walletAddress: '0x4dbb3835744b2976560e0259cb218cab89abef96', chains: ['base'], configuredWindowDays: 90,
+      matchedLotFingerprint: 'fp-v3-production',
+    })
+    assert.equal(v4Identity.manifestSchemaVersion, CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION)
+    assert.notEqual(v3Identity.manifestSchemaVersion, v4Identity.manifestSchemaVersion)
+
+    // The KV KEY itself differs (the schema version is embedded in it) — a v3 record and a v4
+    // record for the SAME wallet/window/fingerprint occupy entirely separate KV slots.
+    const v3Key = buildManifestKey(v3Identity)
+    const v4Key = buildManifestKey(v4Identity)
+    assert.notEqual(v3Key, v4Key)
+    assert.ok(v3Key.endsWith(':s3'))
+    assert.ok(v4Key.endsWith(`:s${CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION}`))
+
+    // Persist a literal 37-lot v3 manifest — the exact production shape.
+    const lots37 = buildLots(37, 37)
+    const { manifest: v3Manifest } = await manifestWithEvidence(lots37, v3Identity)
+    assert.equal(v3Manifest.verifiedLotCount, 37)
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, v3Manifest), true)
+
+    // v4 code reading under the v4 identity gets a CLEAN MISS — never validationFailure (which would
+    // imply corruption) — because the v3 record simply lives at a different key it never touches.
+    const v4Read = await readCanonicalPnlSampleManifest(kv, v4Identity)
+    assert.equal(v4Read.manifest, null, 'a v3 record is invisible to a v4 read — never silently reinterpreted')
+    assert.equal(v4Read.validationFailure, false, 'a schema-version orphan is a real miss, never reported as corruption')
+
+    // The v3 record itself is completely untouched — still readable, byte-identical, under its OWN
+    // v3 identity. v4 code never deletes or mutates it.
+    const v3ReadBack = await readCanonicalPnlSampleManifest(kv, v3Identity)
+    assert.deepEqual(v3ReadBack.manifest, v3Manifest, 'the persisted v3 manifest survives a v4 deploy completely unmodified')
+
+    // A fresh v4 manifest built from the SAME 37 lots is created independently, at the v4 key,
+    // without ever reading, overwriting, or invalidating the coexisting v3 record.
+    const v4Manifest = await buildManifestFromCandidate({
+      identity: v4Identity, allCandidateLots: lots37, candidateVerifiedLots: lots37.filter(isCanonicalVerifiedPublishedLot),
+      structuralLotCount: lots37.length, fingerprints: computeFingerprints(lots37, realizedTotal(lots37)),
+      realizedPnlUsd: realizedTotal(lots37), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: (await manifestWithEvidence(lots37, v3Identity)).evidence.loader, computeFingerprints,
+    })
+    assert.equal(v4Manifest.verifiedLotCount, 37, 'the fresh v4 manifest independently reproduces the full 37-lot sample from the SAME live evidence')
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, v4Manifest), true)
+    const v3StillThere = await readCanonicalPnlSampleManifest(kv, v3Identity)
+    assert.deepEqual(v3StillThere.manifest, v3Manifest, 'writing the new v4 manifest never touches the coexisting v3 record')
+  })
+
   it('missing record: null manifest, no validation failure', async () => {
     const result = await readCanonicalPnlSampleManifest(fakeKv(), identity())
     assert.equal(result.manifest, null)
