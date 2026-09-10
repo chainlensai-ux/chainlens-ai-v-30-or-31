@@ -89,12 +89,27 @@ export const CANONICAL_LOT_IDENTITY_SCHEMA_VERSION = 3
 
 // NUMERIC TOLERANCES, DISCLOSED (requirement #3's "documented numeric tolerance").
 //
-// Per-side prices and per-lot values are copied verbatim out of the SAME immutable accepted-evidence
-// records on both the creating and the replaying scan, so they should agree bit-for-bit; the
-// tolerance exists only to absorb IEEE-754 round-tripping through JSON, never to paper over a
-// genuinely different price. 1e-9 is far below the smallest price this codebase treats as
-// persistable, so a real disagreement can never hide inside it.
-export const CANONICAL_VALUE_TOLERANCE = 1e-9
+// DERIVED FROM THE SYSTEM'S OWN DECLARED PRECISION, DISCLOSED (canonical-manifest-false-structural-
+// disagreement follow-up task — confirmed production false positive: a live group compared
+// acceptedEvidenceUsd=15198.6051810152 against allocatedUsdSum=15198.60518102, a delta of
+// ~4.8e-9 — smaller than a single VALUE_SCALE atomic unit (1e-8, "8 decimal places of USD
+// precision" — see VALUE_SCALE's own header below), yet larger than the PRIOR tolerance (1e-9),
+// which was tighter than the grid the system itself rounds every group total to. Per-side prices
+// and per-lot values are copied verbatim out of the SAME immutable accepted-evidence records on
+// both the creating and the replaying scan, so they should agree — the tolerance exists only to
+// absorb ROUND-TRIP NOISE, never to paper over a genuinely different price. That noise has TWO
+// real, provable sources at realistic wallet magnitudes (thousands of USD): (1) each side's group
+// total independently passes through `Math.round(x * 1e8) / 1e8` TWICE — once when
+// `buildManifestFromCandidate` first freezes it, once when `replayManifest` recomputes it — and (2)
+// at $15,198.xx with 8 claimed decimal places, the value needs 13 significant decimal digits,
+// pressed right against IEEE-754 double precision's own ~15-17 significant-digit ceiling, so the
+// `x * 1e8` multiplication itself is not always exact. Both sources are bounded by the SAME atomic
+// unit VALUE_SCALE already declares as this system's precision floor — this tolerance is exactly
+// TWO such units (the two independent rounding passes), never an arbitrary broader epsilon: a real
+// price disagreement (a different accepted-evidence record, a genuine allocation error) moves a
+// group total by whole cents to dollars, orders of magnitude above this floor, and still fails
+// immediately.
+export const CANONICAL_VALUE_TOLERANCE = 2e-8
 // The aggregate realized total is rounded to cents by pnlReconciliation's own `roundUsd` before it
 // is stored, so comparing a freshly-summed total against a stored, cent-rounded one needs a
 // cent-scale tolerance. Half a cent per lot would be unbounded across a large sample, so this is
@@ -319,6 +334,9 @@ export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<Ma
 // sort order (by canonical lot identity key), never dropped, never duplicated.
 const RAW_QUANTITY_SCALE = BigInt(1_000_000_000_000) // matches canonicalAmountString's 12 decimal places
 const VALUE_SCALE = BigInt(100_000_000) // 8 decimal places of USD precision
+// The smallest USD amount this system ever persists — $0.00000001. See CANONICAL_VALUE_TOLERANCE's
+// own header for why replay's value-comparison tolerance is derived from this exact unit.
+const VALUE_SCALE_ATOMIC_UNIT_USD = 1 / Number(VALUE_SCALE)
 
 function toScaledRawQuantity(amount: number): bigint {
   const str = canonicalAmountString(amount)
@@ -1392,6 +1410,28 @@ export type ManifestMissingLotTrace = {
   affectedBySourceQuality: boolean
 }
 
+// BOUNDED VALUE-DISAGREEMENT AUDIT, DISCLOSED (canonical-manifest-false-structural-disagreement
+// follow-up task) — see replayManifest's own `recordValueDisagreement` for the full disclosure.
+// Diagnostic only: `classification`/`refreshBlocking` describe the SAME comparison the real
+// pass/fail decision makes, never a second, independent judgement.
+export type ManifestValueDisagreementAudit = {
+  lotKey: string
+  evidenceKey: string
+  side: 'entry' | 'exit'
+  acceptedUsd: number
+  rebuiltUsd: number
+  deltaUsd: number
+  // The delta expressed as a count of VALUE_SCALE atomic units ($0.00000001 each) — e.g. -0.48 means
+  // well under one atomic unit (quantization noise); a whole-number-scale value in the hundreds or
+  // more means real dollars moved.
+  deltaAtomicOrScale: number
+  comparisonMethod: string
+  classification: 'quantization_noise' | 'possible_value_corruption'
+  refreshBlocking: boolean
+}
+
+const MAX_VALUE_DISAGREEMENT_EXAMPLES = 30
+
 export type ManifestEvidenceQualityComparisonAudit = {
   canonicalLotKey: string
   manifest: { lotEvidenceQuality: MatchedLot['evidenceQuality'] | null; entryEvidenceStatus: 'verified' | 'missing_or_invalid'; exitEvidenceStatus: 'verified' | 'missing_or_invalid' }
@@ -1456,6 +1496,8 @@ export type ManifestReplayResult = {
   manifestLotIdentityAudit: ManifestLotIdentityAudit[]
   manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[]
   manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
+  // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see ManifestValueDisagreementAudit's own header.
+  manifestValueDisagreementAudit: ManifestValueDisagreementAudit[]
   manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   structuralIntegrityFailure: boolean
   reasonCounts: ManifestReplayReasonCounts
@@ -1746,6 +1788,7 @@ export async function replayManifest(params: {
   const manifestReplayedButNotCanonicalVerifiedLotKeys: string[] = []
   const manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[] = []
   const manifestSideEvidenceAudit: ManifestSideEvidenceAudit[] = []
+  const manifestValueDisagreementAudit: ManifestValueDisagreementAudit[] = []
   const structuralReasonKeys = new Map<string, Set<string>>()
   const staleReasonKeys = new Map<string, Set<string>>()
   const addClassifiedReason = (target: Map<string, Set<string>>, reason: string, key: string) => {
@@ -1880,6 +1923,35 @@ export async function replayManifest(params: {
     }
     const liveGroupCostBasisUsd = Math.round(entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
     const liveGroupProceedsUsd = Math.round(exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
+
+    // BOUNDED VALUE-DISAGREEMENT AUDIT, DISCLOSED (canonical-manifest-false-structural-disagreement
+    // follow-up task) — records EVERY non-zero entry/exit delta this key produced, whether or not it
+    // actually trips the mismatch threshold below, so a real log can show both the (correctly
+    // passing) quantization-noise cases and any genuine, still-blocking disagreement side by side.
+    // Classification uses the SAME `CANONICAL_VALUE_TOLERANCE` the pass/fail decision itself uses —
+    // no separate, looser threshold — so this is strictly an explanation of that decision, never a
+    // second policy. Bounded to MAX_VALUE_DISAGREEMENT_EXAMPLES, never an unbounded per-lot dump.
+    const recordValueDisagreement = (side: 'entry' | 'exit', acceptedUsd: number | null, rebuiltUsd: number | null) => {
+      if (acceptedUsd === null || rebuiltUsd === null || acceptedUsd === rebuiltUsd) return
+      if (manifestValueDisagreementAudit.length >= MAX_VALUE_DISAGREEMENT_EXAMPLES) return
+      const deltaUsd = Math.round((rebuiltUsd - acceptedUsd) * 1e8) / 1e8
+      const deltaAtomicOrScale = Math.round(deltaUsd / VALUE_SCALE_ATOMIC_UNIT_USD)
+      const blocking = Math.abs(deltaUsd) > CANONICAL_VALUE_TOLERANCE
+      manifestValueDisagreementAudit.push({
+        lotKey: key,
+        evidenceKey: side === 'entry' ? record.entryEvidenceKey : record.exitEvidenceKey,
+        side,
+        acceptedUsd,
+        rebuiltUsd,
+        deltaUsd,
+        deltaAtomicOrScale,
+        comparisonMethod: `withinTolerance(rebuilt, accepted, ${CANONICAL_VALUE_TOLERANCE})`,
+        classification: blocking ? 'possible_value_corruption' : 'quantization_noise',
+        refreshBlocking: blocking,
+      })
+    }
+    recordValueDisagreement('entry', record.groupCostBasisUsd, liveGroupCostBasisUsd)
+    recordValueDisagreement('exit', record.groupProceedsUsd, liveGroupProceedsUsd)
 
     let mismatched = false
     if (!withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
@@ -2079,6 +2151,7 @@ export async function replayManifest(params: {
     manifestLotIdentityAudit,
     manifestEvidenceQualityComparisonAudit,
     manifestSideEvidenceAudit,
+    manifestValueDisagreementAudit,
     manifestStructuralFailureAudit,
     structuralIntegrityFailure,
     reasonCounts,
@@ -2149,6 +2222,8 @@ export type CanonicalSampleManifestAudit = {
   manifestLotIdentityAudit: ManifestLotIdentityAudit[]
   manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[]
   manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
+  // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see ManifestValueDisagreementAudit's own header.
+  manifestValueDisagreementAudit: ManifestValueDisagreementAudit[]
   manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   manifestLotsStillValid: number
   manifestLotsInvalidNow: number
@@ -2209,6 +2284,7 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestLotIdentityAudit: [],
     manifestEvidenceQualityComparisonAudit: [],
     manifestSideEvidenceAudit: [],
+    manifestValueDisagreementAudit: [],
     manifestStructuralFailureAudit: {
       structuralFailure: false, actualStructuralReasons: {}, staleEvidenceReasons: {}, candidateEvolutionReasons: {},
       offendingLotKeys: [], refreshAllowed: false, refreshBlockedReason: null,

@@ -3496,6 +3496,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestLotIdentityAudit: firstReplay.manifestLotIdentityAudit,
       manifestEvidenceQualityComparisonAudit: firstReplay.manifestEvidenceQualityComparisonAudit,
       manifestSideEvidenceAudit: firstReplay.manifestSideEvidenceAudit,
+      manifestValueDisagreementAudit: firstReplay.manifestValueDisagreementAudit,
       manifestStructuralFailureAudit: firstReplay.manifestStructuralFailureAudit,
       manifestLotsStillValid: firstReplay.reasonCounts.manifest_replay_success,
       manifestLotsInvalidNow: firstReplay.manifestLotsMissingCurrentEvidence.length,

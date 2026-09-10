@@ -22,6 +22,7 @@ import {
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
   demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot,
+  CANONICAL_VALUE_TOLERANCE,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -1994,5 +1995,151 @@ describe('canonical-manifest-shared-group-allocation follow-up task — producti
     assert.equal(forward.verifiedLotIdentityFingerprint, backward.verifiedLotIdentityFingerprint)
     assert.equal(forward.realizedPnlUsd, backward.realizedPnlUsd)
     assert.deepEqual([...forward.verifiedLotIdentityKeys].sort(), [...backward.verifiedLotIdentityKeys].sort())
+  })
+})
+
+describe('canonical-manifest-false-structural-disagreement follow-up task', () => {
+  // CONFIRMED PRODUCTION SHAPE, DISCLOSED: live wallet 0x4dbb3835744b2976560e0259cb218cab89abef96
+  // compared acceptedEvidenceUsd=15198.6051810152 (the accepted-evidence record's own RAW priceUsd —
+  // a real double carrying MORE than the system's own declared 8-decimal-place precision) against
+  // allocatedUsdSum=15198.60518102 (the SAME value after `toScaledValue`'s own
+  // `Math.round(x * 1e8)` quantization — the FIRST, unavoidable step every allocation performs).
+  // These two numbers describe the identical real price; the ~4.8e-9 gap between them is exactly the
+  // fractional precision `toScaledValue` rounds away by construction, bounded by construction to
+  // well under one VALUE_SCALE atomic unit (1e-8) — never a second, independently-priced accepted-
+  // evidence record.
+  it('the exact reported live delta (15198.6051810152 vs 15198.60518102) is quantization noise, not a real disagreement', () => {
+    const accepted = 15198.6051810152
+    const allocated = 15198.60518102
+    assert.ok(Math.abs(accepted - allocated) > 1e-9, 'sanity: the prior (too-tight) 1e-9 tolerance would have flagged this exact pair')
+    assert.ok(Math.abs(accepted - allocated) <= CANONICAL_VALUE_TOLERANCE, 'the corrected tolerance — derived from VALUE_SCALE\'s own declared atomic unit — absorbs it')
+  })
+
+  it('a lone lot whose accepted evidence carries more precision than the 8-decimal system standard still conserves and publishes (no false group_total_does_not_equal_accepted_side_total)', async () => {
+    const rawPreciseLot = lot({
+      lotId: 'precise', token: '0xprecise', openedTxHash: '0xprecisebuy', closedTxHash: '0xprecisesell',
+      amount: 1, costBasisUsd: 15198.6051810152, proceedsUsd: 20000, realizedPnlUsd: 4801.39,
+    })
+    const evidence = seededEvidence([rawPreciseLot])
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('precision-108'), allCandidateLots: [rawPreciseLot], candidateVerifiedLots: [rawPreciseLot],
+      structuralLotCount: 1, fingerprints: computeFingerprints([rawPreciseLot], realizedTotal([rawPreciseLot])),
+      realizedPnlUsd: realizedTotal([rawPreciseLot]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(manifest.verifiedLotCount, 1, 'never demoted for carrying more raw precision than the system persists')
+    assert.equal(manifest.verifiedLotRecords[0].groupCostBasisUsd, 15198.60518102, 'frozen at the system\'s own 8-decimal precision')
+    const entryAudit = manifest.manifestAllocationBuildAudit?.groups.find((g) => g.side === 'entry')
+    // No residual/anomaly for a fully-published, single-member group — real conservation, not a gap.
+    assert.ok(!entryAudit, 'a fully conserving, fully published group is never flagged in the bounded anomaly list')
+  })
+
+  it('replay: an old manifest whose frozen value differs from freshly re-verified accepted evidence by quantization noise alone replays clean — never canonical_value_disagreement', async () => {
+    const lotRef = lot({
+      lotId: 'noise-lot', token: '0xnoise', openedTxHash: '0xnoisebuy', closedTxHash: '0xnoisesell',
+      amount: 1, costBasisUsd: 15198.60518102, proceedsUsd: 20000, realizedPnlUsd: 4801.39,
+    })
+    const { manifest, evidence } = await manifestWithEvidence([lotRef], identity('noise-108'))
+    assert.equal(manifest.verifiedLotCount, 1)
+
+    // Simulate the accepted-evidence record being re-verified with its full raw provider precision
+    // (15198.6051810152, same real price as the frozen 15198.60518102) rather than an assumption
+    // that only the exact 8-decimal figure was ever stored.
+    const entryIdentity = { chain: lotRef.chain, token: lotRef.token, txHash: lotRef.openedTxHash, side: 'entry' as const, timestamp: lotRef.openedAt, lotIdentityVersion: lotIdentityVersion(lotRef) }
+    evidence.store.set(buildAcceptedEvidenceKey(entryIdentity), buildAcceptedEvidenceEnvelope({
+      identity: entryIdentity, priceUsd: 15198.6051810152, valueUsd: 15198.6051810152,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+
+    const result = await replay(manifest, [lotRef], evidence.loader)
+    assert.equal(result.outcome, 'applied', 'quantization-noise-level re-verification never blocks replay')
+    assert.equal(result.reasonCounts.manifest_cost_basis_mismatch, 0)
+    assert.equal(result.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0, 0)
+    // Nonzero delta IS still captured in the bounded audit, honestly classified as noise, never blocking.
+    const noiseEntry = result.manifestValueDisagreementAudit.find((d) => d.side === 'entry')
+    if (noiseEntry) {
+      assert.equal(noiseEntry.classification, 'quantization_noise')
+      assert.equal(noiseEntry.refreshBlocking, false)
+    }
+  })
+
+  it('replay: a REAL value disagreement (a materially different accepted-evidence price) still fails closed — canonical_value_disagreement, structural failure, refresh blocked', async () => {
+    const lotRef = lot({
+      lotId: 'corrupt-lot', token: '0xcorrupt', openedTxHash: '0xcorruptbuy', closedTxHash: '0xcorruptsell',
+      amount: 1, costBasisUsd: 15198.60518102, proceedsUsd: 20000, realizedPnlUsd: 4801.39,
+    })
+    const { manifest, evidence } = await manifestWithEvidence([lotRef], identity('corrupt-108'))
+    assert.equal(manifest.verifiedLotCount, 1)
+
+    // A GENUINE price change — off by $50, orders of magnitude above any atomic-unit noise floor.
+    const entryIdentity = { chain: lotRef.chain, token: lotRef.token, txHash: lotRef.openedTxHash, side: 'entry' as const, timestamp: lotRef.openedAt, lotIdentityVersion: lotIdentityVersion(lotRef) }
+    evidence.store.set(buildAcceptedEvidenceKey(entryIdentity), buildAcceptedEvidenceEnvelope({
+      identity: entryIdentity, priceUsd: 15248.60518102, valueUsd: 15248.60518102,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+
+    const result = await replay(manifest, [lotRef], evidence.loader)
+    assert.equal(result.outcome, 'unavailable', 'a real $50 price move must still fail closed')
+    assert.equal(result.reasonCounts.manifest_cost_basis_mismatch, 1)
+    assert.ok((result.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0)
+    assert.equal(result.manifestStructuralFailureAudit.structuralFailure, true)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(result, 1), false, 'a true structural/value integrity failure never qualifies for the controlled refresh path')
+
+    const corruptionEntry = result.manifestValueDisagreementAudit.find((d) => d.side === 'entry')
+    assert.ok(corruptionEntry)
+    assert.equal(corruptionEntry!.classification, 'possible_value_corruption')
+    assert.equal(corruptionEntry!.refreshBlocking, true)
+    assert.equal(Math.round(corruptionEntry!.deltaUsd), 50)
+  })
+
+  it('production shape: reproduces 37-old-manifest / 111-current-candidate with 14 quantization-noise disagreements — refresh converges, real corruption among them still blocks', async () => {
+    // 111 current canonical-valid candidates: 37 already in the old manifest (frozen at the system's
+    // 8-decimal precision) plus 74 new candidates the old manifest never saw. Of the 37 already-
+    // published lots, 14 have since had their accepted-evidence record re-verified with extra raw
+    // provider precision (quantization noise only, same real price) — the exact live shape.
+    const oldLots = buildLots(37, 37)
+    const newLots = Array.from({ length: 74 }, (_, offset) => {
+      const i = 37 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 2000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const oldManifest = await buildManifestFromCandidate({
+      identity: identity('live-37-111'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(oldManifest.verifiedLotCount, 37)
+
+    // Re-verify 14 of the 37 entry sides with extra raw precision (same real price, noise-level delta).
+    for (let i = 0; i < 14; i++) {
+      const target = oldLots[i]
+      const entryIdentity = { chain: target.chain, token: target.token, txHash: target.openedTxHash, side: 'entry' as const, timestamp: target.openedAt, lotIdentityVersion: lotIdentityVersion(target) }
+      const preciseValue = Number((target.costBasisUsd! + 0.0000000048).toFixed(10))
+      evidence.store.set(buildAcceptedEvidenceKey(entryIdentity), buildAcceptedEvidenceEnvelope({
+        identity: entryIdentity, priceUsd: preciseValue, valueUsd: preciseValue,
+        source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+
+    const firstReplay = await replay(oldManifest, currentLots, evidence.loader)
+    assert.equal(firstReplay.outcome, 'applied', 'quantization-noise-only re-verification never even requires the refresh path')
+    assert.equal(firstReplay.reasonCounts.manifest_cost_basis_mismatch, 0)
+    assert.equal(firstReplay.candidateNewEvidenceLotKeys.length, 74)
+    assert.equal(firstReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 37, 'all 37 previously-published lots still publish')
+
+    // Companion: if ONE of those 14 is a REAL corruption instead of noise, it must still block —
+    // proves the fix never masks genuine over-claim/value corruption.
+    const corruptedTarget = oldLots[0]
+    const corruptEntryIdentity = { chain: corruptedTarget.chain, token: corruptedTarget.token, txHash: corruptedTarget.openedTxHash, side: 'entry' as const, timestamp: corruptedTarget.openedAt, lotIdentityVersion: lotIdentityVersion(corruptedTarget) }
+    const corruptValue = corruptedTarget.costBasisUsd! + 500
+    evidence.store.set(buildAcceptedEvidenceKey(corruptEntryIdentity), buildAcceptedEvidenceEnvelope({
+      identity: corruptEntryIdentity, priceUsd: corruptValue, valueUsd: corruptValue,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+    const secondReplay = await replay(oldManifest, currentLots, evidence.loader)
+    assert.equal(secondReplay.outcome, 'unavailable', 'a real $500 disagreement among otherwise-harmless noise still fails closed')
+    assert.ok((secondReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0)
   })
 })
