@@ -6,7 +6,7 @@ import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import { createPnlReconciliation, classifyRecoveryFailureReason, rankMissingLotsForRecovery } from './pnlReconciliation'
-import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey } from './acceptedEvidenceStore'
+import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey, buildAcceptedEvidenceCoverageFingerprint } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }
 
@@ -1141,32 +1141,62 @@ describe('pnlReconciliation', () => {
     assert.equal(mutationEntry!.canonicalSeedRawUsd, 150)
   })
 
-  it('companion — a persisted side whose coverage ALREADY matches the live group size stays frozen even when its value looks wrong, preserving immutability/fail-closed behavior', async () => {
+  it('companion — a persisted side whose composition fingerprint ALREADY matches the live group stays frozen even when its value looks wrong, preserving immutability/fail-closed behavior', async () => {
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     const sharedIdentity = { chain: 'base', token: '0xfrozen', txHash: '0xsell-frozen', side: 'exit' as const, timestamp: 2 }
-    // This record already claims to cover BOTH siblings (coveredLotCount: 2) — exactly the live
-    // group's real size — even though its own value (999) does not match what a live recompute would
-    // produce. A genuinely different persisted value on a record that ALREADY covers the full group
-    // must never be silently corrected by this pass; only manifest replay's own explicit
-    // evidence_raw_value_changed classification (a separate, deliberate fail-closed path) may ever
-    // flag that — this pass's job is coverage completion only, never value reconciliation.
+    const first = lot({ lotId: 'first', token: '0xfrozen', openedTxHash: '0xbuy1', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
+    const second = lot({ lotId: 'second', token: '0xfrozen', openedTxHash: '0xbuy2', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, amount: 0.5, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30, evidenceQuality: 'verified' })
+    // This record already claims to cover BOTH siblings (coveredLotCount: 2) AND its coverageFingerprint
+    // is the EXACT same 2-lot composition the live scan will recompute — even though its own value
+    // (999) does not match what a live recompute would produce. A genuinely different persisted value
+    // on a record whose composition is PROVABLY identical must never be silently corrected by this
+    // pass; only manifest replay's own explicit evidence_raw_value_changed classification (a separate,
+    // deliberate fail-closed path) may ever flag that — this pass's job is coverage completion only,
+    // never value reconciliation.
     acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' }), {
       schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, ...sharedIdentity, lotIdentityVersion: 'v1',
       priceUsd: 999, valueUsd: 999, valueType: 'total_side_value_usd', coveredLotCount: 2,
+      coverageFingerprint: buildAcceptedEvidenceCoverageFingerprint([first, second]),
       source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
       verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
     })
-    const first = lot({ lotId: 'first', token: '0xfrozen', openedTxHash: '0xbuy1', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
-    const second = lot({ lotId: 'second', token: '0xfrozen', openedTxHash: '0xbuy2', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, amount: 0.5, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30, evidenceQuality: 'verified' })
     const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1 })
     const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [first, second] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
 
-    assert.equal(summary.acceptedEvidenceAudit.verifiedSidesCoverageReseeded, 0, 'never reseeded — the existing record already covers the full live group')
+    assert.equal(summary.acceptedEvidenceAudit.verifiedSidesCoverageReseeded, 0, 'never reseeded — the existing record already covers the full live group with the SAME composition')
     const stored = acceptedEvidenceKv.store.get(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' })) as { priceUsd: number } | undefined
-    assert.equal(stored!.priceUsd, 999, 'the frozen value is untouched — immutability holds for a record whose coverage already matches')
+    assert.equal(stored!.priceUsd, 999, 'the frozen value is untouched — immutability holds for a record whose composition provably matches')
     const mutationEntry = summary.acceptedEvidenceAudit.acceptedEvidenceMutationAudit.find((m) => m.writeDecision === 'skip_already_covers')
     assert.ok(mutationEntry)
     assert.equal(mutationEntry!.overwritePrevented, true)
+  })
+
+  it('HARD ASSERTION (accepted-evidence-raw-value-mutation follow-up task, part 2): a persisted side whose coveredLotCount matches the live group SIZE but whose actual sibling SET differs (a different lot swapped in at the same count — the reported "$2 vs $15,198" shape) is NOT incorrectly protected by count alone — it is reseeded', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const sharedIdentity = { chain: 'base', token: '0xswap', txHash: '0xsell-swap', side: 'exit' as const, timestamp: 2 }
+    // The record claims coverage of 2 lots — the SAME count as the live group below — but its
+    // fingerprint was built from a DIFFERENT pair of siblings (old-first/old-second, distinct
+    // lotIds/amounts from the live first/second) and its value (2) is wildly smaller than what the
+    // live 2-lot group actually totals (150). Count equality alone would have wrongly protected this;
+    // the fingerprint proves the composition is NOT the same set, so it must be reseeded.
+    const oldFirst = lot({ lotId: 'old-first', token: '0xswap', openedTxHash: '0xoldbuy1', closedTxHash: '0xsell-swap', openedAt: 1, closedAt: 2, amount: 0.001, costBasisUsd: 1, proceedsUsd: 1, realizedPnlUsd: 0, evidenceQuality: 'verified' })
+    const oldSecond = lot({ lotId: 'old-second', token: '0xswap', openedTxHash: '0xoldbuy2', closedTxHash: '0xsell-swap', openedAt: 1, closedAt: 2, amount: 0.001, costBasisUsd: 1, proceedsUsd: 1, realizedPnlUsd: 0, evidenceQuality: 'verified' })
+    acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, ...sharedIdentity, lotIdentityVersion: 'v1',
+      priceUsd: 2, valueUsd: 2, valueType: 'total_side_value_usd', coveredLotCount: 2,
+      coverageFingerprint: buildAcceptedEvidenceCoverageFingerprint([oldFirst, oldSecond]),
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    const first = lot({ lotId: 'first', token: '0xswap', openedTxHash: '0xbuy1', closedTxHash: '0xsell-swap', openedAt: 1, closedAt: 2, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
+    const second = lot({ lotId: 'second', token: '0xswap', openedTxHash: '0xbuy2', closedTxHash: '0xsell-swap', openedAt: 1, closedAt: 2, amount: 0.5, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30, evidenceQuality: 'verified' })
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [first, second] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(summary.acceptedEvidenceAudit.verifiedSidesCoverageReseeded, 2, 'count equality alone must never protect a genuinely different sibling set')
+    const stored = acceptedEvidenceKv.store.get(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' })) as { priceUsd: number; coverageFingerprint: string } | undefined
+    assert.equal(stored!.priceUsd, 150, 'reseeded to the true, live 2-sibling total — never left frozen at the unrelated $2 value')
+    assert.equal(stored!.coverageFingerprint, buildAcceptedEvidenceCoverageFingerprint([first, second]))
   })
 
   // ===============================================================================================

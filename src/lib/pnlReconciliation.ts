@@ -6,6 +6,7 @@ import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
+  buildAcceptedEvidenceCoverageFingerprint,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
@@ -1238,23 +1239,25 @@ export function createPnlReconciliation(config: Config = {}) {
     // summary is built, so a caller can never observe a "done" scan whose seeding writes are still in
     // flight.
     //
-    // COVERAGE-AWARE OVERWRITE GUARD, DISCLOSED (accepted-evidence-raw-value-mutation follow-up
-    // task — confirmed root cause: the prior guard treated ANY existing valid record as permanently
-    // final ("already persisted", never rewritten), which is correct for a genuine immutable fact but
-    // wrong for a record the live recovery lane wrote while it only knew about ONE lot on a side that
-    // has since grown a second, legitimate sibling — that record then stayed frozen at the smaller,
-    // incomplete total forever, even though this very pass just computed the true, full group total
-    // moments later. The RELAXED discovery read still finds a record backing this side under ANY
-    // sibling's version, but the record is only treated as "already covers this" (skip, immutable)
-    // when its own `existing.coveredLotCount` is AT LEAST the current live group's real membership —
-    // never fewer. A record whose coverage is smaller than the live group is a genuine, deterministic
-    // COMPLETION (never a value change for the same coverage) and is reseeded with the true total.
-    // This never weakens immutability for a genuine value change: the SAME group size with a
-    // genuinely different accepted price still reads back with coveredLotCount >= the live group size
-    // and stays frozen, exactly as before.
+    // COMPOSITION-AWARE OVERWRITE GUARD, DISCLOSED (accepted-evidence-raw-value-mutation follow-up
+    // task, part 2 — confirmed gap in the count-only guard this replaces: `coveredLotCount` alone
+    // cannot distinguish "the exact same sibling set" from "a genuinely different sibling set that
+    // happens to be the same size" — e.g. a stale 2-lot record reading $2 sitting next to a live
+    // 2-lot recompute reading $15,198 would have been wrongly protected by count equality alone. The
+    // RELAXED discovery read still finds a record backing this side under ANY sibling's version, but
+    // "already covers this" (skip, immutable) now requires the record's own `coverageFingerprint` —
+    // an exact, order-independent identity of every lot it was aggregated over — to match the LIVE
+    // group's fingerprint exactly. A fingerprint mismatch where the live group is at least as large
+    // as what was recorded (`group.lots.length >= existing.coveredLotCount`) is a genuine,
+    // deterministic COMPOSITION CHANGE — never a value change for the identical set — and is
+    // reseeded with the true, current total. A live view SMALLER than what was already recorded
+    // (`group.lots.length < existing.coveredLotCount`) is conservatively left untouched — this
+    // scan's own view may simply be incomplete, never grounds to shrink a persisted record.
     await mapWithConcurrencyLimit([...groups.values()], RECOVERY_CONCURRENCY_LIMIT, async (group) => {
       const existing = await readAcceptedEvidenceAnyLotVersion(acceptedEvidenceKv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
       const existingCoveredLotCount = existing?.coveredLotCount ?? 1
+      const liveFingerprint = buildAcceptedEvidenceCoverageFingerprint(group.lots)
+      const compositionUnchanged = existing !== null && existing.coverageFingerprint === liveFingerprint
       const totalUsd = Math.round(group.total * 1e8) / 1e8
       const evidenceKey = `${group.chain}:${group.token.toLowerCase()}:${group.txHash}:${group.side}:${group.timestamp}`
       const pushMutationAudit = (writeDecision: AcceptedEvidenceMutationAudit['writeDecision'], overwritePrevented: boolean, firstValueChangeStage: AcceptedEvidenceMutationAudit['firstValueChangeStage']) => {
@@ -1275,14 +1278,15 @@ export function createPnlReconciliation(config: Config = {}) {
           oldScaled: oldScaled.toString(), newScaled: newScaled.toString(), deltaScaled: (newScaled - oldScaled).toString(),
         })
       }
-      if (existing && existingCoveredLotCount >= group.lots.length) {
+      if (existing && (compositionUnchanged || existingCoveredLotCount > group.lots.length)) {
         audit.verifiedSidesAlreadyPersisted += group.lots.length
         pushMutationAudit('skip_already_covers', true, 'none')
         return
       }
       const identity = { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp, lotIdentityVersion: representativeVersion(group) }
       const envelope = buildAcceptedEvidenceEnvelope({
-        identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd', coveredLotCount: group.lots.length,
+        identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd',
+        coveredLotCount: group.lots.length, coverageFingerprint: liveFingerprint,
         source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
       })
       audit.missingVerifiedEvidenceMetadata += group.lots.length

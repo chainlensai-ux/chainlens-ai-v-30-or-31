@@ -75,6 +75,17 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   // (written before this field existed) reads back as 1 — the conservative assumption that never
   // treats an old record as MORE complete than it actually was.
   coveredLotCount: number
+  // COMPOSITION FINGERPRINT, DISCLOSED, ADDITIVE (accepted-evidence-raw-value-mutation follow-up
+  // task, part 2 — confirmed gap: `coveredLotCount` alone cannot tell "the exact same sibling set"
+  // apart from "a genuinely different sibling set that happens to be the same size" (e.g. a stale
+  // 2-lot record reading $2 next to a live 2-lot recompute reading $15,198 — same count, wrong
+  // conclusion if count were the only signal). A stable, order-independent identity of exactly which
+  // lots this envelope's total was aggregated over (each covered lot's own identity, sorted before
+  // joining) — see `buildAcceptedEvidenceCoverageFingerprint`'s own header. Missing on any
+  // pre-existing record reads back as `''`, which can never equal a real live fingerprint, so a
+  // legacy record is conservatively treated as an unconfirmed composition (eligible for correction
+  // once its `coveredLotCount` no longer suffices, never silently trusted purely by count).
+  coverageFingerprint: string
   source: string
   evidenceType: string
   // The provider's own original timestamp/bucket for the candle/quote actually used, when known —
@@ -124,6 +135,16 @@ export type AcceptedEvidenceClassification = {
 export function lotIdentityVersion(lot: { chain: string; token: string; openedTxHash: string; closedTxHash: string; openedAt: number; closedAt: number; amount: number }): string {
   const canonicalAmount = Number.isFinite(lot.amount) ? Number(lot.amount.toFixed(12)).toString() : 'invalid'
   return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, canonicalAmount].join(':')
+}
+
+// COVERAGE FINGERPRINT, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task): a stable,
+// order-independent identity of exactly which lots a writer aggregated into one side's total —
+// every covered lot's own `lotIdentityVersion`, sorted before joining so array order can never
+// change the fingerprint. Two aggregations covering the SAME NUMBER of lots can still be genuinely
+// different sets (a different lot swapped in at the same count) — this is the actual identity check
+// `coveredLotCount` alone cannot provide.
+export function buildAcceptedEvidenceCoverageFingerprint(lots: readonly { chain: string; token: string; openedTxHash: string; closedTxHash: string; openedAt: number; closedAt: number; amount: number }[]): string {
+  return lots.map((lot) => lotIdentityVersion(lot)).sort().join('|')
 }
 
 export function buildAcceptedEvidenceKey(identity: AcceptedEvidenceIdentity): string {
@@ -306,6 +327,11 @@ export function buildAcceptedEvidenceEnvelope(params: {
   // genuinely aggregated N siblings (the canonical seeding pass) must pass the real N explicitly —
   // see this envelope field's own header on `AcceptedEvidenceEnvelope`.
   coveredLotCount?: number
+  // Defaults to the identity's own `lotIdentityVersion` — the correct fingerprint for a writer that
+  // only ever knows about ONE lot (matches `coveredLotCount`'s own default of 1). A writer that
+  // aggregated N siblings must pass the real, multi-lot fingerprint explicitly (see
+  // `buildAcceptedEvidenceCoverageFingerprint`).
+  coverageFingerprint?: string
   source: string
   evidenceType: string
   providerTimestampBucket: number | null
@@ -318,6 +344,7 @@ export function buildAcceptedEvidenceEnvelope(params: {
     valueUsd: params.valueUsd,
     valueType: params.valueType ?? 'total_side_value_usd',
     coveredLotCount: params.coveredLotCount ?? 1,
+    coverageFingerprint: params.coverageFingerprint ?? params.identity.lotIdentityVersion,
     source: params.source,
     evidenceType: params.evidenceType,
     providerTimestampBucket: params.providerTimestampBucket,

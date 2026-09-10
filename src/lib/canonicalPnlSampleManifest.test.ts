@@ -22,7 +22,7 @@ import {
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
   demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot,
-  CANONICAL_VALUE_TOLERANCE,
+  CANONICAL_VALUE_TOLERANCE, groupCompositionFingerprint,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -256,8 +256,8 @@ describe('canonicalPnlSampleManifest — canonical side references (requirement 
     }
   })
 
-  it('the schema version is 3 — a v2 manifest genuinely lacks the side references replay now requires', async () => {
-    assert.equal(CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, 3)
+  it('the schema version is 4 — a v2 manifest genuinely lacks the side references replay now requires', async () => {
+    assert.equal(CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, 4)
     const kv = fakeKv()
     const { manifest } = await manifestWithEvidence(buildLots(2, 2))
     await kv.set(buildManifestKey(identity()), { ...manifest, manifestSchemaVersion: 2 })
@@ -573,7 +573,7 @@ describe('canonicalPnlSampleManifest — production-shaped regression (requireme
 
     // RUN 1 — create and persist the manifest end-to-end under the new schema.
     const { manifest: run1Manifest, evidence, total: TOTAL_A } = await manifestWithEvidence(run1Lots)
-    assert.equal(run1Manifest.manifestSchemaVersion, 3)
+    assert.equal(run1Manifest.manifestSchemaVersion, 4)
     assert.equal(run1Manifest.verifiedLotCount, 23)
     assert.equal(run1Manifest.verifiedPricingCoverage, 23 / 27)
     assert.equal(await writeCanonicalPnlSampleManifest(kv, run1Manifest), true)
@@ -1769,6 +1769,8 @@ describe('refreshed canonical manifest replay failure — build-time self-valida
       exitSideGroupIdentity: 'stale-exit', exitSideGroupRawQuantity: '0', exitLotRawQuantity: '0',
       exitAllocationNumerator: '0', exitAllocationDenominator: '0',
       allocatedCostBasisUsd: 0, allocatedProceedsUsd: 6,
+      entryGroupTotalUsd: 0, exitGroupTotalUsd: 6,
+      entryGroupFingerprint: 'stale-entry-fingerprint', exitGroupFingerprint: 'stale-exit-fingerprint',
     }
     const preFixShapedManifest: CanonicalPnlSampleManifest = {
       ...validManifest,
@@ -2251,5 +2253,135 @@ describe('canonical-manifest-false-structural-disagreement follow-up task — "6
     const groupAudit = firstReplay.manifestGroupReconciliationAudit.find((g) => g.side === 'exit')
     assert.ok(groupAudit)
     assert.equal(groupAudit!.firstDivergenceStage, 'evidence_raw_value_changed', 'correctly attributed to the evidence record itself, never misread as membership growth')
+  })
+})
+
+describe('accepted-evidence-raw-value-mutation follow-up task, part 2 — coveredLotCount is not composition; schema v4 group-total/fingerprint reconciliation', () => {
+  // CONFIRMED ROOT CAUSE, DISCLOSED: the prior `reconcileGroup` compared the live evidence-SIDE-GROUP
+  // total against `record.groupProceedsUsd`/`groupCostBasisUsd` — the target lot's own
+  // OCCURRENCE-multiplicity total (this lot's frozen per-instance share), never the whole shared-side
+  // group's total. Whenever a group has other, differently-shaped siblings (the common real-world
+  // case), those two quantities are simply different numbers, so `evidenceUnchanged` reported "changed"
+  // even when the accepted-evidence record itself never moved — exactly the live report's own proof:
+  // persistedRawUsd === upstreamRawUsd === canonicalSeedRawUsd (perfectly stable), yet replay still
+  // misclassified the mismatch as `evidence_raw_value_changed`. Schema v4 fixes this by persisting the
+  // group's REAL total (`entryGroupTotalUsd`/`exitGroupTotalUsd`) and a composition fingerprint
+  // (`entryGroupFingerprint`/`exitGroupFingerprint`) at build time, so replay can finally compare the
+  // SAME quantity on both sides and tell apart: evidence moved / composition changed / nothing changed.
+  const buildSharedExitGroup = () => {
+    const target = lot({
+      lotId: 'target', token: '0xshared-group', openedTxHash: '0xtargetbuy', closedTxHash: '0xsell-shared',
+      openedAt: 1, closedAt: 2, amount: 100, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60,
+    })
+    const siblingA = lot({
+      lotId: 'siblingA', token: '0xshared-group', openedTxHash: '0xsiblingAbuy', closedTxHash: '0xsell-shared',
+      openedAt: 1, closedAt: 2, amount: 200, costBasisUsd: 80, proceedsUsd: 200, realizedPnlUsd: 120,
+    })
+    return { target, siblingA }
+  }
+  const seedCleanExitTotal = (evidence: ReturnType<typeof seededEvidence>, closedTxHash: string, closedAt: number, totalUsd: number) => {
+    const exitIdentity = { chain: 'base', token: '0xshared-group', txHash: closedTxHash, side: 'exit' as const, timestamp: closedAt, lotIdentityVersion: 'shared-group-representative' }
+    evidence.store.set(buildAcceptedEvidenceKey(exitIdentity), buildAcceptedEvidenceEnvelope({
+      identity: exitIdentity, priceUsd: totalUsd, valueUsd: totalUsd,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+  }
+
+  it('regression 1 — SAME COUNT, DIFFERENT SIBLING SET: a group whose composition changed (a different sibling swapped in at the same size) is correctly reclassified as group_membership_grew, never evidence_raw_value_changed, even though the accepted evidence total never moved', async () => {
+    const { target, siblingA } = buildSharedExitGroup()
+    const { evidence } = await manifestWithEvidence([target, siblingA], identity('composition-change-wallet'))
+    seedCleanExitTotal(evidence, target.closedTxHash, target.closedAt, 300) // target 100/300*300=100, siblingA 200/300*300=200 — divides exactly, no remainder noise
+    // Rebuild against the clean $300 evidence (manifestWithEvidence's own per-lot seeding does not
+    // aggregate) so the frozen record's own entryGroupTotalUsd/exitGroupTotalUsd is the real $300.
+    const rebuilt = await buildManifestFromCandidate({
+      identity: identity('composition-change-wallet'), allCandidateLots: [target, siblingA], candidateVerifiedLots: [target, siblingA],
+      structuralLotCount: 2, fingerprints: computeFingerprints([target, siblingA], realizedTotal([target, siblingA])),
+      realizedPnlUsd: realizedTotal([target, siblingA]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const targetRecord = rebuilt.verifiedLotRecords.find((r) => r.lotIdentityVersion === lotIdentityVersion(target))!
+    assert.equal(targetRecord.exitGroupTotalUsd, 300)
+    assert.equal(targetRecord.proceedsUsd, 100, 'target\'s own frozen share at build time: 100/300 of $300')
+
+    // Replay with siblingA REPLACED by a differently-sized siblingB — same COUNT (still 2 members),
+    // genuinely different composition. The evidence record itself is untouched (still $300).
+    const siblingB = lot({
+      lotId: 'siblingB', token: '0xshared-group', openedTxHash: '0xsiblingBbuy', closedTxHash: '0xsell-shared',
+      openedAt: 1, closedAt: 2, amount: 50, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30,
+    })
+    const currentLots = [target, siblingB]
+    const firstReplay = await replay(rebuilt, currentLots, evidence.loader)
+    assert.equal(firstReplay.outcome, 'unavailable', 'the target\'s own share genuinely moved (100 -> 200), so replay cannot silently republish the stale value')
+    assert.equal((firstReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0), 0, 'must NOT be a hard structural block — the evidence record itself never changed')
+    assert.ok((firstReplay.manifestStructuralFailureAudit.candidateEvolutionReasons.candidate_evolution_group_membership_changed ?? 0) > 0)
+    assert.equal(firstReplay.manifestStructuralFailureAudit.structuralFailure, false)
+    assert.equal(firstReplay.manifestStructuralFailureAudit.refreshAllowed, true)
+
+    const groupAudit = firstReplay.manifestGroupReconciliationAudit.find((g) => g.side === 'exit')
+    assert.ok(groupAudit)
+    assert.equal(groupAudit!.firstDivergenceStage, 'group_membership_grew', 'count-equal composition change must be attributed to membership, never to the evidence record')
+    assert.equal(groupAudit!.acceptedRawUsd, 300, 'the accepted evidence total itself never moved')
+  })
+
+  it('regression 2 — SAME SET, DIFFERENT ORDERING: replay is bit-identical regardless of candidate array order', async () => {
+    const { target, siblingA } = buildSharedExitGroup()
+    const { evidence } = await manifestWithEvidence([target, siblingA], identity('order-independence-wallet'))
+    seedCleanExitTotal(evidence, target.closedTxHash, target.closedAt, 300)
+    const rebuilt = await buildManifestFromCandidate({
+      identity: identity('order-independence-wallet'), allCandidateLots: [target, siblingA], candidateVerifiedLots: [target, siblingA],
+      structuralLotCount: 2, fingerprints: computeFingerprints([target, siblingA], realizedTotal([target, siblingA])),
+      realizedPnlUsd: realizedTotal([target, siblingA]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const reversedReplay = await replay(rebuilt, [siblingA, target], evidence.loader)
+    assert.equal(reversedReplay.outcome, 'applied', 'reversed array order must never produce a mismatch')
+    assert.equal(reversedReplay.reasonCounts.manifest_replay_success, 2)
+    assert.equal(reversedReplay.manifestGroupReconciliationAudit.length, 0, 'no reconciliation is even invoked — nothing mismatched')
+  })
+
+  it('regression 3 — SAME SET, SAME TOTAL: deterministic replay reproduces the exact frozen values and the persisted fingerprints match the live recomputation exactly', async () => {
+    const { target, siblingA } = buildSharedExitGroup()
+    const { evidence } = await manifestWithEvidence([target, siblingA], identity('deterministic-wallet'))
+    seedCleanExitTotal(evidence, target.closedTxHash, target.closedAt, 300)
+    const rebuilt = await buildManifestFromCandidate({
+      identity: identity('deterministic-wallet'), allCandidateLots: [target, siblingA], candidateVerifiedLots: [target, siblingA],
+      structuralLotCount: 2, fingerprints: computeFingerprints([target, siblingA], realizedTotal([target, siblingA])),
+      realizedPnlUsd: realizedTotal([target, siblingA]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const targetRecord = rebuilt.verifiedLotRecords.find((r) => r.lotIdentityVersion === lotIdentityVersion(target))!
+    assert.equal(targetRecord.exitGroupFingerprint, groupCompositionFingerprint([target, siblingA]))
+
+    const result = await replay(rebuilt, [target, siblingA], evidence.loader)
+    assert.equal(result.outcome, 'applied')
+    const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    const publishedTarget = published.find((l) => l.lotId === 'target')!
+    assert.equal(publishedTarget.proceedsUsd, 100)
+  })
+
+  it('regression 4 — GENUINE MATERIAL VALUE CHANGE: the same exact composition, with the accepted-evidence record itself rewritten, still fails closed as evidence_raw_value_changed', async () => {
+    const { target, siblingA } = buildSharedExitGroup()
+    const { evidence } = await manifestWithEvidence([target, siblingA], identity('material-change-wallet'))
+    seedCleanExitTotal(evidence, target.closedTxHash, target.closedAt, 300)
+    const rebuilt = await buildManifestFromCandidate({
+      identity: identity('material-change-wallet'), allCandidateLots: [target, siblingA], candidateVerifiedLots: [target, siblingA],
+      structuralLotCount: 2, fingerprints: computeFingerprints([target, siblingA], realizedTotal([target, siblingA])),
+      realizedPnlUsd: realizedTotal([target, siblingA]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    // Same exact two lots (identical composition) — but the accepted-evidence record itself is
+    // rewritten to a materially different total ($900 instead of $300).
+    seedCleanExitTotal(evidence, target.closedTxHash, target.closedAt, 900)
+    const firstReplay = await replay(rebuilt, [target, siblingA], evidence.loader)
+    assert.equal(firstReplay.outcome, 'unavailable')
+    assert.ok((firstReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0, 'a genuine evidence change on the IDENTICAL composition must still hard-block')
+    assert.equal(firstReplay.manifestStructuralFailureAudit.structuralFailure, true)
+    assert.equal(firstReplay.manifestStructuralFailureAudit.refreshAllowed, false)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(firstReplay, 2), false)
+
+    const groupAudit = firstReplay.manifestGroupReconciliationAudit.find((g) => g.side === 'exit')
+    assert.ok(groupAudit)
+    assert.equal(groupAudit!.firstDivergenceStage, 'evidence_raw_value_changed')
+    assert.equal(groupAudit!.acceptedRawUsd, 900)
   })
 })

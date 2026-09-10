@@ -82,6 +82,10 @@ function record(overrides: Partial<CanonicalManifestLotRecord> = {}): CanonicalM
     exitAllocationDenominator: '0',
     allocatedCostBasisUsd: 10,
     allocatedProceedsUsd: 12,
+    entryGroupTotalUsd: 10,
+    exitGroupTotalUsd: 12,
+    entryGroupFingerprint: 'base:0xtoken:0xbuy:0xsell:1:2:1',
+    exitGroupFingerprint: 'base:0xtoken:0xbuy:0xsell:1:2:1',
     ...overrides,
   }
 }

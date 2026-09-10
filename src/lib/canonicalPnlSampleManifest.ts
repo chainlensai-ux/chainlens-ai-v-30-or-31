@@ -81,7 +81,26 @@ export function stablecoinNormalizedGroupTotal(groupLots: readonly MatchedLot[],
 // references were never written — so the version is bumped and the next scan rebuilds. Both the
 // first (creation) and second (replay) scan of this new schema are covered end-to-end by the
 // regressions in canonicalPnlSampleManifest.test.ts.
-export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 3
+//
+// SCHEMA BUMP TO 4, GENUINELY REQUIRED, DISCLOSED (accepted-evidence-raw-value-mutation follow-up
+// task — confirmed root cause of a live false `evidence_raw_value_changed` block: `reconcileGroup`
+// compared the live evidence-SIDE-GROUP total against `record.groupCostBasisUsd`/`groupProceedsUsd`
+// — but those fields are the OCCURRENCE-GROUP total (this one structural lot's own allocated share,
+// summed across its `occurrenceCount` duplicates), never the full evidence-side group's raw total.
+// Comparing them is apples to oranges whenever a lot's evidence-side group contains OTHER,
+// differently-shaped siblings (the common case for any real partial-fill/shared-transaction group) —
+// it will show a "difference" even when the underlying accepted evidence never moved at all, exactly
+// the live report's own proof: `persistedRawUsd === upstreamRawUsd === canonicalSeedRawUsd`, evidence
+// provably stable, yet replay still misclassified the mismatch as `evidence_raw_value_changed`. A v3
+// record carries no field that records the evidence-side group's OWN total or composition at build
+// time — that data was never persisted, so it cannot be recovered from an existing v3 record. Every
+// v3 record is superseded here by two NEW, honestly-scoped fields per side —
+// `entryGroupTotalUsd`/`exitGroupTotalUsd` (the evidence-side group's real total this lot's share was
+// allocated from) and `entryGroupFingerprint`/`exitGroupFingerprint` (a stable identity fingerprint of
+// exactly which siblings composed that group) — so replay can finally compare the SAME quantity on
+// both sides, and tell "the accepted evidence total moved" apart from "the sibling set composing it
+// changed" apart from "nothing changed" instead of conflating all three into one bogus comparison.
+export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 4
 // UNCHANGED at 2: the structural lot IDENTITY semantics (chain/token/tx hashes/timestamps/
 // partial-fill ordinal) are correct and were proven correct in production — identity replay
 // succeeded for all 23 lots with zero mismatches. Only the stored VALUES were missing.
@@ -714,6 +733,35 @@ export type CanonicalManifestLotRecord = {
   exitAllocationDenominator: string
   allocatedCostBasisUsd: number | null
   allocatedProceedsUsd: number | null
+  // EVIDENCE-SIDE GROUP TOTAL + COMPOSITION, DISCLOSED (accepted-evidence-raw-value-mutation
+  // follow-up task, schema v4 — see CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION's own header). The
+  // evidence-side group's REAL total this lot's share was allocated from at build time — distinct
+  // from `groupCostBasisUsd`/`groupProceedsUsd` above (this lot's OWN occurrence-multiplicity total,
+  // never the whole shared-side group's total when other, differently-shaped siblings exist). Null
+  // only when no evidence was loaded for that side at build time (matches
+  // `entryEvidence`/`exitEvidence` being null elsewhere in this same build).
+  entryGroupTotalUsd: number | null
+  exitGroupTotalUsd: number | null
+  // A stable identity fingerprint of exactly which siblings composed the evidence-side group at
+  // build time (sorted `lotIdentityVersion` of every lot sharing that side, joined) — see
+  // `groupCompositionFingerprint`'s own header. Lets replay tell "the accepted evidence total moved"
+  // apart from "the same total, but a genuinely different sibling set produced it" apart from
+  // "nothing changed" — count alone cannot make that distinction (two different sibling sets can
+  // share the same size).
+  entryGroupFingerprint: string
+  exitGroupFingerprint: string
+}
+
+// GROUP COMPOSITION FINGERPRINT, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task):
+// a stable, order-independent identity of exactly which sibling lots compose one evidence-side
+// group — every sibling's own `lotIdentityVersion` (already the codebase's established per-lot
+// identity string: chain/token/both tx hashes/both timestamps/canonical amount), sorted before
+// joining so array order can never change the fingerprint. Two groups with the SAME total raw
+// quantity or the SAME sibling COUNT can still be genuinely different sets (a different lot swapped
+// in at the same size) — this fingerprint is what actually distinguishes them, where a bare count
+// or raw-quantity sum cannot.
+export function groupCompositionFingerprint(groupLots: readonly MatchedLot[]): string {
+  return groupLots.map((lot) => lotIdentityVersion(lot)).sort().join('|')
 }
 
 // MANIFEST BUILD-TIME CANONICAL-VERIFIER AUDIT, DISCLOSED (refreshed-canonical-manifest-replay-
@@ -1095,6 +1143,10 @@ export async function buildManifestFromCandidate(params: {
       exitAllocationDenominator: representative.exitShare?.denominator ?? '0',
       allocatedCostBasisUsd: groupCostBasisUsd,
       allocatedProceedsUsd: groupProceedsUsd,
+      entryGroupTotalUsd: entryGroupTotalByKey.get(representative.entryEvidenceKey) ?? null,
+      exitGroupTotalUsd: exitGroupTotalByKey.get(representative.exitEvidenceKey) ?? null,
+      entryGroupFingerprint: groupCompositionFingerprint(entryGroups.get(representative.entryEvidenceKey) ?? []),
+      exitGroupFingerprint: groupCompositionFingerprint(exitGroups.get(representative.exitEvidenceKey) ?? []),
     })
   }
 
@@ -2024,11 +2076,21 @@ export async function replayManifest(params: {
     // mismatched key takes — it never changes whether THIS scan publishes it (still `mismatched`,
     // still withheld below), and a refreshed manifest still only ever gets to publish this lot after
     // an independent, real second replay against live evidence passes on its own merits.
-    const reconcileGroup = (side: 'entry' | 'exit', evidenceKey: string, frozenValue: number | null): CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null => {
+    // FROZEN GROUP TOTAL, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task, schema v4
+    // — see CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION's own header for the full root-cause trace):
+    // `record.entryGroupTotalUsd`/`exitGroupTotalUsd` is the evidence-SIDE-GROUP total this lot's
+    // share was allocated from at build time — the SAME quantity `acceptedRawUsd` below recomputes
+    // live. `record.groupCostBasisUsd`/`groupProceedsUsd` is a DIFFERENT quantity entirely (this
+    // lot's own occurrence-multiplicity total) and must never be used as the "was evidence
+    // unchanged" comparison basis — that was the confirmed bug: comparing it against the live
+    // evidence-group total is apples to oranges whenever the evidence-side group contains other,
+    // differently-shaped siblings, and reports a bogus "changed" even when accepted evidence
+    // (persistedRawUsd/loadedRawUsd/upstreamRawUsd/canonicalSeedRawUsd) never moved at all.
+    const reconcileGroup = (side: 'entry' | 'exit', evidenceKey: string, frozenGroupTotal: number | null, frozenOccurrenceTotal: number | null, storedFingerprint: string | undefined): CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null => {
       const evidence = evidenceByKey.get(evidenceKey)
       const group = side === 'entry' ? entryGroupsByKey.get(evidenceKey) : exitGroupsByKey.get(evidenceKey)
       const allocationMap = side === 'entry' ? entryAllocationByKey.get(evidenceKey) : exitAllocationByKey.get(evidenceKey)
-      if (!evidence || !group || group.length === 0 || !allocationMap || frozenValue === null) return null
+      if (!evidence || !group || group.length === 0 || !allocationMap || frozenGroupTotal === null || frozenOccurrenceTotal === null || storedFingerprint === undefined) return null
       const shares = group.map((lot) => allocationMap.get(lot)).filter((s): s is SideAllocationShare => s !== undefined)
       if (shares.length !== group.length) return null
       const acceptedRawUsd = stablecoinNormalizedGroupTotal(group, evidence.priceUsd)
@@ -2040,15 +2102,30 @@ export async function replayManifest(params: {
         ? rawQuantities.reduce((sum, q) => sum + (acceptedScaled * q) / totalRawQuantity, BigInt(0))
         : BigInt(0)
       const remainderScaled = acceptedScaled - baseSum
-      const frozenScaled = toScaledValue(frozenValue)
+      const frozenGroupScaled = toScaledValue(frozenGroupTotal)
+      // DELTA BASIS, DISCLOSED: `deltaScaled` below is scoped to THIS ONE occurrence (the reported
+      // live lot-level delta, e.g. the exact "-6" atomic units a manifest lot's own proceeds moved
+      // by) — its frozen basis is `frozenOccurrenceTotal` (`record.groupCostBasisUsd`/
+      // `groupProceedsUsd`, this lot's own occurrence-multiplicity total), never the group-wide
+      // `frozenGroupTotal` used for the evidence-unchanged classification just below. Conflating the
+      // two was never correct: they answer different questions (did evidence move vs. what did THIS
+      // lot's own value move by).
+      const frozenOccurrenceScaled = toScaledValue(frozenOccurrenceTotal)
       // The ONE unavoidable quantization unit toScaledValue's own Math.round introduces — never
       // CANONICAL_VALUE_TOLERANCE, a different, wider, structurally-derived constant used for a
-      // different purpose (the pass/fail decision itself, unchanged by this reconciliation).
-      const evidenceUnchanged = acceptedScaled - frozenScaled <= BigInt(1) && frozenScaled - acceptedScaled <= BigInt(1)
+      // different purpose (the pass/fail decision itself, unchanged by this reconciliation). Both
+      // sides of this comparison are now genuinely the SAME quantity (the evidence-side group's own
+      // total, live vs frozen) — never the occurrence-total vs group-total mismatch this replaced.
+      const evidenceUnchanged = acceptedScaled - frozenGroupScaled <= BigInt(1) && frozenGroupScaled - acceptedScaled <= BigInt(1)
+      // COMPOSITION FINGERPRINT, DISCLOSED: count alone cannot tell "the same siblings" apart from
+      // "a different sibling set that happens to be the same size" — two distinct sets can share a
+      // count. The fingerprint (sorted per-lot identity) is the actual identity check.
+      const liveFingerprint = groupCompositionFingerprint(group)
+      const compositionUnchanged = liveFingerprint === storedFingerprint
       const targetShare = occurrences.map((lot) => allocationMap.get(lot)).find((s): s is SideAllocationShare => s !== undefined)
       const firstDivergenceStage: CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] = !evidenceUnchanged
         ? 'evidence_raw_value_changed'
-        : group.length > 1
+        : !compositionUnchanged
           ? 'group_membership_grew'
           : 'unexplained'
       if (manifestGroupReconciliationAudit.length < MAX_GROUP_RECONCILIATION_EXAMPLES) {
@@ -2063,7 +2140,7 @@ export async function replayManifest(params: {
           allocatedScaledTotal: allocatedScaledTotal.toString(),
           replayScaledTotal: (targetShare?.allocatedScaled ?? BigInt(0)).toString(),
           targetLotScaled: (targetShare?.allocatedScaled ?? BigInt(0)).toString(),
-          deltaScaled: ((targetShare?.allocatedScaled ?? BigInt(0)) - frozenScaled).toString(),
+          deltaScaled: ((targetShare?.allocatedScaled ?? BigInt(0)) - frozenOccurrenceScaled).toString(),
           firstDivergenceStage,
         })
       }
@@ -2090,8 +2167,8 @@ export async function replayManifest(params: {
         // membership-growth (refresh-eligible) reclassification when EVERY mismatched side proves
         // out that way — a single side that cannot be explained keeps the whole key structural.
         const stages: Array<CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null> = []
-        if (entryMismatched) stages.push(reconcileGroup('entry', record.entryEvidenceKey, record.groupCostBasisUsd))
-        if (exitMismatched) stages.push(reconcileGroup('exit', record.exitEvidenceKey, record.groupProceedsUsd))
+        if (entryMismatched) stages.push(reconcileGroup('entry', record.entryEvidenceKey, record.entryGroupTotalUsd, record.groupCostBasisUsd, record.entryGroupFingerprint))
+        if (exitMismatched) stages.push(reconcileGroup('exit', record.exitEvidenceKey, record.exitGroupTotalUsd, record.groupProceedsUsd, record.exitGroupFingerprint))
         const allExplainedByMembershipGrowth = stages.length > 0 && stages.every((s) => s === 'group_membership_grew')
         if (allExplainedByMembershipGrowth) {
           addClassifiedReason(staleReasonKeys, 'candidate_evolution_group_membership_changed', key)
