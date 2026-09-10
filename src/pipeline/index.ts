@@ -3237,7 +3237,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
     const manifestKey = buildManifestKey(manifestIdentity)
     const candidateVerifiedLots = reconciledLots.filter(isCanonicalVerifiedPublishedLot)
-    const existingRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, manifestIdentity)
+    let existingRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, manifestIdentity)
 
     // ACCEPTED EVIDENCE IS THE SOURCE OF TRUTH, DISCLOSED (requirement #2): the same real store, the
     // same fail-closed identity/side/timestamp/lot-identity-version/schema validation
@@ -3262,6 +3262,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         scanFingerprint: audit.scanFingerprint,
       }
     }
+
+    // CANONICAL INTEGER SUM, DISCLOSED (fingerprint-divergence fix task): sorted by canonical
+    // identity then summed as quantized integer minor units — never a plain floating-point
+    // `.reduce()` over this array's own order — so the SAME rule replay uses when it re-derives
+    // this total (see replayManifest) always reproduces the identical value regardless of either
+    // scan's own array order. The stored `realizedPnlFingerprint` hashes this value's own quantized
+    // form (see scanDeterminismAudit's own header); an unrounded, order-dependent sum here would
+    // make it unreproducible on replay purely from float accumulation noise, failing a replay that
+    // is in fact perfectly correct. Hoisted above the bootstrap/migration branches below — both need
+    // it, and it depends on nothing either branch computes.
+    const realizedPnlUsd = candidateVerifiedLots.length > 0
+      ? sumQuantizedUsd(sortLotsByCanonicalIdentity(candidateVerifiedLots).map((l) => l.realizedPnlUsd))
+      : null
+    const fingerprints = computeManifestFingerprints(reconciledLots, realizedPnlUsd)
+    const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
 
     // A zero-lot manifest is not a canonical sample: it contains no accepted closed-lot evidence
     // to preserve.  If historical pricing subsequently completes a structural lot, replace that
@@ -3288,25 +3303,149 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // genuinely EMPTY bootstrap (`replaceEmptyBootstrapManifest`, a strict improvement over zero
     // lots) are both deliberate, narrower operations and are never blocked by this guard.
     const scanIsProviderPartialForBootstrap = providerDiagnostics.some((d) => d.providerStatus === 'partial' || d.providerStatus === 'provider_unavailable')
+
+    // V3 -> V4 (AND ANY FUTURE N-1 -> N) SCHEMA MIGRATION, DISCLOSED (v3->v4 canonical manifest
+    // migration follow-up task — confirmed gap: the partial-scan bootstrap guard above only ever
+    // prevented a FRESH, smaller bootstrap write during an unsafe scan; it never attempted to
+    // actually RECOVER the prior schema's real canonical sample. A wallet whose only problem is "the
+    // manifest KV key changed" deserves its existing sample carried forward under the new key, not
+    // left orphaned forever while a degraded scan quietly re-bootstraps a smaller one).
+    //
+    // POLICY, DISCLOSED, per this task's own numbered requirements:
+    //  1. Look up the manifest under the EXACT SAME wallet/chains/window/methodology/value-verifier
+    //     identity, with ONLY `manifestSchemaVersion` decremented by exactly one (`s${N-1}`) — never
+    //     a broader search across older versions, never a different identity dimension.
+    //  2. NEVER blindly copy it: nothing from the old manifest's own stored values is ever reused as
+    //     a published number — see (3)/(4).
+    //  3/4. The migrated candidate is built with `buildRefreshedManifest` — the SAME function every
+    //     other refresh in this codebase already uses — which reconstructs every group total and
+    //     fingerprint from LIVE accepted evidence and re-validates each occurrence against the one
+    //     shared canonical predicate before freezing it (buildManifestFromCandidate's own build-time
+    //     self-validation). The old manifest supplies only version-chaining context
+    //     (`priorManifest`), never a value.
+    //  5. The migrated candidate is confirmed via a REAL second `replayManifest` pass — the exact
+    //     double-replay pattern the stale-manifest self-heal path below already uses — and is
+    //     durably written ONLY when that second replay's outcome is `'applied'`.
+    //  6. If THIS scan itself is unsafe (provider-partial, or the window boundary is unproven / the
+    //     scanned history is truncated), migration is skipped entirely AND the plain bootstrap-create
+    //     branch below is ALSO skipped for this identity — this scan publishes normally
+    //     (`[...reconciledLots]`, unaffected) but writes NOTHING durable, so a smaller, unsafely-
+    //     scanned sample can never silently replace a valid, larger prior one merely because the
+    //     schema key changed. A later, safe scan gets another chance to migrate.
+    //  GENUINE CORRUPTION: if the OLD manifest's own first replay reports a real structural
+    //  integrity failure (an accepted-evidence value/group disagreement that is NOT explainable
+    //  candidate evolution — the same classification `reconcileGroup` already computes), migration
+    //  is blocked outright — never partially trusted. The scan then falls through to the ordinary
+    //  bootstrap-create branch (a legitimate fresh start from current evidence, exactly like any
+    //  first-ever scan) if it is otherwise safe, or is blocked entirely per rule 6 if not.
+    type ManifestSchemaMigrationAudit = {
+      previousSchemaKey: string | null
+      previousManifestFound: boolean
+      previousManifestLots: number
+      migrationAttempted: boolean
+      migrationEligible: boolean
+      migratedLots: number
+      rejectedLots: number
+      rejectionReasons: string[]
+      currentCandidates: number
+      newManifestLots: number
+      migrationWriteApplied: boolean
+      freshCreationBlockedReason: string | null
+    }
+    const migrationAudit: ManifestSchemaMigrationAudit = {
+      previousSchemaKey: null, previousManifestFound: false, previousManifestLots: 0,
+      migrationAttempted: false, migrationEligible: false, migratedLots: 0, rejectedLots: 0,
+      rejectionReasons: [], currentCandidates: candidateVerifiedLots.length, newManifestLots: 0,
+      migrationWriteApplied: false, freshCreationBlockedReason: null,
+    }
+    let migrationBlockedFreshCreation = false
+    if (!existingRead.manifest && !existingRead.validationFailure && manifestIdentity.manifestSchemaVersion > 1) {
+      const previousSchemaIdentity = buildManifestIdentity({
+        walletAddress: params.walletAddress, chains: preScan.sanitizedChains,
+        configuredWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED, matchedLotFingerprint: structuralAudit.matchedLotFingerprint,
+        manifestSchemaVersion: manifestIdentity.manifestSchemaVersion - 1,
+      })
+      migrationAudit.previousSchemaKey = buildManifestKey(previousSchemaIdentity)
+      const previousRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, previousSchemaIdentity)
+      migrationAudit.previousManifestFound = !!previousRead.manifest
+      migrationAudit.previousManifestLots = previousRead.manifest?.verifiedLotCount ?? 0
+
+      if (previousRead.manifest && previousRead.manifest.verifiedLotCount > 0) {
+        migrationAudit.migrationAttempted = true
+        const scanUnsafeForMigration = scanIsProviderPartialForBootstrap
+          || unmatchedEvidenceAudit.windowBoundaryProven !== true
+          || unmatchedEvidenceAudit.historyCoverageStatus === 'truncated'
+        if (scanUnsafeForMigration) {
+          migrationAudit.freshCreationBlockedReason = 'unsafe_scan_prior_manifest_preserved'
+          migrationBlockedFreshCreation = true
+        } else {
+          migrationAudit.migrationEligible = true
+          const priorManifestReplay = await replayManifest({
+            manifest: previousRead.manifest, allCandidateLots: reconciledLots,
+            loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+          })
+          if (priorManifestReplay.manifestStructuralFailureAudit.structuralFailure) {
+            migrationAudit.rejectionReasons.push('prior_manifest_structural_integrity_failure')
+            migrationAudit.freshCreationBlockedReason = 'migration_blocked_structural_integrity_failure'
+          } else {
+            const migratedCandidate = await buildRefreshedManifest({
+              priorManifest: previousRead.manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
+              candidateVerifiedLots, structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
+              verifiedPricingCoverage, now: Date.now(), refreshReason: 'schema-migration-previous-version-carried-forward',
+              loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+            })
+            const migrationConfirmReplay = await replayManifest({
+              manifest: migratedCandidate, allCandidateLots: reconciledLots,
+              loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+            })
+            migrationAudit.newManifestLots = migratedCandidate.verifiedLotCount
+            const previousLotKeys = new Set(previousRead.manifest.verifiedLotIdentityKeys)
+            const migratedLotKeys = new Set(migratedCandidate.verifiedLotIdentityKeys)
+            migrationAudit.migratedLots = [...previousLotKeys].filter((key) => migratedLotKeys.has(key)).length
+            migrationAudit.rejectedLots = previousLotKeys.size - migrationAudit.migratedLots
+            if (migrationAudit.rejectedLots > 0) migrationAudit.rejectionReasons.push('not_reproduced_in_migrated_manifest')
+            if (migrationConfirmReplay.outcome === 'applied') {
+              const migrationWriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, migratedCandidate)
+              migrationAudit.migrationWriteApplied = migrationWriteSuccess
+              if (migrationWriteSuccess) {
+                // The migrated v4 manifest now stands in for "the existing manifest" for the REST
+                // of this scan's logic — every downstream branch (bootstrap-skip, subsequent-scan
+                // replay, self-heal) reads `existingRead` unchanged, so migration success requires
+                // zero special-casing beyond this one reassignment.
+                existingRead = { manifest: migratedCandidate, validationFailure: false }
+              } else {
+                migrationAudit.freshCreationBlockedReason = 'migration_write_failed'
+              }
+            } else {
+              migrationAudit.freshCreationBlockedReason = 'migration_confirm_replay_not_applied'
+            }
+          }
+        }
+      }
+      console.warn('[canonical-manifest-schema-migration]', migrationAudit)
+    }
+    if (migrationBlockedFreshCreation) {
+      // Rule 6: this scan writes NOTHING durable for this identity — never a smaller fresh manifest
+      // merely because the schema key changed and this particular scan was unsafe. Publication for
+      // THIS scan is completely unaffected (identical to every other branch's own return below).
+      canonicalSampleManifestAudit = {
+        ...emptyCanonicalSampleManifestAudit(manifestKey),
+        manifestFound: false, manifestCompatible: false,
+        compatibilityReason: 'unsafe_scan_prior_schema_manifest_preserved',
+        manifestCreated: false, manifestApplied: false,
+        currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
+        publishedVerifiedLotCount: candidateVerifiedLots.length,
+      }
+      logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
+      return { publishedLots: [...reconciledLots], forcePublicPnlUnavailable: false }
+    }
+
     const skipUnsafeBootstrapPersist = !existingRead.manifest && !refreshCanonicalSampleRequested
       && !replaceEmptyBootstrapManifest && scanIsProviderPartialForBootstrap
     if (!existingRead.manifest || refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) {
       // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #9 — never an automatic refresh
       // because replay failed). The manifest records THIS scan's own candidate verified sample, and
       // that same sample is published unchanged; there is nothing to withhold.
-      // CANONICAL INTEGER SUM, DISCLOSED (fingerprint-divergence fix task): sorted by canonical
-      // identity then summed as quantized integer minor units — never a plain floating-point
-      // `.reduce()` over this array's own order — so the SAME rule replay uses when it re-derives
-      // this total (see replayManifest) always reproduces the identical value regardless of either
-      // scan's own array order. The stored `realizedPnlFingerprint` hashes this value's own quantized
-      // form (see scanDeterminismAudit's own header); an unrounded, order-dependent sum here would
-      // make it unreproducible on replay purely from float accumulation noise, failing a replay that
-      // is in fact perfectly correct.
-      const realizedPnlUsd = candidateVerifiedLots.length > 0
-        ? sumQuantizedUsd(sortLotsByCanonicalIdentity(candidateVerifiedLots).map((l) => l.realizedPnlUsd))
-        : null
-      const fingerprints = computeManifestFingerprints(reconciledLots, realizedPnlUsd)
-      const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
       // SHARED CANONICALIZATION, DISCLOSED (surgical manifest-replay fix follow-up task — confirmed
       // production bug: manifest_fingerprint_mismatch 2 despite matching identity/side evidence/
       // cost/proceeds, e.g. stored realizedPnlUsd -583.97 vs recomputed -583.96). `realizedPnlUsd`/

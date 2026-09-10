@@ -344,6 +344,95 @@ describe('canonicalPnlSampleManifest — read/write, fail-closed', () => {
     assert.deepEqual(v3StillThere.manifest, v3Manifest, 'writing the new v4 manifest never touches the coexisting v3 record')
   })
 
+  // V3->V4 MIGRATION MECHANISM, DISCLOSED (v3->v4 canonical manifest migration follow-up task):
+  // exercises the EXACT sequence pipeline/index.ts's migration block runs — replay the old manifest
+  // against current candidates (structural-integrity gate), reconstruct via buildRefreshedManifest
+  // (never a blind copy — entirely from current candidates + live evidence), confirm via a second
+  // replay, then write only on a confirmed 'applied' outcome — using the same functions this whole
+  // module already exports and every other refresh path already relies on.
+  it('HARD ASSERTION: a valid migration on the confirmed production 37-v3/30-current shape carries the prior sample forward deterministically — the 30 reproducible lots migrate, the 7 no-longer-present ones are honestly counted as rejected, never a crash or a silent whole-sample loss', async () => {
+    const v3Identity = buildManifestIdentity({
+      walletAddress: '0x4dbb3835744b2976560e0259cb218cab89abef96', chains: ['base'], configuredWindowDays: 90,
+      matchedLotFingerprint: 'fp-migration-production', manifestSchemaVersion: 3,
+    })
+    const v4Identity = buildManifestIdentity({
+      walletAddress: '0x4dbb3835744b2976560e0259cb218cab89abef96', chains: ['base'], configuredWindowDays: 90,
+      matchedLotFingerprint: 'fp-migration-production',
+    })
+    const lots37 = buildLots(37, 37)
+    const { manifest: v3Manifest, evidence } = await manifestWithEvidence(lots37, v3Identity)
+    assert.equal(v3Manifest.verifiedLotCount, 37)
+
+    // THIS scan's own current candidates: only 30 of the original 37 structural lots are present —
+    // the exact confirmed production shape (history truncated this scan, 7 lots simply absent from
+    // the current structural set, never corrupted).
+    const currentLots30 = lots37.slice(0, 30)
+
+    // Step 1: the OLD manifest's own first replay against CURRENT candidates — the structural-
+    // integrity gate that decides whether migration may proceed at all.
+    const priorReplay = await replay(v3Manifest, currentLots30, evidence.loader)
+    assert.equal(priorReplay.manifestStructuralFailureAudit.structuralFailure, false, 'lots simply absent this scan (never corrupted) must not register as a structural integrity failure')
+
+    // Step 2/3/4: reconstruct — buildRefreshedManifest, informed by the prior v3 manifest for
+    // version-chaining ONLY, built entirely from THIS scan's current candidates and live evidence.
+    const migratedCandidate = await buildRefreshedManifest({
+      priorManifest: v3Manifest, identity: v4Identity, allCandidateLots: currentLots30,
+      candidateVerifiedLots: currentLots30.filter(isCanonicalVerifiedPublishedLot), structuralLotCount: currentLots30.length,
+      fingerprints: computeFingerprints(currentLots30, realizedTotal(currentLots30)), realizedPnlUsd: realizedTotal(currentLots30),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'schema-migration-previous-version-carried-forward',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(migratedCandidate.manifestSchemaVersion, CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, 'the migrated manifest is written under the NEW schema identity, never the old one')
+    assert.equal(migratedCandidate.verifiedLotCount, 30, 'reconstructed entirely from THIS scan\'s own 30 current candidates and live evidence — never a blind copy inflating it back to 37')
+
+    // Step 5: confirm via a REAL second replay — only a confirmed 'applied' outcome is ever durable.
+    const confirmReplay = await replay(migratedCandidate, currentLots30, evidence.loader)
+    assert.equal(confirmReplay.outcome, 'applied', 'a genuinely self-consistent migrated manifest must replay cleanly against the exact candidates it was built from')
+
+    // Deterministic reproduction: exactly the 30 reproducible old lots migrated; the other 7 are
+    // honestly counted as rejected, never silently vanished without a trace.
+    const previousLotKeys = new Set(v3Manifest.verifiedLotIdentityKeys)
+    const migratedLotKeys = new Set(migratedCandidate.verifiedLotIdentityKeys)
+    const migratedLots = [...previousLotKeys].filter((key) => migratedLotKeys.has(key)).length
+    const rejectedLots = previousLotKeys.size - migratedLots
+    assert.equal(migratedLots, 30, 'exactly the 30 lots this scan could still structurally reproduce migrated')
+    assert.equal(rejectedLots, 7, 'the 7 lots absent from this scan\'s structural set are honestly rejected, not silently dropped from the count')
+
+    const kv = fakeKv()
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, migratedCandidate), true)
+    const v4ReadBack = await readCanonicalPnlSampleManifest(kv, v4Identity)
+    assert.deepEqual(v4ReadBack.manifest, migratedCandidate, 'the migrated manifest round-trips cleanly under its new v4 key')
+  })
+
+  it('companion — genuine value corruption on the prior v3 manifest is caught by the structural-integrity gate and must block migration, never silently promoted to v4', async () => {
+    const v3Identity = buildManifestIdentity({
+      walletAddress: '0xmigrationcorrupt', chains: ['base'], configuredWindowDays: 90,
+      matchedLotFingerprint: 'fp-migration-corrupt', manifestSchemaVersion: 3,
+    })
+    const corruptedLot = lot({
+      lotId: 'corrupted', token: '0xmigrationcorrupt', openedTxHash: '0xbuy', closedTxHash: '0xsell',
+      openedAt: 1, closedAt: 2, amount: 10, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60,
+    })
+    const { manifest: v3Manifest, evidence } = await manifestWithEvidence([corruptedLot], v3Identity)
+    assert.equal(v3Manifest.verifiedLotCount, 1)
+
+    // The accepted-evidence record itself is rewritten to a materially different value — a genuine
+    // value change on the IDENTICAL lot the v3 manifest was built from, never a legitimate candidate
+    // evolution (same single-member group, no sibling ever joins it).
+    const exitIdentity = { chain: 'base', token: '0xmigrationcorrupt', txHash: '0xsell', side: 'exit' as const, timestamp: 2, lotIdentityVersion: lotIdentityVersion(corruptedLot) }
+    evidence.store.set(buildAcceptedEvidenceKey(exitIdentity), buildAcceptedEvidenceEnvelope({
+      identity: exitIdentity, priceUsd: 999, valueUsd: 999,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+
+    // Step 1: the structural-integrity gate — this is exactly what pipeline/index.ts's migration
+    // block checks BEFORE ever attempting a reconstruction.
+    const priorReplay = await replay(v3Manifest, [corruptedLot], evidence.loader)
+    assert.equal(priorReplay.outcome, 'unavailable')
+    assert.equal(priorReplay.manifestStructuralFailureAudit.structuralFailure, true, 'a genuine value change must register as a structural integrity failure — this is what blocks migration outright')
+    assert.ok((priorReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0)
+  })
+
   it('missing record: null manifest, no validation failure', async () => {
     const result = await readCanonicalPnlSampleManifest(fakeKv(), identity())
     assert.equal(result.manifest, null)

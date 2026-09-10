@@ -129,12 +129,16 @@ test('HARD ASSERTION: manifestRefreshAttempted/Applied/Reason and staleManifestC
   assert.match(auditBody, /manifestRefreshReason,/)
 })
 
-test('HARD ASSERTION: a deployment-proof audit (methodology/fingerprint-helper version, commit sha) is logged on both the manifest-creation and manifest-replay paths', () => {
+test('HARD ASSERTION: a deployment-proof audit (methodology/fingerprint-helper version, commit sha) is logged on the manifest-creation, manifest-replay, AND migration-blocked-fresh-creation paths', () => {
   const versionConstant = position('methodology/helper version constants', 'const MANIFEST_FINGERPRINT_HELPER_VERSION = 2')
   assert.match(pipelineSource, /canonicalValueMethodologyVersion:\s*CANONICAL_VALUE_METHODOLOGY_VERSION,/)
   assert.match(pipelineSource, /manifestFingerprintHelperVersion:\s*MANIFEST_FINGERPRINT_HELPER_VERSION,/)
   const logCallSites = [...pipelineSource.matchAll(/logDeploymentProofAudit\(manifestKey, canonicalSampleManifestAudit\)/g)]
-  assert.equal(logCallSites.length, 2, 'the deployment-proof audit must be logged on BOTH the manifest-creation return and the manifest-replay return')
+  // THREE sites, DISCLOSED (v3->v4 canonical manifest migration follow-up task): the original two
+  // (manifest-creation, manifest-replay) plus the new migration-blocked-fresh-creation early return
+  // (rule 6 — an unsafe scan with a prior-schema manifest found writes nothing and returns early,
+  // but still logs the same deployment-proof audit shape as every other return path).
+  assert.equal(logCallSites.length, 3, 'the deployment-proof audit must be logged on the manifest-creation, manifest-replay, AND migration-blocked-fresh-creation returns')
   assert.ok(versionConstant >= 0)
 })
 
@@ -156,4 +160,44 @@ test('HARD ASSERTION: the manifest bootstrap-persist path is skipped for a provi
   const skipFlagEnd = pipelineSource.indexOf('\n', pipelineSource.indexOf('scanIsProviderPartialForBootstrap', skipFlagStart + 1))
   const skipFlagBody = pipelineSource.slice(skipFlagStart, skipFlagEnd)
   assert.match(skipFlagBody, /!replaceEmptyBootstrapManifest/, 'replacing a genuinely empty bootstrap must never be blocked by this guard')
+})
+
+// V3->V4 SCHEMA MIGRATION WIRING, DISCLOSED (v3->v4 canonical manifest migration follow-up task —
+// confirmed gap: the partial-scan bootstrap guard above only ever PREVENTED a fresh, smaller write;
+// it never attempted to RECOVER the prior schema's real canonical sample, so a wallet's existing
+// 37-lot sample stayed permanently orphaned under the old key forever after a schema bump). Static
+// source-position/content assertions, same convention as this file.
+test('HARD ASSERTION: the v3->v4 migration block looks up the immediately previous schema version under the EXACT SAME identity, gates on a structural-integrity replay of the prior manifest, confirms the rebuilt candidate with a second replay before ever writing, and blocks BOTH migration and fresh bootstrap-creation when the scan itself is unsafe', () => {
+  const previousIdentityStart = position('previous-schema identity lookup', 'manifestSchemaVersion: manifestIdentity.manifestSchemaVersion - 1,')
+  const previousReadStart = position('previous-schema manifest read', 'const previousRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, previousSchemaIdentity)')
+  const unsafeCheckStart = position('migration unsafe-scan check', 'const scanUnsafeForMigration = scanIsProviderPartialForBootstrap')
+  const priorReplayStart = position('prior manifest structural-integrity replay', 'const priorManifestReplay = await replayManifest({\n            manifest: previousRead.manifest, allCandidateLots: reconciledLots,')
+  const structuralFailureCheckStart = position('structural-integrity gate on the prior manifest', 'if (priorManifestReplay.manifestStructuralFailureAudit.structuralFailure) {')
+  const migratedBuildStart = position('migrated candidate reconstruction', 'const migratedCandidate = await buildRefreshedManifest({\n              priorManifest: previousRead.manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,')
+  const confirmReplayStart = position('migration confirmation replay', 'const migrationConfirmReplay = await replayManifest({\n              manifest: migratedCandidate, allCandidateLots: reconciledLots,')
+  const migrationWriteStart = position('migration write, gated on confirmed applied outcome', 'if (migrationConfirmReplay.outcome === \'applied\') {')
+  const migrationWriteCallStart = position('migration write call', 'const migrationWriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, migratedCandidate)')
+  const blockedReturnStart = position('migration-blocked-fresh-creation early return', 'if (migrationBlockedFreshCreation) {')
+  const bootstrapBranchStart = position('bootstrap branch (again)', 'if (!existingRead.manifest || refreshCanonicalSampleRequested || replaceEmptyBootstrapManifest) {')
+
+  assert.ok(previousIdentityStart < previousReadStart)
+  assert.ok(previousReadStart < unsafeCheckStart)
+  assert.ok(unsafeCheckStart < priorReplayStart, 'the unsafe-scan check must be evaluated before any migration reconstruction work runs')
+  assert.ok(priorReplayStart < structuralFailureCheckStart)
+  assert.ok(structuralFailureCheckStart < migratedBuildStart, 'genuine corruption must be checked BEFORE reconstruction is ever attempted')
+  assert.ok(migratedBuildStart < confirmReplayStart)
+  assert.ok(confirmReplayStart < migrationWriteStart)
+  assert.ok(migrationWriteStart < migrationWriteCallStart, 'the write must be gated on the confirmed second replay, never on the first')
+  assert.ok(migrationWriteCallStart < blockedReturnStart)
+  assert.ok(blockedReturnStart < bootstrapBranchStart, 'the migration-blocked early return must occur BEFORE the plain bootstrap-create branch, so an unsafe scan can never fall through to a fresh, smaller write')
+
+  const unsafeCheckEnd = pipelineSource.indexOf('\n', pipelineSource.indexOf('historyCoverageStatus', unsafeCheckStart))
+  const unsafeCheckBody = pipelineSource.slice(unsafeCheckStart, unsafeCheckEnd)
+  assert.match(unsafeCheckBody, /unmatchedEvidenceAudit\.windowBoundaryProven\s*!==\s*true/, 'migration must require a proven window boundary')
+  assert.match(unsafeCheckBody, /unmatchedEvidenceAudit\.historyCoverageStatus\s*===\s*'truncated'/, 'migration must treat truncated history as unsafe')
+
+  const blockedReturnStatement = position('migration-blocked-fresh-creation return statement', 'return { publishedLots: [...reconciledLots], forcePublicPnlUnavailable: false }')
+  assert.ok(blockedReturnStart < blockedReturnStatement)
+  const blockedReturnBody = pipelineSource.slice(blockedReturnStart, blockedReturnStatement)
+  assert.doesNotMatch(blockedReturnBody, /writeCanonicalPnlSampleManifest/, 'the migration-blocked path must never call the manifest writer — nothing durable is written for an unsafe scan')
 })
