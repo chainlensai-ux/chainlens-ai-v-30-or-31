@@ -434,6 +434,44 @@ export type AcceptedEvidenceAudit = {
   existingUpstreamSidesBackedByAcceptedEvidence: number
   existingUpstreamSidesWithoutAcceptedEvidence: number
   existingUpstreamSidesConflictingWithAcceptedEvidence: number
+  // COVERAGE-AWARE RESEED, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task): the
+  // canonical seeding pass no longer treats ANY existing valid record as permanently final — an
+  // existing record whose own `coveredLotCount` is LOWER than the live group's real membership is a
+  // genuine, deterministic completion (a legitimately new sibling recovered since the record was
+  // first written), not a value change, and IS corrected. This counts how many sides were reseeded
+  // for exactly that reason — see `acceptedEvidenceMutationAudit` for the bounded per-side detail.
+  verifiedSidesCoverageReseeded: number
+  acceptedEvidenceMutationAudit: AcceptedEvidenceMutationAudit[]
+}
+
+// BOUNDED MUTATION-TRACE AUDIT, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task):
+// diagnostic-only, capped at MAX_ACCEPTED_EVIDENCE_MUTATION_EXAMPLES — never affects the actual
+// write/skip decision, purely for production log visibility into exactly which stage a persisted
+// side's raw value was last touched at. Every field is read directly off values already computed by
+// the canonical seeding pass (never a second, independent recomputation).
+export type AcceptedEvidenceMutationAudit = {
+  evidenceKey: string
+  persistedRawUsd: number | null
+  loadedRawUsd: number | null
+  upstreamRawUsd: number
+  canonicalSeedRawUsd: number
+  source: string | null
+  sourceTimestamp: number
+  schemaVersion: number | null
+  methodologyVersion: string
+  writeDecision: 'initial_seed' | 'reseed_coverage_growth' | 'skip_already_covers'
+  overwritePrevented: boolean
+  firstValueChangeStage: 'occurrence_set_reconstruction' | 'none' | 'unexplained'
+  oldScaled: string
+  newScaled: string
+  deltaScaled: string
+}
+
+const MAX_ACCEPTED_EVIDENCE_MUTATION_EXAMPLES = 30
+const ACCEPTED_EVIDENCE_VALUE_SCALE = 100_000_000
+
+function toAcceptedEvidenceScaled(usd: number): bigint {
+  return BigInt(Math.round(usd * ACCEPTED_EVIDENCE_VALUE_SCALE))
 }
 
 export type PnlReconciliationSummary = {
@@ -715,6 +753,7 @@ export function createPnlReconciliation(config: Config = {}) {
       acceptedEvidenceValidationFailures: 0, acceptedEvidenceAppliedAfterUpstreamPricing: 0,
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
+      verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
     }
   }
 
@@ -1050,7 +1089,13 @@ export function createPnlReconciliation(config: Config = {}) {
         if (recoveredBuy !== null) {
           const envelope = buildAcceptedEvidenceEnvelope({
             identity: { chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, side: 'entry', timestamp: lot.openedAt, lotIdentityVersion: identityVersion },
-            priceUsd: recoveredBuy, valueUsd: recoveredBuy * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+            // COVERAGE, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task): this lane
+            // only ever knows about THIS ONE lot's own recovered price — never the full sibling group
+            // sharing this side (it has no visibility into siblings, unlike the canonical seeding
+            // pass below). `coveredLotCount: 1` records that honestly, so a later, more-complete
+            // aggregation is never mistaken for "already fully persisted" and blocked from correcting
+            // a partial value — see `AcceptedEvidenceEnvelope.coveredLotCount`'s own header.
+            priceUsd: recoveredBuy, valueUsd: recoveredBuy * lot.amount, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
           if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
@@ -1059,7 +1104,7 @@ export function createPnlReconciliation(config: Config = {}) {
         if (recoveredSell !== null) {
           const envelope = buildAcceptedEvidenceEnvelope({
             identity: { chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit', timestamp: lot.closedAt, lotIdentityVersion: identityVersion },
-            priceUsd: recoveredSell, valueUsd: recoveredSell * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+            priceUsd: recoveredSell, valueUsd: recoveredSell * lot.amount, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
           if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
@@ -1191,24 +1236,64 @@ export function createPnlReconciliation(config: Config = {}) {
     // SIDE GROUP (never once per sibling) — the same bounded worker pool as the live recovery pass,
     // never unbounded KV fan-out — and the whole pass is awaited by reconcile() BEFORE the scan's
     // summary is built, so a caller can never observe a "done" scan whose seeding writes are still in
-    // flight. The "already persisted" check uses the RELAXED discovery read — a valid record backing
-    // this side under ANY sibling's version means the group is already durable; never rewritten
-    // (idempotent, matches this pass's own established "never rewrite once seeded" rule).
+    // flight.
+    //
+    // COVERAGE-AWARE OVERWRITE GUARD, DISCLOSED (accepted-evidence-raw-value-mutation follow-up
+    // task — confirmed root cause: the prior guard treated ANY existing valid record as permanently
+    // final ("already persisted", never rewritten), which is correct for a genuine immutable fact but
+    // wrong for a record the live recovery lane wrote while it only knew about ONE lot on a side that
+    // has since grown a second, legitimate sibling — that record then stayed frozen at the smaller,
+    // incomplete total forever, even though this very pass just computed the true, full group total
+    // moments later. The RELAXED discovery read still finds a record backing this side under ANY
+    // sibling's version, but the record is only treated as "already covers this" (skip, immutable)
+    // when its own `existing.coveredLotCount` is AT LEAST the current live group's real membership —
+    // never fewer. A record whose coverage is smaller than the live group is a genuine, deterministic
+    // COMPLETION (never a value change for the same coverage) and is reseeded with the true total.
+    // This never weakens immutability for a genuine value change: the SAME group size with a
+    // genuinely different accepted price still reads back with coveredLotCount >= the live group size
+    // and stays frozen, exactly as before.
     await mapWithConcurrencyLimit([...groups.values()], RECOVERY_CONCURRENCY_LIMIT, async (group) => {
       const existing = await readAcceptedEvidenceAnyLotVersion(acceptedEvidenceKv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
-      if (existing) { audit.verifiedSidesAlreadyPersisted += group.lots.length; return }
+      const existingCoveredLotCount = existing?.coveredLotCount ?? 1
       const totalUsd = Math.round(group.total * 1e8) / 1e8
+      const evidenceKey = `${group.chain}:${group.token.toLowerCase()}:${group.txHash}:${group.side}:${group.timestamp}`
+      const pushMutationAudit = (writeDecision: AcceptedEvidenceMutationAudit['writeDecision'], overwritePrevented: boolean, firstValueChangeStage: AcceptedEvidenceMutationAudit['firstValueChangeStage']) => {
+        if (audit.acceptedEvidenceMutationAudit.length >= MAX_ACCEPTED_EVIDENCE_MUTATION_EXAMPLES) return
+        const oldScaled = toAcceptedEvidenceScaled(existing?.priceUsd ?? 0)
+        const newScaled = toAcceptedEvidenceScaled(totalUsd)
+        audit.acceptedEvidenceMutationAudit.push({
+          evidenceKey,
+          persistedRawUsd: existing?.priceUsd ?? null,
+          loadedRawUsd: existing?.priceUsd ?? null,
+          upstreamRawUsd: totalUsd,
+          canonicalSeedRawUsd: totalUsd,
+          source: existing?.source ?? null,
+          sourceTimestamp: group.timestamp,
+          schemaVersion: existing?.schemaVersion ?? null,
+          methodologyVersion: 'canonical-seeding-aggregate-v1',
+          writeDecision, overwritePrevented, firstValueChangeStage,
+          oldScaled: oldScaled.toString(), newScaled: newScaled.toString(), deltaScaled: (newScaled - oldScaled).toString(),
+        })
+      }
+      if (existing && existingCoveredLotCount >= group.lots.length) {
+        audit.verifiedSidesAlreadyPersisted += group.lots.length
+        pushMutationAudit('skip_already_covers', true, 'none')
+        return
+      }
       const identity = { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp, lotIdentityVersion: representativeVersion(group) }
       const envelope = buildAcceptedEvidenceEnvelope({
-        identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd',
+        identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd', coveredLotCount: group.lots.length,
         source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
       })
       audit.missingVerifiedEvidenceMetadata += group.lots.length
+      const isCoverageReseed = existing !== null
+      pushMutationAudit(isCoverageReseed ? 'reseed_coverage_growth' : 'initial_seed', false, isCoverageReseed ? 'occurrence_set_reconstruction' : 'none')
       const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
       if (ok) {
         audit.verifiedSidesWritten += group.lots.length
         audit.canonicalSeedingWriteSuccesses += group.lots.length
         audit.acceptedEvidenceWriteSuccesses += group.lots.length
+        if (isCoverageReseed) audit.verifiedSidesCoverageReseeded += group.lots.length
       } else {
         audit.verifiedSideWriteFailures += group.lots.length
         audit.canonicalSeedingWriteFailures += group.lots.length
@@ -1334,6 +1419,8 @@ export function createPnlReconciliation(config: Config = {}) {
         verifiedSidesSkippedInvalid: seeding.verifiedSidesSkippedInvalid,
         missingVerifiedEvidenceMetadata: seeding.missingVerifiedEvidenceMetadata,
         invalidAcceptedEvidenceReasons: seeding.invalidAcceptedEvidenceReasons,
+        verifiedSidesCoverageReseeded: seeding.verifiedSidesCoverageReseeded,
+        acceptedEvidenceMutationAudit: seeding.acceptedEvidenceMutationAudit,
       }
       // PRODUCTION SAFETY WARNING, DISCLOSED (requirement #10): real verified sides exist
       // (updatedFifoLots has at least one verified lot) but NEITHER the hydration pass found any

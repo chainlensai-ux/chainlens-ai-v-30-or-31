@@ -1104,6 +1104,72 @@ describe('pnlReconciliation', () => {
   })
 
   // ===============================================================================================
+  // ACCEPTED-EVIDENCE-RAW-VALUE-MUTATION follow-up task — coverage-aware reseed of a shared side
+  // whose persisted record was written while only a SUBSET of its real sibling group was known.
+  // ===============================================================================================
+
+  it('HARD ASSERTION: a persisted side whose record only ever covered 1 of 2 now-known siblings is corrected (reseeded) to the true, full group total — genuine group-membership growth, never a value drift', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    // Simulate exactly the pre-fix recovery-lane write: ONE lot's own value, persisted under the
+    // SHARED exit side key, with coveredLotCount 1 — written before the second sibling was ever
+    // discovered.
+    const sharedIdentity = { chain: 'base', token: '0xshared', txHash: '0xsell-shared', side: 'exit' as const, timestamp: 2 }
+    acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, ...sharedIdentity, lotIdentityVersion: 'v1',
+      priceUsd: 100, valueUsd: 100, valueType: 'total_side_value_usd', coveredLotCount: 1,
+      source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    // Two verified siblings now legitimately share this exact exit side — the live, full-group total
+    // (100 + 50 = 150) is genuinely larger than what the stale record ever covered.
+    const first = lot({ lotId: 'first', token: '0xshared', openedTxHash: '0xbuy1', closedTxHash: '0xsell-shared', openedAt: 1, closedAt: 2, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
+    const second = lot({ lotId: 'second', token: '0xshared', openedTxHash: '0xbuy2', closedTxHash: '0xsell-shared', openedAt: 1, closedAt: 2, amount: 0.5, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30, evidenceQuality: 'verified' })
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [first, second] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(summary.acceptedEvidenceAudit.verifiedSidesCoverageReseeded, 2, 'both siblings on the corrected side count as coverage-reseeded')
+    const stored = acceptedEvidenceKv.store.get(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' })) as { priceUsd: number; coveredLotCount: number } | undefined
+    assert.ok(stored)
+    assert.equal(stored!.priceUsd, 150, 'the persisted total is corrected to the true, full 2-sibling group total, never left frozen at the stale 1-sibling value')
+    assert.equal(stored!.coveredLotCount, 2, 'the corrected record now honestly records its own real coverage')
+
+    const mutationEntry = summary.acceptedEvidenceAudit.acceptedEvidenceMutationAudit.find((m) => m.writeDecision === 'reseed_coverage_growth')
+    assert.ok(mutationEntry, 'the bounded mutation audit records the reseed decision')
+    assert.equal(mutationEntry!.firstValueChangeStage, 'occurrence_set_reconstruction')
+    assert.equal(mutationEntry!.overwritePrevented, false)
+    assert.equal(mutationEntry!.persistedRawUsd, 100)
+    assert.equal(mutationEntry!.canonicalSeedRawUsd, 150)
+  })
+
+  it('companion — a persisted side whose coverage ALREADY matches the live group size stays frozen even when its value looks wrong, preserving immutability/fail-closed behavior', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const sharedIdentity = { chain: 'base', token: '0xfrozen', txHash: '0xsell-frozen', side: 'exit' as const, timestamp: 2 }
+    // This record already claims to cover BOTH siblings (coveredLotCount: 2) — exactly the live
+    // group's real size — even though its own value (999) does not match what a live recompute would
+    // produce. A genuinely different persisted value on a record that ALREADY covers the full group
+    // must never be silently corrected by this pass; only manifest replay's own explicit
+    // evidence_raw_value_changed classification (a separate, deliberate fail-closed path) may ever
+    // flag that — this pass's job is coverage completion only, never value reconciliation.
+    acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, ...sharedIdentity, lotIdentityVersion: 'v1',
+      priceUsd: 999, valueUsd: 999, valueType: 'total_side_value_usd', coveredLotCount: 2,
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    const first = lot({ lotId: 'first', token: '0xfrozen', openedTxHash: '0xbuy1', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
+    const second = lot({ lotId: 'second', token: '0xfrozen', openedTxHash: '0xbuy2', closedTxHash: '0xsell-frozen', openedAt: 1, closedAt: 2, amount: 0.5, costBasisUsd: 20, proceedsUsd: 50, realizedPnlUsd: 30, evidenceQuality: 'verified' })
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [first, second] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(summary.acceptedEvidenceAudit.verifiedSidesCoverageReseeded, 0, 'never reseeded — the existing record already covers the full live group')
+    const stored = acceptedEvidenceKv.store.get(buildAcceptedEvidenceKey({ ...sharedIdentity, lotIdentityVersion: 'v1' })) as { priceUsd: number } | undefined
+    assert.equal(stored!.priceUsd, 999, 'the frozen value is untouched — immutability holds for a record whose coverage already matches')
+    const mutationEntry = summary.acceptedEvidenceAudit.acceptedEvidenceMutationAudit.find((m) => m.writeDecision === 'skip_already_covers')
+    assert.ok(mutationEntry)
+    assert.equal(mutationEntry!.overwritePrevented, true)
+  })
+
+  // ===============================================================================================
   // CANONICAL SEEDING ELIGIBILITY — accepted-evidence-canonical-seeding-eligibility follow-up task.
   // ===============================================================================================
 

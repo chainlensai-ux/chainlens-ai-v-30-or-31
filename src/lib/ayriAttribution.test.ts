@@ -48,6 +48,7 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       acceptedEvidenceValidationFailures: 0, acceptedEvidenceAppliedAfterUpstreamPricing: 0,
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
+      verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
     },
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     ...overrides,

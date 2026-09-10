@@ -63,6 +63,18 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   priceUsd: number
   valueUsd: number
   valueType: AcceptedEvidenceValueType
+  // COVERAGE, DISCLOSED, ADDITIVE (accepted-evidence-raw-value-mutation follow-up task — confirmed
+  // root cause: a side's group can genuinely grow structural membership between scans as new
+  // siblings are recovered, but the ONLY prior write guard was "a valid record already exists at
+  // this key, never touch it again" — so a write made while only ONE sibling was known stayed frozen
+  // forever, even once a second, legitimate sibling sharing the exact same transaction side was
+  // discovered. Records how many sibling lots' values this envelope's own `valueUsd` total actually
+  // sums over, so a later writer can tell "this record already reflects the full group" (never
+  // rewrite — immutability holds) apart from "this record only ever reflected a partial group"
+  // (a genuine, deterministic completion, safe to reseed). Missing on any pre-existing record
+  // (written before this field existed) reads back as 1 — the conservative assumption that never
+  // treats an old record as MORE complete than it actually was.
+  coveredLotCount: number
   source: string
   evidenceType: string
   // The provider's own original timestamp/bucket for the candle/quote actually used, when known —
@@ -289,6 +301,11 @@ export function buildAcceptedEvidenceEnvelope(params: {
   // today (see this module's own header) — so existing callers that don't pass it explicitly still
   // persist an honest, correct tag rather than an omitted field.
   valueType?: AcceptedEvidenceValueType
+  // Defaults to 1 — the conservative, honest default for a writer that only ever knows about a
+  // single lot's own contribution to this side (e.g. the live recovery lane). A writer that
+  // genuinely aggregated N siblings (the canonical seeding pass) must pass the real N explicitly —
+  // see this envelope field's own header on `AcceptedEvidenceEnvelope`.
+  coveredLotCount?: number
   source: string
   evidenceType: string
   providerTimestampBucket: number | null
@@ -300,6 +317,7 @@ export function buildAcceptedEvidenceEnvelope(params: {
     priceUsd: params.priceUsd,
     valueUsd: params.valueUsd,
     valueType: params.valueType ?? 'total_side_value_usd',
+    coveredLotCount: params.coveredLotCount ?? 1,
     source: params.source,
     evidenceType: params.evidenceType,
     providerTimestampBucket: params.providerTimestampBucket,
