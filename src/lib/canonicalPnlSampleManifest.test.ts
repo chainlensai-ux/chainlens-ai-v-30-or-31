@@ -2143,3 +2143,113 @@ describe('canonical-manifest-false-structural-disagreement follow-up task', () =
     assert.ok((secondReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0)
   })
 })
+
+describe('canonical-manifest-false-structural-disagreement follow-up task — "6 atomic unit" group-membership-growth regression', () => {
+  // CONFIRMED LIVE SHAPE, DISCLOSED: wallet 0x4dbb3835744b2976560e0259cb218cab89abef96 —
+  // structuralClosedLots=137, pricingStageVerifiedLots=111, old manifest=37, candidateNewEvidenceCount=74,
+  // exactly ONE canonical_value_disagreement (side=exit, acceptedUsd=1210.84637925,
+  // rebuiltUsd=1210.84637919, deltaUsd=-6e-8). A single-member evidence-side group is mathematically
+  // GUARANTEED to reproduce bit-identically (share = totalValueScaled exactly, for ANY nonzero
+  // quantity), so this nonzero delta PROVES the exit evidence side now has >= 2 structural members —
+  // exactly reproduced here: the target lot was the manifest's sole claimant at build time; one of
+  // the 74 newly-recovered candidates turns out to share the SAME sell transaction, so replay's live
+  // group (built from ALL 111 current candidates) redistributes the SAME real accepted-evidence total
+  // across two members instead of one.
+  const targetAmount = 138263955.736919075251
+  const targetLot = lot({
+    lotId: 'target-6unit', token: '0xbf8e8f0e8866a7052f948c16508644347c57aba3',
+    openedTxHash: '0xc2d274362af44b209ea981eae2adc31ad7a945b24ce77dcf69659db11834c425',
+    closedTxHash: '0xa00618c549d5b3542fa0304f028d5b59838794ec4ae9045224ee491d53cc2806',
+    openedAt: 1779796767000, closedAt: 1784590253000, amount: targetAmount,
+    costBasisUsd: 5000, proceedsUsd: 1210.84637925, realizedPnlUsd: -3789.15362075,
+  })
+
+  it('replays cleanly and reclassifies as refresh-eligible candidate evolution, never a hard structural block, when the ONLY explanation is a new sibling sharing the same evidence side', async () => {
+    const { manifest: oldManifest, evidence } = await manifestWithEvidence([targetLot], identity('6unit-wallet'))
+    assert.equal(oldManifest.verifiedLotCount, 1)
+    assert.equal(oldManifest.verifiedLotRecords[0].groupProceedsUsd, 1210.84637925)
+
+    // One of the 74 newly-recovered candidates shares the exact same sell transaction — a real,
+    // structurally-recovered sibling, not a fabricated one — with a tiny quantity relative to the
+    // target lot's own ~138M tokens. amount=0.007 reproduces the EXACT reported live delta: with
+    // this sibling in the group, the target's exact BigInt share floors from 121084637925 to
+    // 121084637919 scaled units — precisely the reported rebuiltUsd=1210.84637919 (deltaScaled=-6).
+    const newSibling = lot({
+      lotId: 'new-sibling-74', token: targetLot.token, openedTxHash: '0xnewsiblingbuy',
+      closedTxHash: targetLot.closedTxHash, openedAt: 1, closedAt: targetLot.closedAt,
+      amount: 0.007, costBasisUsd: 0.005, proceedsUsd: 0.005, realizedPnlUsd: 0,
+    })
+    // Seed the sibling's own (unshared) entry evidence and the SAME real exit evidence total the
+    // group already had — the accepted-evidence record itself never changes.
+    const siblingEntryIdentity = { chain: newSibling.chain, token: newSibling.token, txHash: newSibling.openedTxHash, side: 'entry' as const, timestamp: newSibling.openedAt, lotIdentityVersion: lotIdentityVersion(newSibling) }
+    evidence.store.set(buildAcceptedEvidenceKey(siblingEntryIdentity), buildAcceptedEvidenceEnvelope({
+      identity: siblingEntryIdentity, priceUsd: 0.005, valueUsd: 0.005,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+    const currentLots = [targetLot, newSibling]
+
+    const firstReplay = await replay(oldManifest, currentLots, evidence.loader)
+    assert.equal(firstReplay.outcome, 'unavailable', 'the target lot\'s own frozen value genuinely no longer matches its live (now-shared) share')
+    assert.equal((firstReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0), 0, 'never counted as an unexplained structural failure')
+    assert.ok((firstReplay.manifestStructuralFailureAudit.candidateEvolutionReasons.candidate_evolution_group_membership_changed ?? 0) > 0, 'reclassified as explainable candidate evolution')
+    assert.equal(firstReplay.manifestStructuralFailureAudit.structuralFailure, false)
+    assert.equal(firstReplay.manifestStructuralFailureAudit.refreshAllowed, true)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(firstReplay, currentLots.length), true)
+
+    // The bounded exact-scaled-integer audit proves the mechanism, not just asserts it.
+    const groupAudit = firstReplay.manifestGroupReconciliationAudit.find((g) => g.side === 'exit')
+    assert.ok(groupAudit)
+    assert.equal(groupAudit!.occurrenceCount, 2, 'the live group now has two structural members')
+    assert.equal(groupAudit!.firstDivergenceStage, 'group_membership_grew')
+    assert.equal(groupAudit!.allocatedScaledTotal, groupAudit!.acceptedScaled, 'BigInt-exact conservation: allocated total equals the accepted evidence total exactly')
+    assert.equal(groupAudit!.deltaScaled, '-6', 'reproduces the EXACT reported live deltaAtomicOrScale=-6')
+
+    // The controlled refresh path actually converges: rebuild from current candidates, persist,
+    // replay again — never publishing the stale frozen number, always the freshly-verified one.
+    const currentVerifiedLots = currentLots.filter(isCanonicalVerifiedPublishedLot)
+    const refreshed = await buildRefreshedManifest({
+      priorManifest: oldManifest, identity: identity('6unit-wallet'), allCandidateLots: currentLots,
+      candidateVerifiedLots: currentVerifiedLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentVerifiedLots, realizedTotal(currentVerifiedLots)), realizedPnlUsd: realizedTotal(currentVerifiedLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'partially-unreproducible-manifest-current-evidence-refresh',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const secondReplay = await replay(refreshed, currentLots, evidence.loader)
+    assert.equal(secondReplay.outcome, 'applied')
+    assert.equal(secondReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, currentVerifiedLots.length)
+    assert.notEqual(secondReplay.publishedLots.find((l) => l.lotId === 'target-6unit')?.proceedsUsd, 1210.84637925, 'publishes the freshly recomputed (now correctly shared) value, never the stale one')
+  })
+
+  it('companion — a GENUINE evidence value change on a multi-member group still fails closed as evidence_raw_value_changed, never reclassified', async () => {
+    const { manifest: oldManifest, evidence } = await manifestWithEvidence([targetLot], identity('6unit-corrupt'))
+    const newSibling = lot({
+      lotId: 'new-sibling-corrupt', token: targetLot.token, openedTxHash: '0xnewsiblingbuy2',
+      closedTxHash: targetLot.closedTxHash, openedAt: 1, closedAt: targetLot.closedAt,
+      amount: 0.000000000123, costBasisUsd: 0.00001, proceedsUsd: 0.00001, realizedPnlUsd: 0,
+    })
+    const siblingEntryIdentity = { chain: newSibling.chain, token: newSibling.token, txHash: newSibling.openedTxHash, side: 'entry' as const, timestamp: newSibling.openedAt, lotIdentityVersion: lotIdentityVersion(newSibling) }
+    evidence.store.set(buildAcceptedEvidenceKey(siblingEntryIdentity), buildAcceptedEvidenceEnvelope({
+      identity: siblingEntryIdentity, priceUsd: 0.00001, valueUsd: 0.00001,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+    // GENUINE corruption: the shared exit evidence record itself is re-written with a materially
+    // different total ($50 higher) — a real price/value change, not membership growth.
+    const exitIdentity = { chain: targetLot.chain, token: targetLot.token, txHash: targetLot.closedTxHash, side: 'exit' as const, timestamp: targetLot.closedAt, lotIdentityVersion: lotIdentityVersion(targetLot) }
+    evidence.store.set(buildAcceptedEvidenceKey(exitIdentity), buildAcceptedEvidenceEnvelope({
+      identity: exitIdentity, priceUsd: 1260.84637925, valueUsd: 1260.84637925,
+      source: 'test-source', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+    }))
+    const currentLots = [targetLot, newSibling]
+
+    const firstReplay = await replay(oldManifest, currentLots, evidence.loader)
+    assert.equal(firstReplay.outcome, 'unavailable')
+    assert.ok((firstReplay.manifestStructuralFailureAudit.actualStructuralReasons.canonical_value_disagreement ?? 0) > 0, 'a real $50 evidence change stays a hard structural failure')
+    assert.equal(firstReplay.manifestStructuralFailureAudit.structuralFailure, true)
+    assert.equal(firstReplay.manifestStructuralFailureAudit.refreshAllowed, false)
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(firstReplay, currentLots.length), false)
+
+    const groupAudit = firstReplay.manifestGroupReconciliationAudit.find((g) => g.side === 'exit')
+    assert.ok(groupAudit)
+    assert.equal(groupAudit!.firstDivergenceStage, 'evidence_raw_value_changed', 'correctly attributed to the evidence record itself, never misread as membership growth')
+  })
+})

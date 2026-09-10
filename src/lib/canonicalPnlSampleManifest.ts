@@ -366,6 +366,12 @@ export type SideAllocationShare = {
   // share of the group total was itself below the smallest representable USD unit, never a
   // byproduct of which lot happened to absorb a rounding remainder.
   dustBelowPrecision: boolean
+  // EXACT SCALED INTEGER, DISCLOSED (canonical-manifest-false-structural-disagreement follow-up
+  // task) — this lot's own share, in VALUE_SCALE atomic units, BEFORE it is ever converted through
+  // `fromScaledValue` into a double. The single source of truth `allocatedValueUsd` above is
+  // rounded from; exposed so a caller (e.g. replayManifest's own group-reconciliation audit) can
+  // compare/sum in exact integer space instead of re-deriving (and re-rounding) it from the double.
+  allocatedScaled: bigint
 }
 
 // PURE, DETERMINISTIC (requirement #6): allocates ONE shared transaction-side total across every
@@ -436,7 +442,7 @@ export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], t
   const totalRawQuantity = rawQuantities.reduce((sum, q) => sum + q, BigInt(0))
   const totalValueScaled = toScaledValue(totalValueUsd)
   if (totalRawQuantity <= BigInt(0) || ordered.length === 0) {
-    return ordered.map((lot) => ({ lot, allocatedValueUsd: 0, numerator: '0', denominator: totalRawQuantity.toString(), dustBelowPrecision: false }))
+    return ordered.map((lot) => ({ lot, allocatedValueUsd: 0, numerator: '0', denominator: totalRawQuantity.toString(), dustBelowPrecision: false, allocatedScaled: BigInt(0) }))
   }
   // Exact rational share = (totalValueScaled * q) / totalRawQuantity. Floor (`base`) and the exact
   // remainder (`remainder = numerator - base * totalRawQuantity`, always in [0, totalRawQuantity))
@@ -477,6 +483,7 @@ export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], t
     // zero — i.e. its true fractional value never reached the smallest representable USD unit, never
     // a byproduct of remainder placement. See CanonicalAllocationOccurrenceAudit's own header.
     dustBelowPrecision: bases[i] === BigInt(0) && shares[i] === BigInt(0),
+    allocatedScaled: shares[i],
   }))
 }
 
@@ -1432,6 +1439,57 @@ export type ManifestValueDisagreementAudit = {
 
 const MAX_VALUE_DISAGREEMENT_EXAMPLES = 30
 
+// EXACT SCALED-INTEGER GROUP RECONCILIATION AUDIT, DISCLOSED (canonical-manifest-false-structural-
+// disagreement follow-up task, "6 atomic unit" regression — confirmed live wallet
+// 0x4dbb3835744b2976560e0259cb218cab89abef96). CONFIRMED MECHANISM: a single-member evidence-side
+// group is mathematically GUARANTEED to reproduce bit-identically (share = totalValueScaled exactly,
+// for any nonzero quantity, since q/q = 1) — so ANY nonzero per-group delta PROVES the group has TWO
+// OR MORE members, and the delta is either (a) the group's real accepted-evidence TOTAL genuinely
+// changed since the manifest was frozen (real corruption/stale price — must stay blocking), or (b)
+// the total is UNCHANGED but the SET of members sharing it has grown (a real, deterministic, and
+// entirely EXPLAINABLE redistribution — new evidence recovered since the manifest was built
+// legitimately joining this same transaction side, exactly what `candidateNewEvidenceCount` reports).
+// This audit distinguishes the two using EXACT BigInt arithmetic throughout — never a second float
+// comparison, never a widened tolerance — by comparing the group's CURRENT, LIVE, full
+// accepted-evidence total (scaled) against the frozen record's OWN stored value (rescaled): if they
+// match within the ONE unavoidable `toScaledValue` quantization unit (not `CANONICAL_VALUE_TOLERANCE`
+// — a tighter, structurally-derived floor used for a DIFFERENT purpose), the evidence itself provably
+// never moved, and `firstDivergenceStage` names the redistribution as the real, sole cause.
+export type CanonicalManifestGroupReconciliationAudit = {
+  evidenceKey: string
+  side: 'entry' | 'exit'
+  // The accepted-evidence record's own raw priceUsd (or valueUsd for a stablecoin-normalized side),
+  // before any VALUE_SCALE conversion — a real double, exactly as persisted/loaded.
+  acceptedRawUsd: number
+  // acceptedRawUsd run through the SAME toScaledValue this module allocates from — as a string,
+  // since a bigint cannot round-trip through JSON.
+  acceptedScaled: string
+  // How many structural lots currently share this evidence side (the LIVE group size — may exceed
+  // what the frozen manifest record's own occurrenceCount implies, which is the whole point).
+  occurrenceCount: number
+  canonicalAmounts: string[]
+  // Each member's exact rational share numerator/denominator (raw-quantity-scaled), 'numerator:denominator'.
+  exactWeights: string[]
+  allocatedScaledPerOccurrence: string[]
+  // The real, conserved BigInt leftover the largest-remainder pass distributed — never negative,
+  // always < occurrenceCount.
+  remainderScaled: string
+  // Sum of allocatedScaledPerOccurrence — must equal acceptedScaled exactly (BigInt-exact
+  // conservation); a mismatch here would be a genuine internal arithmetic bug, never expected.
+  allocatedScaledTotal: string
+  // The live replay's own recomputed total for JUST the target lot's occurrence-group (its own
+  // occurrenceCount slice of allocatedScaledTotal) — what the pass/fail decision actually compared.
+  replayScaledTotal: string
+  // The target (mismatched) lot's own exact scaled share.
+  targetLotScaled: string
+  // targetLotScaled minus the frozen manifest record's own value (rescaled) — the exact integer
+  // form of the reported deltaUsd, free of any double round-trip.
+  deltaScaled: string
+  firstDivergenceStage: 'evidence_raw_value_changed' | 'group_membership_grew' | 'unexplained'
+}
+
+const MAX_GROUP_RECONCILIATION_EXAMPLES = 10
+
 export type ManifestEvidenceQualityComparisonAudit = {
   canonicalLotKey: string
   manifest: { lotEvidenceQuality: MatchedLot['evidenceQuality'] | null; entryEvidenceStatus: 'verified' | 'missing_or_invalid'; exitEvidenceStatus: 'verified' | 'missing_or_invalid' }
@@ -1498,6 +1556,8 @@ export type ManifestReplayResult = {
   manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
   // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see ManifestValueDisagreementAudit's own header.
   manifestValueDisagreementAudit: ManifestValueDisagreementAudit[]
+  // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see CanonicalManifestGroupReconciliationAudit's own header.
+  manifestGroupReconciliationAudit: CanonicalManifestGroupReconciliationAudit[]
   manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   structuralIntegrityFailure: boolean
   reasonCounts: ManifestReplayReasonCounts
@@ -1789,6 +1849,7 @@ export async function replayManifest(params: {
   const manifestEvidenceQualityComparisonAudit: ManifestEvidenceQualityComparisonAudit[] = []
   const manifestSideEvidenceAudit: ManifestSideEvidenceAudit[] = []
   const manifestValueDisagreementAudit: ManifestValueDisagreementAudit[] = []
+  const manifestGroupReconciliationAudit: CanonicalManifestGroupReconciliationAudit[] = []
   const structuralReasonKeys = new Map<string, Set<string>>()
   const staleReasonKeys = new Map<string, Set<string>>()
   const addClassifiedReason = (target: Map<string, Set<string>>, reason: string, key: string) => {
@@ -1953,9 +2014,67 @@ export async function replayManifest(params: {
     recordValueDisagreement('entry', record.groupCostBasisUsd, liveGroupCostBasisUsd)
     recordValueDisagreement('exit', record.groupProceedsUsd, liveGroupProceedsUsd)
 
+    // EXACT SCALED-INTEGER GROUP RECONCILIATION, DISCLOSED — see CanonicalManifestGroupReconciliation
+    // Audit's own header for the full disclosure. Computed ONLY for a side that actually mismatches
+    // (below), using EXCLUSIVELY BigInt arithmetic already produced by allocateSideValueAcrossGroup
+    // (never a second, independent allocation implementation) to prove — or fail to prove — that a
+    // disagreement is explained entirely by the evidence side now being shared with more structural
+    // siblings than the frozen manifest record accounted for, rather than the accepted evidence
+    // itself changing. Only ever RELAXES which PATH (hard block vs controlled refresh) a genuinely
+    // mismatched key takes — it never changes whether THIS scan publishes it (still `mismatched`,
+    // still withheld below), and a refreshed manifest still only ever gets to publish this lot after
+    // an independent, real second replay against live evidence passes on its own merits.
+    const reconcileGroup = (side: 'entry' | 'exit', evidenceKey: string, frozenValue: number | null): CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null => {
+      const evidence = evidenceByKey.get(evidenceKey)
+      const group = side === 'entry' ? entryGroupsByKey.get(evidenceKey) : exitGroupsByKey.get(evidenceKey)
+      const allocationMap = side === 'entry' ? entryAllocationByKey.get(evidenceKey) : exitAllocationByKey.get(evidenceKey)
+      if (!evidence || !group || group.length === 0 || !allocationMap || frozenValue === null) return null
+      const shares = group.map((lot) => allocationMap.get(lot)).filter((s): s is SideAllocationShare => s !== undefined)
+      if (shares.length !== group.length) return null
+      const acceptedRawUsd = stablecoinNormalizedGroupTotal(group, evidence.priceUsd)
+      const acceptedScaled = toScaledValue(acceptedRawUsd)
+      const allocatedScaledTotal = shares.reduce((sum, s) => sum + s.allocatedScaled, BigInt(0))
+      const rawQuantities = group.map((lot) => toScaledRawQuantity(lot.amount))
+      const totalRawQuantity = rawQuantities.reduce((sum, q) => sum + q, BigInt(0))
+      const baseSum = totalRawQuantity > BigInt(0)
+        ? rawQuantities.reduce((sum, q) => sum + (acceptedScaled * q) / totalRawQuantity, BigInt(0))
+        : BigInt(0)
+      const remainderScaled = acceptedScaled - baseSum
+      const frozenScaled = toScaledValue(frozenValue)
+      // The ONE unavoidable quantization unit toScaledValue's own Math.round introduces — never
+      // CANONICAL_VALUE_TOLERANCE, a different, wider, structurally-derived constant used for a
+      // different purpose (the pass/fail decision itself, unchanged by this reconciliation).
+      const evidenceUnchanged = acceptedScaled - frozenScaled <= BigInt(1) && frozenScaled - acceptedScaled <= BigInt(1)
+      const targetShare = occurrences.map((lot) => allocationMap.get(lot)).find((s): s is SideAllocationShare => s !== undefined)
+      const firstDivergenceStage: CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] = !evidenceUnchanged
+        ? 'evidence_raw_value_changed'
+        : group.length > 1
+          ? 'group_membership_grew'
+          : 'unexplained'
+      if (manifestGroupReconciliationAudit.length < MAX_GROUP_RECONCILIATION_EXAMPLES) {
+        manifestGroupReconciliationAudit.push({
+          evidenceKey, side,
+          acceptedRawUsd, acceptedScaled: acceptedScaled.toString(),
+          occurrenceCount: group.length,
+          canonicalAmounts: group.map((lot) => canonicalAmountString(lot.amount)),
+          exactWeights: shares.map((s) => `${s.numerator}:${s.denominator}`),
+          allocatedScaledPerOccurrence: shares.map((s) => s.allocatedScaled.toString()),
+          remainderScaled: remainderScaled.toString(),
+          allocatedScaledTotal: allocatedScaledTotal.toString(),
+          replayScaledTotal: (targetShare?.allocatedScaled ?? BigInt(0)).toString(),
+          targetLotScaled: (targetShare?.allocatedScaled ?? BigInt(0)).toString(),
+          deltaScaled: ((targetShare?.allocatedScaled ?? BigInt(0)) - frozenScaled).toString(),
+          firstDivergenceStage,
+        })
+      }
+      return firstDivergenceStage
+    }
+
     let mismatched = false
-    if (!withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
-    if (!withinTolerance(liveGroupProceedsUsd, record.groupProceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true }
+    let entryMismatched = false
+    let exitMismatched = false
+    if (!withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true; entryMismatched = true }
+    if (!withinTolerance(liveGroupProceedsUsd, record.groupProceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true; exitMismatched = true }
     if (!qualityEqual) { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
     if (mismatched) {
       manifestLotsMissingCurrentEvidence.push(key)
@@ -1964,8 +2083,22 @@ export async function replayManifest(params: {
         : !withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)
           ? 'manifest_cost_basis_mismatch' : 'manifest_proceeds_mismatch'
       traceMissing(key, mismatchReason, occurrences, record, true, true)
-      if (!qualityEqual) addClassifiedReason(staleReasonKeys, 'normalized_evidence_quality_changed', key)
-      else addClassifiedReason(structuralReasonKeys, 'canonical_value_disagreement', key)
+      if (!qualityEqual) {
+        addClassifiedReason(staleReasonKeys, 'normalized_evidence_quality_changed', key)
+      } else {
+        // Reconcile whichever side(s) actually mismatched. A key is only ever eligible for the
+        // membership-growth (refresh-eligible) reclassification when EVERY mismatched side proves
+        // out that way — a single side that cannot be explained keeps the whole key structural.
+        const stages: Array<CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null> = []
+        if (entryMismatched) stages.push(reconcileGroup('entry', record.entryEvidenceKey, record.groupCostBasisUsd))
+        if (exitMismatched) stages.push(reconcileGroup('exit', record.exitEvidenceKey, record.groupProceedsUsd))
+        const allExplainedByMembershipGrowth = stages.length > 0 && stages.every((s) => s === 'group_membership_grew')
+        if (allExplainedByMembershipGrowth) {
+          addClassifiedReason(staleReasonKeys, 'candidate_evolution_group_membership_changed', key)
+        } else {
+          addClassifiedReason(structuralReasonKeys, 'canonical_value_disagreement', key)
+        }
+      }
       continue
     }
 
@@ -2152,6 +2285,7 @@ export async function replayManifest(params: {
     manifestEvidenceQualityComparisonAudit,
     manifestSideEvidenceAudit,
     manifestValueDisagreementAudit,
+    manifestGroupReconciliationAudit,
     manifestStructuralFailureAudit,
     structuralIntegrityFailure,
     reasonCounts,
@@ -2224,6 +2358,8 @@ export type CanonicalSampleManifestAudit = {
   manifestSideEvidenceAudit: ManifestSideEvidenceAudit[]
   // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see ManifestValueDisagreementAudit's own header.
   manifestValueDisagreementAudit: ManifestValueDisagreementAudit[]
+  // BOUNDED, DIAGNOSTIC ONLY, DISCLOSED — see CanonicalManifestGroupReconciliationAudit's own header.
+  manifestGroupReconciliationAudit: CanonicalManifestGroupReconciliationAudit[]
   manifestStructuralFailureAudit: ManifestStructuralFailureAudit
   manifestLotsStillValid: number
   manifestLotsInvalidNow: number
@@ -2285,6 +2421,7 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestEvidenceQualityComparisonAudit: [],
     manifestSideEvidenceAudit: [],
     manifestValueDisagreementAudit: [],
+    manifestGroupReconciliationAudit: [],
     manifestStructuralFailureAudit: {
       structuralFailure: false, actualStructuralReasons: {}, staleEvidenceReasons: {}, candidateEvolutionReasons: {},
       offendingLotKeys: [], refreshAllowed: false, refreshBlockedReason: null,
