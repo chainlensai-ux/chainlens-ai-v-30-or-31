@@ -23,15 +23,25 @@
 //      beyond what those fields already display, since they were already reading real (if
 //      previously empty) evidenceConfidence output.
 //
-// EXCLUSION CRITERIA, DISCLOSED (this task's own required list, mapped onto this codebase's REAL
-// type system — there is no separate "estimated"/"synthetic"/"transfer-only"/"audit-only" lot tier
-// to exclude beyond what evidenceQuality already encodes): a lot is included ONLY when
-// evidenceQuality === 'verified' AND realizedPnlUsd/costBasisUsd/proceedsUsd are all real, finite
-// numbers AND amount > 0 AND both openedAt/closedAt are real, finite timestamps. Every other lot
-// (evidenceQuality === 'unpriced', or a genuinely malformed record with a non-finite field) is
-// excluded — never included with a guessed value.
+// EXCLUSION CRITERIA, DISCLOSED, FIXED (Wallet Scanner final-state count convergence follow-up
+// task — confirmed root cause of the "provisional 41 vs final canonical 28" divergence between
+// this card and PnlStatusCard's right rail): this file used to re-implement its own by-hand
+// eligibility check — evidenceQuality/finite-value/chronology tests written independently of, and
+// NOT kept in sync with, `isCanonicalVerifiedPublishedLot` (src/lib/canonicalVerifiedLot.ts) — THE
+// ONE shared predicate every other "is this lot part of the canonical verified sample" consumer
+// (the public PnL gate, AYRI, the canonical manifest) is required to use. The by-hand version was
+// missing the `proceedsUsd <= 0` check entirely (it checked `costBasisUsd <= 0` but never the
+// matching exit-side check) — a real, exploitable gap that let a lot with a non-positive exit
+// value count as "verified" here while the canonical predicate correctly rejects it everywhere
+// else, one concrete component of the drift. Now delegates to the shared predicate directly, so
+// this module's own verified-trade count converges on the SAME final canonical value
+// (`isCanonicalVerifiedPublishedLot`), by construction, no matter what upstream selection
+// (manifest replay, canonical sample selector) already ran on `matchedLots` before this function
+// ever sees it — never a second, independently-drifting reimplementation. `amount > 0` remains an
+// additional structural sanity check the shared predicate doesn't itself cover.
 
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
+import { isCanonicalVerifiedPublishedLot } from '@/src/lib/canonicalVerifiedLot'
 import type { VerifiedTradeEvidence } from './computeSmartMoneyScore'
 
 export type FifoAdapterResult = {
@@ -71,17 +81,20 @@ export function adaptFifoMatchedLots(matchedLots: readonly MatchedLot[] | null):
     if (seen.has(key)) continue
     seen.add(key)
 
-    if (lot.evidenceQuality !== 'verified') continue
-    if (!isFiniteNumber(lot.realizedPnlUsd)) continue
-    if (!isFiniteNumber(lot.costBasisUsd) || lot.costBasisUsd <= 0) continue
-    if (!isFiniteNumber(lot.proceedsUsd)) continue
-    if (!isFiniteNumber(lot.amount) || lot.amount <= 0) continue
+    if (!isCanonicalVerifiedPublishedLot(lot)) continue
+    // ADDITIONAL, DISCLOSED: the shared predicate's own chronology check (`closedAt < openedAt`)
+    // never flags a non-finite timestamp (NaN comparisons are always false), so a genuinely
+    // malformed record would otherwise slip through — this module still guards against that
+    // itself, on top of (never instead of) the shared predicate; `amount > 0` is likewise a
+    // structural check the shared predicate doesn't itself cover.
     if (!isFiniteNumber(lot.openedAt) || !isFiniteNumber(lot.closedAt)) continue
-    if (lot.closedAt < lot.openedAt) continue
+    if (!isFiniteNumber(lot.amount) || lot.amount <= 0) continue
 
     verifiedTrades.push({
-      realizedPnlUsd: lot.realizedPnlUsd,
-      costBasisUsd: lot.costBasisUsd,
+      // `isCanonicalVerifiedPublishedLot` above already proves these three are non-null and finite
+      // — the `as number` casts document that proof, never a runtime assumption of their own.
+      realizedPnlUsd: lot.realizedPnlUsd as number,
+      costBasisUsd: lot.costBasisUsd as number,
       closedAt: lot.closedAt,
       openedAt: lot.openedAt,
       isVerified: true,

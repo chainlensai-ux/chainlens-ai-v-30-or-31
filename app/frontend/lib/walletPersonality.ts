@@ -31,6 +31,7 @@ import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 // real, verified FIFO trade evidence for this wallet" — see that file's own header for why a
 // shared selector is what makes drift structurally impossible, not just unlikely.
 import { selectCanonicalPricedFifo } from '@/src/pipeline/selectCanonicalPricedFifo'
+import { isCanonicalVerifiedPublishedLot } from '@/src/lib/canonicalVerifiedLot'
 import type { PersonalityV2 } from '@/lib/engine/modules/personality/types'
 import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
@@ -223,10 +224,17 @@ export function computeRepeatedRouterPercent(counterparties: readonly (string | 
   return (maxCount / known.length) * 100
 }
 
-// PURE. Win/loss counts computed ONLY over VERIFIED matched lots (evidenceQuality === 'verified',
-// realizedPnlUsd non-null) — the real, priced, FIFO-matched outcome of a closed lot. Never reads
-// pnlSummaryV2's diagnostic rows.
-export function computeVerifiedWinLoss(matchedLots: readonly Pick<MatchedLot, 'evidenceQuality' | 'realizedPnlUsd'>[]): {
+// PURE. Win/loss counts computed ONLY over VERIFIED matched lots — DELEGATES to
+// `isCanonicalVerifiedPublishedLot` (src/lib/canonicalVerifiedLot.ts), THE ONE shared predicate
+// every other "is this lot part of the canonical verified sample" consumer (the public PnL gate,
+// AYRI, Smart Money's own adapter — see adaptFifoMatchedLots.ts's own header) is required to use.
+// FIXED (Wallet Scanner final-state count convergence follow-up task): this function previously
+// re-implemented its own narrower check (`evidenceQuality === 'verified' && realizedPnlUsd != null`
+// only) — missing the non-positive cost/proceeds and chronology checks the shared predicate applies
+// — so it could count a lot the final canonical selection had already excluded, exactly the same
+// class of drift that produced adaptFifoMatchedLots' "provisional 41 vs final canonical 28" bug.
+// Never reads pnlSummaryV2's diagnostic rows.
+export function computeVerifiedWinLoss(matchedLots: readonly Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>[]): {
   wins: number
   losses: number
   evaluated: number
@@ -235,10 +243,10 @@ export function computeVerifiedWinLoss(matchedLots: readonly Pick<MatchedLot, 'e
   let losses = 0
   let evaluated = 0
   for (const lot of matchedLots) {
-    if (lot.evidenceQuality !== 'verified' || lot.realizedPnlUsd == null) continue
+    if (!isCanonicalVerifiedPublishedLot(lot)) continue
     evaluated += 1
-    if (lot.realizedPnlUsd > 0) wins += 1
-    else if (lot.realizedPnlUsd < 0) losses += 1
+    if ((lot.realizedPnlUsd as number) > 0) wins += 1
+    else if ((lot.realizedPnlUsd as number) < 0) losses += 1
   }
   return { wins, losses, evaluated }
 }

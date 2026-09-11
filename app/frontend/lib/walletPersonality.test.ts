@@ -278,12 +278,26 @@ test('computeHoldingDaysStats: pure arithmetic over real openedAt/closedAt, neve
 
 test('computeVerifiedWinLoss: only counts verified, priced lots — never pnlSummaryV2-shaped rows', () => {
   const result = computeVerifiedWinLoss([
-    { evidenceQuality: 'verified', realizedPnlUsd: 5 },
-    { evidenceQuality: 'verified', realizedPnlUsd: -1 },
-    { evidenceQuality: 'unpriced', realizedPnlUsd: null },
-    { evidenceQuality: 'verified', realizedPnlUsd: 0 },
+    { evidenceQuality: 'verified', costBasisUsd: 10, proceedsUsd: 15, openedAt: 0, closedAt: 1, realizedPnlUsd: 5 },
+    { evidenceQuality: 'verified', costBasisUsd: 10, proceedsUsd: 9, openedAt: 0, closedAt: 1, realizedPnlUsd: -1 },
+    { evidenceQuality: 'unpriced', costBasisUsd: null, proceedsUsd: null, openedAt: 0, closedAt: 1, realizedPnlUsd: null },
+    { evidenceQuality: 'verified', costBasisUsd: 10, proceedsUsd: 10, openedAt: 0, closedAt: 1, realizedPnlUsd: 0 },
   ])
   assert.deepEqual(result, { wins: 1, losses: 1, evaluated: 3 })
+})
+
+// SHARED-PREDICATE CONVERGENCE, DISCLOSED (Wallet Scanner final-state count convergence follow-up
+// task): computeVerifiedWinLoss now delegates to isCanonicalVerifiedPublishedLot — the SAME shared
+// predicate the public PnL gate and Smart Money's own adaptFifoMatchedLots use — so a lot with a
+// non-positive proceedsUsd (previously slipping through this function's own narrower check) is
+// correctly excluded here too, matching the final canonical count everywhere else.
+test('HARD ASSERTION: a lot with a non-positive proceedsUsd is excluded from evaluated/win/loss counts, converging on the same final canonical sample every other surface uses', () => {
+  const result = computeVerifiedWinLoss([
+    { evidenceQuality: 'verified', costBasisUsd: 10, proceedsUsd: 15, openedAt: 0, closedAt: 1, realizedPnlUsd: 5 },
+    { evidenceQuality: 'verified', costBasisUsd: 100, proceedsUsd: 0, openedAt: 0, closedAt: 1, realizedPnlUsd: -100 },
+    { evidenceQuality: 'verified', costBasisUsd: 100, proceedsUsd: -5, openedAt: 0, closedAt: 1, realizedPnlUsd: -105 },
+  ])
+  assert.deepEqual(result, { wins: 1, losses: 0, evaluated: 1 }, 'only the genuinely verified lot counts — a non-positive exit value must never be evaluated as a real win/loss')
 })
 
 test('evidence basis badges cover all four states', () => {
