@@ -18,6 +18,7 @@ import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
   buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
+  buildManifestAdditiveProviderDependencyAudit,
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
@@ -2012,6 +2013,160 @@ describe('canonical manifest additive candidate evolution (81+27 → 108)', () =
     assert.equal(audit.growthAllowed, false)
     assert.equal(audit.growthBlockedReason, 'provider_unusable')
     assert.equal(shouldRefreshAdditiveCandidateEvolution(audit), false)
+  })
+})
+
+describe('additive provider-usable gate (GoldRush timeout vs independently proven candidates)', () => {
+  const basePartial = {
+    chain: 'base', providerStatus: 'partial',
+    goldrush: { ok: false, errorReason: 'timeout' }, alchemy: { ok: true, errorReason: null },
+  }
+  const allOk = {
+    chain: 'base', providerStatus: 'ok',
+    goldrush: { ok: true, errorReason: null }, alchemy: { ok: true, errorReason: null },
+  }
+
+  it('HARD ASSERTION: GoldRush fails, all additive candidates independently verified by Alchemy/accepted evidence → growth allowed', async () => {
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-alchemy-ok'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const identities = buildCanonicalLotIdentities(currentLots)
+    const newKeys = new Set(first.candidateNewEvidenceLotKeys)
+    const snapshots = newLots.map((lot) => ({
+      lotKey: identities.get(lot)!.key, chain: lot.chain,
+      entryEvidenceSource: 'canonical-upstream', exitEvidenceSource: 'canonical-upstream',
+      independentlyVerified: true,
+    })).filter((row) => newKeys.has(row.lotKey) || true)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [basePartial], newCandidates: snapshots,
+    })
+    assert.equal(dependency.historyBoundaryProviderUsable, false, 'full-history boundary remains PARTIAL')
+    assert.equal(dependency.failedProviders.some((p) => p.provider === 'goldrush'), true)
+    assert.equal(dependency.candidatesDependingOnFailedProvider, 0)
+    assert.equal(dependency.candidatesIndependentOfFailedProvider, 10)
+    assert.equal(dependency.additiveEvidenceUsable, true)
+    assert.equal(dependency.additiveCandidateEvidenceProviderUsable, true)
+    assert.ok(dependency.candidates.every((row) => row.independentlyVerifiedWithoutGoldrush && row.liveAlchemyUsed && !row.liveGoldrushUsed))
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, true)
+    assert.equal(audit.growthBlockedReason, null)
+  })
+
+  it('HARD ASSERTION: GoldRush fails and one candidate requires GoldRush → growth blocked', async () => {
+    const snapshots = Array.from({ length: 10 }, (_, i) => ({
+      lotKey: `lot-${i}`, chain: i === 0 ? 'eth' : 'base',
+      entryEvidenceSource: i === 0 ? null : 'canonical-upstream',
+      exitEvidenceSource: i === 0 ? null : 'canonical-upstream',
+      independentlyVerified: true,
+    }))
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [
+        basePartial,
+        { chain: 'eth', providerStatus: 'provider_unavailable', goldrush: { ok: false, errorReason: 'timeout' }, alchemy: { ok: false, errorReason: 'timeout' } },
+      ],
+      newCandidates: snapshots,
+    })
+    assert.equal(dependency.candidatesDependingOnFailedProvider, 1)
+    assert.equal(dependency.candidatesIndependentOfFailedProvider, 9)
+    assert.equal(dependency.additiveEvidenceUsable, false)
+    assert.equal(dependency.growthBlockedReason, 'additive_candidates_depend_on_failed_provider')
+    assert.equal(dependency.candidates[0].independentlyVerifiedWithoutGoldrush, false)
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-one-depends'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'provider_unusable')
+  })
+
+  it('HARD ASSERTION: provider partial can never shrink the manifest', async () => {
+    const oldLots = buildLots(98, 98)
+    const fewer = oldLots.slice(0, 90)
+    const evidence = seededEvidence(oldLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-noshrink'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, fewer, evidence.loader)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [basePartial], newCandidates: [],
+    })
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: fewer.filter(isCanonicalVerifiedPublishedLot).length,
+      providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.ok(audit.currentCandidateCount < audit.existingCount)
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'would_shrink_manifest')
+  })
+
+  it('HARD ASSERTION: existing manifest mismatch still blocks growth even when Alchemy is ok', async () => {
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-mismatch'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const mutated = {
+      ...original,
+      verifiedLotRecords: original.verifiedLotRecords.map((record, i) => i === 0
+        ? { ...record, groupCostBasisUsd: (record.groupCostBasisUsd ?? 0) + 50, costBasisUsd: (record.costBasisUsd ?? 0) + 50 }
+        : record),
+    }
+    const first = await replay(mutated, currentLots, evidence.loader)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [allOk],
+      newCandidates: newLots.map((lot, i) => ({
+        lotKey: `new-${i}`, chain: lot.chain,
+        entryEvidenceSource: 'canonical-upstream', exitEvidenceSource: 'canonical-upstream',
+        independentlyVerified: true,
+      })),
+    })
+    assert.equal(dependency.additiveCandidateEvidenceProviderUsable, true)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.ok(audit.growthBlockedReason === 'existing_manifest_not_fully_reproducible' || audit.growthBlockedReason === 'value_disagreement' || audit.growthBlockedReason === 'structural_integrity_failure')
   })
 })
 

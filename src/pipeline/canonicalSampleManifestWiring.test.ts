@@ -65,6 +65,9 @@ test('automatic reconciliation is limited to non-structural partial replay failu
   assert.match(pipelineSource, /shouldRefreshPartiallyUnreproducibleManifest\(\s*firstReplay, candidateVerifiedLots\.length/, 'partial refresh must use the centralized integrity policy')
   assert.match(pipelineSource, /buildManifestAdditiveGrowthAudit\(/, 'additive candidate evolution must use the centralized safety predicate')
   assert.match(pipelineSource, /shouldRefreshAdditiveCandidateEvolution\(/, 'additive growth must be gated on the audit')
+  assert.match(pipelineSource, /buildManifestAdditiveProviderDependencyAudit\(/, 'additive growth must use evidence-scoped provider usability, not chain-wide partial')
+  assert.match(pipelineSource, /providerUsable:\s*additiveProviderDependencyAudit\.additiveCandidateEvidenceProviderUsable/, 'GoldRush history timeout must not automatically block independently proven additive lots')
+  assert.doesNotMatch(pipelineSource, /providerUsable:\s*!scanIsProviderPartialForBootstrap/, 'bootstrap partial-scan guard must not be reused as the additive providerUsable predicate')
   assert.match(pipelineSource, /firstReplay\.structuralIntegrityFailure/, 'structural failures must remain explicitly audited')
 })
 

@@ -2631,6 +2631,131 @@ export function shouldRefreshAdditiveCandidateEvolution(audit: ManifestAdditiveG
   return audit.growthAllowed
 }
 
+// ADDITIVE PROVIDER DEPENDENCY, DISCLOSED (provider-usable gate audit):
+// `providerUsable` was previously `!scanIsProviderPartialForBootstrap`, i.e. EVERY configured
+// history provider on EVERY chain must return ok. Confirmed production: Base Alchemy succeeds,
+// Base GoldRush times out → chain `partial` → additive 98→108 blocked even though the 10 new
+// lots already passed the canonical verifier on Alchemy events + accepted evidence.
+// History-boundary partiality (PARTIAL public status, bootstrap skip) is a DIFFERENT question
+// from "are these additive candidates independently proven without the failed provider".
+export type ManifestAdditiveFailedProvider = {
+  chain: string
+  provider: 'goldrush' | 'alchemy'
+  errorReason: string | null
+}
+
+export type ManifestAdditiveCandidateProviderDependency = {
+  lotKey: string
+  chain: string
+  entryEvidenceSource: string | null
+  exitEvidenceSource: string | null
+  providerDependencies: string[]
+  acceptedEvidenceUsed: boolean
+  liveAlchemyUsed: boolean
+  liveGoldrushUsed: boolean
+  independentlyVerifiedWithoutGoldrush: boolean
+}
+
+export type ManifestAdditiveProviderDependencyAudit = {
+  failedProviders: ManifestAdditiveFailedProvider[]
+  newCandidateCount: number
+  candidatesDependingOnFailedProvider: number
+  candidatesIndependentOfFailedProvider: number
+  additiveEvidenceUsable: boolean
+  historyBoundaryProviderUsable: boolean
+  additiveCandidateEvidenceProviderUsable: boolean
+  growthBlockedReason: string | null
+  candidates: ManifestAdditiveCandidateProviderDependency[]
+}
+
+export type AdditiveProviderDiagnostic = {
+  chain: string
+  providerStatus: string
+  goldrush: { ok: boolean; errorReason: string | null }
+  alchemy: { ok: boolean; errorReason: string | null }
+}
+
+export type AdditiveCandidateEvidenceSnapshot = {
+  lotKey: string
+  chain: string
+  entryEvidenceSource: string | null
+  exitEvidenceSource: string | null
+  independentlyVerified: boolean
+}
+
+export function emptyManifestAdditiveProviderDependencyAudit(): ManifestAdditiveProviderDependencyAudit {
+  return {
+    failedProviders: [], newCandidateCount: 0,
+    candidatesDependingOnFailedProvider: 0, candidatesIndependentOfFailedProvider: 0,
+    additiveEvidenceUsable: false, historyBoundaryProviderUsable: false,
+    additiveCandidateEvidenceProviderUsable: false, growthBlockedReason: 'no_candidates',
+    candidates: [],
+  }
+}
+
+export function buildManifestAdditiveProviderDependencyAudit(params: {
+  providerDiagnostics: readonly AdditiveProviderDiagnostic[]
+  newCandidates: readonly AdditiveCandidateEvidenceSnapshot[]
+}): ManifestAdditiveProviderDependencyAudit {
+  const failedProviders: ManifestAdditiveFailedProvider[] = []
+  const byChain = new Map<string, AdditiveProviderDiagnostic>()
+  for (const diagnostic of params.providerDiagnostics) {
+    byChain.set(diagnostic.chain.toLowerCase(), diagnostic)
+    if (!diagnostic.goldrush.ok) failedProviders.push({ chain: diagnostic.chain, provider: 'goldrush', errorReason: diagnostic.goldrush.errorReason })
+    if (!diagnostic.alchemy.ok) failedProviders.push({ chain: diagnostic.chain, provider: 'alchemy', errorReason: diagnostic.alchemy.errorReason })
+  }
+  const historyBoundaryProviderUsable = failedProviders.length === 0
+    && params.providerDiagnostics.length > 0
+    && params.providerDiagnostics.every((d) => d.providerStatus === 'ok')
+  const candidates: ManifestAdditiveCandidateProviderDependency[] = params.newCandidates.map((candidate) => {
+    const diagnostic = byChain.get(candidate.chain.toLowerCase())
+    const goldrushOk = diagnostic?.goldrush.ok === true
+    const alchemyOk = diagnostic?.alchemy.ok === true
+    const acceptedEvidenceUsed = candidate.entryEvidenceSource != null && candidate.exitEvidenceSource != null
+    const goldrushFailed = diagnostic != null && !goldrushOk
+    const alchemyFailed = diagnostic != null && !alchemyOk
+    // History GoldRush timeout cannot have produced this scan's events. A lot on a chain whose
+    // Alchemy history succeeded was formed without GoldRush. Persisted accepted evidence is
+    // independent of this scan's fetch. A lot depends on failed GoldRush only when Alchemy also
+    // failed AND accepted evidence is incomplete — i.e. it cannot be proven without the missing
+    // GoldRush history.
+    const dependsOnFailedGoldrush = goldrushFailed && !alchemyOk && !acceptedEvidenceUsed
+    const dependsOnFailedAlchemy = alchemyFailed && !goldrushOk && !acceptedEvidenceUsed
+    const providerDependencies: string[] = []
+    if (dependsOnFailedGoldrush) providerDependencies.push('goldrush')
+    if (dependsOnFailedAlchemy) providerDependencies.push('alchemy')
+    const independentlyVerifiedWithoutGoldrush = candidate.independentlyVerified && !dependsOnFailedGoldrush
+      && (alchemyOk || acceptedEvidenceUsed)
+    return {
+      lotKey: candidate.lotKey,
+      chain: candidate.chain,
+      entryEvidenceSource: candidate.entryEvidenceSource,
+      exitEvidenceSource: candidate.exitEvidenceSource,
+      providerDependencies,
+      acceptedEvidenceUsed,
+      liveAlchemyUsed: alchemyOk,
+      liveGoldrushUsed: goldrushOk,
+      independentlyVerifiedWithoutGoldrush,
+    }
+  })
+  const depending = candidates.filter((row) => row.providerDependencies.length > 0)
+  const independent = candidates.filter((row) => row.providerDependencies.length === 0)
+  const additiveCandidateEvidenceProviderUsable = params.newCandidates.length === 0
+    || (depending.length === 0 && params.newCandidates.every((c) => c.independentlyVerified) && independent.length === params.newCandidates.length)
+  const usable = additiveCandidateEvidenceProviderUsable
+  return {
+    failedProviders,
+    newCandidateCount: params.newCandidates.length,
+    candidatesDependingOnFailedProvider: depending.length,
+    candidatesIndependentOfFailedProvider: independent.length,
+    additiveEvidenceUsable: usable,
+    historyBoundaryProviderUsable,
+    additiveCandidateEvidenceProviderUsable: usable,
+    growthBlockedReason: usable ? null : (depending.length > 0 ? 'additive_candidates_depend_on_failed_provider' : 'additive_evidence_not_independently_proven'),
+    candidates,
+  }
+}
+
 // ============================================================================
 // AUDIT (requirement #8 of the prior task, extended per #2/#4/#7 here)
 // ============================================================================
@@ -2722,6 +2847,7 @@ export type CanonicalSampleManifestAudit = {
   manifestRefreshReason: string | null
   manifestAdditiveGrowthAudit: ManifestAdditiveGrowthAudit
   manifestRefreshApplicationAudit: ManifestRefreshApplicationAudit
+  manifestAdditiveProviderDependencyAudit: ManifestAdditiveProviderDependencyAudit
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {
@@ -2778,5 +2904,6 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestRefreshReason: null,
     manifestAdditiveGrowthAudit: emptyManifestAdditiveGrowthAudit(),
     manifestRefreshApplicationAudit: emptyManifestRefreshApplicationAudit(),
+    manifestAdditiveProviderDependencyAudit: emptyManifestAdditiveProviderDependencyAudit(),
   }
 }

@@ -27,7 +27,7 @@ import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
   buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
-  emptyManifestRefreshApplicationAudit,
+  emptyManifestRefreshApplicationAudit, buildManifestAdditiveProviderDependencyAudit,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
@@ -3578,11 +3578,49 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const partialReconciliationEligible = shouldRefreshPartiallyUnreproducibleManifest(
       firstReplay, candidateVerifiedLots.length,
     )
+    const additiveIdentities = buildCanonicalLotIdentities(reconciledLots)
+    const additiveNewKeySet = new Set(firstReplay.candidateNewEvidenceLotKeys)
+    const additiveNewLots = candidateVerifiedLots.filter((lot) => {
+      const key = additiveIdentities.get(lot)?.key
+      return !!key && additiveNewKeySet.has(key)
+    })
+    const additiveCandidateEvidenceSnapshots = await Promise.all(additiveNewLots.map(async (lot) => {
+      const key = additiveIdentities.get(lot)!.key
+      const [entryEvidence, exitEvidence] = await Promise.all([
+        loadAcceptedEvidence({
+          chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, side: 'entry',
+          timestamp: lot.openedAt, lotIdentityVersion: null,
+        }),
+        loadAcceptedEvidence({
+          chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit',
+          timestamp: lot.closedAt, lotIdentityVersion: null,
+        }),
+      ])
+      return {
+        lotKey: key, chain: lot.chain,
+        entryEvidenceSource: entryEvidence?.source ?? null,
+        exitEvidenceSource: exitEvidence?.source ?? null,
+        independentlyVerified: isCanonicalVerifiedPublishedLot(lot),
+      }
+    }))
+    const additiveProviderDependencyAudit = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics, newCandidates: additiveCandidateEvidenceSnapshots,
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[manifest-additive-provider-dependency-audit]', {
+      failedProviders: additiveProviderDependencyAudit.failedProviders,
+      newCandidateCount: additiveProviderDependencyAudit.newCandidateCount,
+      candidatesDependingOnFailedProvider: additiveProviderDependencyAudit.candidatesDependingOnFailedProvider,
+      candidatesIndependentOfFailedProvider: additiveProviderDependencyAudit.candidatesIndependentOfFailedProvider,
+      additiveEvidenceUsable: additiveProviderDependencyAudit.additiveEvidenceUsable,
+      growthBlockedReason: additiveProviderDependencyAudit.growthBlockedReason,
+      candidates: additiveProviderDependencyAudit.candidates,
+    })
     const additiveGrowthAudit: ManifestAdditiveGrowthAudit = buildManifestAdditiveGrowthAudit({
       replay: firstReplay,
       manifestVerifiedLotCount: manifest.verifiedLotCount,
       currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
-      providerUsable: !scanIsProviderPartialForBootstrap,
+      providerUsable: additiveProviderDependencyAudit.additiveCandidateEvidenceProviderUsable,
     })
     const additiveGrowthEligible = shouldRefreshAdditiveCandidateEvolution(additiveGrowthAudit)
     // eslint-disable-next-line no-console
@@ -3747,6 +3785,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestWriteFailure,
       manifestAdditiveGrowthAudit: additiveGrowthAudit,
       manifestRefreshApplicationAudit: refreshApplicationAudit,
+      manifestAdditiveProviderDependencyAudit: additiveProviderDependencyAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
     return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }
