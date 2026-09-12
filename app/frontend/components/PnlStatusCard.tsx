@@ -731,6 +731,54 @@ export function selectBoundedSampleDisclosure(
   }
 }
 
+// VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up task).
+//
+// OLD COUPLING, DISCLOSED: `selectBoundedSampleDisclosure` above is gated on `effectiveStatus ===
+// 'limited_verified_sample'` — the SAME complete-history public gate this task's regression wallet
+// fails (2 genuine unmatched sells, and/or a manifest-replay veto, force `publicPnlStatus:
+// 'unavailable'`), even when the CURRENT scan's own 98-lot included sample is 100% verified and
+// internally consistent. That coupling meant a wallet in exactly this shape showed NO realized-PnL
+// figure at all — not even the verified sample's own honest total.
+//
+// FIX, DISCLOSED: reads `reconciliationSummary.verifiedSamplePerformance` directly — a field
+// pnlReconciliation.ts computes from a WHOLLY SEPARATE, additive eligibility check (see that field's
+// own header) that never depends on `publicPnlStatus`/`canonicalSampleManifestAudit` at all. Returns
+// null whenever the backend itself did not allow the sample to publish (`status !== 'verified_bounded_sample'`
+// or `realizedPnlUsd === null`) — this function only ever formats an already-gated backend decision,
+// never makes or loosens the decision itself. Pure, exported for direct testing.
+export type VerifiedSamplePnlDisclosure = {
+  realizedPnlUsd: number
+  verifiedLotCount: number
+  pricingCoveragePercent: number
+  excludedUnmatchedSellCount: number
+  statusLabel: string
+  disclosure: string
+}
+
+export const VERIFIED_SAMPLE_PNL_STATUS_LABEL = 'PARTIAL / BOUNDED SAMPLE'
+
+export function selectVerifiedSamplePnlDisclosure(
+  reconciliationSummary: PnlReconciliationSummary | null | undefined,
+): VerifiedSamplePnlDisclosure | null {
+  const sample = reconciliationSummary?.verifiedSamplePerformance
+  if (!sample || sample.status !== 'verified_bounded_sample' || sample.realizedPnlUsd === null) return null
+  // COVERAGE CAP, DISCLOSED (same convention as selectBoundedSampleDisclosure's own
+  // verifiedPricingCoveragePercent above): a real backend ratio should never exceed 1.0, but this
+  // display-only clamp guards against ever showing a nonsensical >100% figure regardless of cause.
+  const pricingCoveragePercent = Math.min(100, sample.pricingCoverage * 100)
+  const disclosure = sample.excludedUnmatchedSellCount > 0
+    ? `${sample.excludedUnmatchedSellCount} unmatched sell${sample.excludedUnmatchedSellCount === 1 ? '' : 's'} ${sample.excludedUnmatchedSellCount === 1 ? 'is' : 'are'} excluded because ${sample.excludedUnmatchedSellCount === 1 ? 'its' : 'their'} acquisition history could not be verified. This is not complete wallet-history PnL.`
+    : 'This is a verified bounded sample, not complete wallet-history PnL.'
+  return {
+    realizedPnlUsd: sample.realizedPnlUsd,
+    verifiedLotCount: sample.verifiedLotCount,
+    pricingCoveragePercent,
+    excludedUnmatchedSellCount: sample.excludedUnmatchedSellCount,
+    statusLabel: VERIFIED_SAMPLE_PNL_STATUS_LABEL,
+    disclosure,
+  }
+}
+
 // CONTRADICTORY-TILES FIX, DISCLOSED (found live, this task — confirmed production bug: the bounded
 // disclosure block above correctly showed realized PnL -$3,903.53 from `reconciliationSummary`,
 // while the MAIN MetricCard tiles two inches below it — still wired to `selectVerifiedPnlData`'s
@@ -934,6 +982,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   const pnl = selectVerifiedPnlData(pnlV2, effectivePublicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
   const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
+  const verifiedSamplePnl = selectVerifiedSamplePnlDisclosure(reconciliationSummary)
   const lastKnownSample = selectLastKnownSampleDisclosure(canonicalSampleManifestAudit)
   // CANONICAL DISPLAYED PNL, DISCLOSED (contradictory-tiles follow-up task): the ONE selector every
   // visible tile below reads from. For a bounded sample (`isBoundedSample`), this is
@@ -1132,6 +1181,39 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
               {boundedSample.warning}
             </div>
           )}
+        </div>
+      )}
+
+      {/* VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up
+          task): shown ONLY when the backend's OWN, separate `verifiedSamplePerformance` eligibility
+          check allows it (see selectVerifiedSamplePnlDisclosure's own header) — never a relaxation
+          of `boundedSample` above, which continues to govern exactly as before. Rendered only when
+          `boundedSample` itself did NOT already show (`!boundedSample`) so this card never displays
+          the same realized-PnL figure twice under two different labels for the same scan; the two
+          numbers can legitimately be numerically equal (this wallet's own case: 98/98 verified,
+          100% coverage) but the CONDITIONS that admit each are independent and must never be
+          conflated — this block never claims "Complete/Full Wallet PnL", only a disclosed, bounded
+          verified sample. */}
+      {verifiedSamplePnl && !boundedSample && (
+        <div style={{
+          background: 'rgba(96,165,250,0.06)', border: '1px solid rgba(96,165,250,0.25)',
+          borderRadius: '10px', padding: '12px 14px', marginBottom: '16px',
+        }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#60a5fa', letterSpacing: '0.04em', marginBottom: '6px' }}>
+            VERIFIED SAMPLE REALIZED PNL
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: verifiedSamplePnl.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', marginBottom: '6px' }}>
+            {fmtSignedUsd(verifiedSamplePnl.realizedPnlUsd)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.75)', lineHeight: 1.7 }}>
+            {verifiedSamplePnl.verifiedLotCount} verified closed lot{verifiedSamplePnl.verifiedLotCount === 1 ? '' : 's'} · {verifiedSamplePnl.pricingCoveragePercent.toFixed(0)}% pricing coverage
+          </div>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(226,232,240,0.6)', marginTop: '8px', letterSpacing: '0.03em' }}>
+            Status: {verifiedSamplePnl.statusLabel}
+          </div>
+          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.6)', marginTop: '4px', lineHeight: 1.6 }}>
+            {verifiedSamplePnl.disclosure}
+          </div>
         </div>
       )}
 

@@ -981,6 +981,85 @@ export type PnlReconciliationSummary = {
     }>
     invariantFailures: string[]
   }
+  // VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up task).
+  //
+  // OLD COUPLING, CONFIRMED (this is the exact bug this field fixes): before this task,
+  // `realizedPnlUsd`/`publicPnlStatus` above were the ONLY public realized-PnL surface, and both are
+  // gated by `canonicalSampleUnavailable` (a manifest-replay veto — see that field's own header) and
+  // `boundedSampleWindowSafe`/`canonicalManifestApplied` (the bounded-sample path's OWN, STRICTER
+  // requirements — a >=10-verified-lot floor, a live/manifest-proven window boundary). A wallet whose
+  // CURRENT scan already reproduces a 100%-verified, internally-consistent 98/98 sample can still be
+  // forced to `publicPnlStatus: 'unavailable'` by either veto — even though the 98 verified lots'
+  // OWN realized-PnL arithmetic was never in question; only 2 genuine unmatched sells OUTSIDE that
+  // sample (and/or a manifest-replay mismatch unrelated to THIS scan's own live evidence) blocked the
+  // full/complete-history figure. There was no way to see the verified sample's own honest total
+  // without also passing the complete-history gate.
+  //
+  // FIX, DISCLOSED: `verifiedSamplePerformance` is a WHOLLY SEPARATE, ADDITIVE surface — never a
+  // relaxation of `publicPnlStatus`/`realizedPnlUsd`/`boundedSampleEligible`/`canonicalSampleUnavailable`
+  // above (all byte-for-byte unchanged) — gated ONLY by conditions that describe the CURRENT scan's
+  // own included sample's internal integrity: at least one verified lot, the SAME pricing-coverage
+  // threshold the existing bounded-sample path already enforces (`pricingCoverageThresholdMet`,
+  // unchanged), zero canonical-verification-consistency invariant failures (the SAME 98->98->98->98
+  // chain `canonicalVerificationConsistencyAudit` above already computes), and zero pricing-evidence
+  // gaps INSIDE the included sample (`pricingEvidenceMissing`, unchanged, computed once above). The 2
+  // genuine unmatched sells are real, structural, OUTSIDE the sample by construction (fifoEngine never
+  // matched them to a lot at all) — they cannot contribute to or subtract from a sum taken strictly
+  // over `verifiedUpdatedLots`, so their existence can veto the COMPLETE-HISTORY figure (unchanged)
+  // without being able to erase the verified sample's own, already-correct total.
+  verifiedSamplePerformance: VerifiedSamplePerformance
+  verifiedSamplePnlAudit: VerifiedSamplePnlAudit
+}
+
+// See PnlReconciliationSummary.verifiedSamplePerformance's own header for the full disclosure.
+export type VerifiedSamplePerformance = {
+  status: 'verified_bounded_sample' | 'unavailable'
+  realizedPnlUsd: number | null
+  verifiedLotCount: number
+  structuralLotCount: number
+  pricingCoverage: number
+  excludedUnmatchedSellCount: number
+  isCompleteWalletHistory: false
+}
+
+export type VerifiedSamplePnlBlockedReason =
+  | 'no_verified_lots'
+  | 'pricing_coverage_below_threshold'
+  | 'canonical_consistency_failure'
+  | 'pricing_evidence_missing_in_sample'
+  | 'realized_pnl_unavailable'
+
+// BOUNDED, DIAGNOSTIC AUDIT, DISCLOSED: real values only, taken from the exact same computation
+// `verifiedSamplePerformance` itself uses — never a second, independent recomputation.
+// `fullHistoryPnlAllowed` mirrors `structuralConsistent` (the SAME condition that already gates
+// `publicPnlStatus: 'available'`) — reported here purely so a caller can see, side by side, why the
+// bounded sample is allowed to publish even when the complete-history figure is not.
+export type VerifiedSamplePnlAudit = {
+  verifiedLotCount: number
+  realizedPnlUsd: number | null
+  pricingCoverage: number | null
+  canonicalConsistencyPassed: boolean
+  pricingEvidenceMissing: number
+  excludedUnmatchedSellCount: number
+  samplePnlAllowed: boolean
+  samplePnlBlockedReason: VerifiedSamplePnlBlockedReason | null
+  fullHistoryPnlAllowed: boolean
+}
+
+// Honest all-empty fixtures, matching this file's own emptyReasonCounts/emptyMissingPriceRecoveryFunnelAudit
+// convention — for test fixtures/callers that need a real, fully-shaped value with nothing verified.
+export function emptyVerifiedSamplePerformance(): VerifiedSamplePerformance {
+  return {
+    status: 'unavailable', realizedPnlUsd: null, verifiedLotCount: 0, structuralLotCount: 0,
+    pricingCoverage: 0, excludedUnmatchedSellCount: 0, isCompleteWalletHistory: false,
+  }
+}
+export function emptyVerifiedSamplePnlAudit(): VerifiedSamplePnlAudit {
+  return {
+    verifiedLotCount: 0, realizedPnlUsd: null, pricingCoverage: null, canonicalConsistencyPassed: true,
+    pricingEvidenceMissing: 0, excludedUnmatchedSellCount: 0, samplePnlAllowed: false,
+    samplePnlBlockedReason: 'no_verified_lots', fullHistoryPnlAllowed: false,
+  }
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -2613,6 +2692,43 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       if (consistencyInvariantFailures.length > 0) logger.warn('CRITICAL canonical_verification_consistency_failure', canonicalVerificationConsistencyAudit)
 
+      // VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up
+      // task): see PnlReconciliationSummary.verifiedSamplePerformance's own header for the full
+      // "old coupling" disclosure. Every input below is a value already computed above for a
+      // DIFFERENT purpose — this block never recomputes FIFO/pricing/the manifest/the canonical
+      // verifier, it only re-reads their already-decided outputs under a new, additive, narrower
+      // eligibility check.
+      const canonicalConsistencyPassed = consistencyInvariantFailures.length === 0
+      const samplePnlBlockedReason: VerifiedSamplePnlBlockedReason | null =
+        verifiedUpdatedLots.length === 0 ? 'no_verified_lots'
+          : !pricingCoverageThresholdMet ? 'pricing_coverage_below_threshold'
+            : !canonicalConsistencyPassed ? 'canonical_consistency_failure'
+              : pricingEvidenceMissing > 0 ? 'pricing_evidence_missing_in_sample'
+                : realizedPnlUsd === null ? 'realized_pnl_unavailable'
+                  : null
+      const samplePnlAllowed = samplePnlBlockedReason === null
+      const verifiedSamplePerformance: VerifiedSamplePerformance = {
+        status: samplePnlAllowed ? 'verified_bounded_sample' : 'unavailable',
+        realizedPnlUsd: samplePnlAllowed ? realizedPnlUsd : null,
+        verifiedLotCount: verifiedUpdatedLots.length,
+        structuralLotCount: fifoLots.length,
+        pricingCoverage: verifiedPricingCoverage ?? 0,
+        excludedUnmatchedSellCount: gateUnmatchedSells,
+        isCompleteWalletHistory: false,
+      }
+      const verifiedSamplePnlAudit: VerifiedSamplePnlAudit = {
+        verifiedLotCount: verifiedUpdatedLots.length,
+        realizedPnlUsd,
+        pricingCoverage: verifiedPricingCoverage,
+        canonicalConsistencyPassed,
+        pricingEvidenceMissing,
+        excludedUnmatchedSellCount: gateUnmatchedSells,
+        samplePnlAllowed,
+        samplePnlBlockedReason,
+        fullHistoryPnlAllowed: structuralConsistent,
+      }
+      logger.warn('[verified-sample-pnl-audit]', verifiedSamplePnlAudit)
+
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
         unmatchedBuys: correctedUnmatchedBuys,
@@ -2634,6 +2750,8 @@ export function createPnlReconciliation(config: Config = {}) {
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,
         canonicalVerificationConsistencyAudit,
+        verifiedSamplePerformance,
+        verifiedSamplePnlAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

@@ -2141,4 +2141,104 @@ describe('pnlReconciliation', () => {
     )
     assert.equal(summary.publicPnlGateAudit.sellsBlockedSolelyByUnprovenBoundary, 2)
   })
+
+  // =============================================================================================
+  // verified-bounded-sample-pnl follow-up task — verifiedSamplePerformance/verifiedSamplePnlAudit.
+  // OLD COUPLING, DISCLOSED: before this task, a wallet whose live scan reproduces a 100%-verified,
+  // internally-consistent sample could still be forced to `publicPnlStatus: 'unavailable'` by a
+  // manifest-replay veto (`forcePublicPnlUnavailable`) or genuine unmatched sells OUTSIDE the
+  // sample — with NO way to see the verified sample's own honest realized-PnL total. These tests
+  // prove the new field is genuinely independent of that gate, using the EXACT regression shape
+  // (98 verified/structural lots, 100% pricing coverage, 2 genuine unmatched sells, canonical
+  // consistency intact) plus the manifest veto that keeps the COMPLETE-history figure unavailable.
+  // =============================================================================================
+
+  it('HARD ASSERTION (verified-bounded-sample-pnl): the verified sample realized PnL shows even when a manifest veto forces the complete-history gate to \'unavailable\' — the 98/98, 100%-coverage regression shape', async () => {
+    const lots = Array.from({ length: 98 }, (_, i) => lot({
+      lotId: `v${i}`, token: `0xtok${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      openedAt: i, closedAt: 1000 + i, costBasisUsd: 1000, proceedsUsd: 1000 - 722.397653061224489796,
+      realizedPnlUsd: -722.397653061224489796, evidenceQuality: 'verified',
+    }))
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots }),
+      pnlEngineResult: pnl(98),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 2,
+        windowBoundaryProven: false, boundedSampleWindowSafe: false, historyCoverageStatus: 'unknown',
+      },
+      // The manifest replay's own veto — this is the exact mechanism that keeps the COMPLETE-history
+      // figure 'unavailable' regardless of how healthy the live sample is. Must NOT affect
+      // verifiedSamplePerformance, which never reads canonicalSampleSelection at all.
+      canonicalSampleSelector: async (candidateLots) => ({
+        publishedLots: [...candidateLots], forcePublicPnlUnavailable: true, manifestApplied: false,
+      }),
+    })
+
+    // The COMPLETE-history gate remains exactly as strict as before — unchanged.
+    assert.equal(summary.publicPnlStatus, 'unavailable', 'the complete-history gate must remain unavailable — this task never weakens it')
+
+    // The NEW, additive verified-sample figure must still show.
+    const sample = summary.verifiedSamplePerformance
+    assert.equal(sample.status, 'verified_bounded_sample')
+    assert.equal(sample.verifiedLotCount, 98)
+    assert.equal(sample.structuralLotCount, 98)
+    assert.equal(sample.pricingCoverage, 1)
+    assert.equal(sample.excludedUnmatchedSellCount, 2)
+    assert.equal(sample.isCompleteWalletHistory, false)
+    assert.equal(sample.realizedPnlUsd, -70794.97, 'must equal the canonical realized PnL over the 98 verified lots')
+
+    const audit = summary.verifiedSamplePnlAudit
+    assert.equal(audit.verifiedLotCount, 98)
+    assert.equal(audit.realizedPnlUsd, -70794.97)
+    assert.equal(audit.pricingCoverage, 1)
+    assert.equal(audit.canonicalConsistencyPassed, true)
+    assert.equal(audit.pricingEvidenceMissing, 0)
+    assert.equal(audit.excludedUnmatchedSellCount, 2)
+    assert.equal(audit.samplePnlAllowed, true)
+    assert.equal(audit.samplePnlBlockedReason, null)
+    assert.equal(audit.fullHistoryPnlAllowed, false, 'complete-history must stay disallowed even though the sample is allowed')
+  })
+
+  it('HARD ASSERTION (verified-bounded-sample-pnl): zero verified lots blocks the sample figure with an explicit reason, never a fabricated zero', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [] }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.verifiedSamplePerformance.status, 'unavailable')
+    assert.equal(summary.verifiedSamplePerformance.realizedPnlUsd, null)
+    assert.equal(summary.verifiedSamplePnlAudit.samplePnlAllowed, false)
+    assert.equal(summary.verifiedSamplePnlAudit.samplePnlBlockedReason, 'no_verified_lots')
+  })
+
+  it('HARD ASSERTION (verified-bounded-sample-pnl): pricing coverage below the existing 50% threshold blocks the sample figure, using the SAME threshold the bounded-sample path already enforces', async () => {
+    const verified = Array.from({ length: 12 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, openedAt: i, closedAt: 100 + i, costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10, evidenceQuality: 'verified' }))
+    const unpriced = Array.from({ length: 20 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, openedAt: i, closedAt: 200 + i, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verified, ...unpriced] }),
+      pnlEngineResult: pnl(32),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.ok(summary.verifiedSamplePnlAudit.pricingCoverage! < 0.5, 'fixture must genuinely be below the 50% threshold')
+    assert.equal(summary.verifiedSamplePerformance.status, 'unavailable')
+    assert.equal(summary.verifiedSamplePnlAudit.samplePnlBlockedReason, 'pricing_coverage_below_threshold')
+  })
+
+  it('HARD ASSERTION (verified-bounded-sample-pnl): unmatched sells outside the sample are counted and disclosed, never subtracted from the verified-sample realized PnL', async () => {
+    const lots = Array.from({ length: 15 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, openedAt: i, closedAt: 100 + i, costBasisUsd: 100, proceedsUsd: 150, realizedPnlUsd: 50, evidenceQuality: 'verified' }))
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots, unmatchedSells: 5 }),
+      pnlEngineResult: pnl(15),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 5, windowBoundaryProven: false, boundedSampleWindowSafe: false },
+    })
+    assert.equal(summary.verifiedSamplePerformance.realizedPnlUsd, 750, 'the verified sample total (15 x $50) must be completely unaffected by the 5 unmatched sells outside it')
+    assert.equal(summary.verifiedSamplePerformance.excludedUnmatchedSellCount, 5)
+    assert.equal(summary.verifiedSamplePnlAudit.excludedUnmatchedSellCount, 5)
+  })
 })

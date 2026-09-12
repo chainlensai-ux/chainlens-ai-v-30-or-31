@@ -23,12 +23,13 @@ import {
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
   REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
   buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage, selectPnlConfidenceStatus,
+  selectVerifiedSamplePnlDisclosure, VERIFIED_SAMPLE_PNL_STATUS_LABEL,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
-import { emptyMissingPriceRecoveryFunnelAudit } from '@/src/lib/pnlReconciliation'
+import { emptyMissingPriceRecoveryFunnelAudit, emptyVerifiedSamplePerformance, emptyVerifiedSamplePnlAudit } from '@/src/lib/pnlReconciliation'
 import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDiscrepancyAudit } from '@/src/lib/pnlDiscrepancyAudit'
 
 // Minimal, real-shaped PnlReconciliationSummary fixture builder — mirrors the fixture pattern
@@ -88,6 +89,8 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     // placeholder" convention above) — trust-gate tests below override this explicitly.
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
+    verifiedSamplePerformance: emptyVerifiedSamplePerformance(),
+    verifiedSamplePnlAudit: emptyVerifiedSamplePnlAudit(),
     ...overrides,
   }
 }
@@ -659,6 +662,72 @@ describe('selectBoundedSampleDisclosure — bounded-PnL-UI follow-up task', () =
   it('a normal, in-range coverage ratio is unaffected by the cap', () => {
     const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary())!
     assert.ok(Math.abs(disclosure.verifiedPricingCoveragePercent! - 70.37) < 0.01)
+  })
+})
+
+describe('selectVerifiedSamplePnlDisclosure — verified-bounded-sample-pnl follow-up task', () => {
+  // OLD COUPLING, DISCLOSED: selectBoundedSampleDisclosure above only ever returns non-null when
+  // `publicPnlStatus`/effective status is 'limited_verified_sample' — the SAME complete-history
+  // gate this new selector must be independent of. These tests use `publicPnlStatus: 'unavailable'`
+  // throughout (selectBoundedSampleDisclosure would return null for every one of them) to prove
+  // selectVerifiedSamplePnlDisclosure reads reconciliationSummary.verifiedSamplePerformance directly
+  // and never depends on the complete-history status at all.
+  const verifiedSample = (overrides: Partial<PnlReconciliationSummary['verifiedSamplePerformance']> = {}): PnlReconciliationSummary['verifiedSamplePerformance'] => ({
+    status: 'verified_bounded_sample', realizedPnlUsd: -70794.97, verifiedLotCount: 98,
+    structuralLotCount: 98, pricingCoverage: 1, excludedUnmatchedSellCount: 2, isCompleteWalletHistory: false,
+    ...overrides,
+  })
+
+  it('HARD ASSERTION (exact acceptance shape): 98 verified closed lots, 100% pricing coverage, 2 excluded unmatched sells, -$70,794.97 realized PnL — regardless of the complete-history status being unavailable', () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({ verifiedSamplePerformance: verifiedSample() }))
+    assert.ok(disclosure)
+    assert.equal(disclosure!.realizedPnlUsd, -70794.97)
+    assert.equal(disclosure!.verifiedLotCount, 98)
+    assert.equal(disclosure!.pricingCoveragePercent, 100)
+    assert.equal(disclosure!.excludedUnmatchedSellCount, 2)
+    assert.equal(disclosure!.statusLabel, VERIFIED_SAMPLE_PNL_STATUS_LABEL)
+    assert.equal(disclosure!.disclosure, '2 unmatched sells are excluded because their acquisition history could not be verified. This is not complete wallet-history PnL.')
+  })
+
+  it("returns null when the backend's own verifiedSamplePerformance.status is 'unavailable' — never fabricates a figure the backend did not allow", () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
+      verifiedSamplePerformance: verifiedSample({ status: 'unavailable', realizedPnlUsd: null }),
+    }))
+    assert.equal(disclosure, null)
+  })
+
+  it('returns null when reconciliationSummary is absent, even though this selector never reads publicPnlStatus — never fabricates for an unwired caller', () => {
+    assert.equal(selectVerifiedSamplePnlDisclosure(null), null)
+    assert.equal(selectVerifiedSamplePnlDisclosure(undefined), null)
+  })
+
+  it('a single excluded unmatched sell uses correct singular grammar', () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
+      verifiedSamplePerformance: verifiedSample({ excludedUnmatchedSellCount: 1 }),
+    }))
+    assert.equal(disclosure!.disclosure, '1 unmatched sell is excluded because its acquisition history could not be verified. This is not complete wallet-history PnL.')
+  })
+
+  it('zero excluded unmatched sells uses the generic bounded-sample disclosure, never claims an unmatched sell that does not exist', () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
+      verifiedSamplePerformance: verifiedSample({ excludedUnmatchedSellCount: 0 }),
+    }))
+    assert.equal(disclosure!.disclosure, 'This is a verified bounded sample, not complete wallet-history PnL.')
+  })
+
+  it('caps pricing coverage display at 100% even if the backend value somehow exceeds 1.0', () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
+      verifiedSamplePerformance: verifiedSample({ pricingCoverage: 1.5 }),
+    }))
+    assert.equal(disclosure!.pricingCoveragePercent, 100)
+  })
+
+  it('never contains "Complete PnL", "All-time PnL", "Fully verified", or "Full Wallet" in the disclosure text — this is never presented as complete-wallet PnL', () => {
+    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({ verifiedSamplePerformance: verifiedSample() }))!
+    for (const forbidden of ['Complete PnL', 'All-time PnL', 'Fully verified', 'Full Wallet']) {
+      assert.equal(disclosure.disclosure.includes(forbidden), false)
+      assert.equal(disclosure.statusLabel.includes(forbidden), false)
+    }
   })
 })
 
