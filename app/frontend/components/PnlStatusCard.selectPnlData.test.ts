@@ -23,6 +23,7 @@ import {
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
   REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
   buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage, selectPnlConfidenceStatus,
+  isVerifiedSampleDisplayExempt,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { buildWalletPnlViewModel, formatFullWalletUnavailableReason, fmtSignedPercent } from '@/app/frontend/lib/buildWalletPnlViewModel'
@@ -1221,6 +1222,19 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
     assert.match(vm.sampleEvidenceLine ?? '', /Verified Sample Realized PnL -\$70,794\.97/)
     assert.match(vm.sampleEvidenceLine ?? '', /ROI -23\.1%/)
     assert.match(vm.sampleEvidenceLine ?? '', /PARTIAL \/ VERIFIED BOUNDED SAMPLE/)
+  })
+
+  it('HARD ASSERTION: allowed sample is not replaced by synthetic when Combined is unavailable', () => {
+    assert.equal(isVerifiedSampleDisplayExempt(sampleSummary()), true)
+    assert.equal(isVerifiedSampleDisplayExempt(reconciliationSummary()), false)
+    assert.equal(isVerifiedSampleDisplayExempt(null), false)
+    const syntheticPnl = { totalPnlUsd: 1, realizedPnlUsd: 1, unrealizedPnlUsd: 0, perChain: [] } as never
+    const sampleExempt = isVerifiedSampleDisplayExempt(sampleSummary())
+    const showSynthetic = !sampleExempt && shouldShowSyntheticGlobal('unavailable', syntheticPnl)
+    const blocked = sampleExempt ? false : true
+    assert.equal(showSynthetic, false)
+    assert.equal(resolvePnlDisplayMode({ isActive: true, blocked, showSyntheticGlobal: showSynthetic, showSyntheticPerChain: false }), 'real')
+    assert.equal(shouldShowSyntheticGlobal('unavailable', syntheticPnl), true, 'synthetic still exists for Combined-unavailable without a sample')
   })
 
   it('HARD ASSERTION: Combined Partial + wired sample does not republish sample PnL as Combined/Full Wallet', () => {

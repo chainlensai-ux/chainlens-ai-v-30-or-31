@@ -914,6 +914,11 @@ export function hasPerChainSynthetic(syntheticPnl: SyntheticPnlSummary | null | 
     syntheticPnl.perChain.some((c) => c.totalPnlUsd !== null || c.realizedPnlUsd !== null || c.unrealizedPnlUsd !== null)
 }
 
+export function isVerifiedSampleDisplayExempt(summary: PnlReconciliationSummary | null | undefined): boolean {
+  const sample = summary?.verifiedSamplePerformance
+  return sample?.status === 'verified_bounded_sample' && sample.realizedPnlUsd != null && Number.isFinite(sample.realizedPnlUsd)
+}
+
 // Pure, exported for direct testing — the exact condition for showing the GLOBAL synthetic block.
 export function shouldShowSyntheticGlobal(publicPnlStatus: PublicPnlStatus | null | undefined, syntheticPnl: SyntheticPnlSummary | null | undefined): boolean {
   return publicPnlStatus === 'unavailable' && hasGlobalSynthetic(syntheticPnl)
@@ -987,8 +992,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // `unrealizedReconciliation.openPositionCoveragePercent` — currently-held open positions only
   // (FIFO leftovers with no canonical balance are not counted as a current coverage failure).
   // Has no bearing on realized PnL.
-  const showSyntheticGlobal = shouldShowSyntheticGlobal(effectivePublicPnlStatus, syntheticPnl)
-  const showSyntheticPerChain = shouldShowSyntheticPerChain(effectivePublicPnlStatus, syntheticPnl)
+  const showSyntheticGlobal = !isVerifiedSampleDisplayExempt(reconciliationSummary) && shouldShowSyntheticGlobal(effectivePublicPnlStatus, syntheticPnl)
+  const showSyntheticPerChain = !isVerifiedSampleDisplayExempt(reconciliationSummary) && shouldShowSyntheticPerChain(effectivePublicPnlStatus, syntheticPnl)
   // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
   // `!pnl.stable` (this task's new isStablePnl guard) are two independent reasons to hide the
   // numeric display — either alone is enough. Applies uniformly to Realized/Unrealized/Total/ROI
@@ -1002,7 +1007,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // gated on `publicPnlStatus === 'unavailable'` elsewhere, never reachable for a bounded sample
   // anyway); it never widens what's shown — `displayed.realizedPnlUsd == null` still renders
   // PNL_UNAVAILABLE_MESSAGE per-tile below when `reconciliationSummary` itself wasn't wired.
-  const blocked = isBoundedSample ? false : isActive && (pnl.unreliable || !pnl.stable)
+  const blocked = (isBoundedSample || isVerifiedSampleDisplayExempt(reconciliationSummary)) ? false : isActive && (pnl.unreliable || !pnl.stable)
   const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticGlobal, showSyntheticPerChain })
 
   // SHARED VIEW MODEL, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): the ONE
