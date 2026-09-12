@@ -27,7 +27,9 @@
 // applies only when lot identity + methodology version match; a fresh live FIFO/event quote can
 // confirm; a stale/mismatched proof is unresolved, never guessed into the denominator. Never infer
 // from token symbol. Independent EOA/CEX/mint still requires live event proof (or a matching
-// persisted independent proof when the bounded window has dropped those txs).
+// persisted independent proof when the bounded window has dropped those txs). Targeted receipt
+// backfill (roiQuoteLegTxBackfill.ts) may fill missing proof from the lot's own open/close txs
+// without paginating wallet history; failed/capped lookups stay unresolved.
 //
 // PROOF STANDARD, DISCLOSED: a verified stablecoin lot is excluded from the ROI denominator only
 // when swap/FIFO identity — live or a matching persisted proof — proves it is the cash/quote leg
@@ -70,8 +72,9 @@ export type RoiClassificationReason =
   | 'unresolved_native_or_unknown_quote'
   | 'unresolved_router_without_opposite_risk'
   | 'unresolved_stale_quote_leg_proof'
+  | 'unresolved_targeted_tx_backfill_unconfirmed'
 
-export type RoiQuoteLegProofType = 'fifo_structural_lot' | 'event_opposite_leg' | 'independent_eoa_cex_or_mint'
+export type RoiQuoteLegProofType = 'fifo_structural_lot' | 'event_opposite_leg' | 'independent_eoa_cex_or_mint' | 'targeted_tx_backfill'
 
 // Bumped only when the quote-leg identity RULE changes (what counts as a proven pair / independent
 // movement), never for a bounded-window or provider-availability change — those are exactly the
@@ -140,6 +143,7 @@ export function isValidPersistedRoiQuoteLegProof(raw: unknown): raw is Persisted
     proof.proofType !== 'fifo_structural_lot'
     && proof.proofType !== 'event_opposite_leg'
     && proof.proofType !== 'independent_eoa_cex_or_mint'
+    && proof.proofType !== 'targeted_tx_backfill'
   ) return false
   if (typeof proof.methodologyVersion !== 'number' || !Number.isFinite(proof.methodologyVersion)) return false
   if (proof.disposition === 'exclude_quote_cash_leg') {
@@ -386,6 +390,7 @@ export function classifyVerifiedSampleRoiEligibility(params: {
   structuralLots?: readonly MatchedLot[]
   normalizedEvents?: readonly NormalizedEvent[]
   persistedProofs?: readonly PersistedRoiQuoteLegProof[]
+  forceUnresolvedLotKeys?: readonly string[]
 }): VerifiedSampleRoiEligibility {
   const structuralLots = params.structuralLots ?? params.verifiedLots
   const events = params.normalizedEvents
@@ -395,6 +400,7 @@ export function classifyVerifiedSampleRoiEligibility(params: {
   for (const proof of sanitizeRoiQuoteLegProofs(params.persistedProofs)) {
     persistedByKey.set(proof.stableLotKey, proof)
   }
+  const forceUnresolved = new Set(params.forceUnresolvedLotKeys ?? [])
 
   const riskByOpenTx = new Map<string, MatchedLot[]>()
   const riskByCloseTx = new Map<string, MatchedLot[]>()
@@ -525,6 +531,11 @@ export function classifyVerifiedSampleRoiEligibility(params: {
       // swap. Do not guess. A stored independent does not override live ambiguity.
       disposition = 'unresolved'
       reason = 'unresolved_router_without_opposite_risk'
+    } else if (forceUnresolved.has(key)) {
+      // Targeted receipt backfill was required and did not confirm this lot (failed/timeout/capped).
+      // Bounded USDC-only events must not stand in as an independent proof.
+      disposition = 'unresolved'
+      reason = 'unresolved_targeted_tx_backfill_unconfirmed'
     } else {
       // Both txs are present in events and show no opposite-direction risk asset. Counterparties
       // are EOA/CEX or a 0x0 mint — a mint without a swap is cash issuance, not a quote leg.

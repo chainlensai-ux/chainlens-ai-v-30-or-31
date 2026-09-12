@@ -35,6 +35,7 @@ import {
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
+import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
@@ -3096,6 +3097,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // cache already uses — a genuinely separate key namespace (`v1:accepted-evidence:...` vs
     // `v2:price:...`), same underlying Upstash instance.
     acceptedEvidenceKv: acceptedEvidenceRealKv,
+    roiQuoteLegTxBackfill: {
+      walletAddress: params.walletAddress,
+      fetchTxReceipt: fetchRoiQuoteLegTxReceipt,
+      cacheKv: acceptedEvidenceRealKv,
+    },
   })
   // SYNTHETIC-PNL LEAK FIX, DISCLOSED (confirmed, critical severity — see pnlReconciliation.ts's own
   // header comment on the realizedPnlUsd computation for the full trace): this previously also

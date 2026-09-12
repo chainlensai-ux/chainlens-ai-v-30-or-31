@@ -12,9 +12,16 @@ import {
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
-import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
+import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
+import {
+  EMPTY_ROI_QUOTE_LEG_TX_BACKFILL_AUDIT,
+  runRoiQuoteLegTxBackfill,
+  type RoiQuoteLegTxBackfillAudit,
+  type RoiQuoteLegTxBackfillCache,
+  type RoiQuoteLegTxReceiptFetcher,
+} from './roiQuoteLegTxBackfill'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -159,6 +166,14 @@ type Config = {
   // fail-closed identity-matching rule.
   acceptedEvidenceKv?: AcceptedEvidenceKvLike
   now?: () => number
+  // TARGETED ROI QUOTE-LEG TX BACKFILL, OPTIONAL: fetches only unproven stable lots' own
+  // open/close receipts. Omitted → current live/persisted classification, no extra provider calls.
+  roiQuoteLegTxBackfill?: {
+    walletAddress: string
+    fetchTxReceipt: RoiQuoteLegTxReceiptFetcher
+    cacheKv?: RoiQuoteLegTxBackfillCache | null
+    maxProviderCalls?: number
+  }
 }
 
 // COMPACT FAILURE-REASON CATEGORIES, DISCLOSED: mirrors this task's own requested category list.
@@ -1108,6 +1123,7 @@ export type PnlReconciliationSummary = {
   // includes unresolved or replay-only rows. Pipeline merges these onto the canonical sample
   // manifest without touching fingerprints or sample values.
   roiQuoteLegProofsToPersist?: PersistedRoiQuoteLegProof[]
+  roiQuoteLegTxBackfillAudit?: RoiQuoteLegTxBackfillAudit
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -1204,6 +1220,7 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   structuralLots?: readonly MatchedLot[]
   normalizedEvents?: readonly NormalizedEvent[]
   persistedProofs?: readonly PersistedRoiQuoteLegProof[]
+  forceUnresolvedLotKeys?: readonly string[]
   structuralLotCount: number
   realizedPnlUsd: number | null
   verifiedPricingCoverage: number | null
@@ -1229,6 +1246,7 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     structuralLots: params.structuralLots ?? params.verifiedLots,
     normalizedEvents: params.normalizedEvents,
     persistedProofs: params.persistedProofs,
+    forceUnresolvedLotKeys: params.forceUnresolvedLotKeys,
   })
   const roiMembershipResolved = eligibility.roiAvailable
   const realizedRoiPnlUsd = eligibility.realizedRoiPnlUsd
@@ -2965,14 +2983,47 @@ export function createPnlReconciliation(config: Config = {}) {
       ).map((reason) => reason.rule)
       const roiPairingStructuralLots = buildRoiPairingStructuralLots(consistentFifoLots, input.fifoEngineResult)
       const persistedProofs = canonicalSampleSelection?.roiQuoteLegProofs
+      let roiEvents = input.normalizedEvents
+      let roiProofs = persistedProofs
+      let forceUnresolvedLotKeys: string[] = []
+      let roiQuoteLegTxBackfillAudit: RoiQuoteLegTxBackfillAudit = EMPTY_ROI_QUOTE_LEG_TX_BACKFILL_AUDIT
+      let backfillProofs: PersistedRoiQuoteLegProof[] = []
+      if (config.roiQuoteLegTxBackfill) {
+        const firstPass = classifyVerifiedSampleRoiEligibility({
+          verifiedLots: verifiedUpdatedLots,
+          structuralLots: roiPairingStructuralLots,
+          normalizedEvents: input.normalizedEvents,
+          persistedProofs,
+        })
+        const backfill = await runRoiQuoteLegTxBackfill({
+          verifiedLots: verifiedUpdatedLots,
+          structuralLots: roiPairingStructuralLots,
+          classifications: firstPass.classifications,
+          normalizedEvents: input.normalizedEvents,
+          persistedProofs,
+          walletAddress: config.roiQuoteLegTxBackfill.walletAddress,
+          fetchTxReceipt: config.roiQuoteLegTxBackfill.fetchTxReceipt,
+          cacheKv: config.roiQuoteLegTxBackfill.cacheKv,
+          maxProviderCalls: config.roiQuoteLegTxBackfill.maxProviderCalls,
+        })
+        backfillProofs = backfill.proofs
+        forceUnresolvedLotKeys = backfill.unconfirmedLotKeys
+        roiQuoteLegTxBackfillAudit = backfill.audit
+        roiProofs = mergeRoiQuoteLegProofs(persistedProofs ?? [], backfill.proofs)
+        roiEvents = backfill.events.length > 0
+          ? [...(input.normalizedEvents ?? []), ...backfill.events]
+          : input.normalizedEvents
+        logger.warn('[roi-quote-leg-tx-backfill]', backfill.audit)
+      }
       const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
         verifiedLots: verifiedUpdatedLots,
         // Pairing universe is closed structural FIFO plus unmatched non-stable buy/sell identities
         // FIFO already produced. Bounded-window counterpart risk lots survive here as unmatched
         // events, not as published verified lots. Classifier semantics unchanged.
         structuralLots: roiPairingStructuralLots,
-        normalizedEvents: input.normalizedEvents,
-        persistedProofs,
+        normalizedEvents: roiEvents,
+        persistedProofs: roiProofs,
+        forceUnresolvedLotKeys,
         structuralLotCount: fifoLots.length,
         realizedPnlUsd,
         verifiedPricingCoverage,
@@ -2989,8 +3040,9 @@ export function createPnlReconciliation(config: Config = {}) {
       const roiEligibility = classifyVerifiedSampleRoiEligibility({
         verifiedLots: verifiedUpdatedLots,
         structuralLots: roiPairingStructuralLots,
-        normalizedEvents: input.normalizedEvents,
-        persistedProofs,
+        normalizedEvents: roiEvents,
+        persistedProofs: roiProofs,
+        forceUnresolvedLotKeys,
       })
       {
         const openedAt = roiPairingStructuralLots.map((lot) => lot.openedAt)
@@ -3003,7 +3055,8 @@ export function createPnlReconciliation(config: Config = {}) {
           fifoMatchedLotsCount: fifoLots.length,
           unmatchedBuyEventsCount: input.fifoEngineResult.unmatchedBuyEvents.length,
           unmatchedSellEventsCount: input.fifoEngineResult.unmatchedSellEvents.length,
-          persistedProofCount: persistedProofs?.length ?? 0,
+          persistedProofCount: roiProofs?.length ?? 0,
+          roiQuoteLegTxBackfill: roiQuoteLegTxBackfillAudit,
           structuralTokenCounts: structuralTokenCounts(roiPairingStructuralLots),
           structuralEarliestOpenedAt: openedAt.length > 0 ? Math.min(...openedAt) : null,
           structuralLatestClosedAt: closedAt.length > 0 ? Math.max(...closedAt) : null,
@@ -3101,7 +3154,11 @@ export function createPnlReconciliation(config: Config = {}) {
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,
         canonicalVerificationConsistencyAudit,
-        roiQuoteLegProofsToPersist: liveRoiQuoteLegProofsToPersist(roiEligibility),
+        roiQuoteLegProofsToPersist: mergeRoiQuoteLegProofs(
+          liveRoiQuoteLegProofsToPersist(roiEligibility),
+          backfillProofs,
+        ),
+        roiQuoteLegTxBackfillAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

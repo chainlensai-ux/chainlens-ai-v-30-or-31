@@ -60,3 +60,16 @@ test('pipeline replays persisted ROI quote-leg proofs from the canonical sample 
   assert.notEqual(persistCall, -1)
   assert.ok(persistCall > reconcileCall, 'proof persist must run after reconcile so live-proven identities from this scan are included')
 })
+
+test('pipeline wires targeted ROI quote-leg tx backfill into reconcile without fetching full wallet history', () => {
+  const callStart = position('createPnlReconciliation call site', 'const pnlReconciliation = createPnlReconciliation({')
+  const callEnd = pipelineSource.indexOf('\n  })', callStart)
+  assert.notEqual(callEnd, -1)
+  const callBody = pipelineSource.slice(callStart, callEnd)
+  assert.match(callBody, /roiQuoteLegTxBackfill:/, 'production reconcile must run targeted tx backfill for unproven stable lots')
+  assert.match(callBody, /fetchTxReceipt:\s*fetchRoiQuoteLegTxReceipt/, 'backfill must use the exact-tx receipt fetcher')
+  assert.match(pipelineSource, /from '\.\.\/lib\/roiQuoteLegTxBackfill'/)
+  const backfillSource = readFileSync(new URL('../lib/roiQuoteLegTxBackfill.ts', import.meta.url), 'utf8')
+  assert.match(backfillSource, /eth_getTransactionReceipt/, 'backfill fetches individual receipts')
+  assert.doesNotMatch(backfillSource, /alchemy_getAssetTransfers/, 'must not paginate asset transfers for ROI quote-leg backfill')
+})
