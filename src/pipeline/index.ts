@@ -84,7 +84,7 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
-import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, type EventClassification } from '../modules/eventClassification/index'
+import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -3100,9 +3100,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // driven by fifoAndPnl's own raw unmatched counts — this is an evidence-input correction to the
   // structuralCoverage reporting metric only, never a threshold change (see pnlReconciliation.ts's
   // own disclosure at its structuralCoverage computation).
-  const structuralCoverageClassified = classifyEvents(canonicalNormalizedEvents, { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  // IDENTITY JOIN SET, DISCLOSED (critical-trade-evidence-gap task): fifoEngine merges
+  // recoveredNormalized events into matching (buildFifoOutput) but the unmatched-identity join
+  // previously classified canonicalNormalizedEvents ONLY. A recovered-only unmatched sell
+  // therefore had no classified counterpart, counted as unmatchedIdentityJoinFailures, and
+  // short-circuited to blocking `unknown` before pre-window / non-trade rules could run. The
+  // join set is now the SAME merge fifoEngine itself uses. FIFO matching, filterToFifoEligible,
+  // thresholds, and manifest are untouched — this only lets the join see events FIFO already
+  // unmatched.
+  const classifiedJoinEvents = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
+  const structuralCoverageClassified = classifyEvents(classifiedJoinEvents, { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
   const exactStructuralCoverageAudit = computeExactStructuralCoverageAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+  )
+  const criticalTradeEvidenceGapAudit = buildCriticalTradeEvidenceGapAudit(
+    structuralCoverageClassified, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
   )
   // BOUNDED-HISTORY EVIDENCE SPLIT, DISCLOSED (bounded-history follow-up task, requirements #1-#4):
   // real, computed here (not inside pnlReconciliation.ts, which has no per-event classification
@@ -3132,6 +3144,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
     },
   )
+  // eslint-disable-next-line no-console
+  console.warn('[critical-trade-evidence-gap-audit]', {
+    unmatchedIdentityJoinFailures: criticalTradeEvidenceGapAudit.unmatchedIdentityJoinFailures,
+    sellJoinFailures: criticalTradeEvidenceGapAudit.sellJoinFailures,
+    buyJoinFailures: criticalTradeEvidenceGapAudit.buyJoinFailures,
+    sameTwoAsGenuineUnmatchedSells: criticalTradeEvidenceGapAudit.sameTwoAsGenuineUnmatchedSells,
+    unmatchedSellsTotal: fifoAndPnl.unmatchedSellEvents.length,
+    unmatchedBuysTotal: fifoAndPnl.unmatchedBuyEvents.length,
+    structurallyInvalidOrUnknownSells: unmatchedEvidenceAudit.structurallyInvalidOrUnknownSells,
+    structurallyInvalidOrUnknownBuys: unmatchedEvidenceAudit.structurallyInvalidOrUnknownBuys,
+    events: criticalTradeEvidenceGapAudit.events,
+  })
   // [window-boundary-proof-audit], DISCLOSED, DIAGNOSTIC ONLY (window-boundary-proof audit task).
   // Read-only: derives everything from data already computed above and changes no decision.
   //

@@ -383,7 +383,79 @@ export type ExactStructuralCoverageAudit = {
 }
 
 function unmatchedJoinGroupKey(chain: string, txHash: string, token: string, direction: 'inbound' | 'outbound'): string {
-  return `${chain}:${txHash}:${token.toLowerCase()}:${direction}`
+  // TX HASH CASE, DISCLOSED (critical-trade-evidence-gap task): fifoEngine unmatched identities
+  // copy `sell.txHash` / `lot.openedTxHash` byte-for-byte from NormalizedEvent, and providers do
+  // not agree on checksum vs lowercase. The join previously used the raw string, so a recovered
+  // (checksummed) unmatched sell could not join a canonical (lowercase) classified event of the
+  // SAME transaction — counted as unmatchedIdentityJoinFailures and hard-blocked. Token was
+  // already lowercased; txHash/chain now match that convention. Never a new identity, never a
+  // weaker match (0xabc and 0xABC are the same tx).
+  return `${chain.toLowerCase()}:${txHash.toLowerCase()}:${token.toLowerCase()}:${direction}`
+}
+
+function amountsMatch(eventAmount: number, identityAmount: number): boolean {
+  return Math.abs(eventAmount - identityAmount) < 1e-12
+}
+
+function amountRawMatches(eventRaw: string | null | undefined, identityRaw: string | null | undefined): boolean {
+  if (eventRaw == null || identityRaw == null) return false
+  return eventRaw === identityRaw
+}
+
+function addressPairMatches(event: ClassifiedEvent['event'], identity: UnmatchedEventIdentity): boolean {
+  return event.fromAddress.toLowerCase() === (identity.fromAddress ?? '').toLowerCase()
+    && event.toAddress.toLowerCase() === (identity.toAddress ?? '').toLowerCase()
+}
+
+export type UnmatchedJoinFailure = 'no_classified_counterpart' | 'ambiguous_multi_candidate'
+
+type UnmatchedJoinResolution = {
+  classification: EventClassification | null
+  failure: UnmatchedJoinFailure | null
+  identityKeyGenerated: string
+  identityKeyExpected: string
+}
+
+function pickUniqueCandidate(pool: readonly ClassifiedEvent[], identity: UnmatchedEventIdentity): ClassifiedEvent | 'ambiguous' | null {
+  if (pool.length === 0) return null
+  if (pool.length === 1) return pool[0]
+  const byAmount = pool.filter((c) => amountsMatch(c.event.amount, identity.amount))
+  if (byAmount.length === 1) return byAmount[0]
+  const amountPool = byAmount.length > 1 ? byAmount : pool
+  const byRaw = identity.amountRaw != null
+    ? amountPool.filter((c) => amountRawMatches(c.event.amountRaw, identity.amountRaw))
+    : []
+  if (byRaw.length === 1) return byRaw[0]
+  const byAddr = amountPool.filter((c) => addressPairMatches(c.event, identity))
+  if (byAddr.length === 1) return byAddr[0]
+  return 'ambiguous'
+}
+
+function resolveUnmatchedJoin(
+  identity: UnmatchedEventIdentity,
+  groups: Map<string, ClassifiedEvent[]>,
+): UnmatchedJoinResolution {
+  const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
+  const picked = pickUniqueCandidate(groups.get(key) ?? [], identity)
+  if (picked === 'ambiguous') {
+    return { classification: null, failure: 'ambiguous_multi_candidate', identityKeyGenerated: key, identityKeyExpected: key }
+  }
+  if (picked) {
+    return { classification: picked.classification, failure: null, identityKeyGenerated: key, identityKeyExpected: key }
+  }
+  return { classification: null, failure: 'no_classified_counterpart', identityKeyGenerated: key, identityKeyExpected: key }
+}
+
+function buildUnmatchedJoinGroups(classified: readonly ClassifiedEvent[]): Map<string, ClassifiedEvent[]> {
+  const groups = new Map<string, ClassifiedEvent[]>()
+  for (const c of classified) {
+    if (c.event.direction === 'unknown') continue
+    const key = unmatchedJoinGroupKey(c.event.chain, c.event.txHash, c.event.contract, c.event.direction)
+    const list = groups.get(key)
+    if (list) list.push(c)
+    else groups.set(key, [c])
+  }
+  return groups
 }
 
 function joinOneSide(
@@ -394,18 +466,8 @@ function joinOneSide(
   let genuine = 0
   let joinFailures = 0
   for (const identity of identities) {
-    const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
-    const candidates = groups.get(key) ?? []
-    let resolved: EventClassification | null = null
-    if (candidates.length === 1) {
-      resolved = candidates[0].classification
-    } else if (candidates.length > 1) {
-      const exactMatches = candidates.filter((c) => Math.abs(c.event.amount - identity.amount) < 1e-12)
-      if (exactMatches.length === 1) resolved = exactMatches[0].classification
-      // 0 or >1 exact matches among multiple candidates: genuinely ambiguous — falls through to
-      // the join-failure path below (resolved stays null), never guessed.
-    }
-    if (resolved === null) {
+    const resolved = resolveUnmatchedJoin(identity, groups)
+    if (resolved.classification === null) {
       // FAIL CLOSED, DISCLOSED (requirement #8): no candidate at all, or a genuinely ambiguous
       // multi-candidate group — this event remains `unknown` and continues counting as genuine
       // (blocking) unmatched evidence, exactly as an un-joinable event must.
@@ -413,10 +475,10 @@ function joinOneSide(
       genuine += 1
       continue
     }
-    if (resolved === 'genuine_trade_leg' || resolved === 'unknown') {
+    if (resolved.classification === 'genuine_trade_leg' || resolved.classification === 'unknown') {
       genuine += 1
     } else {
-      excludedByClassification[resolved] = (excludedByClassification[resolved] ?? 0) + 1
+      excludedByClassification[resolved.classification] = (excludedByClassification[resolved.classification] ?? 0) + 1
     }
   }
   return { genuine, excludedByClassification, joinFailures }
@@ -628,7 +690,7 @@ export function computeUnmatchedEvidenceAudit(
   unmatchedSellEvents: readonly UnmatchedEventIdentity[],
   context: UnmatchedEvidenceAuditContext,
 ): UnmatchedEvidenceAudit {
-  const groups = new Map<string, ClassifiedEvent[]>()
+  const groups = buildUnmatchedJoinGroups(classified)
   let earliestEventTimestamp: number | null = null
   // DIAGNOSTIC ONLY, ADDITIVE: tracked alongside the existing earliest scan, never read by any
   // decision below — see WindowBoundaryProofDiagnostics' own header.
@@ -637,10 +699,6 @@ export function computeUnmatchedEvidenceAudit(
   const earliestBuyTimestampByToken = new Map<string, number>()
   for (const c of classified) {
     if (c.event.direction === 'unknown') continue
-    const key = unmatchedJoinGroupKey(c.event.chain, c.event.txHash, c.event.contract, c.event.direction)
-    const list = groups.get(key)
-    if (list) list.push(c)
-    else groups.set(key, [c])
     const ts = Date.parse(c.event.timestamp)
     if (Number.isFinite(ts)) {
       timestampedEventsConsidered += 1
@@ -671,16 +729,8 @@ export function computeUnmatchedEvidenceAudit(
         : 'unknown'
   const boundedSampleWindowSafe = historyCoverageStatus === 'exhaustive' || historyCoverageStatus === 'truncated'
 
-  const resolveJoin = (identity: UnmatchedEventIdentity): EventClassification | null => {
-    const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
-    const candidates = groups.get(key) ?? []
-    if (candidates.length === 1) return candidates[0].classification
-    if (candidates.length > 1) {
-      const exactMatches = candidates.filter((c) => Math.abs(c.event.amount - identity.amount) < 1e-12)
-      if (exactMatches.length === 1) return exactMatches[0].classification
-    }
-    return null
-  }
+  const resolveJoin = (identity: UnmatchedEventIdentity): EventClassification | null =>
+    resolveUnmatchedJoin(identity, groups).classification
 
   let openPositionBuys = 0
   let unknownBuys = 0
@@ -794,14 +844,7 @@ export function computeExactStructuralCoverageAudit(
   unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
   unmatchedSellEvents: readonly UnmatchedEventIdentity[],
 ): ExactStructuralCoverageAudit {
-  const groups = new Map<string, ClassifiedEvent[]>()
-  for (const c of classified) {
-    const key = unmatchedJoinGroupKey(c.event.chain, c.event.txHash, c.event.contract, c.event.direction === 'unknown' ? 'inbound' : c.event.direction)
-    if (c.event.direction === 'unknown') continue // never a candidate for a buy/sell join — has no genuine direction
-    const list = groups.get(key)
-    if (list) list.push(c)
-    else groups.set(key, [c])
-  }
+  const groups = buildUnmatchedJoinGroups(classified)
 
   const buySide = joinOneSide(unmatchedBuyEvents, groups)
   const sellSide = joinOneSide(unmatchedSellEvents, groups)
@@ -823,5 +866,114 @@ export function computeExactStructuralCoverageAudit(
     structuralCoverageNumerator,
     structuralCoverageDenominator,
     structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
+  }
+}
+
+// CRITICAL TRADE-EVIDENCE GAP AUDIT, DISCLOSED (critical-trade-evidence-gap task): the two
+// production unmatchedIdentityJoinFailures were previously a COUNT only — no tx hash, no join
+// key, no way to tell recovered-not-classified from a genuine unmatched sell. This audit lists
+// every unmatched identity that failed the join, with the real source fields fifoEngine already
+// carries. Never invents a counterpart, never weakens the gate: a listed gap still blocks until
+// the join actually resolves it.
+export type CriticalTradeEvidenceGap = {
+  chain: string
+  txHash: string
+  token: string
+  tokenAddress: string
+  side: 'buy' | 'sell'
+  direction: 'inbound' | 'outbound'
+  rawAmount: string | null
+  normalizedAmount: number
+  timestamp: number
+  from: string
+  to: string
+  classification: EventClassification | null
+  identityFailure: UnmatchedJoinFailure
+  identityKeyGenerated: string
+  identityKeyExpected: string
+  joinStage: 'unmatched_identity_join'
+  joinFailureReason: UnmatchedJoinFailure
+  genuineTrade: boolean | null
+  fixable: boolean
+  proposedResolution:
+    | 'include_recovered_events_in_join_set'
+    | 'normalize_join_txhash_case'
+    | 'disambiguate_via_source_identity'
+    | 'exclude_non_trade'
+    | 'keep_blocking'
+  receiptEvidence: null
+  providerSources: null
+}
+
+export type CriticalTradeEvidenceGapAudit = {
+  unmatchedIdentityJoinFailures: number
+  sellJoinFailures: number
+  buyJoinFailures: number
+  sameTwoAsGenuineUnmatchedSells: boolean
+  events: CriticalTradeEvidenceGap[]
+}
+
+function proposedResolutionFor(failure: UnmatchedJoinFailure, identity: UnmatchedEventIdentity): CriticalTradeEvidenceGap['proposedResolution'] {
+  if (failure === 'ambiguous_multi_candidate') return 'disambiguate_via_source_identity'
+  if (identity.txHash !== identity.txHash.toLowerCase()) return 'normalize_join_txhash_case'
+  return 'include_recovered_events_in_join_set'
+}
+
+function gapFromIdentity(
+  identity: UnmatchedEventIdentity,
+  side: 'buy' | 'sell',
+  groups: Map<string, ClassifiedEvent[]>,
+): CriticalTradeEvidenceGap | null {
+  const resolved = resolveUnmatchedJoin(identity, groups)
+  if (resolved.failure === null) return null
+  return {
+    chain: identity.chain,
+    txHash: identity.txHash,
+    token: identity.token,
+    tokenAddress: identity.token,
+    side,
+    direction: identity.direction,
+    rawAmount: identity.amountRaw,
+    normalizedAmount: identity.amount,
+    timestamp: identity.timestamp,
+    from: identity.fromAddress,
+    to: identity.toAddress,
+    classification: resolved.classification,
+    identityFailure: resolved.failure,
+    identityKeyGenerated: resolved.identityKeyGenerated,
+    identityKeyExpected: resolved.identityKeyExpected,
+    joinStage: 'unmatched_identity_join',
+    joinFailureReason: resolved.failure,
+    genuineTrade: null,
+    fixable: resolved.failure !== 'ambiguous_multi_candidate' || Boolean(identity.amountRaw || identity.fromAddress),
+    proposedResolution: proposedResolutionFor(resolved.failure, identity),
+    receiptEvidence: null,
+    providerSources: null,
+  }
+}
+
+export function buildCriticalTradeEvidenceGapAudit(
+  classified: readonly ClassifiedEvent[],
+  unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
+  unmatchedSellEvents: readonly UnmatchedEventIdentity[],
+): CriticalTradeEvidenceGapAudit {
+  const groups = buildUnmatchedJoinGroups(classified)
+  const events: CriticalTradeEvidenceGap[] = []
+  for (const identity of unmatchedBuyEvents) {
+    const gap = gapFromIdentity(identity, 'buy', groups)
+    if (gap) events.push(gap)
+  }
+  for (const identity of unmatchedSellEvents) {
+    const gap = gapFromIdentity(identity, 'sell', groups)
+    if (gap) events.push(gap)
+  }
+  const sellJoinFailures = events.filter((e) => e.side === 'sell').length
+  const buyJoinFailures = events.filter((e) => e.side === 'buy').length
+  return {
+    unmatchedIdentityJoinFailures: events.length,
+    sellJoinFailures,
+    buyJoinFailures,
+    sameTwoAsGenuineUnmatchedSells: buyJoinFailures === 0 && sellJoinFailures === unmatchedSellEvents.length && unmatchedSellEvents.length > 0,
+    events,
   }
 }
