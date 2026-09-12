@@ -1243,4 +1243,88 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
     assert.equal(vm.sampleEvidenceLine, null)
     assert.equal(vm.combinedStatus, 'unavailable')
   })
+
+  it('HARD ASSERTION: sample cost basis <= 0 → ROI unavailable; sample PnL still displays; full-history stays blocked', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: -5 }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: reconciliationSummary({
+        publicPnlStatus: 'unavailable',
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, unmatchedSellCount: 2, verifiedClosedLots: 1 },
+        verifiedSamplePerformance: {
+          status: 'verified_bounded_sample',
+          realizedPnlUsd: -5,
+          realizedCostBasisUsd: 0,
+          realizedRoiPct: null,
+          verifiedLotCount: 1,
+          structuralLotCount: 1,
+          pricingCoverage: 1,
+          excludedUnmatchedSellCount: 2,
+          isCompleteWalletHistory: false,
+        },
+        fullHistoryPerformance: { status: 'unavailable', realizedPnlUsd: null, realizedRoiPct: null, blockingReasons: ['unmatched_sells'] },
+        verifiedSamplePerformanceAudit: {
+          ...emptyVerifiedSamplePerformanceAudit(),
+          verifiedLotCount: 1,
+          includedLotCount: 1,
+          realizedPnlUsd: -5,
+          realizedCostBasisUsd: 0,
+          realizedRoiPct: null,
+          pricingCoverage: 1,
+          samplePerformanceAllowed: true,
+          samplePerformanceBlockedReason: null,
+          excludedUnmatchedSellCount: 2,
+        },
+      }),
+    })
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Partial')
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$5.00')
+    assert.equal(vm.roiBox.status, 'Unavailable')
+    assert.equal(vm.roiBox.value, null)
+    assert.match(vm.roiBox.reason, /cost basis is not positive/)
+    assert.equal(vm.combinedStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: canonical consistency failure → sample PnL/ROI unavailable; full-history stays blocked', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: reconciliationSummary({
+        publicPnlStatus: 'unavailable',
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, unmatchedSellCount: 2, verifiedClosedLots: 98 },
+        verifiedSamplePerformance: {
+          ...EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
+          verifiedLotCount: 98,
+          structuralLotCount: 98,
+          excludedUnmatchedSellCount: 2,
+        },
+        fullHistoryPerformance: { status: 'unavailable', realizedPnlUsd: null, realizedRoiPct: null, blockingReasons: ['unmatched_sells'] },
+        verifiedSamplePerformanceAudit: {
+          ...emptyVerifiedSamplePerformanceAudit(),
+          verifiedLotCount: 98,
+          includedLotCount: 98,
+          samplePerformanceAllowed: false,
+          samplePerformanceBlockedReason: 'canonical_consistency_failed',
+          excludedUnmatchedSellCount: 2,
+        },
+      }),
+    })
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Unavailable')
+    assert.equal(vm.verifiedSampleRealizedBox.value, null)
+    assert.equal(vm.roiBox.value, null)
+    assert.equal(vm.combinedStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: selectDisplayedPnl exposes sample cost basis + realized ROI when verifiedSamplePerformance is allowed — unmatched sells do not erase them', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 0, costBasis: [] }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: sampleSummary(),
+    })
+    assert.equal(displayed.realizedPnlUsd, SAMPLE_PNL)
+    assert.ok(displayed.costBasisUsd != null && Math.abs(displayed.costBasisUsd - SAMPLE_COST) < 1e-6)
+    assert.ok(displayed.roiPercent != null && Math.abs(displayed.roiPercent - SAMPLE_ROI) < 1e-6)
+    assert.equal(displayed.roiLabel, '-23.1%')
+    assert.match(displayed.costBasisLabel ?? '', /98 closed lots/)
+  })
 })

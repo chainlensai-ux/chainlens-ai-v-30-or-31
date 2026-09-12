@@ -40,7 +40,7 @@ import { StatusBadge } from './StatusBadge'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
-import { buildWalletPnlViewModel, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
+import { buildWalletPnlViewModel, fmtSignedPercent, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
 
 // COMBINED-STATUS DISPLAY MAPS, DISCLOSED: presentation only — the underlying classification comes
 // entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here. "Combined "
@@ -773,18 +773,43 @@ export type DisplayedPnl = {
 // `syntheticPnl`, never a fabricated `0`. A caller that hasn't wired `reconciliationSummary` yet
 // gets honest nulls (source: 'none'), never a silent fallback to the wrong number.
 //
-// COST BASIS / ROI, DISCLOSED (requirements #4/#5): `reconciliationSummary`/`publicPnlGateAudit`
-// carry no verified, canonical per-wallet cost-basis figure today (only per-lot costBasisUsd inside
-// individual matched lots, never summed/exposed at this level) — so for a bounded sample this
-// function honestly returns `costBasisUsd: null` with the literal label "Not available for bounded
-// sample", and `roiPercent: null` with "Not calculated for bounded sample", rather than either
-// showing a fabricated $0.00/"No cost-basis evidence" (which reads as "this whole sample lacks
-// evidence", not true — 19 lots ARE verified) or computing a number from data this function was
-// never given. If a real canonical cost-basis field is ever added to PnlReconciliationSummary, this
-// is the one place that would need to start reading it.
-// FAIL-CLOSED LABEL, DISCLOSED (issue #2's own literal spec — "show PnL unavailable"). Exported so
-// tests can assert on the exact string rather than a substring guess.
+// COST BASIS / ROI, DISCLOSED (verified-sample-vs-full-history follow-up): when
+// `verifiedSamplePerformance` is allowed, cost basis and realized-only ROI come from the SAME
+// included canonical lots as sample PnL. Unmatched sells outside that sample must not erase
+// those numbers. Callers that have not wired verifiedSamplePerformance still get honest nulls
+// ("Not available for bounded sample" / "Not calculated for bounded sample") — never pnlV2
+// costBasis and never a fabricated $0.00.
 export const CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL = 'PnL unavailable — canonical sample not currently verified'
+
+function sampleCostAndRoi(summary: PnlReconciliationSummary | null | undefined): {
+  costBasisUsd: number | null
+  costBasisLabel: string
+  roiPercent: number | null
+  roiLabel: string
+} {
+  const sample = summary?.verifiedSamplePerformance
+  const allowed = sample?.status === 'verified_bounded_sample' && sample.realizedPnlUsd != null && Number.isFinite(sample.realizedPnlUsd)
+  if (!allowed || !sample) {
+    return {
+      costBasisUsd: null,
+      costBasisLabel: 'Not available for bounded sample',
+      roiPercent: null,
+      roiLabel: 'Not calculated for bounded sample',
+    }
+  }
+  const cost = sample.realizedCostBasisUsd != null && Number.isFinite(sample.realizedCostBasisUsd) ? sample.realizedCostBasisUsd : null
+  const roi = sample.realizedRoiPct != null && Number.isFinite(sample.realizedRoiPct) ? sample.realizedRoiPct : null
+  return {
+    costBasisUsd: cost,
+    costBasisLabel: cost != null
+      ? `Verified sample cost basis · ${sample.verifiedLotCount} closed lots`
+      : 'Not available for bounded sample',
+    roiPercent: roi,
+    roiLabel: roi != null
+      ? (fmtSignedPercent(roi) ?? 'Not calculated for bounded sample')
+      : 'Verified Sample ROI unavailable — sample cost basis is not positive.',
+  }
+}
 
 export function selectDisplayedPnl(params: {
   pnlV2: PnlV2 | null | undefined
@@ -824,6 +849,7 @@ export function selectDisplayedPnl(params: {
     const realizedPnlUsd = summary.realizedPnlUsd
     const unrealizedPnlUsd = summary.unrealizedPnlUsd
     const totalPnlUsd = realizedPnlUsd != null && unrealizedPnlUsd != null ? realizedPnlUsd + unrealizedPnlUsd : null
+    const sampleMetrics = sampleCostAndRoi(summary)
     // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): a bounded sample
     // whose own discrepancy audit fired (engine divergence, thin pricing coverage, missing
     // critical evidence, or genuine unmatched sells) never shows the normal "PARTIAL — VERIFIED
@@ -842,8 +868,8 @@ export function selectDisplayedPnl(params: {
     const headlineOverrideLabel = summary.pnlDiscrepancyAudit?.headlineOverrideLabel ?? null
     return {
       status, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd,
-      costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
-      roiPercent: null, roiLabel: 'Not calculated for bounded sample',
+      costBasisUsd: sampleMetrics.costBasisUsd, costBasisLabel: sampleMetrics.costBasisLabel,
+      roiPercent: sampleMetrics.roiPercent, roiLabel: sampleMetrics.roiLabel,
       integrityLabel: trustGateTriggered && headlineOverrideLabel ? PARTIAL_TRUST_GATE_PUBLIC_LABEL : `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`,
       source: 'reconciliationSummary',
       trustGateTriggered,
