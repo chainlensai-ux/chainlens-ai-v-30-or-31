@@ -7,7 +7,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
-  detectLegacyPerUnitTotalByLiveUpstreamProof,
+  detectLegacyPerUnitTotalByLiveUpstreamProof, detectWrongDecimalScaleByLiveUpstreamProof,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
@@ -1290,7 +1290,7 @@ export function createPnlReconciliation(config: Config = {}) {
       let groupTotalUsd = evidence.priceUsd
       const evidenceKey = buildAcceptedEvidenceKey(evidence)
       const liveFingerprint = buildAcceptedEvidenceCoverageFingerprint(group.lots)
-      let legacyProofAvailable: AcceptedEvidenceMigrationClassification | null = null
+      let detection: ReturnType<typeof detectLegacyPerUnitTotalRecord> = { legacyProof: null, reconstructedTotalUsd: null }
       // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair /
       // provenance-laundering follow-up tasks): only ever attempted when the record's own declared
       // scope (`coveredLotCount: 1`, the old writer's only shape) still matches the LIVE group's
@@ -1304,7 +1304,7 @@ export function createPnlReconciliation(config: Config = {}) {
         // own header: this alone can no longer be silently defeated by a later re-envelope, since
         // `originWriter` is now preserved through every write (see buildAcceptedEvidenceEnvelope's
         // provenance-preservation logic below).
-        let detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
+        detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
         // FALLBACK: independent, provenance-free proof for a record whose true origin is ALREADY
         // unrecoverable (laundered before this fix ever shipped) — proves corruption from this
         // scan's own live upstream total alone, never from a metadata field that could itself have
@@ -1315,8 +1315,26 @@ export function createPnlReconciliation(config: Config = {}) {
             detection = detectLegacyPerUnitTotalByLiveUpstreamProof(evidence.priceUsd, group.lots[0].amount, liveUpstreamTotalUsd)
           }
         }
-        legacyProofAvailable = detection.legacyProof
-        if (detection.legacyProof !== null) {
+      }
+      // WRONG-DECIMAL-SCALE, DISCLOSED (same-tx Base USDC 18-vs-6 poison): a scale-error record
+      // wrote priceUsd === valueUsd === the tiny TOTAL, so the per-unit proofs above never fire
+      // (live "detected/repaired 0 records"). Only rewrite when this scan's own live total is
+      // 10^12 × the persisted total AND the token is a canonical 6-decimal stable — never a
+      // blind immutability bypass.
+      if (detection.legacyProof === null) {
+        let liveGroupTotal = 0
+        let liveComplete = true
+        for (const lot of group.lots) {
+          const live = group.side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd
+          if (live == null || !Number.isFinite(live) || live <= 0) { liveComplete = false; break }
+          liveGroupTotal += live
+        }
+        if (liveComplete) {
+          detection = detectWrongDecimalScaleByLiveUpstreamProof(evidence.priceUsd, liveGroupTotal)
+        }
+      }
+      const legacyProofAvailable: AcceptedEvidenceMigrationClassification | null = detection.legacyProof
+      if (detection.legacyProof !== null) {
           audit.legacyPerUnitRecordsDetected += 1
           const total = detection.reconstructedTotalUsd!
           const record: AcceptedEvidenceLegacyMigrationRecord = {
@@ -1347,7 +1365,6 @@ export function createPnlReconciliation(config: Config = {}) {
           if (ok) { audit.legacyPerUnitRecordsRepaired += 1; groupTotalUsd = total; repairedEvidenceKeysThisPass.add(evidenceKey) }
           else { audit.legacyPerUnitRecordsRejected += 1; record.repairRejectedReason = 'write_failed' }
           if (audit.legacyPerUnitMigrationAudit.length < MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES) audit.legacyPerUnitMigrationAudit.push(record)
-        }
       }
       for (const lot of group.lots) {
         const ctx = conflictContextByLot.get(lot) ?? {}

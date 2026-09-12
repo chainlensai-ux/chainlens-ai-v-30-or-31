@@ -793,6 +793,47 @@ describe('pnlReconciliation', () => {
     assert.equal(stored.valueUsd, 10)
   })
 
+  it('HARD ASSERTION (same-tx USDC 18-vs-6 scale): a first-write-wins tiny total (2.996e-9) is rebuilt to the live 2996.415704 under the 10^12 proof, never left immutable', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const aeonLot = lot({
+      lotId: 'usdc-scale',
+      token: '0xaeon',
+      openedTxHash: '0xbuy-scale',
+      closedTxHash: '0xsell-scale',
+      amount: 121140766.74509133,
+      costBasisUsd: 2996.415704,
+      proceedsUsd: 3369.42277,
+      realizedPnlUsd: 372.999999999,
+      evidenceQuality: 'verified',
+    })
+    const identityVersion = realLotIdentityVersion(aeonLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xaeon', txHash: '0xbuy-scale', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xaeon', txHash: '0xbuy-scale', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 2.996415704e-9, valueUsd: 2.996415704e-9, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion,
+      source: 'same_tx_stable_quote', evidenceType: 'same_tx_stable_quote', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [aeonLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'usdc-scale')
+    assert.ok(published)
+    assert.ok(Math.abs((published!.costBasisUsd ?? 0) - 2996.415704) < 1e-6, 'hydrated cost must be the live canonical-6 total, not the e-9 poison')
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 1)
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsRepaired, 1)
+    const record = summary.acceptedEvidenceAudit.legacyPerUnitMigrationAudit.find((r2) => r2.evidenceKey === entryKey)
+    assert.ok(record)
+    assert.equal(record!.legacyProof, 'wrong_decimal_scale_live_upstream_proof')
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number; originWriter?: string }
+    assert.ok(Math.abs(stored.priceUsd - 2996.415704) < 1e-6)
+    assert.ok(Math.abs(stored.valueUsd - 2996.415704) < 1e-6)
+  })
+
   it('HARD ASSERTION (provenance-laundering fix): a genuinely correct canonical-upstream record stays immutable when live upstream merely disagrees — never repaired, always audited', async () => {
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     // A real, previously-accepted $500 total for a 2-token trade — genuinely correct, not corrupted.
