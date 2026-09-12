@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { NormalizedEvent } from '../normalization/types'
-import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD, auditDistributionDirection, computeStructuralCoverageAudit, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit } from './index'
+import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD, auditDistributionDirection, computeStructuralCoverageAudit, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, buildCanonicalWinningJoinGroups } from './index'
 import type { UnmatchedEventIdentity } from '../fifoEngine/types'
 
 const WALLET = '0xwallet'
@@ -759,7 +759,7 @@ test('HARD ASSERTION (production shape): a recovered-only unmatched sell is a jo
   assert.equal(gap.sameTwoAsGenuineUnmatchedSells, true)
 })
 
-test('HARD ASSERTION: classifying the fifoEngine merge set (canonical + recovered) joins the recovered unmatched sell', () => {
+test('HARD ASSERTION: recovered-only unmatched sell joins via auxiliary recovered classification, without merging into canonical classifyEvents', () => {
   const canonicalBuy = event({
     txHash: '0xcanonical-aeon-buy', direction: 'inbound', contract: TOKEN_A, amount: 100,
     timestamp: new Date(WINDOW_START + 10 * 24 * 60 * 60 * 1000).toISOString(),
@@ -771,19 +771,25 @@ test('HARD ASSERTION: classifying the fifoEngine merge set (canonical + recovere
     toAddress: '0x1231deb6a074f5f1b87526fff134ee3e198b3d43',
     timestamp: new Date(WINDOW_START - 20 * 24 * 60 * 60 * 1000).toISOString(),
   })
-  const merged = classifyEvents([canonicalBuy, recoveredSell], noRouters)
+  const canonicalClassified = classifyEvents([canonicalBuy], noRouters)
+  const recoveredClassified = classifyEvents([recoveredSell], noRouters)
   const identity = unmatchedIdentity({
     txHash: recoveredSell.txHash, token: BASE_USDC, direction: 'outbound', amount: 2996.415704,
     fromAddress: recoveredSell.fromAddress, toAddress: recoveredSell.toAddress, amountRaw: '2996415704',
     timestamp: Date.parse(recoveredSell.timestamp),
   })
-  const after = computeExactStructuralCoverageAudit(merged, 104, [], [identity])
-  assert.equal(after.unmatchedIdentityJoinFailures, 0, 'recovered event now visible to the join')
-  assert.equal(buildCriticalTradeEvidenceGapAudit(merged, [], [identity]).events.length, 0)
-  const evidence = computeUnmatchedEvidenceAudit(merged, 104, [], [identity], ctx)
+  const after = computeExactStructuralCoverageAudit(canonicalClassified, 104, [], [identity], recoveredClassified)
+  assert.equal(after.unmatchedIdentityJoinFailures, 0, 'recovered event visible to the join via auxiliary lookup')
+  assert.equal(buildCriticalTradeEvidenceGapAudit(canonicalClassified, [], [identity], recoveredClassified).events.length, 0)
+  const evidence = computeUnmatchedEvidenceAudit(
+    canonicalClassified, 104, [], [identity],
+    { ...ctx, boundedWindowStartProven: true },
+    recoveredClassified,
+  )
   assert.equal(evidence.unmatchedIdentityJoinFailures, 0)
-  assert.equal(evidence.preWindowInventoryExits, 1, 'no earlier buy + exhaustive window → pre-window, not blocking')
+  assert.equal(evidence.preWindowInventoryExits, 1, 'joined recovered sell with no earlier canonical buy is pre-window once coverage is proven from canonical signals, not recovered timestamps')
   assert.equal(evidence.structurallyInvalidOrUnknownSells, 0)
+  assert.equal(canonicalClassified[0].classification, 'genuine_trade_leg')
 })
 
 test('HARD ASSERTION: two recovered-only unmatched sells are THE SAME two genuine unmatched sells when they are the only unmatched sells', () => {
@@ -848,6 +854,70 @@ test('a lookalike-USDC singleton that IS in the classified set is a joined unmat
     amountRaw: '5000000635', timestamp: Date.parse(spam.timestamp),
   })
   const audit = computeExactStructuralCoverageAudit(classified, 104, [], [identity])
+  assert.equal(audit.unmatchedIdentityJoinFailures, 0)
+  assert.equal(audit.genuineUnmatchedSells, 1)
+})
+
+test('HARD ASSERTION (c7b8a8e regression): a recovered duplicate must not change classification of an existing canonical matched-lot event', () => {
+  const canonicalBuy = event({
+    txHash: '0xaeon-buy', direction: 'inbound', contract: TOKEN_A, amount: 500,
+    timestamp: new Date(WINDOW_START + 10 * 24 * 60 * 60 * 1000).toISOString(),
+    fromAddress: '0xpool', toAddress: '0xwallet',
+  })
+  const canonicalSell = event({
+    txHash: '0xaeon-sell', direction: 'outbound', contract: TOKEN_A, amount: 500,
+    timestamp: new Date(WINDOW_START + 20 * 24 * 60 * 60 * 1000).toISOString(),
+    fromAddress: '0xwallet', toAddress: '0xpool',
+  })
+  // Recovered same-tx opposite-direction copy of the canonical buy — if classified in the SAME
+  // universe, same-tx netting reclassifies the already-matched canonical buy as ordinary_transfer.
+  const recoveredSameTxOpposite = event({
+    txHash: '0xaeon-buy', direction: 'outbound', contract: TOKEN_A, amount: 500,
+    timestamp: canonicalBuy.timestamp, fromAddress: '0xwallet', toAddress: '0xrouter',
+  })
+  const canonicalClassified = classifyEvents([canonicalBuy, canonicalSell], noRouters)
+  assert.equal(canonicalClassified.find((c) => c.event === canonicalBuy)!.classification, 'genuine_trade_leg')
+  assert.equal(canonicalClassified.find((c) => c.event === canonicalSell)!.classification, 'genuine_trade_leg')
+
+  const mergedWouldReclassify = classifyEvents([canonicalBuy, canonicalSell, recoveredSameTxOpposite], noRouters)
+  assert.equal(
+    mergedWouldReclassify.find((c) => c.event === canonicalBuy)!.classification,
+    'ordinary_transfer',
+    'sanity: merged classifyEvents reclassifies the canonical buy via same-tx netting — the 104→81 mechanism',
+  )
+
+  const recoveredClassified = classifyEvents([recoveredSameTxOpposite], noRouters)
+  const unmatchedSell = unmatchedIdentity({
+    txHash: canonicalSell.txHash, token: TOKEN_A, direction: 'outbound', amount: 500,
+    timestamp: Date.parse(canonicalSell.timestamp),
+  })
+  const audit = computeExactStructuralCoverageAudit(canonicalClassified, 108, [], [unmatchedSell], recoveredClassified)
+  assert.equal(canonicalClassified.find((c) => c.event === canonicalBuy)!.classification, 'genuine_trade_leg', 'canonical classification is frozen')
+  assert.equal(audit.genuineUnmatchedSells, 1, 'canonical sell still joins as genuine_trade_leg')
+  assert.equal(audit.unmatchedIdentityJoinFailures, 0)
+  assert.equal(audit.excludedUnmatchedByClassification.ordinary_transfer ?? 0, 0)
+})
+
+test('HARD ASSERTION: canonical event wins over a recovered copy on the same join key', () => {
+  const canonicalSell = event({
+    txHash: LOWER_TX, direction: 'outbound', contract: TOKEN_A, amount: 10, amountRaw: '10',
+    fromAddress: '0xwallet', toAddress: '0xrouter',
+  })
+  const recoveredCopy = event({
+    txHash: CHECKSUM_TX, direction: 'outbound', contract: TOKEN_A, amount: 10, amountRaw: '10',
+    fromAddress: '0xwallet', toAddress: '0xpool',
+  })
+  const canonicalClassified = classifyEvents([canonicalSell], noRouters)
+  const recoveredClassified = classifyEvents([recoveredCopy], noRouters)
+  const groups = buildCanonicalWinningJoinGroups(canonicalClassified, recoveredClassified)
+  const key = [...groups.keys()][0]
+  assert.equal(groups.get(key)!.length, 1, 'recovered copy is not added alongside the canonical event')
+  assert.equal(groups.get(key)![0].event.toAddress, '0xrouter', 'canonical counterparty wins')
+  const identity = unmatchedIdentity({
+    txHash: CHECKSUM_TX, token: TOKEN_A, direction: 'outbound', amount: 10, amountRaw: '10',
+    fromAddress: '0xwallet', toAddress: '0xpool',
+  })
+  const audit = computeExactStructuralCoverageAudit(canonicalClassified, 1, [], [identity], recoveredClassified)
   assert.equal(audit.unmatchedIdentityJoinFailures, 0)
   assert.equal(audit.genuineUnmatchedSells, 1)
 })

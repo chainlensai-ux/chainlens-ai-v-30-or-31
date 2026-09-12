@@ -458,6 +458,27 @@ function buildUnmatchedJoinGroups(classified: readonly ClassifiedEvent[]): Map<s
   return groups
 }
 
+// CANONICAL-WINS JOIN GROUPS, DISCLOSED (c7b8a8e regression fix): recovered events must be
+// available to resolve unmatched FIFO identities, but they must NEVER reclassify a canonical
+// event. classifyEvents is cross-transaction (distribution_airdrop repeats across the whole
+// set). Feeding recovered+canonical into one classifyEvents call reclassified already-matched
+// canonical legs (confirmed production: 104 verified → 81, 14 normalized_evidence_quality_changed).
+// Canonical groups are built from a canonical-only classifyEvents pass. Recovered-only groups
+// are built from a SEPARATE classifyEvents pass over recovered-only events. When both have the
+// same join key, the canonical group is kept and the recovered group is ignored.
+export function buildCanonicalWinningJoinGroups(
+  canonicalClassified: readonly ClassifiedEvent[],
+  recoveredClassified: readonly ClassifiedEvent[] = [],
+): Map<string, ClassifiedEvent[]> {
+  const groups = buildUnmatchedJoinGroups(canonicalClassified)
+  if (recoveredClassified.length === 0) return groups
+  for (const [key, recovered] of buildUnmatchedJoinGroups(recoveredClassified)) {
+    if (groups.has(key)) continue
+    groups.set(key, recovered)
+  }
+  return groups
+}
+
 function joinOneSide(
   identities: readonly UnmatchedEventIdentity[],
   groups: Map<string, ClassifiedEvent[]>,
@@ -689,8 +710,9 @@ export function computeUnmatchedEvidenceAudit(
   unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
   unmatchedSellEvents: readonly UnmatchedEventIdentity[],
   context: UnmatchedEvidenceAuditContext,
+  recoveredClassified: readonly ClassifiedEvent[] = [],
 ): UnmatchedEvidenceAudit {
-  const groups = buildUnmatchedJoinGroups(classified)
+  const groups = buildCanonicalWinningJoinGroups(classified, recoveredClassified)
   let earliestEventTimestamp: number | null = null
   // DIAGNOSTIC ONLY, ADDITIVE: tracked alongside the existing earliest scan, never read by any
   // decision below — see WindowBoundaryProofDiagnostics' own header.
@@ -843,8 +865,9 @@ export function computeExactStructuralCoverageAudit(
   closedLotCount: number,
   unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
   unmatchedSellEvents: readonly UnmatchedEventIdentity[],
+  recoveredClassified: readonly ClassifiedEvent[] = [],
 ): ExactStructuralCoverageAudit {
-  const groups = buildUnmatchedJoinGroups(classified)
+  const groups = buildCanonicalWinningJoinGroups(classified, recoveredClassified)
 
   const buySide = joinOneSide(unmatchedBuyEvents, groups)
   const sellSide = joinOneSide(unmatchedSellEvents, groups)
@@ -956,8 +979,9 @@ export function buildCriticalTradeEvidenceGapAudit(
   classified: readonly ClassifiedEvent[],
   unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
   unmatchedSellEvents: readonly UnmatchedEventIdentity[],
+  recoveredClassified: readonly ClassifiedEvent[] = [],
 ): CriticalTradeEvidenceGapAudit {
-  const groups = buildUnmatchedJoinGroups(classified)
+  const groups = buildCanonicalWinningJoinGroups(classified, recoveredClassified)
   const events: CriticalTradeEvidenceGap[] = []
   for (const identity of unmatchedBuyEvents) {
     const gap = gapFromIdentity(identity, 'buy', groups)

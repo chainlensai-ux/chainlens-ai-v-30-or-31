@@ -12,7 +12,7 @@
 
 import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters, MAX_RAW_EVENTS_PER_PROVIDER } from '../modules/providerFetchWindow/index'
 import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from '../lib/knownDexRouters'
-import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
+import { mergeNormalizedEvents, recoveredEconomicDedupeKey } from '../modules/fifoEngine/utils'
 import type { ProviderFetchWindowResult, RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
@@ -3100,21 +3100,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // driven by fifoAndPnl's own raw unmatched counts — this is an evidence-input correction to the
   // structuralCoverage reporting metric only, never a threshold change (see pnlReconciliation.ts's
   // own disclosure at its structuralCoverage computation).
-  // IDENTITY JOIN SET, DISCLOSED (critical-trade-evidence-gap task): fifoEngine merges
-  // recoveredNormalized events into matching (buildFifoOutput) but the unmatched-identity join
-  // previously classified canonicalNormalizedEvents ONLY. A recovered-only unmatched sell
-  // therefore had no classified counterpart, counted as unmatchedIdentityJoinFailures, and
-  // short-circuited to blocking `unknown` before pre-window / non-trade rules could run. The
-  // join set is now the SAME merge fifoEngine itself uses. FIFO matching, filterToFifoEligible,
-  // thresholds, and manifest are untouched — this only lets the join see events FIFO already
-  // unmatched.
-  const classifiedJoinEvents = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
-  const structuralCoverageClassified = classifyEvents(classifiedJoinEvents, { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  // IDENTITY JOIN SET, DISCLOSED (c7b8a8e regression fix): recovered events must be available
+  // to resolve unmatched FIFO identities (the join-failure fix), but they must NOT enter the
+  // canonical classifyEvents universe. classifyEvents is cross-transaction; merging recovered
+  // history into it reclassified already-matched canonical legs (104 verified → 81). Canonical
+  // classification is restored to classifyEvents(canonicalNormalizedEvents). Recovered-only
+  // events are classified in isolation and consulted only when the canonical join has no
+  // counterpart (canonical wins on the same join key). FIFO, filterToFifoEligible, pricing,
+  // manifest, and the 50% gate are untouched. txHash lowercasing is preserved.
+  const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
+  const structuralCoverageClassified = classifyEvents(canonicalNormalizedEvents, classificationContext)
+  const canonicalEconomicKeys = new Set(canonicalNormalizedEvents.map(recoveredEconomicDedupeKey))
+  const recoveredOnlyEvents = recoveredNormalizedForPricing.filter((event) => !canonicalEconomicKeys.has(recoveredEconomicDedupeKey(event)))
+  const recoveredClassifiedForJoin = recoveredOnlyEvents.length > 0
+    ? classifyEvents(recoveredOnlyEvents, classificationContext)
+    : []
   const exactStructuralCoverageAudit = computeExactStructuralCoverageAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+    recoveredClassifiedForJoin,
   )
   const criticalTradeEvidenceGapAudit = buildCriticalTradeEvidenceGapAudit(
     structuralCoverageClassified, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+    recoveredClassifiedForJoin,
   )
   // BOUNDED-HISTORY EVIDENCE SPLIT, DISCLOSED (bounded-history follow-up task, requirements #1-#4):
   // real, computed here (not inside pnlReconciliation.ts, which has no per-event classification
@@ -3143,6 +3150,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
       anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
     },
+    recoveredClassifiedForJoin,
   )
   // eslint-disable-next-line no-console
   console.warn('[critical-trade-evidence-gap-audit]', {
