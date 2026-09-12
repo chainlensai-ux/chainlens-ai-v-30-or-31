@@ -6,6 +6,7 @@ import {
   isCoinPaprikaEligible,
   rankCoinPaprikaRequirements,
   resolveCoinPaprikaHistorical,
+  COINPAPRIKA_HARD_MAX_CALLS,
   type CoinPaprikaRequirement,
 } from './coinPaprikaHistorical'
 
@@ -15,6 +16,19 @@ const requirement = (overrides: Partial<CoinPaprikaRequirement> = {}): CoinPapri
   lotCount: 1, lotsCompletedIfResolved: 1, sidesCompleted: 1, coverageGain: 10, notionalUsd: 100,
   hasRealTradeEvidence: true, canCompleteClosedLot: true, strongerSourcesExhausted: true, ...overrides,
 })
+
+function uniqueAddress(i: number): string {
+  return `0x${(i + 1).toString(16).padStart(40, '0')}`
+}
+
+async function contractAndDailyPriceFetch(input: string | URL | Request): Promise<Response> {
+  const url = String(input)
+  if (url.includes('/contracts/')) {
+    const addr = (url.match(/0x[0-9a-f]{40}/i)?.[0] ?? ADDRESS).toLowerCase()
+    return Response.json({ id: `coin-${addr.slice(2, 10)}`, platform_id: 'base-base', contract_address: addr })
+  }
+  return Response.json([{ time_open: '2024-01-02T00:00:00Z', close: 2.5 }])
+}
 
 test('no API key selects configured keyless Free mode without an Authorization header', async () => {
   clearCoinPaprikaCachesForTests()
@@ -205,7 +219,7 @@ test('current or far-away prices are never accepted as historical', async () => 
 
 test('hard request ceiling is never above 130 and provider failure is contained', async () => {
   clearCoinPaprikaCachesForTests(); process.env.COINPAPRIKA_API_KEY = 'test'; process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '999'
-  const many = Array.from({ length: 150 }, (_, i) => requirement({ contractAddress: `0x${(i + 1).toString(16).padStart(40, '0')}` }))
+  const many = Array.from({ length: 150 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
   const result = await resolveCoinPaprikaHistorical(many, { fetchImpl: async () => new Response('', { status: 500 }) })
   assert.equal(result.audit.callsAttempted, 130)
   assert.equal(result.audit.stoppedBecauseBudget, true)
@@ -224,4 +238,129 @@ test('positive cache avoids repeat provider calls', async () => {
   await resolveCoinPaprikaHistorical([requirement()], { fetchImpl })
   await resolveCoinPaprikaHistorical([requirement()], { fetchImpl })
   assert.equal(calls, 2)
+})
+
+test('HARD ASSERTION: zero unresolved requirements make zero CoinPaprika HTTP calls', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  let calls = 0
+  const result = await resolveCoinPaprikaHistorical([], { fetchImpl: async () => { calls += 1; return new Response() } })
+  assert.equal(calls, 0)
+  assert.equal(result.audit.unresolvedRequirementsReceived, 0)
+  assert.equal(result.audit.callsAttempted, 0)
+  assert.equal(result.audit.identityLookupsAttempted, 0)
+  assert.equal(result.audit.historicalRequestsPlanned, 0)
+  assert.equal(result.audit.callsSucceeded, 0)
+  assert.equal(result.audit.callsFailed, 0)
+  assert.equal(result.audit.stoppedBecauseBudget, false)
+  assert.equal(result.audit.budgetMax, COINPAPRIKA_HARD_MAX_CALLS)
+})
+
+test('HARD ASSERTION: accepted/persisted evidence and stronger sources still available make zero CoinPaprika HTTP calls', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  let calls = 0
+  const fetchImpl = async () => { calls += 1; return new Response() }
+  const accepted = await resolveCoinPaprikaHistorical([requirement({ hasAcceptedEvidence: true })], { fetchImpl })
+  const stronger = await resolveCoinPaprikaHistorical([requirement({ strongerSourcesExhausted: false })], { fetchImpl })
+  assert.equal(calls, 0)
+  assert.equal(accepted.audit.callsAttempted, 0)
+  assert.equal(accepted.audit.filteredAcceptedEvidence, 1)
+  assert.equal(stronger.audit.callsAttempted, 0)
+  assert.equal(stronger.audit.filteredStrongerEvidenceAvailable, 1)
+})
+
+test('HARD ASSERTION: identity lookups and historical price requests share one global budget', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '5'
+  const many = Array.from({ length: 10 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
+  let http = 0
+  let identityHttp = 0
+  let historicalHttp = 0
+  const result = await resolveCoinPaprikaHistorical(many, {
+    fetchImpl: async (input) => {
+      http += 1
+      const url = String(input)
+      if (url.includes('/contracts/')) identityHttp += 1
+      else historicalHttp += 1
+      return contractAndDailyPriceFetch(input)
+    },
+  })
+  assert.equal(result.audit.budgetMax, 5)
+  assert.equal(http, 5)
+  assert.equal(result.audit.callsAttempted, 5)
+  assert.equal(result.audit.callsAttempted <= result.audit.budgetMax, true)
+  assert.equal(result.audit.stoppedBecauseBudget, true)
+  assert.ok(identityHttp > 0, 'identity lookups must consume the shared budget')
+  assert.ok(historicalHttp > 0, 'historical requests must consume the same budget')
+  assert.equal(identityHttp + historicalHttp, result.audit.callsAttempted)
+  assert.ok(result.audit.identityLookupsAttempted > 0)
+  assert.ok(result.audit.historicalRequestsPlanned > 0)
+  delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
+})
+
+test('HARD ASSERTION: many unresolved assets never exceed the 130 hard ceiling across identity + historical HTTP', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '999'
+  const many = Array.from({ length: 200 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
+  let http = 0
+  const result = await resolveCoinPaprikaHistorical(many, {
+    fetchImpl: async (input) => {
+      http += 1
+      return contractAndDailyPriceFetch(input)
+    },
+  })
+  assert.equal(result.audit.budgetMax, COINPAPRIKA_HARD_MAX_CALLS)
+  assert.equal(http, COINPAPRIKA_HARD_MAX_CALLS)
+  assert.equal(result.audit.callsAttempted, COINPAPRIKA_HARD_MAX_CALLS)
+  assert.equal(result.audit.callsAttempted <= result.audit.budgetMax, true)
+  assert.equal(result.audit.stoppedBecauseBudget, true)
+  assert.ok(result.audit.identityLookupsAttempted > 0)
+  assert.ok(result.audit.historicalRequestsPlanned > 0)
+  assert.ok(result.evidence.size > 0)
+  assert.ok(result.evidence.size < many.length, 'uncapped remainder must stay unresolved')
+  delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
+})
+
+test('HARD ASSERTION: 429/500 failures are not retried and cannot bypass the cap', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '4'
+  const urls: string[] = []
+  const many = Array.from({ length: 12 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
+  const result = await resolveCoinPaprikaHistorical(many, {
+    fetchImpl: async (input) => {
+      urls.push(String(input))
+      return new Response('', { status: urls.length % 2 === 0 ? 500 : 429 })
+    },
+  })
+  assert.equal(urls.length, 4)
+  assert.equal(result.audit.callsAttempted, 4)
+  assert.equal(result.audit.callsFailed, 4)
+  assert.equal(result.audit.callsSucceeded, 0)
+  assert.equal(result.audit.stoppedBecauseBudget, true)
+  assert.equal(result.evidence.size, 0)
+  assert.equal(new Set(urls).size, urls.length, 'a failed URL must not be retried')
+  delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
+})
+
+test('HARD ASSERTION: once the cap is exhausted remaining requirements fail closed', async () => {
+  clearCoinPaprikaCachesForTests()
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN = '3'
+  const many = Array.from({ length: 8 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
+  const result = await resolveCoinPaprikaHistorical(many, { fetchImpl: contractAndDailyPriceFetch })
+  assert.equal(result.audit.callsAttempted, 3)
+  assert.equal(result.audit.stoppedBecauseBudget, true)
+  // 3 shared-budget calls: identity, historical, identity. One priced coin, rest unresolved.
+  assert.equal(result.evidence.size, 1)
+  assert.equal(result.audit.callsAttempted <= result.audit.budgetMax, true)
+  assert.equal(typeof result.audit.budgetMax, 'number')
+  assert.equal(typeof result.audit.identityLookupsAttempted, 'number')
+  assert.equal(typeof result.audit.historicalRequestsPlanned, 'number')
+  assert.equal(typeof result.audit.callsSucceeded, 'number')
+  assert.equal(typeof result.audit.callsFailed, 'number')
+  delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
 })

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { clearCoinPaprikaCachesForTests } from '../../lib/server/coinPaprikaHistorical'
+import { lotIdentityVersion, buildAcceptedEvidenceEnvelope, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
 import { priceLotsForWallet } from './priceLotsForWallet'
@@ -21,14 +22,23 @@ function event(i: number, direction: 'inbound' | 'outbound'): NormalizedEvent {
   return {
     provider: 'goldrush', chain: 'base', txHash: `0x${direction}${i}`,
     timestamp: `2024-01-${String(i + 1).padStart(2, '0')}T${direction === 'inbound' ? '00' : '12'}:00:00.000Z`,
-    fromAddress: '0xfrom', toAddress: '0xto', contract: TOKEN, symbol: 'TOK', amount: 1,
-    amountRaw: '1000000000000000000', tokenDecimals: 18, direction,
+    fromAddress: '0xfrom', toAddress: '0xto', contract: TOKEN, symbol: 'TOK',
+    amount: 1, amountRaw: '1000000000000000000', tokenDecimals: 18, direction,
   }
 }
 const misses: PriceSources = { primary: (async () => null) as PriceSourceFn, fallback: (async () => null) as PriceSourceFn }
 const paprikaFetch = async (input: string | URL | Request) => String(input).includes('/contracts/')
   ? Response.json({ id: 'tok-token', platform_id: 'base-base', contract_address: TOKEN })
   : Response.json([{ time_open: '2024-01-01T00:00:00Z', close: 2 }])
+
+function fakeAcceptedEvidenceKv(): AcceptedEvidenceKvLike & { store: Map<string, unknown> } {
+  const raw = new Map<string, unknown>()
+  return {
+    store: raw,
+    get: async <T>(key: string) => (raw.has(key) ? raw.get(key) as T : null),
+    set: async (key: string, value: unknown) => { raw.set(key, JSON.parse(JSON.stringify(value))); return 'OK' },
+  }
+}
 
 describe('priceLotsForWallet CoinPaprika canonical fallback wiring', () => {
   it('passes 22 unresolved stronger-source failures to identity lookup after stronger providers fail', async () => {
@@ -44,10 +54,19 @@ describe('priceLotsForWallet CoinPaprika canonical fallback wiring', () => {
 
   it('always returns an exact audit when no closed-lot candidate exists', async () => {
     process.env.COINPAPRIKA_API_KEY = 'test'
-    const result = await priceLotsForWallet({ normalizedEvents: [event(0, 'inbound')], recoveredEvents: [], priceSources: misses, coinPaprikaFetchImpl: paprikaFetch })
+    let paprikaCalls = 0
+    const result = await priceLotsForWallet({
+      normalizedEvents: [event(0, 'inbound')],
+      recoveredEvents: [],
+      priceSources: misses,
+      coinPaprikaFetchImpl: async () => { paprikaCalls += 1; return paprikaFetch('https://example.invalid') },
+    })
     assert.equal(result.coinPaprikaHistoricalAudit.eligibleAfterFilters, 0)
     assert.equal(result.coinPaprikaHistoricalAudit.firstDropStage, 'eligibility')
     assert.equal(result.coinPaprikaHistoricalAudit.exactDropReason, 'zero_unresolved_requirements_received')
+    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 0)
+    assert.equal(result.coinPaprikaHistoricalAudit.callsAttempted, 0)
+    assert.equal(paprikaCalls, 0)
   })
 
   it('passes 60 unresolved requirements into keyless eligibility and identity lookup', async () => {
@@ -96,5 +115,46 @@ describe('priceLotsForWallet CoinPaprika canonical fallback wiring', () => {
     assert.equal(result.priceLotsCanonicalGapAudit.unresolvedCanonicalLots, 1)
     assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 2)
     assert.equal(result.coinPaprikaHistoricalAudit.pricesApplied, 0)
+  })
+
+  it('HARD ASSERTION: accepted-evidence warm rescan makes zero CoinPaprika HTTP calls', async () => {
+    process.env.COINPAPRIKA_API_KEY = 'test'
+    const buy = event(0, 'inbound')
+    const sell = event(0, 'outbound')
+    const identityBase = {
+      chain: buy.chain, token: buy.contract,
+      openedTxHash: buy.txHash, closedTxHash: sell.txHash,
+      openedAt: Date.parse(buy.timestamp), closedAt: Date.parse(sell.timestamp),
+      amount: buy.amount,
+    }
+    const version = lotIdentityVersion(identityBase)
+    const now = 1_000_000
+    const kv = fakeAcceptedEvidenceKv()
+    for (const side of ['entry', 'exit'] as const) {
+      const txHash = side === 'entry' ? buy.txHash : sell.txHash
+      const timestamp = side === 'entry' ? identityBase.openedAt : identityBase.closedAt
+      await kv.set(
+        `v1:accepted-evidence:${buy.chain}:${buy.contract.toLowerCase()}:${txHash}:${side}:${timestamp}`,
+        buildAcceptedEvidenceEnvelope({
+          identity: { chain: buy.chain, token: buy.contract, txHash, side, timestamp, lotIdentityVersion: version },
+          priceUsd: side === 'entry' ? 5 : 7, valueUsd: side === 'entry' ? 5 : 7,
+          source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+        }),
+      )
+    }
+    let paprikaCalls = 0
+    const result = await priceLotsForWallet({
+      normalizedEvents: [buy, sell],
+      recoveredEvents: [],
+      priceSources: misses,
+      acceptedEvidenceKv: kv,
+      now: () => now,
+      coinPaprikaFetchImpl: async () => { paprikaCalls += 1; return new Response('', { status: 500 }) },
+    })
+    assert.equal(result.coinPaprikaHistoricalAudit.unresolvedRequirementsReceived, 0)
+    assert.equal(result.coinPaprikaHistoricalAudit.callsAttempted, 0)
+    assert.equal(result.coinPaprikaHistoricalAudit.identityLookupsAttempted, 0)
+    assert.equal(paprikaCalls, 0)
+    assert.equal(result.priceLotsCanonicalGapAudit.canonicalVerifiedLots, 1)
   })
 })
