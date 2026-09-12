@@ -506,6 +506,21 @@ export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], t
   }))
 }
 
+// FAST-PATH / HYDRATION GATE, DISCLOSED (contaminated 81-lot manifest lock): a persisted side
+// total only covers its structural siblings when EVERY sibling's allocated share is itself a
+// canonical-positive USD value. A $1 (or dust) group total that floors any sibling to 0 is
+// presence, not coverage — suppressing pricing/recovery for that side is what self-locked the
+// 27 lots whose current canonical predicate fails. Pure; never writes.
+export function acceptedEvidenceAllocationsAreCanonicalPositive(
+  groupLots: readonly MatchedLot[],
+  totalValueUsd: number,
+): boolean {
+  if (!Number.isFinite(totalValueUsd) || totalValueUsd <= 0 || groupLots.length === 0) return false
+  return allocateSideValueAcrossGroup(groupLots, totalValueUsd).every(
+    (share) => share.allocatedValueUsd > 0 && !share.dustBelowPrecision,
+  )
+}
+
 // DETERMINISTIC OCCURRENCE SPLIT, DISCLOSED (grouped-multiplicity rewrite, requirement #1's
 // "deterministically reconstruct all occurrences"). Splits one occurrence-group TOTAL across its N
 // structurally-identical members using the SAME integer-exact arithmetic as

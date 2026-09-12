@@ -22,6 +22,7 @@ import {
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
   demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot,
+  acceptedEvidenceAllocationsAreCanonicalPositive,
   CANONICAL_VALUE_TOLERANCE, groupCompositionFingerprint,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
@@ -1572,6 +1573,15 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
     const only = lot({ lotId: 'solo' })
     assert.equal(lotsOnIncompleteAcceptedSides([only]).size, 0)
     assert.equal(demoteLotsOnIncompleteAcceptedSides([only])[0].evidenceQuality, 'verified')
+  })
+
+  it('HARD ASSERTION: a $1 group total that dusts a sibling is not canonical-positive coverage', () => {
+    const tiny = lot({ lotId: 'tiny', amount: 1, closedTxHash: '0xsell-tiny' })
+    const huge = lot({ lotId: 'huge', amount: 10_000_000_000, closedTxHash: '0xsell-huge', closedAt: 3 })
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny, huge], 1), false)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny, huge], 20_000_000_000), true)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny], 5), true)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny], 0), false)
   })
 
   it('HARD ASSERTION (end-to-end, CORRECTED — canonical-manifest-shared-group-allocation follow-up task): a mixed-quality shared side publishes the verified sibling\'s own conserving share, never demotes it merely because an unrelated sibling is unpriced', async () => {

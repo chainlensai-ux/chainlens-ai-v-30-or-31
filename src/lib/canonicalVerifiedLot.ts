@@ -52,6 +52,15 @@ export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRej
 
 type PublishableLot = Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>
 
+// CANONICAL POSITIVE USD, DISCLOSED (contaminated 81-lot fast-path lock): the same numeric
+// predicate the verifier uses for `non_positive_entry_price` / `non_positive_exit_price`.
+// Presence of a finite number is not coverage — 0 is stored, hydratable, and still fails
+// publication. Fast-path skip, accepted-evidence hydration, and recovery must use this so a
+// non-positive side is never treated as "already priced."
+export function isCanonicalPositiveUsd(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
 // CHRONOLOGY GUARD, DISCLOSED, ADDITIVE (wallet-scanner-bounded-publication follow-up task —
 // confirmed production shape: a structural lot with `closedAt < openedAt` — a sell TIMESTAMPED
 // before its own matched buy — observed in the raw structural array. Such a lot cannot represent a

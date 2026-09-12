@@ -614,6 +614,38 @@ describe('pnlReconciliation', () => {
     assert.equal(summary.missingPriceRecoveryFunnelAudit.canonicalVerifiedLots, 0, 'funnel canonicalVerifiedLots must match the real, post-demotion published count, never an inflated pre-demotion figure')
   })
 
+  it('HARD ASSERTION (contaminated 81-lot lock): a dust allocated share does not overwrite a live positive upstream value, and a 0-cost side is recovered', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const tiny = lot({
+      lotId: 'dust-tiny', openedTxHash: '0xshared-dust-buy', closedTxHash: '0xsell-tiny',
+      openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 5000, proceedsUsd: 5100, realizedPnlUsd: 100, evidenceQuality: 'verified',
+    })
+    const huge = lot({
+      lotId: 'dust-huge', openedTxHash: '0xshared-dust-buy', closedTxHash: '0xsell-huge',
+      openedAt: 100, closedAt: 250, amount: 10_000_000_000, costBasisUsd: 0, proceedsUsd: 12, realizedPnlUsd: 12, evidenceQuality: 'verified',
+    })
+    const identityVersion = realLotIdentityVersion(tiny)
+    acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({
+      chain: 'base', token: '0xtoken', txHash: '0xshared-dust-buy', side: 'entry', timestamp: 100, lotIdentityVersion: identityVersion,
+    }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xshared-dust-buy', side: 'entry', timestamp: 100, lotIdentityVersion: identityVersion,
+      priceUsd: 1, valueUsd: 1, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => 7, getPricePrimary: async () => 7 },
+      priceSources: { primary: async () => 7 },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [tiny, huge] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+    const publishedTiny = summary.publishedMatchedLots.find((l) => l.lotId === 'dust-tiny')
+    const publishedHuge = summary.publishedMatchedLots.find((l) => l.lotId === 'dust-huge')
+    assert.ok(publishedTiny && publishedHuge)
+    assert.equal(publishedTiny!.costBasisUsd, 5000, 'dust allocation must not clobber the live positive entry')
+    assert.ok((publishedHuge!.costBasisUsd ?? 0) > 0, 'the 0-cost sibling must be recovered or keep a canonical-positive live value')
+  })
+
   // =============================================================================================
   // legacy-accepted-evidence-repair follow-up task — migrates ONLY records demonstrably written
   // under the pre-1b3675a recovery-lane bug (`priceUsd` held a raw per-unit price while `valueUsd`,

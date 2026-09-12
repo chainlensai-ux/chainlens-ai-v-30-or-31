@@ -1,5 +1,5 @@
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
-import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
+import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
@@ -1393,7 +1393,8 @@ export function createPnlReconciliation(config: Config = {}) {
       ]
       for (const s of sides) {
         if (s.already) audit.existingVerifiedSidesProtectedFromOverwrite += 1
-        if (s.share) {
+        const shareIsCanonicalPositive = s.share != null && isCanonicalPositiveUsd(s.share.allocatedValueUsd) && !s.share.dustBelowPrecision
+        if (shareIsCanonicalPositive && s.share) {
           audit.persistedAcceptedSidesLoaded += 1
           audit.persistedAcceptedSidesApplied += 1
           audit.acceptedSidesLoadedBeforePricing += 1
@@ -1439,8 +1440,16 @@ export function createPnlReconciliation(config: Config = {}) {
           if (s.side === 'entry') costBasisUsd = s.share.allocatedValueUsd
           else proceedsUsd = s.share.allocatedValueUsd
         } else {
+          // FAIL OPEN, DISCLOSED (contaminated 81-lot fast-path lock): a persisted group total
+          // that allocates this sibling to 0 / dust is not canonical coverage. Leave the
+          // upstream value (live price, or null) so recovery can still fill the side. Never
+          // overwrite a positive live value with a non-positive reconstruction, and never
+          // persist that reconstruction as "applied."
           audit.missingAcceptedEvidenceKeys += 1
           audit.acceptedEvidenceIdentityMisses += 1
+          if (s.share && !shareIsCanonicalPositive) {
+            audit.invalidAcceptedEvidenceReasons!.invalidPrice += 1
+          }
           if (s.already) audit.existingUpstreamSidesWithoutAcceptedEvidence += 1
         }
       }
@@ -1451,7 +1460,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // figure. Only recomputed when a price actually changed and both sides are now known.
       const pricesChanged = costBasisUsd !== lot.costBasisUsd || proceedsUsd !== lot.proceedsUsd
       if (!pricesChanged) { hydratedLots.push(lot); continue }
-      const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+      const nowFullyPriced = isCanonicalPositiveUsd(costBasisUsd) && isCanonicalPositiveUsd(proceedsUsd)
       hydratedLots.push({
         ...lot,
         costBasisUsd,
@@ -1484,8 +1493,7 @@ export function createPnlReconciliation(config: Config = {}) {
     // stale label before recovery so a genuinely two-sided lot is not stranded outside every
     // canonical verified consumer.  One-sided lots remain unpriced and are handled below.
     const pricedStructuralLots = lots.map((lot) => {
-      const bothAccepted = lot.costBasisUsd !== null && Number.isFinite(lot.costBasisUsd)
-        && lot.proceedsUsd !== null && Number.isFinite(lot.proceedsUsd)
+      const bothAccepted = isCanonicalPositiveUsd(lot.costBasisUsd) && isCanonicalPositiveUsd(lot.proceedsUsd)
       return bothAccepted && lot.evidenceQuality === 'unpriced'
         ? { ...lot, realizedPnlUsd: lot.proceedsUsd! - lot.costBasisUsd!, evidenceQuality: 'verified' as const }
         : lot
@@ -1506,8 +1514,8 @@ export function createPnlReconciliation(config: Config = {}) {
     let detailedAttemptsObserved = 0
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     const detailedPrimary = config.priceSourceDetailedPrimary
-    const missingLots = hydratedLots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
-    const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
+    const missingLots = hydratedLots.filter((lot) => !isCanonicalPositiveUsd(lot.costBasisUsd) || !isCanonicalPositiveUsd(lot.proceedsUsd))
+    const oneSideMissingCandidates = missingLots.filter((l) => isCanonicalPositiveUsd(l.costBasisUsd) || isCanonicalPositiveUsd(l.proceedsUsd)).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
       const missingPriceRecoveryFunnelAudit = buildMissingPriceRecoveryFunnelAudit({
@@ -1535,8 +1543,8 @@ export function createPnlReconciliation(config: Config = {}) {
     }
     const tokenYield = (lot: MatchedLot) => missingLotsPerToken.get(`${lot.chain}:${lot.token.toLowerCase()}`) ?? 0
     const sorted = [...missingLots].sort((a, b) => {
-      const aOneSide = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
-      const bOneSide = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
+      const aOneSide = isCanonicalPositiveUsd(a.costBasisUsd) || isCanonicalPositiveUsd(a.proceedsUsd) ? 0 : 1
+      const bOneSide = isCanonicalPositiveUsd(b.costBasisUsd) || isCanonicalPositiveUsd(b.proceedsUsd) ? 0 : 1
       if (aOneSide !== bOneSide) return aOneSide - bOneSide
       const yieldDelta = tokenYield(b) - tokenYield(a)
       return yieldDelta !== 0 ? yieldDelta : lotKey(a).localeCompare(lotKey(b))
@@ -1618,8 +1626,8 @@ export function createPnlReconciliation(config: Config = {}) {
     // for every one of the 109 missing-price lots, exactly this task's own requirement.
     const candidateOutcomeByKey = new Map<string, CandidateRecoveryOutcome>()
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
-      const needsBuy = lot.costBasisUsd === null
-      const needsSell = lot.proceedsUsd === null
+      const needsBuy = !isCanonicalPositiveUsd(lot.costBasisUsd)
+      const needsSell = !isCanonicalPositiveUsd(lot.proceedsUsd)
       let recoveredBuy: number | null = null
       let recoveredSell: number | null = null
       let lastBuyReason: string | null = null
@@ -1994,9 +2002,9 @@ export function createPnlReconciliation(config: Config = {}) {
       const updatedFifoLots = recovery.hydratedLots.map((lot) => {
         const recoveredPrice = recovery.recoveredByLotKey.get(lotKey(lot))
         if (!recoveredPrice) return lot
-        const costBasisUsd = lot.costBasisUsd ?? recoveredPrice.costBasisUsd
-        const proceedsUsd = lot.proceedsUsd ?? recoveredPrice.proceedsUsd
-        const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+        const costBasisUsd = isCanonicalPositiveUsd(lot.costBasisUsd) ? lot.costBasisUsd : (recoveredPrice.costBasisUsd ?? lot.costBasisUsd)
+        const proceedsUsd = isCanonicalPositiveUsd(lot.proceedsUsd) ? lot.proceedsUsd : (recoveredPrice.proceedsUsd ?? lot.proceedsUsd)
+        const nowFullyPriced = isCanonicalPositiveUsd(costBasisUsd) && isCanonicalPositiveUsd(proceedsUsd)
         if (recoveredPrice.costBasisUsd !== null && recoveredPrice.proceedsUsd !== null) recoveredBoth += 1
         else if (recoveredPrice.costBasisUsd !== null) recoveredBuyOnly += 1
         else recoveredSellOnly += 1
