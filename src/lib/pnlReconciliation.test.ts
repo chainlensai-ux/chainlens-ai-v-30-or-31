@@ -516,6 +516,105 @@ describe('pnlReconciliation', () => {
   })
 
   // =============================================================================================
+  // 130-early-canonical-to-30-final-candidate-collapse trace — CONFIRMED ROOT CAUSE regression:
+  // recoverPrices() previously used the price source's raw PER-TOKEN unit price directly as a lot's
+  // TOTAL costBasisUsd/proceedsUsd (a lot-level dollar field), never multiplying by `lot.amount` —
+  // exactly the same multiplication `priceAllEntries` (pricingAtTimeEngine/index.ts) already applies
+  // via `multiplyAmount(attempt.priceUsd, entry.amount)` for the non-recovery pricing pass. Every
+  // existing test in this file used `amount: 1` (the `lot()` fixture's own default), which made the
+  // bug numerically invisible (unit price === total at amount 1) — these tests use a realistic,
+  // non-1 amount to prove the fix.
+  // =============================================================================================
+
+  it('HARD ASSERTION (confirmed root cause): a live-recovered price is scaled by the lot\'s own amount before becoming its costBasisUsd/proceedsUsd — never used as a raw per-unit price', async () => {
+    const bigAmountLot = lot({ lotId: 'scaled', openedTxHash: '0xbuy-scaled', closedTxHash: '0xsell-scaled', amount: 1_000_000, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      // A realistic low-cap-token per-unit price: $0.00004/token. The correct total for 1,000,000
+      // tokens is $40 — the bug would instead have published costBasisUsd/proceedsUsd as 0.00004.
+      priceKvClient: { getPriceHistorical: async () => 0.00004, getPricePrimary: async () => 0.00004 },
+      priceSources: { primary: async () => 0.00004 },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [bigAmountLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'scaled')
+    assert.ok(published, 'the lot must publish')
+    assert.equal(published!.costBasisUsd, 40, 'costBasisUsd must be price x amount (0.00004 x 1,000,000 = $40), never the raw $0.00004 unit price')
+    assert.equal(published!.proceedsUsd, 40)
+    assert.equal(published!.evidenceQuality, 'verified')
+  })
+
+  it('HARD ASSERTION (confirmed root cause): the accepted-evidence envelope the recovery lane writes stores the TOTAL side value, never the raw per-unit price, so a later rescan\'s hydration never corrupts a good value toward zero', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const bigAmountLot = lot({ lotId: 'scaled', openedTxHash: '0xbuy-scaled', closedTxHash: '0xsell-scaled', amount: 1_000_000, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r1 = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => 0.00004, getPricePrimary: async () => 0.00004 },
+      priceSources: { primary: async () => 0.00004 },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    await r1.reconcile({ fifoEngineResult: fifo({ matchedLots: [bigAmountLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+
+    // Confirm the STORED envelope itself already carries the correct total, never the raw unit price.
+    const identityVersion = realLotIdentityVersion(bigAmountLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-scaled', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    const storedEntry = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number } | undefined
+    assert.ok(storedEntry, 'the recovery lane must persist an entry-side envelope')
+    assert.equal(storedEntry!.priceUsd, 40, 'the stored priceUsd must be the TOTAL side value (this store\'s own documented contract every reader relies on), never the raw $0.00004 unit price')
+    assert.equal(storedEntry!.valueUsd, 40)
+
+    // A SECOND, independent scan (upstream now returns null — the lot must be rehydrated purely from
+    // the persisted accepted evidence written by the first scan) must reproduce the SAME correct $40
+    // total, never a corrupted near-zero value from misreading a per-unit price as a group total.
+    const freshLot = lot({ lotId: 'scaled', openedTxHash: '0xbuy-scaled', closedTxHash: '0xsell-scaled', amount: 1_000_000, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r2 = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary2 = await r2.reconcile({ fifoEngineResult: fifo({ matchedLots: [freshLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published2 = summary2.publishedMatchedLots.find((l) => l.lotId === 'scaled')
+    assert.ok(published2, 'the lot must still publish on the second scan, rehydrated purely from accepted evidence')
+    assert.equal(published2!.costBasisUsd, 40, 'rehydration must reproduce the correct $40 total, never collapse to the raw unit price (or 0, if it underflows VALUE_SCALE precision)')
+    assert.equal(published2!.proceedsUsd, 40)
+  })
+
+  it('missingPriceRecoveryFunnelAudit: canonicalVerifiedLots matches the REAL, post-demotion final count — never the pre-demotion reconstruction (the confirmed 64-vs-30 funnel scoping bug)', async () => {
+    // Two lots share the SAME accepted-evidence entry side (same chain/token/txHash/timestamp) — one
+    // fully priced/verified, one still genuinely unpriced. `demoteLotsOnIncompleteAcceptedSides`
+    // demotes the verified one back to 'unpriced' because the shared side's group total cannot
+    // equal the accepted evidence record while a sibling remains unpriced. The funnel's own
+    // `canonicalVerifiedLots`/`recovered_verified` bucket must reflect that demotion, never count the
+    // sibling as verified just because it reconstructs cleanly in isolation.
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const sharedEntry = { chain: 'base', txHash: '0xshared-buy', timestamp: 100 }
+    const verifiedSibling = lot({ lotId: 'sib-verified', openedTxHash: sharedEntry.txHash, closedTxHash: '0xsell-a', openedAt: sharedEntry.timestamp, closedAt: 200, amount: 5, costBasisUsd: 50, proceedsUsd: 60, realizedPnlUsd: 10, evidenceQuality: 'verified' })
+    // Exit side genuinely unrecoverable (priceKvClient/priceSources below always return null) — the
+    // entry side gets filled by hydration (same group total as verifiedSibling's own value, since
+    // both siblings have equal amount), but the exit stays null, so this sibling never becomes fully
+    // priced — the group stays genuinely INCOMPLETE, which is what must trigger demotion.
+    const unpricedSibling = lot({ lotId: 'sib-unpriced', openedTxHash: sharedEntry.txHash, closedTxHash: '0xsell-b', openedAt: sharedEntry.timestamp, closedAt: 250, amount: 5, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const identityVersion = realLotIdentityVersion(verifiedSibling)
+    acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ chain: sharedEntry.chain, token: '0xtoken', txHash: sharedEntry.txHash, side: 'entry', timestamp: sharedEntry.timestamp, lotIdentityVersion: identityVersion }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: sharedEntry.chain, token: '0xtoken', txHash: sharedEntry.txHash, side: 'entry', timestamp: sharedEntry.timestamp, lotIdentityVersion: identityVersion,
+      priceUsd: 100, valueUsd: 100, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [verifiedSibling, unpricedSibling] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+    // The real, published sample must demote the sibling (proves the fixture actually exercises demotion).
+    const publishedVerified = summary.publishedMatchedLots.filter((l) => l.evidenceQuality === 'verified')
+    assert.equal(publishedVerified.length, 0, 'the shared-side sibling must be demoted out of the published verified sample')
+    // The funnel's own count must agree — never report the pre-demotion reconstruction as verified.
+    assert.equal(summary.missingPriceRecoveryFunnelAudit.canonicalVerifiedLots, 0, 'funnel canonicalVerifiedLots must match the real, post-demotion published count, never an inflated pre-demotion figure')
+  })
+
+  // =============================================================================================
   // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
   // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already
   // enforce — never a second, looser or stricter gate.

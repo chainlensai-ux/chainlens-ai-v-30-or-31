@@ -307,10 +307,22 @@ function classifyMissingPriceLotBucket(params: {
   recovered: RecoveredPrice | undefined
   wasSelected: boolean
   outcome: CandidateRecoveryOutcome | undefined
+  // DEMOTION-AWARE, DISCLOSED (130-early-canonical-to-30-final-candidate-collapse trace, CONFIRMED
+  // FUNNEL SCOPING BUG): reconcile()'s own pipeline runs `demoteLotsOnIncompleteAcceptedSides` AFTER
+  // recoverPrices finishes — a lot that reconstructs as canonically verified in isolation can still
+  // be demoted back to 'unpriced' if it shares an accepted-evidence side with an incomplete sibling
+  // group. The funnel previously classified BEFORE this demotion step ever ran, so it counted a lot
+  // as `recovered_verified`/canonically verified even when the real, final pipeline demotes it —
+  // exactly why an earlier version of this audit reported 64 verified lots against a real
+  // `pricingStageVerifiedLots` of 30. `demoted` is computed once, over the FULL final-lot population
+  // (see buildMissingPriceRecoveryFunnelAudit), and only ever DOWNGRADES a lot that would otherwise
+  // read as verified — it never invents a rejection for a lot the real pipeline does not demote.
+  demoted: boolean
 }): MissingPriceLotBucket {
-  const { originalLot, hydratedLot, recovered, wasSelected, outcome } = params
+  const { originalLot, hydratedLot, recovered, wasSelected, outcome, demoted } = params
   const finalLot = reconstructFinalLot(hydratedLot, recovered)
-  const finalReason = canonicalVerifiedRejectionReason(finalLot)
+  const rawFinalReason = canonicalVerifiedRejectionReason(finalLot)
+  const finalReason = rawFinalReason === null && demoted ? 'evidence_quality_not_verified' : rawFinalReason
   if (finalReason === null) return 'recovered_verified'
 
   const wasMissingOriginally = originalLot.costBasisUsd === null || originalLot.proceedsUsd === null
@@ -378,6 +390,26 @@ export function buildMissingPriceRecoveryFunnelAudit(params: {
   const hydratedByKey = new Map(params.hydratedLots.map((l) => [lotKey(l), l]))
   const selectedKeys = new Set(params.candidates.map((l) => lotKey(l)))
 
+  // DEMOTION-AWARE FINAL STATE, DISCLOSED (130-early-canonical-to-30-final-candidate-collapse trace,
+  // CONFIRMED FUNNEL SCOPING BUG): reconcile()'s own pipeline is `updatedFifoLots` (this same
+  // hydrated+recovered merge) -> `demoteLotsOnIncompleteAcceptedSides` -> `consistentFifoLots`, and
+  // ONLY `consistentFifoLots`'s verified count ever becomes `pricingStageVerifiedLots`. Every prior
+  // version of this funnel classified lots on the PRE-demotion reconstruction alone, so a lot that
+  // reconstructs as verified here but gets demoted afterward (because it shares an accepted-evidence
+  // side with a sibling group that isn't fully priced) was still counted as verified — inflating
+  // `canonicalVerifiedLots`/`recovered_verified` against the real, final published count. Reproduces
+  // the SAME demotion decision here, over the SAME full reconstructed population, so this audit can
+  // never disagree with what reconcile() actually publishes.
+  const allFinalLots = params.originalLots.map((original) => {
+    const key = lotKey(original)
+    const hydrated = hydratedByKey.get(key) ?? original
+    return reconstructFinalLot(hydrated, params.recoveredByLotKey.get(key))
+  })
+  const demotedKeys = new Set<string>()
+  for (const demotedLot of demoteLotsOnIncompleteAcceptedSides(allFinalLots)) {
+    if (demotedLot.evidenceQuality === 'unpriced') demotedKeys.add(lotKey(demotedLot))
+  }
+
   const buckets = emptyMissingPriceLotBucketCounts()
   let providerAttemptedLots = 0
   let providerResolvedLots = 0
@@ -388,11 +420,12 @@ export function buildMissingPriceRecoveryFunnelAudit(params: {
     const wasSelected = selectedKeys.has(key)
     const outcome = params.candidateOutcomeByKey.get(key)
     const recovered = params.recoveredByLotKey.get(key)
+    const demoted = demotedKeys.has(key)
     if (wasSelected && outcome && (outcome.needsBuy || outcome.needsSell)) providerAttemptedLots += 1
     if (recovered) providerResolvedLots += 1
-    const bucket = classifyMissingPriceLotBucket({ originalLot: original, hydratedLot: hydrated, recovered, wasSelected, outcome })
+    const bucket = classifyMissingPriceLotBucket({ originalLot: original, hydratedLot: hydrated, recovered, wasSelected, outcome, demoted })
     buckets[bucket] += 1
-    if (isCanonicalVerifiedPublishedLot(reconstructFinalLot(hydrated, recovered))) canonicalVerifiedLots += 1
+    if (bucket === 'recovered_verified') canonicalVerifiedLots += 1
   }
 
   const neededForGate = Math.max(0, Math.ceil(thresholdRequired * params.totalStructuralLots) - canonicalVerifiedLots)
@@ -1419,8 +1452,31 @@ export function createPnlReconciliation(config: Config = {}) {
       candidateOutcomeByKey.set(lotKey(lot), { needsBuy, needsSell, buyReason: lastBuyReason, sellReason: lastSellReason, buyBudgetCapped, sellBudgetCapped })
       if (needsBuy && recoveredBuy === null) recordFailureReason(failureReasonCounts, lastBuyReason)
       if (needsSell && recoveredSell === null) recordFailureReason(failureReasonCounts, lastSellReason)
-      if (recoveredBuy !== null || recoveredSell !== null) {
-        recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
+      // UNIT FIX, DISCLOSED (130-early-canonical-to-30-final-candidate-collapse trace, CONFIRMED ROOT
+      // CAUSE): `attemptLeg`'s own `price` is the price source's raw PER-TOKEN unit price — the exact
+      // same contract `priceAllEntries` in pricingAtTimeEngine/index.ts already multiplies by
+      // `entry.amount` before ever calling it a lot's `costUsd`/`proceedsUsd` (see that module's own
+      // `multiplyAmount(attempt.priceUsd, entry.amount)`). This recovery lane previously used the raw
+      // per-unit price DIRECTLY as the lot's own `costBasisUsd`/`proceedsUsd` (a lot-level TOTAL
+      // dollar field per MatchedLot's own contract — `realizedPnlUsd = proceedsUsd - costBasisUsd`
+      // must be a dollar figure) — an un-scaled per-unit value persisted to the accepted-evidence
+      // store's `priceUsd` field, which acceptedEvidenceStore.ts's own header documents as ALWAYS the
+      // TOTAL side value ("that assumption is now genuinely true of every value this store's own
+      // writers persist"). On a later rescan, hydrateFromAcceptedEvidence reads that record back and
+      // reallocates it via allocateSideValueAcrossGroup, treating the tiny per-unit figure as the
+      // group's total — for any real per-token price below VALUE_SCALE precision (1e-8, routine for
+      // low-cap/memecoin prices), the BigInt floor produces an allocated share of EXACTLY 0,
+      // overwriting a previously-good, correctly-scaled positive value with a non-positive one. This
+      // is the confirmed source of the `non_positive_reconstruction` bucket / `non_positive_entry_
+      // price`+`non_positive_exit_price` canonical-predicate rejections despite valid early numeric
+      // pricing. Fixed at the source: multiply by `lot.amount` once, immediately, before this raw
+      // price is used for anything lot-level — every downstream consumer (recoveredByLotKey, the
+      // accepted-evidence write-back below) now receives the same TOTAL-dollar contract every other
+      // writer/reader in this codebase already assumes.
+      const recoveredBuyTotalUsd = recoveredBuy !== null ? recoveredBuy * lot.amount : null
+      const recoveredSellTotalUsd = recoveredSell !== null ? recoveredSell * lot.amount : null
+      if (recoveredBuyTotalUsd !== null || recoveredSellTotalUsd !== null) {
+        recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuyTotalUsd, proceedsUsd: recoveredSellTotalUsd })
       }
       if (recoveredBuy !== null) acceptedEvidenceAudit.liveSidesResolved += 1
       if (recoveredSell !== null) acceptedEvidenceAudit.liveSidesResolved += 1
@@ -1456,7 +1512,10 @@ export function createPnlReconciliation(config: Config = {}) {
             // pass below). `coveredLotCount: 1` records that honestly, so a later, more-complete
             // aggregation is never mistaken for "already fully persisted" and blocked from correcting
             // a partial value — see `AcceptedEvidenceEnvelope.coveredLotCount`'s own header.
-            priceUsd: recoveredBuy, valueUsd: recoveredBuy * lot.amount, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+            // `priceUsd === valueUsd` here, both the TOTAL side value (see the UNIT FIX disclosure
+            // above this lot's own recovered-price computation) — matching every other writer's own
+            // "priceUsd IS the total" contract this store documents, never the raw per-unit price.
+            priceUsd: recoveredBuyTotalUsd!, valueUsd: recoveredBuyTotalUsd!, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
           if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
@@ -1465,7 +1524,7 @@ export function createPnlReconciliation(config: Config = {}) {
         if (recoveredSell !== null) {
           const envelope = buildAcceptedEvidenceEnvelope({
             identity: { chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit', timestamp: lot.closedAt, lotIdentityVersion: identityVersion },
-            priceUsd: recoveredSell, valueUsd: recoveredSell * lot.amount, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+            priceUsd: recoveredSellTotalUsd!, valueUsd: recoveredSellTotalUsd!, coveredLotCount: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
           if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
