@@ -603,11 +603,12 @@ export type UnmatchedEvidenceAuditContext = {
   boundedWindowStartProven?: boolean
   // PER-SELL BOUNDARY PROOFS, DISCLOSED, ADDITIVE (boundary-dependent unmatched sells): keys are
   // `${chain}:${txHash.toLowerCase()}:${token.toLowerCase()}`. A sell in provenPreWindowInventoryExits
-  // is classified as a proven pre-window exit even when chain coverage is `partial`/`unknown` —
-  // that is a TOKEN-SCOPED inbound proof, never a global window-boundary bypass. A sell in
-  // provenNonTradeTransfers is excluded as transfer_distribution. A sell in
+  // is classified as a proven pre-window exit even when chain coverage is `partial`/`unknown`/
+  // `truncated` — that is a TOKEN-SCOPED inbound proof, never a global window-boundary bypass. A
+  // sell in provenNonTradeTransfers is excluded as transfer_distribution. A sell in
   // provenGenuineUnmatchedSells stays blocking `unknown` but is no longer attributed to the
   // unproven window boundary. Omit all three for byte-for-byte prior behavior.
+
   provenPreWindowInventoryExits?: ReadonlySet<string>
   provenNonTradeTransfers?: ReadonlySet<string>
   provenGenuineUnmatchedSells?: ReadonlySet<string>
@@ -618,19 +619,24 @@ export type UnmatchedEvidenceAudit = {
   structurallyInvalidBuys: number
   unknownBuys: number
   preWindowInventoryExits: number
-  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): sells that
-  // would have qualified as pre_window_inventory_exit but coverage was only 'truncated' — real
-  // count, never folded into `preWindowInventoryExits` (which would falsely claim a proven full
-  // window) and never folded into `unknownSells`/the blocking denominator (which would hard-block
-  // an otherwise-verified sample over provider page-cap truncation, the confirmed production bug).
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task; tightened by
+  // the per-sell-resolver-bypass fix): sells that would have qualified as pre_window_inventory_exit
+  // but coverage was only 'truncated'. Still NEVER folded into `preWindowInventoryExits` (which
+  // would falsely claim a proven full window). Truncation itself is NOT proof — these sells remain
+  // in `unknownSells` / the blocking denominator and in `sellsBlockedSolelyByUnprovenBoundary`
+  // until a token-scoped inbound or non-trade proof exists. The disclosed count stays so a log can
+  // attribute the population to page-cap truncation rather than a join failure.
+
   preWindowInventoryExitsUnprovenDueToTruncation: number
   transferDistributionSells: Partial<Record<EventClassification, number>>
   structurallyInvalidSells: number
   unknownSells: number
   unmatchedIdentityJoinFailures: number
   // BLOCKING COUNTS, DISCLOSED (requirement #4): only these two feed the structural-consistency
-  // gate's denominator/decision below — open positions and pre-window exits (proven or
-  // truncation-disclosed) are disclosed but never invalidate an independently verified closed lot.
+  // gate's denominator/decision below — open positions and PROVEN pre-window exits are disclosed
+  // but never invalidate an independently verified closed lot. Truncation-unproven exits stay in
+  // structurallyInvalidOrUnknownSells until per-sell proof exists.
+
   structurallyInvalidOrUnknownBuys: number
   structurallyInvalidOrUnknownSells: number
   structuralCoverageNumerator: number
@@ -824,17 +830,20 @@ export function computeUnmatchedEvidenceAudit(
     } else if (historyCoverageStatus === 'exhaustive') {
       // Only status that may grant a full, proven classification — unchanged from before this task.
       preWindowInventoryExits += 1
-    } else if (historyCoverageStatus === 'truncated') {
-      // CONFIRMED PRODUCTION FIX (boundary-model follow-up task): a page-capped-but-healthy fetch
-      // no longer collapses this whole population into `unknown`/hard-blocking — disclosed
-      // separately, excluded from the blocking denominator below, never claimed as proven.
-      preWindowInventoryExitsUnprovenDueToTruncation += 1
-      boundaryRequiredSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'history_truncated_at_provider' })
     } else if (context.provenGenuineUnmatchedSells?.has(proofKey)) {
       // Targeted history completed and found no earlier inbound — genuine unmatched, still
-      // blocking, but no longer attributed to the unproven window boundary.
+      // blocking, but no longer attributed to the unproven window boundary. Checked BEFORE the
+      // truncated/partial buckets so a completed token-scoped query cannot be re-waived by
+      // historyCoverageStatus === 'truncated'.
       unknownSells += 1
       boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'genuine_unmatched_sell' })
+    } else if (historyCoverageStatus === 'truncated') {
+      // Truncation is a coverage disclosure, NOT per-sell proof. These sells stay blocking and
+      // must pass through boundaryDependentSellResolutionAudit before they can drop.
+      preWindowInventoryExitsUnprovenDueToTruncation += 1
+      unknownSells += 1
+      sellsBlockedSolelyByUnprovenBoundary += 1
+      boundaryRequiredSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'history_truncated_at_provider' })
     } else {
       // 'partial' (a genuine provider failure) or 'unknown' (short real history / no timestamped
       // evidence) — fail closed exactly as before this task: cannot prove either a bounded-history

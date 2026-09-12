@@ -1361,6 +1361,62 @@ describe('pnlReconciliation', () => {
     assert.ok(summary.warning?.includes('110'))
   })
 
+  it('HARD ASSERTION: unresolved boundary-dependent sells veto Combined even when truncated coverage would have admitted a bounded sample', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 98 }, (_, i) => lot({
+      lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10,
+    }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: verifiedLots, unmatchedSells: 5 }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 5,
+        preWindowInventoryExits: 0,
+        preWindowInventoryExitsUnprovenDueToTruncation: 5,
+        sellsBlockedSolelyByUnprovenBoundary: 5,
+        historyCoverageStatus: 'truncated',
+        scanWindowDays: 90,
+        windowBoundaryProven: false,
+        boundedSampleWindowSafe: true,
+        boundaryDependentRemainingBlockers: 5,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable', 'truncation without per-sell proof must not publish Combined')
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, false)
+    assert.ok(summary.publicPnlGateAudit.boundedSampleBlockingReasons.some((reason) => reason.rule === 'boundary_dependent_sells_unresolved'))
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 98)
+  })
+
+  it('HARD ASSERTION: once every boundary-dependent sell is proven, Combined stays partial on the verified sample', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 98 }, (_, i) => lot({
+      lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10,
+    }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: verifiedLots, unmatchedSells: 5 }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0,
+        preWindowInventoryExits: 5,
+        preWindowInventoryExitsUnprovenDueToTruncation: 0,
+        sellsBlockedSolelyByUnprovenBoundary: 0,
+        historyCoverageStatus: 'truncated',
+        scanWindowDays: 90,
+        windowBoundaryProven: false,
+        boundedSampleWindowSafe: true,
+        boundaryDependentRemainingBlockers: 0,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'partial')
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, true)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 98)
+    assert.equal(summary.publicPnlGateAudit.unmatchedSellCount, 0)
+  })
+
   it('HARD ASSERTION: the bounded path fails closed when the provider window boundary is not proven, even with otherwise-eligible thresholds', async () => {
     const r = createPnlReconciliation({ logger: quiet })
     const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))

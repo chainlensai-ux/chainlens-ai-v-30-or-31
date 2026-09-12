@@ -377,3 +377,117 @@ test('unmatchedSellProofKey is chain:txHash:token lowercased', () => {
     'base:0xabc:0xdef',
   )
 })
+
+test('HARD ASSERTION: history_truncated_at_provider sells are resolver candidates and stay blocking until per-sell proof', async () => {
+  const tokens = [
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1',
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2',
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3',
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4',
+    '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa5',
+  ]
+  const sells = tokens.map((token, i) => event({
+    txHash: `0xsell-trunc-${i}`, direction: 'outbound', contract: token, fromAddress: WALLET,
+  }))
+  const classified = classifyEvents(sells, noRouters)
+  const identities = tokens.map((token, i) => identity({
+    txHash: `0xsell-trunc-${i}`, token, timestamp: IN_WINDOW_TS,
+  }))
+  const truncatedCtx = {
+    windowStartTimestamp: WINDOW_START, scanWindowDays: WINDOW_DAYS,
+    anyProviderAtEventCap: true, anyProviderFetchFailed: false,
+  }
+  const before = computeUnmatchedEvidenceAudit(classified, 98, [], identities, truncatedCtx)
+  assert.equal(before.historyCoverageStatus, 'truncated')
+  assert.equal(before.preWindowInventoryExitsUnprovenDueToTruncation, 5)
+  assert.equal(before.unknownSells, 5, 'truncation is not a waiver — still blocking')
+  assert.equal(before.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 5)
+  assert.equal(before.boundaryProofDiagnostics.boundaryRequiredSells.length, 5)
+  assert.ok(before.boundaryProofDiagnostics.boundaryRequiredSells.every((sell) => sell.reason === 'history_truncated_at_provider'))
+
+  const fetchCalls: string[] = []
+  const preResolverBuckets = new Map(before.boundaryProofDiagnostics.boundaryRequiredSells.map((sell) => [
+    unmatchedSellProofKey(sell), sell.reason,
+  ] as const))
+  const resolution = await resolveBoundaryDependentSells({
+    sells: identities,
+    classified,
+    windowStartTimestamp: WINDOW_START,
+    walletAddress: WALLET,
+    preResolverBuckets,
+    fetchTokenHistory: async (chain, _wallet, token) => {
+      fetchCalls.push(`${chain}:${token}`)
+      return historyResult({ ok: false, inboundQueryOk: false, providerCalls: 1 })
+    },
+  })
+  assert.equal(resolution.sellsConsidered, 5)
+  assert.equal(resolution.rows.length, 5)
+  assert.equal(resolution.providerCalls, 5)
+  assert.equal(fetchCalls.length, 5)
+  assert.ok(resolution.rows.every((row) => row.preResolverBucket === 'history_truncated_at_provider'))
+  assert.ok(resolution.rows.every((row) => row.finalDisposition === 'still_unresolved_boundary'))
+  assert.ok(resolution.rows.every((row) => row.blockingAfterResolution === true))
+  assert.equal(resolution.remainingBlockers, 5)
+  assert.equal(resolution.provenPreWindowInventoryExits.length, 0)
+
+  const after = computeUnmatchedEvidenceAudit(classified, 98, [], identities, {
+    ...truncatedCtx,
+    provenPreWindowInventoryExits: new Set(resolution.provenPreWindowInventoryExits),
+    provenNonTradeTransfers: new Set(resolution.provenNonTradeTransfers),
+    provenGenuineUnmatchedSells: new Set(resolution.provenGenuineUnmatchedSells),
+  })
+  assert.equal(after.unknownSells, 5, 'unresolved truncation sells remain blocking after the resolver')
+  assert.equal(after.preWindowInventoryExits, 0)
+  assert.equal(after.windowBoundaryProven, false)
+})
+
+test('HARD ASSERTION: truncation + per-sell inbound proof drops only the proven rows', async () => {
+  const sell = event({ txHash: '0xsell-trunc-p', direction: 'outbound', contract: TOKEN_A, fromAddress: WALLET })
+  const classified = classifyEvents([sell], noRouters)
+  const sellId = identity({ txHash: '0xsell-trunc-p', token: TOKEN_A, timestamp: IN_WINDOW_TS })
+  const truncatedCtx = {
+    windowStartTimestamp: WINDOW_START, scanWindowDays: WINDOW_DAYS,
+    anyProviderAtEventCap: true, anyProviderFetchFailed: false,
+  }
+  const before = computeUnmatchedEvidenceAudit(classified, 98, [], [sellId], truncatedCtx)
+  assert.equal(before.unknownSells, 1)
+  assert.equal(before.preWindowInventoryExitsUnprovenDueToTruncation, 1)
+
+  const resolution = await resolveBoundaryDependentSells({
+    sells: [sellId],
+    classified,
+    windowStartTimestamp: WINDOW_START,
+    walletAddress: WALLET,
+    preResolverBuckets: new Map([[unmatchedSellProofKey(sellId), 'history_truncated_at_provider']]),
+    fetchTokenHistory: async () => historyResult({
+      events: [rawInbound({ txHash: '0xpre-buy', timestamp: new Date(PRE_WINDOW_TS).toISOString() })],
+    }),
+  })
+  assert.equal(resolution.sellsConsidered, 1)
+  assert.equal(resolution.rows[0]!.finalDisposition, 'pre_window_inventory_exit_proven')
+  assert.equal(resolution.rows[0]!.blockingAfterResolution, false)
+  assert.equal(resolution.remainingBlockers, 0)
+
+  const after = computeUnmatchedEvidenceAudit(classified, 98, [], [sellId], {
+    ...truncatedCtx,
+    provenPreWindowInventoryExits: new Set(resolution.provenPreWindowInventoryExits),
+  })
+  assert.equal(after.preWindowInventoryExits, 1)
+  assert.equal(after.unknownSells, 0)
+  assert.equal(after.preWindowInventoryExitsUnprovenDueToTruncation, 0)
+  assert.equal(after.windowBoundaryProven, false, 'global boundary stays honest')
+  assert.equal(after.structuralCoverageDenominator, 98)
+})
+
+test('pipeline feeds ALL boundaryRequiredSells, not only window_boundary_unproven', async () => {
+  const { readFileSync } = await import('node:fs')
+  const { fileURLToPath } = await import('node:url')
+  const src = readFileSync(fileURLToPath(new URL('../../pipeline/index.ts', import.meta.url)), 'utf8')
+  assert.doesNotMatch(
+    src,
+    /\.filter\(\(sell\) => sell\.reason === 'window_boundary_unproven'\)/,
+    'the resolver must not skip history_truncated_at_provider sells',
+  )
+  assert.match(src, /const boundaryRequiredSells = unmatchedEvidenceAudit\.boundaryProofDiagnostics\.boundaryRequiredSells/)
+  assert.match(src, /boundaryDependentRemainingBlockers: boundaryDependentSellResolutionAudit\.remainingBlockers/)
+})

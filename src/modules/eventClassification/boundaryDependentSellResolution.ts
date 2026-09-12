@@ -22,18 +22,34 @@ export type BoundaryDependentSellDisposition =
   | 'genuine_unmatched_sell'
   | 'still_unresolved_boundary'
 
+export type TargetedRecoveryOutcome =
+  | 'not_attempted'
+  | 'inbound_found'
+  | 'timeout_or_failed'
+  | 'page_capped'
+  | 'empty_exhausted'
+
+export type PreResolverBucket = 'history_truncated_at_provider' | 'window_boundary_unproven'
+
 export type BoundaryDependentSellResolutionRow = {
   identity: string
   txHash: string
   token: string
   amount: number
   currentClassification: EventClassification | null
+  originalClassification: EventClassification | null
   receiptProof: string | null
   earlierBuyProof: boolean
+  earlierInboundProof: boolean
   preWindowRecoveryAttempted: boolean
+  targetedRecoveryAttempted: boolean
+  targetedRecoveryOutcome: TargetedRecoveryOutcome
   preWindowEvidenceFound: boolean
+  preResolverBucket: PreResolverBucket | null
   disposition: BoundaryDependentSellDisposition
+  finalDisposition: BoundaryDependentSellDisposition
   gateImpact: 'non_blocking' | 'blocking'
+  blockingAfterResolution: boolean
   chain: string
   timestamp: number
   rawAmount: string | null
@@ -48,7 +64,6 @@ export type BoundaryDependentSellResolutionRow = {
   earliestRecoveredBuy: { txHash: string; timestamp: number; source: string } | null
   providerSource: string | null
   providerBoundaryDependency: boolean
-  finalDisposition: BoundaryDependentSellDisposition
   inboundTx: string | null
   inboundTimestamp: number | null
   inboundSource: string | null
@@ -176,10 +191,12 @@ export async function resolveBoundaryDependentSells(params: {
   walletAddress: string
   receiptProofByTx?: ReadonlyMap<string, string>
   fetchTokenHistory?: TokenHistoryFetcher
+  preResolverBuckets?: ReadonlyMap<string, PreResolverBucket>
 }): Promise<BoundaryDependentSellResolutionAudit> {
   const recoveredClassified = params.recoveredClassified ?? []
   const recoveredRawEvents = params.recoveredRawEvents ?? []
   const receiptProofByTx = params.receiptProofByTx ?? new Map<string, string>()
+  const preResolverBuckets = params.preResolverBuckets ?? new Map<string, PreResolverBucket>()
   const rows: BoundaryDependentSellResolutionRow[] = []
   const provenPreWindowInventoryExits: string[] = []
   const provenNonTradeTransfers: string[] = []
@@ -222,6 +239,8 @@ export async function resolveBoundaryDependentSells(params: {
         sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
         disposition: 'non_trade_transfer_proven',
         preWindowRecoveryAttempted: false, providerSource: null, providerBoundaryDependency: false,
+        targetedRecoveryOutcome: 'not_attempted',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenNonTradeTransfers.push(key)
       continue
@@ -231,6 +250,8 @@ export async function resolveBoundaryDependentSells(params: {
         sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
         disposition: 'non_trade_transfer_proven',
         preWindowRecoveryAttempted: false, providerSource: 'receipt', providerBoundaryDependency: false,
+        targetedRecoveryOutcome: 'not_attempted',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenNonTradeTransfers.push(key)
       continue
@@ -240,6 +261,8 @@ export async function resolveBoundaryDependentSells(params: {
         sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
         disposition: 'pre_window_inventory_exit_proven',
         preWindowRecoveryAttempted: false, providerSource: preWindowHit.source, providerBoundaryDependency: false,
+        targetedRecoveryOutcome: 'not_attempted',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenPreWindowInventoryExits.push(key)
       continue
@@ -288,6 +311,8 @@ export async function resolveBoundaryDependentSells(params: {
         disposition: 'still_unresolved_boundary',
         preWindowRecoveryAttempted: fetchAttempted, providerSource: fetchAttempted ? 'alchemy' : null,
         providerBoundaryDependency: true,
+        targetedRecoveryOutcome: fetchAttempted ? 'timeout_or_failed' : 'not_attempted',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       continue
     }
@@ -308,6 +333,8 @@ export async function resolveBoundaryDependentSells(params: {
         sell, classification, receiptProof, hits: allHits, preWindowHit, inWindowHit,
         disposition: 'pre_window_inventory_exit_proven',
         preWindowRecoveryAttempted: true, providerSource: preWindowHit.source, providerBoundaryDependency: true,
+        targetedRecoveryOutcome: 'inbound_found',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenPreWindowInventoryExits.push(key)
       continue
@@ -320,6 +347,8 @@ export async function resolveBoundaryDependentSells(params: {
         sell, classification, receiptProof, hits: allHits, preWindowHit: null, inWindowHit,
         disposition: 'still_unresolved_boundary',
         preWindowRecoveryAttempted: true, providerSource: 'alchemy', providerBoundaryDependency: true,
+        targetedRecoveryOutcome: 'page_capped',
+        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       continue
     }
@@ -332,6 +361,8 @@ export async function resolveBoundaryDependentSells(params: {
       sell, classification, receiptProof, hits: allHits, preWindowHit: null, inWindowHit,
       disposition,
       preWindowRecoveryAttempted: true, providerSource: 'alchemy', providerBoundaryDependency: true,
+      targetedRecoveryOutcome: 'empty_exhausted',
+      preResolverBucket: preResolverBuckets.get(key) ?? null,
     }))
     provenGenuineUnmatchedSells.push(key)
   }
@@ -360,21 +391,31 @@ function buildRow(params: {
   preWindowRecoveryAttempted: boolean
   providerSource: string | null
   providerBoundaryDependency: boolean
+  targetedRecoveryOutcome: TargetedRecoveryOutcome
+  preResolverBucket: PreResolverBucket | null
 }): BoundaryDependentSellResolutionRow {
   const { sell, classification, receiptProof, hits, preWindowHit, inWindowHit, disposition } = params
   const earliest = hits[0] ?? null
+  const gateImpact = gateImpactFor(disposition)
   return {
     identity: unmatchedSellProofKey(sell),
     txHash: sell.txHash,
     token: sell.token,
     amount: sell.amount,
     currentClassification: classification,
+    originalClassification: classification,
     receiptProof,
     earlierBuyProof: preWindowHit != null || inWindowHit != null,
+    earlierInboundProof: preWindowHit != null || inWindowHit != null,
     preWindowRecoveryAttempted: params.preWindowRecoveryAttempted,
+    targetedRecoveryAttempted: params.preWindowRecoveryAttempted,
+    targetedRecoveryOutcome: params.targetedRecoveryOutcome,
     preWindowEvidenceFound: preWindowHit != null,
+    preResolverBucket: params.preResolverBucket,
     disposition,
-    gateImpact: gateImpactFor(disposition),
+    finalDisposition: disposition,
+    gateImpact,
+    blockingAfterResolution: gateImpact === 'blocking',
     chain: sell.chain,
     timestamp: sell.timestamp,
     rawAmount: sell.amountRaw,
@@ -389,7 +430,6 @@ function buildRow(params: {
     earliestRecoveredBuy: earliest == null ? null : { txHash: earliest.txHash, timestamp: earliest.timestamp, source: earliest.source },
     providerSource: params.providerSource,
     providerBoundaryDependency: params.providerBoundaryDependency,
-    finalDisposition: disposition,
     inboundTx: preWindowHit?.txHash ?? earliest?.txHash ?? null,
     inboundTimestamp: preWindowHit?.timestamp ?? earliest?.timestamp ?? null,
     inboundSource: preWindowHit?.source ?? earliest?.source ?? null,

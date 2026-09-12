@@ -3168,16 +3168,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     unmatchedEvidenceAuditContext,
     recoveredClassifiedForJoin,
   )
-  // PER-SELL BOUNDARY RESOLUTION, DISCLOSED (boundary-dependent unmatched sells): only the sells
-  // this audit already attributed to `window_boundary_unproven` are examined. Token-scoped inbound
-  // proof (or receipt non-trade proof) can drop those sells from the blocking denominator; it
-  // never flips `windowBoundaryProven` / `historyCoverageStatus`. FIFO, pricing, and the 98-lot
-  // sample are untouched.
-  const boundaryUnprovenSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryRequiredSells
-    .filter((sell) => sell.reason === 'window_boundary_unproven')
-  const boundaryUnprovenKeys = new Set(boundaryUnprovenSells.map((sell) => unmatchedSellProofKey(sell)))
+  // PER-SELL BOUNDARY RESOLUTION, DISCLOSED (boundary-dependent unmatched sells): EVERY sell this
+  // audit attributed to an unproven window boundary — `window_boundary_unproven` OR
+  // `history_truncated_at_provider` — is examined. Truncation is a coverage disclosure, not
+  // per-sell proof, and must not drop a blocker on its own. Token-scoped inbound proof (or
+  // receipt non-trade proof) can drop those sells from the blocking denominator; it never flips
+  // `windowBoundaryProven` / `historyCoverageStatus`. FIFO, pricing, and the 98-lot sample are
+  // untouched.
+  const boundaryRequiredSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryRequiredSells
+  const boundaryRequiredKeys = new Set(boundaryRequiredSells.map((sell) => unmatchedSellProofKey(sell)))
+  const preResolverBuckets = new Map(boundaryRequiredSells.map((sell) => [unmatchedSellProofKey(sell), sell.reason] as const))
   const boundaryDependentSellsToResolve = fifoAndPnl.unmatchedSellEvents.filter((sell) =>
-    boundaryUnprovenKeys.has(unmatchedSellProofKey(sell)))
+    boundaryRequiredKeys.has(unmatchedSellProofKey(sell)))
   const boundaryDependentSellResolutionAudit = await resolveBoundaryDependentSells({
     sells: boundaryDependentSellsToResolve,
     classified: structuralCoverageClassified,
@@ -3187,8 +3189,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     walletAddress: params.walletAddress,
     receiptProofByTx: receiptProofByTxHash,
     fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
+    preResolverBuckets,
   })
-  if (boundaryDependentSellResolutionAudit.rows.length > 0) {
+  if (boundaryDependentSellResolutionAudit.sellsConsidered > 0) {
     unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
       structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
       {
@@ -3212,8 +3215,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
     historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
     sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
+    preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
     unknownSells: unmatchedEvidenceAudit.unknownSells,
-    rows: boundaryDependentSellResolutionAudit.rows,
+    rows: boundaryDependentSellResolutionAudit.rows.map((row) => ({
+      txHash: row.txHash,
+      token: row.token,
+      amount: row.amount,
+      originalClassification: row.originalClassification,
+      preResolverBucket: row.preResolverBucket,
+      receiptProof: row.receiptProof,
+      earlierInboundProof: row.earlierInboundProof,
+      targetedRecoveryAttempted: row.targetedRecoveryAttempted,
+      targetedRecoveryOutcome: row.targetedRecoveryOutcome,
+      finalDisposition: row.finalDisposition,
+      blockingAfterResolution: row.blockingAfterResolution,
+    })),
   })
   // eslint-disable-next-line no-console
   console.warn('[critical-trade-evidence-gap-audit]', {
@@ -3873,6 +3889,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
       boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
+      boundaryDependentRemainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+
     },
     canonicalSampleSelector,
   })

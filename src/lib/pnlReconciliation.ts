@@ -558,14 +558,18 @@ export type StructuralCoverageDenominatorAudit = {
   // genuineUnmatchedBuys/Sells, so it never reaches the gate as blocking evidence.
   openPositionBuys?: number
   preWindowInventoryExits?: number
-  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): real count
-  // from eventClassification's computeUnmatchedEvidenceAudit — sells that would have qualified as
-  // pre-window exits but the fetch's coverage was only 'truncated' (a provider/direction hit its
-  // bounded-page event cap while every provider otherwise succeeded). Disclosed here for the same
-  // reason `preWindowInventoryExits` is — excluded from `genuineUnmatchedSells`/blocking, but never
-  // conflated with a PROVEN pre-window exit.
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task; tightened by
+  // the per-sell-resolver-bypass fix): real count from eventClassification. Truncation is NOT
+  // per-sell proof. These sells remain in genuineUnmatchedSells / sellsBlockedSolelyByUnprovenBoundary
+  // until a token-scoped inbound or non-trade proof exists; this field is the disclosed attribution
+  // of that still-blocking population, never a waiver.
   preWindowInventoryExitsUnprovenDueToTruncation?: number
   sellsBlockedSolelyByUnprovenBoundary?: number
+  // Remaining per-sell boundary-resolver blockers, DISCLOSED, ADDITIVE (per-sell-resolver-bypass
+  // fix). When supplied, Combined PnL stays unavailable while any of these sells still lack
+  // pre-window / non-trade proof — truncation, 98/98 pricing, and manifest replay are not waivers.
+  // Omit for byte-for-byte prior Combined admission (unmigrated callers/tests).
+  boundaryDependentRemainingBlockers?: number
   scanWindowDays?: number
   // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
   // eventClassification's computeUnmatchedEvidenceAudit.historyCoverageStatus — see its own header.
@@ -2284,16 +2288,12 @@ export function createPnlReconciliation(config: Config = {}) {
       // from the caller's exact-unmatched-evidence audit.
       const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
       // FULL PNL REQUIRES A PROVEN WINDOW BOUNDARY, DISCLOSED (wallet-scanner-bounded-publication
-      // follow-up task — confirmed gap: `preWindowInventoryExitsUnprovenDueToTruncation` sells are
-      // deliberately excluded from `gateUnmatchedSells` [never hard-blocking], so a wallet with
-      // ZERO other unmatched/missing evidence could satisfy every other structuralConsistent
-      // condition and earn full 'available' status EVEN THOUGH its history was truncated and its
-      // window boundary was never proven — publishing an unqualified "complete wallet history"
-      // claim on an incomplete fetch. Full availability now additionally requires
-      // `windowBoundaryProven` — the bounded ('partial') path remains reachable via
-      // `boundedSampleWindowSafe` below (true for both 'exhaustive' and 'truncated' coverage), so a
-      // truncated-but-otherwise-clean wallet still publishes its verified bounded sample, just never
-      // as unqualified FULL history.
+      // follow-up task — confirmed gap: without `windowBoundaryProven`, a wallet with ZERO other
+      // unmatched/missing evidence could satisfy every other structuralConsistent condition and
+      // earn full 'available' status EVEN THOUGH its history was truncated. Full availability
+      // additionally requires `windowBoundaryProven`. Truncation-unproven unmatched sells now stay
+      // in `gateUnmatchedSells` until per-sell proof exists (bypass fix); the bounded ('partial')
+      // path remains reachable via `boundedSampleWindowSafe` only after those sells are resolved.
       const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null && windowBoundaryProven
       // BOUNDED VERIFIED SAMPLE, REWIRED, DISCLOSED (bounded-sample-gate follow-up task, real
       // production evidence: 27 structural lots, 18 verified/66.67% coverage, 94 buys correctly
@@ -2344,9 +2344,18 @@ export function createPnlReconciliation(config: Config = {}) {
       // conditions, just not `boundedSampleWindowSafe` specifically (a signal this gate computes
       // from a live, current-scan recompute the manifest replay does not depend on).
       const canonicalManifestApplied = canonicalSampleSelection?.manifestApplied === true
+      // PER-SELL BOUNDARY RESOLVER, DISCLOSED (bypass fix): truncation / 98-lot pricing / a
+      // successful manifest replay must not publish Combined PnL while any unmatched sell is still
+      // only "unproven due to truncation" or otherwise unresolved. Omitted remainingBlockers
+      // (unmigrated callers) leaves Combined admission unchanged.
+      const boundaryDependentRemainingBlockers = denomAudit?.boundaryDependentRemainingBlockers
+      const unresolvedBoundaryDependentSells = boundaryDependentRemainingBlockers != null
+        ? boundaryDependentRemainingBlockers
+        : 0
       const boundedSampleEligible =
         verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && realizedPnlUsd !== null
         && (boundedSampleWindowSafe || canonicalManifestApplied)
+        && unresolvedBoundaryDependentSells === 0
       // CANONICAL SAMPLE UNAVAILABLE OVERRIDE, DISCLOSED (requirement #4 — genuine fail-closed): a
       // valid manifest exists but this scan could not reproduce its required evidence. The public
       // result must then be degraded/unavailable — never the live candidate sample that happens to
@@ -2359,7 +2368,7 @@ export function createPnlReconciliation(config: Config = {}) {
         ? 'unavailable'
         : structuralConsistent
           ? 'available'
-          : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
+          : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0 && unresolvedBoundaryDependentSells === 0)
             ? 'partial'
             : 'unavailable'
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
@@ -2466,6 +2475,13 @@ export function createPnlReconciliation(config: Config = {}) {
       if (!boundedSampleWindowSafe) {
         boundedSampleBlockingReasons.push({ rule: 'window_boundary_proven', threshold: 'true', actualValue: 'false' })
       }
+      if (unresolvedBoundaryDependentSells > 0) {
+        boundedSampleBlockingReasons.push({
+          rule: 'boundary_dependent_sells_unresolved',
+          threshold: '0 unresolved boundary-dependent sells',
+          actualValue: String(unresolvedBoundaryDependentSells),
+        })
+      }
       if (realizedPnlUsd === null) {
         boundedSampleBlockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
       }
@@ -2477,7 +2493,7 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
         unmatchedBuyCount: gateUnmatchedBuys,
         unmatchedSellCount: gateUnmatchedSells,
-        integrityTier: canonicalSampleUnavailable ? 'blocked' : structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
+        integrityTier: canonicalSampleUnavailable ? 'blocked' : structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0 && unresolvedBoundaryDependentSells === 0) ? 'partial' : 'blocked',
         blockingReasons,
         rawUnmatchedBuys: correctedUnmatchedBuys,
         rawUnmatchedSells: correctedUnmatchedSells,
