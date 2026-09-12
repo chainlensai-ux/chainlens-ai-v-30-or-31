@@ -1137,7 +1137,7 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
   const SAMPLE_COST = 307103.26242036064
   const SAMPLE_ROI = SAMPLE_PNL / SAMPLE_COST * 100
 
-  function sampleSummary() {
+  function sampleSummary(overrides: Partial<PnlReconciliationSummary> = {}) {
     return reconciliationSummary({
       realizedPnlUsd: SAMPLE_PNL,
       publicPnlStatus: 'unavailable',
@@ -1189,6 +1189,7 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
         samplePerformanceBlockedReason: null,
         fullHistoryPerformanceAllowed: false,
       },
+      ...overrides,
     })
   }
 
@@ -1220,6 +1221,35 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
     assert.match(vm.sampleEvidenceLine ?? '', /Verified Sample Realized PnL -\$70,794\.97/)
     assert.match(vm.sampleEvidenceLine ?? '', /ROI -23\.1%/)
     assert.match(vm.sampleEvidenceLine ?? '', /PARTIAL \/ VERIFIED BOUNDED SAMPLE/)
+  })
+
+  it('HARD ASSERTION: Combined Partial + wired sample does not republish sample PnL as Combined/Full Wallet', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: sampleSummary({
+        publicPnlStatus: 'partial',
+        publicPnlGateAudit: {
+          ...sampleSummary().publicPnlGateAudit,
+          unmatchedSellCount: 0,
+          genuineUnmatchedSells: 0,
+          integrityTier: 'partial',
+          boundedSampleEligible: true,
+        },
+        fullHistoryPerformance: { status: 'partial', realizedPnlUsd: SAMPLE_PNL, realizedRoiPct: null, blockingReasons: [] },
+        verifiedSamplePerformanceAudit: {
+          ...sampleSummary().verifiedSamplePerformanceAudit,
+          fullHistoryPerformanceAllowed: false,
+        },
+      }),
+    })
+    assert.equal(vm.combinedStatus, 'partial')
+    assert.equal(vm.combinedRealizedBox.status, 'Partial')
+    assert.equal(vm.combinedRealizedBox.value, null)
+    assert.match(vm.combinedRealizedBox.reason, /not complete-history/)
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$70,794.97')
+    assert.equal(vm.roiBox.value, '-23.1%')
+    assert.equal(vm.sampleStatusBadge, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
   })
 
   it('HARD ASSERTION: sample pricing missing → sample PnL/ROI unavailable; full-history stays blocked', () => {

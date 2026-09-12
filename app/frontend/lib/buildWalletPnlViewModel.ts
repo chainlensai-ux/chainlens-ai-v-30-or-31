@@ -411,6 +411,11 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // never recomputed differently — a bounded sample is exempt (reads reconciliationSummary instead).
   const blocked = isBoundedSample ? false : isActive && (pnl.unreliable || !pnl.stable)
 
+  const sample = reconciliationSummary?.verifiedSamplePerformance
+  const sampleWired = sample != null && (sample.status === 'verified_bounded_sample' || sample.verifiedLotCount > 0)
+  const sampleAllowed = sample?.status === 'verified_bounded_sample' && sample.realizedPnlUsd != null && Number.isFinite(sample.realizedPnlUsd)
+  const sampleBlockedReason = reconciliationSummary?.verifiedSamplePerformanceAudit?.samplePerformanceBlockedReason
+
   // COMBINED, DISCLOSED, MOVED EARLIER (PnL Evidence UI cleanup follow-up — this task's own explicit
   // requirement: "Combined Realized PnL" box status must ALWAYS match the header badge): describes
   // the OFFICIAL combined (pnlV2/Base+ETH) figure only — Robinhood's realized PnL is never summed
@@ -437,7 +442,9 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   } else if (baseCombinedStatus === 'verified') {
     combinedReason = buildRealizedVerifiedMessage(effectiveStatus) ?? 'Realized PnL: Verified — closed-lot coverage confirmed.'
   } else if (baseCombinedStatus === 'partial') {
-    combinedReason = boundedSample?.label ?? 'Verified bounded sample.'
+    combinedReason = sampleWired
+      ? 'Full-wallet realized PnL is not complete-history. See Verified Sample Realized PnL.'
+      : (boundedSample?.label ?? 'Verified bounded sample.')
   } else {
     combinedReason = formatFullWalletUnavailableReason(reconciliationSummary) ?? specificUnavailableReason
   }
@@ -455,10 +462,11 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     combinedStatus === 'verified' ? 'Verified' : combinedStatus === 'partial' ? 'Partial' : combinedStatus === 'locked' ? 'Locked' : 'Unavailable'
   // ZERO SUPPRESSION, DISCLOSED (portfolio-vs-PnL contradiction fix): a Partial combined figure of
   // $0.00 is the empty-lot default, not a verified realized 0. Only a Verified combined status may
-  // show $0.00. Bounded-sample Partial still shows its real non-zero number.
+  // show $0.00. When verifiedSamplePerformance is wired, Combined / Full Wallet never republishes
+  // the bounded-sample number — that lives on verifiedSampleRealizedBox.
   const rawCombinedUsd = combinedRealizedBoxStatus === 'Verified'
     ? (displayed.realizedPnlUsd ?? null)
-    : combinedRealizedBoxStatus === 'Partial'
+    : combinedRealizedBoxStatus === 'Partial' && !sampleWired
       ? (boundedSample?.realizedPnlUsd ?? displayed.realizedPnlUsd ?? null)
       : null
   const combinedRealizedValue = combinedRealizedBoxStatus === 'Locked' || combinedRealizedBoxStatus === 'Unavailable'
@@ -474,16 +482,14 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       : combinedRealizedBoxStatus === 'Locked'
         ? (baseCombinedStatus === 'partial' ? 'Base/ETH history is partial.' : 'Base/ETH PnL is not yet verified.')
         : combinedRealizedBoxStatus === 'Partial'
-          ? (boundedSample?.label ?? 'Base/ETH history is a bounded, verified sample.')
+          ? (sampleWired
+            ? 'Full-wallet realized PnL is not complete-history. See Verified Sample Realized PnL.'
+            : (boundedSample?.label ?? 'Base/ETH history is a bounded, verified sample.'))
           : combinedRealizedBoxStatus === 'Verified'
             ? (buildRealizedVerifiedMessage(effectiveStatus) ?? 'Closed-lot coverage confirmed.')
             : (formatFullWalletUnavailableReason(reconciliationSummary) ?? specificUnavailableReason),
   )
 
-  const sample = reconciliationSummary?.verifiedSamplePerformance
-  const sampleWired = sample != null && (sample.status === 'verified_bounded_sample' || sample.verifiedLotCount > 0)
-  const sampleAllowed = sample?.status === 'verified_bounded_sample' && sample.realizedPnlUsd != null && Number.isFinite(sample.realizedPnlUsd)
-  const sampleBlockedReason = reconciliationSummary?.verifiedSamplePerformanceAudit?.samplePerformanceBlockedReason
   const verifiedSampleRealizedBox = canonicalSampleUnavailable
     ? box(null, 'Unavailable', CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL)
     : sampleAllowed
