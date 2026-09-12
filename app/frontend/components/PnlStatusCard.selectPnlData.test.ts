@@ -81,6 +81,8 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
+      legacyPerUnitRecordsDetected: 0, legacyPerUnitRecordsRepaired: 0, legacyPerUnitRecordsRejected: 0,
+      legacyPerUnitMigrationAudit: [],
     },
     // DEFAULT: no discrepancy audit wired (matches this fixture's own pre-existing "unused
     // placeholder" convention above) — trust-gate tests below override this explicitly.

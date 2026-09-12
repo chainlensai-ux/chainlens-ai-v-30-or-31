@@ -104,6 +104,67 @@ export type AcceptedEvidenceKvLike = {
   set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown>
 }
 
+// ================================================================================================
+// LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair follow-up task).
+//
+// CONFIRMED PRE-1b3675a BUG, DISCLOSED: pnlReconciliation.ts's live recovery-lane writer used to
+// persist `priceUsd: recoveredBuy` — the price source's raw PER-TOKEN unit price — while its OWN
+// `valueUsd: recoveredBuy * lot.amount` field, computed at that exact same write from the exact same
+// already-known lot amount, already held the CORRECT total side value. Every reader in this codebase
+// (hydrateFromAcceptedEvidence, canonicalPnlSampleManifest.ts's own allocation call sites) uses
+// `evidence.priceUsd` as the group's total — a legacy record's `priceUsd` is therefore silently
+// wrong while its own `valueUsd` sibling field was right all along. `1b3675a` fixed the WRITER (new
+// records now set `priceUsd === valueUsd`, both the true total) but never touched records already
+// persisted under the old semantics — this migration repairs those, in place, on read.
+//
+// PROOF, NEVER A GUESS, DISCLOSED: "the stored value is tiny" is explicitly NOT sufficient proof — a
+// genuinely tiny total (a dust-sized real trade) is not corruption. Repair requires BOTH:
+//   1. PROVENANCE — the record's own shape matches the ONE writer that ever produced this bug: only
+//      the live recovery lane ever wrote a per-lot (never per-group) record (`source ===
+//      'recovery-lane'`, `coveredLotCount === 1` — the old writer's only possible shape; the
+//      canonical-seeding writer has always set `priceUsd === valueUsd`, so no genuine post-fix or
+//      canonical-seeding record can ever satisfy this proof).
+//   2. SELF-CONSISTENCY — an exact, deterministic reconstruction: `priceUsd * lotAmount === valueUsd`
+//      (within float tolerance). This is the "equally deterministic signature" the old writer's own
+//      arithmetic already left behind — `valueUsd` was computed from the SAME provider call and the
+//      SAME lot amount, at write time, so recomputing `priceUsd * amount` and finding it matches
+//      `valueUsd` exactly is proof the record was written under the old per-unit semantics, not a
+//      guess. A record whose `priceUsd * amount` does NOT reconcile to `valueUsd` (tampered data, or
+//      a genuine, unrelated value disagreement) reports no proof and no reconstructed total — the
+//      caller must treat it as ineligible for repair and fail closed, never coerce a value in.
+// A record already written under the new semantics (`priceUsd === valueUsd`) always reports no proof
+// — there is nothing to repair, whether or not the shared value happens to be small.
+export type AcceptedEvidenceMigrationClassification = 'legacy_recovery_per_unit_total'
+
+export type LegacyPerUnitTotalDetection = {
+  legacyProof: AcceptedEvidenceMigrationClassification | null
+  reconstructedTotalUsd: number | null
+}
+
+// PURE, DETERMINISTIC. `lotAmount` must be the CURRENT, real amount of the exact single lot this
+// record's own `coveredLotCount: 1` scope refers to — the caller is responsible for only calling
+// this when the record's declared scope (1 lot) still matches the live group's real composition
+// (still exactly 1 lot); a group that has since grown beyond that scope is a genuinely different,
+// unrelated question (composition drift) this function does not attempt to answer.
+export function detectLegacyPerUnitTotalRecord(
+  envelope: Pick<AcceptedEvidenceEnvelope, 'priceUsd' | 'valueUsd' | 'source' | 'coveredLotCount'>,
+  lotAmount: number,
+): LegacyPerUnitTotalDetection {
+  const none: LegacyPerUnitTotalDetection = { legacyProof: null, reconstructedTotalUsd: null }
+  // PROVENANCE, DISCLOSED: the old writer's ONE distinguishing shape — a per-lot recovery-lane write.
+  if (envelope.source !== 'recovery-lane' || envelope.coveredLotCount !== 1) return none
+  if (!Number.isFinite(envelope.priceUsd) || !Number.isFinite(envelope.valueUsd) || !Number.isFinite(lotAmount) || lotAmount <= 0) return none
+  // Already the current (post-fix) shape — priceUsd IS the total, nothing to repair, regardless of
+  // how small the shared value is.
+  if (envelope.priceUsd === envelope.valueUsd) return none
+  const expectedFromUnitPrice = envelope.priceUsd * lotAmount
+  const tolerance = Math.max(1e-9, Math.abs(envelope.valueUsd) * 1e-9)
+  const selfConsistent = Math.abs(expectedFromUnitPrice - envelope.valueUsd) <= tolerance
+  if (!selfConsistent) return none
+  if (envelope.valueUsd <= 0) return none
+  return { legacyProof: 'legacy_recovery_per_unit_total', reconstructedTotalUsd: envelope.valueUsd }
+}
+
 export type AcceptedEvidenceState =
   | 'verified_valid'
   | 'partial_unverified'

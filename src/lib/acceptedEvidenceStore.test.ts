@@ -4,6 +4,7 @@ import {
   buildAcceptedEvidenceKey, buildAcceptedEvidenceEnvelope, isValidAcceptedEvidence,
   classifyAcceptedEvidence,
   readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
+  detectLegacyPerUnitTotalRecord,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
   type AcceptedEvidenceBatchIdentity,
 } from './acceptedEvidenceStore'
@@ -172,4 +173,40 @@ it('lotIdentityVersion canonicalizes float representation without merging econom
   assert.equal(lotIdentityVersion(base), lotIdentityVersion({ ...base, amount: 0.1 + 0.2 }))
   assert.notEqual(lotIdentityVersion(base), lotIdentityVersion({ ...base, amount: 0.300001 }))
   assert.equal(lotIdentityVersion({ ...base, amount: 1 }).endsWith(':1'), true, 'preserve existing exact integer identities')
+})
+
+describe('detectLegacyPerUnitTotalRecord — legacy-accepted-evidence-repair follow-up task', () => {
+  it('proves the confirmed pre-1b3675a bug: recovery-lane, coveredLotCount 1, priceUsd x amount reconciles exactly to valueUsd', () => {
+    const result = detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000)
+    assert.equal(result.legacyProof, 'legacy_recovery_per_unit_total')
+    assert.equal(result.reconstructedTotalUsd, 10)
+  })
+
+  it('never flags a genuine current-format record (priceUsd already equals valueUsd), no matter how small the shared value is', () => {
+    const result = detectLegacyPerUnitTotalRecord({ priceUsd: 0.000009, valueUsd: 0.000009, source: 'recovery-lane', coveredLotCount: 1 }, 3)
+    assert.equal(result.legacyProof, null)
+    assert.equal(result.reconstructedTotalUsd, null)
+  })
+
+  it('never flags a record from a different writer (canonical-seeding, source !== recovery-lane), even with priceUsd !== valueUsd', () => {
+    const result = detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 10, source: 'canonical-seeding', coveredLotCount: 1 }, 1_000_000)
+    assert.equal(result.legacyProof, null, 'provenance alone (source) must gate this — the old bug only ever came from the recovery lane')
+  })
+
+  it('never flags a record with coveredLotCount > 1 (a real multi-sibling aggregate, never the old per-lot writer\'s shape)', () => {
+    const result = detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 2 }, 1_000_000)
+    assert.equal(result.legacyProof, null)
+  })
+
+  it('fails closed when priceUsd x amount does not reconcile to valueUsd — a genuine disagreement, never coerced', () => {
+    const result = detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 999, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000)
+    assert.equal(result.legacyProof, null)
+    assert.equal(result.reconstructedTotalUsd, null)
+  })
+
+  it('fails closed on a non-positive or non-finite reconstructed total', () => {
+    assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: -0.00001, valueUsd: -10, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000).legacyProof, null)
+    assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 1 }, 0).legacyProof, null)
+    assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: NaN, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000).legacyProof, null)
+  })
 })

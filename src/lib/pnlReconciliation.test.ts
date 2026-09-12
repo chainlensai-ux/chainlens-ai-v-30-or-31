@@ -615,6 +615,130 @@ describe('pnlReconciliation', () => {
   })
 
   // =============================================================================================
+  // legacy-accepted-evidence-repair follow-up task — migrates ONLY records demonstrably written
+  // under the pre-1b3675a recovery-lane bug (`priceUsd` held a raw per-unit price while `valueUsd`,
+  // computed at that same write from the same known amount, already held the correct total).
+  // =============================================================================================
+
+  function legacyRecoveryLaneEnvelope(overrides: Partial<{ chain: string; token: string; txHash: string; side: 'entry' | 'exit'; timestamp: number; lotIdentityVersion: string; unitPrice: number; amount: number; source: string; coveredLotCount: number }> = {}) {
+    const o = { chain: 'base', token: '0xtoken', txHash: '0xbuy-legacy', side: 'entry' as const, timestamp: 1, lotIdentityVersion: 'v1', unitPrice: 0.00001, amount: 1_000_000, source: 'recovery-lane', coveredLotCount: 1, ...overrides }
+    return {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: o.chain, token: o.token, txHash: o.txHash, side: o.side, timestamp: o.timestamp, lotIdentityVersion: o.lotIdentityVersion,
+      // THE OLD BUG'S OWN SHAPE, DISCLOSED: priceUsd is the raw per-unit price; valueUsd is the
+      // (already correct) total the old writer computed at write time from the SAME amount.
+      priceUsd: o.unitPrice, valueUsd: o.unitPrice * o.amount, valueType: 'total_side_value_usd', coveredLotCount: o.coveredLotCount,
+      coverageFingerprint: o.lotIdentityVersion, source: o.source, evidenceType: 'chain-aware-historical', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    }
+  }
+
+  it('HARD ASSERTION (legacy migration): a legacy per-unit record (priceUsd=1e-8, amount=1,000,000) is repaired to the correct $10 total — hydration no longer reconstructs zero', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const bigAmountLot = lot({ lotId: 'legacy', openedTxHash: '0xbuy-legacy', closedTxHash: '0xsell-legacy', amount: 1_000_000, costBasisUsd: null, proceedsUsd: 20, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const identityVersion = realLotIdentityVersion(bigAmountLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-legacy', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    acceptedEvidenceKv.store.set(entryKey, legacyRecoveryLaneEnvelope({ txHash: '0xbuy-legacy', lotIdentityVersion: identityVersion, unitPrice: 0.00001, amount: 1_000_000 }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [bigAmountLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'legacy')
+    assert.ok(published, 'the lot must publish')
+    assert.equal(published!.costBasisUsd, 10, 'the correct $10 total (1e-8 x 1,000,000) must be reconstructed, never the raw 1e-8 unit price the old bug would have hydrated as costBasisUsd')
+    assert.equal(published!.evidenceQuality, 'verified', 'must now pass the canonical verifier, not remain non_positive_reconstruction')
+
+    const migration = summary.acceptedEvidenceAudit
+    assert.equal(migration.legacyPerUnitRecordsDetected, 1)
+    assert.equal(migration.legacyPerUnitRecordsRepaired, 1)
+    assert.equal(migration.legacyPerUnitRecordsRejected, 0)
+    const record = migration.legacyPerUnitMigrationAudit.find((r2) => r2.evidenceKey === entryKey)
+    assert.ok(record, 'the migration audit must report this exact evidence key')
+    assert.equal(record!.legacyProof, 'legacy_recovery_per_unit_total')
+    assert.equal(record!.oldUsd, 0.00001)
+    assert.equal(record!.amount, 1_000_000)
+    assert.equal(record!.reconstructedTotalUsd, 10)
+    assert.equal(record!.repairEligible, true)
+    assert.equal(record!.repairApplied, true)
+    assert.equal(record!.repairRejectedReason, null)
+
+    // STABLE / IDEMPOTENT, DISCLOSED: the repaired record is now indistinguishable from a genuine
+    // new-format record (priceUsd === valueUsd) — a SECOND scan must reuse it, unmodified, with zero
+    // further migration activity and the SAME correct total.
+    const storedAfterRepair = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(storedAfterRepair.priceUsd, 10)
+    assert.equal(storedAfterRepair.valueUsd, 10)
+    const r2 = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const freshLot = lot({ lotId: 'legacy', openedTxHash: '0xbuy-legacy', closedTxHash: '0xsell-legacy', amount: 1_000_000, costBasisUsd: null, proceedsUsd: 20, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const summary2 = await r2.reconcile({ fifoEngineResult: fifo({ matchedLots: [freshLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published2 = summary2.publishedMatchedLots.find((l) => l.lotId === 'legacy')
+    assert.equal(published2!.costBasisUsd, 10, 'the second scan must reproduce the SAME correct $10 total — stable and idempotent')
+    assert.equal(summary2.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 0, 'an already-repaired record must never be re-detected as legacy on a later scan')
+  })
+
+  it('HARD ASSERTION (legacy migration): unrelated tiny-but-legitimately-total evidence (a genuine dust trade, priceUsd already equal to valueUsd) is never modified', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const dustLot = lot({ lotId: 'dust', openedTxHash: '0xbuy-dust', closedTxHash: '0xsell-dust', amount: 3, costBasisUsd: null, proceedsUsd: 20, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const identityVersion = realLotIdentityVersion(dustLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-dust', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    // A genuine current-format record: priceUsd === valueUsd already (both $0.000009, a real total
+    // for a genuinely tiny trade) — this must NEVER be treated as legacy-corrupted merely because
+    // the value itself is small.
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xbuy-dust', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 0.000009, valueUsd: 0.000009, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion,
+      source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [dustLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 0, 'priceUsd already equals valueUsd — never flagged as legacy merely because the value is tiny')
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(stored.priceUsd, 0.000009, 'the genuine dust record must be left byte-for-byte untouched')
+    assert.equal(stored.valueUsd, 0.000009)
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'dust')
+    assert.equal(published!.costBasisUsd, 0.000009)
+  })
+
+  it('HARD ASSERTION (legacy migration): a record whose priceUsd x amount does NOT reconcile to valueUsd (tampered/genuinely disagreeing data) is never repaired — fails closed', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const suspectLot = lot({ lotId: 'suspect', openedTxHash: '0xbuy-suspect', closedTxHash: '0xsell-suspect', amount: 1_000_000, costBasisUsd: null, proceedsUsd: 20, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const identityVersion = realLotIdentityVersion(suspectLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-suspect', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    // Shaped exactly like the old writer (recovery-lane, coveredLotCount: 1, priceUsd !== valueUsd),
+    // but priceUsd * amount (1e-8 x 1,000,000 = 10) does NOT match the stored valueUsd (999) — no
+    // deterministic proof exists that this is the legacy bug rather than a genuine disagreement, so
+    // it must be left alone (fail closed), never coerced into either value.
+    acceptedEvidenceKv.store.set(entryKey, legacyRecoveryLaneEnvelope({ txHash: '0xbuy-suspect', lotIdentityVersion: identityVersion, unitPrice: 0.00001, amount: 1_000_000 }))
+    const raw = acceptedEvidenceKv.store.get(entryKey) as { valueUsd: number }
+    raw.valueUsd = 999 // corrupt/disagreeing valueUsd — breaks the self-consistency proof
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [suspectLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 0, 'a self-inconsistent record must never be treated as proven-legacy')
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsRepaired, 0)
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(stored.priceUsd, 0.00001, 'the disputed record must be left untouched — never repaired on an unproven guess')
+    assert.equal(stored.valueUsd, 999)
+  })
+
+  // =============================================================================================
   // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
   // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already
   // enforce — never a second, looser or stricter gate.

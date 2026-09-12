@@ -6,8 +6,8 @@ import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
-  buildAcceptedEvidenceCoverageFingerprint,
-  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
+  buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
+  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
@@ -798,7 +798,36 @@ export type AcceptedEvidenceAudit = {
   // for exactly that reason — see `acceptedEvidenceMutationAudit` for the bounded per-side detail.
   verifiedSidesCoverageReseeded: number
   acceptedEvidenceMutationAudit: AcceptedEvidenceMutationAudit[]
+  // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair follow-up task):
+  // see detectLegacyPerUnitTotalRecord's own header (acceptedEvidenceStore.ts) for the exact,
+  // deterministic proof required before a persisted record is ever touched. `Detected` counts every
+  // record proven to carry the old writer's per-unit-as-total shape; `Repaired` counts those actually
+  // rewritten in place; `Rejected` counts detected-but-not-repaired (e.g. the write itself failed) —
+  // never a record this migration merely declined to inspect.
+  legacyPerUnitRecordsDetected: number
+  legacyPerUnitRecordsRepaired: number
+  legacyPerUnitRecordsRejected: number
+  legacyPerUnitMigrationAudit: AcceptedEvidenceLegacyMigrationRecord[]
 }
+
+// BOUNDED MIGRATION-TRACE AUDIT, DISCLOSED (legacy-accepted-evidence-repair follow-up task): one
+// entry per record this pass PROVED carries the old per-unit-as-total writer bug (see
+// detectLegacyPerUnitTotalRecord) — capped at MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES, purely for
+// production log visibility, never a second decision surface (the actual repair/skip decision is
+// made once, inline, by the exact same detection this record just reports).
+export type AcceptedEvidenceLegacyMigrationRecord = {
+  evidenceKey: string
+  oldUsd: number
+  amount: number
+  unitPrice: number
+  reconstructedTotalUsd: number | null
+  legacyProof: AcceptedEvidenceMigrationClassification | null
+  repairEligible: boolean
+  repairApplied: boolean
+  repairRejectedReason: string | null
+}
+
+const MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES = 30
 
 // BOUNDED MUTATION-TRACE AUDIT, DISCLOSED (accepted-evidence-raw-value-mutation follow-up task):
 // diagnostic-only, capped at MAX_ACCEPTED_EVIDENCE_MUTATION_EXAMPLES — never affects the actual
@@ -1115,6 +1144,8 @@ export function createPnlReconciliation(config: Config = {}) {
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
+      legacyPerUnitRecordsDetected: 0, legacyPerUnitRecordsRepaired: 0, legacyPerUnitRecordsRejected: 0,
+      legacyPerUnitMigrationAudit: [],
     }
   }
 
@@ -1205,7 +1236,44 @@ export function createPnlReconciliation(config: Config = {}) {
     for (const [key, group] of groups) {
       const evidence = evidenceByGroupKey.get(key)
       if (!evidence) continue
-      for (const share of allocateSideValueAcrossGroup(group.lots, stablecoinNormalizedGroupTotal(group.lots, evidence.priceUsd))) {
+      let groupTotalUsd = evidence.priceUsd
+      // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair follow-up
+      // task): only ever attempted when the record's own declared scope (`coveredLotCount: 1`, the
+      // old writer's only shape) still matches the LIVE group's real composition exactly (still
+      // exactly 1 lot) — a group that has since grown beyond that scope is a genuinely different
+      // question (composition drift) this migration does not attempt to answer; it is left
+      // untouched here, exactly as before this task (fail-closed, never a guess).
+      if (group.lots.length === 1) {
+        const detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
+        const evidenceKey = buildAcceptedEvidenceKey(evidence)
+        if (detection.legacyProof !== null) {
+          audit.legacyPerUnitRecordsDetected += 1
+          const total = detection.reconstructedTotalUsd!
+          const record: AcceptedEvidenceLegacyMigrationRecord = {
+            evidenceKey, oldUsd: evidence.priceUsd, amount: group.lots[0].amount, unitPrice: evidence.priceUsd,
+            reconstructedTotalUsd: total, legacyProof: detection.legacyProof,
+            repairEligible: true, repairApplied: false, repairRejectedReason: null,
+          }
+          // REPAIR, WRITTEN BACK, AWAITED, DISCLOSED: current schema/methodology (buildAcceptedEvidenceEnvelope
+          // always stamps ACCEPTED_EVIDENCE_SCHEMA_VERSION), correct group-total USD in BOTH
+          // priceUsd/valueUsd (the new writer's own invariant), identity/source/evidenceType/
+          // providerTimestampBucket preserved exactly from the record being repaired — never a
+          // fabricated provenance. Applied THIS scan, before publication, so the corrected value
+          // both fixes this scan's own reconstruction AND makes every future scan stable/idempotent
+          // (a record already at `priceUsd === valueUsd` never re-triggers this migration again).
+          const repairedEnvelope = buildAcceptedEvidenceEnvelope({
+            identity: { chain: evidence.chain, token: evidence.token, txHash: evidence.txHash, side: evidence.side, timestamp: evidence.timestamp, lotIdentityVersion: evidence.lotIdentityVersion },
+            priceUsd: total, valueUsd: total, coveredLotCount: evidence.coveredLotCount, coverageFingerprint: evidence.coverageFingerprint,
+            source: evidence.source, evidenceType: evidence.evidenceType, providerTimestampBucket: evidence.providerTimestampBucket, now,
+          })
+          const ok = await writeAcceptedEvidence(kv, repairedEnvelope)
+          record.repairApplied = ok
+          if (ok) { audit.legacyPerUnitRecordsRepaired += 1; groupTotalUsd = total }
+          else { audit.legacyPerUnitRecordsRejected += 1; record.repairRejectedReason = 'write_failed' }
+          if (audit.legacyPerUnitMigrationAudit.length < MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES) audit.legacyPerUnitMigrationAudit.push(record)
+        }
+      }
+      for (const share of allocateSideValueAcrossGroup(group.lots, stablecoinNormalizedGroupTotal(group.lots, groupTotalUsd))) {
         const existing = shareByLot.get(share.lot) ?? {}
         if (group.side === 'entry') existing.entry = share
         else existing.exit = share
