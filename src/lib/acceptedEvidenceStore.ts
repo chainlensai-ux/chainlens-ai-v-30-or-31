@@ -97,7 +97,41 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   verificationStatus: 'verified'
   acceptedAt: number
   expiresAt: number
+  // IMMUTABLE PROVENANCE, DISCLOSED, ADDITIVE (provenance-laundering follow-up task — CONFIRMED ROOT
+  // CAUSE this closes: `source` is MUTABLE — every writer that re-envelopes an existing key (the
+  // canonical-seeding pass is the confirmed real-world case) has always overwritten it with its OWN
+  // name, silently erasing whatever writer/methodology actually first produced the value. A record
+  // that started life as a `recovery-lane` per-unit-as-total bug and was later re-aggregated by the
+  // canonical-seeding pass came out the other side reading `source: 'canonical-upstream'`,
+  // `priceUsd === valueUsd` — bit-for-bit indistinguishable from a genuine, correct canonical-seeding
+  // record, and the OLD migration's `source === 'recovery-lane'` provenance gate could never see it
+  // again. `originWriter`/`originMethodologyVersion` are set ONCE, from the FIRST writer this store
+  // ever sees for a given key, and every later write (however many times the key is re-enveloped)
+  // preserves them unchanged — never reset to the new writer's own name. `lastWriter` is the one
+  // field that DOES update on every write (the current writer's own name), and `migrationHistory` is
+  // a bounded, append-only log of every writer transition, so "who wrote this, and who wrote it
+  // before that" is always reconstructable from the envelope alone, without needing external logs.
+  // MISSING ON A PRE-EXISTING RECORD, DISCLOSED: a record persisted before this field existed has no
+  // way to recover its TRUE original writer — `buildAcceptedEvidenceEnvelope` conservatively seeds
+  // `originWriter` from that record's own (possibly already-laundered) `source` field the first time
+  // it is next touched, never fabricating a writer name it cannot know. This is an honest "best
+  // information available" default, not a claim of certainty — see this module's own
+  // `detectLegacyPerUnitTotalByLiveUpstreamProof` for the INDEPENDENT (provenance-free) proof this
+  // task requires for a record whose true origin is already unrecoverable this way.
+  originWriter: string
+  originMethodologyVersion: string
+  lastWriter: string
+  migrationHistory: AcceptedEvidenceMigrationHistoryEntry[]
 }
+
+export type AcceptedEvidenceMigrationHistoryEntry = {
+  at: number
+  fromWriter: string
+  toWriter: string
+  reason: string
+}
+
+const MAX_MIGRATION_HISTORY_ENTRIES = 10
 
 export type AcceptedEvidenceKvLike = {
   get<T>(key: string): Promise<T | null>
@@ -134,7 +168,23 @@ export type AcceptedEvidenceKvLike = {
 //      caller must treat it as ineligible for repair and fail closed, never coerce a value in.
 // A record already written under the new semantics (`priceUsd === valueUsd`) always reports no proof
 // — there is nothing to repair, whether or not the shared value happens to be small.
-export type AcceptedEvidenceMigrationClassification = 'legacy_recovery_per_unit_total'
+//
+// PROVENANCE-LAUNDERING FIX, DISCLOSED (provenance-laundering follow-up task — CONFIRMED ROOT
+// CAUSE): the check below now reads `envelope.originWriter` FIRST, falling back to `envelope.source`
+// only for a pre-existing record that predates the `originWriter` field entirely. This is what stops
+// the confirmed laundering path — the canonical-seeding pass re-enveloping an existing
+// `recovery-lane` key with `source: 'canonical-upstream'` — from ever erasing this proof again GOING
+// FORWARD: once a key's `originWriter` is recorded as `recovery-lane`, every later re-write (however
+// many times the canonical-seeding pass touches it) preserves that field unchanged (see
+// `buildAcceptedEvidenceEnvelope`'s own provenance-preservation logic), so this same function keeps
+// recognizing it no matter how many times `source`/`lastWriter` itself has since changed.
+// A record ALREADY laundered BEFORE this fix shipped has no `originWriter` field at all yet, so it
+// falls back to reading its current, already-laundered `source` ('canonical-upstream') — genuinely
+// unrecoverable this way; see `detectLegacyPerUnitTotalByLiveUpstreamProof` below for the
+// independent, provenance-free proof this task requires for exactly that case.
+export type AcceptedEvidenceMigrationClassification =
+  | 'legacy_recovery_per_unit_total'
+  | 'legacy_recovery_per_unit_total_live_upstream_proof'
 
 export type LegacyPerUnitTotalDetection = {
   legacyProof: AcceptedEvidenceMigrationClassification | null
@@ -147,12 +197,15 @@ export type LegacyPerUnitTotalDetection = {
 // (still exactly 1 lot); a group that has since grown beyond that scope is a genuinely different,
 // unrelated question (composition drift) this function does not attempt to answer.
 export function detectLegacyPerUnitTotalRecord(
-  envelope: Pick<AcceptedEvidenceEnvelope, 'priceUsd' | 'valueUsd' | 'source' | 'coveredLotCount'>,
+  envelope: Pick<AcceptedEvidenceEnvelope, 'priceUsd' | 'valueUsd' | 'source' | 'coveredLotCount'> & Partial<Pick<AcceptedEvidenceEnvelope, 'originWriter'>>,
   lotAmount: number,
 ): LegacyPerUnitTotalDetection {
   const none: LegacyPerUnitTotalDetection = { legacyProof: null, reconstructedTotalUsd: null }
   // PROVENANCE, DISCLOSED: the old writer's ONE distinguishing shape — a per-lot recovery-lane write.
-  if (envelope.source !== 'recovery-lane' || envelope.coveredLotCount !== 1) return none
+  // Reads the IMMUTABLE `originWriter` when present (survives any number of later re-envelopings);
+  // falls back to the mutable `source` only for a record that predates this field.
+  const writerForProvenance = envelope.originWriter ?? envelope.source
+  if (writerForProvenance !== 'recovery-lane' || envelope.coveredLotCount !== 1) return none
   if (!Number.isFinite(envelope.priceUsd) || !Number.isFinite(envelope.valueUsd) || !Number.isFinite(lotAmount) || lotAmount <= 0) return none
   // Already the current (post-fix) shape — priceUsd IS the total, nothing to repair, regardless of
   // how small the shared value is.
@@ -163,6 +216,49 @@ export function detectLegacyPerUnitTotalRecord(
   if (!selfConsistent) return none
   if (envelope.valueUsd <= 0) return none
   return { legacyProof: 'legacy_recovery_per_unit_total', reconstructedTotalUsd: envelope.valueUsd }
+}
+
+// INDEPENDENT, PROVENANCE-FREE PROOF, DISCLOSED (provenance-laundering follow-up task — the repair
+// path for a record whose true origin is ALREADY unrecoverable: no `originWriter` field, `source`
+// already reads `'canonical-upstream'`, `priceUsd === valueUsd` — bit-for-bit indistinguishable from
+// a genuine canonical-seeding record by metadata alone). Never uses provenance at all — instead
+// proves corruption from arithmetic, using ONLY data this scan's own upstream pricing pass ALREADY
+// computed (never a new provider call, never touching provider strategy):
+//
+//   `liveUpstreamTotalUsd` — the SAME lot's own fresh, correctly-scaled TOTAL side value from THIS
+//   scan's upstream pricing (`priceAllEntries`'s own `price x amount`, already in memory before
+//   hydration ever runs) — genuinely independent of whatever is persisted.
+//
+// PROOF: dividing that live total by the lot's own amount recovers the live PER-UNIT price. If the
+// PERSISTED total is, within tolerance, EQUAL to that per-unit price (not the total), the persisted
+// record can only be explained one way: a past writer stored a per-unit price where a total was
+// required — exactly the confirmed bug's own signature, reconstructed independently of any
+// provenance field. A persisted total that is small for an unrelated, legitimate reason (a genuine
+// dust trade) will not coincidentally equal a DIFFERENT, live-computed per-unit price — this is a
+// real arithmetic coincidence check, not a magnitude threshold. Requires `lotAmount` to genuinely
+// differ from 1 (at amount 1, per-unit price and total are numerically identical, so equality proves
+// nothing — fails closed on the one case where this proof is structurally unable to distinguish
+// corruption from a correct amount-1 record). A persisted value that does NOT reconcile this way is
+// left completely alone — no proof, no repair, material disagreement stays fail-closed, exactly as
+// for any other unexplained conflict this store has always left untouched.
+export function detectLegacyPerUnitTotalByLiveUpstreamProof(
+  persistedTotalUsd: number,
+  lotAmount: number,
+  liveUpstreamTotalUsd: number,
+): LegacyPerUnitTotalDetection {
+  const none: LegacyPerUnitTotalDetection = { legacyProof: null, reconstructedTotalUsd: null }
+  if (!Number.isFinite(persistedTotalUsd) || persistedTotalUsd <= 0) return none
+  if (!Number.isFinite(lotAmount) || lotAmount <= 0 || lotAmount === 1) return none
+  if (!Number.isFinite(liveUpstreamTotalUsd) || liveUpstreamTotalUsd <= 0) return none
+  const impliedLiveUnitPrice = liveUpstreamTotalUsd / lotAmount
+  const tolerance = Math.max(1e-9, Math.abs(impliedLiveUnitPrice) * 1e-6)
+  const matchesLiveUnitPrice = Math.abs(persistedTotalUsd - impliedLiveUnitPrice) <= tolerance
+  if (!matchesLiveUnitPrice) return none
+  // Guards the coincidental case where the live total and live per-unit price are themselves close
+  // (amount near 1) — already excluded by `lotAmount === 1` above, kept as an explicit belt-and-
+  // braces check against float-noise amounts very close to (but not exactly) 1.
+  if (Math.abs(persistedTotalUsd - liveUpstreamTotalUsd) <= tolerance) return none
+  return { legacyProof: 'legacy_recovery_per_unit_total_live_upstream_proof', reconstructedTotalUsd: liveUpstreamTotalUsd }
 }
 
 export type AcceptedEvidenceState =
@@ -397,7 +493,26 @@ export function buildAcceptedEvidenceEnvelope(params: {
   evidenceType: string
   providerTimestampBucket: number | null
   now: number
+  // PROVENANCE PRESERVATION, DISCLOSED, ADDITIVE (provenance-laundering follow-up task — this is the
+  // fix for the confirmed laundering path): pass the EXISTING envelope being replaced (if any) so
+  // `originWriter`/`originMethodologyVersion` carry forward unchanged instead of being reset to this
+  // write's own `source` every time a key is re-enveloped. Omit (or pass null) ONLY for a genuinely
+  // brand-new key with no prior record — passing it for a re-write is what stops the canonical-
+  // seeding pass (or any future writer) from ever again silently erasing an earlier writer's
+  // identity. `writerReason` names why THIS write is happening (e.g. 'initial_seed',
+  // 'reseed_coverage_growth', 'legacy_recovery_per_unit_total') — recorded in `migrationHistory` only
+  // when the writer identity actually changes from the previous envelope's own `lastWriter`.
+  previousEnvelope?: Pick<AcceptedEvidenceEnvelope, 'originWriter' | 'originMethodologyVersion' | 'lastWriter' | 'migrationHistory' | 'source' | 'evidenceType'> | null
+  writerReason?: string
 }): AcceptedEvidenceEnvelope {
+  const prev = params.previousEnvelope ?? null
+  const originWriter = prev?.originWriter ?? prev?.source ?? params.source
+  const originMethodologyVersion = prev?.originMethodologyVersion ?? prev?.evidenceType ?? params.evidenceType
+  const previousLastWriter = prev?.lastWriter ?? prev?.source ?? null
+  const writerChanged = previousLastWriter !== null && previousLastWriter !== params.source
+  const migrationHistory = writerChanged
+    ? [...(prev?.migrationHistory ?? []), { at: params.now, fromWriter: previousLastWriter!, toWriter: params.source, reason: params.writerReason ?? 'rewrite' }].slice(-MAX_MIGRATION_HISTORY_ENTRIES)
+    : (prev?.migrationHistory ?? [])
   return {
     ...params.identity,
     schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION,
@@ -413,5 +528,9 @@ export function buildAcceptedEvidenceEnvelope(params: {
     verificationStatus: 'verified',
     acceptedAt: params.now,
     expiresAt: params.now + ACCEPTED_EVIDENCE_TTL_SECONDS * 1000,
+    originWriter,
+    originMethodologyVersion,
+    lastWriter: params.source,
+    migrationHistory,
   }
 }

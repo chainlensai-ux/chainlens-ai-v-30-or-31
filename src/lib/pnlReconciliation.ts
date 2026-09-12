@@ -7,6 +7,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
+  detectLegacyPerUnitTotalByLiveUpstreamProof,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
@@ -808,7 +809,46 @@ export type AcceptedEvidenceAudit = {
   legacyPerUnitRecordsRepaired: number
   legacyPerUnitRecordsRejected: number
   legacyPerUnitMigrationAudit: AcceptedEvidenceLegacyMigrationRecord[]
+  // CONFLICT AUDIT, DISCLOSED (provenance-laundering follow-up task): one bounded entry per side
+  // where THIS scan's own fresh upstream value disagreed with the persisted accepted-evidence share
+  // (`existingUpstreamSidesConflictingWithAcceptedEvidence`'s own real detail) — answers "why did the
+  // conflict counter fire but nothing got reseeded" without needing to re-derive it from logs.
+  acceptedEvidenceConflictAudit: AcceptedEvidenceConflictAuditRecord[]
 }
+
+// CONFLICT-CONTEXT, DISCLOSED (provenance-laundering follow-up task): per-group-side state the
+// per-lot conflict-audit loop needs — computed once per group, never re-derived per lot.
+type ConflictContext = {
+  evidenceKey: string
+  evidence: AcceptedEvidenceEnvelope
+  liveFingerprint: string
+  legacyProofAvailable: AcceptedEvidenceMigrationClassification | null
+}
+
+// BOUNDED CONFLICT AUDIT, DISCLOSED (provenance-laundering follow-up task — the CONFIRMED
+// "existingUpstreamSidesConflictingWithAcceptedEvidence=211 yet verifiedSidesCoverageReseeded=0"
+// paradox this closes): every side where this scan's own live upstream candidate disagreed with the
+// persisted accepted-evidence share was ALWAYS counted (`existingUpstreamSidesConflictingWith
+// AcceptedEvidence`), but nothing ever explained WHY none of those 211 conflicts triggered a reseed —
+// the coverage-reseed mechanism only ever watches for composition growth (`coveredLotCount`/
+// `coverageFingerprint`), never a plain VALUE disagreement, so accepted evidence unconditionally wins
+// by design (`reasonProtected: 'accepted_evidence_immutable_by_design'`) UNLESS an independent legacy
+// proof is available for that exact side (`legacyProofAvailable` non-null — in which case this same
+// pass already repaired it above, before this audit entry is even built).
+export type AcceptedEvidenceConflictAuditRecord = {
+  evidenceKey: string
+  persistedValue: number
+  upstreamValue: number
+  source: string
+  originWriter: string
+  coverageFingerprint: string
+  liveFingerprint: string
+  writeDecision: 'repaired' | 'protected_immutable'
+  reasonProtected: string | null
+  legacyProofAvailable: AcceptedEvidenceMigrationClassification | null
+}
+
+const MAX_CONFLICT_AUDIT_EXAMPLES = 30
 
 // BOUNDED MIGRATION-TRACE AUDIT, DISCLOSED (legacy-accepted-evidence-repair follow-up task): one
 // entry per record this pass PROVED carries the old per-unit-as-total writer bug (see
@@ -1145,7 +1185,7 @@ export function createPnlReconciliation(config: Config = {}) {
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
       legacyPerUnitRecordsDetected: 0, legacyPerUnitRecordsRepaired: 0, legacyPerUnitRecordsRejected: 0,
-      legacyPerUnitMigrationAudit: [],
+      legacyPerUnitMigrationAudit: [], acceptedEvidenceConflictAudit: [],
     }
   }
 
@@ -1233,19 +1273,49 @@ export function createPnlReconciliation(config: Config = {}) {
     // ALLOCATE EACH GROUP'S TOTAL ACROSS ITS SIBLINGS, ONCE, DISCLOSED: the exact same deterministic,
     // integer-exact split the manifest module uses — allocated shares sum back to the group's total.
     const shareByLot = new Map<MatchedLot, { entry?: SideAllocationShare; exit?: SideAllocationShare }>()
+    // CONFLICT-AUDIT CONTEXT, DISCLOSED (provenance-laundering follow-up task): per-lot-per-side
+    // context the second (per-lot) loop below needs to build a real conflict-audit entry — never a
+    // second, independent recomputation of the group's own evidence/fingerprint/legacy-proof state.
+    const conflictContextByLot = new Map<MatchedLot, { entry?: ConflictContext; exit?: ConflictContext }>()
+    // REPAIR TRACKING, DISCLOSED: which evidence keys this SAME pass actually repaired (write
+    // succeeded) — never re-derived from value equality, since a repair via the live-upstream proof
+    // path makes the repaired share EQUAL to upstream by construction (landing in the "matching"
+    // branch below, never "conflicting" at all); the conflict-audit's own `writeDecision` needs the
+    // real, independent fact of whether a write happened, not an inference from values that a
+    // successful repair would have already reconciled.
+    const repairedEvidenceKeysThisPass = new Set<string>()
     for (const [key, group] of groups) {
       const evidence = evidenceByGroupKey.get(key)
       if (!evidence) continue
       let groupTotalUsd = evidence.priceUsd
-      // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair follow-up
-      // task): only ever attempted when the record's own declared scope (`coveredLotCount: 1`, the
-      // old writer's only shape) still matches the LIVE group's real composition exactly (still
-      // exactly 1 lot) — a group that has since grown beyond that scope is a genuinely different
-      // question (composition drift) this migration does not attempt to answer; it is left
-      // untouched here, exactly as before this task (fail-closed, never a guess).
+      const evidenceKey = buildAcceptedEvidenceKey(evidence)
+      const liveFingerprint = buildAcceptedEvidenceCoverageFingerprint(group.lots)
+      let legacyProofAvailable: AcceptedEvidenceMigrationClassification | null = null
+      // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair /
+      // provenance-laundering follow-up tasks): only ever attempted when the record's own declared
+      // scope (`coveredLotCount: 1`, the old writer's only shape) still matches the LIVE group's
+      // real composition exactly (still exactly 1 lot) — a group that has since grown beyond that
+      // scope is a genuinely different question (composition drift) this migration does not attempt
+      // to answer; it is left untouched here, exactly as before this task (fail-closed, never a
+      // guess).
       if (group.lots.length === 1) {
-        const detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
-        const evidenceKey = buildAcceptedEvidenceKey(evidence)
+        // PRIMARY: metadata-based proof (works when `originWriter` — or, for a record predating
+        // that field, `source` — still says `recovery-lane`). See detectLegacyPerUnitTotalRecord's
+        // own header: this alone can no longer be silently defeated by a later re-envelope, since
+        // `originWriter` is now preserved through every write (see buildAcceptedEvidenceEnvelope's
+        // provenance-preservation logic below).
+        let detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
+        // FALLBACK: independent, provenance-free proof for a record whose true origin is ALREADY
+        // unrecoverable (laundered before this fix ever shipped) — proves corruption from this
+        // scan's own live upstream total alone, never from a metadata field that could itself have
+        // been erased. See detectLegacyPerUnitTotalByLiveUpstreamProof's own header.
+        if (detection.legacyProof === null) {
+          const liveUpstreamTotalUsd = group.side === 'entry' ? group.lots[0].costBasisUsd : group.lots[0].proceedsUsd
+          if (liveUpstreamTotalUsd !== null) {
+            detection = detectLegacyPerUnitTotalByLiveUpstreamProof(evidence.priceUsd, group.lots[0].amount, liveUpstreamTotalUsd)
+          }
+        }
+        legacyProofAvailable = detection.legacyProof
         if (detection.legacyProof !== null) {
           audit.legacyPerUnitRecordsDetected += 1
           const total = detection.reconstructedTotalUsd!
@@ -1256,22 +1326,35 @@ export function createPnlReconciliation(config: Config = {}) {
           }
           // REPAIR, WRITTEN BACK, AWAITED, DISCLOSED: current schema/methodology (buildAcceptedEvidenceEnvelope
           // always stamps ACCEPTED_EVIDENCE_SCHEMA_VERSION), correct group-total USD in BOTH
-          // priceUsd/valueUsd (the new writer's own invariant), identity/source/evidenceType/
+          // priceUsd/valueUsd (the new writer's own invariant), identity/evidenceType/
           // providerTimestampBucket preserved exactly from the record being repaired — never a
-          // fabricated provenance. Applied THIS scan, before publication, so the corrected value
-          // both fixes this scan's own reconstruction AND makes every future scan stable/idempotent
-          // (a record already at `priceUsd === valueUsd` never re-triggers this migration again).
+          // fabricated provenance. `previousEnvelope: evidence` carries `originWriter`/
+          // `originMethodologyVersion` forward unchanged (this repair write is never itself allowed
+          // to launder provenance) and appends a real `migrationHistory` entry. `source` is left as
+          // whatever the record's own CURRENT source already is (this repair corrects the VALUE, not
+          // the writer identity — a record already relabeled `canonical-upstream` stays labeled
+          // that; only its `originWriter` truthfully remembers where the value first came from).
+          // Applied THIS scan, before publication, so the corrected value both fixes this scan's own
+          // reconstruction AND makes every future scan stable/idempotent.
           const repairedEnvelope = buildAcceptedEvidenceEnvelope({
             identity: { chain: evidence.chain, token: evidence.token, txHash: evidence.txHash, side: evidence.side, timestamp: evidence.timestamp, lotIdentityVersion: evidence.lotIdentityVersion },
             priceUsd: total, valueUsd: total, coveredLotCount: evidence.coveredLotCount, coverageFingerprint: evidence.coverageFingerprint,
             source: evidence.source, evidenceType: evidence.evidenceType, providerTimestampBucket: evidence.providerTimestampBucket, now,
+            previousEnvelope: evidence, writerReason: detection.legacyProof,
           })
           const ok = await writeAcceptedEvidence(kv, repairedEnvelope)
           record.repairApplied = ok
-          if (ok) { audit.legacyPerUnitRecordsRepaired += 1; groupTotalUsd = total }
+          if (ok) { audit.legacyPerUnitRecordsRepaired += 1; groupTotalUsd = total; repairedEvidenceKeysThisPass.add(evidenceKey) }
           else { audit.legacyPerUnitRecordsRejected += 1; record.repairRejectedReason = 'write_failed' }
           if (audit.legacyPerUnitMigrationAudit.length < MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES) audit.legacyPerUnitMigrationAudit.push(record)
         }
+      }
+      for (const lot of group.lots) {
+        const ctx = conflictContextByLot.get(lot) ?? {}
+        const context: ConflictContext = { evidenceKey, evidence, liveFingerprint, legacyProofAvailable }
+        if (group.side === 'entry') ctx.entry = context
+        else ctx.exit = context
+        conflictContextByLot.set(lot, ctx)
       }
       for (const share of allocateSideValueAcrossGroup(group.lots, stablecoinNormalizedGroupTotal(group.lots, groupTotalUsd))) {
         const existing = shareByLot.get(share.lot) ?? {}
@@ -1286,9 +1369,10 @@ export function createPnlReconciliation(config: Config = {}) {
       let costBasisUsd = lot.costBasisUsd
       let proceedsUsd = lot.proceedsUsd
       const shares = shareByLot.get(lot)
-      const sides: Array<{ side: AcceptedEvidenceSide; upstreamPrice: number | null; already: boolean; share: SideAllocationShare | undefined }> = [
-        { side: 'entry', upstreamPrice: lot.costBasisUsd, already: lot.costBasisUsd !== null, share: shares?.entry },
-        { side: 'exit', upstreamPrice: lot.proceedsUsd, already: lot.proceedsUsd !== null, share: shares?.exit },
+      const contexts = conflictContextByLot.get(lot)
+      const sides: Array<{ side: AcceptedEvidenceSide; upstreamPrice: number | null; already: boolean; share: SideAllocationShare | undefined; context: ConflictContext | undefined }> = [
+        { side: 'entry', upstreamPrice: lot.costBasisUsd, already: lot.costBasisUsd !== null, share: shares?.entry, context: contexts?.entry },
+        { side: 'exit', upstreamPrice: lot.proceedsUsd, already: lot.proceedsUsd !== null, share: shares?.exit, context: contexts?.exit },
       ]
       for (const s of sides) {
         if (s.already) audit.existingVerifiedSidesProtectedFromOverwrite += 1
@@ -1307,6 +1391,30 @@ export function createPnlReconciliation(config: Config = {}) {
             } else {
               audit.upstreamPricesRejectedDueToAcceptedEvidence += 1
               audit.existingUpstreamSidesConflictingWithAcceptedEvidence += 1
+              // CONFLICT AUDIT, DISCLOSED (provenance-laundering follow-up task — answers the
+              // confirmed "conflicting=211, reseeded=0" paradox for EVERY conflicting side, not just
+              // an aggregate count): a repair already happened above (in the group loop) whenever an
+              // independent legacy proof was available for this exact side — `writeDecision` reports
+              // which actually occurred. Absent a proof, accepted evidence wins unconditionally BY
+              // DESIGN (never a bug in itself — this is what keeps a genuinely correct, immutable
+              // historical record safe from a live price simply drifting later); `reasonProtected`
+              // names that design choice explicitly so a real corruption without proof is at least
+              // VISIBLE, never silently invisible the way the plain counter alone left it.
+              if (s.context && audit.acceptedEvidenceConflictAudit.length < MAX_CONFLICT_AUDIT_EXAMPLES) {
+                const wasRepaired = repairedEvidenceKeysThisPass.has(s.context.evidenceKey)
+                audit.acceptedEvidenceConflictAudit.push({
+                  evidenceKey: s.context.evidenceKey,
+                  persistedValue: s.context.evidence.priceUsd,
+                  upstreamValue: s.upstreamPrice!,
+                  source: s.context.evidence.source,
+                  originWriter: s.context.evidence.originWriter ?? s.context.evidence.source,
+                  coverageFingerprint: s.context.evidence.coverageFingerprint,
+                  liveFingerprint: s.context.liveFingerprint,
+                  writeDecision: wasRepaired ? 'repaired' : 'protected_immutable',
+                  reasonProtected: wasRepaired ? null : 'accepted_evidence_immutable_by_design',
+                  legacyProofAvailable: s.context.legacyProofAvailable,
+                })
+              }
             }
           } else {
             audit.upstreamLookupsSkippedByAcceptedEvidence += 1
@@ -1780,10 +1888,22 @@ export function createPnlReconciliation(config: Config = {}) {
         return
       }
       const identity = { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp, lotIdentityVersion: representativeVersion(group) }
+      // PROVENANCE PRESERVATION, DISCLOSED (provenance-laundering follow-up task — CONFIRMED ROOT
+      // CAUSE this fixes): this pass previously called buildAcceptedEvidenceEnvelope WITHOUT
+      // `previousEnvelope`, so every re-write here — including a `reseed_coverage_growth` over an
+      // EXISTING `recovery-lane` record — reset `originWriter` to this pass's own `'canonical-
+      // upstream'` name, permanently erasing the record's true origin (and, since this pass also
+      // always sets `priceUsd === valueUsd`, made the result bit-for-bit indistinguishable from a
+      // genuine canonical-seeding record — exactly the confirmed laundering path this migration's own
+      // provenance gate could no longer see through). Passing `previousEnvelope: existing` carries
+      // `originWriter`/`originMethodologyVersion` forward unchanged (or seeds them, once, from
+      // `existing.source` for a record that predates these fields) — this pass's own name only ever
+      // becomes `lastWriter`, never `originWriter`, from here on.
       const envelope = buildAcceptedEvidenceEnvelope({
         identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd',
         coveredLotCount: group.lots.length, coverageFingerprint: liveFingerprint,
         source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
+        previousEnvelope: existing, writerReason: existing !== null ? 'reseed_coverage_growth' : 'initial_seed',
       })
       audit.missingVerifiedEvidenceMetadata += group.lots.length
       const isCoverageReseed = existing !== null

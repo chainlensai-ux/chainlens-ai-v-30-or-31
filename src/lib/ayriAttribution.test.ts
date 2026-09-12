@@ -51,7 +51,7 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
       legacyPerUnitRecordsDetected: 0, legacyPerUnitRecordsRepaired: 0, legacyPerUnitRecordsRejected: 0,
-      legacyPerUnitMigrationAudit: [],
+      legacyPerUnitMigrationAudit: [], acceptedEvidenceConflictAudit: [],
     },
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),

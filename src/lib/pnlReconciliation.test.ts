@@ -739,6 +739,133 @@ describe('pnlReconciliation', () => {
   })
 
   // =============================================================================================
+  // provenance-laundering follow-up task — CONFIRMED ROOT CAUSE: seedAcceptedEvidenceForVerifiedLots
+  // re-enveloped an EXISTING recovery-lane record as `source: 'canonical-upstream'` with
+  // `priceUsd === valueUsd`, silently erasing the ONLY signal (`source === 'recovery-lane'`) the
+  // prior migration's provenance gate could detect — the corrupted value became permanently
+  // protected as "immutable canonical evidence." Fixed two ways: (1) `originWriter` now survives
+  // every re-envelope (seedAcceptedEvidenceForVerifiedLots' own write no longer resets it), closing
+  // the hole going forward; (2) an independent, provenance-free proof
+  // (`detectLegacyPerUnitTotalByLiveUpstreamProof`) can still repair a record ALREADY laundered
+  // before this fix shipped, using only this scan's own live upstream total — never a new provider
+  // call, never provenance.
+  // =============================================================================================
+
+  it('HARD ASSERTION (provenance-laundering fix): a record already laundered to canonical-upstream (no originWriter, priceUsd already equals the corrupted valueUsd) is still repaired via the independent live-upstream proof', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const bigAmountLot = lot({ lotId: 'laundered', openedTxHash: '0xbuy-laundered', closedTxHash: '0xsell-laundered', amount: 1_000_000, costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10, evidenceQuality: 'verified' })
+    const identityVersion = realLotIdentityVersion(bigAmountLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-laundered', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    // Simulates the CONFIRMED laundering outcome: seedAcceptedEvidenceForVerifiedLots (before this
+    // fix) re-aggregated an already-corrupted per-unit value (0.00001, from the old recovery-lane
+    // bug) as if it were a fresh, correct canonical-upstream total — no originWriter field exists
+    // (this record predates it entirely), source is already relabeled, priceUsd === valueUsd (the
+    // exact shape that defeated the prior migration's `source === 'recovery-lane'` provenance gate).
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xbuy-laundered', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 0.00001, valueUsd: 0.00001, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion,
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    // THIS scan's own upstream pricing already resolved the entry side correctly at $10 (costBasisUsd:
+    // 10 on the fixture lot) — the live, independent fact the repair proof is built from.
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [bigAmountLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'laundered')
+    assert.ok(published, 'the lot must publish')
+    assert.equal(published!.costBasisUsd, 10, 'the laundered 0.00001 must never overwrite the correct $10 total — the independent live-upstream proof must catch what the metadata-only gate could not')
+
+    const migration = summary.acceptedEvidenceAudit
+    assert.equal(migration.legacyPerUnitRecordsDetected, 1)
+    assert.equal(migration.legacyPerUnitRecordsRepaired, 1)
+    const record = migration.legacyPerUnitMigrationAudit.find((r2) => r2.evidenceKey === entryKey)
+    assert.ok(record)
+    assert.equal(record!.legacyProof, 'legacy_recovery_per_unit_total_live_upstream_proof')
+    assert.equal(record!.reconstructedTotalUsd, 10)
+
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(stored.priceUsd, 10, 'the persisted record itself must be corrected, so a LATER scan is stable/idempotent too')
+    assert.equal(stored.valueUsd, 10)
+  })
+
+  it('HARD ASSERTION (provenance-laundering fix): a genuinely correct canonical-upstream record stays immutable when live upstream merely disagrees — never repaired, always audited', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    // A real, previously-accepted $500 total for a 2-token trade — genuinely correct, not corrupted.
+    // A later, unrelated provider-drift price disagreement (upstream now reads $600 for the same
+    // side) must NEVER overwrite this frozen historical fact — accepted evidence wins by design.
+    const stableLot = lot({ lotId: 'stable', openedTxHash: '0xbuy-stable', closedTxHash: '0xsell-stable', amount: 2, costBasisUsd: 600, proceedsUsd: 20, realizedPnlUsd: -580, evidenceQuality: 'verified' })
+    const identityVersion = realLotIdentityVersion(stableLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-stable', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xbuy-stable', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 500, valueUsd: 500, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion,
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [stableLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    // No proof exists ($500 is not $600/2=$300, nor any other provable per-unit reconstruction) —
+    // the record must be left completely untouched.
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 0)
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(stored.priceUsd, 500, 'a genuinely correct, immutable record must never be repaired merely because upstream later disagrees')
+    assert.equal(stored.valueUsd, 500)
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'stable')
+    assert.equal(published!.costBasisUsd, 500, 'accepted evidence wins over upstream by design — the published value stays the frozen $500')
+
+    // The conflict must still be VISIBLE (this is exactly the confirmed "conflicting=211,
+    // reseeded=0" paradox this task closes: the conflict is real and now individually audited, even
+    // though — correctly — nothing gets rewritten).
+    const conflict = summary.acceptedEvidenceAudit.acceptedEvidenceConflictAudit.find((c) => c.evidenceKey === entryKey)
+    assert.ok(conflict, 'a real upstream/accepted-evidence disagreement must be individually audited, not just counted in aggregate')
+    assert.equal(conflict!.persistedValue, 500)
+    assert.equal(conflict!.upstreamValue, 600)
+    assert.equal(conflict!.source, 'canonical-upstream')
+    assert.equal(conflict!.writeDecision, 'protected_immutable')
+    assert.equal(conflict!.reasonProtected, 'accepted_evidence_immutable_by_design')
+    assert.equal(conflict!.legacyProofAvailable, null)
+  })
+
+  it('HARD ASSERTION (provenance-laundering fix): originWriter survives a canonical-seeding re-envelope of an existing recovery-lane record — closing the laundering hole going forward', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    // A pre-existing, still-unlaundered legacy record (source: 'recovery-lane', no originWriter yet)
+    // that this scan's canonical-seeding pass will re-envelope (composition growth / reseed).
+    const growingLot = lot({ lotId: 'growing', openedTxHash: '0xbuy-growing', closedTxHash: '0xsell-growing', amount: 3, costBasisUsd: 30, proceedsUsd: 40, realizedPnlUsd: 10, evidenceQuality: 'verified' })
+    const identityVersion = realLotIdentityVersion(growingLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-growing', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xbuy-growing', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 10, valueUsd: 30, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: 'stale-fingerprint',
+      source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [growingLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { source: string; originWriter: string; lastWriter: string; migrationHistory: unknown[] }
+    // The canonical-seeding pass DID re-envelope this key (a real, expected reseed for a genuine
+    // composition/value change) — `source`/`lastWriter` now read its own name, but `originWriter`
+    // must still remember the TRUE original writer, never reset to the new writer's own name.
+    assert.equal(stored.originWriter, 'recovery-lane', 'originWriter must survive a canonical-seeding re-envelope — this is the exact fix for the confirmed laundering path')
+    assert.equal(stored.lastWriter, 'canonical-upstream')
+    assert.ok(stored.migrationHistory.length >= 1, 'a real writer transition must be recorded')
+  })
+
+  // =============================================================================================
   // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
   // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already
   // enforce — never a second, looser or stricter gate.

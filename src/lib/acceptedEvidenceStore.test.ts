@@ -4,7 +4,7 @@ import {
   buildAcceptedEvidenceKey, buildAcceptedEvidenceEnvelope, isValidAcceptedEvidence,
   classifyAcceptedEvidence,
   readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
-  detectLegacyPerUnitTotalRecord,
+  detectLegacyPerUnitTotalRecord, detectLegacyPerUnitTotalByLiveUpstreamProof,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
   type AcceptedEvidenceBatchIdentity,
 } from './acceptedEvidenceStore'
@@ -28,6 +28,47 @@ describe('acceptedEvidenceStore', () => {
     assert.equal(written, true)
     const read = await readAcceptedEvidence(kv, IDENTITY, 5001)
     assert.deepEqual(read, envelope)
+  })
+
+  it('HARD ASSERTION (provenance-laundering follow-up task): a brand-new envelope (no previousEnvelope) records itself as its own originWriter/lastWriter, with empty migrationHistory', () => {
+    const envelope = buildAcceptedEvidenceEnvelope({ identity: IDENTITY, priceUsd: 1, valueUsd: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: 0 })
+    assert.equal(envelope.originWriter, 'recovery-lane')
+    assert.equal(envelope.originMethodologyVersion, 'chain-aware-historical')
+    assert.equal(envelope.lastWriter, 'recovery-lane')
+    assert.deepEqual(envelope.migrationHistory, [])
+  })
+
+  it('HARD ASSERTION (provenance-laundering follow-up task — the CONFIRMED fix): re-enveloping an existing record with a DIFFERENT writer preserves originWriter, updates lastWriter, and appends a migrationHistory entry', () => {
+    const original = buildAcceptedEvidenceEnvelope({ identity: IDENTITY, priceUsd: 1, valueUsd: 1, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: 0 })
+    const relabeled = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 2, valueUsd: 2, source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: 1000,
+      previousEnvelope: original, writerReason: 'reseed_coverage_growth',
+    })
+    assert.equal(relabeled.originWriter, 'recovery-lane', 'the TRUE original writer must survive the re-envelope — this is the confirmed laundering fix')
+    assert.equal(relabeled.originMethodologyVersion, 'chain-aware-historical')
+    assert.equal(relabeled.lastWriter, 'canonical-upstream')
+    assert.equal(relabeled.migrationHistory.length, 1)
+    assert.deepEqual(relabeled.migrationHistory[0], { at: 1000, fromWriter: 'recovery-lane', toWriter: 'canonical-upstream', reason: 'reseed_coverage_growth' })
+  })
+
+  it('re-enveloping with the SAME writer does not append a spurious migrationHistory entry', () => {
+    const original = buildAcceptedEvidenceEnvelope({ identity: IDENTITY, priceUsd: 1, valueUsd: 1, source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: 0 })
+    const reseeded = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 5, valueUsd: 5, source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: 1000,
+      previousEnvelope: original,
+    })
+    assert.equal(reseeded.originWriter, 'canonical-upstream')
+    assert.deepEqual(reseeded.migrationHistory, [], 'no writer transition occurred — nothing to log')
+  })
+
+  it('a previousEnvelope predating originWriter/lastWriter (a genuinely pre-existing record) seeds them from its own source, never fabricating an unknown writer', () => {
+    const legacyPreExisting = { source: 'recovery-lane', evidenceType: 'chain-aware-historical' } as Parameters<typeof buildAcceptedEvidenceEnvelope>[0]['previousEnvelope']
+    const repaired = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 10, valueUsd: 10, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: 1000,
+      previousEnvelope: legacyPreExisting,
+    })
+    assert.equal(repaired.originWriter, 'recovery-lane')
+    assert.equal(repaired.originMethodologyVersion, 'chain-aware-historical')
   })
 
   it('HARD ASSERTION: any identity mismatch (chain/token/txHash/side/timestamp/lotIdentityVersion) is a miss, never a coincidental reuse', async () => {
@@ -208,5 +249,45 @@ describe('detectLegacyPerUnitTotalRecord — legacy-accepted-evidence-repair fol
     assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: -0.00001, valueUsd: -10, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000).legacyProof, null)
     assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: 0.00001, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 1 }, 0).legacyProof, null)
     assert.equal(detectLegacyPerUnitTotalRecord({ priceUsd: NaN, valueUsd: 10, source: 'recovery-lane', coveredLotCount: 1 }, 1_000_000).legacyProof, null)
+  })
+
+  it('reads originWriter FIRST (surviving a re-envelope), falling back to source only when originWriter is absent', () => {
+    // Already laundered: source says 'canonical-upstream', but originWriter (preserved through the
+    // re-envelope) still truthfully says 'recovery-lane' — the exact fix for the confirmed
+    // laundering path.
+    const laundered = { priceUsd: 0.00001, valueUsd: 10, source: 'canonical-upstream', coveredLotCount: 1, originWriter: 'recovery-lane' }
+    assert.equal(detectLegacyPerUnitTotalRecord(laundered, 1_000_000).legacyProof, 'legacy_recovery_per_unit_total')
+    // Already laundered, but originWriter is ALSO already 'canonical-upstream' (a record predating
+    // originWriter entirely just fell back to its own already-laundered source) — no provenance
+    // proof available, must return null (the independent live-upstream proof is the only avenue left).
+    const trulyLaundered = { priceUsd: 0.00001, valueUsd: 0.00001, source: 'canonical-upstream', coveredLotCount: 1 }
+    assert.equal(detectLegacyPerUnitTotalRecord(trulyLaundered, 1_000_000).legacyProof, null)
+  })
+})
+
+describe('detectLegacyPerUnitTotalByLiveUpstreamProof — provenance-laundering follow-up task', () => {
+  it('proves a laundered record (no recoverable provenance) via this scan\'s own live upstream total alone', () => {
+    // Persisted total (0.00001) is the OLD per-unit price; live upstream total for this exact lot
+    // this scan is $10 (amount 1,000,000) — 10 / 1,000,000 = 0.00001, an exact arithmetic match.
+    const result = detectLegacyPerUnitTotalByLiveUpstreamProof(0.00001, 1_000_000, 10)
+    assert.equal(result.legacyProof, 'legacy_recovery_per_unit_total_live_upstream_proof')
+    assert.equal(result.reconstructedTotalUsd, 10)
+  })
+
+  it('never flags a genuinely correct record merely because upstream later disagrees by an unrelated amount', () => {
+    const result = detectLegacyPerUnitTotalByLiveUpstreamProof(500, 2, 600)
+    assert.equal(result.legacyProof, null, '500 is not 600/2=300 — no per-unit-price coincidence, so no proof')
+  })
+
+  it('fails closed at amount 1 — a per-unit price and a total are numerically identical, so equality proves nothing', () => {
+    const result = detectLegacyPerUnitTotalByLiveUpstreamProof(10, 1, 10)
+    assert.equal(result.legacyProof, null)
+  })
+
+  it('fails closed on non-positive or non-finite inputs', () => {
+    assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(-0.00001, 1_000_000, 10).legacyProof, null)
+    assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(0.00001, 1_000_000, -10).legacyProof, null)
+    assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(0.00001, 0, 10).legacyProof, null)
+    assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(NaN, 1_000_000, 10).legacyProof, null)
   })
 })
