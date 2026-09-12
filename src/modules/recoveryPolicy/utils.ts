@@ -49,6 +49,26 @@ function alchemyApiKey(chain: SupportedChain): string {
   return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
+// Local copies of providerFetchWindow/utils.ts's alchemyHex helpers — this module is
+// intentionally self-contained (see file header: no runtime coupling to module 1). Same
+// conversions the shallow-window Alchemy path already applies: hex raw → decimal integer
+// string, hex decimal → number. Previously this recovery path stored the hex unmodified
+// and hardcoded tokenDecimals: null, so parseAmount's 18-fallback minted 2.99e-9 USDC.
+function alchemyHexAmountToDecimalString(hexValue: string | null): string | null {
+  if (hexValue == null) return null
+  try {
+    return BigInt(hexValue).toString()
+  } catch {
+    return null
+  }
+}
+
+function alchemyHexDecimalToNumber(hexDecimal: string | null): number | null {
+  if (hexDecimal == null) return null
+  const parsed = Number(hexDecimal)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function alchemyBaseUrl(chain: SupportedChain): string | null {
   const verified = ALCHEMY_VERIFIED_CHAINS[chain]
   if (!verified) return null
@@ -82,8 +102,21 @@ function goldrushChainName(chain: SupportedChain): string | null {
 // resetRecoveryHistoricalPageRequestCache, called from walletScanWorker.ts).
 const requestScopedHistoricalPages = new Map<string, Promise<RawProviderEvent[]>>()
 
+export type AlchemyTokenHistoryStrictResult = {
+  ok: boolean
+  inboundQueryOk: boolean
+  outboundQueryOk: boolean
+  events: RawProviderEvent[]
+  inboundPageCapped: boolean
+  inboundPageExhausted: boolean
+  providerCalls: number
+}
+
+const requestScopedAlchemyTokenHistoryStrict = new Map<string, Promise<AlchemyTokenHistoryStrictResult>>()
+
 export function resetRecoveryHistoricalPageRequestCache(): void {
   requestScopedHistoricalPages.clear()
+  requestScopedAlchemyTokenHistoryStrict.clear()
 }
 
 // Targeted GoldRush historical page — page-number offset beyond the base window's page 0. Caller
@@ -164,44 +197,6 @@ async function fetchGoldrushHistoricalPageLive(
   }
 }
 
-// CONFIRMED ROOT CAUSE, DISCLOSED (same-tx Base USDC quote-normalization follow-up task): this
-// module's own header (above) explains why it keeps a SELF-CONTAINED copy of Alchemy's raw-response
-// parsing rather than importing providerFetchWindow/utils.ts's — but that meant the SAME
-// "rawContract.decimal is real, documented, and was never read" bug providerFetchWindow/utils.ts's
-// own `alchemyHexDecimalToNumber`/its "TOKEN-DECIMALS FIX" comment already fixed for the PRIMARY
-// Alchemy adapter was never independently fixed here, in this module's own PARALLEL, per-token
-// Alchemy pull. `tokenDecimals: null` below caused normalization/utils.ts's `parseAmount` to default
-// every event this function ever returned to 18 decimals — correct for WETH/native, silently WRONG
-// for any other token (Base USDC = 6 decimals) recovered via this path. Traced via two real,
-// production-shaped Base USDC same-tx quote legs (tx 0x52f77bb4..., 0x609a9ceb...): both derived
-// prices reproduced EXACTLY from raw/10^18 instead of raw/10^6 (e.g. raw 2996415704 / 1e18 =
-// 2.996415704e-9, the exact reported `quoteQuantity` — never a double /1e6, a SINGLE mis-normalization
-// at this exact source). This is the sole source of that corruption — `deriveSameTransactionQuotePrice`'s
-// own `normalizedLegAmount` self-consistency check (quoteLegPricing/index.ts) could never catch it,
-// because the wrong decimals value travels WITH the wrong amount on the same NormalizedEvent/SwapLeg,
-// so the re-derived `raw / 10^decimals` agrees with the already-wrong `amount` — both jointly wrong
-// against ground truth, never disagreeing with each other. Fixed the same way the primary adapter
-// already was: read the real `rawContract.decimal` hex field Alchemy's response actually carries.
-// `amountRaw` is ALSO converted from Alchemy's raw hex to the same decimal-string format GoldRush's
-// own `delta` already uses (never previously done here) — matching dedupeRawEventKey's own
-// documented cross-provider dedup contract, so a transfer this function recovers can be recognized
-// as the same on-chain event a GoldRush page already reported, instead of silently double-counting
-// it under two differently-formatted amountRaw strings.
-function alchemyHexAmountToDecimalStringLocal(hexValue: string | null): string | null {
-  if (hexValue == null) return null
-  try {
-    return BigInt(hexValue).toString()
-  } catch {
-    return null // malformed hex — honestly unparseable, never guessed
-  }
-}
-
-function alchemyHexDecimalToNumberLocal(hexDecimal: string | null): number | null {
-  if (hexDecimal == null) return null
-  const parsed = Number(hexDecimal)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
 // Targeted Alchemy pull scoped to a single token contract (contractAddresses filter) — never a
 // whole-wallet pull, keeping this genuinely "targeted historical recovery for this token only".
 export async function fetchAlchemyTokenHistory(
@@ -261,16 +256,12 @@ export async function fetchAlchemyTokenHistory(
             ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
             : null,
           symbol: typeof t.asset === 'string' ? t.asset : null,
-          amountRaw: alchemyHexAmountToDecimalStringLocal(
-            typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
-              ? ((t.rawContract as Record<string, unknown>).value as string)
-              : null,
-          ),
-          tokenDecimals: alchemyHexDecimalToNumberLocal(
-            typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
-              ? ((t.rawContract as Record<string, unknown>).decimal as string)
-              : null,
-          ),
+          amountRaw: alchemyHexAmountToDecimalString(typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
+            ? ((t.rawContract as Record<string, unknown>).value as string)
+            : null),
+          tokenDecimals: alchemyHexDecimalToNumber(typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
+            ? ((t.rawContract as Record<string, unknown>).decimal as string)
+            : null),
         })
       }
     }
@@ -279,6 +270,105 @@ export async function fetchAlchemyTokenHistory(
     return events
   } catch {
     return []
+  }
+}
+
+const ALCHEMY_TOKEN_HISTORY_MAX_COUNT = 100
+
+function collectAlchemyAssetTransfers(result: Record<string, unknown> | null, chain: SupportedChain): RawProviderEvent[] {
+  const events: RawProviderEvent[] = []
+  const transfers = Array.isArray(result?.transfers) ? (result!.transfers as Record<string, unknown>[]) : []
+  for (const t of transfers) {
+    const meta = t.metadata as Record<string, unknown> | undefined
+    events.push({
+      provider: 'alchemy',
+      chain,
+      txHash: typeof t.hash === 'string' ? t.hash : null,
+      timestamp: typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null,
+      fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
+      toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
+      contract: typeof (t.rawContract as Record<string, unknown> | undefined)?.address === 'string'
+        ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
+        : null,
+      symbol: typeof t.asset === 'string' ? t.asset : null,
+      amountRaw: alchemyHexAmountToDecimalString(typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
+        ? ((t.rawContract as Record<string, unknown>).value as string)
+        : null),
+      tokenDecimals: alchemyHexDecimalToNumber(typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
+        ? ((t.rawContract as Record<string, unknown>).decimal as string)
+        : null),
+    })
+  }
+  return events
+}
+
+export async function fetchAlchemyTokenHistoryStrict(
+  chain: SupportedChain,
+  walletAddress: string,
+  token: string,
+): Promise<AlchemyTokenHistoryStrictResult> {
+  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${token.trim().toLowerCase()}:inbound`
+  const existing = requestScopedAlchemyTokenHistoryStrict.get(key)
+  if (existing) return existing
+  const promise = fetchAlchemyTokenHistoryInboundLive(chain, walletAddress, token)
+  requestScopedAlchemyTokenHistoryStrict.set(key, promise)
+  promise.catch(() => {
+    if (requestScopedAlchemyTokenHistoryStrict.get(key) === promise) requestScopedAlchemyTokenHistoryStrict.delete(key)
+  })
+  return promise
+}
+
+async function fetchAlchemyTokenHistoryInboundLive(
+  chain: SupportedChain,
+  walletAddress: string,
+  token: string,
+): Promise<AlchemyTokenHistoryStrictResult> {
+  const failed: AlchemyTokenHistoryStrictResult = {
+    ok: false, inboundQueryOk: false, outboundQueryOk: false, events: [],
+    inboundPageCapped: false, inboundPageExhausted: false, providerCalls: 0,
+  }
+  const url = alchemyBaseUrl(chain)
+  const apiKey = alchemyApiKey(chain)
+  if (!url || !apiKey) return failed
+  try {
+    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'recovery' })) {
+      return failed
+    }
+    logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
+    auditRPC('alchemy_getAssetTransfers', {
+      toAddress: walletAddress, contractAddresses: [token], probe: 'inbound_strict',
+    })
+    const res = await fetch(url, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromBlock: '0x0', category: ['erc20'], contractAddresses: [token],
+          withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: walletAddress,
+        }],
+      }),
+      signal: AbortSignal.timeout(12_000),
+    })
+    if (!res.ok) return { ...failed, providerCalls: 1 }
+    const json = await res.json() as { result?: Record<string, unknown> | null; error?: unknown }
+    if (json?.error != null || json?.result == null || typeof json.result !== 'object') {
+      return { ...failed, providerCalls: 1 }
+    }
+    const events = collectAlchemyAssetTransfers(json.result, chain)
+    const inboundPageCapped = events.length >= ALCHEMY_TOKEN_HISTORY_MAX_COUNT
+    return {
+      ok: true,
+      inboundQueryOk: true,
+      outboundQueryOk: false,
+      events,
+      inboundPageCapped,
+      inboundPageExhausted: !inboundPageCapped,
+      providerCalls: 1,
+    }
+  } catch {
+    return { ...failed, providerCalls: 1 }
   }
 }
 

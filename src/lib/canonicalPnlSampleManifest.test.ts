@@ -17,11 +17,14 @@ import assert from 'node:assert/strict'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
+  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
+  buildManifestAdditiveProviderDependencyAudit,
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
   demoteLotsOnIncompleteAcceptedSides, lotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot,
+  acceptedEvidenceAllocationsAreCanonicalPositive,
   CANONICAL_VALUE_TOLERANCE, groupCompositionFingerprint,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
@@ -1574,6 +1577,15 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
     assert.equal(demoteLotsOnIncompleteAcceptedSides([only])[0].evidenceQuality, 'verified')
   })
 
+  it('HARD ASSERTION: a $1 group total that dusts a sibling is not canonical-positive coverage', () => {
+    const tiny = lot({ lotId: 'tiny', amount: 1, closedTxHash: '0xsell-tiny' })
+    const huge = lot({ lotId: 'huge', amount: 10_000_000_000, closedTxHash: '0xsell-huge', closedAt: 3 })
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny, huge], 1), false)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny, huge], 20_000_000_000), true)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny], 5), true)
+    assert.equal(acceptedEvidenceAllocationsAreCanonicalPositive([tiny], 0), false)
+  })
+
   it('HARD ASSERTION (end-to-end, CORRECTED — canonical-manifest-shared-group-allocation follow-up task): a mixed-quality shared side publishes the verified sibling\'s own conserving share, never demotes it merely because an unrelated sibling is unpriced', async () => {
     // Production shape: one buy consumed by two FIFO lots, only one of which is priced. Schema-2
     // accepted evidence is a SIDE TOTAL ($100). Allocation over the full sibling set gives the
@@ -1815,6 +1827,774 @@ describe('canonical manifest partial reconciliation policy', () => {
     assert.equal(result.manifestStructuralFailureAudit.refreshAllowed, false)
     assert.equal(result.manifestStructuralFailureAudit.refreshBlockedReason, 'true_structural_or_value_integrity_failure')
     assert.ok(result.manifestStructuralFailureAudit.actualStructuralReasons.duplicate_canonical_identity > 0)
+  })
+})
+
+describe('canonical manifest additive candidate evolution (81+27 → 108)', () => {
+  it('HARD ASSERTION: 81 valid manifest + 27 independently verified candidates safely refreshes to 108', async () => {
+    const oldLots = buildLots(81, 81)
+    const newLots = Array.from({ length: 27 }, (_, offset) => {
+      const i = 81 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('additive-81-108'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    assert.equal(first.outcome, 'applied')
+    assert.equal(first.reasonCounts.manifest_replay_success, 81)
+    assert.equal(first.manifestLotsMissingCurrentEvidence.length, 0)
+    assert.equal(first.candidateNewEvidenceLotKeys.length, 27)
+    assert.equal(first.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 81, 'pre-growth replay still withholds the 27')
+    assert.equal(shouldRefreshPartiallyUnreproducibleManifest(first, 108), false, 'partial-unreproducible path must stay dark — the 81 are fully valid')
+    assert.equal(first.manifestStructuralFailureAudit.refreshAllowed, false)
+
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: true,
+    })
+    assert.equal(audit.existingCount, 81)
+    assert.equal(audit.currentCandidateCount, 108)
+    assert.equal(audit.newCandidateCount, 27)
+    assert.equal(audit.existingReplayAllValid, true)
+    assert.equal(audit.strictSuperset, true)
+    assert.equal(audit.noValueDisagreement, true)
+    assert.equal(audit.noFingerprintMismatch, true)
+    assert.equal(audit.noDuplicates, true)
+    assert.equal(audit.providerUsable, true)
+    assert.equal(audit.growthAllowed, true)
+    assert.equal(audit.growthBlockedReason, null)
+    assert.equal(shouldRefreshAdditiveCandidateEvolution(audit), true)
+
+    const originalRecords = original.verifiedLotRecords.map((r) => ({ key: r.key, cost: r.costBasisUsd, proceeds: r.proceedsUsd, pnl: r.realizedPnlUsd }))
+    const refreshed = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('additive-81-108'), allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(refreshed.verifiedLotCount, 108)
+    for (const old of originalRecords) {
+      const next = refreshed.verifiedLotRecords.find((r) => r.key === old.key)
+      assert.ok(next, `existing lot ${old.key} must survive additive growth`)
+      assert.equal(next!.costBasisUsd, old.cost)
+      assert.equal(next!.proceedsUsd, old.proceeds)
+      assert.equal(next!.realizedPnlUsd, old.pnl)
+    }
+    const second = await replay(refreshed, currentLots, evidence.loader)
+    assert.equal(second.outcome, 'applied')
+    assert.equal(second.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+    assert.equal(second.manifestLotsMissingCurrentEvidence.length, 0)
+    assert.equal(second.structuralIntegrityFailure, false)
+  })
+
+  it('HARD ASSERTION: same 81-lot manifest + one existing value mismatch blocks growth', async () => {
+    const oldLots = buildLots(81, 81)
+    const newLots = Array.from({ length: 27 }, (_, offset) => {
+      const i = 81 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('additive-mismatch'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const mutated = {
+      ...original,
+      verifiedLotRecords: original.verifiedLotRecords.map((record, i) => i === 0
+        ? { ...record, groupCostBasisUsd: (record.groupCostBasisUsd ?? 0) + 50, costBasisUsd: (record.costBasisUsd ?? 0) + 50 }
+        : record),
+    }
+    const first = await replay(mutated, currentLots, evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: true,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.ok(audit.growthBlockedReason === 'existing_manifest_not_fully_reproducible' || audit.growthBlockedReason === 'value_disagreement' || audit.growthBlockedReason === 'structural_integrity_failure')
+    assert.equal(shouldRefreshAdditiveCandidateEvolution(audit), false)
+  })
+
+  it('HARD ASSERTION: current candidates fewer than the manifest never shrink it', async () => {
+    const oldLots = buildLots(81, 81)
+    const fewer = oldLots.slice(0, 70)
+    const evidence = seededEvidence(oldLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('additive-noshrink'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, fewer, evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: fewer.filter(isCanonicalVerifiedPublishedLot).length, providerUsable: true,
+    })
+    assert.ok(audit.currentCandidateCount < audit.existingCount)
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'would_shrink_manifest')
+  })
+
+  it('HARD ASSERTION: a duplicate candidate blocks additive growth', async () => {
+    const oldLots = buildLots(81, 81)
+    const newLots = Array.from({ length: 27 }, (_, offset) => {
+      const i = 81 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('additive-dup'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const withDuplicates = {
+      ...first,
+      duplicates: {
+        ...first.duplicates,
+        hasDuplicates: true,
+        candidateDuplicateLotKeys: [first.candidateNewEvidenceLotKeys[0] ?? 'dup'],
+      },
+    }
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: withDuplicates, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: true,
+    })
+    assert.equal(audit.noDuplicates, false)
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'duplicate_canonical_identity')
+  })
+
+  it('HARD ASSERTION: a structurally incompatible candidate set blocks additive growth', async () => {
+    const lots = buildLots(2, 2)
+    const { manifest, evidence } = await manifestWithEvidence(lots)
+    const extra = lot({ lotId: 'lot-2', token: '0xtoken2', openedTxHash: '0xbuy2', closedTxHash: '0xsell2', openedAt: 2, closedAt: 1002, costBasisUsd: 12, proceedsUsd: 22, realizedPnlUsd: 10 })
+    const corrupt = { ...manifest, verifiedLotIdentityKeys: [...manifest.verifiedLotIdentityKeys, manifest.verifiedLotIdentityKeys[0]] }
+    const result = await replay(corrupt, [...lots, extra], evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: result, manifestVerifiedLotCount: manifest.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 3, providerUsable: true,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'structural_integrity_failure')
+  })
+
+  it('HARD ASSERTION: partial/unusable provider state cannot unsafe-refresh', async () => {
+    const oldLots = buildLots(81, 81)
+    const newLots = Array.from({ length: 27 }, (_, offset) => {
+      const i = 81 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('additive-partial'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: false,
+    })
+    assert.equal(audit.providerUsable, false)
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'provider_unusable')
+    assert.equal(shouldRefreshAdditiveCandidateEvolution(audit), false)
+  })
+})
+
+describe('additive provider-usable gate (GoldRush timeout vs independently proven candidates)', () => {
+  const basePartial = {
+    chain: 'base', providerStatus: 'partial',
+    goldrush: { ok: false, errorReason: 'timeout' }, alchemy: { ok: true, errorReason: null },
+  }
+  const allOk = {
+    chain: 'base', providerStatus: 'ok',
+    goldrush: { ok: true, errorReason: null }, alchemy: { ok: true, errorReason: null },
+  }
+
+  it('HARD ASSERTION: GoldRush fails, all additive candidates independently verified by Alchemy/accepted evidence → growth allowed', async () => {
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-alchemy-ok'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const identities = buildCanonicalLotIdentities(currentLots)
+    const newKeys = new Set(first.candidateNewEvidenceLotKeys)
+    const snapshots = newLots.map((lot) => ({
+      lotKey: identities.get(lot)!.key, chain: lot.chain,
+      entryEvidenceSource: 'canonical-upstream', exitEvidenceSource: 'canonical-upstream',
+      independentlyVerified: true,
+    })).filter((row) => newKeys.has(row.lotKey) || true)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [basePartial], newCandidates: snapshots,
+    })
+    assert.equal(dependency.historyBoundaryProviderUsable, false, 'full-history boundary remains PARTIAL')
+    assert.equal(dependency.failedProviders.some((p) => p.provider === 'goldrush'), true)
+    assert.equal(dependency.candidatesDependingOnFailedProvider, 0)
+    assert.equal(dependency.candidatesIndependentOfFailedProvider, 10)
+    assert.equal(dependency.additiveEvidenceUsable, true)
+    assert.equal(dependency.additiveCandidateEvidenceProviderUsable, true)
+    assert.ok(dependency.candidates.every((row) => row.independentlyVerifiedWithoutGoldrush && row.liveAlchemyUsed && !row.liveGoldrushUsed))
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, true)
+    assert.equal(audit.growthBlockedReason, null)
+  })
+
+  it('HARD ASSERTION: GoldRush fails and one candidate requires GoldRush → growth blocked', async () => {
+    const snapshots = Array.from({ length: 10 }, (_, i) => ({
+      lotKey: `lot-${i}`, chain: i === 0 ? 'eth' : 'base',
+      entryEvidenceSource: i === 0 ? null : 'canonical-upstream',
+      exitEvidenceSource: i === 0 ? null : 'canonical-upstream',
+      independentlyVerified: true,
+    }))
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [
+        basePartial,
+        { chain: 'eth', providerStatus: 'provider_unavailable', goldrush: { ok: false, errorReason: 'timeout' }, alchemy: { ok: false, errorReason: 'timeout' } },
+      ],
+      newCandidates: snapshots,
+    })
+    assert.equal(dependency.candidatesDependingOnFailedProvider, 1)
+    assert.equal(dependency.candidatesIndependentOfFailedProvider, 9)
+    assert.equal(dependency.additiveEvidenceUsable, false)
+    assert.equal(dependency.growthBlockedReason, 'additive_candidates_depend_on_failed_provider')
+    assert.equal(dependency.candidates[0].independentlyVerifiedWithoutGoldrush, false)
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-one-depends'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, currentLots, evidence.loader)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'provider_unusable')
+  })
+
+  it('HARD ASSERTION: provider partial can never shrink the manifest', async () => {
+    const oldLots = buildLots(98, 98)
+    const fewer = oldLots.slice(0, 90)
+    const evidence = seededEvidence(oldLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-noshrink'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const first = await replay(original, fewer, evidence.loader)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [basePartial], newCandidates: [],
+    })
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: fewer.filter(isCanonicalVerifiedPublishedLot).length,
+      providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.ok(audit.currentCandidateCount < audit.existingCount)
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.growthBlockedReason, 'would_shrink_manifest')
+  })
+
+  it('HARD ASSERTION: existing manifest mismatch still blocks growth even when Alchemy is ok', async () => {
+    const oldLots = buildLots(98, 98)
+    const newLots = Array.from({ length: 10 }, (_, offset) => {
+      const i = 98 + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const original = await buildManifestFromCandidate({
+      identity: identity('provider-mismatch'), allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const mutated = {
+      ...original,
+      verifiedLotRecords: original.verifiedLotRecords.map((record, i) => i === 0
+        ? { ...record, groupCostBasisUsd: (record.groupCostBasisUsd ?? 0) + 50, costBasisUsd: (record.costBasisUsd ?? 0) + 50 }
+        : record),
+    }
+    const first = await replay(mutated, currentLots, evidence.loader)
+    const dependency = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics: [allOk],
+      newCandidates: newLots.map((lot, i) => ({
+        lotKey: `new-${i}`, chain: lot.chain,
+        entryEvidenceSource: 'canonical-upstream', exitEvidenceSource: 'canonical-upstream',
+        independentlyVerified: true,
+      })),
+    })
+    assert.equal(dependency.additiveCandidateEvidenceProviderUsable, true)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: first, manifestVerifiedLotCount: original.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: dependency.additiveCandidateEvidenceProviderUsable,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.ok(audit.growthBlockedReason === 'existing_manifest_not_fully_reproducible' || audit.growthBlockedReason === 'value_disagreement' || audit.growthBlockedReason === 'structural_integrity_failure')
+  })
+})
+
+describe('additive rebuild freezes live verified values instead of dust allocation', () => {
+  function dustSharedEntryLots() {
+    const existing = lot({
+      lotId: 'existing-usdc', token: '0xusdc', amount: 10_000_000_000,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-existing', openedAt: 1, closedAt: 2,
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-usdc', token: '0xusdc', amount: 1,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-additive', openedAt: 1, closedAt: 3,
+      costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    return { existing, additive }
+  }
+
+  function seedDustEntry(existing: MatchedLot, additive: MatchedLot, extra: MatchedLot[] = []) {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const write = (lotRef: MatchedLot, side: 'entry' | 'exit', priceUsd: number) => {
+      const identity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd, valueUsd: priceUsd, source: 'canonical-upstream',
+        evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    write(existing, 'entry', 1)
+    write(existing, 'exit', existing.proceedsUsd as number)
+    write(additive, 'exit', additive.proceedsUsd as number)
+    for (const lotRef of extra) {
+      write(lotRef, 'entry', (lotRef.costBasisUsd as number) || 1)
+      write(lotRef, 'exit', (lotRef.proceedsUsd as number) || 1)
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    return { loader, kv }
+  }
+
+  it('HARD ASSERTION: additive candidate with verified live values + dust accepted allocation freezes live verified values', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    assert.equal(isCanonicalVerifiedPublishedLot(additive), true)
+    const evidence = seedDustEntry(existing, additive)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-live-dust'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingCost = original.verifiedLotRecords[0].costBasisUsd
+    const existingProceeds = original.verifiedLotRecords[0].proceedsUsd
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-live-dust'),
+      allCandidateLots: [existing, additive], candidateVerifiedLots: [existing, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, additive], realizedTotal([existing, additive])),
+      realizedPnlUsd: realizedTotal([existing, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    assert.equal(rebuilt.verifiedLotCount, 2)
+    const additiveIdentity = [...buildCanonicalLotIdentities([additive]).values()][0]
+    const additiveRecord = rebuilt.verifiedLotRecords.find((r) => r.key === additiveIdentity.key)
+    assert.ok(additiveRecord, 'additive lot must be emitted')
+    assert.equal(additiveRecord!.costBasisUsd, 42.5)
+    assert.equal(additiveRecord!.proceedsUsd, 50)
+    const auditRow = rebuilt.manifestAdditiveRebuildCandidateAudit?.candidates.find((row) => row.lotKey === additiveIdentity.key)
+    assert.equal(auditRow?.sourceChosen, 'live_canonical_candidate')
+    assert.equal(auditRow?.emitted, true)
+    assert.equal(auditRow?.dropReason, null)
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)
+    assert.ok(existingRecord)
+    assert.equal(existingRecord!.costBasisUsd, existingCost)
+    assert.equal(existingRecord!.proceedsUsd, existingProceeds)
+  })
+
+  it('HARD ASSERTION: non-verified live candidate + dust allocation is still rejected', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    const unverified = { ...additive, evidenceQuality: 'unpriced' as const, costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5 }
+    const evidence = seedDustEntry(existing, unverified)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-unverified'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-unverified'),
+      allCandidateLots: [existing, unverified], candidateVerifiedLots: [existing],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 0.5, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const unverifiedKey = [...buildCanonicalLotIdentities([unverified]).values()][0].key
+    assert.ok(!rebuilt.verifiedLotIdentityKeys.includes(unverifiedKey))
+    assert.equal(rebuilt.verifiedLotCount, 1)
+  })
+
+  it('HARD ASSERTION: existing manifest lots never switch from frozen evidence to live values', async () => {
+    const existing = lot({
+      lotId: 'existing-independent', token: '0xold', openedTxHash: '0xoldbuy', closedTxHash: '0xoldsell',
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-independent', token: '0xnew', openedTxHash: '0xnewbuy', closedTxHash: '0xnewsell',
+      openedAt: 5, closedAt: 6, costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    const evidence = seededEvidence([existing, additive])
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-existing-frozen'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const frozenCost = original.verifiedLotRecords[0].costBasisUsd
+    const frozenProceeds = original.verifiedLotRecords[0].proceedsUsd
+    const liveDrifted = { ...existing, costBasisUsd: 999, proceedsUsd: 1000, realizedPnlUsd: 1 }
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-existing-frozen'),
+      allCandidateLots: [liveDrifted, additive], candidateVerifiedLots: [liveDrifted, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([liveDrifted, additive], realizedTotal([liveDrifted, additive])),
+      realizedPnlUsd: realizedTotal([liveDrifted, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)
+    assert.ok(existingRecord)
+    assert.equal(existingRecord!.costBasisUsd, frozenCost)
+    assert.equal(existingRecord!.proceedsUsd, frozenProceeds)
+    assert.notEqual(existingRecord!.costBasisUsd, 999)
+  })
+
+  it('HARD ASSERTION: rebuild count below candidates aborts without write', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    const unverified = { ...additive, evidenceQuality: 'unpriced' as const }
+    const evidence = seedDustEntry(existing, unverified)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-abort'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const kv = jsonKv()
+    await writeCanonicalPnlSampleManifest(kv, original)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-abort'),
+      allCandidateLots: [existing, unverified], candidateVerifiedLots: [existing],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, unverified], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 0.5, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    assert.ok(rebuilt.verifiedLotCount < 2)
+    const application = await applyRefreshedCanonicalManifest({
+      kv, identity: identity('rebuild-abort'), rebuilt,
+      allCandidateLots: [existing, unverified],
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 2, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeAttempted, false)
+    assert.equal(application.audit.writeFailureReason, 'rebuilt_count_below_candidates')
+    const intact = await readCanonicalPnlSampleManifest(kv, identity('rebuild-abort'))
+    assert.equal(intact.manifest?.verifiedLotCount, 1)
+  })
+})
+
+describe('additive live-canonical provenance replay', () => {
+  function dustPair() {
+    const existing = lot({
+      lotId: 'existing-usdc', token: '0xusdc', amount: 10_000_000_000,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-existing', openedAt: 1, closedAt: 2,
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-usdc', token: '0xusdc', amount: 1,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-additive', openedAt: 1, closedAt: 3,
+      costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    return { existing, additive }
+  }
+  function seedDust(existing: MatchedLot, additive: MatchedLot) {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const write = (lotRef: MatchedLot, side: 'entry' | 'exit', priceUsd: number) => {
+      const identityFields = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identityFields), buildAcceptedEvidenceEnvelope({
+        identity: identityFields, priceUsd, valueUsd: priceUsd, source: 'canonical-upstream',
+        evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    write(existing, 'entry', 1)
+    write(existing, 'exit', existing.proceedsUsd as number)
+    write(additive, 'exit', additive.proceedsUsd as number)
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    return { loader }
+  }
+  async function rebuiltDustManifest() {
+    const { existing, additive } = dustPair()
+    const evidence = seedDust(existing, additive)
+    const original = await buildManifestFromCandidate({
+      identity: identity('live-prov'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('live-prov'),
+      allCandidateLots: [existing, additive], candidateVerifiedLots: [existing, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, additive], realizedTotal([existing, additive])),
+      realizedPnlUsd: realizedTotal([existing, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    return { existing, additive, evidence, original, rebuilt }
+  }
+
+  it('HARD ASSERTION: additive manifest record sourced from verified live canonical candidate replays successfully', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const additiveKey = [...buildCanonicalLotIdentities([additive]).values()][0].key
+    const additiveRecord = rebuilt.verifiedLotRecords.find((r) => r.key === additiveKey)
+    assert.equal(additiveRecord?.valueProvenance, 'live_canonical_candidate')
+    const replayResult = await replay(rebuilt, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'applied')
+    assert.equal(replayResult.reasonCounts.manifest_replay_success, 2)
+    const published = replayResult.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    assert.equal(published.length, 2)
+    const publishedAdditive = published.find((l) => l.closedTxHash === additive.closedTxHash)
+    assert.equal(publishedAdditive?.costBasisUsd, 42.5)
+    assert.equal(publishedAdditive?.proceedsUsd, 50)
+  })
+
+  it('HARD ASSERTION: same record with changed live value fails replay', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const changed = { ...additive, costBasisUsd: 99, proceedsUsd: 80, realizedPnlUsd: -19 }
+    const replayResult = await replay(rebuilt, [existing, changed], evidence.loader)
+    assert.equal(replayResult.outcome, 'unavailable')
+    assert.ok(replayResult.reasonCounts.manifest_cost_basis_mismatch > 0 || replayResult.reasonCounts.manifest_proceeds_mismatch > 0)
+  })
+
+  it('HARD ASSERTION: same record without provenance fails closed', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const additiveKey = [...buildCanonicalLotIdentities([additive]).values()][0].key
+    const stripped: CanonicalPnlSampleManifest = {
+      ...rebuilt,
+      verifiedLotRecords: rebuilt.verifiedLotRecords.map((record) => {
+        if (record.key !== additiveKey) return record
+        const { valueProvenance: _drop, ...rest } = record
+        return rest
+      }),
+    }
+    const replayResult = await replay(stripped, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'unavailable')
+    assert.equal(stripped.verifiedLotRecords.find((r) => r.key === additiveKey)?.valueProvenance, undefined)
+  })
+
+  it('HARD ASSERTION: existing accepted-evidence manifest records unchanged', async () => {
+    const { existing, additive, evidence, original, rebuilt } = await rebuiltDustManifest()
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)!
+    assert.equal(existingRecord.valueProvenance, undefined)
+    assert.equal(existingRecord.costBasisUsd, original.verifiedLotRecords[0].costBasisUsd)
+    assert.equal(existingRecord.proceedsUsd, original.verifiedLotRecords[0].proceedsUsd)
+    const replayResult = await replay(rebuilt, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'applied')
+    const publishedExisting = replayResult.publishedLots.find((l) => l.closedTxHash === existing.closedTxHash)
+    assert.equal(publishedExisting?.costBasisUsd, original.verifiedLotRecords[0].costBasisUsd)
+    assert.equal(publishedExisting?.proceedsUsd, original.verifiedLotRecords[0].proceedsUsd)
+  })
+})
+
+describe('additive manifest refresh application / persistence', () => {
+  async function builtAdditivePair(existingCount: number, newCount: number) {
+    const oldLots = buildLots(existingCount, existingCount)
+    const newLots = Array.from({ length: newCount }, (_, offset) => {
+      const i = existingCount + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const id = identity(`apply-${existingCount}-${newCount}-${currentLots.length}`)
+    const original = await buildManifestFromCandidate({
+      identity: id, allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    return { oldLots, newLots, currentLots, evidence, id, original }
+  }
+
+  it('HARD ASSERTION: 98→108 additive refresh persists and publishes in the same scan', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, original), true)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const application = await applyRefreshedCanonicalManifest({
+      kv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, true)
+    assert.equal(application.audit.writeAttempted, true)
+    assert.equal(application.audit.writeSuccess, true)
+    assert.equal(application.audit.writeFailureReason, null)
+    assert.equal(application.audit.rebuiltLotCount, 108)
+    assert.equal(application.audit.rereadCount, 108)
+    assert.equal(application.audit.publishedCount, 108)
+    assert.equal(application.persisted?.verifiedLotCount, 108)
+    assert.equal(application.replay?.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+    const reread = await readCanonicalPnlSampleManifest(kv, id)
+    assert.equal(reread.manifest?.verifiedLotCount, 108)
+  })
+
+  it('HARD ASSERTION: refreshApplied cannot be true if write did not happen', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const failingKv: CanonicalSampleManifestKvLike = {
+      get: async <T>(_key: string) => original as T,
+      set: async () => { throw new Error('kv write denied') },
+    }
+    const application = await applyRefreshedCanonicalManifest({
+      kv: failingKv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeAttempted, true)
+    assert.equal(application.audit.writeSuccess, false)
+    assert.equal(application.audit.writeFailureReason, 'write_failed')
+    assert.equal(application.persisted, null)
+  })
+
+  it('HARD ASSERTION: failed write leaves the old 98-lot manifest/publication intact and reports failure', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, original), true)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const failingKv: CanonicalSampleManifestKvLike = {
+      get: async <T>(key: string) => kv.get<T>(key),
+      set: async () => { throw new Error('kv write denied') },
+    }
+    const application = await applyRefreshedCanonicalManifest({
+      kv: failingKv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeSuccess, false)
+    const intact = await readCanonicalPnlSampleManifest(kv, id)
+    assert.equal(intact.manifest?.verifiedLotCount, 98, 'the durable 98-lot sample must not be overwritten on write failure')
+  })
+
+  it('HARD ASSERTION: next identical scan after a successful 108 write performs no refresh', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    await writeCanonicalPnlSampleManifest(kv, original)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const firstApply = await applyRefreshedCanonicalManifest({
+      kv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(firstApply.applied, true)
+    const stored = (await readCanonicalPnlSampleManifest(kv, id)).manifest!
+    const secondReplay = await replay(stored, currentLots, evidence.loader)
+    assert.equal(secondReplay.outcome, 'applied')
+    assert.equal(secondReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: secondReplay, manifestVerifiedLotCount: stored.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: true,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.newCandidateCount, 0)
+    assert.equal(audit.growthBlockedReason, 'no_new_candidates')
   })
 })
 

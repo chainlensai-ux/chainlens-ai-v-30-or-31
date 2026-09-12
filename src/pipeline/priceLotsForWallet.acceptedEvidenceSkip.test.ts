@@ -352,3 +352,78 @@ describe('priceLotsForWallet — unchanged-rescan requirement restriction (group
     assert.notEqual(result.priceUsdLookup(openBuy), null)
   })
 })
+
+describe('priceLotsForWallet — contaminated-manifest fast-path fail-open (81-lot lock)', () => {
+  it('HARD ASSERTION: a present accepted-evidence total that dusts any sibling does not skip that side or claim allClosedLotSidesCovered', async () => {
+    const token = '0xdusttoken'
+    const buy = event({ txHash: '0xdustbuy', direction: 'inbound', contract: token, amount: 10_000_000_001, timestamp: '2026-01-01T00:00:00.000Z' })
+    const tinySell = event({ txHash: '0xdustsell-tiny', direction: 'outbound', contract: token, amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+    const hugeSell = event({ txHash: '0xdustsell-huge', direction: 'outbound', contract: token, amount: 10_000_000_000, timestamp: '2026-01-03T00:00:00.000Z' })
+    const kv = fakeAcceptedEvidenceKv()
+    const now = 1_000_000
+    const seed = async (txHash: string, side: 'entry' | 'exit', timestampIso: string, priceUsd: number, amount: number) => {
+      const timestamp = Date.parse(timestampIso)
+      const version = lotIdentityVersion({
+        chain: buy.chain, token, openedTxHash: buy.txHash, closedTxHash: txHash === buy.txHash ? tinySell.txHash : txHash,
+        openedAt: Date.parse(buy.timestamp), closedAt: timestamp, amount,
+      })
+      const identity = { chain: buy.chain, token, txHash, side, timestamp, lotIdentityVersion: version }
+      await kv.set(
+        `v1:accepted-evidence:${identity.chain}:${identity.token.toLowerCase()}:${identity.txHash}:${side}:${timestamp}`,
+        buildAcceptedEvidenceEnvelope({ identity, priceUsd, valueUsd: priceUsd, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now }),
+      )
+    }
+    // $1 group total over 1 vs 1e10 quantities floors the tiny sibling to 0 — presence, not coverage.
+    await seed(buy.txHash, 'entry', buy.timestamp, 1, 10_000_000_001)
+    await seed(tinySell.txHash, 'exit', tinySell.timestamp, 10, 1)
+    await seed(hugeSell.txHash, 'exit', hugeSell.timestamp, 10, 10_000_000_000)
+
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({
+      normalizedEvents: [buy, tinySell, hugeSell], recoveredEvents: [],
+      priceSources: counting.sources, acceptedEvidenceKv: kv, now: () => now,
+    })
+    assert.equal(result.priceLotsCanonicalGapAudit.structuralLots, 2)
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesPresent, true, 'every closed-lot side has a store record')
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesCovered, false, 'dust allocation must not claim full coverage')
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesVerified, false)
+    assert.ok(counting.calls() > 0, 'the dusted entry side must fall through to live pricing')
+    assert.ok(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence < 3, 'entry must not be skipped even though both exits may be')
+  })
+
+  it('HARD ASSERTION: a fully positive sibling group still skips — the 81 valid manifest lots stay protected', async () => {
+    const token = '0xkepttoken'
+    const buy = event({ txHash: '0xkeptbuy', direction: 'inbound', contract: token, amount: 2, timestamp: '2026-01-01T00:00:00.000Z' })
+    const sellA = event({ txHash: '0xkeptsell-a', direction: 'outbound', contract: token, amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+    const sellB = event({ txHash: '0xkeptsell-b', direction: 'outbound', contract: token, amount: 1, timestamp: '2026-01-03T00:00:00.000Z' })
+    const kv = fakeAcceptedEvidenceKv()
+    const now = 1_000_000
+    const seed = async (txHash: string, side: 'entry' | 'exit', timestampIso: string, priceUsd: number, amount: number) => {
+      const timestamp = Date.parse(timestampIso)
+      const version = lotIdentityVersion({
+        chain: buy.chain, token, openedTxHash: buy.txHash, closedTxHash: txHash === buy.txHash ? sellA.txHash : txHash,
+        openedAt: Date.parse(buy.timestamp), closedAt: timestamp, amount,
+      })
+      const identity = { chain: buy.chain, token, txHash, side, timestamp, lotIdentityVersion: version }
+      await kv.set(
+        `v1:accepted-evidence:${identity.chain}:${identity.token.toLowerCase()}:${identity.txHash}:${side}:${timestamp}`,
+        buildAcceptedEvidenceEnvelope({ identity, priceUsd, valueUsd: priceUsd, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now }),
+      )
+    }
+    await seed(buy.txHash, 'entry', buy.timestamp, 20, 2)
+    await seed(sellA.txHash, 'exit', sellA.timestamp, 12, 1)
+    await seed(sellB.txHash, 'exit', sellB.timestamp, 12, 1)
+
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({
+      normalizedEvents: [buy, sellA, sellB], recoveredEvents: [],
+      priceSources: counting.sources, acceptedEvidenceKv: kv, now: () => now,
+    })
+    assert.equal(result.priceLotsCanonicalGapAudit.structuralLots, 2)
+    assert.equal(counting.calls(), 0, 'positive allocations keep the fast path')
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesCovered, true)
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesVerified, true)
+    assert.equal(result.priceUsdLookup(buy), 20)
+    assert.equal(result.priceUsdLookup(sellA), 12)
+  })
+})

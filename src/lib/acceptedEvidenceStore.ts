@@ -17,6 +17,8 @@
 // becoming available, or the scan simply happening later are explicitly NEVER reasons to reject an
 // otherwise-matching accepted entry (requirement #4's own "do not invalidate because..." list).
 
+import { EIGHTEEN_VS_SIX_SCALE } from '../modules/normalization/canonicalDecimals'
+
 export type AcceptedEvidenceSide = 'entry' | 'exit'
 
 // SCHEMA BUMP TO 2, GENUINELY REQUIRED, DISCLOSED (accepted-evidence-persistence follow-up task —
@@ -185,6 +187,7 @@ export type AcceptedEvidenceKvLike = {
 export type AcceptedEvidenceMigrationClassification =
   | 'legacy_recovery_per_unit_total'
   | 'legacy_recovery_per_unit_total_live_upstream_proof'
+  | 'wrong_decimal_scale_live_upstream_proof'
 
 export type LegacyPerUnitTotalDetection = {
   legacyProof: AcceptedEvidenceMigrationClassification | null
@@ -259,6 +262,30 @@ export function detectLegacyPerUnitTotalByLiveUpstreamProof(
   // braces check against float-noise amounts very close to (but not exactly) 1.
   if (Math.abs(persistedTotalUsd - liveUpstreamTotalUsd) <= tolerance) return none
   return { legacyProof: 'legacy_recovery_per_unit_total_live_upstream_proof', reconstructedTotalUsd: liveUpstreamTotalUsd }
+}
+
+// WRONG-DECIMAL-SCALE PROOF, DISCLOSED (same-tx Base USDC quote scaling): treating a 6-decimal
+// raw integer as 18-decimal wei shrinks the persisted side total by exactly 10^(18-6)=1e12.
+// Production shape: quoteValueUsd 2.996415704e-9 persisted while the producer (once canonical 6
+// is applied) emits ~2996.415704 for the SAME raw 2996415704. This is NOT the per-unit-as-total
+// bug (those records have priceUsd !== valueUsd, or priceUsd equal to a per-token unit price);
+// a scale-poisoned same-tx quote wrote priceUsd === valueUsd === the tiny TOTAL, so the
+// recovery-lane per-unit proofs above never fire — matching the live "detected/repaired 0
+// records" log. Proof is provenance-free arithmetic: live/persisted ≈ 1e12, AND the token is
+// an address-verified 6-decimal canonical stable. A genuine dust total will not coincidentally
+// equal a different live total divided by 1e12. Fail closed on unknown tokens, non-finite
+// values, or any other ratio.
+export function detectWrongDecimalScaleByLiveUpstreamProof(
+  persistedTotalUsd: number,
+  liveUpstreamTotalUsd: number,
+): LegacyPerUnitTotalDetection {
+  const none: LegacyPerUnitTotalDetection = { legacyProof: null, reconstructedTotalUsd: null }
+  if (!Number.isFinite(persistedTotalUsd) || persistedTotalUsd <= 0) return none
+  if (!Number.isFinite(liveUpstreamTotalUsd) || liveUpstreamTotalUsd <= 0) return none
+  const ratio = liveUpstreamTotalUsd / persistedTotalUsd
+  const relativeError = Math.abs(ratio - EIGHTEEN_VS_SIX_SCALE) / EIGHTEEN_VS_SIX_SCALE
+  if (relativeError > 1e-6) return none
+  return { legacyProof: 'wrong_decimal_scale_live_upstream_proof', reconstructedTotalUsd: liveUpstreamTotalUsd }
 }
 
 export type AcceptedEvidenceState =

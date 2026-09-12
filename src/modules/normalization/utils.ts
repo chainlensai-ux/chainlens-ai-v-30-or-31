@@ -20,16 +20,40 @@ export function isValidTimestamp(timestamp: string | null): timestamp is string 
 // Parses a raw provider amount (string, decimal-scaled) into a finite, non-negative number.
 // Returns null when the value cannot be safely parsed — callers must treat null as "skip", never
 // silently coerce it to 0 (0 would misrepresent "no amount reported" as "reported amount of zero").
+//
+// NORMALIZE EXACTLY ONCE, DISCLOSED (same-tx Base USDC quote scaling): GoldRush `delta` and
+// Alchemy `rawContract.value` are raw-unit integers and need division by 10^decimals. A value that
+// is already human/scientific (contains `.` or `e`) is left alone — never divided again. Hex
+// strings (`0x…`) are converted to a decimal integer first (Alchemy recovery historically stored
+// the hex unmodified) so Number("0x…")/10^18 cannot silently mint a 2.99e-9 USDC amount.
 export function parseAmount(amountRaw: string | null, tokenDecimals: number | null): number | null {
   if (amountRaw == null) return null
+  const trimmed = String(amountRaw).trim()
+  if (!trimmed) return null
   const decimals = typeof tokenDecimals === 'number' && Number.isFinite(tokenDecimals) ? tokenDecimals : 18
-  const parsed = Number(amountRaw)
+
+  let integerOrHuman = trimmed
+  if (/^0x[0-9a-fA-F]+$/i.test(trimmed)) {
+    try {
+      integerOrHuman = BigInt(trimmed).toString(10)
+    } catch {
+      return null
+    }
+  }
+
+  // Already-normalized human/scientific amount — the companion invariant: 2.996415 must stay
+  // 2.996415, never 2.996415e-6. Integer raw strings still take the 10^decimals path below.
+  if (/[eE]/.test(integerOrHuman) || integerOrHuman.includes('.')) {
+    const parsed = Number(integerOrHuman)
+    return Number.isFinite(parsed) ? Math.abs(parsed) : null
+  }
+
+  const parsed = Number(integerOrHuman)
   if (!Number.isFinite(parsed)) return null
-  // GoldRush `delta` values arrive pre-scaled by raw units; Alchemy `rawContract.value` values are
-  // also raw-unit integers. Both need division by 10^decimals to reach a human-readable amount.
   const value = Math.abs(parsed) / Math.pow(10, decimals)
   return Number.isFinite(value) ? value : null
 }
+
 
 // CHAIN-SCOPED DEDUPE KEY, DISCLOSED (Wallet Scanner graph/API support audit): the caller
 // (src/pipeline/index.ts) fetches every requested chain concurrently and flattens all chains'

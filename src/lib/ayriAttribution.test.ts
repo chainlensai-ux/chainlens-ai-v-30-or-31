@@ -4,7 +4,7 @@ import type { MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from './pnlReconciliation'
 import { createAyriAttribution } from './ayriAttribution'
 import { emptyPnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
-import { emptyMissingPriceRecoveryFunnelAudit, emptyVerifiedSamplePerformance, emptyVerifiedSamplePnlAudit } from './pnlReconciliation'
+import { emptyMissingPriceRecoveryFunnelAudit, EMPTY_VERIFIED_SAMPLE_PERFORMANCE, EMPTY_FULL_HISTORY_PERFORMANCE, emptyVerifiedSamplePerformanceAudit } from './pnlReconciliation'
 
 const quiet = { warn() {} }
 
@@ -19,6 +19,11 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 0,
     missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 0, pricingEvidenceMissing: 0, dustExcluded: 0, nonTradeExcluded: 0 },
     publicPnlStatus: 'available',
+    verifiedSamplePerformance: EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
+    fullHistoryPerformance: EMPTY_FULL_HISTORY_PERFORMANCE,
+    verifiedSamplePerformanceAudit: emptyVerifiedSamplePerformanceAudit(),
+    verifiedSampleRealizedPnlUsd: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedPnlUsd,
+    verifiedSampleRealizedRoiPct: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedRoiPct,
     publicPnlGateAudit: {
       verifiedLotCount: 1, fullyPricedLotCount: 1, pricingCoverage: 1, structuralCoverage: 1, unmatchedBuyCount: 0, unmatchedSellCount: 0,
       integrityTier: 'full', blockingReasons: [],
@@ -55,8 +60,6 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
     },
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
-    verifiedSamplePerformance: emptyVerifiedSamplePerformance(),
-    verifiedSamplePnlAudit: emptyVerifiedSamplePnlAudit(),
     ...overrides,
   }
 }

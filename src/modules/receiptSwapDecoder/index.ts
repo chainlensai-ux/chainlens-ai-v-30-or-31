@@ -36,19 +36,23 @@ import { decodeLogs } from './decodeLogs'
 import type { PoolValidator } from './poolValidator'
 import { WETH_BASE_ADDRESS } from './signatures'
 import type {
-  DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics,
+  DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics, UniswapV3Diagnostics,
 } from './types'
 import { resolveClassicMultiTransferLeg, mergeMultiTransferDiagnostics, type ClassicPoolLeg } from './multiTransferLeg'
 import { resolveSlipstreamMultiTransferLeg } from './aerodromeSlipstreamLeg'
 import { resolveUniswapV3Leg, type UniswapV3PoolLeg } from './uniswapV3Leg'
 import type { UniswapV3PoolValidator, UniswapV3ValidationResult } from './uniswapV3PoolValidator'
-import type { UniswapV3Diagnostics } from './types'
+import { canonicalTokenDecimals } from '../normalization/canonicalDecimals'
 
 export type { DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle } from './types'
 export { decodeLogs } from './decodeLogs'
 
 function tokenMetaFor(meta: Record<string, TokenMeta> | undefined, address: string): TokenMeta {
-  return meta?.[address.toLowerCase()] ?? { symbol: '?', decimals: 18 }
+  const canonical = canonicalTokenDecimals('base', address)
+  const fromMap = meta?.[address.toLowerCase()]
+  if (fromMap) return { symbol: fromMap.symbol, decimals: canonical ?? fromMap.decimals }
+  if (canonical != null) return { symbol: '?', decimals: canonical }
+  return { symbol: '?', decimals: 18 }
 }
 
 function toNormalized(raw: bigint, decimals: number): number {

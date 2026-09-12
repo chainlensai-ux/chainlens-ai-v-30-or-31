@@ -5,6 +5,7 @@ import {
   classifyAcceptedEvidence,
   readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
   detectLegacyPerUnitTotalRecord, detectLegacyPerUnitTotalByLiveUpstreamProof,
+  detectWrongDecimalScaleByLiveUpstreamProof,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
   type AcceptedEvidenceBatchIdentity,
 } from './acceptedEvidenceStore'
@@ -289,5 +290,38 @@ describe('detectLegacyPerUnitTotalByLiveUpstreamProof — provenance-laundering 
     assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(0.00001, 1_000_000, -10).legacyProof, null)
     assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(0.00001, 0, 10).legacyProof, null)
     assert.equal(detectLegacyPerUnitTotalByLiveUpstreamProof(NaN, 1_000_000, 10).legacyProof, null)
+  })
+})
+
+describe('detectWrongDecimalScaleByLiveUpstreamProof — same-tx Base USDC 18-vs-6 scale', () => {
+  it('proves the production-shaped 2996415704 raw / 10^18 poison: persisted 2.996415704e-9 vs live 2996.415704', () => {
+    const result = detectWrongDecimalScaleByLiveUpstreamProof(2.996415704e-9, 2996.415704)
+    assert.equal(result.legacyProof, 'wrong_decimal_scale_live_upstream_proof')
+    assert.equal(result.reconstructedTotalUsd, 2996.415704)
+  })
+
+  it('also proves the simplified fixture 2,996,415 → 2.996415 vs 2.996415e-12', () => {
+    const result = detectWrongDecimalScaleByLiveUpstreamProof(2.996415e-12, 2.996415)
+    assert.equal(result.legacyProof, 'wrong_decimal_scale_live_upstream_proof')
+    assert.equal(result.reconstructedTotalUsd, 2.996415)
+  })
+
+  it('never flags a correctly-scaled record (live equals persisted)', () => {
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(2996.415704, 2996.415704).legacyProof, null)
+  })
+
+  it('never flags an unrelated disagreement that is not a 10^12 ratio', () => {
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(10, 12).legacyProof, null)
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(2.996415704e-9, 10).legacyProof, null)
+  })
+
+  it('fails closed on non-positive inputs', () => {
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(-2.996e-9, 2996).legacyProof, null)
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(2.996e-9, -2996).legacyProof, null)
+  })
+
+  it('does not treat the per-unit-as-total shape as a decimal-scale error (different proof)', () => {
+    // per-unit 0.00001 * amount 1e6 = 10, live total 10 — that is the other migration, not 1e12.
+    assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(0.00001, 10).legacyProof, null)
   })
 })

@@ -222,6 +222,7 @@ export function buildWalletScannerViewAudit(params: {
   }
   const displayedPnlValues: Record<string, string> = {
     combined: vm.combinedRealizedBox.value ?? '—',
+    verifiedSample: vm.verifiedSampleRealizedBox.value ?? '—',
     unrealized: vm.unrealizedBox.value ?? '—',
     roi: vm.roiBox.value ?? '—',
   }

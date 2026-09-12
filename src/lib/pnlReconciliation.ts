@@ -1,5 +1,5 @@
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
-import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
+import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
@@ -7,7 +7,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
-  detectLegacyPerUnitTotalByLiveUpstreamProof,
+  detectLegacyPerUnitTotalByLiveUpstreamProof, detectWrongDecimalScaleByLiveUpstreamProof,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
@@ -15,6 +15,82 @@ import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrep
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
+
+// VERIFIED BOUNDED-SAMPLE PERFORMANCE, DISCLOSED (verified-sample-vs-full-history follow-up):
+// arithmetic over the included canonical verified closed-lot sample, independent of unmatched
+// sells that sit OUTSIDE that sample. Full-wallet/complete-history publication stays governed by
+// the existing public gate. This object never claims complete wallet history.
+export type VerifiedSamplePerformanceStatus = 'verified_bounded_sample' | 'unavailable'
+export type VerifiedSamplePerformance = {
+  status: VerifiedSamplePerformanceStatus
+  realizedPnlUsd: number | null
+  realizedCostBasisUsd: number | null
+  realizedRoiPct: number | null
+  verifiedLotCount: number
+  structuralLotCount: number
+  pricingCoverage: number
+  excludedUnmatchedSellCount: number
+  isCompleteWalletHistory: false
+}
+
+export type FullHistoryPerformanceStatus = 'verified' | 'partial' | 'unavailable'
+export type FullHistoryPerformance = {
+  status: FullHistoryPerformanceStatus
+  realizedPnlUsd: number | null
+  realizedRoiPct: number | null
+  blockingReasons: string[]
+}
+
+export type VerifiedSamplePerformanceAudit = {
+  verifiedLotCount: number
+  includedLotCount: number
+  realizedPnlUsd: number | null
+  realizedCostBasisUsd: number | null
+  realizedRoiPct: number | null
+  pricingCoverage: number
+  canonicalConsistencyPassed: boolean
+  pricingEvidenceMissing: number
+  excludedUnmatchedSellCount: number
+  samplePerformanceAllowed: boolean
+  samplePerformanceBlockedReason: string | null
+  fullHistoryPerformanceAllowed: boolean
+}
+
+export const EMPTY_VERIFIED_SAMPLE_PERFORMANCE: VerifiedSamplePerformance = {
+  status: 'unavailable',
+  realizedPnlUsd: null,
+  realizedCostBasisUsd: null,
+  realizedRoiPct: null,
+  verifiedLotCount: 0,
+  structuralLotCount: 0,
+  pricingCoverage: 0,
+  excludedUnmatchedSellCount: 0,
+  isCompleteWalletHistory: false,
+}
+
+export const EMPTY_FULL_HISTORY_PERFORMANCE: FullHistoryPerformance = {
+  status: 'unavailable',
+  realizedPnlUsd: null,
+  realizedRoiPct: null,
+  blockingReasons: [],
+}
+
+export function emptyVerifiedSamplePerformanceAudit(): VerifiedSamplePerformanceAudit {
+  return {
+    verifiedLotCount: 0,
+    includedLotCount: 0,
+    realizedPnlUsd: null,
+    realizedCostBasisUsd: null,
+    realizedRoiPct: null,
+    pricingCoverage: 0,
+    canonicalConsistencyPassed: true,
+    pricingEvidenceMissing: 0,
+    excludedUnmatchedSellCount: 0,
+    samplePerformanceAllowed: false,
+    samplePerformanceBlockedReason: 'no_verified_lots',
+    fullHistoryPerformanceAllowed: false,
+  }
+}
 
 type RouterInferenceLike = { highConfidenceRouters?: ReadonlySet<string>; tokenFlowClustersByAddress?: ReadonlyMap<string, readonly unknown[]> }
 // RECOVERY LANE, DISCLOSED (provider-call-audit follow-up task, confirmed root cause of "recovery
@@ -558,14 +634,18 @@ export type StructuralCoverageDenominatorAudit = {
   // genuineUnmatchedBuys/Sells, so it never reaches the gate as blocking evidence.
   openPositionBuys?: number
   preWindowInventoryExits?: number
-  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): real count
-  // from eventClassification's computeUnmatchedEvidenceAudit — sells that would have qualified as
-  // pre-window exits but the fetch's coverage was only 'truncated' (a provider/direction hit its
-  // bounded-page event cap while every provider otherwise succeeded). Disclosed here for the same
-  // reason `preWindowInventoryExits` is — excluded from `genuineUnmatchedSells`/blocking, but never
-  // conflated with a PROVEN pre-window exit.
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task; tightened by
+  // the per-sell-resolver-bypass fix): real count from eventClassification. Truncation is NOT
+  // per-sell proof. These sells remain in genuineUnmatchedSells / sellsBlockedSolelyByUnprovenBoundary
+  // until a token-scoped inbound or non-trade proof exists; this field is the disclosed attribution
+  // of that still-blocking population, never a waiver.
   preWindowInventoryExitsUnprovenDueToTruncation?: number
   sellsBlockedSolelyByUnprovenBoundary?: number
+  // Remaining per-sell boundary-resolver blockers, DISCLOSED, ADDITIVE (per-sell-resolver-bypass
+  // fix). When supplied, Combined PnL stays unavailable while any of these sells still lack
+  // pre-window / non-trade proof — truncation, 98/98 pricing, and manifest replay are not waivers.
+  // Omit for byte-for-byte prior Combined admission (unmigrated callers/tests).
+  boundaryDependentRemainingBlockers?: number
   scanWindowDays?: number
   // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
   // eventClassification's computeUnmatchedEvidenceAudit.historyCoverageStatus — see its own header.
@@ -912,6 +992,14 @@ export type PnlReconciliationSummary = {
   missingEvidenceBreakdown: MissingEvidenceBreakdown
   publicPnlStatus: ReconciledPublicPnlStatus
   publicPnlGateAudit: PublicPnlGateAudit
+  // VERIFIED SAMPLE vs FULL HISTORY, DISCLOSED (verified-sample-vs-full-history follow-up):
+  // sample performance is the included canonical closed-lot arithmetic; full-history stays under
+  // the existing public gate. Unmatched sells outside the sample never zero the sample figures.
+  verifiedSamplePerformance: VerifiedSamplePerformance
+  fullHistoryPerformance: FullHistoryPerformance
+  verifiedSamplePerformanceAudit: VerifiedSamplePerformanceAudit
+  verifiedSampleRealizedPnlUsd: number | null
+  verifiedSampleRealizedRoiPct: number | null
   mismatches: Array<{ key: string; classification: PnlMismatchClass }>
   // BOUNDED-SAMPLE WARNING, DISCLOSED (bounded-sample-gate follow-up task, requirement #7): a real,
   // human-readable disclosure — set ONLY when publicPnlStatus is 'partial' via the bounded verified-
@@ -981,85 +1069,6 @@ export type PnlReconciliationSummary = {
     }>
     invariantFailures: string[]
   }
-  // VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up task).
-  //
-  // OLD COUPLING, CONFIRMED (this is the exact bug this field fixes): before this task,
-  // `realizedPnlUsd`/`publicPnlStatus` above were the ONLY public realized-PnL surface, and both are
-  // gated by `canonicalSampleUnavailable` (a manifest-replay veto — see that field's own header) and
-  // `boundedSampleWindowSafe`/`canonicalManifestApplied` (the bounded-sample path's OWN, STRICTER
-  // requirements — a >=10-verified-lot floor, a live/manifest-proven window boundary). A wallet whose
-  // CURRENT scan already reproduces a 100%-verified, internally-consistent 98/98 sample can still be
-  // forced to `publicPnlStatus: 'unavailable'` by either veto — even though the 98 verified lots'
-  // OWN realized-PnL arithmetic was never in question; only 2 genuine unmatched sells OUTSIDE that
-  // sample (and/or a manifest-replay mismatch unrelated to THIS scan's own live evidence) blocked the
-  // full/complete-history figure. There was no way to see the verified sample's own honest total
-  // without also passing the complete-history gate.
-  //
-  // FIX, DISCLOSED: `verifiedSamplePerformance` is a WHOLLY SEPARATE, ADDITIVE surface — never a
-  // relaxation of `publicPnlStatus`/`realizedPnlUsd`/`boundedSampleEligible`/`canonicalSampleUnavailable`
-  // above (all byte-for-byte unchanged) — gated ONLY by conditions that describe the CURRENT scan's
-  // own included sample's internal integrity: at least one verified lot, the SAME pricing-coverage
-  // threshold the existing bounded-sample path already enforces (`pricingCoverageThresholdMet`,
-  // unchanged), zero canonical-verification-consistency invariant failures (the SAME 98->98->98->98
-  // chain `canonicalVerificationConsistencyAudit` above already computes), and zero pricing-evidence
-  // gaps INSIDE the included sample (`pricingEvidenceMissing`, unchanged, computed once above). The 2
-  // genuine unmatched sells are real, structural, OUTSIDE the sample by construction (fifoEngine never
-  // matched them to a lot at all) — they cannot contribute to or subtract from a sum taken strictly
-  // over `verifiedUpdatedLots`, so their existence can veto the COMPLETE-HISTORY figure (unchanged)
-  // without being able to erase the verified sample's own, already-correct total.
-  verifiedSamplePerformance: VerifiedSamplePerformance
-  verifiedSamplePnlAudit: VerifiedSamplePnlAudit
-}
-
-// See PnlReconciliationSummary.verifiedSamplePerformance's own header for the full disclosure.
-export type VerifiedSamplePerformance = {
-  status: 'verified_bounded_sample' | 'unavailable'
-  realizedPnlUsd: number | null
-  verifiedLotCount: number
-  structuralLotCount: number
-  pricingCoverage: number
-  excludedUnmatchedSellCount: number
-  isCompleteWalletHistory: false
-}
-
-export type VerifiedSamplePnlBlockedReason =
-  | 'no_verified_lots'
-  | 'pricing_coverage_below_threshold'
-  | 'canonical_consistency_failure'
-  | 'pricing_evidence_missing_in_sample'
-  | 'realized_pnl_unavailable'
-
-// BOUNDED, DIAGNOSTIC AUDIT, DISCLOSED: real values only, taken from the exact same computation
-// `verifiedSamplePerformance` itself uses — never a second, independent recomputation.
-// `fullHistoryPnlAllowed` mirrors `structuralConsistent` (the SAME condition that already gates
-// `publicPnlStatus: 'available'`) — reported here purely so a caller can see, side by side, why the
-// bounded sample is allowed to publish even when the complete-history figure is not.
-export type VerifiedSamplePnlAudit = {
-  verifiedLotCount: number
-  realizedPnlUsd: number | null
-  pricingCoverage: number | null
-  canonicalConsistencyPassed: boolean
-  pricingEvidenceMissing: number
-  excludedUnmatchedSellCount: number
-  samplePnlAllowed: boolean
-  samplePnlBlockedReason: VerifiedSamplePnlBlockedReason | null
-  fullHistoryPnlAllowed: boolean
-}
-
-// Honest all-empty fixtures, matching this file's own emptyReasonCounts/emptyMissingPriceRecoveryFunnelAudit
-// convention — for test fixtures/callers that need a real, fully-shaped value with nothing verified.
-export function emptyVerifiedSamplePerformance(): VerifiedSamplePerformance {
-  return {
-    status: 'unavailable', realizedPnlUsd: null, verifiedLotCount: 0, structuralLotCount: 0,
-    pricingCoverage: 0, excludedUnmatchedSellCount: 0, isCompleteWalletHistory: false,
-  }
-}
-export function emptyVerifiedSamplePnlAudit(): VerifiedSamplePnlAudit {
-  return {
-    verifiedLotCount: 0, realizedPnlUsd: null, pricingCoverage: null, canonicalConsistencyPassed: true,
-    pricingEvidenceMissing: 0, excludedUnmatchedSellCount: 0, samplePnlAllowed: false,
-    samplePnlBlockedReason: 'no_verified_lots', fullHistoryPnlAllowed: false,
-  }
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -1090,6 +1099,97 @@ const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'clos
 export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>): boolean {
   return isCanonicalVerifiedPublishedLot(lot)
 }
+
+// VERIFIED BOUNDED-SAMPLE vs FULL-HISTORY SPLIT, DISCLOSED: unmatched sells outside the included
+// canonical sample must not erase the sample's own arithmetic. Numerator (realized PnL) and
+// denominator (cost basis) are summed from EXACTLY the same included verified lots. Cost basis is
+// never invented. ROI is realized-only — (realized + unrealized) / cost is not computed here.
+export function computeVerifiedSampleAndFullHistoryPerformance(params: {
+  verifiedLots: readonly MatchedLot[]
+  structuralLotCount: number
+  realizedPnlUsd: number | null
+  verifiedPricingCoverage: number | null
+  pricingCoverageThresholdMet: boolean
+  excludedUnmatchedSellCount: number
+  canonicalConsistencyPassed: boolean
+  includedSamplePricingMissing: number
+  hardInvalidFifoResult: boolean
+  canonicalSampleUnavailable: boolean
+  publicPnlStatus: ReconciledPublicPnlStatus
+  fullHistoryBlockingReasons: readonly string[]
+}): {
+  verifiedSamplePerformance: VerifiedSamplePerformance
+  fullHistoryPerformance: FullHistoryPerformance
+  verifiedSamplePerformanceAudit: VerifiedSamplePerformanceAudit
+} {
+  const verifiedLotCount = params.verifiedLots.length
+  const realizedCostBasisUsd = verifiedLotCount > 0
+    ? params.verifiedLots.reduce((sum, lot) => sum + (lot.costBasisUsd ?? 0), 0)
+    : null
+  const costBasisFinite = realizedCostBasisUsd != null && Number.isFinite(realizedCostBasisUsd)
+  const realizedPnlFinite = params.realizedPnlUsd != null && Number.isFinite(params.realizedPnlUsd)
+  const realizedRoiPct = realizedPnlFinite && costBasisFinite && realizedCostBasisUsd! > 0
+    ? (params.realizedPnlUsd! / realizedCostBasisUsd!) * 100
+    : null
+  const pricingCoverage = params.verifiedPricingCoverage != null && Number.isFinite(params.verifiedPricingCoverage)
+    ? params.verifiedPricingCoverage
+    : 0
+
+  let samplePerformanceBlockedReason: string | null = null
+  if (params.canonicalSampleUnavailable) samplePerformanceBlockedReason = 'canonical_sample_unavailable'
+  else if (params.hardInvalidFifoResult) samplePerformanceBlockedReason = 'fifo_result_hard_invalid'
+  else if (!params.canonicalConsistencyPassed) samplePerformanceBlockedReason = 'canonical_consistency_failed'
+  else if (params.includedSamplePricingMissing > 0) samplePerformanceBlockedReason = 'pricing_evidence_missing_inside_sample'
+  else if (verifiedLotCount <= 0) samplePerformanceBlockedReason = 'no_verified_lots'
+  else if (!params.pricingCoverageThresholdMet) samplePerformanceBlockedReason = 'pricing_coverage_below_threshold'
+  else if (!realizedPnlFinite) samplePerformanceBlockedReason = 'realized_pnl_not_finite'
+
+  const samplePerformanceAllowed = samplePerformanceBlockedReason == null
+  const roiAllowed = samplePerformanceAllowed && realizedRoiPct != null
+
+  const verifiedSamplePerformance: VerifiedSamplePerformance = {
+    status: samplePerformanceAllowed ? 'verified_bounded_sample' : 'unavailable',
+    realizedPnlUsd: samplePerformanceAllowed ? params.realizedPnlUsd : null,
+    realizedCostBasisUsd: samplePerformanceAllowed && costBasisFinite ? realizedCostBasisUsd : null,
+    realizedRoiPct: roiAllowed ? realizedRoiPct : null,
+    verifiedLotCount,
+    structuralLotCount: params.structuralLotCount,
+    pricingCoverage,
+    excludedUnmatchedSellCount: params.excludedUnmatchedSellCount,
+    isCompleteWalletHistory: false,
+  }
+
+  const fullHistoryStatus: FullHistoryPerformanceStatus = params.publicPnlStatus === 'available'
+    ? 'verified'
+    : params.publicPnlStatus === 'partial'
+      ? 'partial'
+      : 'unavailable'
+  const fullHistoryPerformanceAllowed = fullHistoryStatus === 'verified'
+  const fullHistoryPerformance: FullHistoryPerformance = {
+    status: fullHistoryStatus,
+    realizedPnlUsd: fullHistoryStatus === 'unavailable' ? null : params.realizedPnlUsd,
+    realizedRoiPct: null,
+    blockingReasons: [...params.fullHistoryBlockingReasons],
+  }
+
+  const verifiedSamplePerformanceAudit: VerifiedSamplePerformanceAudit = {
+    verifiedLotCount,
+    includedLotCount: verifiedLotCount,
+    realizedPnlUsd: params.realizedPnlUsd,
+    realizedCostBasisUsd: costBasisFinite ? realizedCostBasisUsd : null,
+    realizedRoiPct,
+    pricingCoverage,
+    canonicalConsistencyPassed: params.canonicalConsistencyPassed,
+    pricingEvidenceMissing: params.includedSamplePricingMissing,
+    excludedUnmatchedSellCount: params.excludedUnmatchedSellCount,
+    samplePerformanceAllowed,
+    samplePerformanceBlockedReason,
+    fullHistoryPerformanceAllowed,
+  }
+
+  return { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit }
+}
+
 
 // CLOSED-LOT COVERAGE RANKING, DISCLOSED (Wallet PnL Item 4): recoverPrices previously sorted
 // missing lots as one-side-missing first, then lotKey. That is still a real completable-first
@@ -1369,7 +1469,7 @@ export function createPnlReconciliation(config: Config = {}) {
       let groupTotalUsd = evidence.priceUsd
       const evidenceKey = buildAcceptedEvidenceKey(evidence)
       const liveFingerprint = buildAcceptedEvidenceCoverageFingerprint(group.lots)
-      let legacyProofAvailable: AcceptedEvidenceMigrationClassification | null = null
+      let detection: ReturnType<typeof detectLegacyPerUnitTotalRecord> = { legacyProof: null, reconstructedTotalUsd: null }
       // LEGACY PER-UNIT-AS-TOTAL MIGRATION, DISCLOSED (legacy-accepted-evidence-repair /
       // provenance-laundering follow-up tasks): only ever attempted when the record's own declared
       // scope (`coveredLotCount: 1`, the old writer's only shape) still matches the LIVE group's
@@ -1383,7 +1483,7 @@ export function createPnlReconciliation(config: Config = {}) {
         // own header: this alone can no longer be silently defeated by a later re-envelope, since
         // `originWriter` is now preserved through every write (see buildAcceptedEvidenceEnvelope's
         // provenance-preservation logic below).
-        let detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
+        detection = detectLegacyPerUnitTotalRecord(evidence, group.lots[0].amount)
         // FALLBACK: independent, provenance-free proof for a record whose true origin is ALREADY
         // unrecoverable (laundered before this fix ever shipped) — proves corruption from this
         // scan's own live upstream total alone, never from a metadata field that could itself have
@@ -1394,8 +1494,26 @@ export function createPnlReconciliation(config: Config = {}) {
             detection = detectLegacyPerUnitTotalByLiveUpstreamProof(evidence.priceUsd, group.lots[0].amount, liveUpstreamTotalUsd)
           }
         }
-        legacyProofAvailable = detection.legacyProof
-        if (detection.legacyProof !== null) {
+      }
+      // WRONG-DECIMAL-SCALE, DISCLOSED (same-tx Base USDC 18-vs-6 poison): a scale-error record
+      // wrote priceUsd === valueUsd === the tiny TOTAL, so the per-unit proofs above never fire
+      // (live "detected/repaired 0 records"). Only rewrite when this scan's own live total is
+      // 10^12 × the persisted total AND the token is a canonical 6-decimal stable — never a
+      // blind immutability bypass.
+      if (detection.legacyProof === null) {
+        let liveGroupTotal = 0
+        let liveComplete = true
+        for (const lot of group.lots) {
+          const live = group.side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd
+          if (live == null || !Number.isFinite(live) || live <= 0) { liveComplete = false; break }
+          liveGroupTotal += live
+        }
+        if (liveComplete) {
+          detection = detectWrongDecimalScaleByLiveUpstreamProof(evidence.priceUsd, liveGroupTotal)
+        }
+      }
+      const legacyProofAvailable: AcceptedEvidenceMigrationClassification | null = detection.legacyProof
+      if (detection.legacyProof !== null) {
           audit.legacyPerUnitRecordsDetected += 1
           const total = detection.reconstructedTotalUsd!
           const record: AcceptedEvidenceLegacyMigrationRecord = {
@@ -1426,7 +1544,6 @@ export function createPnlReconciliation(config: Config = {}) {
           if (ok) { audit.legacyPerUnitRecordsRepaired += 1; groupTotalUsd = total; repairedEvidenceKeysThisPass.add(evidenceKey) }
           else { audit.legacyPerUnitRecordsRejected += 1; record.repairRejectedReason = 'write_failed' }
           if (audit.legacyPerUnitMigrationAudit.length < MAX_LEGACY_MIGRATION_AUDIT_EXAMPLES) audit.legacyPerUnitMigrationAudit.push(record)
-        }
       }
       for (const lot of group.lots) {
         const ctx = conflictContextByLot.get(lot) ?? {}
@@ -1455,7 +1572,8 @@ export function createPnlReconciliation(config: Config = {}) {
       ]
       for (const s of sides) {
         if (s.already) audit.existingVerifiedSidesProtectedFromOverwrite += 1
-        if (s.share) {
+        const shareIsCanonicalPositive = s.share != null && isCanonicalPositiveUsd(s.share.allocatedValueUsd) && !s.share.dustBelowPrecision
+        if (shareIsCanonicalPositive && s.share) {
           audit.persistedAcceptedSidesLoaded += 1
           audit.persistedAcceptedSidesApplied += 1
           audit.acceptedSidesLoadedBeforePricing += 1
@@ -1501,8 +1619,16 @@ export function createPnlReconciliation(config: Config = {}) {
           if (s.side === 'entry') costBasisUsd = s.share.allocatedValueUsd
           else proceedsUsd = s.share.allocatedValueUsd
         } else {
+          // FAIL OPEN, DISCLOSED (contaminated 81-lot fast-path lock): a persisted group total
+          // that allocates this sibling to 0 / dust is not canonical coverage. Leave the
+          // upstream value (live price, or null) so recovery can still fill the side. Never
+          // overwrite a positive live value with a non-positive reconstruction, and never
+          // persist that reconstruction as "applied."
           audit.missingAcceptedEvidenceKeys += 1
           audit.acceptedEvidenceIdentityMisses += 1
+          if (s.share && !shareIsCanonicalPositive) {
+            audit.invalidAcceptedEvidenceReasons!.invalidPrice += 1
+          }
           if (s.already) audit.existingUpstreamSidesWithoutAcceptedEvidence += 1
         }
       }
@@ -1513,7 +1639,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // figure. Only recomputed when a price actually changed and both sides are now known.
       const pricesChanged = costBasisUsd !== lot.costBasisUsd || proceedsUsd !== lot.proceedsUsd
       if (!pricesChanged) { hydratedLots.push(lot); continue }
-      const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+      const nowFullyPriced = isCanonicalPositiveUsd(costBasisUsd) && isCanonicalPositiveUsd(proceedsUsd)
       hydratedLots.push({
         ...lot,
         costBasisUsd,
@@ -1546,8 +1672,7 @@ export function createPnlReconciliation(config: Config = {}) {
     // stale label before recovery so a genuinely two-sided lot is not stranded outside every
     // canonical verified consumer.  One-sided lots remain unpriced and are handled below.
     const pricedStructuralLots = lots.map((lot) => {
-      const bothAccepted = lot.costBasisUsd !== null && Number.isFinite(lot.costBasisUsd)
-        && lot.proceedsUsd !== null && Number.isFinite(lot.proceedsUsd)
+      const bothAccepted = isCanonicalPositiveUsd(lot.costBasisUsd) && isCanonicalPositiveUsd(lot.proceedsUsd)
       return bothAccepted && lot.evidenceQuality === 'unpriced'
         ? { ...lot, realizedPnlUsd: lot.proceedsUsd! - lot.costBasisUsd!, evidenceQuality: 'verified' as const }
         : lot
@@ -1568,8 +1693,8 @@ export function createPnlReconciliation(config: Config = {}) {
     let detailedAttemptsObserved = 0
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     const detailedPrimary = config.priceSourceDetailedPrimary
-    const missingLots = hydratedLots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
-    const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
+    const missingLots = hydratedLots.filter((lot) => !isCanonicalPositiveUsd(lot.costBasisUsd) || !isCanonicalPositiveUsd(lot.proceedsUsd))
+    const oneSideMissingCandidates = missingLots.filter((l) => isCanonicalPositiveUsd(l.costBasisUsd) || isCanonicalPositiveUsd(l.proceedsUsd)).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
       const missingPriceRecoveryFunnelAudit = buildMissingPriceRecoveryFunnelAudit({
@@ -1597,8 +1722,8 @@ export function createPnlReconciliation(config: Config = {}) {
     }
     const tokenYield = (lot: MatchedLot) => missingLotsPerToken.get(`${lot.chain}:${lot.token.toLowerCase()}`) ?? 0
     const sorted = [...missingLots].sort((a, b) => {
-      const aOneSide = a.costBasisUsd !== null || a.proceedsUsd !== null ? 0 : 1
-      const bOneSide = b.costBasisUsd !== null || b.proceedsUsd !== null ? 0 : 1
+      const aOneSide = isCanonicalPositiveUsd(a.costBasisUsd) || isCanonicalPositiveUsd(a.proceedsUsd) ? 0 : 1
+      const bOneSide = isCanonicalPositiveUsd(b.costBasisUsd) || isCanonicalPositiveUsd(b.proceedsUsd) ? 0 : 1
       if (aOneSide !== bOneSide) return aOneSide - bOneSide
       const yieldDelta = tokenYield(b) - tokenYield(a)
       return yieldDelta !== 0 ? yieldDelta : lotKey(a).localeCompare(lotKey(b))
@@ -1680,8 +1805,8 @@ export function createPnlReconciliation(config: Config = {}) {
     // for every one of the 109 missing-price lots, exactly this task's own requirement.
     const candidateOutcomeByKey = new Map<string, CandidateRecoveryOutcome>()
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
-      const needsBuy = lot.costBasisUsd === null
-      const needsSell = lot.proceedsUsd === null
+      const needsBuy = !isCanonicalPositiveUsd(lot.costBasisUsd)
+      const needsSell = !isCanonicalPositiveUsd(lot.proceedsUsd)
       let recoveredBuy: number | null = null
       let recoveredSell: number | null = null
       let lastBuyReason: string | null = null
@@ -2056,9 +2181,9 @@ export function createPnlReconciliation(config: Config = {}) {
       const updatedFifoLots = recovery.hydratedLots.map((lot) => {
         const recoveredPrice = recovery.recoveredByLotKey.get(lotKey(lot))
         if (!recoveredPrice) return lot
-        const costBasisUsd = lot.costBasisUsd ?? recoveredPrice.costBasisUsd
-        const proceedsUsd = lot.proceedsUsd ?? recoveredPrice.proceedsUsd
-        const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+        const costBasisUsd = isCanonicalPositiveUsd(lot.costBasisUsd) ? lot.costBasisUsd : (recoveredPrice.costBasisUsd ?? lot.costBasisUsd)
+        const proceedsUsd = isCanonicalPositiveUsd(lot.proceedsUsd) ? lot.proceedsUsd : (recoveredPrice.proceedsUsd ?? lot.proceedsUsd)
+        const nowFullyPriced = isCanonicalPositiveUsd(costBasisUsd) && isCanonicalPositiveUsd(proceedsUsd)
         if (recoveredPrice.costBasisUsd !== null && recoveredPrice.proceedsUsd !== null) recoveredBoth += 1
         else if (recoveredPrice.costBasisUsd !== null) recoveredBuyOnly += 1
         else recoveredSellOnly += 1
@@ -2338,16 +2463,12 @@ export function createPnlReconciliation(config: Config = {}) {
       // from the caller's exact-unmatched-evidence audit.
       const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
       // FULL PNL REQUIRES A PROVEN WINDOW BOUNDARY, DISCLOSED (wallet-scanner-bounded-publication
-      // follow-up task — confirmed gap: `preWindowInventoryExitsUnprovenDueToTruncation` sells are
-      // deliberately excluded from `gateUnmatchedSells` [never hard-blocking], so a wallet with
-      // ZERO other unmatched/missing evidence could satisfy every other structuralConsistent
-      // condition and earn full 'available' status EVEN THOUGH its history was truncated and its
-      // window boundary was never proven — publishing an unqualified "complete wallet history"
-      // claim on an incomplete fetch. Full availability now additionally requires
-      // `windowBoundaryProven` — the bounded ('partial') path remains reachable via
-      // `boundedSampleWindowSafe` below (true for both 'exhaustive' and 'truncated' coverage), so a
-      // truncated-but-otherwise-clean wallet still publishes its verified bounded sample, just never
-      // as unqualified FULL history.
+      // follow-up task — confirmed gap: without `windowBoundaryProven`, a wallet with ZERO other
+      // unmatched/missing evidence could satisfy every other structuralConsistent condition and
+      // earn full 'available' status EVEN THOUGH its history was truncated. Full availability
+      // additionally requires `windowBoundaryProven`. Truncation-unproven unmatched sells now stay
+      // in `gateUnmatchedSells` until per-sell proof exists (bypass fix); the bounded ('partial')
+      // path remains reachable via `boundedSampleWindowSafe` only after those sells are resolved.
       const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null && windowBoundaryProven
       // BOUNDED VERIFIED SAMPLE, REWIRED, DISCLOSED (bounded-sample-gate follow-up task, real
       // production evidence: 27 structural lots, 18 verified/66.67% coverage, 94 buys correctly
@@ -2398,9 +2519,18 @@ export function createPnlReconciliation(config: Config = {}) {
       // conditions, just not `boundedSampleWindowSafe` specifically (a signal this gate computes
       // from a live, current-scan recompute the manifest replay does not depend on).
       const canonicalManifestApplied = canonicalSampleSelection?.manifestApplied === true
+      // PER-SELL BOUNDARY RESOLVER, DISCLOSED (bypass fix): truncation / 98-lot pricing / a
+      // successful manifest replay must not publish Combined PnL while any unmatched sell is still
+      // only "unproven due to truncation" or otherwise unresolved. Omitted remainingBlockers
+      // (unmigrated callers) leaves Combined admission unchanged.
+      const boundaryDependentRemainingBlockers = denomAudit?.boundaryDependentRemainingBlockers
+      const unresolvedBoundaryDependentSells = boundaryDependentRemainingBlockers != null
+        ? boundaryDependentRemainingBlockers
+        : 0
       const boundedSampleEligible =
         verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && realizedPnlUsd !== null
         && (boundedSampleWindowSafe || canonicalManifestApplied)
+        && unresolvedBoundaryDependentSells === 0
       // CANONICAL SAMPLE UNAVAILABLE OVERRIDE, DISCLOSED (requirement #4 — genuine fail-closed): a
       // valid manifest exists but this scan could not reproduce its required evidence. The public
       // result must then be degraded/unavailable — never the live candidate sample that happens to
@@ -2413,7 +2543,7 @@ export function createPnlReconciliation(config: Config = {}) {
         ? 'unavailable'
         : structuralConsistent
           ? 'available'
-          : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
+          : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0 && unresolvedBoundaryDependentSells === 0)
             ? 'partial'
             : 'unavailable'
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
@@ -2520,6 +2650,13 @@ export function createPnlReconciliation(config: Config = {}) {
       if (!boundedSampleWindowSafe) {
         boundedSampleBlockingReasons.push({ rule: 'window_boundary_proven', threshold: 'true', actualValue: 'false' })
       }
+      if (unresolvedBoundaryDependentSells > 0) {
+        boundedSampleBlockingReasons.push({
+          rule: 'boundary_dependent_sells_unresolved',
+          threshold: '0 unresolved boundary-dependent sells',
+          actualValue: String(unresolvedBoundaryDependentSells),
+        })
+      }
       if (realizedPnlUsd === null) {
         boundedSampleBlockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
       }
@@ -2531,7 +2668,7 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
         unmatchedBuyCount: gateUnmatchedBuys,
         unmatchedSellCount: gateUnmatchedSells,
-        integrityTier: canonicalSampleUnavailable ? 'blocked' : structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
+        integrityTier: canonicalSampleUnavailable ? 'blocked' : structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0 && unresolvedBoundaryDependentSells === 0) ? 'partial' : 'blocked',
         blockingReasons,
         rawUnmatchedBuys: correctedUnmatchedBuys,
         rawUnmatchedSells: correctedUnmatchedSells,
@@ -2692,42 +2829,32 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       if (consistencyInvariantFailures.length > 0) logger.warn('CRITICAL canonical_verification_consistency_failure', canonicalVerificationConsistencyAudit)
 
-      // VERIFIED BOUNDED-SAMPLE REALIZED PNL, DISCLOSED (verified-bounded-sample-pnl follow-up
-      // task): see PnlReconciliationSummary.verifiedSamplePerformance's own header for the full
-      // "old coupling" disclosure. Every input below is a value already computed above for a
-      // DIFFERENT purpose — this block never recomputes FIFO/pricing/the manifest/the canonical
-      // verifier, it only re-reads their already-decided outputs under a new, additive, narrower
-      // eligibility check.
+      const includedSamplePricingMissing = verifiedUpdatedLots.filter((lot) =>
+        !isCanonicalPositiveUsd(lot.costBasisUsd) || !isCanonicalPositiveUsd(lot.proceedsUsd) || lot.realizedPnlUsd == null || !Number.isFinite(lot.realizedPnlUsd),
+      ).length
       const canonicalConsistencyPassed = consistencyInvariantFailures.length === 0
-      const samplePnlBlockedReason: VerifiedSamplePnlBlockedReason | null =
-        verifiedUpdatedLots.length === 0 ? 'no_verified_lots'
-          : !pricingCoverageThresholdMet ? 'pricing_coverage_below_threshold'
-            : !canonicalConsistencyPassed ? 'canonical_consistency_failure'
-              : pricingEvidenceMissing > 0 ? 'pricing_evidence_missing_in_sample'
-                : realizedPnlUsd === null ? 'realized_pnl_unavailable'
-                  : null
-      const samplePnlAllowed = samplePnlBlockedReason === null
-      const verifiedSamplePerformance: VerifiedSamplePerformance = {
-        status: samplePnlAllowed ? 'verified_bounded_sample' : 'unavailable',
-        realizedPnlUsd: samplePnlAllowed ? realizedPnlUsd : null,
-        verifiedLotCount: verifiedUpdatedLots.length,
+        && pnlVerificationTransitionAudit.invariantFailures.length === 0
+      const fullHistoryBlockingReasons = (publicPnlStatus === 'available'
+        ? []
+        : publicPnlStatus === 'partial'
+          ? publicPnlGateAudit.boundedSampleBlockingReasons
+          : publicPnlGateAudit.blockingReasons
+      ).map((reason) => reason.rule)
+      const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
+        verifiedLots: verifiedUpdatedLots,
         structuralLotCount: fifoLots.length,
-        pricingCoverage: verifiedPricingCoverage ?? 0,
-        excludedUnmatchedSellCount: gateUnmatchedSells,
-        isCompleteWalletHistory: false,
-      }
-      const verifiedSamplePnlAudit: VerifiedSamplePnlAudit = {
-        verifiedLotCount: verifiedUpdatedLots.length,
         realizedPnlUsd,
-        pricingCoverage: verifiedPricingCoverage,
-        canonicalConsistencyPassed,
-        pricingEvidenceMissing,
+        verifiedPricingCoverage,
+        pricingCoverageThresholdMet,
         excludedUnmatchedSellCount: gateUnmatchedSells,
-        samplePnlAllowed,
-        samplePnlBlockedReason,
-        fullHistoryPnlAllowed: structuralConsistent,
-      }
-      logger.warn('[verified-sample-pnl-audit]', verifiedSamplePnlAudit)
+        canonicalConsistencyPassed,
+        includedSamplePricingMissing,
+        hardInvalidFifoResult,
+        canonicalSampleUnavailable,
+        publicPnlStatus,
+        fullHistoryBlockingReasons,
+      })
+      logger.warn('[verified-sample-performance-audit]', verifiedSamplePerformanceAudit)
 
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
@@ -2742,6 +2869,11 @@ export function createPnlReconciliation(config: Config = {}) {
         missingEvidenceBreakdown,
         publicPnlStatus,
         publicPnlGateAudit,
+        verifiedSamplePerformance,
+        fullHistoryPerformance,
+        verifiedSamplePerformanceAudit,
+        verifiedSampleRealizedPnlUsd: verifiedSamplePerformance.realizedPnlUsd,
+        verifiedSampleRealizedRoiPct: verifiedSamplePerformance.realizedRoiPct,
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
         acceptedEvidenceAudit,
@@ -2750,8 +2882,6 @@ export function createPnlReconciliation(config: Config = {}) {
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,
         canonicalVerificationConsistencyAudit,
-        verifiedSamplePerformance,
-        verifiedSamplePnlAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

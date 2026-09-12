@@ -23,13 +23,13 @@ import {
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
   REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
   buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage, selectPnlConfidenceStatus,
-  selectVerifiedSamplePnlDisclosure, VERIFIED_SAMPLE_PNL_STATUS_LABEL,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
+import { buildWalletPnlViewModel, formatFullWalletUnavailableReason, fmtSignedPercent } from '@/app/frontend/lib/buildWalletPnlViewModel'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
-import { emptyMissingPriceRecoveryFunnelAudit, emptyVerifiedSamplePerformance, emptyVerifiedSamplePnlAudit } from '@/src/lib/pnlReconciliation'
+import { emptyMissingPriceRecoveryFunnelAudit, EMPTY_VERIFIED_SAMPLE_PERFORMANCE, EMPTY_FULL_HISTORY_PERFORMANCE, emptyVerifiedSamplePerformanceAudit } from '@/src/lib/pnlReconciliation'
 import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDiscrepancyAudit } from '@/src/lib/pnlDiscrepancyAudit'
 
 // Minimal, real-shaped PnlReconciliationSummary fixture builder — mirrors the fixture pattern
@@ -38,12 +38,17 @@ import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDi
 // verifiedPricingCoverage,invalidOrUnknownUnmatchedEvents,scanWindowDays}) vary meaningfully across
 // tests below; the rest are honest, unused-by-this-selector placeholders.
 function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}): PnlReconciliationSummary {
-  return {
+  const base: PnlReconciliationSummary = {
     closedLots: 27, unmatchedBuys: 94, unmatchedSells: 114, realizedPnlUsd: -3515.49, unrealizedPnlUsd: -19.02,
     publishedMatchedLots: [],
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 15,
     missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 4, pricingEvidenceMissing: 8, dustExcluded: 0, nonTradeExcluded: 0 },
     publicPnlStatus: 'partial',
+    verifiedSamplePerformance: EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
+    fullHistoryPerformance: EMPTY_FULL_HISTORY_PERFORMANCE,
+    verifiedSamplePerformanceAudit: emptyVerifiedSamplePerformanceAudit(),
+    verifiedSampleRealizedPnlUsd: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedPnlUsd,
+    verifiedSampleRealizedRoiPct: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedRoiPct,
     publicPnlGateAudit: {
       verifiedLotCount: 19, fullyPricedLotCount: 19, pricingCoverage: 0.7037, structuralCoverage: 0.871,
       unmatchedBuyCount: 0, unmatchedSellCount: 4, integrityTier: 'partial', blockingReasons: [],
@@ -89,9 +94,12 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     // placeholder" convention above) — trust-gate tests below override this explicitly.
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
-    verifiedSamplePerformance: emptyVerifiedSamplePerformance(),
-    verifiedSamplePnlAudit: emptyVerifiedSamplePnlAudit(),
     ...overrides,
+  }
+  return {
+    ...base,
+    verifiedSampleRealizedPnlUsd: overrides.verifiedSampleRealizedPnlUsd ?? base.verifiedSamplePerformance.realizedPnlUsd,
+    verifiedSampleRealizedRoiPct: overrides.verifiedSampleRealizedRoiPct ?? base.verifiedSamplePerformance.realizedRoiPct,
   }
 }
 
@@ -665,72 +673,6 @@ describe('selectBoundedSampleDisclosure — bounded-PnL-UI follow-up task', () =
   })
 })
 
-describe('selectVerifiedSamplePnlDisclosure — verified-bounded-sample-pnl follow-up task', () => {
-  // OLD COUPLING, DISCLOSED: selectBoundedSampleDisclosure above only ever returns non-null when
-  // `publicPnlStatus`/effective status is 'limited_verified_sample' — the SAME complete-history
-  // gate this new selector must be independent of. These tests use `publicPnlStatus: 'unavailable'`
-  // throughout (selectBoundedSampleDisclosure would return null for every one of them) to prove
-  // selectVerifiedSamplePnlDisclosure reads reconciliationSummary.verifiedSamplePerformance directly
-  // and never depends on the complete-history status at all.
-  const verifiedSample = (overrides: Partial<PnlReconciliationSummary['verifiedSamplePerformance']> = {}): PnlReconciliationSummary['verifiedSamplePerformance'] => ({
-    status: 'verified_bounded_sample', realizedPnlUsd: -70794.97, verifiedLotCount: 98,
-    structuralLotCount: 98, pricingCoverage: 1, excludedUnmatchedSellCount: 2, isCompleteWalletHistory: false,
-    ...overrides,
-  })
-
-  it('HARD ASSERTION (exact acceptance shape): 98 verified closed lots, 100% pricing coverage, 2 excluded unmatched sells, -$70,794.97 realized PnL — regardless of the complete-history status being unavailable', () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({ verifiedSamplePerformance: verifiedSample() }))
-    assert.ok(disclosure)
-    assert.equal(disclosure!.realizedPnlUsd, -70794.97)
-    assert.equal(disclosure!.verifiedLotCount, 98)
-    assert.equal(disclosure!.pricingCoveragePercent, 100)
-    assert.equal(disclosure!.excludedUnmatchedSellCount, 2)
-    assert.equal(disclosure!.statusLabel, VERIFIED_SAMPLE_PNL_STATUS_LABEL)
-    assert.equal(disclosure!.disclosure, '2 unmatched sells are excluded because their acquisition history could not be verified. This is not complete wallet-history PnL.')
-  })
-
-  it("returns null when the backend's own verifiedSamplePerformance.status is 'unavailable' — never fabricates a figure the backend did not allow", () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
-      verifiedSamplePerformance: verifiedSample({ status: 'unavailable', realizedPnlUsd: null }),
-    }))
-    assert.equal(disclosure, null)
-  })
-
-  it('returns null when reconciliationSummary is absent, even though this selector never reads publicPnlStatus — never fabricates for an unwired caller', () => {
-    assert.equal(selectVerifiedSamplePnlDisclosure(null), null)
-    assert.equal(selectVerifiedSamplePnlDisclosure(undefined), null)
-  })
-
-  it('a single excluded unmatched sell uses correct singular grammar', () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
-      verifiedSamplePerformance: verifiedSample({ excludedUnmatchedSellCount: 1 }),
-    }))
-    assert.equal(disclosure!.disclosure, '1 unmatched sell is excluded because its acquisition history could not be verified. This is not complete wallet-history PnL.')
-  })
-
-  it('zero excluded unmatched sells uses the generic bounded-sample disclosure, never claims an unmatched sell that does not exist', () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
-      verifiedSamplePerformance: verifiedSample({ excludedUnmatchedSellCount: 0 }),
-    }))
-    assert.equal(disclosure!.disclosure, 'This is a verified bounded sample, not complete wallet-history PnL.')
-  })
-
-  it('caps pricing coverage display at 100% even if the backend value somehow exceeds 1.0', () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({
-      verifiedSamplePerformance: verifiedSample({ pricingCoverage: 1.5 }),
-    }))
-    assert.equal(disclosure!.pricingCoveragePercent, 100)
-  })
-
-  it('never contains "Complete PnL", "All-time PnL", "Fully verified", or "Full Wallet" in the disclosure text — this is never presented as complete-wallet PnL', () => {
-    const disclosure = selectVerifiedSamplePnlDisclosure(reconciliationSummary({ verifiedSamplePerformance: verifiedSample() }))!
-    for (const forbidden of ['Complete PnL', 'All-time PnL', 'Fully verified', 'Full Wallet']) {
-      assert.equal(disclosure.disclosure.includes(forbidden), false)
-      assert.equal(disclosure.statusLabel.includes(forbidden), false)
-    }
-  })
-})
-
 describe('bounded-PnL-UI end-to-end regression: partial/available/unavailable rendering behavior', () => {
   const pnlV2Fixture = pnlV2({ realizedPnlUsd: -3515.49, unrealizedPnlUsd: 545000 })
   const unrealizedRecon = reconciliation({ officialUnrealizedPnlUsd: -19.02, reconciliationStatus: 'ok' })
@@ -1187,5 +1129,242 @@ describe('selectPnlConfidenceStatus — split realized/unrealized/coverage/integ
     assert.equal(withTier('full'), 'OK')
     assert.equal(withTier('partial'), 'Needs review')
     assert.equal(withTier('blocked'), 'Debug only')
+  })
+})
+
+describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
+  const SAMPLE_PNL = -70794.97
+  const SAMPLE_COST = 307103.26242036064
+  const SAMPLE_ROI = SAMPLE_PNL / SAMPLE_COST * 100
+
+  function sampleSummary(overrides: Partial<PnlReconciliationSummary> = {}) {
+    return reconciliationSummary({
+      realizedPnlUsd: SAMPLE_PNL,
+      publicPnlStatus: 'unavailable',
+      missingEvidenceCount: 2,
+      unmatchedSells: 2,
+      publicPnlGateAudit: {
+        ...reconciliationSummary().publicPnlGateAudit,
+        verifiedClosedLots: 98,
+        verifiedLotCount: 98,
+        structuralClosedLots: 98,
+        fullyPricedLotCount: 98,
+        verifiedPricingCoverage: 1,
+        pricingCoverage: 1,
+        unmatchedSellCount: 2,
+        genuineUnmatchedSells: 2,
+        integrityTier: 'blocked',
+        boundedSampleEligible: false,
+        includedVerifiedLotCount: 98,
+        excludedUnknownUnmatchedCount: 2,
+      },
+      verifiedSamplePerformance: {
+        status: 'verified_bounded_sample',
+        realizedPnlUsd: SAMPLE_PNL,
+        realizedCostBasisUsd: SAMPLE_COST,
+        realizedRoiPct: SAMPLE_ROI,
+        verifiedLotCount: 98,
+        structuralLotCount: 98,
+        pricingCoverage: 1,
+        excludedUnmatchedSellCount: 2,
+        isCompleteWalletHistory: false,
+      },
+      fullHistoryPerformance: {
+        status: 'unavailable',
+        realizedPnlUsd: null,
+        realizedRoiPct: null,
+        blockingReasons: ['unmatched_sells'],
+      },
+      verifiedSamplePerformanceAudit: {
+        verifiedLotCount: 98,
+        includedLotCount: 98,
+        realizedPnlUsd: SAMPLE_PNL,
+        realizedCostBasisUsd: SAMPLE_COST,
+        realizedRoiPct: SAMPLE_ROI,
+        pricingCoverage: 1,
+        canonicalConsistencyPassed: true,
+        pricingEvidenceMissing: 0,
+        excludedUnmatchedSellCount: 2,
+        samplePerformanceAllowed: true,
+        samplePerformanceBlockedReason: null,
+        fullHistoryPerformanceAllowed: false,
+      },
+      ...overrides,
+    })
+  }
+
+  it('HARD ASSERTION: 98 verified sample + 2 unmatched sells → sample PnL/ROI display; Combined/full-wallet stays unavailable', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: sampleSummary(),
+    })
+    assert.equal(vm.combinedStatus, 'unavailable')
+    assert.equal(vm.combinedRealizedBox.status, 'Unavailable')
+    assert.equal(vm.combinedRealizedBox.value, null)
+    assert.equal(vm.combinedReason, '2 unmatched sells prevent complete-wallet verification')
+    assert.equal(vm.combinedRealizedBox.reason, '2 unmatched sells prevent complete-wallet verification')
+    assert.equal(formatFullWalletUnavailableReason(sampleSummary()), '2 unmatched sells prevent complete-wallet verification')
+    assert.equal(sampleSummary().verifiedSampleRealizedPnlUsd, SAMPLE_PNL)
+    assert.ok(sampleSummary().verifiedSampleRealizedRoiPct != null && Math.abs(sampleSummary().verifiedSampleRealizedRoiPct! - SAMPLE_ROI) < 1e-6)
+    assert.equal(vm.sampleStatusBadge, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Partial')
+    assert.equal(vm.verifiedSampleRealizedBox.statusLabel, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$70,794.97')
+    assert.match(vm.verifiedSampleRealizedBox.reason, /98 verified closed lots/)
+    assert.match(vm.verifiedSampleRealizedBox.reason, /100% pricing coverage/)
+    assert.equal(vm.roiBox.status, 'Partial')
+    assert.equal(vm.roiBox.statusLabel, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
+    assert.equal(vm.roiBox.value, fmtSignedPercent(SAMPLE_ROI))
+    assert.equal(vm.roiBox.value, '-23.1%')
+    assert.match(vm.roiBox.reason, /realized-only bounded sample/)
+    assert.match(vm.sampleEvidenceLine ?? '', /Verified Sample Realized PnL -\$70,794\.97/)
+    assert.match(vm.sampleEvidenceLine ?? '', /ROI -23\.1%/)
+    assert.match(vm.sampleEvidenceLine ?? '', /PARTIAL \/ VERIFIED BOUNDED SAMPLE/)
+  })
+
+  it('HARD ASSERTION: Combined Partial + wired sample does not republish sample PnL as Combined/Full Wallet', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: sampleSummary({
+        publicPnlStatus: 'partial',
+        publicPnlGateAudit: {
+          ...sampleSummary().publicPnlGateAudit,
+          unmatchedSellCount: 0,
+          genuineUnmatchedSells: 0,
+          integrityTier: 'partial',
+          boundedSampleEligible: true,
+        },
+        fullHistoryPerformance: { status: 'partial', realizedPnlUsd: SAMPLE_PNL, realizedRoiPct: null, blockingReasons: [] },
+        verifiedSamplePerformanceAudit: {
+          ...sampleSummary().verifiedSamplePerformanceAudit,
+          fullHistoryPerformanceAllowed: false,
+        },
+      }),
+    })
+    assert.equal(vm.combinedStatus, 'partial')
+    assert.equal(vm.combinedRealizedBox.status, 'Partial')
+    assert.equal(vm.combinedRealizedBox.value, null)
+    assert.match(vm.combinedRealizedBox.reason, /not complete-history/)
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$70,794.97')
+    assert.equal(vm.roiBox.value, '-23.1%')
+    assert.equal(vm.sampleStatusBadge, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
+  })
+
+  it('HARD ASSERTION: sample pricing missing → sample PnL/ROI unavailable; full-history stays blocked', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: reconciliationSummary({
+        publicPnlStatus: 'unavailable',
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, unmatchedSellCount: 2, verifiedClosedLots: 98 },
+        verifiedSamplePerformance: {
+          ...EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
+          verifiedLotCount: 98,
+          structuralLotCount: 98,
+          excludedUnmatchedSellCount: 2,
+        },
+        fullHistoryPerformance: { status: 'unavailable', realizedPnlUsd: null, realizedRoiPct: null, blockingReasons: ['unmatched_sells'] },
+        verifiedSamplePerformanceAudit: {
+          ...emptyVerifiedSamplePerformanceAudit(),
+          verifiedLotCount: 98,
+          includedLotCount: 98,
+          samplePerformanceAllowed: false,
+          samplePerformanceBlockedReason: 'pricing_evidence_missing_inside_sample',
+          excludedUnmatchedSellCount: 2,
+        },
+      }),
+    })
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Unavailable')
+    assert.equal(vm.verifiedSampleRealizedBox.value, null)
+    assert.equal(vm.roiBox.value, null)
+    assert.equal(vm.roiBox.status, 'Unavailable')
+    assert.equal(vm.sampleEvidenceLine, null)
+    assert.equal(vm.combinedStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: sample cost basis <= 0 → ROI unavailable; sample PnL still displays; full-history stays blocked', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: -5 }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: reconciliationSummary({
+        publicPnlStatus: 'unavailable',
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, unmatchedSellCount: 2, verifiedClosedLots: 1 },
+        verifiedSamplePerformance: {
+          status: 'verified_bounded_sample',
+          realizedPnlUsd: -5,
+          realizedCostBasisUsd: 0,
+          realizedRoiPct: null,
+          verifiedLotCount: 1,
+          structuralLotCount: 1,
+          pricingCoverage: 1,
+          excludedUnmatchedSellCount: 2,
+          isCompleteWalletHistory: false,
+        },
+        fullHistoryPerformance: { status: 'unavailable', realizedPnlUsd: null, realizedRoiPct: null, blockingReasons: ['unmatched_sells'] },
+        verifiedSamplePerformanceAudit: {
+          ...emptyVerifiedSamplePerformanceAudit(),
+          verifiedLotCount: 1,
+          includedLotCount: 1,
+          realizedPnlUsd: -5,
+          realizedCostBasisUsd: 0,
+          realizedRoiPct: null,
+          pricingCoverage: 1,
+          samplePerformanceAllowed: true,
+          samplePerformanceBlockedReason: null,
+          excludedUnmatchedSellCount: 2,
+        },
+      }),
+    })
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Partial')
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$5.00')
+    assert.equal(vm.roiBox.status, 'Unavailable')
+    assert.equal(vm.roiBox.value, null)
+    assert.match(vm.roiBox.reason, /cost basis is not positive/)
+    assert.equal(vm.combinedStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: canonical consistency failure → sample PnL/ROI unavailable; full-history stays blocked', () => {
+    const vm = buildWalletPnlViewModel({
+      pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }),
+      publicPnlStatus: 'unavailable',
+      reconciliationSummary: reconciliationSummary({
+        publicPnlStatus: 'unavailable',
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, unmatchedSellCount: 2, verifiedClosedLots: 98 },
+        verifiedSamplePerformance: {
+          ...EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
+          verifiedLotCount: 98,
+          structuralLotCount: 98,
+          excludedUnmatchedSellCount: 2,
+        },
+        fullHistoryPerformance: { status: 'unavailable', realizedPnlUsd: null, realizedRoiPct: null, blockingReasons: ['unmatched_sells'] },
+        verifiedSamplePerformanceAudit: {
+          ...emptyVerifiedSamplePerformanceAudit(),
+          verifiedLotCount: 98,
+          includedLotCount: 98,
+          samplePerformanceAllowed: false,
+          samplePerformanceBlockedReason: 'canonical_consistency_failed',
+          excludedUnmatchedSellCount: 2,
+        },
+      }),
+    })
+    assert.equal(vm.verifiedSampleRealizedBox.status, 'Unavailable')
+    assert.equal(vm.verifiedSampleRealizedBox.value, null)
+    assert.equal(vm.roiBox.value, null)
+    assert.equal(vm.combinedStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: selectDisplayedPnl exposes sample cost basis + realized ROI when verifiedSamplePerformance is allowed — unmatched sells do not erase them', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 0, costBasis: [] }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: sampleSummary(),
+    })
+    assert.equal(displayed.realizedPnlUsd, SAMPLE_PNL)
+    assert.ok(displayed.costBasisUsd != null && Math.abs(displayed.costBasisUsd - SAMPLE_COST) < 1e-6)
+    assert.ok(displayed.roiPercent != null && Math.abs(displayed.roiPercent - SAMPLE_ROI) < 1e-6)
+    assert.equal(displayed.roiLabel, '-23.1%')
+    assert.match(displayed.costBasisLabel ?? '', /98 closed lots/)
   })
 })

@@ -63,6 +63,11 @@ test('AYRI and the determinism audit both consume the same reconciled published 
 test('automatic reconciliation is limited to non-structural partial replay failures', () => {
   assert.match(pipelineSource, /params\.refreshCanonicalPnlSample === true/, 'manual refresh remains supported')
   assert.match(pipelineSource, /shouldRefreshPartiallyUnreproducibleManifest\(\s*firstReplay, candidateVerifiedLots\.length/, 'partial refresh must use the centralized integrity policy')
+  assert.match(pipelineSource, /buildManifestAdditiveGrowthAudit\(/, 'additive candidate evolution must use the centralized safety predicate')
+  assert.match(pipelineSource, /shouldRefreshAdditiveCandidateEvolution\(/, 'additive growth must be gated on the audit')
+  assert.match(pipelineSource, /buildManifestAdditiveProviderDependencyAudit\(/, 'additive growth must use evidence-scoped provider usability, not chain-wide partial')
+  assert.match(pipelineSource, /providerUsable:\s*additiveProviderDependencyAudit\.additiveCandidateEvidenceProviderUsable/, 'GoldRush history timeout must not automatically block independently proven additive lots')
+  assert.doesNotMatch(pipelineSource, /providerUsable:\s*!scanIsProviderPartialForBootstrap/, 'bootstrap partial-scan guard must not be reused as the additive providerUsable predicate')
   assert.match(pipelineSource, /firstReplay\.structuralIntegrityFailure/, 'structural failures must remain explicitly audited')
 })
 
@@ -99,19 +104,19 @@ test('HARD ASSERTION: manifest creation (buildRefreshedManifest and buildManifes
 // source position/content assertions, same convention as the rest of this file.
 test('HARD ASSERTION: a stale-canonicalization mismatch triggers exactly one rebuild-and-rewrite, published only from a re-replay of the refreshed manifest', () => {
   const firstReplayStart = position('first replay call site', 'const firstReplay = await replayManifest({')
-  const selfHealGuardStart = position('self-heal guard', 'if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible) {')
+  const selfHealGuardStart = position('self-heal guard', 'if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible || additiveGrowthEligible) {')
   const refreshedManifestStart = position('refreshed manifest build', 'const refreshedManifest = await buildRefreshedManifest({')
-  const rewriteStart = position('refreshed manifest write', 'const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)')
-  const secondReplayStart = position('second replay call site', 'const secondReplay = await replayManifest({\n            manifest: refreshedManifest, allCandidateLots: reconciledLots,')
-  const effectiveReplayAssignStart = position('effectiveReplay assignment on success', 'effectiveReplay = secondReplay')
+  const applyStart = position('refresh application helper', 'const application = await applyRefreshedCanonicalManifest({')
+  const effectiveReplayAssignStart = position('effectiveReplay assignment on success', 'effectiveReplay = application.replay')
   const replayAliasStart = position('replay alias', 'const replay = effectiveReplay')
 
   assert.ok(firstReplayStart < selfHealGuardStart)
   assert.ok(selfHealGuardStart < refreshedManifestStart)
-  assert.ok(refreshedManifestStart < rewriteStart)
-  assert.ok(rewriteStart < secondReplayStart)
-  assert.ok(secondReplayStart < effectiveReplayAssignStart)
+  assert.ok(refreshedManifestStart < applyStart)
+  assert.ok(applyStart < effectiveReplayAssignStart)
   assert.ok(effectiveReplayAssignStart < replayAliasStart, 'everything downstream must read the (possibly healed) effectiveReplay, never the raw first attempt')
+  assert.match(pipelineSource, /requireVerifiedLotCount:\s*additiveGrowthEligible \? candidateVerifiedLots\.length : null/, 'additive growth must refuse to persist a rebuilt count below current candidates')
+  assert.match(pipelineSource, /manifestWriteSuccess = application\.audit\.writeSuccess/, 'refreshApplied cannot be true while write success stays the empty-audit false')
 
   const refreshedManifestCallEnd = pipelineSource.indexOf('\n        })', refreshedManifestStart)
   const refreshedManifestBody = pipelineSource.slice(refreshedManifestStart, refreshedManifestCallEnd)

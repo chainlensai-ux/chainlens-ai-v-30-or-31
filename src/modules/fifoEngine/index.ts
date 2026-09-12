@@ -28,7 +28,10 @@ import type {
   UnrealizedReconciliationStatus,
   UnrealizedReconciliationSummary,
 } from './types'
-import { buildLotId, groupByToken, mergeNormalizedEvents } from './utils'
+import { buildLotId, groupByToken, mergeNormalizedEvents, tokenKey } from './utils'
+import {
+  atomicUnitsToNumber, numberToAtomicUnits, tokenCanonicalDecimals,
+} from './atomicAmount'
 
 export type {
   CanonicalBalanceLookup,
@@ -108,7 +111,30 @@ export function matchLotsFIFO(
   priceUsdLookup: PriceUsdLookup = noPriceLookup,
 ): MatchResult {
   // Work on a deep-enough copy so the caller's `lots` array is never mutated.
-  const workingLots = lots.map((lot) => ({ ...lot }))
+  // ATOMIC REMAINING, DISCLOSED (sub-atomic USDC FIFO remainder): remaining/opened amounts are
+  // tracked as integer atomic units at the token's canonical decimals. IEEE `remaining -= matched`
+  // leftovers around 1e-12 are 0 atomic units for 6-decimal USDC and must not emit a matched lot.
+  type WorkingLot = OpenLot & { remainingAtomic: bigint; openedAtomic: bigint; decimals: number }
+  const decimalsByToken = new Map<string, number>()
+  for (const lot of lots) {
+    decimalsByToken.set(tokenKey(lot.token, lot.chain), tokenCanonicalDecimals(lot.chain, lot.token))
+  }
+  for (const sell of sellEvents) {
+    decimalsByToken.set(`${sell.chain}:${sell.contract.toLowerCase()}`, tokenCanonicalDecimals(sell.chain, sell.contract, sell.tokenDecimals))
+  }
+  const workingLots: WorkingLot[] = lots.map((lot) => {
+    const decimals = decimalsByToken.get(tokenKey(lot.token, lot.chain)) ?? tokenCanonicalDecimals(lot.chain, lot.token)
+    const remainingAtomic = numberToAtomicUnits(lot.amountRemaining, decimals)
+    const openedAtomic = numberToAtomicUnits(lot.amountOpened, decimals)
+    return {
+      ...lot,
+      decimals,
+      remainingAtomic,
+      openedAtomic,
+      amountRemaining: atomicUnitsToNumber(remainingAtomic, decimals),
+      amountOpened: atomicUnitsToNumber(openedAtomic, decimals),
+    }
+  }).filter((lot) => lot.remainingAtomic > BigInt(0))
   const lotsByToken = groupByToken(workingLots)
   const matchedLots: MatchedLot[] = []
   let unmatchedSells = 0
@@ -125,16 +151,20 @@ export function matchLotsFIFO(
   const sortedSells = [...sellEvents].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
 
   for (const sell of sortedSells) {
+    const decimals = decimalsByToken.get(`${sell.chain}:${sell.contract.toLowerCase()}`)
+      ?? tokenCanonicalDecimals(sell.chain, sell.contract, sell.tokenDecimals)
+    let remainingToMatchAtomic = numberToAtomicUnits(sell.amount, decimals)
+    if (remainingToMatchAtomic <= BigInt(0)) continue
     const key = `${sell.chain}:${sell.contract.toLowerCase()}`
-    const tokenLots = (lotsByToken.get(key) ?? []).filter((l) => l.amountRemaining > 0)
-    let remainingToMatch = sell.amount
+    const tokenLots = (lotsByToken.get(key) ?? []).filter((l) => l.remainingAtomic > BigInt(0))
     let matchedAnyAmount = false
     const proceedsUsdTotal = priceUsdLookup(sell)
     const sellTimestampMs = Date.parse(sell.timestamp)
+    const sellAtomic = remainingToMatchAtomic
 
     for (const lot of tokenLots) {
-      if (remainingToMatch <= 0) break
-      if (lot.amountRemaining <= 0) continue
+      if (remainingToMatchAtomic <= BigInt(0)) break
+      if (lot.remainingAtomic <= BigInt(0)) continue
       // CHRONOLOGY GUARD, DISCLOSED (confirmed production bug: FIFO matched a sell against the
       // oldest STILL-OPEN lot for a token regardless of whether that lot's own openedAt was actually
       // before the sell — e.g. no genuinely earlier buy existed yet and the engine still consumed a
@@ -145,10 +175,14 @@ export function matchLotsFIFO(
       // the existing, real unmatchedSells/unmatchedSellEvents path (never silently dropped).
       if (lot.openedAt > sellTimestampMs) break
 
-      const amountFromThisLot = Math.min(lot.amountRemaining, remainingToMatch)
-      const proportionOfSell = proceedsUsdTotal != null && sell.amount > 0 ? (amountFromThisLot / sell.amount) * proceedsUsdTotal : null
-      const costBasisForPortion = lot.costBasisUsd != null && lot.amountOpened > 0
-        ? (amountFromThisLot / lot.amountOpened) * lot.costBasisUsd
+      const consumedAtomic = lot.remainingAtomic < remainingToMatchAtomic ? lot.remainingAtomic : remainingToMatchAtomic
+      if (consumedAtomic <= BigInt(0)) continue
+      const amountFromThisLot = atomicUnitsToNumber(consumedAtomic, lot.decimals)
+      const sellAmountNumber = atomicUnitsToNumber(sellAtomic, decimals)
+      const proportionOfSell = proceedsUsdTotal != null && sellAmountNumber > 0 ? (amountFromThisLot / sellAmountNumber) * proceedsUsdTotal : null
+      const openedForCost = atomicUnitsToNumber(lot.openedAtomic, lot.decimals)
+      const costBasisForPortion = lot.costBasisUsd != null && openedForCost > 0
+        ? (amountFromThisLot / openedForCost) * lot.costBasisUsd
         : null
       const isVerified = costBasisForPortion != null && proportionOfSell != null
       const occurrence = matchOccurrenceByLotId.get(lot.lotId) ?? 0
@@ -175,24 +209,23 @@ export function matchLotsFIFO(
       // original full-lot cost basis. Without this, computePnl's remaining-open-lot cost basis
       // double-counts the portion already realized above (costBasisForPortion).
       if (lot.costBasisUsd != null) lot.costBasisUsd -= costBasisForPortion ?? 0
-      lot.amountOpened -= amountFromThisLot
-      lot.amountRemaining -= amountFromThisLot
-      remainingToMatch -= amountFromThisLot
+      lot.openedAtomic -= consumedAtomic
+      lot.remainingAtomic -= consumedAtomic
+      lot.amountOpened = atomicUnitsToNumber(lot.openedAtomic, lot.decimals)
+      lot.amountRemaining = atomicUnitsToNumber(lot.remainingAtomic, lot.decimals)
+      remainingToMatchAtomic -= consumedAtomic
       matchedAnyAmount = true
     }
 
-    if (remainingToMatch > 0 || !matchedAnyAmount) {
+    if (remainingToMatchAtomic > BigInt(0) || !matchedAnyAmount) {
       unmatchedSells += 1
-      // remainingToMatch already equals sell.amount when nothing matched at all (matchedAnyAmount
-      // false) — this is the real unmatched QUANTITY either way, never the sell's full original
-      // amount when only part of it went unmatched.
       unmatchedSellEvents.push({
         chain: sell.chain,
         txHash: sell.txHash,
         token: sell.contract,
         timestamp: Date.parse(sell.timestamp),
         direction: 'outbound',
-        amount: remainingToMatch,
+        amount: atomicUnitsToNumber(remainingToMatchAtomic, decimals),
         fromAddress: sell.fromAddress,
         toAddress: sell.toAddress,
         amountRaw: sell.amountRaw,
@@ -200,7 +233,9 @@ export function matchLotsFIFO(
     }
   }
 
-  const remainingOpenLots = [...lotsByToken.values()].flat().filter((l) => l.amountRemaining > 0)
+  const remainingOpenLots = [...lotsByToken.values()].flat()
+    .filter((l) => l.remainingAtomic > BigInt(0))
+    .map(({ remainingAtomic: _r, openedAtomic: _o, decimals: _d, ...lot }) => lot)
   return { matchedLots: dedupeExactEconomicDuplicates(matchedLots), remainingOpenLots, unmatchedSells, unmatchedSellEvents }
 }
 

@@ -12,7 +12,7 @@
 
 import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters, MAX_RAW_EVENTS_PER_PROVIDER } from '../modules/providerFetchWindow/index'
 import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from '../lib/knownDexRouters'
-import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
+import { mergeNormalizedEvents, recoveredEconomicDedupeKey } from '../modules/fifoEngine/utils'
 import type { ProviderFetchWindowResult, RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
@@ -26,9 +26,12 @@ import {
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
+  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
+  emptyManifestRefreshApplicationAudit, buildManifestAdditiveProviderDependencyAudit,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
+  type ManifestAdditiveGrowthAudit,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
@@ -84,7 +87,9 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
-import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, type EventClassification } from '../modules/eventClassification/index'
+import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
+import { resolveBoundaryDependentSells, unmatchedSellProofKey } from '../modules/eventClassification/boundaryDependentSellResolution'
+import { fetchAlchemyTokenHistoryStrict } from '../modules/recoveryPolicy/utils'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -1751,6 +1756,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (still-running-in-the-background) shadow block can never race with or change the real result.
   const receiptSwapCanonicalPromotionEnabled = process.env.RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED === 'true'
   let shadowExactReceiptSwaps: DecodedReceiptSwap[] = []
+  const receiptProofByTxHash = new Map<string, string>()
   // CAPTURED FOR THE LATER [receipt-completion-phase2] DIAGNOSTIC, DISCLOSED: same "capture-early,
   // use-late" pattern as shadowExactReceiptSwaps above — fifoLotsUnlocked/fullyPricedLots/coverage
   // fields require fifoAndPnl, which doesn't exist yet at this point in the file. Never exposed on
@@ -2006,6 +2012,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
     if (shadowPayload.enabled) {
       shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
+      for (const swap of shadowPayload.acceptedExactSwaps) {
+        receiptProofByTxHash.set(swap.txHash.toLowerCase(), 'exact_swap')
+      }
+      for (const sample of shadowPayload.receiptForensics) {
+        const tx = sample.txHash.toLowerCase()
+        if (receiptProofByTxHash.has(tx)) continue
+        if (sample.finalRejectionReason) receiptProofByTxHash.set(tx, sample.finalRejectionReason)
+        else if (sample.likelyRoute === 'ordinary_transfer') receiptProofByTxHash.set(tx, 'ordinary_transfer')
+      }
       receiptCompletionPhase2Summary = {
         candidatesConsidered: shadowPayload.selectorTransactionsConsidered,
         candidatesSelected: shadowPayload.baseSwapCandidates,
@@ -3100,9 +3115,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // driven by fifoAndPnl's own raw unmatched counts — this is an evidence-input correction to the
   // structuralCoverage reporting metric only, never a threshold change (see pnlReconciliation.ts's
   // own disclosure at its structuralCoverage computation).
-  const structuralCoverageClassified = classifyEvents(canonicalNormalizedEvents, { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  // IDENTITY JOIN SET, DISCLOSED (c7b8a8e regression fix): recovered events must be available
+  // to resolve unmatched FIFO identities (the join-failure fix), but they must NOT enter the
+  // canonical classifyEvents universe. classifyEvents is cross-transaction; merging recovered
+  // history into it reclassified already-matched canonical legs (104 verified → 81). Canonical
+  // classification is restored to classifyEvents(canonicalNormalizedEvents). Recovered-only
+  // events are classified in isolation and consulted only when the canonical join has no
+  // counterpart (canonical wins on the same join key). FIFO, filterToFifoEligible, pricing,
+  // manifest, and the 50% gate are untouched. txHash lowercasing is preserved.
+  const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
+  const structuralCoverageClassified = classifyEvents(canonicalNormalizedEvents, classificationContext)
+  const canonicalEconomicKeys = new Set(canonicalNormalizedEvents.map(recoveredEconomicDedupeKey))
+  const recoveredOnlyEvents = recoveredNormalizedForPricing.filter((event) => !canonicalEconomicKeys.has(recoveredEconomicDedupeKey(event)))
+  const recoveredClassifiedForJoin = recoveredOnlyEvents.length > 0
+    ? classifyEvents(recoveredOnlyEvents, classificationContext)
+    : []
   const exactStructuralCoverageAudit = computeExactStructuralCoverageAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+    recoveredClassifiedForJoin,
+  )
+  const criticalTradeEvidenceGapAudit = buildCriticalTradeEvidenceGapAudit(
+    structuralCoverageClassified, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+    recoveredClassifiedForJoin,
   )
   // BOUNDED-HISTORY EVIDENCE SPLIT, DISCLOSED (bounded-history follow-up task, requirements #1-#4):
   // real, computed here (not inside pnlReconciliation.ts, which has no per-event classification
@@ -3125,13 +3159,90 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
   const providerWindowStartReached = windowBoundaryProviderAudit.length > 0
     && windowBoundaryProviderAudit.every((provider) => provider.requestedWindowStartReached)
-  const unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
+  const unmatchedEvidenceAuditContext = {
+    windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
+  }
+  let unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
-    {
-      windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
-      anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
-    },
+    unmatchedEvidenceAuditContext,
+    recoveredClassifiedForJoin,
   )
+  // PER-SELL BOUNDARY RESOLUTION, DISCLOSED (boundary-dependent unmatched sells): EVERY sell this
+  // audit attributed to an unproven window boundary — `window_boundary_unproven` OR
+  // `history_truncated_at_provider` — is examined. Truncation is a coverage disclosure, not
+  // per-sell proof, and must not drop a blocker on its own. Token-scoped inbound proof (or
+  // receipt non-trade proof) can drop those sells from the blocking denominator; it never flips
+  // `windowBoundaryProven` / `historyCoverageStatus`. FIFO, pricing, and the 98-lot sample are
+  // untouched.
+  const boundaryRequiredSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryRequiredSells
+  const boundaryRequiredKeys = new Set(boundaryRequiredSells.map((sell) => unmatchedSellProofKey(sell)))
+  const preResolverBuckets = new Map(boundaryRequiredSells.map((sell) => [unmatchedSellProofKey(sell), sell.reason] as const))
+  const boundaryDependentSellsToResolve = fifoAndPnl.unmatchedSellEvents.filter((sell) =>
+    boundaryRequiredKeys.has(unmatchedSellProofKey(sell)))
+  const boundaryDependentSellResolutionAudit = await resolveBoundaryDependentSells({
+    sells: boundaryDependentSellsToResolve,
+    classified: structuralCoverageClassified,
+    recoveredClassified: recoveredClassifiedForJoin,
+    recoveredRawEvents: recoveredRawEventsForPricing,
+    windowStartTimestamp: requestedWindowStart,
+    walletAddress: params.walletAddress,
+    receiptProofByTx: receiptProofByTxHash,
+    fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
+    preResolverBuckets,
+  })
+  if (boundaryDependentSellResolutionAudit.sellsConsidered > 0) {
+    unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
+      structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+      {
+        ...unmatchedEvidenceAuditContext,
+        provenPreWindowInventoryExits: new Set(boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits),
+        provenNonTradeTransfers: new Set(boundaryDependentSellResolutionAudit.provenNonTradeTransfers),
+        provenGenuineUnmatchedSells: new Set(boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells),
+      },
+      recoveredClassifiedForJoin,
+    )
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[boundary-dependent-sell-resolution-audit]', {
+    sellsConsidered: boundaryDependentSellResolutionAudit.sellsConsidered,
+    uniqueTokensFetched: boundaryDependentSellResolutionAudit.uniqueTokensFetched,
+    providerCalls: boundaryDependentSellResolutionAudit.providerCalls,
+    remainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+    provenPreWindowInventoryExits: boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits.length,
+    provenNonTradeTransfers: boundaryDependentSellResolutionAudit.provenNonTradeTransfers.length,
+    provenGenuineUnmatchedSells: boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells.length,
+    windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
+    historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
+    sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
+    preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
+    unknownSells: unmatchedEvidenceAudit.unknownSells,
+    rows: boundaryDependentSellResolutionAudit.rows.map((row) => ({
+      txHash: row.txHash,
+      token: row.token,
+      amount: row.amount,
+      originalClassification: row.originalClassification,
+      preResolverBucket: row.preResolverBucket,
+      receiptProof: row.receiptProof,
+      earlierInboundProof: row.earlierInboundProof,
+      targetedRecoveryAttempted: row.targetedRecoveryAttempted,
+      targetedRecoveryOutcome: row.targetedRecoveryOutcome,
+      finalDisposition: row.finalDisposition,
+      blockingAfterResolution: row.blockingAfterResolution,
+    })),
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[critical-trade-evidence-gap-audit]', {
+    unmatchedIdentityJoinFailures: criticalTradeEvidenceGapAudit.unmatchedIdentityJoinFailures,
+    sellJoinFailures: criticalTradeEvidenceGapAudit.sellJoinFailures,
+    buyJoinFailures: criticalTradeEvidenceGapAudit.buyJoinFailures,
+    sameTwoAsGenuineUnmatchedSells: criticalTradeEvidenceGapAudit.sameTwoAsGenuineUnmatchedSells,
+    unmatchedSellsTotal: fifoAndPnl.unmatchedSellEvents.length,
+    unmatchedBuysTotal: fifoAndPnl.unmatchedBuyEvents.length,
+    structurallyInvalidOrUnknownSells: unmatchedEvidenceAudit.structurallyInvalidOrUnknownSells,
+    structurallyInvalidOrUnknownBuys: unmatchedEvidenceAudit.structurallyInvalidOrUnknownBuys,
+    events: criticalTradeEvidenceGapAudit.events,
+  })
   // [window-boundary-proof-audit], DISCLOSED, DIAGNOSTIC ONLY (window-boundary-proof audit task).
   // Read-only: derives everything from data already computed above and changes no decision.
   //
@@ -3532,6 +3643,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     let manifestRefreshAttempted = false
     let manifestRefreshApplied = false
     let manifestRefreshReason: string | null = null
+    let manifestWriteSuccess = false
+    let manifestWriteFailure = false
+    let refreshApplicationAudit = emptyManifestRefreshApplicationAudit()
     // A historically frozen manifest is authoritative only while its CURRENT accepted evidence
     // remains reproducible. If individual old records legitimately expire or become invalid under
     // today's canonical evidence policy, rebuild a bounded manifest from today's already-verified
@@ -3540,46 +3654,98 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const partialReconciliationEligible = shouldRefreshPartiallyUnreproducibleManifest(
       firstReplay, candidateVerifiedLots.length,
     )
-    if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible) {
+    const additiveIdentities = buildCanonicalLotIdentities(reconciledLots)
+    const additiveNewKeySet = new Set(firstReplay.candidateNewEvidenceLotKeys)
+    const additiveNewLots = candidateVerifiedLots.filter((lot) => {
+      const key = additiveIdentities.get(lot)?.key
+      return !!key && additiveNewKeySet.has(key)
+    })
+    const additiveCandidateEvidenceSnapshots = await Promise.all(additiveNewLots.map(async (lot) => {
+      const key = additiveIdentities.get(lot)!.key
+      const [entryEvidence, exitEvidence] = await Promise.all([
+        loadAcceptedEvidence({
+          chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, side: 'entry',
+          timestamp: lot.openedAt, lotIdentityVersion: null,
+        }),
+        loadAcceptedEvidence({
+          chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit',
+          timestamp: lot.closedAt, lotIdentityVersion: null,
+        }),
+      ])
+      return {
+        lotKey: key, chain: lot.chain,
+        entryEvidenceSource: entryEvidence?.source ?? null,
+        exitEvidenceSource: exitEvidence?.source ?? null,
+        independentlyVerified: isCanonicalVerifiedPublishedLot(lot),
+      }
+    }))
+    const additiveProviderDependencyAudit = buildManifestAdditiveProviderDependencyAudit({
+      providerDiagnostics, newCandidates: additiveCandidateEvidenceSnapshots,
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[manifest-additive-provider-dependency-audit]', {
+      failedProviders: additiveProviderDependencyAudit.failedProviders,
+      newCandidateCount: additiveProviderDependencyAudit.newCandidateCount,
+      candidatesDependingOnFailedProvider: additiveProviderDependencyAudit.candidatesDependingOnFailedProvider,
+      candidatesIndependentOfFailedProvider: additiveProviderDependencyAudit.candidatesIndependentOfFailedProvider,
+      additiveEvidenceUsable: additiveProviderDependencyAudit.additiveEvidenceUsable,
+      growthBlockedReason: additiveProviderDependencyAudit.growthBlockedReason,
+      candidates: additiveProviderDependencyAudit.candidates,
+    })
+    const additiveGrowthAudit: ManifestAdditiveGrowthAudit = buildManifestAdditiveGrowthAudit({
+      replay: firstReplay,
+      manifestVerifiedLotCount: manifest.verifiedLotCount,
+      currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
+      providerUsable: additiveProviderDependencyAudit.additiveCandidateEvidenceProviderUsable,
+    })
+    const additiveGrowthEligible = shouldRefreshAdditiveCandidateEvolution(additiveGrowthAudit)
+    // eslint-disable-next-line no-console
+    console.warn('[manifest-additive-growth-audit]', additiveGrowthAudit)
+    if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible || additiveGrowthEligible) {
       manifestRefreshAttempted = true
       manifestRefreshReason = firstReplay.staleManifestCanonicalizationMismatch
         ? 'stale-manifest-canonicalization-self-heal'
-        : 'partially-unreproducible-manifest-current-evidence-refresh'
+        : partialReconciliationEligible
+          ? 'partially-unreproducible-manifest-current-evidence-refresh'
+          : 'additive-candidate-evolution-strict-superset'
       try {
         const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
-        // Rebuilds the manifest exactly the way a first-qualifying scan does (buildRefreshedManifest
-        // -> buildManifestFromCandidate), with `computeFingerprints` supplied — so the rewritten
-        // manifest is guaranteed self-consistent with THIS replay logic. `fingerprints`/`realizedPnlUsd`
-        // below are only the legacy fallback (see buildManifestFromCandidate's own header); the real
-        // values come from its internal correction, exactly like a fresh first scan.
         const refreshedManifest = await buildRefreshedManifest({
           priorManifest: manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
           candidateVerifiedLots, structuralLotCount: reconciledLots.length,
           fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
           verifiedPricingCoverage, now: Date.now(), refreshReason: manifestRefreshReason,
           loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+          preferLiveCanonicalValuesWhenAllocatedNotPositive: additiveGrowthEligible,
         })
-        const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)
-        if (rewriteSuccess) {
-          // Publish ONLY from a replay of the freshly-written, validated manifest — never the raw
-          // rebuilt manifest directly, so the exact same atomic per-lot/total/fingerprint validation
-          // this whole function performs on every other scan is applied here too.
-          const secondReplay = await replayManifest({
-            manifest: refreshedManifest, allCandidateLots: reconciledLots,
-            loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
-          })
-          if (secondReplay.outcome === 'applied') {
-            manifestRefreshApplied = true
-            sampleUpdated = true
-            effectiveReplay = secondReplay
-            effectiveManifest = refreshedManifest
-          } else {
-            // eslint-disable-next-line no-console
-            console.warn('[stale-manifest-self-heal] refreshed manifest still failed to replay — falling back to the original unavailable result', { manifestKey, reasonCounts: secondReplay.reasonCounts })
-          }
+        // eslint-disable-next-line no-console
+        console.warn('[manifest-additive-rebuild-candidate-audit]', refreshedManifest.manifestAdditiveRebuildCandidateAudit ?? null)
+        const application = await applyRefreshedCanonicalManifest({
+          kv: canonicalSampleManifestKv,
+          identity: manifestIdentity,
+          rebuilt: refreshedManifest,
+          allCandidateLots: reconciledLots,
+          loadEvidence: loadAcceptedEvidence,
+          computeFingerprints: computeManifestFingerprints,
+          requireVerifiedLotCount: additiveGrowthEligible ? candidateVerifiedLots.length : null,
+          growthAllowed: additiveGrowthEligible,
+        })
+        // eslint-disable-next-line no-console
+        console.warn('[manifest-refresh-in-memory-replay-audit]', application.audit.inMemoryReplay)
+        refreshApplicationAudit = application.audit
+        manifestWriteSuccess = application.audit.writeSuccess
+        manifestWriteFailure = application.audit.writeAttempted && !application.audit.writeSuccess
+        if (application.applied && application.replay && application.persisted) {
+          manifestRefreshApplied = true
+          sampleUpdated = true
+          effectiveReplay = application.replay
+          effectiveManifest = application.persisted
         } else {
           // eslint-disable-next-line no-console
-          console.warn('[stale-manifest-self-heal] refreshed manifest write failed — falling back to the original unavailable result', { manifestKey })
+          console.warn('[canonical-manifest-refresh] rebuilt manifest not applied — leaving the existing sample intact', {
+            manifestKey, reason: application.audit.writeFailureReason, rebuiltLotCount: application.audit.rebuiltLotCount,
+            publishedCount: application.audit.publishedCount,
+          })
         }
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -3670,7 +3836,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       currentNewVerifiedLots: firstReplay.candidateNewEvidenceLotKeys.length,
       selectedFromExistingManifest: manifestRefreshApplied ? 0 : replay.reasonCounts.manifest_replay_success,
       selectedFromCurrentCandidates: manifestRefreshApplied ? publishedVerifiedLotCount : 0,
-      manifestRefreshRequired: partialReconciliationEligible || firstReplay.staleManifestCanonicalizationMismatch,
+      manifestRefreshRequired: partialReconciliationEligible || firstReplay.staleManifestCanonicalizationMismatch || additiveGrowthEligible,
       zeroPublicationReason: publishedVerifiedLotCount === 0 && candidateVerifiedLots.length > 0
         ? (firstReplay.structuralIntegrityFailure ? 'manifest_structural_integrity_failure' : manifestRefreshAttempted ? 'manifest_refresh_failed_or_unreplayable' : 'no_current_lot_safely_publishable')
         : null,
@@ -3695,6 +3861,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestRefreshAttempted,
       manifestRefreshApplied,
       manifestRefreshReason,
+      manifestWriteSuccess,
+      manifestWriteFailure,
+      manifestAdditiveGrowthAudit: additiveGrowthAudit,
+      manifestRefreshApplicationAudit: refreshApplicationAudit,
+      manifestAdditiveProviderDependencyAudit: additiveProviderDependencyAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
     return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }
@@ -3718,9 +3889,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
       boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
+      boundaryDependentRemainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+
     },
     canonicalSampleSelector,
   })
+  console.warn('[verified-sample-performance-audit]', reconciledPnlSummary.verifiedSamplePerformanceAudit)
   {
     const gate = reconciledPnlSummary.publicPnlGateAudit
     const boundaryDependentSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary
@@ -3759,6 +3933,25 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       eligible: gate.boundedSampleEligible,
       blockers: gate.boundedSampleBlockingReasons,
       exactFailureReason: gate.boundedSampleBlockingReasons[0] ?? null,
+      boundaryDependentSellResolutionAudit: {
+        sellsConsidered: boundaryDependentSellResolutionAudit.sellsConsidered,
+        uniqueTokensFetched: boundaryDependentSellResolutionAudit.uniqueTokensFetched,
+        providerCalls: boundaryDependentSellResolutionAudit.providerCalls,
+        remainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+        rows: boundaryDependentSellResolutionAudit.rows.map((row) => ({
+          identity: row.identity,
+          txHash: row.txHash,
+          token: row.token,
+          amount: row.amount,
+          currentClassification: row.currentClassification,
+          receiptProof: row.receiptProof,
+          earlierBuyProof: row.earlierBuyProof,
+          preWindowRecoveryAttempted: row.preWindowRecoveryAttempted,
+          preWindowEvidenceFound: row.preWindowEvidenceFound,
+          disposition: row.disposition,
+          gateImpact: row.gateImpact,
+        })),
+      },
     })
   }
   // RECEIPT COMPLETION OUTCOME, DISCLOSED: one final gate-level before/after record. Unlike the

@@ -69,6 +69,33 @@ const publicStatusMap: Record<PnlReconciliationSummary['publicPnlStatus'], FifoO
   unavailable: 'unavailable',
 }
 
+function formatSamplePnlUsd(value: number): string {
+  const abs = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  if (value < 0) return `-$${abs}`
+  if (value > 0) return `+$${abs}`
+  return `$${abs}`
+}
+
+// VERIFIED SAMPLE HEADLINE, DISCLOSED: unmatched sells outside the included canonical sample must
+// not erase sample arithmetic from the official financialStatus headline. Full-wallet status stays
+// whatever the public gate already decided. Never claims complete wallet history.
+export function applyVerifiedSampleHeadline(headline: string, reconciled: PnlReconciliationSummary): string {
+  const sample = reconciled.verifiedSamplePerformance
+  if (sample?.status !== 'verified_bounded_sample' || sample.realizedPnlUsd == null || !Number.isFinite(sample.realizedPnlUsd)) {
+    return headline
+  }
+  const sampleClause = `Verified sample realized PnL ${formatSamplePnlUsd(sample.realizedPnlUsd)} (PARTIAL / VERIFIED BOUNDED SAMPLE).`
+  if (headline.includes(sampleClause)) return headline
+  if (reconciled.publicPnlStatus === 'unavailable') {
+    const unmatched = reconciled.publicPnlGateAudit?.unmatchedSellCount ?? 0
+    const fullWallet = unmatched > 0
+      ? `${unmatched} unmatched sell${unmatched === 1 ? '' : 's'} prevent complete-wallet verification.`
+      : 'Full-wallet PnL is unavailable.'
+    return `${fullWallet} ${sampleClause}`
+  }
+  return `${headline} ${sampleClause}`
+}
+
 function buildReconciledFifo(input: BuildInput): FifoOutput {
   return {
     ...input.fifoAndPnl,
@@ -173,6 +200,13 @@ export function createFinalReportAssembler(config: { logger?: Logger } = {}) {
       const base = assembleReport({ ...input, fifoAndPnl, pnlSummaryV2, syntheticPnl: input.syntheticPnlAssemblyOutput ?? input.syntheticPnl, ayriAttribution: input.ayriAttribution })
       const finalReport = {
         ...base,
+        finalSummary: {
+          ...base.finalSummary,
+          financialStatus: {
+            ...base.finalSummary.financialStatus,
+            headline: applyVerifiedSampleHeadline(base.finalSummary.financialStatus.headline, input.reconciledPnL),
+          },
+        },
         reconciliationSummary: input.reconciledPnL,
         attributionCoveragePercent: input.ayriAttribution.attributionCoveragePercent,
         historicalPricingCoveragePercent: input.ayriAttribution.historicalPricingCoveragePercent,

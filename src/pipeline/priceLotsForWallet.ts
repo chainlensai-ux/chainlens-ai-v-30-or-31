@@ -96,7 +96,8 @@ import {
   type CoinPaprikaHistoricalEvidence,
   type CoinPaprikaRequirement,
 } from '../../lib/server/coinPaprikaHistorical'
-import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot } from '../lib/canonicalVerifiedLot'
+import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
+import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
 
 export type PriceLotsCanonicalGapAudit = {
   structuralLots: number
@@ -605,6 +606,7 @@ export async function priceLotsForWallet(params: {
   // this pipeline, and the one true choke point every provider call for a manifest-covered side
   // would otherwise pass through (see the "ACCEPTED-EVIDENCE SKIP FILTER" note below).
   const manifestFastPathAudit = emptyManifestFastPathAudit()
+  const presentMatchedLotSideKeys = new Set<string>()
   if (acceptedEvidenceKv) {
     manifestFastPathAudit.manifestLoadedBeforePricing = true
     const groups = new Map<string, MatchedLot[]>()
@@ -649,7 +651,14 @@ export async function priceLotsForWallet(params: {
       const evidenceKvKey = buildAcceptedEvidenceKey({ chain: representative.chain, token: representative.token, txHash, side, timestamp, lotIdentityVersion: '' })
       const evidence = batchResult.byKey.get(evidenceKvKey) ?? null
       const canonicalPriceUsd = evidence?.priceUsd ?? null
-      if (canonicalPriceUsd !== null) {
+      if (isCanonicalPositiveUsd(canonicalPriceUsd)) presentMatchedLotSideKeys.add(key)
+      // COVERAGE ≠ PRESENCE, DISCLOSED (contaminated 81-lot fast-path lock): a verified_valid
+      // record with priceUsd > 0 still must allocate a canonical-positive share to EVERY
+      // structural sibling on this side. A $1 (or dust) total that floors any sibling to 0 is
+      // exactly the 9 non-positive + 17 demoted-sibling regression — those lots must fall
+      // through to live pricing/recovery. Manifest lots whose shares stay positive still skip.
+      if (isCanonicalPositiveUsd(canonicalPriceUsd)
+        && acceptedEvidenceAllocationsAreCanonicalPositive(groupedLots, canonicalPriceUsd)) {
         skippableRequirementKeys.add(key)
         acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip += groupedLots.length
         manifestFastPathAudit.manifestCoveredPricingRequirements += groupedLots.length
@@ -727,9 +736,14 @@ export async function priceLotsForWallet(params: {
   const everyMatchedLotSideCovered = matchedLotSideKeys.size > 0
     && [...matchedLotSideKeys].every((key) => skippableRequirementKeys.has(key))
   manifestFastPathAudit.allClosedLotSidesCovered = everyMatchedLotSideCovered
-  // The current store reader deliberately exposes only fail-closed verified records. Therefore
-  // presence is a conservative lower bound here; it is never used to suppress recovery.
-  manifestFastPathAudit.allClosedLotSidesPresent = everyMatchedLotSideCovered
+  // PRESENCE vs VERIFIED, DISCLOSED (contaminated 81-lot fast-path lock): a store record can
+  // exist for every closed-lot side (`allClosedLotSidesPresent`) while some of those records
+  // still fail the current canonical predicate after allocation (dust / non-positive share).
+  // Only VERIFIED coverage (`skippableRequirementKeys`) may suppress unmatched-sell pricing
+  // and mark the historical pass open-position-only. Presence alone must never self-lock the
+  // 27 lots whose current scan would reject them.
+  manifestFastPathAudit.allClosedLotSidesPresent = matchedLotSideKeys.size > 0
+    && [...matchedLotSideKeys].every((key) => skippableRequirementKeys.has(key) || presentMatchedLotSideKeys.has(key))
   manifestFastPathAudit.allClosedLotSidesVerified = everyMatchedLotSideCovered
   if (everyMatchedLotSideCovered) {
     const beforeSells = sells.length

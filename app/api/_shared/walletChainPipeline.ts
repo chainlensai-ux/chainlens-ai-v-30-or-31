@@ -320,7 +320,7 @@ export async function recoverQuoteLegsForBundles(
           logIndex: nextLogIndex,
           contract: recovered.leg.contract,
           symbol: recovered.leg.symbol,
-          decimals: undefined,
+          decimals: recovered.leg.decimals,
           from: recovered.leg.from,
           to: recovered.leg.to,
           amountRaw: recovered.leg.amountRaw,

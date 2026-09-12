@@ -39,20 +39,20 @@ const TRANSFER_EVENT_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11
 // precedent this follows).
 export type QuoteLegChain = 'eth' | 'base'
 
-const QUOTE_ASSETS_BY_CHAIN: Record<QuoteLegChain, Record<string, { symbol: string; kind: 'native_wrapped' | 'stable' }>> = {
+const QUOTE_ASSETS_BY_CHAIN: Record<QuoteLegChain, Record<string, { symbol: string; kind: 'native_wrapped' | 'stable'; decimals: number }>> = {
   eth: {
-    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': { symbol: 'WETH', kind: 'native_wrapped' },
-    '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', kind: 'stable' },
-    '0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', kind: 'stable' },
-    '0x6b175474e89094c44da98b954eedeac495271d0': { symbol: 'DAI', kind: 'stable' },
+    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': { symbol: 'WETH', kind: 'native_wrapped', decimals: 18 },
+    '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', kind: 'stable', decimals: 6 },
+    '0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', kind: 'stable', decimals: 6 },
+    '0x6b175474e89094c44da98b954eedeac495271d0': { symbol: 'DAI', kind: 'stable', decimals: 18 },
   },
   base: {
-    '0x4200000000000000000000000000000000000006': { symbol: 'WETH', kind: 'native_wrapped' },
-    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': { symbol: 'USDC', kind: 'stable' },
+    '0x4200000000000000000000000000000000000006': { symbol: 'WETH', kind: 'native_wrapped', decimals: 18 },
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': { symbol: 'USDC', kind: 'stable', decimals: 6 },
   },
 }
 
-export function isKnownQuoteAssetAddress(chain: QuoteLegChain, address: string): { symbol: string; kind: 'native_wrapped' | 'stable' } | null {
+export function isKnownQuoteAssetAddress(chain: QuoteLegChain, address: string): { symbol: string; kind: 'native_wrapped' | 'stable'; decimals: number } | null {
   return QUOTE_ASSETS_BY_CHAIN[chain][address.toLowerCase()] ?? null
 }
 
@@ -70,6 +70,7 @@ export type RecoveredQuoteLeg = {
   contract: string
   symbol: string
   kind: 'native_wrapped' | 'stable'
+  decimals: number
   amountRaw: string
   // 'in' = wallet received this quote asset (recovers a missing tokenOut); 'out' = wallet sent it
   // (recovers a missing tokenIn).
@@ -108,6 +109,7 @@ export function decodeQuoteAssetTransfers(logs: readonly RawReceiptLog[], wallet
       contract: log.address.toLowerCase(),
       symbol: quote.symbol,
       kind: quote.kind,
+      decimals: quote.decimals,
       amountRaw: BigInt(log.data).toString(),
       direction: to === wallet ? 'in' : 'out',
       logIndex: log.logIndex,
