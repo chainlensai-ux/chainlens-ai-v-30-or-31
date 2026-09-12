@@ -6,9 +6,10 @@
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { MatchedLot } from '../modules/fifoEngine/types'
+import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
+import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
-import { computeVerifiedSampleAndFullHistoryPerformance } from './pnlReconciliation'
+import { computeVerifiedSampleAndFullHistoryPerformance, createPnlReconciliation } from './pnlReconciliation'
 import { classifyVerifiedSampleRoiEligibility, roiLotKey } from './verifiedSampleRoiEligibility'
 
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
@@ -439,5 +440,144 @@ describe('verifiedSampleRoiEligibility — quote/cash vs independent stablecoin'
     assert.equal(eligibility.roiAvailable, false)
     assert.equal(eligibility.realizedRoiPnlUsd, null)
     assert.equal(eligibility.realizedRoiCostBasisUsd, null)
+  })
+})
+
+describe('production reconcile path — unmatched FIFO identities survive into ROI pairing', () => {
+  it('HARD ASSERTION: historical unpriced risk counterpart as unmatched sell still excludes the USDC quote lot', async () => {
+    const historicalSellTx = '0xhistoricaltokensell'
+    const liveBuyTx = '0xliveusdcspend'
+    const liveSellTx = '0xlivetokensell'
+    const independentOpenTx = '0xeoain'
+    const independentCloseTx = '0xeoaout'
+
+    const publishedRisk = lot({
+      lotId: 'token-live',
+      token: TOKEN,
+      openedTxHash: liveBuyTx,
+      closedTxHash: liveSellTx,
+      openedAt: 20,
+      closedAt: 30,
+      amount: 50,
+      costBasisUsd: 1000,
+      proceedsUsd: 700,
+      realizedPnlUsd: -300,
+    })
+    const publishedUsdcQuote = lot({
+      lotId: 'usdc-quote-historical-open',
+      token: USDC,
+      openedTxHash: historicalSellTx,
+      closedTxHash: liveBuyTx,
+      openedAt: 10,
+      closedAt: 20,
+      amount: 1000,
+      costBasisUsd: 1000,
+      proceedsUsd: 1000,
+      realizedPnlUsd: 0,
+    })
+    const independentUsdc = lot({
+      lotId: 'usdc-independent',
+      token: USDC,
+      openedTxHash: independentOpenTx,
+      closedTxHash: independentCloseTx,
+      openedAt: 1,
+      closedAt: 2,
+      amount: 5000,
+      costBasisUsd: 5000,
+      proceedsUsd: 5000,
+      realizedPnlUsd: 0,
+    })
+
+    const boundedEvents: NormalizedEvent[] = [
+      event({ txHash: liveBuyTx, contract: USDC, direction: 'outbound', fromAddress: WALLET, toAddress: SWAP_ROUTER02, amount: 1000 }),
+      event({ txHash: liveBuyTx, contract: TOKEN, symbol: 'CLANKER', direction: 'inbound', fromAddress: SWAP_ROUTER02, toAddress: WALLET, amount: 50 }),
+      event({ txHash: liveSellTx, contract: TOKEN, symbol: 'CLANKER', direction: 'outbound', fromAddress: WALLET, toAddress: SWAP_ROUTER02, amount: 50 }),
+      event({ txHash: liveSellTx, contract: USDC, direction: 'inbound', fromAddress: SWAP_ROUTER02, toAddress: WALLET, amount: 700 }),
+      event({ txHash: independentOpenTx, contract: USDC, direction: 'inbound', fromAddress: EOA_A, toAddress: WALLET, amount: 5000 }),
+      event({ txHash: independentCloseTx, contract: USDC, direction: 'outbound', fromAddress: WALLET, toAddress: EOA_B, amount: 5000 }),
+    ]
+
+    const fifoEngineResult: FifoOutput = {
+      matchedLots: [publishedRisk, publishedUsdcQuote, independentUsdc],
+      unmatchedBuys: 0,
+      unmatchedSells: 1,
+      unmatchedBuyEvents: [],
+      unmatchedSellEvents: [{
+        chain: 'base',
+        txHash: historicalSellTx,
+        token: TOKEN,
+        timestamp: 10,
+        direction: 'outbound',
+        amount: 50,
+        fromAddress: WALLET,
+        toAddress: SWAP_ROUTER02,
+        amountRaw: '50000000000000000000',
+      }],
+      realizedPnlUsd: -300,
+      unrealizedPnlUsd: 0,
+      costBasisUsd: 7000,
+      publicPnlStatus: 'unavailable',
+      integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
+      unrealizedPnlExcludedTokens: [],
+      unrealizedReconciliation: emptyUnrealizedReconciliation(),
+    }
+
+    const classificationLogs: Array<Record<string, unknown>> = []
+    const r = createPnlReconciliation({
+      logger: {
+        warn(message: string, payload?: unknown) {
+          if (message === '[roi-quote-leg-classification]' && payload && typeof payload === 'object') {
+            classificationLogs.push(payload as Record<string, unknown>)
+          }
+        },
+      },
+    })
+    const summary = await r.reconcile({
+      fifoEngineResult,
+      pnlEngineResult: {
+        realizedPnlUsd: -300,
+        closedLots: [],
+        winLossRate: { wins: 0, losses: 1, evaluated: 1, rate: 0 },
+        chainBreakdown: [],
+        confidenceBasis: { high: 3, medium: 0, low: 0, aggregate: 'high' },
+        evidenceMissingCount: 0,
+      },
+      syntheticPnlAssemblyOutput: null,
+      normalizedEvents: boundedEvents,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0,
+        genuineUnmatchedSells: 1,
+        windowBoundaryProven: false,
+        boundedSampleWindowSafe: true,
+        historyCoverageStatus: 'truncated',
+        scanWindowDays: 90,
+      },
+    })
+
+    assert.equal(summary.verifiedSamplePerformance.verifiedLotCount, 3)
+    assert.equal(summary.verifiedSamplePerformance.realizedPnlUsd, -300, 'displayed sample PnL stays on the full verified sample')
+    assert.equal(summary.verifiedSamplePerformance.quoteCashLegExcludedLotCount, 1)
+    assert.equal(summary.verifiedSamplePerformance.unresolvedQuoteLegLotCount, 0)
+    assert.equal(summary.verifiedSamplePerformance.verifiedSampleRoiEligibleLotCount, 2)
+    assert.equal(summary.verifiedSamplePerformance.roiUnavailableReason, null)
+    assert.equal(summary.verifiedSamplePerformance.realizedCostBasisUsd, 6000)
+    assert.ok(summary.verifiedSamplePerformance.realizedRoiPct != null)
+    assert.ok(Math.abs(summary.verifiedSamplePerformance.realizedRoiPct! - (-300 / 6000) * 100) < 1e-9)
+    assert.equal(summary.publishedMatchedLots.length, 3, 'unmatched risk counterpart is pairing-only, never published')
+    assert.equal(summary.publishedMatchedLots.filter((row) => row.evidenceQuality === 'verified').length, 3)
+
+    assert.equal(classificationLogs.length, 1)
+    const audit = classificationLogs[0]!
+    assert.equal(audit.verifiedLotsCount, 3)
+    assert.equal(audit.consistentFifoLotsCount, 3)
+    assert.equal(audit.publishedFifoLotsCount, 3)
+    assert.equal(audit.structuralLotsCount, 4)
+    assert.equal(audit.unmatchedSellEventsCount, 1)
+    const stableLots = audit.stableLots as Array<Record<string, unknown>>
+    const quoteRow = stableLots.find((row) => row.openTx === historicalSellTx)
+    const independentRow = stableLots.find((row) => row.openTx === independentOpenTx)
+    assert.equal(quoteRow?.disposition, 'exclude_quote_cash_leg')
+    assert.equal(quoteRow?.structuralRiskPairAtOpen, true)
+    assert.equal(independentRow?.disposition, 'include_economic_position')
   })
 })

@@ -35,12 +35,17 @@ test('computeVerifiedSampleAndFullHistoryPerformance classifies ROI membership f
   assert.match(reconcileSource, /unresolved_quote_leg_identity/)
 })
 
-test('ROI pairing universe is the full structural FIFO, not only the published verified sample', () => {
+test('ROI pairing universe is closed FIFO lots plus unmatched non-stable buy/sell identities', () => {
   const callStart = reconcileSource.indexOf('computeVerifiedSampleAndFullHistoryPerformance({')
   assert.notEqual(callStart, -1, 'performance call site must remain in pnlReconciliation')
   const callEnd = reconcileSource.indexOf('\n      })', callStart)
   assert.notEqual(callEnd, -1)
   const callBody = reconcileSource.slice(callStart, callEnd)
-  assert.match(callBody, /structuralLots: consistentFifoLots/, 'pairing must use all structural matched lots including unpriced')
+  assert.match(callBody, /structuralLots: roiPairingStructuralLots/, 'pairing must include unmatched FIFO identities, not only closed lots')
   assert.doesNotMatch(callBody, /structuralLots: publishedFifoLots/, 'published verified sample is not the pairing universe')
+  assert.doesNotMatch(callBody, /structuralLots: consistentFifoLots/, 'closed FIFO lots alone drop bounded-window risk counterparts')
+  assert.match(reconcileSource, /buildRoiPairingStructuralLots\(consistentFifoLots, input\.fifoEngineResult\)/)
+  assert.match(reconcileSource, /unmatchedBuyEvents/)
+  assert.match(reconcileSource, /unmatchedSellEvents/)
+  assert.match(reconcileSource, /\[roi-quote-leg-classification\]/)
 })

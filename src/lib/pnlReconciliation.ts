@@ -1,4 +1,4 @@
-import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
+import type { FifoOutput, MatchedLot, UnmatchedEventIdentity } from '../modules/fifoEngine/types'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
@@ -14,6 +14,7 @@ import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLot
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, roiLotKey } from './verifiedSampleRoiEligibility'
 import type { NormalizedEvent } from '../modules/normalization/types'
+import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -1128,6 +1129,59 @@ const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'clos
 // counted stops counting — it simply can no longer diverge from what the other consumers see.
 export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>): boolean {
   return isCanonicalVerifiedPublishedLot(lot)
+}
+
+// ROI PAIRING UNIVERSE, DISCLOSED (live 72→16 quote-leg drop): bounded-window FIFO still SEES the
+// counterpart risk asset (a TOKEN sell with no in-window buy, or a TOKEN buy still open) but cannot
+// emit a closed matched lot for it. Those identities survive on fifoEngine's unmatchedBuyEvents /
+// unmatchedSellEvents — they are never deleted, never invented, and never published into realized
+// PnL. Pairing against closed matched lots alone therefore collapses quote-leg proof to the subset
+// whose risk counterpart also closed inside the window (live: 16 of 72). This helper appends those
+// unmatched non-stable identities as unpriced pairing-only lots. Classifier semantics, FIFO matching,
+// the published sample, and displayed PnL are unchanged.
+function unmatchedEventPairingLot(event: UnmatchedEventIdentity, side: 'buy' | 'sell'): MatchedLot {
+  const token = event.token
+  const tx = event.txHash
+  const unique = `${event.chain}:${tx.toLowerCase()}:${token.toLowerCase()}:${event.timestamp}`
+  return {
+    lotId: `roi-unmatched-${side}:${unique}`,
+    token,
+    chain: event.chain,
+    openedAt: event.timestamp,
+    closedAt: event.timestamp,
+    openedTxHash: side === 'buy' ? tx : `roi-unmatched-sell-open:${unique}`,
+    closedTxHash: side === 'sell' ? tx : `roi-unmatched-buy-close:${unique}`,
+    amount: event.amount,
+    costBasisUsd: null,
+    proceedsUsd: null,
+    realizedPnlUsd: null,
+    evidenceQuality: 'unpriced',
+  }
+}
+
+export function buildRoiPairingStructuralLots(
+  consistentFifoLots: readonly MatchedLot[],
+  fifoEngineResult: Pick<FifoOutput, 'unmatchedBuyEvents' | 'unmatchedSellEvents'>,
+): MatchedLot[] {
+  const pairingLots: MatchedLot[] = [...consistentFifoLots]
+  for (const event of fifoEngineResult.unmatchedBuyEvents) {
+    if (isVerifiedStablecoinAddress(event.chain, event.token)) continue
+    pairingLots.push(unmatchedEventPairingLot(event, 'buy'))
+  }
+  for (const event of fifoEngineResult.unmatchedSellEvents) {
+    if (isVerifiedStablecoinAddress(event.chain, event.token)) continue
+    pairingLots.push(unmatchedEventPairingLot(event, 'sell'))
+  }
+  return pairingLots
+}
+
+function structuralTokenCounts(lots: readonly MatchedLot[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const lot of lots) {
+    const key = `${lot.chain}:${lot.token.toLowerCase()}`
+    counts[key] = (counts[key] ?? 0) + 1
+  }
+  return counts
 }
 
 // VERIFIED BOUNDED-SAMPLE vs FULL-HISTORY SPLIT, DISCLOSED: unmatched sells outside the included
@@ -2899,13 +2953,13 @@ export function createPnlReconciliation(config: Config = {}) {
           ? publicPnlGateAudit.boundedSampleBlockingReasons
           : publicPnlGateAudit.blockingReasons
       ).map((reason) => reason.rule)
+      const roiPairingStructuralLots = buildRoiPairingStructuralLots(consistentFifoLots, input.fifoEngineResult)
       const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
         verifiedLots: verifiedUpdatedLots,
-        // Pairing universe is the full structural FIFO, including unpriced lots. Manifest-replayed
-        // quote/cash legs stay excluded when a counterpart risk lot exists here even if the bounded
-        // event window no longer contains those historical txs. Published verified lots remain the
-        // ROI membership set (`verifiedLots`); this array is identity-only.
-        structuralLots: consistentFifoLots,
+        // Pairing universe is closed structural FIFO plus unmatched non-stable buy/sell identities
+        // FIFO already produced. Bounded-window counterpart risk lots survive here as unmatched
+        // events, not as published verified lots. Classifier semantics unchanged.
+        structuralLots: roiPairingStructuralLots,
         normalizedEvents: input.normalizedEvents,
         structuralLotCount: fifoLots.length,
         realizedPnlUsd,
@@ -2920,6 +2974,39 @@ export function createPnlReconciliation(config: Config = {}) {
         fullHistoryBlockingReasons,
       })
       logger.warn('[verified-sample-performance-audit]', verifiedSamplePerformanceAudit)
+      {
+        const eligibility = classifyVerifiedSampleRoiEligibility({
+          verifiedLots: verifiedUpdatedLots,
+          structuralLots: roiPairingStructuralLots,
+          normalizedEvents: input.normalizedEvents,
+        })
+        const openedAt = roiPairingStructuralLots.map((lot) => lot.openedAt)
+        const closedAt = roiPairingStructuralLots.map((lot) => lot.closedAt)
+        logger.warn('[roi-quote-leg-classification]', {
+          verifiedLotsCount: verifiedUpdatedLots.length,
+          structuralLotsCount: roiPairingStructuralLots.length,
+          consistentFifoLotsCount: consistentFifoLots.length,
+          publishedFifoLotsCount: publishedFifoLots.length,
+          fifoMatchedLotsCount: fifoLots.length,
+          unmatchedBuyEventsCount: input.fifoEngineResult.unmatchedBuyEvents.length,
+          unmatchedSellEventsCount: input.fifoEngineResult.unmatchedSellEvents.length,
+          structuralTokenCounts: structuralTokenCounts(roiPairingStructuralLots),
+          structuralEarliestOpenedAt: openedAt.length > 0 ? Math.min(...openedAt) : null,
+          structuralLatestClosedAt: closedAt.length > 0 ? Math.max(...closedAt) : null,
+          stableLots: eligibility.classifications
+            .filter((row) => row.reason !== 'non_stable_economic_position')
+            .map((row) => ({
+              lotKey: row.lotKey,
+              openTx: row.openedTxHash,
+              closeTx: row.closedTxHash,
+              structuralRiskPairAtOpen: row.fifoPairAtOpen,
+              structuralRiskPairAtClose: row.fifoPairAtClose,
+              matchedStructuralLotKey: row.pairedRiskAssetLotKeys[0] ?? null,
+              disposition: row.roiDenominatorDisposition,
+              reason: row.reason,
+            })),
+        })
+      }
 
       // TEMPORARY DIAGNOSTIC, DISCLOSED (verified-sample-cost-basis-denominator-drift follow-up
       // task) — never repairs, never changes any published value. Added because
