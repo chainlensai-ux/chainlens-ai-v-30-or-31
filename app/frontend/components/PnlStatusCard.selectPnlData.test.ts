@@ -28,6 +28,7 @@ import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } 
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+import { emptyMissingPriceRecoveryFunnelAudit } from '@/src/lib/pnlReconciliation'
 import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDiscrepancyAudit } from '@/src/lib/pnlDiscrepancyAudit'
 
 // Minimal, real-shaped PnlReconciliationSummary fixture builder — mirrors the fixture pattern
@@ -84,6 +85,7 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     // DEFAULT: no discrepancy audit wired (matches this fixture's own pre-existing "unused
     // placeholder" convention above) — trust-gate tests below override this explicitly.
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
+    missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
     ...overrides,
   }
 }

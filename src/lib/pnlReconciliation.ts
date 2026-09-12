@@ -141,6 +141,328 @@ function recordFailureReason(counts: RecoveryFailureReasonCounts, reason: string
   }
 }
 
+// ================================================================================================
+// MISSING-PRICE RECOVERY FUNNEL AUDIT, DISCLOSED (missing-price-recovery-funnel follow-up task).
+//
+// GOAL: every structural lot the public gate's canonical predicate currently rejects for a
+// pricing-shaped reason (the coarse `missing_price` bucket in walletPnlCoverageRecoveryAudit.ts —
+// deliberately collapsed there because a FINALIZED lot alone cannot distinguish these causes) lands
+// in EXACTLY ONE of the finer terminal buckets below, using data this recovery pass already computes
+// — never a second, independent recomputation of FIFO/pricing/canonical-verification logic.
+//
+// DIAGNOSTIC ONLY, DISCLOSED: this module never changes which lots get selected for recovery, never
+// changes MAX_RECOVERY_ATTEMPTS, never changes the canonical predicate, never changes what gets
+// published. It is a pure, read-only classification of the SAME decisions recoverPrices/hydration/
+// the canonical predicate already made, built strictly for visibility into the funnel.
+//
+// BUCKET PRIORITY, DISCLOSED (a lot's bucket is the FIRST stage, in this order, at which its own
+// story stops — never a second bucket once one applies):
+//   1. Lot never had a null side to begin with (recovery only ever targets `costBasisUsd === null ||
+//      proceedsUsd === null` — see rankMissingLotsForRecovery/missingLots below) yet still fails the
+//      canonical predicate: `non_positive_reconstruction` (a present-but-invalid value: zero,
+//      negative, or non-finite) or `no_price_requirement_generated` (present, finite, positive
+//      values, but evidenceQuality itself never reached 'verified' — recovery structurally never
+//      treats this as "needing a price request" at all, since neither side is null).
+//   2. Lot has a null side (a genuine recovery candidate) but ranked outside the top
+//      MAX_RECOVERY_ATTEMPTS this scan: `not_selected_by_recovery_cap`.
+//   3. Selected, but the shared recovery-lane lookup budget (kvClient.ts's own
+//      `recoveryLookupsBudget`, exhausted BEFORE the real fetcher is ever called — see
+//      RequestPriceKvClient.getPriceRecovery's own header) was already spent when this lot's side
+//      was reached: `provider_not_attempted_budget` — a genuinely different state from a REAL
+//      provider call that returned null, previously indistinguishable from `providerReturnedNull`.
+//   4. Selected, provider attempted, a specific rejection reason was recorded — mapped via the SAME
+//      `classifyRecoveryFailureReason` this file's own aggregate counters already use:
+//      `unsupportedTokenOrChain` -> `identity_rejected`, `timestampOutsideProviderData` ->
+//      `timestamp_rejected`, `noPool` -> `quote_leg_proof_missing` (no same-tx/pool proof available),
+//      anything else specific but unenumerated -> `other`.
+//   5. Selected, provider attempted, returned a bare null with no further reason:
+//      `provider_returned_null`.
+//   6. Both sides now numeric (hydration + recovery together resolved them) but the canonical
+//      predicate still rejects on `evidence_quality_not_verified`: `partial_unverified_only`.
+//   7. Any other canonical rejection surviving full recovery (e.g. `invalid_chronology`):
+//      `canonical_verifier_rejected`.
+//   8. Fully resolved and now canonically verified: `recovered_verified` (kept in the same taxonomy,
+//      not filtered out, so the funnel's own counts are provably exhaustive over every originally
+//      missing lot).
+//   9. `other` — the fallback that must stay at 0 by construction; a non-zero count here is itself
+//      the signal that a real case this priority list didn't anticipate exists.
+type RecoveredPrice = { costBasisUsd: number | null; proceedsUsd: number | null }
+
+export type MissingPriceLotBucket =
+  | 'not_selected_by_recovery_cap'
+  | 'no_price_requirement_generated'
+  | 'accepted_evidence_miss'
+  | 'provider_not_attempted_budget'
+  | 'provider_returned_null'
+  | 'identity_rejected'
+  | 'timestamp_rejected'
+  | 'partial_unverified_only'
+  | 'quote_leg_proof_missing'
+  | 'non_positive_reconstruction'
+  | 'canonical_verifier_rejected'
+  | 'recovered_verified'
+  | 'other'
+
+export const MISSING_PRICE_LOT_BUCKETS: readonly MissingPriceLotBucket[] = [
+  'not_selected_by_recovery_cap', 'no_price_requirement_generated', 'accepted_evidence_miss',
+  'provider_not_attempted_budget', 'provider_returned_null', 'identity_rejected', 'timestamp_rejected',
+  'partial_unverified_only', 'quote_leg_proof_missing', 'non_positive_reconstruction',
+  'canonical_verifier_rejected', 'recovered_verified', 'other',
+]
+
+export function emptyMissingPriceLotBucketCounts(): Record<MissingPriceLotBucket, number> {
+  const counts = {} as Record<MissingPriceLotBucket, number>
+  for (const bucket of MISSING_PRICE_LOT_BUCKETS) counts[bucket] = 0
+  return counts
+}
+
+export type BeyondCapRecoveryCandidateAudit = {
+  rank: number
+  token: string
+  lotKey: string
+  missingSides: Array<'entry' | 'exit'>
+  sharedSiblingUnlockCount: number
+  estimatedProviderCalls: number
+  wouldCompleteLotIfResolved: boolean
+}
+
+export type MissingPriceRecoveryCapYieldEstimate = {
+  first40ExpectedYield: number
+  ranks41To60ExpectedYield: number
+  ranks61To80ExpectedYield: number
+  marginalProviderCallEstimateByCap: Array<{ cap: number; estimatedProviderCalls: number }>
+}
+
+export type MissingPriceRecoveryFunnelAudit = {
+  totalMissingLots: number
+  selectedForRecovery: number
+  notSelectedByCap: number
+  providerAttemptedLots: number
+  providerResolvedLots: number
+  canonicalVerifiedLots: number
+  buckets: Record<MissingPriceLotBucket, number>
+  lotsNeededFor50: number
+  beyondCapCandidates: BeyondCapRecoveryCandidateAudit[]
+  capYieldEstimate: MissingPriceRecoveryCapYieldEstimate
+}
+
+// Honest all-zero fixture, matching this file's own `emptyReasonCounts`/`emptySourceAttemptCounters`
+// convention — for callers (tests, an unavailable-recovery-pass fallback) that need a real, fully-
+// shaped value with no candidates to report, never a partial/undefined stand-in.
+export function emptyMissingPriceRecoveryFunnelAudit(): MissingPriceRecoveryFunnelAudit {
+  return {
+    totalMissingLots: 0,
+    selectedForRecovery: 0,
+    notSelectedByCap: 0,
+    providerAttemptedLots: 0,
+    providerResolvedLots: 0,
+    canonicalVerifiedLots: 0,
+    buckets: emptyMissingPriceLotBucketCounts(),
+    lotsNeededFor50: 0,
+    beyondCapCandidates: [],
+    capYieldEstimate: {
+      first40ExpectedYield: 0,
+      ranks41To60ExpectedYield: 0,
+      ranks61To80ExpectedYield: 0,
+      marginalProviderCallEstimateByCap: [
+        { cap: 40, estimatedProviderCalls: 0 },
+        { cap: 60, estimatedProviderCalls: 0 },
+        { cap: 80, estimatedProviderCalls: 0 },
+      ],
+    },
+  }
+}
+
+// Per-candidate outcome captured inline in recoverPrices' own concurrency-limited loop — never a
+// second live pass, purely bookkeeping around calls that pass already makes.
+type CandidateRecoveryOutcome = {
+  needsBuy: boolean
+  needsSell: boolean
+  buyReason: string | null
+  sellReason: string | null
+  buyBudgetCapped: boolean
+  sellBudgetCapped: boolean
+}
+
+// Reconstructs the SAME merged lot reconcile()'s own `updatedFifoLots.map(...)` produces — a side
+// already resolved by accepted-evidence hydration wins; otherwise a live-recovered price fills it;
+// otherwise the side stays exactly as it was. Mirrors that merge exactly so this audit's own
+// "is this lot now canonically verified" check can never disagree with what actually gets published.
+function reconstructFinalLot(hydratedLot: MatchedLot, recovered: RecoveredPrice | undefined): MatchedLot {
+  const costBasisUsd = hydratedLot.costBasisUsd ?? recovered?.costBasisUsd ?? null
+  const proceedsUsd = hydratedLot.proceedsUsd ?? recovered?.proceedsUsd ?? null
+  const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+  return {
+    ...hydratedLot,
+    costBasisUsd,
+    proceedsUsd,
+    realizedPnlUsd: nowFullyPriced ? proceedsUsd! - costBasisUsd! : hydratedLot.realizedPnlUsd,
+    evidenceQuality: nowFullyPriced ? ('verified' as const) : hydratedLot.evidenceQuality,
+  }
+}
+
+function classifyMissingPriceLotBucket(params: {
+  originalLot: MatchedLot
+  hydratedLot: MatchedLot
+  recovered: RecoveredPrice | undefined
+  wasSelected: boolean
+  outcome: CandidateRecoveryOutcome | undefined
+}): MissingPriceLotBucket {
+  const { originalLot, hydratedLot, recovered, wasSelected, outcome } = params
+  const finalLot = reconstructFinalLot(hydratedLot, recovered)
+  const finalReason = canonicalVerifiedRejectionReason(finalLot)
+  if (finalReason === null) return 'recovered_verified'
+
+  const wasMissingOriginally = originalLot.costBasisUsd === null || originalLot.proceedsUsd === null
+  if (!wasMissingOriginally) {
+    if (finalReason === 'non_positive_entry_price' || finalReason === 'non_positive_exit_price' || finalReason === 'non_finite_value') {
+      return 'non_positive_reconstruction'
+    }
+    return 'no_price_requirement_generated'
+  }
+
+  if (!wasSelected) return 'not_selected_by_recovery_cap'
+
+  if (outcome?.buyBudgetCapped || outcome?.sellBudgetCapped) return 'provider_not_attempted_budget'
+
+  const finalBuyMissing = finalLot.costBasisUsd === null
+  const finalSellMissing = finalLot.proceedsUsd === null
+  if (finalBuyMissing || finalSellMissing) {
+    const reason = finalBuyMissing ? (outcome?.buyReason ?? null) : (outcome?.sellReason ?? null)
+    const { bucket } = classifyRecoveryFailureReason(reason)
+    if (bucket === 'unsupportedTokenOrChain') return 'identity_rejected'
+    if (bucket === 'timestampOutsideProviderData') return 'timestamp_rejected'
+    if (bucket === 'noPool') return 'quote_leg_proof_missing'
+    if (bucket === 'providerReturnedNull') {
+      // A bare null with no evidence and no provider reason recorded reads more precisely as an
+      // accepted-evidence miss than a generic provider outcome when hydration itself never even had
+      // a candidate to try (recovered is entirely absent for this side and the other side, if any,
+      // was never touched by hydration either) — otherwise it is a genuine provider null.
+      const hydrationNeverResolvedEither = hydratedLot.costBasisUsd === null && hydratedLot.proceedsUsd === null
+        && originalLot.costBasisUsd === null && originalLot.proceedsUsd === null
+      return hydrationNeverResolvedEither ? 'accepted_evidence_miss' : 'provider_returned_null'
+    }
+    return 'other'
+  }
+
+  if (finalReason === 'evidence_quality_not_verified') return 'partial_unverified_only'
+  return 'canonical_verifier_rejected'
+}
+
+// Estimates whether resolving a lot's own still-missing side(s) would, on its own, make it
+// canonically verified — i.e. no OTHER independent defect (chronology, an already-non-positive
+// side) would still block it. Best-case/deterministic, never a probabilistic forecast: assumes a
+// successful recovery fills the missing side(s) with SOME positive, finite value.
+function wouldCompleteIfResolved(lot: MatchedLot): boolean {
+  const probe: MatchedLot = {
+    ...lot,
+    costBasisUsd: lot.costBasisUsd ?? 1,
+    proceedsUsd: lot.proceedsUsd ?? 1,
+    realizedPnlUsd: 0,
+    evidenceQuality: 'verified',
+  }
+  return canonicalVerifiedRejectionReason(probe) === null
+}
+
+export function buildMissingPriceRecoveryFunnelAudit(params: {
+  originalLots: readonly MatchedLot[]
+  hydratedLots: readonly MatchedLot[]
+  sortedMissing: readonly MatchedLot[]
+  candidates: readonly MatchedLot[]
+  recoveredByLotKey: ReadonlyMap<string, RecoveredPrice>
+  candidateOutcomeByKey: ReadonlyMap<string, CandidateRecoveryOutcome>
+  thresholdRequired?: number
+  totalStructuralLots: number
+}): MissingPriceRecoveryFunnelAudit {
+  const thresholdRequired = params.thresholdRequired ?? 0.5
+  const hydratedByKey = new Map(params.hydratedLots.map((l) => [lotKey(l), l]))
+  const selectedKeys = new Set(params.candidates.map((l) => lotKey(l)))
+
+  const buckets = emptyMissingPriceLotBucketCounts()
+  let providerAttemptedLots = 0
+  let providerResolvedLots = 0
+  let canonicalVerifiedLots = 0
+  for (const original of params.originalLots) {
+    const key = lotKey(original)
+    const hydrated = hydratedByKey.get(key) ?? original
+    const wasSelected = selectedKeys.has(key)
+    const outcome = params.candidateOutcomeByKey.get(key)
+    const recovered = params.recoveredByLotKey.get(key)
+    if (wasSelected && outcome && (outcome.needsBuy || outcome.needsSell)) providerAttemptedLots += 1
+    if (recovered) providerResolvedLots += 1
+    const bucket = classifyMissingPriceLotBucket({ originalLot: original, hydratedLot: hydrated, recovered, wasSelected, outcome })
+    buckets[bucket] += 1
+    if (isCanonicalVerifiedPublishedLot(reconstructFinalLot(hydrated, recovered))) canonicalVerifiedLots += 1
+  }
+
+  const neededForGate = Math.max(0, Math.ceil(thresholdRequired * params.totalStructuralLots) - canonicalVerifiedLots)
+
+  // BEYOND-CAP CANDIDATES + YIELD ESTIMATE, DISCLOSED: uses the SAME ranked order recoverPrices
+  // itself already produced (`sortedMissing`) — never a second, independently-computed ranking.
+  const groupUnlockCounts = new Map<string, number>()
+  for (const lot of params.sortedMissing) {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    for (const gk of [entryKey, exitKey]) groupUnlockCounts.set(gk, (groupUnlockCounts.get(gk) ?? 0) + 1)
+  }
+  const beyondCapCandidates: BeyondCapRecoveryCandidateAudit[] = params.sortedMissing.map((lot, index) => {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    const missingSides: Array<'entry' | 'exit'> = []
+    if (lot.costBasisUsd === null) missingSides.push('entry')
+    if (lot.proceedsUsd === null) missingSides.push('exit')
+    const sharedSiblingUnlockCount = missingSides.reduce((sum, side) => {
+      const gk = side === 'entry' ? entryKey : exitKey
+      return sum + Math.max(0, (groupUnlockCounts.get(gk) ?? 1) - 1)
+    }, 0)
+    return {
+      rank: index + 1,
+      token: `${lot.chain}:${lot.token}`,
+      lotKey: lotKey(lot),
+      missingSides,
+      sharedSiblingUnlockCount,
+      estimatedProviderCalls: missingSides.length,
+      wouldCompleteLotIfResolved: wouldCompleteIfResolved(lot),
+    }
+  }).filter((c) => c.rank > MAX_RECOVERY_ATTEMPTS)
+
+  const yieldForRange = (startRank: number, endRank: number) => beyondCapCandidates
+    .filter((c) => c.rank >= startRank && c.rank <= endRank && c.wouldCompleteLotIfResolved).length
+  const callsForRange = (startRank: number, endRank: number) => beyondCapCandidates
+    .filter((c) => c.rank >= startRank && c.rank <= endRank)
+    .reduce((sum, c) => sum + c.estimatedProviderCalls, 0)
+  const first40ExpectedYield = params.sortedMissing.slice(0, MAX_RECOVERY_ATTEMPTS).filter((l) => wouldCompleteIfResolved(l)).length
+  // MARGINAL CALLS, DISCLOSED: `beyondCapCandidates` only ever holds ranks beyond the CURRENT
+  // 40-cap (see the `.filter((c) => c.rank > MAX_RECOVERY_ATTEMPTS)` above), so `callsForRange`
+  // alone can never price the first-40 slice itself — it would silently read as 0 calls for cap 40.
+  // The cap-40 baseline is priced directly off `sortedMissing`'s own first 40 entries, and every
+  // higher cap adds the incremental beyond-cap slice on top of that same baseline.
+  const callsForFirst40 = params.sortedMissing
+    .slice(0, MAX_RECOVERY_ATTEMPTS)
+    .reduce((sum, lot) => sum + (lot.costBasisUsd === null ? 1 : 0) + (lot.proceedsUsd === null ? 1 : 0), 0)
+  const capYieldEstimate: MissingPriceRecoveryCapYieldEstimate = {
+    first40ExpectedYield,
+    ranks41To60ExpectedYield: yieldForRange(41, 60),
+    ranks61To80ExpectedYield: yieldForRange(61, 80),
+    marginalProviderCallEstimateByCap: [
+      { cap: 40, estimatedProviderCalls: callsForFirst40 },
+      { cap: 60, estimatedProviderCalls: callsForFirst40 + callsForRange(41, 60) },
+      { cap: 80, estimatedProviderCalls: callsForFirst40 + callsForRange(41, 80) },
+    ],
+  }
+
+  return {
+    totalMissingLots: params.sortedMissing.length,
+    selectedForRecovery: params.candidates.length,
+    notSelectedByCap: Math.max(0, params.sortedMissing.length - params.candidates.length),
+    providerAttemptedLots,
+    providerResolvedLots,
+    canonicalVerifiedLots,
+    buckets,
+    lotsNeededFor50: neededForGate,
+    beyondCapCandidates,
+    capYieldEstimate,
+  }
+}
+
 // PER-SOURCE ATTEMPT COUNTERS, DISCLOSED (this task's explicit requirement): built from EVERY
 // attempt in a detailed lookup's `attempts` array (not just the final one), so a source that was
 // tried and failed early is never invisible just because a later source in the same lookup also
@@ -497,6 +819,12 @@ export type PnlReconciliationSummary = {
   // ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real, from this
   // scan's own hydration/recovery pass — see AcceptedEvidenceAudit's own header.
   acceptedEvidenceAudit: AcceptedEvidenceAudit
+  // MISSING-PRICE RECOVERY FUNNEL AUDIT, DISCLOSED (this task's own requirement): diagnostics-only,
+  // additive to (never a replacement of) walletPnlCoverageRecoveryAudit.ts's coarser per-token
+  // `missing_price` bucket — see MissingPriceRecoveryFunnelAudit's own header. Never affects pricing,
+  // evidence policy, FIFO, manifest, or the 50% gate; read-only bookkeeping over this same scan's
+  // own recovery pass.
+  missingPriceRecoveryFunnelAudit: MissingPriceRecoveryFunnelAudit
   // THE ONE CANONICAL PUBLISHED LOT ARRAY, DISCLOSED (canonical-manifest-replay follow-up task,
   // requirement #5/#10). CONFIRMED PRODUCTION BUG THIS CLOSES: this summary previously exposed no
   // lot array at all, so `src/pipeline/index.ts` built its `reconciledFifoAndPnl` by spreading the
@@ -721,7 +1049,6 @@ export function createPnlReconciliation(config: Config = {}) {
   // (2) tokens that dominate the unpriced closed-lot sample. Same MAX_RECOVERY_ATTEMPTS cap, same
   // fetchers — only the order of the already-bounded candidate list changes. See
   // rankMissingLotsForRecovery.
-  type RecoveredPrice = { costBasisUsd: number | null; proceedsUsd: number | null }
   // WIRING DIAGNOSTIC COUNTERS, DISCLOSED (this task's explicit requirement): distinguishes THREE
   // real, distinct things that a bare "recovered: 0" summary conflates:
   //   - detailedLookupsUsed: how many leg attempts SELECTED the detailed path (the primary slot,
@@ -923,6 +1250,7 @@ export function createPnlReconciliation(config: Config = {}) {
     plainLookupsUsed: number
     detailedAttemptsObserved: number
     acceptedEvidenceAudit: AcceptedEvidenceAudit
+    missingPriceRecoveryFunnelAudit: MissingPriceRecoveryFunnelAudit
   }> {
     // priceLotsForWallet is the canonical historical-price boundary: every finite value reaching
     // FIFO through its lookup was accepted by a configured (non-synthetic) price source.  Older
@@ -956,7 +1284,16 @@ export function createPnlReconciliation(config: Config = {}) {
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
-      return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
+      const missingPriceRecoveryFunnelAudit = buildMissingPriceRecoveryFunnelAudit({
+        originalLots: lots,
+        hydratedLots,
+        sortedMissing: missingLots,
+        candidates: [],
+        recoveredByLotKey,
+        candidateOutcomeByKey: new Map(),
+        totalStructuralLots: lots.length,
+      })
+      return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit, missingPriceRecoveryFunnelAudit }
     }
     const priceKvClient = config.priceKvClient
     // Within the existing fixed attempt budget, prefer tokens whose missing side blocks the most
@@ -1012,9 +1349,22 @@ export function createPnlReconciliation(config: Config = {}) {
     // detailed source is configured at all. Every call routes through the shared, bounded recovery
     // lane (priceKvClient.getPriceRecovery) when available, falling back to the plain
     // getPriceHistorical/getPricePrimary methods only for a priceKvClient that doesn't implement it.
-    const attemptLeg = async (token: string, chain: string, timestamp: number, label: 'primary' | 'chain-aware-historical'): Promise<{ price: number | null; reason: string | null }> => {
+    const attemptLeg = async (token: string, chain: string, timestamp: number, label: 'primary' | 'chain-aware-historical'): Promise<{ price: number | null; reason: string | null; budgetCapped: boolean }> => {
+      // BUDGET-CAPPED DETECTION, DISCLOSED (this task's own requirement): `getPriceRecovery` is the
+      // ONLY call routed through kvClient.ts's global-per-scan recovery lookup budget
+      // (`recoveryLookupsBudget`/`recoveryStats.recoveryCappedLookups`); a before/after snapshot of
+      // that already-public counter is the sole way this function can tell "the real fetcher was
+      // never called because the budget was already exhausted" apart from a genuine provider null —
+      // both currently return the same bare `null` from `getPriceRecovery` itself.
+      let budgetCapped = false
       const callVia = async (fetcher: PriceSourceFn): Promise<number | null> => {
-        if (priceKvClient.getPriceRecovery) return priceKvClient.getPriceRecovery(token, chain, timestamp, fetcher, label, maxRecoveryLookups)
+        if (priceKvClient.getPriceRecovery) {
+          const before = priceKvClient.recoveryStats?.recoveryCappedLookups ?? 0
+          const result = await priceKvClient.getPriceRecovery(token, chain, timestamp, fetcher, label, maxRecoveryLookups)
+          const after = priceKvClient.recoveryStats?.recoveryCappedLookups ?? 0
+          if (after > before) budgetCapped = true
+          return result
+        }
         if (label === 'chain-aware-historical') return priceKvClient.getPriceHistorical ? priceKvClient.getPriceHistorical(token, chain, timestamp, fetcher) : null
         return priceKvClient.getPricePrimary ? priceKvClient.getPricePrimary(token, chain, timestamp, fetcher) : null
       }
@@ -1026,16 +1376,21 @@ export function createPnlReconciliation(config: Config = {}) {
           return result.price
         }
         const price = await callVia(wrapped)
-        return { price, reason }
+        return { price, reason, budgetCapped }
       }
       for (const fetcher of fetchers) {
         const price = await callVia(fetcher)
-        if (price !== null) return { price, reason: null }
+        if (price !== null) return { price, reason: null, budgetCapped }
       }
-      return { price: null, reason: null }
+      return { price: null, reason: null, budgetCapped }
     }
     const acceptedEvidenceKv = config.acceptedEvidenceKv
     const writeNow = config.now ?? Date.now
+    // Per-candidate outcome, DISCLOSED: captured purely from local variables this same loop already
+    // computes — never a second live pass — so `buildMissingPriceRecoveryFunnelAudit` below can
+    // distinguish "provider genuinely said no" from "budget exhausted before the fetcher ever ran"
+    // for every one of the 109 missing-price lots, exactly this task's own requirement.
+    const candidateOutcomeByKey = new Map<string, CandidateRecoveryOutcome>()
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
       const needsBuy = lot.costBasisUsd === null
       const needsSell = lot.proceedsUsd === null
@@ -1043,12 +1398,15 @@ export function createPnlReconciliation(config: Config = {}) {
       let recoveredSell: number | null = null
       let lastBuyReason: string | null = null
       let lastSellReason: string | null = null
+      let buyBudgetCapped = false
+      let sellBudgetCapped = false
       if (needsBuy) {
         if (detailedPrimary) detailedLookupsUsed += 1
         else plainLookupsUsed += 1
         const result = await attemptLeg(lot.token, lot.chain, lot.openedAt, 'chain-aware-historical')
         recoveredBuy = result.price
         lastBuyReason = result.reason
+        buyBudgetCapped = result.budgetCapped
       }
       if (needsSell) {
         if (detailedPrimary) detailedLookupsUsed += 1
@@ -1056,7 +1414,9 @@ export function createPnlReconciliation(config: Config = {}) {
         const result = await attemptLeg(lot.token, lot.chain, lot.closedAt, 'primary')
         recoveredSell = result.price
         lastSellReason = result.reason
+        sellBudgetCapped = result.budgetCapped
       }
+      candidateOutcomeByKey.set(lotKey(lot), { needsBuy, needsSell, buyReason: lastBuyReason, sellReason: lastSellReason, buyBudgetCapped, sellBudgetCapped })
       if (needsBuy && recoveredBuy === null) recordFailureReason(failureReasonCounts, lastBuyReason)
       if (needsSell && recoveredSell === null) recordFailureReason(failureReasonCounts, lastSellReason)
       if (recoveredBuy !== null || recoveredSell !== null) {
@@ -1113,7 +1473,16 @@ export function createPnlReconciliation(config: Config = {}) {
         }
       }
     })
-    return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
+    const missingPriceRecoveryFunnelAudit = buildMissingPriceRecoveryFunnelAudit({
+      originalLots: lots,
+      hydratedLots,
+      sortedMissing: sorted,
+      candidates,
+      recoveredByLotKey,
+      candidateOutcomeByKey,
+      totalStructuralLots: lots.length,
+    })
+    return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit, missingPriceRecoveryFunnelAudit }
   }
 
   // STRUCTURAL VALIDITY, DISCLOSED (requirement #4's "never persist... structurally invalid lots"):
@@ -1508,6 +1877,11 @@ export function createPnlReconciliation(config: Config = {}) {
       // counters from hydrateFromAcceptedEvidence + the live recovery loop's own write-back — see
       // recoverPrices' own header for what each field means.
       logger.warn('[accepted-evidence-audit]', acceptedEvidenceAudit)
+      // MISSING-PRICE RECOVERY FUNNEL, DISCLOSED (this task's own requirement): logged in full every
+      // scan — diagnostics only, never consumed by the pass/fail decision above. See
+      // MissingPriceRecoveryFunnelAudit's own header for the full bucket taxonomy and how each
+      // candidate beyond the current MAX_RECOVERY_ATTEMPTS cap is scored.
+      logger.warn('[missing-price-recovery-funnel]', recovery.missingPriceRecoveryFunnelAudit)
 
       let syntheticAlignedCount = 0
       const synthetic = input.syntheticPnlAssemblyOutput
@@ -2008,6 +2382,7 @@ export function createPnlReconciliation(config: Config = {}) {
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
         acceptedEvidenceAudit,
+        missingPriceRecoveryFunnelAudit: recovery.missingPriceRecoveryFunnelAudit,
         publishedMatchedLots: publishedFifoLots,
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,

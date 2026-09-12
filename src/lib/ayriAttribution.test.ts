@@ -4,6 +4,7 @@ import type { MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from './pnlReconciliation'
 import { createAyriAttribution } from './ayriAttribution'
 import { emptyPnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
+import { emptyMissingPriceRecoveryFunnelAudit } from './pnlReconciliation'
 
 const quiet = { warn() {} }
 
@@ -51,6 +52,7 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
     },
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
+    missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
     ...overrides,
   }
 }

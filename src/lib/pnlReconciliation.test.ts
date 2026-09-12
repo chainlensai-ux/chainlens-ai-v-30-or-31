@@ -405,6 +405,117 @@ describe('pnlReconciliation', () => {
   })
 
   // =============================================================================================
+  // missingPriceRecoveryFunnelAudit — missing-price-recovery-funnel follow-up task. Every one of
+  // the 109-lot-style missing-price population must land in exactly one terminal bucket, and the
+  // aggregate/beyond-cap/yield-estimate figures must reconcile exactly against the same recovery
+  // pass's own decisions. Diagnostics only — none of these tests assert any change to pricing,
+  // FIFO, the manifest, or the 50% gate.
+  // =============================================================================================
+
+  it('missingPriceRecoveryFunnelAudit: a one-side-missing lot successfully recovered lands in recovered_verified, and bucket counts sum to totalMissingLots', async () => {
+    const missing = lot({ lotId: 'recoverable', openedTxHash: '0xbuy-r', closedTxHash: '0xsell-r', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPricePrimary: async () => 15 },
+      priceSources: { primary: async () => 15 },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [missing] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const audit = summary.missingPriceRecoveryFunnelAudit
+    assert.equal(audit.totalMissingLots, 1)
+    assert.equal(audit.selectedForRecovery, 1)
+    assert.equal(audit.notSelectedByCap, 0)
+    assert.equal(audit.buckets.recovered_verified, 1)
+    assert.equal(audit.canonicalVerifiedLots, 1)
+    const bucketSum = Object.values(audit.buckets).reduce((s, n) => s + n, 0)
+    assert.equal(bucketSum, audit.totalMissingLots, 'every missing lot must land in exactly one bucket')
+    assert.equal(audit.buckets.other, 0, 'the `other` fallback bucket must stay 0 — a non-zero count is itself a real, unanticipated case')
+  })
+
+  it('missingPriceRecoveryFunnelAudit: lots ranked beyond MAX_RECOVERY_ATTEMPTS (40) land in not_selected_by_recovery_cap, never attempted', async () => {
+    const manyLots = Array.from({ length: 50 }, (_, i) => lot({ lotId: `both-${i}`, openedTxHash: `0xbuy-${i}`, closedTxHash: `0xsell-${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: manyLots }), pnlEngineResult: pnl(50), syntheticPnlAssemblyOutput: null })
+    const audit = summary.missingPriceRecoveryFunnelAudit
+    assert.equal(audit.totalMissingLots, 50)
+    assert.equal(audit.selectedForRecovery, 40)
+    assert.equal(audit.notSelectedByCap, 10)
+    assert.equal(audit.buckets.not_selected_by_recovery_cap, 10)
+    assert.equal(audit.beyondCapCandidates.length, 10)
+    assert.ok(audit.beyondCapCandidates.every((c) => c.rank > 40), 'every beyond-cap candidate must be ranked strictly after the 40-cap')
+  })
+
+  it('missingPriceRecoveryFunnelAudit: distinguishes a genuine provider null (provider_returned_null) from a lot hydration never even touched (accepted_evidence_miss)', async () => {
+    const oneSideNull = lot({ lotId: 'one-side-null', openedTxHash: '0xbuy-1', closedTxHash: '0xsell-1', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const bothSideNull = lot({ lotId: 'both-side-null', openedTxHash: '0xbuy-2', closedTxHash: '0xsell-2', costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [oneSideNull, bothSideNull] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+    const audit = summary.missingPriceRecoveryFunnelAudit
+    assert.equal(audit.buckets.provider_returned_null, 1, 'a lot with one side already present must classify a genuine provider null as provider_returned_null')
+    assert.equal(audit.buckets.accepted_evidence_miss, 1, 'a lot with neither side ever resolved (by hydration or recovery) must classify as accepted_evidence_miss')
+  })
+
+  it('missingPriceRecoveryFunnelAudit: maps detailed-source reasons to identity_rejected/timestamp_rejected/quote_leg_proof_missing via the same classifyRecoveryFailureReason buckets', async () => {
+    const identity = lot({ lotId: 'identity', token: '0xidentity', openedTxHash: '0xbuy-id', closedTxHash: '0xsell-id', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const timestamp = lot({ lotId: 'timestamp', token: '0xtimestamp', openedTxHash: '0xbuy-ts', closedTxHash: '0xsell-ts', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const quoteLeg = lot({ lotId: 'quote-leg', token: '0xquoteleg', openedTxHash: '0xbuy-ql', closedTxHash: '0xsell-ql', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const reasonForToken: Record<string, string> = { '0xidentity': 'unverified_chain', '0xtimestamp': 'no_candles', '0xquoteleg': 'no_pool_found' }
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPricePrimary: async (token: string, chain: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(token, chain, ts) } as never,
+      priceSourceDetailedPrimary: async (token: string) => ({ price: null, route: 'test', attempts: [{ source: 'test', ok: false, reason: reasonForToken[token] }] }),
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [identity, timestamp, quoteLeg] }), pnlEngineResult: pnl(3), syntheticPnlAssemblyOutput: null })
+    const audit = summary.missingPriceRecoveryFunnelAudit
+    assert.equal(audit.buckets.identity_rejected, 1)
+    assert.equal(audit.buckets.timestamp_rejected, 1)
+    assert.equal(audit.buckets.quote_leg_proof_missing, 1)
+  })
+
+  it('missingPriceRecoveryFunnelAudit: a lot whose side lookup is refused by the recovery-lane budget (never reaching the real fetcher) lands in provider_not_attempted_budget, distinct from a genuine provider null', async () => {
+    const capped = lot({ lotId: 'capped', openedTxHash: '0xbuy-capped', closedTxHash: '0xsell-capped', costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const recoveryStats = { recoveryLookupsRequested: 0, recoveryCacheHits: 0, recoveryLiveFetches: 0, recoveryCappedLookups: 0 }
+    let fetcherCalled = false
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: {
+        recoveryStats,
+        getPriceRecovery: async () => { recoveryStats.recoveryCappedLookups += 1; return null },
+      } as never,
+      priceSources: { primary: async () => { fetcherCalled = true; return 5 } },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [capped] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const audit = summary.missingPriceRecoveryFunnelAudit
+    assert.equal(audit.buckets.provider_not_attempted_budget, 1)
+    assert.equal(fetcherCalled, false, 'the real fetcher must never be invoked once the recovery-lane budget is exhausted')
+  })
+
+  it('missingPriceRecoveryFunnelAudit: capYieldEstimate marginal provider-call counts for cap 40/60/80 are exact, cumulative sums over the ranked candidate list', async () => {
+    // 60 both-sides-missing lots: ranks 1-40 are selected (2 calls each = 80), ranks 41-60 are
+    // beyond-cap (2 calls each = 40 more). Cap 40 must price ONLY the first 40 (never silently read
+    // as 0 just because `beyondCapCandidates` itself only holds ranks > 40).
+    const manyLots = Array.from({ length: 60 }, (_, i) => lot({ lotId: `both-${i}`, openedTxHash: `0xbuy-${i}`, closedTxHash: `0xsell-${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: manyLots }), pnlEngineResult: pnl(60), syntheticPnlAssemblyOutput: null })
+    const estimate = summary.missingPriceRecoveryFunnelAudit.capYieldEstimate
+    const byCap = Object.fromEntries(estimate.marginalProviderCallEstimateByCap.map((e) => [e.cap, e.estimatedProviderCalls]))
+    assert.equal(byCap[40], 80, 'cap 40 must price the first 40 candidates directly, never 0')
+    assert.equal(byCap[60], 120, 'cap 60 must be the cap-40 baseline plus ranks 41-60, never just the beyond-cap slice alone')
+    assert.equal(byCap[80], 120, 'cap 80 has no ranks 61-80 in this 60-lot fixture, so it must equal cap 60 exactly')
+  })
+
+  // =============================================================================================
   // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
   // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already
   // enforce — never a second, looser or stricter gate.
