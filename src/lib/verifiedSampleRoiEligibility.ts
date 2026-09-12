@@ -13,22 +13,27 @@
 // non-USDC lots), $527,036.11 cost basis of which $278,198.83 was 77 Base USDC lots at $1/$1/$0.
 // That flattened published ROI toward 0 (−13.43%) without changing FIFO conservation.
 //
-// LIVE CLASSIFICATION REGRESSION THIS ALSO CLOSES (origin/main 46320a): pairing used the published
-// verified sample as the structural universe, and a provided-but-bounded `normalizedEvents` array
-// whose txs did not cover manifest-replayed historical lots fell through to independent (all event
-// flags false). Quote-leg count collapsed (72 → 16), independent USDC inflated, and a handful of
-// in-window router-only lots made ROI unavailable. Canonical FIFO lot identity is now the primary
-// proof; events only supplement. Missing historical/bounded event context is unresolved, never
-// independent. Independent EOA/CEX/mint still requires the lot's open AND close txs to be present
-// in the event set with no opposite-direction risk asset and no router ambiguity.
+// LIVE CLASSIFICATION REGRESSION THIS ALSO CLOSES (origin/main 46320a / e984eaf / cf6f379): pairing
+// used the published verified sample, then consistent FIFO, then unmatched FIFO identities. Live
+// still collapsed 72 → 16 quote legs with structuralLotsCount = 232. The missing 56 counterparts
+// are not in the current bounded FIFO matched-lot set, not in unmatched buy/sell events, not in
+// accepted-evidence records (prices only), and not in the 98-lot canonical manifest (verified
+// sample identity + frozen values, no paired-risk token). The original 72-quote audit paired the
+// 77 Base USDC lots against a one-off FULL-HISTORY FIFO matched-lot dump (~505 closed lots,
+// including unpriced TOKEN counterparts outside the bounded window). That dump was never persisted,
+// so a later bounded scan cannot re-prove those identities from any current store. Compact ROI
+// quote-leg proofs are therefore written onto the existing v4 canonical sample manifest (optional
+// additive field — schema version is NOT bumped, fingerprints do NOT include proofs). Replay
+// applies only when lot identity + methodology version match; a fresh live FIFO/event quote can
+// confirm; a stale/mismatched proof is unresolved, never guessed into the denominator. Never infer
+// from token symbol. Independent EOA/CEX/mint still requires live event proof (or a matching
+// persisted independent proof when the bounded window has dropped those txs).
 //
 // PROOF STANDARD, DISCLOSED: a verified stablecoin lot is excluded from the ROI denominator only
-// when swap/FIFO identity proves it is the cash/quote leg of an already-represented economic
-// trade — never by symbol, never by a blanket stablecoin-address filter. Non-stablecoin verified
-// lots always remain eligible. A genuine independent stablecoin movement (EOA/CEX transfer,
-// mint-without-swap, stable-stable cash reshuffle with no opposite-direction risk asset) remains
-// eligible. When quote-leg identity cannot be proven either way, ROI is unavailable — never
-// guessed.
+// when swap/FIFO identity — live or a matching persisted proof — proves it is the cash/quote leg
+// of an already-represented economic trade. Non-stablecoin verified lots always remain eligible.
+// A genuine independent stablecoin movement remains eligible. When quote-leg identity cannot be
+// proven either way, ROI is unavailable — never guessed.
 //
 // Pairing uses ALL structural matched lots (including unpriced), not only the verified subset:
 // an unpriced risk lot is still the economic trade the USDC cash financed. That trade's PnL is
@@ -44,6 +49,12 @@ import type { NormalizedEvent } from '../modules/normalization/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { isKnownDexRouter } from './knownDexRouters'
+import {
+  readCanonicalPnlSampleManifest,
+  writeCanonicalPnlSampleManifest,
+  type CanonicalPnlSampleManifestIdentity,
+  type CanonicalSampleManifestKvLike,
+} from './canonicalPnlSampleManifest'
 
 export type RoiDenominatorDisposition = 'include_economic_position' | 'exclude_quote_cash_leg' | 'unresolved'
 
@@ -51,11 +62,30 @@ export type RoiClassificationReason =
   | 'non_stable_economic_position'
   | 'fifo_paired_quote_cash'
   | 'event_paired_quote_cash'
+  | 'persisted_quote_cash'
+  | 'persisted_independent'
   | 'independent_eoa_cex_or_mint'
   | 'unresolved_no_events_provided'
   | 'unresolved_missing_event_context'
   | 'unresolved_native_or_unknown_quote'
   | 'unresolved_router_without_opposite_risk'
+  | 'unresolved_stale_quote_leg_proof'
+
+export type RoiQuoteLegProofType = 'fifo_structural_lot' | 'event_opposite_leg' | 'independent_eoa_cex_or_mint'
+
+// Bumped only when the quote-leg identity RULE changes (what counts as a proven pair / independent
+// movement), never for a bounded-window or provider-availability change — those are exactly the
+// class of change persisted proofs exist to make invisible on replay.
+export const ROI_QUOTE_LEG_PROOF_METHODOLOGY_VERSION = 1
+
+export type PersistedRoiQuoteLegProof = {
+  stableLotKey: string
+  disposition: 'exclude_quote_cash_leg' | 'include_economic_position'
+  pairedRiskToken: string | null
+  pairedTxHash: string | null
+  proofType: RoiQuoteLegProofType
+  methodologyVersion: number
+}
 
 export type VerifiedSampleRoiLotClassification = {
   lotKey: string
@@ -97,6 +127,160 @@ export type VerifiedSampleRoiEligibility = {
 
 export function roiLotKey(lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt'>): string {
   return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt].join(':')
+}
+
+export function isValidPersistedRoiQuoteLegProof(raw: unknown): raw is PersistedRoiQuoteLegProof {
+  if (raw === null || typeof raw !== 'object') return false
+  const proof = raw as Partial<PersistedRoiQuoteLegProof>
+  if (typeof proof.stableLotKey !== 'string' || proof.stableLotKey.length === 0) return false
+  if (proof.disposition !== 'exclude_quote_cash_leg' && proof.disposition !== 'include_economic_position') return false
+  if (proof.pairedRiskToken != null && typeof proof.pairedRiskToken !== 'string') return false
+  if (proof.pairedTxHash != null && typeof proof.pairedTxHash !== 'string') return false
+  if (
+    proof.proofType !== 'fifo_structural_lot'
+    && proof.proofType !== 'event_opposite_leg'
+    && proof.proofType !== 'independent_eoa_cex_or_mint'
+  ) return false
+  if (typeof proof.methodologyVersion !== 'number' || !Number.isFinite(proof.methodologyVersion)) return false
+  if (proof.disposition === 'exclude_quote_cash_leg') {
+    if (typeof proof.pairedTxHash !== 'string' || proof.pairedTxHash.length === 0) return false
+  }
+  return true
+}
+
+export function sanitizeRoiQuoteLegProofs(raw: unknown): PersistedRoiQuoteLegProof[] {
+  if (!Array.isArray(raw)) return []
+  const out: PersistedRoiQuoteLegProof[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!isValidPersistedRoiQuoteLegProof(item)) continue
+    if (seen.has(item.stableLotKey)) continue
+    seen.add(item.stableLotKey)
+    out.push({
+      stableLotKey: item.stableLotKey,
+      disposition: item.disposition,
+      pairedRiskToken: item.pairedRiskToken ?? null,
+      pairedTxHash: item.pairedTxHash ?? null,
+      proofType: item.proofType,
+      methodologyVersion: item.methodologyVersion,
+    })
+  }
+  return out
+}
+
+function normalizeTx(txHash: string | null | undefined): string {
+  return (txHash ?? '').toLowerCase()
+}
+
+function persistedProofMatchesLot(
+  proof: PersistedRoiQuoteLegProof,
+  lot: Pick<MatchedLot, 'openedTxHash' | 'closedTxHash'>,
+): { matching: boolean; stale: boolean } {
+  if (proof.methodologyVersion !== ROI_QUOTE_LEG_PROOF_METHODOLOGY_VERSION) {
+    return { matching: false, stale: true }
+  }
+  if (proof.disposition === 'exclude_quote_cash_leg') {
+    const pairTx = normalizeTx(proof.pairedTxHash)
+    const matches = pairTx === normalizeTx(lot.openedTxHash) || pairTx === normalizeTx(lot.closedTxHash)
+    return { matching: matches, stale: !matches }
+  }
+  return { matching: true, stale: false }
+}
+
+export function mergeRoiQuoteLegProofs(
+  stored: readonly PersistedRoiQuoteLegProof[],
+  live: readonly PersistedRoiQuoteLegProof[],
+): PersistedRoiQuoteLegProof[] {
+  const byKey = new Map<string, PersistedRoiQuoteLegProof>()
+  for (const proof of sanitizeRoiQuoteLegProofs(stored)) byKey.set(proof.stableLotKey, proof)
+  for (const proof of sanitizeRoiQuoteLegProofs(live)) {
+    const previous = byKey.get(proof.stableLotKey)
+    if (!previous) {
+      byKey.set(proof.stableLotKey, proof)
+      continue
+    }
+    // Live FIFO/event quote confirms and may upgrade a stored independent. A stored quote is never
+    // overwritten by a later bounded scan that can only see USDC-only events and therefore reports
+    // independent — that is incomplete TOKEN context, not a proof mismatch.
+    if (proof.disposition === 'exclude_quote_cash_leg') {
+      byKey.set(proof.stableLotKey, proof)
+      continue
+    }
+    if (previous.disposition === 'exclude_quote_cash_leg') continue
+    byKey.set(proof.stableLotKey, proof)
+  }
+  return [...byKey.values()].sort((a, b) => a.stableLotKey.localeCompare(b.stableLotKey))
+}
+
+export function liveProofFromClassification(row: VerifiedSampleRoiLotClassification): PersistedRoiQuoteLegProof | null {
+  if (row.reason === 'fifo_paired_quote_cash' || row.reason === 'event_paired_quote_cash') {
+    const pairedTxHash = row.fifoPairAtOpen || row.eventPairAtOpen
+      ? row.openedTxHash
+      : row.closedTxHash
+    const pairedRiskToken = row.fifoPairAtOpen || row.eventPairAtOpen
+      ? row.openingCounterAsset
+      : row.closingCounterAsset
+    return {
+      stableLotKey: row.lotKey,
+      disposition: 'exclude_quote_cash_leg',
+      pairedRiskToken,
+      pairedTxHash,
+      proofType: row.reason === 'fifo_paired_quote_cash' ? 'fifo_structural_lot' : 'event_opposite_leg',
+      methodologyVersion: ROI_QUOTE_LEG_PROOF_METHODOLOGY_VERSION,
+    }
+  }
+  if (row.reason === 'independent_eoa_cex_or_mint') {
+    return {
+      stableLotKey: row.lotKey,
+      disposition: 'include_economic_position',
+      pairedRiskToken: null,
+      pairedTxHash: null,
+      proofType: 'independent_eoa_cex_or_mint',
+      methodologyVersion: ROI_QUOTE_LEG_PROOF_METHODOLOGY_VERSION,
+    }
+  }
+  return null
+}
+
+export function liveRoiQuoteLegProofsToPersist(eligibility: VerifiedSampleRoiEligibility): PersistedRoiQuoteLegProof[] {
+  const proofs: PersistedRoiQuoteLegProof[] = []
+  for (const row of eligibility.classifications) {
+    const proof = liveProofFromClassification(row)
+    if (proof) proofs.push(proof)
+  }
+  return proofs
+}
+
+function proofsEquivalent(a: readonly PersistedRoiQuoteLegProof[], b: readonly PersistedRoiQuoteLegProof[]): boolean {
+  if (a.length !== b.length) return false
+  const key = (proof: PersistedRoiQuoteLegProof) => [
+    proof.stableLotKey,
+    proof.disposition,
+    proof.pairedRiskToken ?? '',
+    normalizeTx(proof.pairedTxHash),
+    proof.proofType,
+    String(proof.methodologyVersion),
+  ].join('|')
+  const left = [...a].sort((x, y) => x.stableLotKey.localeCompare(y.stableLotKey)).map(key)
+  const right = [...b].sort((x, y) => x.stableLotKey.localeCompare(y.stableLotKey)).map(key)
+  return left.every((item, index) => item === right[index])
+}
+
+// Read-modify-write ONLY `roiQuoteLegProofs` on an existing v4 manifest. Fingerprints, records,
+// realized totals, and sample membership are untouched. Invalid/malformed proofs are dropped, never
+// used to fail the whole manifest. No-op when no manifest exists or the merged set is unchanged.
+export async function persistRoiQuoteLegProofs(
+  kv: CanonicalSampleManifestKvLike,
+  identity: CanonicalPnlSampleManifestIdentity,
+  liveProofs: readonly PersistedRoiQuoteLegProof[],
+): Promise<{ wrote: boolean; proofCount: number }> {
+  const read = await readCanonicalPnlSampleManifest(kv, identity)
+  if (!read.manifest) return { wrote: false, proofCount: 0 }
+  const stored = sanitizeRoiQuoteLegProofs(read.manifest.roiQuoteLegProofs)
+  const merged = mergeRoiQuoteLegProofs(stored, liveProofs)
+  if (proofsEquivalent(stored, merged)) return { wrote: false, proofCount: merged.length }
+  const ok = await writeCanonicalPnlSampleManifest(kv, { ...read.manifest, roiQuoteLegProofs: merged })
+  return { wrote: ok, proofCount: merged.length }
 }
 
 function txGroupId(chain: SupportedChain, txHash: string): string {
@@ -201,11 +385,16 @@ export function classifyVerifiedSampleRoiEligibility(params: {
   verifiedLots: readonly MatchedLot[]
   structuralLots?: readonly MatchedLot[]
   normalizedEvents?: readonly NormalizedEvent[]
+  persistedProofs?: readonly PersistedRoiQuoteLegProof[]
 }): VerifiedSampleRoiEligibility {
   const structuralLots = params.structuralLots ?? params.verifiedLots
   const events = params.normalizedEvents
   const eventsProvided = events != null
   const eventsByTx = eventsProvided ? indexEventsByTx(events) : null
+  const persistedByKey = new Map<string, PersistedRoiQuoteLegProof>()
+  for (const proof of sanitizeRoiQuoteLegProofs(params.persistedProofs)) {
+    persistedByKey.set(proof.stableLotKey, proof)
+  }
 
   const riskByOpenTx = new Map<string, MatchedLot[]>()
   const riskByCloseTx = new Map<string, MatchedLot[]>()
@@ -277,6 +466,8 @@ export function classifyVerifiedSampleRoiEligibility(params: {
 
     const fifoProvenQuote = fifoPairAtOpen || fifoPairAtClose
     const eventProvenQuote = eventPairAtOpen || eventPairAtClose
+    const persistedProof = persistedByKey.get(key)
+    const persistedMatch = persistedProof ? persistedProofMatchesLot(persistedProof, lot) : null
 
     let disposition: RoiDenominatorDisposition
     let isQuoteLeg = false
@@ -289,16 +480,38 @@ export function classifyVerifiedSampleRoiEligibility(params: {
       disposition = 'exclude_quote_cash_leg'
       isQuoteLeg = true
       reason = fifoProvenQuote ? 'fifo_paired_quote_cash' : 'event_paired_quote_cash'
+    } else if (persistedProof && persistedMatch?.stale) {
+      // Wrong methodology or pairedTxHash that is not this lot's open/close. Fail closed.
+      disposition = 'unresolved'
+      reason = 'unresolved_stale_quote_leg_proof'
+    } else if (persistedProof && persistedMatch?.matching && persistedProof.disposition === 'exclude_quote_cash_leg') {
+      // Same canonical sample/lot identity + matching methodology. Bounded FIFO/events no longer
+      // contain the TOKEN counterpart; the once-proven quote identity still holds.
+      disposition = 'exclude_quote_cash_leg'
+      isQuoteLeg = true
+      reason = 'persisted_quote_cash'
     } else if (!eventsProvided) {
-      // Structural lots alone cannot distinguish an EOA/CEX cash movement from a native-ETH swap
-      // whose opposite leg never produced an ERC20 FIFO lot. Fail closed.
-      disposition = 'unresolved'
-      reason = 'unresolved_no_events_provided'
+      if (persistedProof && persistedMatch?.matching && persistedProof.disposition === 'include_economic_position') {
+        disposition = 'include_economic_position'
+        isIndependentStablecoinTrade = true
+        reason = 'persisted_independent'
+      } else {
+        // Structural lots alone cannot distinguish an EOA/CEX cash movement from a native-ETH swap
+        // whose opposite leg never produced an ERC20 FIFO lot. Fail closed.
+        disposition = 'unresolved'
+        reason = 'unresolved_no_events_provided'
+      }
     } else if (!openEvents!.txPresent || !closeEvents!.txPresent) {
-      // Missing historical/bounded event context is not proof of an independent EOA/CEX/mint
-      // movement. Do not guess the lot into the ROI denominator.
-      disposition = 'unresolved'
-      reason = 'unresolved_missing_event_context'
+      if (persistedProof && persistedMatch?.matching && persistedProof.disposition === 'include_economic_position') {
+        disposition = 'include_economic_position'
+        isIndependentStablecoinTrade = true
+        reason = 'persisted_independent'
+      } else {
+        // Missing historical/bounded event context is not proof of an independent EOA/CEX/mint
+        // movement. Do not guess the lot into the ROI denominator.
+        disposition = 'unresolved'
+        reason = 'unresolved_missing_event_context'
+      }
     } else if (
       openEvents?.hasUnknownDirectionNonStable
       || closeEvents?.hasUnknownDirectionNonStable
@@ -309,12 +522,14 @@ export function classifyVerifiedSampleRoiEligibility(params: {
       reason = 'unresolved_native_or_unknown_quote'
     } else if (openEvents?.usdcInboundFromRouter || closeEvents?.usdcOutboundToRouter) {
       // Router counterparty with no proven opposite-direction risk asset: could be a native quote
-      // swap. Do not guess.
+      // swap. Do not guess. A stored independent does not override live ambiguity.
       disposition = 'unresolved'
       reason = 'unresolved_router_without_opposite_risk'
     } else {
       // Both txs are present in events and show no opposite-direction risk asset. Counterparties
       // are EOA/CEX or a 0x0 mint — a mint without a swap is cash issuance, not a quote leg.
+      // Matching persisted quote already returned above; reaching here with a stored quote is
+      // impossible. Live independent is the honest classification of this event set.
       disposition = 'include_economic_position'
       isIndependentStablecoinTrade = true
       reason = 'independent_eoa_cex_or_mint'
@@ -322,8 +537,10 @@ export function classifyVerifiedSampleRoiEligibility(params: {
 
     const openingCounterAsset = openEvents?.openingCounterAsset
       ?? (pairedOnOpen[0] ? pairedOnOpen[0].token.toLowerCase() : null)
+      ?? (persistedProof?.pairedRiskToken ?? null)
     const closingCounterAsset = closeEvents?.closingCounterAsset
       ?? (pairedOnClose[0] ? pairedOnClose[0].token.toLowerCase() : null)
+      ?? (persistedProof?.pairedRiskToken ?? null)
 
     classifications.push({
       lotKey: key,

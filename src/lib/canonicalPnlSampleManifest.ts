@@ -31,6 +31,7 @@
 // never lets the current live candidate sample escape as canonical (requirement #4).
 
 import type { MatchedLot } from '../modules/fifoEngine/types'
+import type { PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import {
   buildAcceptedEvidenceKey, lotIdentityVersion,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceValueType,
@@ -920,6 +921,13 @@ export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
   manifestAllocationBuildAudit?: ManifestAllocationBuildAudit
   // OPTIONAL, DIAGNOSTIC ONLY — additive rebuild of candidate-only lots (live vs allocated).
   manifestAdditiveRebuildCandidateAudit?: ManifestAdditiveRebuildCandidateAudit
+  // OPTIONAL, ADDITIVE, DISCLOSED (ROI historical quote-leg proof): compact immutable proofs that
+  // a verified stablecoin lot is the cash/quote leg of an already-represented risk trade, or a
+  // genuine independent EOA/CEX/mint movement. NEVER part of identity/fingerprints/sample values.
+  // Schema version is deliberately NOT bumped — a missing field is "no proofs yet" (replay uses
+  // live FIFO/events only). Invalid entries are dropped on read, never used to fail the whole
+  // manifest. See verifiedSampleRoiEligibility.ts for the replay rule.
+  roiQuoteLegProofs?: PersistedRoiQuoteLegProof[]
 }
 
 type DeterminismFingerprints = {
@@ -1469,6 +1477,12 @@ export async function buildManifestFromCandidate(params: {
         candidates: [...additiveRebuildByKey.values()].sort((a, b) => a.lotKey.localeCompare(b.lotKey)),
       },
     } : {}),
+    // Carry prior ROI quote-leg proofs onto a rebuilt manifest so a refresh cannot drop identities
+    // a later bounded scan still needs. Fingerprints ignore this field. Later persist merges any
+    // newly live-proven proofs without rewriting sample values.
+    ...(params.priorManifest?.roiQuoteLegProofs && params.priorManifest.roiQuoteLegProofs.length > 0
+      ? { roiQuoteLegProofs: params.priorManifest.roiQuoteLegProofs }
+      : {}),
   }
 }
 

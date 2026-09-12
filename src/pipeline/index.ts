@@ -31,9 +31,10 @@ import {
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
-  type ManifestAdditiveGrowthAudit,
+  type ManifestAdditiveGrowthAudit, type CanonicalPnlSampleManifestIdentity,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
+import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
@@ -3328,6 +3329,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const refreshCanonicalSampleRequested = params.refreshCanonicalPnlSample === true
   let canonicalSampleManifestAudit: CanonicalSampleManifestAudit = emptyCanonicalSampleManifestAudit('')
   let sampleUpdated = false
+  let roiQuoteLegManifestIdentity: CanonicalPnlSampleManifestIdentity | null = null
 
   const canonicalSampleSelector: CanonicalSampleSelector = async (reconciledLots) => {
     // The manifest's own lookup key is the STRUCTURAL fingerprint of the full reconciled lot array —
@@ -3347,6 +3349,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       matchedLotFingerprint: structuralAudit.matchedLotFingerprint,
     })
     const manifestKey = buildManifestKey(manifestIdentity)
+    roiQuoteLegManifestIdentity = manifestIdentity
     const candidateVerifiedLots = reconciledLots.filter(isCanonicalVerifiedPublishedLot)
     let existingRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, manifestIdentity)
 
@@ -3614,7 +3617,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         refreshReason: newManifest.refreshReason,
       }
       logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
-      return { publishedLots: [...reconciledLots], forcePublicPnlUnavailable: false }
+      return {
+        publishedLots: [...reconciledLots],
+        forcePublicPnlUnavailable: false,
+        roiQuoteLegProofs: sanitizeRoiQuoteLegProofs(newManifest.roiQuoteLegProofs ?? existingRead.manifest?.roiQuoteLegProofs),
+      }
     }
 
     // SUBSEQUENT UNCHANGED SCAN — atomic replay (requirement #3): every manifest lot is resolved and
@@ -3868,7 +3875,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestAdditiveProviderDependencyAudit: additiveProviderDependencyAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
-    return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }
+    return {
+      publishedLots: replay.publishedLots,
+      forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable,
+      manifestApplied: replay.outcome === 'applied',
+      roiQuoteLegProofs: sanitizeRoiQuoteLegProofs(effectiveManifest.roiQuoteLegProofs),
+    }
   }
 
   const reconciledPnlSummary = await pnlReconciliation.reconcile({
@@ -3895,6 +3907,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     canonicalSampleSelector,
     normalizedEvents: [...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
   })
+  if (roiQuoteLegManifestIdentity) {
+    await persistRoiQuoteLegProofs(
+      canonicalSampleManifestKv,
+      roiQuoteLegManifestIdentity,
+      reconciledPnlSummary.roiQuoteLegProofsToPersist ?? [],
+    )
+  }
   console.warn('[verified-sample-performance-audit]', reconciledPnlSummary.verifiedSamplePerformanceAudit)
   {
     const gate = reconciledPnlSummary.publicPnlGateAudit

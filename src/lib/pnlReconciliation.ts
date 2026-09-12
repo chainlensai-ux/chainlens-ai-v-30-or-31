@@ -12,7 +12,7 @@ import {
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
-import { classifyVerifiedSampleRoiEligibility, roiLotKey } from './verifiedSampleRoiEligibility'
+import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 
@@ -725,6 +725,10 @@ export type CanonicalSampleSelection = {
   // independent path to eligibility, never a replacement for the existing structural checks, and
   // never consulted at all when this manifest itself failed to apply.
   manifestApplied?: boolean
+  // OPTIONAL, ADDITIVE (ROI historical quote-leg proof): compact proofs replayed from the same
+  // canonical sample manifest this selector just resolved. Classifier uses them only for lot
+  // identity + methodology matches. Never changes published lots, fingerprints, or sample PnL.
+  roiQuoteLegProofs?: readonly PersistedRoiQuoteLegProof[]
 }
 export type CanonicalSampleSelector = (lots: readonly MatchedLot[]) => Promise<CanonicalSampleSelection>
 
@@ -1100,6 +1104,10 @@ export type PnlReconciliationSummary = {
     }>
     invariantFailures: string[]
   }
+  // Live-proven ROI quote-leg proofs from this scan (FIFO/event quote or live independent). Never
+  // includes unresolved or replay-only rows. Pipeline merges these onto the canonical sample
+  // manifest without touching fingerprints or sample values.
+  roiQuoteLegProofsToPersist?: PersistedRoiQuoteLegProof[]
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -1195,6 +1203,7 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   verifiedLots: readonly MatchedLot[]
   structuralLots?: readonly MatchedLot[]
   normalizedEvents?: readonly NormalizedEvent[]
+  persistedProofs?: readonly PersistedRoiQuoteLegProof[]
   structuralLotCount: number
   realizedPnlUsd: number | null
   verifiedPricingCoverage: number | null
@@ -1219,6 +1228,7 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     verifiedLots: params.verifiedLots,
     structuralLots: params.structuralLots ?? params.verifiedLots,
     normalizedEvents: params.normalizedEvents,
+    persistedProofs: params.persistedProofs,
   })
   const roiMembershipResolved = eligibility.roiAvailable
   const realizedRoiPnlUsd = eligibility.realizedRoiPnlUsd
@@ -2954,6 +2964,7 @@ export function createPnlReconciliation(config: Config = {}) {
           : publicPnlGateAudit.blockingReasons
       ).map((reason) => reason.rule)
       const roiPairingStructuralLots = buildRoiPairingStructuralLots(consistentFifoLots, input.fifoEngineResult)
+      const persistedProofs = canonicalSampleSelection?.roiQuoteLegProofs
       const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
         verifiedLots: verifiedUpdatedLots,
         // Pairing universe is closed structural FIFO plus unmatched non-stable buy/sell identities
@@ -2961,6 +2972,7 @@ export function createPnlReconciliation(config: Config = {}) {
         // events, not as published verified lots. Classifier semantics unchanged.
         structuralLots: roiPairingStructuralLots,
         normalizedEvents: input.normalizedEvents,
+        persistedProofs,
         structuralLotCount: fifoLots.length,
         realizedPnlUsd,
         verifiedPricingCoverage,
@@ -2974,12 +2986,13 @@ export function createPnlReconciliation(config: Config = {}) {
         fullHistoryBlockingReasons,
       })
       logger.warn('[verified-sample-performance-audit]', verifiedSamplePerformanceAudit)
+      const roiEligibility = classifyVerifiedSampleRoiEligibility({
+        verifiedLots: verifiedUpdatedLots,
+        structuralLots: roiPairingStructuralLots,
+        normalizedEvents: input.normalizedEvents,
+        persistedProofs,
+      })
       {
-        const eligibility = classifyVerifiedSampleRoiEligibility({
-          verifiedLots: verifiedUpdatedLots,
-          structuralLots: roiPairingStructuralLots,
-          normalizedEvents: input.normalizedEvents,
-        })
         const openedAt = roiPairingStructuralLots.map((lot) => lot.openedAt)
         const closedAt = roiPairingStructuralLots.map((lot) => lot.closedAt)
         logger.warn('[roi-quote-leg-classification]', {
@@ -2990,10 +3003,11 @@ export function createPnlReconciliation(config: Config = {}) {
           fifoMatchedLotsCount: fifoLots.length,
           unmatchedBuyEventsCount: input.fifoEngineResult.unmatchedBuyEvents.length,
           unmatchedSellEventsCount: input.fifoEngineResult.unmatchedSellEvents.length,
+          persistedProofCount: persistedProofs?.length ?? 0,
           structuralTokenCounts: structuralTokenCounts(roiPairingStructuralLots),
           structuralEarliestOpenedAt: openedAt.length > 0 ? Math.min(...openedAt) : null,
           structuralLatestClosedAt: closedAt.length > 0 ? Math.max(...closedAt) : null,
-          stableLots: eligibility.classifications
+          stableLots: roiEligibility.classifications
             .filter((row) => row.reason !== 'non_stable_economic_position')
             .map((row) => ({
               lotKey: row.lotKey,
@@ -3087,6 +3101,7 @@ export function createPnlReconciliation(config: Config = {}) {
         pnlDiscrepancyAudit,
         pnlVerificationTransitionAudit,
         canonicalVerificationConsistencyAudit,
+        roiQuoteLegProofsToPersist: liveRoiQuoteLegProofsToPersist(roiEligibility),
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

@@ -48,4 +48,15 @@ test('ROI pairing universe is closed FIFO lots plus unmatched non-stable buy/sel
   assert.match(reconcileSource, /unmatchedBuyEvents/)
   assert.match(reconcileSource, /unmatchedSellEvents/)
   assert.match(reconcileSource, /\[roi-quote-leg-classification\]/)
+  assert.match(callBody, /persistedProofs/, 'ROI classification must receive replayed quote-leg proofs from the canonical sample')
+})
+
+test('pipeline replays persisted ROI quote-leg proofs from the canonical sample and writes newly proven ones back', () => {
+  assert.match(pipelineSource, /roiQuoteLegProofs:/, 'selector must return existing ROI quote-leg proofs')
+  assert.match(pipelineSource, /persistRoiQuoteLegProofs\(/, 'pipeline must persist live-proven ROI quote-leg proofs after reconcile')
+  const reconcileCall = pipelineSource.indexOf('const reconciledPnlSummary = await pnlReconciliation.reconcile({')
+  const persistCall = pipelineSource.indexOf('await persistRoiQuoteLegProofs(')
+  assert.notEqual(reconcileCall, -1)
+  assert.notEqual(persistCall, -1)
+  assert.ok(persistCall > reconcileCall, 'proof persist must run after reconcile so live-proven identities from this scan are included')
 })
