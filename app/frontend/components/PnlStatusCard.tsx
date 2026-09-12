@@ -773,11 +773,12 @@ export type DisplayedPnl = {
 // `syntheticPnl`, never a fabricated `0`. A caller that hasn't wired `reconciliationSummary` yet
 // gets honest nulls (source: 'none'), never a silent fallback to the wrong number.
 //
-// COST BASIS / ROI, DISCLOSED (verified-sample-vs-full-history follow-up): when
-// `verifiedSamplePerformance` is allowed, cost basis and realized-only ROI come from the SAME
-// included canonical lots as sample PnL. Unmatched sells outside that sample must not erase
-// those numbers. Callers that have not wired verifiedSamplePerformance still get honest nulls
-// ("Not available for bounded sample" / "Not calculated for bounded sample") — never pnlV2
+// COST BASIS / ROI, DISCLOSED (verified-sample-vs-full-history follow-up, quote-cash denominator):
+// when `verifiedSamplePerformance` is allowed, displayed sample PnL is the full verified sample.
+// Realized-only ROI numerator and denominator use `verifiedSampleRoiEligibleLots` only — quote/cash
+// legs of already-represented risk trades are excluded. Unmatched sells outside that sample must
+// not erase those numbers. Callers that have not wired verifiedSamplePerformance still get honest
+// nulls ("Not available for bounded sample" / "Not calculated for bounded sample") — never pnlV2
 // costBasis and never a fabricated $0.00.
 export const CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL = 'PnL unavailable — canonical sample not currently verified'
 
@@ -799,15 +800,22 @@ function sampleCostAndRoi(summary: PnlReconciliationSummary | null | undefined):
   }
   const cost = sample.realizedCostBasisUsd != null && Number.isFinite(sample.realizedCostBasisUsd) ? sample.realizedCostBasisUsd : null
   const roi = sample.realizedRoiPct != null && Number.isFinite(sample.realizedRoiPct) ? sample.realizedRoiPct : null
+  const eligibleCount = sample.verifiedSampleRoiEligibleLotCount ?? sample.verifiedLotCount
+  const quoteExcluded = sample.quoteCashLegExcludedLotCount ?? 0
+  const unresolvedQuote = sample.roiUnavailableReason === 'unresolved_quote_leg_identity'
   return {
     costBasisUsd: cost,
     costBasisLabel: cost != null
-      ? `Verified sample cost basis · ${sample.verifiedLotCount} closed lots`
+      ? (quoteExcluded > 0
+        ? `Verified sample ROI cost basis · ${eligibleCount} eligible lots (${quoteExcluded} quote/cash legs excluded)`
+        : `Verified sample cost basis · ${sample.verifiedLotCount} closed lots`)
       : 'Not available for bounded sample',
     roiPercent: roi,
     roiLabel: roi != null
       ? (fmtSignedPercent(roi) ?? 'Not calculated for bounded sample')
-      : 'Verified Sample ROI unavailable — sample cost basis is not positive.',
+      : unresolvedQuote
+        ? 'Verified Sample ROI unavailable — quote-leg identity unresolved.'
+        : 'Verified Sample ROI unavailable — sample cost basis is not positive.',
   }
 }
 

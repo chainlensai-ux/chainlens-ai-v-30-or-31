@@ -153,6 +153,11 @@ describe('finalReportAssembler', () => {
           pricingCoverage: 1,
           excludedUnmatchedSellCount: 2,
           isCompleteWalletHistory: false,
+          verifiedSampleRoiEligibleLots: [],
+          verifiedSampleRoiEligibleLotCount: 98,
+          quoteCashLegExcludedLotCount: 0,
+          unresolvedQuoteLegLotCount: 0,
+          roiUnavailableReason: null,
         },
       },
     }))

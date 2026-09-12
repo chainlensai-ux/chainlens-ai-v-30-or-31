@@ -3893,6 +3893,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
     },
     canonicalSampleSelector,
+    normalizedEvents: [...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
   })
   console.warn('[verified-sample-performance-audit]', reconciledPnlSummary.verifiedSamplePerformanceAudit)
   {

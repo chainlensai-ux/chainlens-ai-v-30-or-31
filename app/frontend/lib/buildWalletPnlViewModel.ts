@@ -554,7 +554,9 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
       : sampleRoiAllowed
         ? VERIFIED_SAMPLE_ROI_REASON
-        : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
+        : sampleWired && sample?.roiUnavailableReason === 'unresolved_quote_leg_identity'
+          ? 'Verified Sample ROI unavailable — quote-leg identity unresolved.'
+          : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
           ? 'Verified Sample ROI unavailable — sample cost basis is not positive.'
           : sampleWired
             ? VERIFIED_SAMPLE_UNAVAILABLE_REASON

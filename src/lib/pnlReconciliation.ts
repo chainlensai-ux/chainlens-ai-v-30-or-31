@@ -12,6 +12,8 @@ import {
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
+import { classifyVerifiedSampleRoiEligibility, roiLotKey } from './verifiedSampleRoiEligibility'
+import type { NormalizedEvent } from '../modules/normalization/types'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -31,6 +33,13 @@ export type VerifiedSamplePerformance = {
   pricingCoverage: number
   excludedUnmatchedSellCount: number
   isCompleteWalletHistory: false
+  // ROI-ONLY MEMBERSHIP, DISCLOSED (quote-cash denominator follow-up): realized ROI uses this
+  // eligible set, not the full verified sample. Displayed sample PnL stays on every verified lot.
+  verifiedSampleRoiEligibleLots: readonly string[]
+  verifiedSampleRoiEligibleLotCount: number
+  quoteCashLegExcludedLotCount: number
+  unresolvedQuoteLegLotCount: number
+  roiUnavailableReason: 'unresolved_quote_leg_identity' | null
 }
 
 export type FullHistoryPerformanceStatus = 'verified' | 'partial' | 'unavailable'
@@ -54,6 +63,12 @@ export type VerifiedSamplePerformanceAudit = {
   samplePerformanceAllowed: boolean
   samplePerformanceBlockedReason: string | null
   fullHistoryPerformanceAllowed: boolean
+  roiEligibleLotCount: number
+  quoteCashLegExcludedLotCount: number
+  unresolvedQuoteLegLotCount: number
+  roiUnavailableReason: 'unresolved_quote_leg_identity' | null
+  realizedRoiPnlUsd: number | null
+  sampleCostBasisUsd: number | null
 }
 
 export const EMPTY_VERIFIED_SAMPLE_PERFORMANCE: VerifiedSamplePerformance = {
@@ -66,6 +81,11 @@ export const EMPTY_VERIFIED_SAMPLE_PERFORMANCE: VerifiedSamplePerformance = {
   pricingCoverage: 0,
   excludedUnmatchedSellCount: 0,
   isCompleteWalletHistory: false,
+  verifiedSampleRoiEligibleLots: [],
+  verifiedSampleRoiEligibleLotCount: 0,
+  quoteCashLegExcludedLotCount: 0,
+  unresolvedQuoteLegLotCount: 0,
+  roiUnavailableReason: null,
 }
 
 export const EMPTY_FULL_HISTORY_PERFORMANCE: FullHistoryPerformance = {
@@ -89,6 +109,12 @@ export function emptyVerifiedSamplePerformanceAudit(): VerifiedSamplePerformance
     samplePerformanceAllowed: false,
     samplePerformanceBlockedReason: 'no_verified_lots',
     fullHistoryPerformanceAllowed: false,
+    roiEligibleLotCount: 0,
+    quoteCashLegExcludedLotCount: 0,
+    unresolvedQuoteLegLotCount: 0,
+    roiUnavailableReason: null,
+    realizedRoiPnlUsd: null,
+    sampleCostBasisUsd: null,
   }
 }
 
@@ -708,6 +734,10 @@ export type PnlReconciliationInput = {
   syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null
   structuralCoverageDenominatorAudit?: StructuralCoverageDenominatorAudit | null
   canonicalSampleSelector?: CanonicalSampleSelector
+  // ADDITIVE, OPTIONAL, DISCLOSED (quote-cash ROI denominator): the same normalized events FIFO
+  // already consumed. Used only to prove independent stablecoin movements vs unresolved native
+  // quote identity. Omitted → unpaired stablecoin lots fail closed as unresolved (ROI unavailable).
+  normalizedEvents?: readonly NormalizedEvent[]
 }
 
 // PUBLIC PNL GATE AUDIT, DISCLOSED (evidence-first PnL completion task, requirement #1): a single,
@@ -1101,11 +1131,16 @@ export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQual
 }
 
 // VERIFIED BOUNDED-SAMPLE vs FULL-HISTORY SPLIT, DISCLOSED: unmatched sells outside the included
-// canonical sample must not erase the sample's own arithmetic. Numerator (realized PnL) and
-// denominator (cost basis) are summed from EXACTLY the same included verified lots. Cost basis is
-// never invented. ROI is realized-only — (realized + unrealized) / cost is not computed here.
+// canonical sample must not erase the sample's own arithmetic. Displayed sample PnL is summed from
+// every included verified lot. Realized ROI numerator and denominator are summed from the ROI-
+// eligible membership only (quote/cash legs of already-represented risk trades are excluded;
+// independent stablecoin lots remain). Cost basis is never invented. ROI is realized-only —
+// (realized + unrealized) / cost is not computed here. Unresolved quote-leg identity makes ROI
+// unavailable rather than guessing a denominator.
 export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   verifiedLots: readonly MatchedLot[]
+  structuralLots?: readonly MatchedLot[]
+  normalizedEvents?: readonly NormalizedEvent[]
   structuralLotCount: number
   realizedPnlUsd: number | null
   verifiedPricingCoverage: number | null
@@ -1123,13 +1158,25 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   verifiedSamplePerformanceAudit: VerifiedSamplePerformanceAudit
 } {
   const verifiedLotCount = params.verifiedLots.length
-  const realizedCostBasisUsd = verifiedLotCount > 0
+  const sampleCostBasisUsd = verifiedLotCount > 0
     ? params.verifiedLots.reduce((sum, lot) => sum + (lot.costBasisUsd ?? 0), 0)
     : null
+  const eligibility = classifyVerifiedSampleRoiEligibility({
+    verifiedLots: params.verifiedLots,
+    structuralLots: params.structuralLots ?? params.verifiedLots,
+    normalizedEvents: params.normalizedEvents,
+  })
+  const roiMembershipResolved = eligibility.roiAvailable
+  const realizedRoiPnlUsd = eligibility.realizedRoiPnlUsd
+  const realizedRoiCostBasisUsd = eligibility.realizedRoiCostBasisUsd
+  const realizedCostBasisUsd = roiMembershipResolved ? realizedRoiCostBasisUsd : sampleCostBasisUsd
   const costBasisFinite = realizedCostBasisUsd != null && Number.isFinite(realizedCostBasisUsd)
+  const sampleCostFinite = sampleCostBasisUsd != null && Number.isFinite(sampleCostBasisUsd)
   const realizedPnlFinite = params.realizedPnlUsd != null && Number.isFinite(params.realizedPnlUsd)
-  const realizedRoiPct = realizedPnlFinite && costBasisFinite && realizedCostBasisUsd! > 0
-    ? (params.realizedPnlUsd! / realizedCostBasisUsd!) * 100
+  const roiCostFinite = realizedRoiCostBasisUsd != null && Number.isFinite(realizedRoiCostBasisUsd)
+  const roiPnlFinite = realizedRoiPnlUsd != null && Number.isFinite(realizedRoiPnlUsd)
+  const realizedRoiPct = roiMembershipResolved && roiPnlFinite && roiCostFinite && realizedRoiCostBasisUsd! > 0
+    ? (realizedRoiPnlUsd! / realizedRoiCostBasisUsd!) * 100
     : null
   const pricingCoverage = params.verifiedPricingCoverage != null && Number.isFinite(params.verifiedPricingCoverage)
     ? params.verifiedPricingCoverage
@@ -1145,7 +1192,8 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   else if (!realizedPnlFinite) samplePerformanceBlockedReason = 'realized_pnl_not_finite'
 
   const samplePerformanceAllowed = samplePerformanceBlockedReason == null
-  const roiAllowed = samplePerformanceAllowed && realizedRoiPct != null
+  const roiUnavailableReason = !roiMembershipResolved ? eligibility.roiUnavailableReason : null
+  const roiAllowed = samplePerformanceAllowed && realizedRoiPct != null && roiUnavailableReason == null
 
   const verifiedSamplePerformance: VerifiedSamplePerformance = {
     status: samplePerformanceAllowed ? 'verified_bounded_sample' : 'unavailable',
@@ -1157,6 +1205,11 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     pricingCoverage,
     excludedUnmatchedSellCount: params.excludedUnmatchedSellCount,
     isCompleteWalletHistory: false,
+    verifiedSampleRoiEligibleLots: eligibility.verifiedSampleRoiEligibleLots.map(roiLotKey),
+    verifiedSampleRoiEligibleLotCount: eligibility.verifiedSampleRoiEligibleLots.length,
+    quoteCashLegExcludedLotCount: eligibility.quoteCashLegLots.length,
+    unresolvedQuoteLegLotCount: eligibility.unresolvedLots.length,
+    roiUnavailableReason: samplePerformanceAllowed ? roiUnavailableReason : null,
   }
 
   const fullHistoryStatus: FullHistoryPerformanceStatus = params.publicPnlStatus === 'available'
@@ -1185,6 +1238,12 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     samplePerformanceAllowed,
     samplePerformanceBlockedReason,
     fullHistoryPerformanceAllowed,
+    roiEligibleLotCount: eligibility.verifiedSampleRoiEligibleLots.length,
+    quoteCashLegExcludedLotCount: eligibility.quoteCashLegLots.length,
+    unresolvedQuoteLegLotCount: eligibility.unresolvedLots.length,
+    roiUnavailableReason,
+    realizedRoiPnlUsd,
+    sampleCostBasisUsd: sampleCostFinite ? sampleCostBasisUsd : null,
   }
 
   return { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit }
@@ -2842,6 +2901,8 @@ export function createPnlReconciliation(config: Config = {}) {
       ).map((reason) => reason.rule)
       const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
         verifiedLots: verifiedUpdatedLots,
+        structuralLots: publishedFifoLots,
+        normalizedEvents: input.normalizedEvents,
         structuralLotCount: fifoLots.length,
         realizedPnlUsd,
         verifiedPricingCoverage,
