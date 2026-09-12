@@ -2402,6 +2402,94 @@ export function shouldRefreshPartiallyUnreproducibleManifest(replay: ManifestRep
     && !replay.structuralIntegrityFailure
 }
 
+// ADDITIVE CANDIDATE EVOLUTION, DISCLOSED (safe additive canonical-manifest growth task):
+// a fully reproducible manifest previously froze the published sample even when the current
+// scan had independently verified STRICT SUPERSET lots (confirmed production: 81 valid
+// replay + 27 candidate_evolution_new_verified_lot, refreshAllowed=false, public verified
+// stuck at 81). Partial-unreproducible refresh cannot fire here because it requires
+// outcome==='unavailable' AND missing manifest lots. Additive growth is a SEPARATE, narrower
+// policy: the existing manifest must still replay 1:1, no value/fingerprint/identity change,
+// no structural failure, no duplicates, the candidate set is a strict superset, and the
+// provider scan is usable. It NEVER shrinks a larger frozen sample to a smaller live one.
+export type ManifestAdditiveGrowthAudit = {
+  existingCount: number
+  currentCandidateCount: number
+  newCandidateCount: number
+  existingReplayAllValid: boolean
+  strictSuperset: boolean
+  noValueDisagreement: boolean
+  noFingerprintMismatch: boolean
+  noDuplicates: boolean
+  providerUsable: boolean
+  growthAllowed: boolean
+  growthBlockedReason: string | null
+}
+
+export function emptyManifestAdditiveGrowthAudit(): ManifestAdditiveGrowthAudit {
+  return {
+    existingCount: 0, currentCandidateCount: 0, newCandidateCount: 0,
+    existingReplayAllValid: false, strictSuperset: false, noValueDisagreement: false,
+    noFingerprintMismatch: false, noDuplicates: false, providerUsable: false,
+    growthAllowed: false, growthBlockedReason: 'no_manifest',
+  }
+}
+
+export function buildManifestAdditiveGrowthAudit(params: {
+  replay: ManifestReplayResult
+  manifestVerifiedLotCount: number
+  currentCandidateVerifiedLotCount: number
+  providerUsable: boolean
+}): ManifestAdditiveGrowthAudit {
+  const existingCount = params.manifestVerifiedLotCount
+  const currentCandidateCount = params.currentCandidateVerifiedLotCount
+  const newCandidateCount = params.replay.candidateNewEvidenceLotKeys.length
+  const existingReplayAllValid = params.replay.outcome === 'applied'
+    && !params.replay.forcePublicPnlUnavailable
+    && params.replay.manifestLotsMissingCurrentEvidence.length === 0
+    && params.replay.reasonCounts.manifest_replay_success === existingCount
+    && params.replay.reasonCounts.manifest_evidence_quality_mismatch === 0
+  const noValueDisagreement = params.replay.reasonCounts.manifest_cost_basis_mismatch === 0
+    && params.replay.reasonCounts.manifest_proceeds_mismatch === 0
+    && params.replay.reasonCounts.manifest_entry_price_mismatch === 0
+    && params.replay.reasonCounts.manifest_exit_price_mismatch === 0
+    && params.replay.reasonCounts.manifest_realized_pnl_mismatch === 0
+    && params.replay.manifestValueDisagreementAudit.length === 0
+  const noFingerprintMismatch = params.replay.reasonCounts.manifest_fingerprint_mismatch === 0
+    && params.replay.reasonCounts.manifest_realized_total_mismatch === 0
+  const noDuplicates = !params.replay.duplicates.hasDuplicates
+  const strictSuperset = existingReplayAllValid
+    && newCandidateCount > 0
+    && currentCandidateCount > existingCount
+    && currentCandidateCount === existingCount + newCandidateCount
+  let growthBlockedReason: string | null = null
+  if (!params.providerUsable) growthBlockedReason = 'provider_unusable'
+  else if (params.replay.structuralIntegrityFailure) growthBlockedReason = 'structural_integrity_failure'
+  else if (!noDuplicates) growthBlockedReason = 'duplicate_canonical_identity'
+  else if (currentCandidateCount < existingCount) growthBlockedReason = 'would_shrink_manifest'
+  else if (!existingReplayAllValid) growthBlockedReason = 'existing_manifest_not_fully_reproducible'
+  else if (!noValueDisagreement) growthBlockedReason = 'value_disagreement'
+  else if (!noFingerprintMismatch) growthBlockedReason = 'fingerprint_mismatch'
+  else if (newCandidateCount === 0 || currentCandidateCount === existingCount) growthBlockedReason = 'no_new_candidates'
+  else if (!strictSuperset) growthBlockedReason = 'not_strict_superset'
+  const growthAllowed = growthBlockedReason === null
+    && existingReplayAllValid
+    && strictSuperset
+    && noValueDisagreement
+    && noFingerprintMismatch
+    && noDuplicates
+    && params.providerUsable
+    && !params.replay.structuralIntegrityFailure
+  return {
+    existingCount, currentCandidateCount, newCandidateCount, existingReplayAllValid, strictSuperset,
+    noValueDisagreement, noFingerprintMismatch, noDuplicates, providerUsable: params.providerUsable,
+    growthAllowed, growthBlockedReason,
+  }
+}
+
+export function shouldRefreshAdditiveCandidateEvolution(audit: ManifestAdditiveGrowthAudit): boolean {
+  return audit.growthAllowed
+}
+
 // ============================================================================
 // AUDIT (requirement #8 of the prior task, extended per #2/#4/#7 here)
 // ============================================================================
@@ -2491,6 +2579,7 @@ export type CanonicalSampleManifestAudit = {
   manifestRefreshAttempted: boolean
   manifestRefreshApplied: boolean
   manifestRefreshReason: string | null
+  manifestAdditiveGrowthAudit: ManifestAdditiveGrowthAudit
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {
@@ -2545,5 +2634,6 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestRefreshAttempted: false,
     manifestRefreshApplied: false,
     manifestRefreshReason: null,
+    manifestAdditiveGrowthAudit: emptyManifestAdditiveGrowthAudit(),
   }
 }

@@ -26,9 +26,11 @@ import {
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
+  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
+  type ManifestAdditiveGrowthAudit,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
@@ -3572,11 +3574,22 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const partialReconciliationEligible = shouldRefreshPartiallyUnreproducibleManifest(
       firstReplay, candidateVerifiedLots.length,
     )
-    if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible) {
+    const additiveGrowthAudit: ManifestAdditiveGrowthAudit = buildManifestAdditiveGrowthAudit({
+      replay: firstReplay,
+      manifestVerifiedLotCount: manifest.verifiedLotCount,
+      currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
+      providerUsable: !scanIsProviderPartialForBootstrap,
+    })
+    const additiveGrowthEligible = shouldRefreshAdditiveCandidateEvolution(additiveGrowthAudit)
+    // eslint-disable-next-line no-console
+    console.warn('[manifest-additive-growth-audit]', additiveGrowthAudit)
+    if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible || additiveGrowthEligible) {
       manifestRefreshAttempted = true
       manifestRefreshReason = firstReplay.staleManifestCanonicalizationMismatch
         ? 'stale-manifest-canonicalization-self-heal'
-        : 'partially-unreproducible-manifest-current-evidence-refresh'
+        : partialReconciliationEligible
+          ? 'partially-unreproducible-manifest-current-evidence-refresh'
+          : 'additive-candidate-evolution-strict-superset'
       try {
         const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
         // Rebuilds the manifest exactly the way a first-qualifying scan does (buildRefreshedManifest
@@ -3702,7 +3715,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       currentNewVerifiedLots: firstReplay.candidateNewEvidenceLotKeys.length,
       selectedFromExistingManifest: manifestRefreshApplied ? 0 : replay.reasonCounts.manifest_replay_success,
       selectedFromCurrentCandidates: manifestRefreshApplied ? publishedVerifiedLotCount : 0,
-      manifestRefreshRequired: partialReconciliationEligible || firstReplay.staleManifestCanonicalizationMismatch,
+      manifestRefreshRequired: partialReconciliationEligible || firstReplay.staleManifestCanonicalizationMismatch || additiveGrowthEligible,
       zeroPublicationReason: publishedVerifiedLotCount === 0 && candidateVerifiedLots.length > 0
         ? (firstReplay.structuralIntegrityFailure ? 'manifest_structural_integrity_failure' : manifestRefreshAttempted ? 'manifest_refresh_failed_or_unreplayable' : 'no_current_lot_safely_publishable')
         : null,
@@ -3727,6 +3740,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestRefreshAttempted,
       manifestRefreshApplied,
       manifestRefreshReason,
+      manifestAdditiveGrowthAudit: additiveGrowthAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
     return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }

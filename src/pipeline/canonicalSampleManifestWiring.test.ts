@@ -63,6 +63,8 @@ test('AYRI and the determinism audit both consume the same reconciled published 
 test('automatic reconciliation is limited to non-structural partial replay failures', () => {
   assert.match(pipelineSource, /params\.refreshCanonicalPnlSample === true/, 'manual refresh remains supported')
   assert.match(pipelineSource, /shouldRefreshPartiallyUnreproducibleManifest\(\s*firstReplay, candidateVerifiedLots\.length/, 'partial refresh must use the centralized integrity policy')
+  assert.match(pipelineSource, /buildManifestAdditiveGrowthAudit\(/, 'additive candidate evolution must use the centralized safety predicate')
+  assert.match(pipelineSource, /shouldRefreshAdditiveCandidateEvolution\(/, 'additive growth must be gated on the audit')
   assert.match(pipelineSource, /firstReplay\.structuralIntegrityFailure/, 'structural failures must remain explicitly audited')
 })
 
@@ -99,7 +101,7 @@ test('HARD ASSERTION: manifest creation (buildRefreshedManifest and buildManifes
 // source position/content assertions, same convention as the rest of this file.
 test('HARD ASSERTION: a stale-canonicalization mismatch triggers exactly one rebuild-and-rewrite, published only from a re-replay of the refreshed manifest', () => {
   const firstReplayStart = position('first replay call site', 'const firstReplay = await replayManifest({')
-  const selfHealGuardStart = position('self-heal guard', 'if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible) {')
+  const selfHealGuardStart = position('self-heal guard', 'if (firstReplay.staleManifestCanonicalizationMismatch || partialReconciliationEligible || additiveGrowthEligible) {')
   const refreshedManifestStart = position('refreshed manifest build', 'const refreshedManifest = await buildRefreshedManifest({')
   const rewriteStart = position('refreshed manifest write', 'const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)')
   const secondReplayStart = position('second replay call site', 'const secondReplay = await replayManifest({\n            manifest: refreshedManifest, allCandidateLots: reconciledLots,')
