@@ -38,7 +38,7 @@ import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDi
 // verifiedPricingCoverage,invalidOrUnknownUnmatchedEvents,scanWindowDays}) vary meaningfully across
 // tests below; the rest are honest, unused-by-this-selector placeholders.
 function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}): PnlReconciliationSummary {
-  return {
+  const base: PnlReconciliationSummary = {
     closedLots: 27, unmatchedBuys: 94, unmatchedSells: 114, realizedPnlUsd: -3515.49, unrealizedPnlUsd: -19.02,
     publishedMatchedLots: [],
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 15,
@@ -47,6 +47,8 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     verifiedSamplePerformance: EMPTY_VERIFIED_SAMPLE_PERFORMANCE,
     fullHistoryPerformance: EMPTY_FULL_HISTORY_PERFORMANCE,
     verifiedSamplePerformanceAudit: emptyVerifiedSamplePerformanceAudit(),
+    verifiedSampleRealizedPnlUsd: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedPnlUsd,
+    verifiedSampleRealizedRoiPct: EMPTY_VERIFIED_SAMPLE_PERFORMANCE.realizedRoiPct,
     publicPnlGateAudit: {
       verifiedLotCount: 19, fullyPricedLotCount: 19, pricingCoverage: 0.7037, structuralCoverage: 0.871,
       unmatchedBuyCount: 0, unmatchedSellCount: 4, integrityTier: 'partial', blockingReasons: [],
@@ -93,6 +95,11 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     missingPriceRecoveryFunnelAudit: emptyMissingPriceRecoveryFunnelAudit(),
     ...overrides,
+  }
+  return {
+    ...base,
+    verifiedSampleRealizedPnlUsd: overrides.verifiedSampleRealizedPnlUsd ?? base.verifiedSamplePerformance.realizedPnlUsd,
+    verifiedSampleRealizedRoiPct: overrides.verifiedSampleRealizedRoiPct ?? base.verifiedSamplePerformance.realizedRoiPct,
   }
 }
 
@@ -1197,6 +1204,9 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
     assert.equal(vm.combinedReason, '2 unmatched sells prevent complete-wallet verification')
     assert.equal(vm.combinedRealizedBox.reason, '2 unmatched sells prevent complete-wallet verification')
     assert.equal(formatFullWalletUnavailableReason(sampleSummary()), '2 unmatched sells prevent complete-wallet verification')
+    assert.equal(sampleSummary().verifiedSampleRealizedPnlUsd, SAMPLE_PNL)
+    assert.ok(sampleSummary().verifiedSampleRealizedRoiPct != null && Math.abs(sampleSummary().verifiedSampleRealizedRoiPct! - SAMPLE_ROI) < 1e-6)
+    assert.equal(vm.sampleStatusBadge, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
     assert.equal(vm.verifiedSampleRealizedBox.status, 'Partial')
     assert.equal(vm.verifiedSampleRealizedBox.statusLabel, 'PARTIAL / VERIFIED BOUNDED SAMPLE')
     assert.equal(vm.verifiedSampleRealizedBox.value, '-$70,794.97')

@@ -1039,6 +1039,9 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           tone={COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
           glow={pnlViewModel.combinedStatus === 'verified'}
         />
+        {pnlViewModel.sampleStatusBadge && (
+          <StatusBadge label={pnlViewModel.sampleStatusBadge} tone="warning" />
+        )}
       </div>
       <p style={{ fontSize: '12px', fontWeight: 600, color: COMBINED_REASON_COLOR[pnlViewModel.combinedStatus], margin: '0 0 14px', lineHeight: 1.5 }}>
         {pnlViewModel.combinedReason}

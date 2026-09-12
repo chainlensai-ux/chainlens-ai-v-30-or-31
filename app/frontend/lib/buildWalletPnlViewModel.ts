@@ -102,6 +102,8 @@ export type WalletPnlViewModel = {
   chainRows: WalletPnlChainRow[]
   // CORTEX / sidebar: same sample wording as the tiles. Null when the sample is not allowed.
   sampleEvidenceLine: string | null
+  // Header badge when the included sample is allowed. Null when sample PnL is not publishable.
+  sampleStatusBadge: string | null
   // Kept for backward compatibility with existing callers/tests — identical to robinhoodBox.proof.
   robinhoodProof: WalletRobinhoodPnlProof | null
 }
@@ -627,6 +629,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     roiBox,
     chainRows,
     sampleEvidenceLine,
+    sampleStatusBadge: sampleAllowed ? VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL : null,
     robinhoodProof,
   }
 }

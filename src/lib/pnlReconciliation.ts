@@ -998,6 +998,8 @@ export type PnlReconciliationSummary = {
   verifiedSamplePerformance: VerifiedSamplePerformance
   fullHistoryPerformance: FullHistoryPerformance
   verifiedSamplePerformanceAudit: VerifiedSamplePerformanceAudit
+  verifiedSampleRealizedPnlUsd: number | null
+  verifiedSampleRealizedRoiPct: number | null
   mismatches: Array<{ key: string; classification: PnlMismatchClass }>
   // BOUNDED-SAMPLE WARNING, DISCLOSED (bounded-sample-gate follow-up task, requirement #7): a real,
   // human-readable disclosure — set ONLY when publicPnlStatus is 'partial' via the bounded verified-
@@ -2870,6 +2872,8 @@ export function createPnlReconciliation(config: Config = {}) {
         verifiedSamplePerformance,
         fullHistoryPerformance,
         verifiedSamplePerformanceAudit,
+        verifiedSampleRealizedPnlUsd: verifiedSamplePerformance.realizedPnlUsd,
+        verifiedSampleRealizedRoiPct: verifiedSamplePerformance.realizedRoiPct,
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
         acceptedEvidenceAudit,
