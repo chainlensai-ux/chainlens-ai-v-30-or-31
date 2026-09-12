@@ -866,6 +866,26 @@ export type ManifestCanonicalVerifierAudit = {
   examples: ManifestCanonicalVerifierAuditExample[]
 }
 
+export type ManifestAdditiveRebuildCandidateAuditRow = {
+  lotKey: string
+  candidateVerified: boolean
+  liveEntry: number | null
+  liveExit: number | null
+  rebuildEntry: number | null
+  rebuildExit: number | null
+  sourceChosen: 'live_canonical_candidate' | 'accepted_allocation' | 'dropped'
+  selfValidationPassed: boolean
+  emitted: boolean
+  dropReason: string | null
+}
+
+export type ManifestAdditiveRebuildCandidateAudit = {
+  newCandidateCount: number
+  emittedCount: number
+  droppedCount: number
+  candidates: ManifestAdditiveRebuildCandidateAuditRow[]
+}
+
 const MANIFEST_CANONICAL_VERIFIER_AUDIT_MAX_EXAMPLES = 10
 
 export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
@@ -891,6 +911,8 @@ export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
   manifestCanonicalVerifierAudit?: ManifestCanonicalVerifierAudit
   // OPTIONAL, DIAGNOSTIC ONLY, DISCLOSED — see ManifestAllocationBuildAudit's own header.
   manifestAllocationBuildAudit?: ManifestAllocationBuildAudit
+  // OPTIONAL, DIAGNOSTIC ONLY — additive rebuild of candidate-only lots (live vs allocated).
+  manifestAdditiveRebuildCandidateAudit?: ManifestAdditiveRebuildCandidateAudit
 }
 
 type DeterminismFingerprints = {
@@ -1027,6 +1049,9 @@ export async function buildManifestFromCandidate(params: {
     proceedsUsd: number | null
   }
   const allocated: AllocatedLot[] = []
+  const priorManifestKeySet = new Set(params.priorManifest?.verifiedLotIdentityKeys ?? [])
+  const freezeLiveForAdditiveNew = params.preferLiveCanonicalValuesWhenAllocatedNotPositive === true
+  const additiveRebuildByKey = new Map<string, ManifestAdditiveRebuildCandidateAuditRow>()
   for (const lot of algebraicallyVerifiableLots) {
     const identity = identities.get(lot)
     if (!identity) continue
@@ -1035,17 +1060,48 @@ export async function buildManifestFromCandidate(params: {
     const exitEvidence = exitEvidenceByKey.get(exitEvidenceKey) ?? null
     const entryShare = entryAllocationByKey.get(entryEvidenceKey)?.get(lot) ?? null
     const exitShare = exitAllocationByKey.get(exitEvidenceKey)?.get(lot) ?? null
-    // FALLS BACK TO THE LOT'S OWN VALUE ONLY when no evidence loader was supplied at all (legacy
-    // callers/tests) or a group's evidence genuinely could not be loaded — never silently drops the
-    // lot from the manifest; the build simply cannot correct what it has no evidence to correct.
+    const additiveNewVerified = freezeLiveForAdditiveNew
+      && !priorManifestKeySet.has(identity.key)
+      && isCanonicalVerifiedPublishedLot(lot)
+    // ADDITIVE-ONLY NEW LOTS, DISCLOSED (rebuild dropping 10 verified live candidates):
+    // `canonicalPositiveAllocatedOrLive` still preferred ANY allocatedUsd > 0, including a
+    // remainder-unit / dust-floor share of a poisoned USDC $1 sibling total. Self-validation
+    // then reconstructed that ~0 share and dropped the lot even though the live canonical
+    // candidate already passed `isCanonicalVerifiedPublishedLot`. Additive-new lots freeze
+    // those live values. Existing prior-manifest lots keep accepted-evidence allocation.
+    const costBasisUsd = additiveNewVerified
+      ? lot.costBasisUsd
+      : freezeLiveForAdditiveNew
+        ? canonicalPositiveAllocatedOrLive(
+          (entryShare && !entryShare.dustBelowPrecision) ? entryShare.allocatedValueUsd : null,
+          lot.costBasisUsd,
+        )
+        : (entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd)
+    const proceedsUsd = additiveNewVerified
+      ? lot.proceedsUsd
+      : freezeLiveForAdditiveNew
+        ? canonicalPositiveAllocatedOrLive(
+          (exitShare && !exitShare.dustBelowPrecision) ? exitShare.allocatedValueUsd : null,
+          lot.proceedsUsd,
+        )
+        : (exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd)
+    if (freezeLiveForAdditiveNew && !priorManifestKeySet.has(identity.key)) {
+      additiveRebuildByKey.set(identity.key, {
+        lotKey: identity.key,
+        candidateVerified: isCanonicalVerifiedPublishedLot(lot),
+        liveEntry: lot.costBasisUsd,
+        liveExit: lot.proceedsUsd,
+        rebuildEntry: costBasisUsd,
+        rebuildExit: proceedsUsd,
+        sourceChosen: additiveNewVerified ? 'live_canonical_candidate' : (entryShare || exitShare ? 'accepted_allocation' : 'dropped'),
+        selfValidationPassed: false,
+        emitted: false,
+        dropReason: additiveNewVerified ? null : 'not_independently_canonical_verified',
+      })
+    }
     allocated.push({
       lot, identity, entryEvidenceKey, exitEvidenceKey, entryEvidence, exitEvidence, entryShare, exitShare,
-      costBasisUsd: params.preferLiveCanonicalValuesWhenAllocatedNotPositive
-        ? canonicalPositiveAllocatedOrLive(entryShare?.allocatedValueUsd ?? null, lot.costBasisUsd)
-        : (entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd),
-      proceedsUsd: params.preferLiveCanonicalValuesWhenAllocatedNotPositive
-        ? canonicalPositiveAllocatedOrLive(exitShare?.allocatedValueUsd ?? null, lot.proceedsUsd)
-        : (exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd),
+      costBasisUsd, proceedsUsd,
     })
   }
 
@@ -1105,39 +1161,72 @@ export async function buildManifestFromCandidate(params: {
     const groupCostBasisUsd = sumOrNull(members.map((m) => m.costBasisUsd))
     const groupProceedsUsd = sumOrNull(members.map((m) => m.proceedsUsd))
 
+    const additiveNewVerifiedGroup = freezeLiveForAdditiveNew
+      && members.every((m) => !priorManifestKeySet.has(m.identity.key) && isCanonicalVerifiedPublishedLot(m.lot))
     // DETERMINISTIC RE-SPLIT, DISCLOSED: the group's total is immediately re-split across its own
-    // occurrences with `splitGroupTotalAcrossOccurrences` — the exact function replay uses. This is
-    // what makes build and replay produce a bit-for-bit identical multiset of per-lot values, and
-    // therefore identical fingerprints, without either side consulting array order.
-    const costShares = splitGroupTotalAcrossOccurrences(groupCostBasisUsd, occurrenceCount)
-    const proceedsShares = splitGroupTotalAcrossOccurrences(groupProceedsUsd, occurrenceCount)
-    const pnlShares = costShares.map((c, i) => {
-      const p = proceedsShares[i]
-      return c === null || p === null ? null : Math.round((p - c) * 100) / 100
-    })
+    // occurrences with `splitGroupTotalAcrossOccurrences` — the exact function replay uses. Additive
+    // new independently-verified lots skip this re-split and freeze the live candidate values that
+    // already passed the canonical verifier — a dust-floored sibling allocation must not replace them.
+    const costShares = additiveNewVerifiedGroup
+      ? members.map((m) => m.lot.costBasisUsd)
+      : splitGroupTotalAcrossOccurrences(groupCostBasisUsd, occurrenceCount)
+    const proceedsShares = additiveNewVerifiedGroup
+      ? members.map((m) => m.lot.proceedsUsd)
+      : splitGroupTotalAcrossOccurrences(groupProceedsUsd, occurrenceCount)
+    const pnlShares = additiveNewVerifiedGroup
+      ? members.map((m) => m.lot.realizedPnlUsd)
+      : costShares.map((c, i) => {
+        const p = proceedsShares[i]
+        return c === null || p === null ? null : Math.round((p - c) * 100) / 100
+      })
     const groupRealizedPnlUsd = sumOrNull(pnlShares)
 
     // SELF-VALIDATE before freezing anything for this group — see this block's own header above.
     const rebuiltOccurrenceRejection = members
-      .map((_, i) => canonicalVerifiedRejectionReason({
-        evidenceQuality: 'verified',
-        costBasisUsd: costShares[i],
-        proceedsUsd: proceedsShares[i],
-        realizedPnlUsd: pnlShares[i],
-        openedAt: lot.openedAt,
-        closedAt: lot.closedAt,
-      }))
+      .map((member, i) => canonicalVerifiedRejectionReason(additiveNewVerifiedGroup
+        ? member.lot
+        : {
+          evidenceQuality: 'verified',
+          costBasisUsd: costShares[i],
+          proceedsUsd: proceedsShares[i],
+          realizedPnlUsd: pnlShares[i],
+          openedAt: lot.openedAt,
+          closedAt: lot.closedAt,
+        }))
       .find((reason): reason is CanonicalVerifiedRejectionReason => reason !== null)
     if (rebuiltOccurrenceRejection) {
       buildRejections.push({
         key, lot, occurrenceCount, groupCostBasisUsd, groupProceedsUsd, groupRealizedPnlUsd,
         rejectionReason: rebuiltOccurrenceRejection,
       })
+      const additiveRow = additiveRebuildByKey.get(key)
+      if (additiveRow) {
+        additiveRebuildByKey.set(key, {
+          ...additiveRow,
+          rebuildEntry: costShares[0] ?? additiveRow.rebuildEntry,
+          rebuildExit: proceedsShares[0] ?? additiveRow.rebuildExit,
+          selfValidationPassed: false,
+          emitted: false,
+          dropReason: `self_validation_${rebuiltOccurrenceRejection}`,
+        })
+      }
       continue
     }
 
     frozenSharesByKey.set(key, { cost: costShares, proceeds: proceedsShares, pnl: pnlShares })
     for (const member of members) publishedLotSet.add(member.lot)
+    const additiveEmitted = additiveRebuildByKey.get(key)
+    if (additiveEmitted) {
+      additiveRebuildByKey.set(key, {
+        ...additiveEmitted,
+        rebuildEntry: costShares[0] ?? additiveEmitted.rebuildEntry,
+        rebuildExit: proceedsShares[0] ?? additiveEmitted.rebuildExit,
+        sourceChosen: additiveNewVerifiedGroup ? 'live_canonical_candidate' : additiveEmitted.sourceChosen,
+        selfValidationPassed: true,
+        emitted: true,
+        dropReason: null,
+      })
+    }
 
     records.push({
       key,
@@ -1366,6 +1455,14 @@ export async function buildManifestFromCandidate(params: {
     refreshReason: params.priorManifest ? (params.refreshReason ?? null) : null,
     manifestCanonicalVerifierAudit,
     manifestAllocationBuildAudit,
+    ...(freezeLiveForAdditiveNew ? {
+      manifestAdditiveRebuildCandidateAudit: {
+        newCandidateCount: additiveRebuildByKey.size,
+        emittedCount: [...additiveRebuildByKey.values()].filter((row) => row.emitted).length,
+        droppedCount: [...additiveRebuildByKey.values()].filter((row) => !row.emitted).length,
+        candidates: [...additiveRebuildByKey.values()].sort((a, b) => a.lotKey.localeCompare(b.lotKey)),
+      },
+    } : {}),
   }
 }
 
@@ -2848,6 +2945,7 @@ export type CanonicalSampleManifestAudit = {
   manifestAdditiveGrowthAudit: ManifestAdditiveGrowthAudit
   manifestRefreshApplicationAudit: ManifestRefreshApplicationAudit
   manifestAdditiveProviderDependencyAudit: ManifestAdditiveProviderDependencyAudit
+  manifestAdditiveRebuildCandidateAudit?: ManifestAdditiveRebuildCandidateAudit
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {

@@ -3642,6 +3642,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
           preferLiveCanonicalValuesWhenAllocatedNotPositive: additiveGrowthEligible,
         })
+        // eslint-disable-next-line no-console
+        console.warn('[manifest-additive-rebuild-candidate-audit]', refreshedManifest.manifestAdditiveRebuildCandidateAudit ?? null)
         const application = await applyRefreshedCanonicalManifest({
           kv: canonicalSampleManifestKv,
           identity: manifestIdentity,

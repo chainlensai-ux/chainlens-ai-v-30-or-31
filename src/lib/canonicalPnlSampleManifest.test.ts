@@ -2170,6 +2170,187 @@ describe('additive provider-usable gate (GoldRush timeout vs independently prove
   })
 })
 
+describe('additive rebuild freezes live verified values instead of dust allocation', () => {
+  function dustSharedEntryLots() {
+    const existing = lot({
+      lotId: 'existing-usdc', token: '0xusdc', amount: 10_000_000_000,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-existing', openedAt: 1, closedAt: 2,
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-usdc', token: '0xusdc', amount: 1,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-additive', openedAt: 1, closedAt: 3,
+      costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    return { existing, additive }
+  }
+
+  function seedDustEntry(existing: MatchedLot, additive: MatchedLot, extra: MatchedLot[] = []) {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const write = (lotRef: MatchedLot, side: 'entry' | 'exit', priceUsd: number) => {
+      const identity = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd, valueUsd: priceUsd, source: 'canonical-upstream',
+        evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    write(existing, 'entry', 1)
+    write(existing, 'exit', existing.proceedsUsd as number)
+    write(additive, 'exit', additive.proceedsUsd as number)
+    for (const lotRef of extra) {
+      write(lotRef, 'entry', (lotRef.costBasisUsd as number) || 1)
+      write(lotRef, 'exit', (lotRef.proceedsUsd as number) || 1)
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    return { loader, kv }
+  }
+
+  it('HARD ASSERTION: additive candidate with verified live values + dust accepted allocation freezes live verified values', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    assert.equal(isCanonicalVerifiedPublishedLot(additive), true)
+    const evidence = seedDustEntry(existing, additive)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-live-dust'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingCost = original.verifiedLotRecords[0].costBasisUsd
+    const existingProceeds = original.verifiedLotRecords[0].proceedsUsd
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-live-dust'),
+      allCandidateLots: [existing, additive], candidateVerifiedLots: [existing, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, additive], realizedTotal([existing, additive])),
+      realizedPnlUsd: realizedTotal([existing, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    assert.equal(rebuilt.verifiedLotCount, 2)
+    const additiveIdentity = [...buildCanonicalLotIdentities([additive]).values()][0]
+    const additiveRecord = rebuilt.verifiedLotRecords.find((r) => r.key === additiveIdentity.key)
+    assert.ok(additiveRecord, 'additive lot must be emitted')
+    assert.equal(additiveRecord!.costBasisUsd, 42.5)
+    assert.equal(additiveRecord!.proceedsUsd, 50)
+    const auditRow = rebuilt.manifestAdditiveRebuildCandidateAudit?.candidates.find((row) => row.lotKey === additiveIdentity.key)
+    assert.equal(auditRow?.sourceChosen, 'live_canonical_candidate')
+    assert.equal(auditRow?.emitted, true)
+    assert.equal(auditRow?.dropReason, null)
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)
+    assert.ok(existingRecord)
+    assert.equal(existingRecord!.costBasisUsd, existingCost)
+    assert.equal(existingRecord!.proceedsUsd, existingProceeds)
+  })
+
+  it('HARD ASSERTION: non-verified live candidate + dust allocation is still rejected', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    const unverified = { ...additive, evidenceQuality: 'unpriced' as const, costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5 }
+    const evidence = seedDustEntry(existing, unverified)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-unverified'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-unverified'),
+      allCandidateLots: [existing, unverified], candidateVerifiedLots: [existing],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 0.5, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const unverifiedKey = [...buildCanonicalLotIdentities([unverified]).values()][0].key
+    assert.ok(!rebuilt.verifiedLotIdentityKeys.includes(unverifiedKey))
+    assert.equal(rebuilt.verifiedLotCount, 1)
+  })
+
+  it('HARD ASSERTION: existing manifest lots never switch from frozen evidence to live values', async () => {
+    const existing = lot({
+      lotId: 'existing-independent', token: '0xold', openedTxHash: '0xoldbuy', closedTxHash: '0xoldsell',
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-independent', token: '0xnew', openedTxHash: '0xnewbuy', closedTxHash: '0xnewsell',
+      openedAt: 5, closedAt: 6, costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    const evidence = seededEvidence([existing, additive])
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-existing-frozen'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const frozenCost = original.verifiedLotRecords[0].costBasisUsd
+    const frozenProceeds = original.verifiedLotRecords[0].proceedsUsd
+    const liveDrifted = { ...existing, costBasisUsd: 999, proceedsUsd: 1000, realizedPnlUsd: 1 }
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-existing-frozen'),
+      allCandidateLots: [liveDrifted, additive], candidateVerifiedLots: [liveDrifted, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([liveDrifted, additive], realizedTotal([liveDrifted, additive])),
+      realizedPnlUsd: realizedTotal([liveDrifted, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)
+    assert.ok(existingRecord)
+    assert.equal(existingRecord!.costBasisUsd, frozenCost)
+    assert.equal(existingRecord!.proceedsUsd, frozenProceeds)
+    assert.notEqual(existingRecord!.costBasisUsd, 999)
+  })
+
+  it('HARD ASSERTION: rebuild count below candidates aborts without write', async () => {
+    const { existing, additive } = dustSharedEntryLots()
+    const unverified = { ...additive, evidenceQuality: 'unpriced' as const }
+    const evidence = seedDustEntry(existing, unverified)
+    const original = await buildManifestFromCandidate({
+      identity: identity('rebuild-abort'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const kv = jsonKv()
+    await writeCanonicalPnlSampleManifest(kv, original)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('rebuild-abort'),
+      allCandidateLots: [existing, unverified], candidateVerifiedLots: [existing],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, unverified], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 0.5, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    assert.ok(rebuilt.verifiedLotCount < 2)
+    const application = await applyRefreshedCanonicalManifest({
+      kv, identity: identity('rebuild-abort'), rebuilt,
+      allCandidateLots: [existing, unverified],
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 2, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeAttempted, false)
+    assert.equal(application.audit.writeFailureReason, 'rebuilt_count_below_candidates')
+    const intact = await readCanonicalPnlSampleManifest(kv, identity('rebuild-abort'))
+    assert.equal(intact.manifest?.verifiedLotCount, 1)
+  })
+})
+
 describe('additive manifest refresh application / persistence', () => {
   async function builtAdditivePair(existingCount: number, newCount: number) {
     const oldLots = buildLots(existingCount, existingCount)
