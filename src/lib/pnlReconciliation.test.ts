@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
-import { createPnlReconciliation, classifyRecoveryFailureReason, rankMissingLotsForRecovery } from './pnlReconciliation'
+import { createPnlReconciliation, classifyRecoveryFailureReason, rankMissingLotsForRecovery, computeVerifiedSampleAndFullHistoryPerformance } from './pnlReconciliation'
 import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey, buildAcceptedEvidenceCoverageFingerprint } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }
@@ -2225,5 +2225,144 @@ describe('pnlReconciliation', () => {
       { rule: 'window_boundary_unproven_for_unmatched_sells', threshold: '0 exits blocked by boundary', actualValue: '2' },
     )
     assert.equal(summary.publicPnlGateAudit.sellsBlockedSolelyByUnprovenBoundary, 2)
+  })
+})
+
+function sampleLots(count: number, totalCost: number, totalPnl: number): MatchedLot[] {
+  return Array.from({ length: count }, (_, i) => {
+    const isLast = i === count - 1
+    const cost = isLast ? totalCost - (totalCost / count) * (count - 1) : totalCost / count
+    const pnl = isLast ? totalPnl - (totalPnl / count) * (count - 1) : totalPnl / count
+    return lot({
+      lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      costBasisUsd: cost, proceedsUsd: cost + pnl, realizedPnlUsd: pnl,
+    })
+  })
+}
+
+describe('verified bounded-sample performance vs full-history gate', () => {
+  const SAMPLE_COST = 307103.26242036064
+  const SAMPLE_PNL = -70794.97
+
+  it('HARD ASSERTION: 98 verified sample + 2 unmatched sells → sample PnL and ROI display; full-history metrics blocked', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: sampleLots(98, SAMPLE_COST, SAMPLE_PNL), unmatchedSells: 2 }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 2,
+        preWindowInventoryExits: 1,
+        historyCoverageStatus: 'truncated',
+        scanWindowDays: 90,
+        windowBoundaryProven: false,
+        boundedSampleWindowSafe: true,
+        boundaryDependentRemainingBlockers: 2,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable', '2 genuine unmatched sells keep complete-wallet PnL locked')
+    assert.equal(summary.fullHistoryPerformance.status, 'unavailable')
+    assert.equal(summary.fullHistoryPerformance.realizedPnlUsd, null)
+    assert.equal(summary.fullHistoryPerformance.realizedRoiPct, null)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 98)
+    assert.equal(summary.publicPnlGateAudit.verifiedPricingCoverage, 1)
+    assert.equal(summary.verifiedSamplePerformance.status, 'verified_bounded_sample')
+    assert.equal(summary.verifiedSamplePerformance.realizedPnlUsd, SAMPLE_PNL)
+    assert.ok(Math.abs((summary.verifiedSamplePerformance.realizedCostBasisUsd ?? 0) - SAMPLE_COST) < 1e-6)
+    assert.equal(summary.verifiedSamplePerformance.verifiedLotCount, 98)
+    assert.equal(summary.verifiedSamplePerformance.excludedUnmatchedSellCount, 2)
+    assert.equal(summary.verifiedSamplePerformance.isCompleteWalletHistory, false)
+    const roi = summary.verifiedSamplePerformance.realizedRoiPct
+    assert.ok(roi != null && Number.isFinite(roi))
+    assert.ok(Math.abs(roi! - (SAMPLE_PNL / SAMPLE_COST * 100)) < 1e-9, 'ROI is realizedPnl / sampleCostBasis * 100, never hardcoded')
+    assert.ok(Math.abs(roi! - (-23.05)) < 0.01)
+    assert.equal(roi!.toFixed(1), '-23.1')
+    assert.equal(summary.verifiedSamplePerformanceAudit.samplePerformanceAllowed, true)
+    assert.equal(summary.verifiedSamplePerformanceAudit.fullHistoryPerformanceAllowed, false)
+  })
+
+  it('HARD ASSERTION: sample pricing missing → sample PnL/ROI unavailable', () => {
+    const lots = sampleLots(98, SAMPLE_COST, SAMPLE_PNL)
+    const result = computeVerifiedSampleAndFullHistoryPerformance({
+      verifiedLots: lots,
+      structuralLotCount: 98,
+      realizedPnlUsd: SAMPLE_PNL,
+      verifiedPricingCoverage: 1,
+      pricingCoverageThresholdMet: true,
+      excludedUnmatchedSellCount: 2,
+      canonicalConsistencyPassed: true,
+      includedSamplePricingMissing: 1,
+      hardInvalidFifoResult: false,
+      canonicalSampleUnavailable: false,
+      publicPnlStatus: 'unavailable',
+      fullHistoryBlockingReasons: ['unmatched_sells'],
+    })
+    assert.equal(result.verifiedSamplePerformance.status, 'unavailable')
+    assert.equal(result.verifiedSamplePerformance.realizedPnlUsd, null)
+    assert.equal(result.verifiedSamplePerformance.realizedRoiPct, null)
+    assert.equal(result.verifiedSamplePerformanceAudit.samplePerformanceBlockedReason, 'pricing_evidence_missing_inside_sample')
+    assert.equal(result.fullHistoryPerformance.status, 'unavailable')
+  })
+
+  it('HARD ASSERTION: sample cost basis <= 0 → ROI unavailable, sample PnL still shown', () => {
+    const lots = [lot({ costBasisUsd: 0, proceedsUsd: 12, realizedPnlUsd: -5, evidenceQuality: 'verified' })]
+    const result = computeVerifiedSampleAndFullHistoryPerformance({
+      verifiedLots: lots,
+      structuralLotCount: 1,
+      realizedPnlUsd: -5,
+      verifiedPricingCoverage: 1,
+      pricingCoverageThresholdMet: true,
+      excludedUnmatchedSellCount: 0,
+      canonicalConsistencyPassed: true,
+      includedSamplePricingMissing: 0,
+      hardInvalidFifoResult: false,
+      canonicalSampleUnavailable: false,
+      publicPnlStatus: 'unavailable',
+      fullHistoryBlockingReasons: [],
+    })
+    assert.equal(result.verifiedSamplePerformance.status, 'verified_bounded_sample')
+    assert.equal(result.verifiedSamplePerformance.realizedPnlUsd, -5)
+    assert.equal(result.verifiedSamplePerformance.realizedRoiPct, null)
+  })
+
+  it('HARD ASSERTION: canonical consistency failure → sample PnL/ROI unavailable', () => {
+    const lots = sampleLots(98, SAMPLE_COST, SAMPLE_PNL)
+    const result = computeVerifiedSampleAndFullHistoryPerformance({
+      verifiedLots: lots,
+      structuralLotCount: 98,
+      realizedPnlUsd: SAMPLE_PNL,
+      verifiedPricingCoverage: 1,
+      pricingCoverageThresholdMet: true,
+      excludedUnmatchedSellCount: 0,
+      canonicalConsistencyPassed: false,
+      includedSamplePricingMissing: 0,
+      hardInvalidFifoResult: false,
+      canonicalSampleUnavailable: false,
+      publicPnlStatus: 'partial',
+      fullHistoryBlockingReasons: [],
+    })
+    assert.equal(result.verifiedSamplePerformance.status, 'unavailable')
+    assert.equal(result.verifiedSamplePerformance.realizedPnlUsd, null)
+    assert.equal(result.verifiedSamplePerformance.realizedRoiPct, null)
+    assert.equal(result.verifiedSamplePerformanceAudit.samplePerformanceBlockedReason, 'canonical_consistency_failed')
+  })
+
+  it('HARD ASSERTION: zero unmatched sells + complete history → full-history path may unlock under existing rules', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const lots = sampleLots(98, SAMPLE_COST, SAMPLE_PNL)
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots, unmatchedSells: 0, unmatchedBuys: 0 }),
+      pnlEngineResult: pnl(0),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: provenAudit({ genuineUnmatchedSells: 0, genuineUnmatchedBuys: 0 }),
+    })
+    assert.equal(summary.publicPnlStatus, 'available')
+    assert.equal(summary.fullHistoryPerformance.status, 'verified')
+    assert.equal(summary.fullHistoryPerformance.realizedPnlUsd, SAMPLE_PNL)
+    assert.equal(summary.fullHistoryPerformance.realizedRoiPct, null, 'no combined/full-wallet ROI yet')
+    assert.equal(summary.verifiedSamplePerformance.status, 'verified_bounded_sample')
+    assert.equal(summary.verifiedSamplePerformance.realizedPnlUsd, SAMPLE_PNL)
+    assert.equal(summary.verifiedSamplePerformance.isCompleteWalletHistory, false)
+    assert.equal(summary.verifiedSamplePerformanceAudit.fullHistoryPerformanceAllowed, true)
   })
 })

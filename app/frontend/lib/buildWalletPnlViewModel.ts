@@ -86,7 +86,13 @@ export type WalletPnlViewModel = {
   // box showed a big "verified" number while the header said "Combined Locked". Only ever carries a
   // real Base/ETH-only value (never Robinhood's) for 'Verified'/'Partial'; null for 'Locked'/
   // 'Unavailable' — a locked/unavailable combined figure never pretends to have a number.
+  // LABEL, DISCLOSED (verified-sample-vs-full-history follow-up): this box is Combined / Full Wallet
+  // Realized PnL — complete-wallet performance. Bounded-sample arithmetic lives in
+  // verifiedSampleRealizedBox / roiBox and is never relabeled as complete-wallet history.
   combinedRealizedBox: WalletPnlBox
+  // VERIFIED SAMPLE REALIZED BOX, DISCLOSED: included canonical closed-lot arithmetic. Independent
+  // of unmatched sells outside the sample. Never labeled complete-wallet / full-history.
+  verifiedSampleRealizedBox: WalletPnlBox
   robinhoodBox: WalletPnlRobinhoodBox
   unrealizedBox: WalletPnlBox
   roiBox: WalletPnlBox
@@ -235,6 +241,30 @@ export function formatCanonicalUnavailableReason(summary: PnlReconciliationSumma
 
   return sentences.join(' ')
 }
+
+export function formatFullWalletUnavailableReason(summary: PnlReconciliationSummary | null | undefined): string | null {
+  const count = summary?.publicPnlGateAudit.unmatchedSellCount ?? 0
+  if (count > 0) return `${count} unmatched sell${count === 1 ? '' : 's'} prevent complete-wallet verification`
+  return null
+}
+
+export function fmtSignedPercent(value: number | null | undefined, digits = 1): string | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const abs = Math.abs(value).toFixed(digits)
+  if (value > 0) return `+${abs}%`
+  if (value < 0) return `-${abs}%`
+  return `${Number(0).toFixed(digits)}%`
+}
+
+export const VERIFIED_SAMPLE_PNL_REASON = (verifiedLotCount: number, pricingCoverage: number): string =>
+  `PARTIAL · ${verifiedLotCount} verified closed lots · ${(pricingCoverage * 100).toFixed(0)}% pricing coverage`
+
+export const VERIFIED_SAMPLE_ROI_REASON = 'PARTIAL · realized-only bounded sample'
+
+export const VERIFIED_SAMPLE_UNAVAILABLE_REASON = 'Verified sample PnL is unavailable — included lot integrity failed.'
+
+export const FULL_WALLET_ROI_LOCKED_REASON = 'Full-wallet ROI is locked until complete-wallet history is verified. Verified Sample ROI is realized-only and does not include unrealized PnL.'
+
 
 export function buildOfficialUnavailableReason(params: {
   reconciliationSummary?: PnlReconciliationSummary | null
@@ -400,7 +430,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   } else if (baseCombinedStatus === 'partial') {
     combinedReason = boundedSample?.label ?? 'Verified bounded sample.'
   } else {
-    combinedReason = specificUnavailableReason
+    combinedReason = formatFullWalletUnavailableReason(reconciliationSummary) ?? specificUnavailableReason
   }
 
   // COMBINED REALIZED BOX, DISCLOSED (this task's own root-cause fix — confirmed reported bug: the
@@ -438,8 +468,28 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
           ? (boundedSample?.label ?? 'Base/ETH history is a bounded, verified sample.')
           : combinedRealizedBoxStatus === 'Verified'
             ? (buildRealizedVerifiedMessage(effectiveStatus) ?? 'Closed-lot coverage confirmed.')
-            : specificUnavailableReason,
+            : (formatFullWalletUnavailableReason(reconciliationSummary) ?? specificUnavailableReason),
   )
+
+  const sample = reconciliationSummary?.verifiedSamplePerformance
+  const sampleWired = sample != null && (sample.status === 'verified_bounded_sample' || sample.verifiedLotCount > 0)
+  const sampleAllowed = sample?.status === 'verified_bounded_sample' && sample.realizedPnlUsd != null && Number.isFinite(sample.realizedPnlUsd)
+  const sampleBlockedReason = reconciliationSummary?.verifiedSamplePerformanceAudit?.samplePerformanceBlockedReason
+  const verifiedSampleRealizedBox = canonicalSampleUnavailable
+    ? box(null, 'Unavailable', CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL)
+    : sampleAllowed
+      ? box(
+        fmtSignedUsd(sample!.realizedPnlUsd),
+        'Partial',
+        VERIFIED_SAMPLE_PNL_REASON(sample!.verifiedLotCount, sample!.pricingCoverage),
+      )
+      : box(
+        null,
+        'Unavailable',
+        sampleBlockedReason
+          ? `Verified sample unavailable (${sampleBlockedReason}).`
+          : VERIFIED_SAMPLE_UNAVAILABLE_REASON,
+      )
 
   // ROBINHOOD BOX, DISCLOSED: a distinct top-row box (never folded into the combined figure above) —
   // 'Verified' shows the real gated figure + compact proof; a genuinely not-verified or absent scan
@@ -466,25 +516,35 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     }),
   )
 
-  // ROI, DISCLOSED, SIMPLIFIED (this task's own explicit spec — "ROI: Locked until combined PnL is
-  // verified"): ROI is a derivative of the COMBINED realized figure, so it is now gated on
-  // combinedStatus directly rather than its own bounded/blocked nuance — 'Verified' only when the
-  // combined figure itself is fully verified, 'Locked' otherwise (including the bounded-sample case,
-  // which previously showed as its own real ROI number even though the headline combined PnL was not
-  // fully verified — the same class of contradiction this task's box-1 fix closes).
+  // ROI, DISCLOSED (verified-sample-vs-full-history follow-up): realized-only Verified Sample ROI
+  // from the included canonical lots. Full-wallet / combined (realized+unrealized) ROI is never
+  // computed — open-position coverage is not independently verified. Unmatched sells outside the
+  // sample must not erase this number. A caller that has not yet wired verifiedSamplePerformance
+  // keeps the prior Combined-gated ROI (Verified only when Combined itself is verified).
+  const sampleRoiAllowed = sampleAllowed && sample?.realizedRoiPct != null && Number.isFinite(sample.realizedRoiPct)
   const roiStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
     ? 'Unavailable'
-    : combinedStatus === 'verified'
-      ? 'Verified'
-      : 'Locked'
+    : sampleWired
+      ? (sampleRoiAllowed ? 'Partial' : 'Locked')
+      : combinedStatus === 'verified'
+        ? 'Verified'
+        : 'Locked'
   const roiBox = box(
-    roiStatus === 'Verified' && displayed.roiPercent != null ? displayed.roiLabel : null,
+    sampleWired
+      ? (sampleRoiAllowed ? fmtSignedPercent(sample!.realizedRoiPct) : null)
+      : (roiStatus === 'Verified' && displayed.roiPercent != null ? displayed.roiLabel : null),
     roiStatus,
     canonicalSampleUnavailable
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
-      : roiStatus === 'Verified'
-        ? 'Realized PnL vs verified cost basis.'
-        : 'Locked until combined PnL is verified.',
+      : sampleRoiAllowed
+        ? VERIFIED_SAMPLE_ROI_REASON
+        : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
+          ? 'Verified Sample ROI unavailable — sample cost basis is not positive.'
+          : sampleWired
+            ? FULL_WALLET_ROI_LOCKED_REASON
+            : roiStatus === 'Verified'
+              ? 'Realized PnL vs verified cost basis.'
+              : 'Locked until combined PnL is verified.',
   )
 
   // CHAIN ROWS, DISCLOSED: Base/ETH share pnlV2's ONE combined EVM lane status (pnlV2 has never
@@ -544,6 +604,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     combinedStatus,
     combinedReason,
     combinedRealizedBox,
+    verifiedSampleRealizedBox,
     robinhoodBox,
     unrealizedBox,
     roiBox,

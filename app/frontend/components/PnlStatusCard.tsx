@@ -1166,11 +1166,20 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         // resolves which real source (reconciliationSummary vs pnlV2) and which status/reason each
         // box gets, so this render no longer needs its own separate bounded/normal branches.
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
-          <PnlBoxTile label="Combined Realized PnL" box={pnlViewModel.combinedRealizedBox} />
+          <PnlBoxTile label="Combined / Full Wallet Realized PnL" box={pnlViewModel.combinedRealizedBox} />
+          <PnlBoxTile label="Verified Sample Realized PnL" box={pnlViewModel.verifiedSampleRealizedBox} />
+          <PnlBoxTile label="Verified Sample ROI" box={pnlViewModel.roiBox} />
           <PnlRobinhoodBoxTile box={pnlViewModel.robinhoodBox} />
           <PnlBoxTile label="Unrealized PnL" box={pnlViewModel.unrealizedBox} />
-          <PnlBoxTile label="ROI" box={pnlViewModel.roiBox} />
         </div>
+      )}
+
+      {pnlViewModel.verifiedSampleRealizedBox.status === 'Partial' && pnlViewModel.verifiedSampleRealizedBox.value != null && (
+        <p style={{ fontSize: '11px', color: '#fbbf24', lineHeight: 1.6, margin: '0 0 16px' }}>
+          {reconciliationSummary?.verifiedSamplePerformance?.excludedUnmatchedSellCount
+            ? `${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount} unmatched sell${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? '' : 's'} ${reconciliationSummary.verifiedSamplePerformance.excludedUnmatchedSellCount === 1 ? 'is' : 'are'} excluded because their acquisition history could not be verified. This is not complete wallet-history PnL.`
+            : 'Verified bounded sample — not complete wallet-history PnL.'}
+        </p>
       )}
 
       {(isBoundedSample || displayMode === 'real') && (

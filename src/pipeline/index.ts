@@ -3894,6 +3894,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     canonicalSampleSelector,
   })
+  console.warn('[verified-sample-performance-audit]', reconciledPnlSummary.verifiedSamplePerformanceAudit)
   {
     const gate = reconciledPnlSummary.publicPnlGateAudit
     const boundaryDependentSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary
