@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
-  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution,
+  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
@@ -2012,6 +2012,137 @@ describe('canonical manifest additive candidate evolution (81+27 → 108)', () =
     assert.equal(audit.growthAllowed, false)
     assert.equal(audit.growthBlockedReason, 'provider_unusable')
     assert.equal(shouldRefreshAdditiveCandidateEvolution(audit), false)
+  })
+})
+
+describe('additive manifest refresh application / persistence', () => {
+  async function builtAdditivePair(existingCount: number, newCount: number) {
+    const oldLots = buildLots(existingCount, existingCount)
+    const newLots = Array.from({ length: newCount }, (_, offset) => {
+      const i = existingCount + offset
+      return lot({ lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, openedAt: i, closedAt: 1000 + i, costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10 })
+    })
+    const currentLots = [...oldLots, ...newLots]
+    const evidence = seededEvidence(currentLots)
+    const id = identity(`apply-${existingCount}-${newCount}-${currentLots.length}`)
+    const original = await buildManifestFromCandidate({
+      identity: id, allCandidateLots: oldLots, candidateVerifiedLots: oldLots,
+      structuralLotCount: oldLots.length, fingerprints: computeFingerprints(oldLots, realizedTotal(oldLots)),
+      realizedPnlUsd: realizedTotal(oldLots), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    return { oldLots, newLots, currentLots, evidence, id, original }
+  }
+
+  it('HARD ASSERTION: 98→108 additive refresh persists and publishes in the same scan', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, original), true)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    const application = await applyRefreshedCanonicalManifest({
+      kv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, true)
+    assert.equal(application.audit.writeAttempted, true)
+    assert.equal(application.audit.writeSuccess, true)
+    assert.equal(application.audit.writeFailureReason, null)
+    assert.equal(application.audit.rebuiltLotCount, 108)
+    assert.equal(application.audit.rereadCount, 108)
+    assert.equal(application.audit.publishedCount, 108)
+    assert.equal(application.persisted?.verifiedLotCount, 108)
+    assert.equal(application.replay?.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+    const reread = await readCanonicalPnlSampleManifest(kv, id)
+    assert.equal(reread.manifest?.verifiedLotCount, 108)
+  })
+
+  it('HARD ASSERTION: refreshApplied cannot be true if write did not happen', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const failingKv: CanonicalSampleManifestKvLike = {
+      get: async <T>(_key: string) => original as T,
+      set: async () => { throw new Error('kv write denied') },
+    }
+    const application = await applyRefreshedCanonicalManifest({
+      kv: failingKv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeAttempted, true)
+    assert.equal(application.audit.writeSuccess, false)
+    assert.equal(application.audit.writeFailureReason, 'write_failed')
+    assert.equal(application.persisted, null)
+  })
+
+  it('HARD ASSERTION: failed write leaves the old 98-lot manifest/publication intact and reports failure', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, original), true)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const failingKv: CanonicalSampleManifestKvLike = {
+      get: async <T>(key: string) => kv.get<T>(key),
+      set: async () => { throw new Error('kv write denied') },
+    }
+    const application = await applyRefreshedCanonicalManifest({
+      kv: failingKv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(application.applied, false)
+    assert.equal(application.audit.writeSuccess, false)
+    const intact = await readCanonicalPnlSampleManifest(kv, id)
+    assert.equal(intact.manifest?.verifiedLotCount, 98, 'the durable 98-lot sample must not be overwritten on write failure')
+  })
+
+  it('HARD ASSERTION: next identical scan after a successful 108 write performs no refresh', async () => {
+    const { currentLots, evidence, id, original } = await builtAdditivePair(98, 10)
+    const kv = jsonKv()
+    await writeCanonicalPnlSampleManifest(kv, original)
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: id, allCandidateLots: currentLots,
+      candidateVerifiedLots: currentLots, structuralLotCount: currentLots.length,
+      fingerprints: computeFingerprints(currentLots, realizedTotal(currentLots)), realizedPnlUsd: realizedTotal(currentLots),
+      verifiedPricingCoverage: 1, now: NOW + 1, refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const firstApply = await applyRefreshedCanonicalManifest({
+      kv, identity: id, rebuilt, allCandidateLots: currentLots,
+      loadEvidence: evidence.loader, computeFingerprints,
+      requireVerifiedLotCount: 108, growthAllowed: true,
+    })
+    assert.equal(firstApply.applied, true)
+    const stored = (await readCanonicalPnlSampleManifest(kv, id)).manifest!
+    const secondReplay = await replay(stored, currentLots, evidence.loader)
+    assert.equal(secondReplay.outcome, 'applied')
+    assert.equal(secondReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 108)
+    const audit = buildManifestAdditiveGrowthAudit({
+      replay: secondReplay, manifestVerifiedLotCount: stored.verifiedLotCount,
+      currentCandidateVerifiedLotCount: 108, providerUsable: true,
+    })
+    assert.equal(audit.growthAllowed, false)
+    assert.equal(audit.newCandidateCount, 0)
+    assert.equal(audit.growthBlockedReason, 'no_new_candidates')
   })
 })
 

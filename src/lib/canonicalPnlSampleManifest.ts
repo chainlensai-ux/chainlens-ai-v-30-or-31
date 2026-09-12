@@ -37,6 +37,7 @@ import {
 } from './acceptedEvidenceStore'
 import {
   isCanonicalVerifiedPublishedLot, canonicalVerifiedRejectionReason, emptyCanonicalVerifiedPredicateReasonCounts,
+  isCanonicalPositiveUsd,
   type CanonicalVerifiedRejectionReason,
   type CanonicalVerifiedPredicateReasonCounts,
 } from './canonicalVerifiedLot'
@@ -521,6 +522,27 @@ export function acceptedEvidenceAllocationsAreCanonicalPositive(
   )
 }
 
+// ALLOCATED-OR-LIVE, DISCLOSED (additive-manifest refresh application): a dust/zero allocated
+// share is not canonical coverage. Independently verified live lot values (the same fail-open
+// the hydration/fast-path already uses) may back a NEW manifest record so additive growth can
+// freeze lots whose accepted-evidence group total floors them to $0. Positive allocated shares
+// still win — existing 98 values are unchanged when their reconstruction is canonical-positive.
+function canonicalPositiveAllocatedOrLive(allocatedUsd: number | null, liveUsd: number | null): number | null {
+  if (isCanonicalPositiveUsd(allocatedUsd)) return allocatedUsd
+  if (isCanonicalPositiveUsd(liveUsd)) return liveUsd
+  return allocatedUsd ?? liveUsd
+}
+
+function sumOrLive(lots: readonly MatchedLot[], side: 'entry' | 'exit'): number | null {
+  let sum = 0
+  for (const lot of lots) {
+    const value = side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd
+    if (!isCanonicalPositiveUsd(value)) return null
+    sum += value
+  }
+  return lots.length > 0 ? sum : null
+}
+
 // DETERMINISTIC OCCURRENCE SPLIT, DISCLOSED (grouped-multiplicity rewrite, requirement #1's
 // "deterministically reconstruct all occurrences"). Splits one occurrence-group TOTAL across its N
 // structurally-identical members using the SAME integer-exact arithmetic as
@@ -922,6 +944,7 @@ export async function buildManifestFromCandidate(params: {
   // Recomputes the four determinism fingerprints over a candidate array — required alongside
   // `loadEvidence` to get the corrected total/fingerprints; see this function's own note above.
   computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
+  preferLiveCanonicalValuesWhenAllocatedNotPositive?: boolean
 }): Promise<CanonicalPnlSampleManifest> {
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
 
@@ -1017,8 +1040,12 @@ export async function buildManifestFromCandidate(params: {
     // lot from the manifest; the build simply cannot correct what it has no evidence to correct.
     allocated.push({
       lot, identity, entryEvidenceKey, exitEvidenceKey, entryEvidence, exitEvidence, entryShare, exitShare,
-      costBasisUsd: entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd,
-      proceedsUsd: exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd,
+      costBasisUsd: params.preferLiveCanonicalValuesWhenAllocatedNotPositive
+        ? canonicalPositiveAllocatedOrLive(entryShare?.allocatedValueUsd ?? null, lot.costBasisUsd)
+        : (entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd),
+      proceedsUsd: params.preferLiveCanonicalValuesWhenAllocatedNotPositive
+        ? canonicalPositiveAllocatedOrLive(exitShare?.allocatedValueUsd ?? null, lot.proceedsUsd)
+        : (exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd),
     })
   }
 
@@ -1355,6 +1382,7 @@ export async function buildRefreshedManifest(params: {
   refreshReason: string
   loadEvidence?: AcceptedEvidenceLoader
   computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
+  preferLiveCanonicalValuesWhenAllocatedNotPositive?: boolean
 }): Promise<CanonicalPnlSampleManifest> {
   return buildManifestFromCandidate({ ...params, priorManifest: params.priorManifest })
 }
@@ -1417,6 +1445,107 @@ export async function writeCanonicalPnlSampleManifest(kv: CanonicalSampleManifes
   } catch {
     return false
   }
+}
+
+// REFRESH APPLICATION, DISCLOSED (additive-manifest refresh persistence task): the prior
+// pipeline wrote first, then replayed, then set `manifestRefreshApplied=true` without ever
+// copying `rewriteSuccess` into the audit (`manifestWriteSuccess` stayed the empty-audit
+// false). A rebuild that silently dropped additive lots (98 instead of 108) still replayed
+// the smaller sample, so refreshApplied=true while publication stayed 98. This helper:
+//   1. replays the rebuilt manifest IN MEMORY first
+//   2. refuses to write unless that replay applies AND published count matches rebuilt
+//      count (and `requireVerifiedLotCount` when the caller is additive growth)
+//   3. writes, rereads, and only then reports applied
+// `refreshApplied` is therefore true only when the new manifest was built, persisted,
+// reread, and published in the same scan.
+export type ManifestRefreshApplicationAudit = {
+  growthAllowed: boolean
+  refreshAttempted: boolean
+  rebuiltLotCount: number
+  writeAttempted: boolean
+  writeSuccess: boolean
+  writeFailureReason: string | null
+  rereadCount: number | null
+  replayCount: number | null
+  selectedCount: number
+  publishedCount: number
+}
+
+export function emptyManifestRefreshApplicationAudit(): ManifestRefreshApplicationAudit {
+  return {
+    growthAllowed: false, refreshAttempted: false, rebuiltLotCount: 0,
+    writeAttempted: false, writeSuccess: false, writeFailureReason: null,
+    rereadCount: null, replayCount: null, selectedCount: 0, publishedCount: 0,
+  }
+}
+
+export async function applyRefreshedCanonicalManifest(params: {
+  kv: CanonicalSampleManifestKvLike
+  identity: CanonicalPnlSampleManifestIdentity
+  rebuilt: CanonicalPnlSampleManifest
+  allCandidateLots: readonly MatchedLot[]
+  loadEvidence: AcceptedEvidenceLoader
+  computeFingerprints: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
+  requireVerifiedLotCount?: number | null
+  growthAllowed?: boolean
+}): Promise<{
+  applied: boolean
+  replay: ManifestReplayResult | null
+  persisted: CanonicalPnlSampleManifest | null
+  audit: ManifestRefreshApplicationAudit
+}> {
+  const rebuiltLotCount = params.rebuilt.verifiedLotCount
+  const requireCount = params.requireVerifiedLotCount ?? null
+  const audit: ManifestRefreshApplicationAudit = {
+    growthAllowed: params.growthAllowed === true,
+    refreshAttempted: true,
+    rebuiltLotCount,
+    writeAttempted: false,
+    writeSuccess: false,
+    writeFailureReason: null,
+    rereadCount: null,
+    replayCount: null,
+    selectedCount: 0,
+    publishedCount: 0,
+  }
+  if (requireCount !== null && rebuiltLotCount !== requireCount) {
+    audit.writeFailureReason = 'rebuilt_count_below_candidates'
+    return { applied: false, replay: null, persisted: null, audit }
+  }
+  const replay = await replayManifest({
+    manifest: params.rebuilt, allCandidateLots: params.allCandidateLots,
+    loadEvidence: params.loadEvidence, computeFingerprints: params.computeFingerprints,
+  })
+  const publishedCount = replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length
+  audit.replayCount = publishedCount
+  audit.selectedCount = replay.selectedLotKeys.length
+  audit.publishedCount = publishedCount
+  if (replay.outcome !== 'applied') {
+    audit.writeFailureReason = 'in_memory_replay_unavailable'
+    return { applied: false, replay, persisted: null, audit }
+  }
+  if (publishedCount !== rebuiltLotCount) {
+    audit.writeFailureReason = 'replay_published_count_mismatch'
+    return { applied: false, replay, persisted: null, audit }
+  }
+  if (requireCount !== null && publishedCount !== requireCount) {
+    audit.writeFailureReason = 'replay_published_below_candidates'
+    return { applied: false, replay, persisted: null, audit }
+  }
+  audit.writeAttempted = true
+  const writeSuccess = await writeCanonicalPnlSampleManifest(params.kv, params.rebuilt)
+  audit.writeSuccess = writeSuccess
+  if (!writeSuccess) {
+    audit.writeFailureReason = 'write_failed'
+    return { applied: false, replay, persisted: null, audit }
+  }
+  const reread = await readCanonicalPnlSampleManifest(params.kv, params.identity)
+  audit.rereadCount = reread.manifest?.verifiedLotCount ?? null
+  if (!reread.manifest || reread.manifest.verifiedLotCount !== rebuiltLotCount) {
+    audit.writeFailureReason = reread.manifest ? 'reread_count_mismatch' : 'reread_missing'
+    return { applied: false, replay, persisted: null, audit }
+  }
+  return { applied: true, replay, persisted: reread.manifest, audit }
 }
 
 // ============================================================================
@@ -2049,8 +2178,20 @@ export async function replayManifest(params: {
       addClassifiedReason(structuralReasonKeys, 'evidence_allocation_membership_conflict', key)
       continue
     }
-    const liveGroupCostBasisUsd = Math.round(entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
-    const liveGroupProceedsUsd = Math.round(exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
+    const liveGroupCostBasisUsd = Math.round((() => {
+      const allocated = entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
+      const live = sumOrLive(occurrences, 'entry')
+      if (isCanonicalPositiveUsd(allocated)) return allocated
+      if (isCanonicalPositiveUsd(record.groupCostBasisUsd) && isCanonicalPositiveUsd(live)) return live
+      return allocated
+    })() * 1e8) / 1e8
+    const liveGroupProceedsUsd = Math.round((() => {
+      const allocated = exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
+      const live = sumOrLive(occurrences, 'exit')
+      if (isCanonicalPositiveUsd(allocated)) return allocated
+      if (isCanonicalPositiveUsd(record.groupProceedsUsd) && isCanonicalPositiveUsd(live)) return live
+      return allocated
+    })() * 1e8) / 1e8
 
     // BOUNDED VALUE-DISAGREEMENT AUDIT, DISCLOSED (canonical-manifest-false-structural-disagreement
     // follow-up task) — records EVERY non-zero entry/exit delta this key produced, whether or not it
@@ -2580,6 +2721,7 @@ export type CanonicalSampleManifestAudit = {
   manifestRefreshApplied: boolean
   manifestRefreshReason: string | null
   manifestAdditiveGrowthAudit: ManifestAdditiveGrowthAudit
+  manifestRefreshApplicationAudit: ManifestRefreshApplicationAudit
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {
@@ -2635,5 +2777,6 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestRefreshApplied: false,
     manifestRefreshReason: null,
     manifestAdditiveGrowthAudit: emptyManifestAdditiveGrowthAudit(),
+    manifestRefreshApplicationAudit: emptyManifestRefreshApplicationAudit(),
   }
 }

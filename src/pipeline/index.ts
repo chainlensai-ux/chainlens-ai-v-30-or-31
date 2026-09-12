@@ -26,7 +26,8 @@ import {
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
-  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution,
+  buildManifestAdditiveGrowthAudit, shouldRefreshAdditiveCandidateEvolution, applyRefreshedCanonicalManifest,
+  emptyManifestRefreshApplicationAudit,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
@@ -3566,6 +3567,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     let manifestRefreshAttempted = false
     let manifestRefreshApplied = false
     let manifestRefreshReason: string | null = null
+    let manifestWriteSuccess = false
+    let manifestWriteFailure = false
+    let refreshApplicationAudit = emptyManifestRefreshApplicationAudit()
     // A historically frozen manifest is authoritative only while its CURRENT accepted evidence
     // remains reproducible. If individual old records legitimately expire or become invalid under
     // today's canonical evidence policy, rebuild a bounded manifest from today's already-verified
@@ -3592,39 +3596,38 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           : 'additive-candidate-evolution-strict-superset'
       try {
         const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
-        // Rebuilds the manifest exactly the way a first-qualifying scan does (buildRefreshedManifest
-        // -> buildManifestFromCandidate), with `computeFingerprints` supplied — so the rewritten
-        // manifest is guaranteed self-consistent with THIS replay logic. `fingerprints`/`realizedPnlUsd`
-        // below are only the legacy fallback (see buildManifestFromCandidate's own header); the real
-        // values come from its internal correction, exactly like a fresh first scan.
         const refreshedManifest = await buildRefreshedManifest({
           priorManifest: manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
           candidateVerifiedLots, structuralLotCount: reconciledLots.length,
           fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
           verifiedPricingCoverage, now: Date.now(), refreshReason: manifestRefreshReason,
           loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+          preferLiveCanonicalValuesWhenAllocatedNotPositive: additiveGrowthEligible,
         })
-        const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)
-        if (rewriteSuccess) {
-          // Publish ONLY from a replay of the freshly-written, validated manifest — never the raw
-          // rebuilt manifest directly, so the exact same atomic per-lot/total/fingerprint validation
-          // this whole function performs on every other scan is applied here too.
-          const secondReplay = await replayManifest({
-            manifest: refreshedManifest, allCandidateLots: reconciledLots,
-            loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
-          })
-          if (secondReplay.outcome === 'applied') {
-            manifestRefreshApplied = true
-            sampleUpdated = true
-            effectiveReplay = secondReplay
-            effectiveManifest = refreshedManifest
-          } else {
-            // eslint-disable-next-line no-console
-            console.warn('[stale-manifest-self-heal] refreshed manifest still failed to replay — falling back to the original unavailable result', { manifestKey, reasonCounts: secondReplay.reasonCounts })
-          }
+        const application = await applyRefreshedCanonicalManifest({
+          kv: canonicalSampleManifestKv,
+          identity: manifestIdentity,
+          rebuilt: refreshedManifest,
+          allCandidateLots: reconciledLots,
+          loadEvidence: loadAcceptedEvidence,
+          computeFingerprints: computeManifestFingerprints,
+          requireVerifiedLotCount: additiveGrowthEligible ? candidateVerifiedLots.length : null,
+          growthAllowed: additiveGrowthEligible,
+        })
+        refreshApplicationAudit = application.audit
+        manifestWriteSuccess = application.audit.writeSuccess
+        manifestWriteFailure = application.audit.writeAttempted && !application.audit.writeSuccess
+        if (application.applied && application.replay && application.persisted) {
+          manifestRefreshApplied = true
+          sampleUpdated = true
+          effectiveReplay = application.replay
+          effectiveManifest = application.persisted
         } else {
           // eslint-disable-next-line no-console
-          console.warn('[stale-manifest-self-heal] refreshed manifest write failed — falling back to the original unavailable result', { manifestKey })
+          console.warn('[canonical-manifest-refresh] rebuilt manifest not applied — leaving the existing sample intact', {
+            manifestKey, reason: application.audit.writeFailureReason, rebuiltLotCount: application.audit.rebuiltLotCount,
+            publishedCount: application.audit.publishedCount,
+          })
         }
       } catch (error) {
         // eslint-disable-next-line no-console
@@ -3740,7 +3743,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestRefreshAttempted,
       manifestRefreshApplied,
       manifestRefreshReason,
+      manifestWriteSuccess,
+      manifestWriteFailure,
       manifestAdditiveGrowthAudit: additiveGrowthAudit,
+      manifestRefreshApplicationAudit: refreshApplicationAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
     return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }
