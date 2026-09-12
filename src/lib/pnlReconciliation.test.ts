@@ -865,6 +865,50 @@ describe('pnlReconciliation', () => {
     assert.ok(stored.migrationHistory.length >= 1, 'a real writer transition must be recorded')
   })
 
+  it('HARD ASSERTION (same-tx-Base-USDC-quote-normalization follow-up task): a persisted value corrupted by the confirmed wrong-decimals bug (~1e12 off, NOT the per-unit-vs-total shape the existing migration proves) is NEVER auto-repaired by the existing migration rules — it fails closed and stays individually audited, never silently coerced', async () => {
+    // This is the DIFFERENT corruption shape this task confirmed: a same-tx quote leg normalized
+    // with the wrong decimals (18 instead of Base USDC's real 6) — a completely different arithmetic
+    // relationship from the per-unit-vs-total confusion detectLegacyPerUnitTotalRecord/
+    // detectLegacyPerUnitTotalByLiveUpstreamProof were built to prove. Neither detector's proof
+    // condition can hold here (the persisted value is not `unitPrice`, and it is not
+    // `liveTotal / lotAmount` either) — so, correctly, NEITHER fires. The record must be left
+    // completely alone: this task explicitly says "do NOT repair KV until the current producer path
+    // is correct" — the producer fix in this same task (recoveryPolicy/utils.ts) stops the
+    // corruption at the source; a DIFFERENT, dedicated migration proof would be required to safely
+    // repair records already corrupted this way, and none is added here.
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const corruptedLot = lot({ lotId: 'decimals-corrupted', openedTxHash: '0xbuy-decimals', closedTxHash: '0xsell-decimals', amount: 121_140_766.74509133, costBasisUsd: 2996.415704, proceedsUsd: 20, realizedPnlUsd: -2976.415704, evidenceQuality: 'verified' })
+    const identityVersion = realLotIdentityVersion(corruptedLot)
+    const entryKey = buildAcceptedEvidenceKey({ chain: 'base', token: '0xtoken', txHash: '0xbuy-decimals', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion })
+    // The confirmed corruption: true value ~2996.415704 (correct, 6-decimal normalization), but the
+    // PERSISTED record holds the same figure normalized with decimals=18 instead of 6 — off by
+    // exactly 1e12, reproducing the reported ~1e-9-scale quoteQuantity/derivedPriceUsd pattern.
+    const corruptedUsd = 2996.415704 / 1e12
+    acceptedEvidenceKv.store.set(entryKey, {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xtoken', txHash: '0xbuy-decimals', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: corruptedUsd, valueUsd: corruptedUsd, valueType: 'total_side_value_usd', coveredLotCount: 1, coverageFingerprint: identityVersion,
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: Date.now() + 1_000_000,
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
+      priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never,
+    })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [corruptedLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.acceptedEvidenceAudit.legacyPerUnitRecordsDetected, 0, 'the existing migration must never mistake a wrong-decimals corruption for the per-unit-vs-total shape it was built to prove')
+    const stored = acceptedEvidenceKv.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    assert.equal(stored.priceUsd, corruptedUsd, 'immutability holds — never bypassed on a guess, even for a value this clearly wrong')
+    assert.equal(stored.valueUsd, corruptedUsd)
+    // The disagreement between this scan's fresh upstream ($2996.415704) and the persisted corrupted
+    // record must still be VISIBLE, individually audited — never silently absorbed.
+    const conflict = summary.acceptedEvidenceAudit.acceptedEvidenceConflictAudit.find((c) => c.evidenceKey === entryKey)
+    assert.ok(conflict, 'the real disagreement must be individually audited so it can be investigated, even though no safe automatic repair exists yet')
+    assert.equal(conflict!.writeDecision, 'protected_immutable')
+    assert.equal(conflict!.legacyProofAvailable, null)
+  })
+
   // =============================================================================================
   // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
   // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already

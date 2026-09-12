@@ -164,6 +164,44 @@ async function fetchGoldrushHistoricalPageLive(
   }
 }
 
+// CONFIRMED ROOT CAUSE, DISCLOSED (same-tx Base USDC quote-normalization follow-up task): this
+// module's own header (above) explains why it keeps a SELF-CONTAINED copy of Alchemy's raw-response
+// parsing rather than importing providerFetchWindow/utils.ts's — but that meant the SAME
+// "rawContract.decimal is real, documented, and was never read" bug providerFetchWindow/utils.ts's
+// own `alchemyHexDecimalToNumber`/its "TOKEN-DECIMALS FIX" comment already fixed for the PRIMARY
+// Alchemy adapter was never independently fixed here, in this module's own PARALLEL, per-token
+// Alchemy pull. `tokenDecimals: null` below caused normalization/utils.ts's `parseAmount` to default
+// every event this function ever returned to 18 decimals — correct for WETH/native, silently WRONG
+// for any other token (Base USDC = 6 decimals) recovered via this path. Traced via two real,
+// production-shaped Base USDC same-tx quote legs (tx 0x52f77bb4..., 0x609a9ceb...): both derived
+// prices reproduced EXACTLY from raw/10^18 instead of raw/10^6 (e.g. raw 2996415704 / 1e18 =
+// 2.996415704e-9, the exact reported `quoteQuantity` — never a double /1e6, a SINGLE mis-normalization
+// at this exact source). This is the sole source of that corruption — `deriveSameTransactionQuotePrice`'s
+// own `normalizedLegAmount` self-consistency check (quoteLegPricing/index.ts) could never catch it,
+// because the wrong decimals value travels WITH the wrong amount on the same NormalizedEvent/SwapLeg,
+// so the re-derived `raw / 10^decimals` agrees with the already-wrong `amount` — both jointly wrong
+// against ground truth, never disagreeing with each other. Fixed the same way the primary adapter
+// already was: read the real `rawContract.decimal` hex field Alchemy's response actually carries.
+// `amountRaw` is ALSO converted from Alchemy's raw hex to the same decimal-string format GoldRush's
+// own `delta` already uses (never previously done here) — matching dedupeRawEventKey's own
+// documented cross-provider dedup contract, so a transfer this function recovers can be recognized
+// as the same on-chain event a GoldRush page already reported, instead of silently double-counting
+// it under two differently-formatted amountRaw strings.
+function alchemyHexAmountToDecimalStringLocal(hexValue: string | null): string | null {
+  if (hexValue == null) return null
+  try {
+    return BigInt(hexValue).toString()
+  } catch {
+    return null // malformed hex — honestly unparseable, never guessed
+  }
+}
+
+function alchemyHexDecimalToNumberLocal(hexDecimal: string | null): number | null {
+  if (hexDecimal == null) return null
+  const parsed = Number(hexDecimal)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 // Targeted Alchemy pull scoped to a single token contract (contractAddresses filter) — never a
 // whole-wallet pull, keeping this genuinely "targeted historical recovery for this token only".
 export async function fetchAlchemyTokenHistory(
@@ -223,10 +261,16 @@ export async function fetchAlchemyTokenHistory(
             ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
             : null,
           symbol: typeof t.asset === 'string' ? t.asset : null,
-          amountRaw: typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
-            ? ((t.rawContract as Record<string, unknown>).value as string)
-            : null,
-          tokenDecimals: null,
+          amountRaw: alchemyHexAmountToDecimalStringLocal(
+            typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
+              ? ((t.rawContract as Record<string, unknown>).value as string)
+              : null,
+          ),
+          tokenDecimals: alchemyHexDecimalToNumberLocal(
+            typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
+              ? ((t.rawContract as Record<string, unknown>).decimal as string)
+              : null,
+          ),
         })
       }
     }

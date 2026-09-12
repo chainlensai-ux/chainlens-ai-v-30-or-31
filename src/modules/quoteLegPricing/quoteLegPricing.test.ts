@@ -71,6 +71,40 @@ describe('deriveSameTransactionQuotePrice — stablecoin quote', () => {
     assert.equal(rejected.priceUsd, null)
     assert.equal(rejected.evidence.rejectionReason, 'quote_amount_normalization_mismatch')
   })
+
+  // same-tx-Base-USDC-quote-normalization follow-up task — the exact real-shaped fixture requested:
+  // Base USDC (0x833589fcd6edb6e08f4c7c32d4f71b54bda02913, decimals=6) raw integer 2,996,415 must
+  // normalize to exactly 2.996415, produce a positive, non-zero derived price, and never be divided
+  // a second time (the confirmed root cause traced to fetchAlchemyTokenHistory in
+  // src/modules/recoveryPolicy/utils.ts hardcoding tokenDecimals: null — fixed in that same task —
+  // this module's own consistency check is the second, independent line of defense).
+  it('HARD ASSERTION (Base USDC historical invariant): a real-shaped Base USDC raw quote leg (raw 2,996,415, decimals=6) normalizes exactly once to 2.996415, with a positive non-zero derived price', () => {
+    const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'AEON', decimals: 18, amount: 121_140_766.74509133, direction: 'inbound', logIndex: 0 },
+      { contract: BASE_USDC, symbol: 'USDC', decimals: 6, amount: 2.996415, rawAmount: '2996415', inputWasAlreadyNormalized: true, direction: 'outbound', logIndex: 1 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ chain: 'base', groupedSwapLegs: legs, targetQuantity: 121_140_766.74509133 }))
+    assert.equal(result.source, 'same_tx_stable_quote')
+    assert.equal(result.quoteQuantity, 2.996415, 'raw 2,996,415 at 6 decimals must normalize to exactly 2.996415, never 2.996415e-9 or any other re-scaled value')
+    assert.equal(result.quoteValueUsd, 2.996415)
+    assert.ok(result.priceUsd !== null && Number.isFinite(result.priceUsd) && result.priceUsd > 0, 'derived token price must be positive and non-zero')
+    assert.equal(result.evidence.rejectionReason, null)
+  })
+
+  it('companion (Base USDC historical invariant): an already-normalized Base USDC amount (2.996415) must NOT be divided again', () => {
+    const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'AEON', decimals: 18, amount: 121_140_766.74509133, direction: 'inbound', logIndex: 0 },
+      // No rawAmount at all — the caller (groupSwapLegsByTransaction) always sets
+      // inputWasAlreadyNormalized: true for a real NormalizedEvent-derived leg; normalizedLegAmount
+      // must trust `amount` as-is in that shape, never re-derive or re-scale it.
+      { contract: BASE_USDC, symbol: 'USDC', decimals: 6, amount: 2.996415, inputWasAlreadyNormalized: true, direction: 'outbound', logIndex: 1 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ chain: 'base', groupedSwapLegs: legs, targetQuantity: 121_140_766.74509133 }))
+    assert.equal(result.quoteQuantity, 2.996415, 'an already-normalized amount must be used exactly as-is, never divided by 10^6 a second time')
+    assert.equal(result.quoteValueUsd, 2.996415)
+  })
 })
 
 describe('deriveSameTransactionQuotePrice — native/WETH quote', () => {
