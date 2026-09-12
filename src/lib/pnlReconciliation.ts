@@ -2856,6 +2856,59 @@ export function createPnlReconciliation(config: Config = {}) {
       })
       logger.warn('[verified-sample-performance-audit]', verifiedSamplePerformanceAudit)
 
+      // TEMPORARY DIAGNOSTIC, DISCLOSED (verified-sample-cost-basis-denominator-drift follow-up
+      // task) — never repairs, never changes any published value. Added because
+      // `canonicalPnlDiffAudit`'s own `changedGroups`/`previousRealizedPnlUsd`/`currentRealizedPnlUsd`
+      // summary (logged from src/pipeline/index.ts) diffs a FRESH, never-published rebuild
+      // (`buildManifestFromCandidate` over this scan's own candidate lots) against the PRE-SCAN
+      // manifest — it never touches `replay.publishedLots`/`effectiveReplay` (the actual array a
+      // manifest refresh, when one applies, replaces before publication) and therefore cannot prove
+      // anything about what `verifiedSamplePerformance.realizedCostBasisUsd` itself actually is. This
+      // block emits ONE bounded per-lot row for every lot in the ACTUAL published verified sample —
+      // its own entry/exit evidence keys, the RAW accepted-evidence side total each key currently
+      // holds, and this lot's own already-allocated canonical cost basis/proceeds — so a real scan's
+      // log can be diffed lot-by-lot against a prior scan's log without guessing. Bounded to this
+      // scan's own >=1 verified lots (a real wallet's sample, never unbounded); skipped entirely
+      // when there is no KV to read evidence from, and any read failure for one lot is caught and
+      // recorded rather than aborting the diagnostic for the rest.
+      if (config.acceptedEvidenceKv && verifiedUpdatedLots.length > 0) {
+        try {
+          const kv = config.acceptedEvidenceKv
+          const now = (config.now ?? Date.now)()
+          const rows = await mapWithConcurrencyLimit(verifiedUpdatedLots, RECOVERY_CONCURRENCY_LIMIT, async (l) => {
+            const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(l)
+            let acceptedEntryUsd: number | null = null
+            let acceptedExitUsd: number | null = null
+            try {
+              const entryEvidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: l.chain, token: l.token, txHash: l.openedTxHash, side: 'entry', timestamp: l.openedAt }, now)
+              acceptedEntryUsd = entryEvidence?.priceUsd ?? null
+            } catch { /* read failure — leave null, never fabricated */ }
+            try {
+              const exitEvidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: l.chain, token: l.token, txHash: l.closedTxHash, side: 'exit', timestamp: l.closedAt }, now)
+              acceptedExitUsd = exitEvidence?.priceUsd ?? null
+            } catch { /* read failure — leave null, never fabricated */ }
+            return {
+              lotKey: lotKey(l),
+              costBasisUsd: l.costBasisUsd,
+              proceedsUsd: l.proceedsUsd,
+              realizedPnlUsd: l.realizedPnlUsd,
+              entryEvidenceKey,
+              exitEvidenceKey,
+              acceptedEntryUsd,
+              acceptedExitUsd,
+              // "Canonical" here means this lot's own already-published, already-allocated figure —
+              // the SAME value `realizedCostBasisUsd`/`realizedPnlUsd` above were summed from. Never a
+              // second, independent recomputation.
+              canonicalEntryUsd: l.costBasisUsd,
+              canonicalExitUsd: l.proceedsUsd,
+            }
+          })
+          logger.warn('[verified-sample-cost-basis-audit]', { lotCount: rows.length, rows })
+        } catch (error) {
+          logger.warn('[verified-sample-cost-basis-audit] skipped — diagnostic failure never blocks a scan', { error: String(error) })
+        }
+      }
+
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
         unmatchedBuys: correctedUnmatchedBuys,
