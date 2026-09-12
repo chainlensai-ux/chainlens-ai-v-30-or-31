@@ -73,7 +73,7 @@ export type WalletReadV2 = {
   // both read from ONE call to buildWalletPnlViewModel, never two independently-worded summaries of
   // the same evidence. `null` only when the caller (an older/unwired call site, or a test) didn't
   // supply a pnlViewModel — never a fabricated summary.
-  pnlEvidenceSummary: { status: WalletPnlViewModel['combinedStatus']; reason: string } | null
+  pnlEvidenceSummary: { status: WalletPnlViewModel['combinedStatus']; reason: string; sampleReason: string | null } | null
   nextAction: string
 }
 
@@ -401,7 +401,7 @@ export function buildWalletReadV2(params: {
       matchedLotsCount: params.matchedLotsCount,
     }),
     pnlLanes: buildPnlLanes({ evmPnlLane: params.evmPnlLane, robinhoodPnlLane: params.robinhoodPnlLane, robinhoodResult: params.robinhoodResult }),
-    pnlEvidenceSummary: params.pnlViewModel ? { status: params.pnlViewModel.combinedStatus, reason: params.pnlViewModel.combinedReason } : null,
+    pnlEvidenceSummary: params.pnlViewModel ? { status: params.pnlViewModel.combinedStatus, reason: params.pnlViewModel.combinedReason, sampleReason: params.pnlViewModel.sampleEvidenceLine } : null,
     nextAction: buildNextAction({
       evmPnlLane: params.evmPnlLane,
       robinhoodPnlLane: params.robinhoodPnlLane,

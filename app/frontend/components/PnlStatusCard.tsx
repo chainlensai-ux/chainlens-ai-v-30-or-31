@@ -75,7 +75,7 @@ function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
         <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{label}</span>
-        <StatusBadge label={box.status} tone={BOX_STATUS_TONE[box.status]} />
+        <StatusBadge label={box.statusLabel ?? box.status} tone={BOX_STATUS_TONE[box.status]} />
       </div>
       <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
       <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>

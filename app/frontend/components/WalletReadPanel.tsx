@@ -149,9 +149,16 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
             own header paragraph shows for this exact scan — both come from ONE call to
             buildWalletPnlViewModel (page.tsx), never two independently-worded summaries. */}
         {read.pnlEvidenceSummary && (
-          <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'rgba(203,213,225,0.8)', lineHeight: 1.5 }}>
-            {read.pnlEvidenceSummary.reason}
-          </p>
+          <>
+            <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'rgba(203,213,225,0.8)', lineHeight: 1.5 }}>
+              {read.pnlEvidenceSummary.reason}
+            </p>
+            {read.pnlEvidenceSummary.sampleReason && (
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#fbbf24', lineHeight: 1.5 }}>
+                {read.pnlEvidenceSummary.sampleReason}
+              </p>
+            )}
+          </>
         )}
         {read.pnlLanes.map((lane) => <PnlLaneRow key={lane.chainLabel} lane={lane} />)}
       </div>

@@ -43,6 +43,9 @@ export type WalletPnlBox = {
   value: string | null
   status: WalletPnlBoxStatus
   reason: string
+  // Optional presentation label. Sample tiles use this so the badge can read
+  // "PARTIAL / VERIFIED BOUNDED SAMPLE" without inventing a new status enum.
+  statusLabel?: string
 }
 
 export type WalletPnlChainRowStatus = 'Verified' | 'Partial' | 'Unavailable' | 'Not verified'
@@ -97,6 +100,8 @@ export type WalletPnlViewModel = {
   unrealizedBox: WalletPnlBox
   roiBox: WalletPnlBox
   chainRows: WalletPnlChainRow[]
+  // CORTEX / sidebar: same sample wording as the tiles. Null when the sample is not allowed.
+  sampleEvidenceLine: string | null
   // Kept for backward compatibility with existing callers/tests — identical to robinhoodBox.proof.
   robinhoodProof: WalletRobinhoodPnlProof | null
 }
@@ -261,6 +266,8 @@ export const VERIFIED_SAMPLE_PNL_REASON = (verifiedLotCount: number, pricingCove
 
 export const VERIFIED_SAMPLE_ROI_REASON = 'PARTIAL · realized-only bounded sample'
 
+export const VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL = 'PARTIAL / VERIFIED BOUNDED SAMPLE'
+
 export const VERIFIED_SAMPLE_UNAVAILABLE_REASON = 'Verified sample PnL is unavailable — included lot integrity failed.'
 
 export const FULL_WALLET_ROI_LOCKED_REASON = 'Full-wallet ROI is locked until complete-wallet history is verified. Verified Sample ROI is realized-only and does not include unrealized PnL.'
@@ -378,8 +385,8 @@ export type BuildWalletPnlViewModelParams = {
   walletPnlEvidenceAudit?: WalletPnlEvidenceAudit | null
 }
 
-function box(value: string | null, status: WalletPnlBoxStatus, reason: string): WalletPnlBox {
-  return { value, status, reason }
+function box(value: string | null, status: WalletPnlBoxStatus, reason: string, statusLabel?: string): WalletPnlBox {
+  return statusLabel ? { value, status, reason, statusLabel } : { value, status, reason }
 }
 
 export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): WalletPnlViewModel {
@@ -482,6 +489,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
         fmtSignedUsd(sample!.realizedPnlUsd),
         'Partial',
         VERIFIED_SAMPLE_PNL_REASON(sample!.verifiedLotCount, sample!.pricingCoverage),
+        VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL,
       )
       : box(
         null,
@@ -525,7 +533,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   const roiStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
     ? 'Unavailable'
     : sampleWired
-      ? (sampleRoiAllowed ? 'Partial' : 'Locked')
+      ? (sampleRoiAllowed ? 'Partial' : 'Unavailable')
       : combinedStatus === 'verified'
         ? 'Verified'
         : 'Locked'
@@ -541,10 +549,11 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
         : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
           ? 'Verified Sample ROI unavailable — sample cost basis is not positive.'
           : sampleWired
-            ? FULL_WALLET_ROI_LOCKED_REASON
+            ? VERIFIED_SAMPLE_UNAVAILABLE_REASON
             : roiStatus === 'Verified'
               ? 'Realized PnL vs verified cost basis.'
               : 'Locked until combined PnL is verified.',
+    sampleRoiAllowed ? VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL : undefined,
   )
 
   // CHAIN ROWS, DISCLOSED: Base/ETH share pnlV2's ONE combined EVM lane status (pnlV2 has never
@@ -600,6 +609,14 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     proof: robinhoodProof,
   }
 
+  const sampleEvidenceLine = sampleAllowed
+    ? [
+      `Verified Sample Realized PnL ${fmtSignedUsd(sample!.realizedPnlUsd)}`,
+      sampleRoiAllowed ? `ROI ${fmtSignedPercent(sample!.realizedRoiPct)}` : null,
+      VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL,
+    ].filter((part): part is string => part != null).join(' · ')
+    : null
+
   return {
     combinedStatus,
     combinedReason,
@@ -609,6 +626,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     unrealizedBox,
     roiBox,
     chainRows,
+    sampleEvidenceLine,
     robinhoodProof,
   }
 }
