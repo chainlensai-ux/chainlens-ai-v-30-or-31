@@ -648,6 +648,23 @@ test('HARD ASSERTION: a genuine provider failure (partial) still hard-blocks eve
   assert.equal(audit.unknownSells, 115, 'the 110 unproven + the 5 contradictory all stay blocking under a genuine provider failure')
 })
 
+test('HARD ASSERTION: a token-scoped proven pre-window set under partial coverage is non-blocking and does not flip windowBoundaryProven', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const proven = new Set(f.sellIdentities.slice(0, 110).map((identity) => `${identity.chain}:${identity.txHash.toLowerCase()}:${identity.token.toLowerCase()}`))
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: true, anyProviderFetchFailed: true,
+    provenPreWindowInventoryExits: proven,
+  })
+  assert.equal(audit.historyCoverageStatus, 'partial')
+  assert.equal(audit.windowBoundaryProven, false, 'global boundary flag stays honest')
+  assert.equal(audit.boundedSampleWindowSafe, false)
+  assert.equal(audit.preWindowInventoryExits, 110)
+  assert.equal(audit.unknownSells, 5, 'the 5 sells with earlier in-window buys stay independently blocking')
+  assert.equal(audit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
+  assert.equal(audit.structuralCoverageDenominator, 23 + 0 + 5)
+})
+
 test('a short real wallet history (no cap, no failure, boundary genuinely not reached) still fails closed exactly as before this task', () => {
   const f = boundaryProofFixture()
   const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)

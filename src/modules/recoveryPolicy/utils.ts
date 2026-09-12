@@ -102,8 +102,21 @@ function goldrushChainName(chain: SupportedChain): string | null {
 // resetRecoveryHistoricalPageRequestCache, called from walletScanWorker.ts).
 const requestScopedHistoricalPages = new Map<string, Promise<RawProviderEvent[]>>()
 
+export type AlchemyTokenHistoryStrictResult = {
+  ok: boolean
+  inboundQueryOk: boolean
+  outboundQueryOk: boolean
+  events: RawProviderEvent[]
+  inboundPageCapped: boolean
+  inboundPageExhausted: boolean
+  providerCalls: number
+}
+
+const requestScopedAlchemyTokenHistoryStrict = new Map<string, Promise<AlchemyTokenHistoryStrictResult>>()
+
 export function resetRecoveryHistoricalPageRequestCache(): void {
   requestScopedHistoricalPages.clear()
+  requestScopedAlchemyTokenHistoryStrict.clear()
 }
 
 // Targeted GoldRush historical page — page-number offset beyond the base window's page 0. Caller
@@ -257,6 +270,105 @@ export async function fetchAlchemyTokenHistory(
     return events
   } catch {
     return []
+  }
+}
+
+const ALCHEMY_TOKEN_HISTORY_MAX_COUNT = 100
+
+function collectAlchemyAssetTransfers(result: Record<string, unknown> | null, chain: SupportedChain): RawProviderEvent[] {
+  const events: RawProviderEvent[] = []
+  const transfers = Array.isArray(result?.transfers) ? (result!.transfers as Record<string, unknown>[]) : []
+  for (const t of transfers) {
+    const meta = t.metadata as Record<string, unknown> | undefined
+    events.push({
+      provider: 'alchemy',
+      chain,
+      txHash: typeof t.hash === 'string' ? t.hash : null,
+      timestamp: typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null,
+      fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
+      toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
+      contract: typeof (t.rawContract as Record<string, unknown> | undefined)?.address === 'string'
+        ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
+        : null,
+      symbol: typeof t.asset === 'string' ? t.asset : null,
+      amountRaw: alchemyHexAmountToDecimalString(typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
+        ? ((t.rawContract as Record<string, unknown>).value as string)
+        : null),
+      tokenDecimals: alchemyHexDecimalToNumber(typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
+        ? ((t.rawContract as Record<string, unknown>).decimal as string)
+        : null),
+    })
+  }
+  return events
+}
+
+export async function fetchAlchemyTokenHistoryStrict(
+  chain: SupportedChain,
+  walletAddress: string,
+  token: string,
+): Promise<AlchemyTokenHistoryStrictResult> {
+  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${token.trim().toLowerCase()}:inbound`
+  const existing = requestScopedAlchemyTokenHistoryStrict.get(key)
+  if (existing) return existing
+  const promise = fetchAlchemyTokenHistoryInboundLive(chain, walletAddress, token)
+  requestScopedAlchemyTokenHistoryStrict.set(key, promise)
+  promise.catch(() => {
+    if (requestScopedAlchemyTokenHistoryStrict.get(key) === promise) requestScopedAlchemyTokenHistoryStrict.delete(key)
+  })
+  return promise
+}
+
+async function fetchAlchemyTokenHistoryInboundLive(
+  chain: SupportedChain,
+  walletAddress: string,
+  token: string,
+): Promise<AlchemyTokenHistoryStrictResult> {
+  const failed: AlchemyTokenHistoryStrictResult = {
+    ok: false, inboundQueryOk: false, outboundQueryOk: false, events: [],
+    inboundPageCapped: false, inboundPageExhausted: false, providerCalls: 0,
+  }
+  const url = alchemyBaseUrl(chain)
+  const apiKey = alchemyApiKey(chain)
+  if (!url || !apiKey) return failed
+  try {
+    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'recovery' })) {
+      return failed
+    }
+    logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
+    auditRPC('alchemy_getAssetTransfers', {
+      toAddress: walletAddress, contractAddresses: [token], probe: 'inbound_strict',
+    })
+    const res = await fetch(url, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromBlock: '0x0', category: ['erc20'], contractAddresses: [token],
+          withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: walletAddress,
+        }],
+      }),
+      signal: AbortSignal.timeout(12_000),
+    })
+    if (!res.ok) return { ...failed, providerCalls: 1 }
+    const json = await res.json() as { result?: Record<string, unknown> | null; error?: unknown }
+    if (json?.error != null || json?.result == null || typeof json.result !== 'object') {
+      return { ...failed, providerCalls: 1 }
+    }
+    const events = collectAlchemyAssetTransfers(json.result, chain)
+    const inboundPageCapped = events.length >= ALCHEMY_TOKEN_HISTORY_MAX_COUNT
+    return {
+      ok: true,
+      inboundQueryOk: true,
+      outboundQueryOk: false,
+      events,
+      inboundPageCapped,
+      inboundPageExhausted: !inboundPageCapped,
+      providerCalls: 1,
+    }
+  } catch {
+    return { ...failed, providerCalls: 1 }
   }
 }
 

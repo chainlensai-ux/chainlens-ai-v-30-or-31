@@ -601,6 +601,16 @@ export type UnmatchedEvidenceAuditContext = {
   // requested start or exhausted the provider's history before it. Unlike the legacy timestamp
   // heuristic, an exhausted short wallet is deterministic evidence rather than `unknown`.
   boundedWindowStartProven?: boolean
+  // PER-SELL BOUNDARY PROOFS, DISCLOSED, ADDITIVE (boundary-dependent unmatched sells): keys are
+  // `${chain}:${txHash.toLowerCase()}:${token.toLowerCase()}`. A sell in provenPreWindowInventoryExits
+  // is classified as a proven pre-window exit even when chain coverage is `partial`/`unknown` —
+  // that is a TOKEN-SCOPED inbound proof, never a global window-boundary bypass. A sell in
+  // provenNonTradeTransfers is excluded as transfer_distribution. A sell in
+  // provenGenuineUnmatchedSells stays blocking `unknown` but is no longer attributed to the
+  // unproven window boundary. Omit all three for byte-for-byte prior behavior.
+  provenPreWindowInventoryExits?: ReadonlySet<string>
+  provenNonTradeTransfers?: ReadonlySet<string>
+  provenGenuineUnmatchedSells?: ReadonlySet<string>
 }
 
 export type UnmatchedEvidenceAudit = {
@@ -695,13 +705,17 @@ export type WindowBoundaryProofDiagnostics = {
   // of the fetch boundary. These identifiers are public chain data and keep the gate attributable
   // without changing any unmatched-sell decision.
   boundaryRequiredSells: Array<{ chain: string; txHash: string; token: string; reason: 'history_truncated_at_provider' | 'window_boundary_unproven' }>
-  boundaryIndependentSells: Array<{ chain: string; txHash: string; token: string; reason: 'earlier_buy_in_window' | 'identity_join_failed' }>
+  boundaryIndependentSells: Array<{ chain: string; txHash: string; token: string; reason: 'earlier_buy_in_window' | 'identity_join_failed' | 'genuine_unmatched_sell' }>
 }
 
 const DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000
 
 function isTradeEligibleBuyClassification(classification: EventClassification): boolean {
   return classification === 'genuine_trade_leg' || classification === 'unknown' || classification === 'dust_non_economic'
+}
+
+function unmatchedSellProofKey(identity: { chain: string; txHash: string; token: string }): string {
+  return `${identity.chain}:${identity.txHash.toLowerCase()}:${identity.token.toLowerCase()}`
 }
 
 export function computeUnmatchedEvidenceAudit(
@@ -787,6 +801,16 @@ export function computeUnmatchedEvidenceAudit(
       transferDistributionSells[resolved] = (transferDistributionSells[resolved] ?? 0) + 1
       continue
     }
+    const proofKey = unmatchedSellProofKey(identity)
+    if (context.provenNonTradeTransfers?.has(proofKey)) {
+      transferDistributionSells.ordinary_transfer = (transferDistributionSells.ordinary_transfer ?? 0) + 1
+      continue
+    }
+    if (context.provenPreWindowInventoryExits?.has(proofKey)) {
+      // TOKEN-SCOPED inbound proof — does not flip windowBoundaryProven / historyCoverageStatus.
+      preWindowInventoryExits += 1
+      continue
+    }
     const tokenKeyStr = `${identity.chain}:${identity.token.toLowerCase()}`
     const earlierBuyExists = earliestBuyTimestampByToken.has(tokenKeyStr) && earliestBuyTimestampByToken.get(tokenKeyStr)! < identity.timestamp
     // CONTRADICTORY EVIDENCE, DISCLOSED (requirement: "genuine unmatched sells with contradictory
@@ -806,6 +830,11 @@ export function computeUnmatchedEvidenceAudit(
       // separately, excluded from the blocking denominator below, never claimed as proven.
       preWindowInventoryExitsUnprovenDueToTruncation += 1
       boundaryRequiredSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'history_truncated_at_provider' })
+    } else if (context.provenGenuineUnmatchedSells?.has(proofKey)) {
+      // Targeted history completed and found no earlier inbound — genuine unmatched, still
+      // blocking, but no longer attributed to the unproven window boundary.
+      unknownSells += 1
+      boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'genuine_unmatched_sell' })
     } else {
       // 'partial' (a genuine provider failure) or 'unknown' (short real history / no timestamped
       // evidence) — fail closed exactly as before this task: cannot prove either a bounded-history

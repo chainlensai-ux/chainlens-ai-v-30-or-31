@@ -88,6 +88,8 @@ import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
 import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
+import { resolveBoundaryDependentSells, unmatchedSellProofKey } from '../modules/eventClassification/boundaryDependentSellResolution'
+import { fetchAlchemyTokenHistoryStrict } from '../modules/recoveryPolicy/utils'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -1754,6 +1756,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (still-running-in-the-background) shadow block can never race with or change the real result.
   const receiptSwapCanonicalPromotionEnabled = process.env.RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED === 'true'
   let shadowExactReceiptSwaps: DecodedReceiptSwap[] = []
+  const receiptProofByTxHash = new Map<string, string>()
   // CAPTURED FOR THE LATER [receipt-completion-phase2] DIAGNOSTIC, DISCLOSED: same "capture-early,
   // use-late" pattern as shadowExactReceiptSwaps above — fifoLotsUnlocked/fullyPricedLots/coverage
   // fields require fifoAndPnl, which doesn't exist yet at this point in the file. Never exposed on
@@ -2009,6 +2012,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
     if (shadowPayload.enabled) {
       shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
+      for (const swap of shadowPayload.acceptedExactSwaps) {
+        receiptProofByTxHash.set(swap.txHash.toLowerCase(), 'exact_swap')
+      }
+      for (const sample of shadowPayload.receiptForensics) {
+        const tx = sample.txHash.toLowerCase()
+        if (receiptProofByTxHash.has(tx)) continue
+        if (sample.finalRejectionReason) receiptProofByTxHash.set(tx, sample.finalRejectionReason)
+        else if (sample.likelyRoute === 'ordinary_transfer') receiptProofByTxHash.set(tx, 'ordinary_transfer')
+      }
       receiptCompletionPhase2Summary = {
         candidatesConsidered: shadowPayload.selectorTransactionsConsidered,
         candidatesSelected: shadowPayload.baseSwapCandidates,
@@ -3147,14 +3159,62 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
   const providerWindowStartReached = windowBoundaryProviderAudit.length > 0
     && windowBoundaryProviderAudit.every((provider) => provider.requestedWindowStartReached)
-  const unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
+  const unmatchedEvidenceAuditContext = {
+    windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
+  }
+  let unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
-    {
-      windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
-      anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
-    },
+    unmatchedEvidenceAuditContext,
     recoveredClassifiedForJoin,
   )
+  // PER-SELL BOUNDARY RESOLUTION, DISCLOSED (boundary-dependent unmatched sells): only the sells
+  // this audit already attributed to `window_boundary_unproven` are examined. Token-scoped inbound
+  // proof (or receipt non-trade proof) can drop those sells from the blocking denominator; it
+  // never flips `windowBoundaryProven` / `historyCoverageStatus`. FIFO, pricing, and the 98-lot
+  // sample are untouched.
+  const boundaryUnprovenSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryRequiredSells
+    .filter((sell) => sell.reason === 'window_boundary_unproven')
+  const boundaryUnprovenKeys = new Set(boundaryUnprovenSells.map((sell) => unmatchedSellProofKey(sell)))
+  const boundaryDependentSellsToResolve = fifoAndPnl.unmatchedSellEvents.filter((sell) =>
+    boundaryUnprovenKeys.has(unmatchedSellProofKey(sell)))
+  const boundaryDependentSellResolutionAudit = await resolveBoundaryDependentSells({
+    sells: boundaryDependentSellsToResolve,
+    classified: structuralCoverageClassified,
+    recoveredClassified: recoveredClassifiedForJoin,
+    recoveredRawEvents: recoveredRawEventsForPricing,
+    windowStartTimestamp: requestedWindowStart,
+    walletAddress: params.walletAddress,
+    receiptProofByTx: receiptProofByTxHash,
+    fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
+  })
+  if (boundaryDependentSellResolutionAudit.rows.length > 0) {
+    unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
+      structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+      {
+        ...unmatchedEvidenceAuditContext,
+        provenPreWindowInventoryExits: new Set(boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits),
+        provenNonTradeTransfers: new Set(boundaryDependentSellResolutionAudit.provenNonTradeTransfers),
+        provenGenuineUnmatchedSells: new Set(boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells),
+      },
+      recoveredClassifiedForJoin,
+    )
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[boundary-dependent-sell-resolution-audit]', {
+    sellsConsidered: boundaryDependentSellResolutionAudit.sellsConsidered,
+    uniqueTokensFetched: boundaryDependentSellResolutionAudit.uniqueTokensFetched,
+    providerCalls: boundaryDependentSellResolutionAudit.providerCalls,
+    remainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+    provenPreWindowInventoryExits: boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits.length,
+    provenNonTradeTransfers: boundaryDependentSellResolutionAudit.provenNonTradeTransfers.length,
+    provenGenuineUnmatchedSells: boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells.length,
+    windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
+    historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
+    sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
+    unknownSells: unmatchedEvidenceAudit.unknownSells,
+    rows: boundaryDependentSellResolutionAudit.rows,
+  })
   // eslint-disable-next-line no-console
   console.warn('[critical-trade-evidence-gap-audit]', {
     unmatchedIdentityJoinFailures: criticalTradeEvidenceGapAudit.unmatchedIdentityJoinFailures,
@@ -3854,6 +3914,25 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       eligible: gate.boundedSampleEligible,
       blockers: gate.boundedSampleBlockingReasons,
       exactFailureReason: gate.boundedSampleBlockingReasons[0] ?? null,
+      boundaryDependentSellResolutionAudit: {
+        sellsConsidered: boundaryDependentSellResolutionAudit.sellsConsidered,
+        uniqueTokensFetched: boundaryDependentSellResolutionAudit.uniqueTokensFetched,
+        providerCalls: boundaryDependentSellResolutionAudit.providerCalls,
+        remainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
+        rows: boundaryDependentSellResolutionAudit.rows.map((row) => ({
+          identity: row.identity,
+          txHash: row.txHash,
+          token: row.token,
+          amount: row.amount,
+          currentClassification: row.currentClassification,
+          receiptProof: row.receiptProof,
+          earlierBuyProof: row.earlierBuyProof,
+          preWindowRecoveryAttempted: row.preWindowRecoveryAttempted,
+          preWindowEvidenceFound: row.preWindowEvidenceFound,
+          disposition: row.disposition,
+          gateImpact: row.gateImpact,
+        })),
+      },
     })
   }
   // RECEIPT COMPLETION OUTCOME, DISCLOSED: one final gate-level before/after record. Unlike the
