@@ -751,6 +751,13 @@ export type CanonicalManifestLotRecord = {
   exitSource: string | null
   pricingMethodologyVersion: number
   evidenceSchemaVersion: number | null
+  // ADDITIVE-NEW PROVENANCE, DISCLOSED (108-lot in-memory replay failure): records frozen from
+  // independently verified live canonical candidates, not from accepted-evidence allocation.
+  // Absent/undefined on accepted-evidence records (the existing 98 and any pre-this-field
+  // manifest). Replay may use live candidate values ONLY when this is exactly
+  // `live_canonical_candidate` AND the current scan independently re-verifies the same numbers.
+  // Untagged records fail closed on the accepted-evidence path — never a silent live fallback.
+  valueProvenance?: 'live_canonical_candidate' | 'accepted_evidence'
   // PARTIAL-FILL VALUE ALLOCATION, DISCLOSED (canonical-price-replay-values follow-up task, Part
   // A). `entrySideGroupIdentity`/`exitSideGroupIdentity` echo `entryEvidenceKey`/`exitEvidenceKey`
   // (the group this lot's side belongs to) under the field names this task's own spec asks for.
@@ -1173,12 +1180,10 @@ export async function buildManifestFromCandidate(params: {
     const proceedsShares = additiveNewVerifiedGroup
       ? members.map((m) => m.lot.proceedsUsd)
       : splitGroupTotalAcrossOccurrences(groupProceedsUsd, occurrenceCount)
-    const pnlShares = additiveNewVerifiedGroup
-      ? members.map((m) => m.lot.realizedPnlUsd)
-      : costShares.map((c, i) => {
-        const p = proceedsShares[i]
-        return c === null || p === null ? null : Math.round((p - c) * 100) / 100
-      })
+    const pnlShares = costShares.map((c, i) => {
+      const p = proceedsShares[i]
+      return c === null || p === null ? null : Math.round((p - c) * 100) / 100
+    })
     const groupRealizedPnlUsd = sumOrNull(pnlShares)
 
     // SELF-VALIDATE before freezing anything for this group — see this block's own header above.
@@ -1278,6 +1283,7 @@ export async function buildManifestFromCandidate(params: {
       exitGroupTotalUsd: exitGroupTotalByKey.get(representative.exitEvidenceKey) ?? null,
       entryGroupFingerprint: groupCompositionFingerprint(entryGroups.get(representative.entryEvidenceKey) ?? []),
       exitGroupFingerprint: groupCompositionFingerprint(exitGroups.get(representative.exitEvidenceKey) ?? []),
+      ...(additiveNewVerifiedGroup ? { valueProvenance: 'live_canonical_candidate' as const } : {}),
     })
   }
 
@@ -1566,6 +1572,7 @@ export type ManifestRefreshApplicationAudit = {
   replayCount: number | null
   selectedCount: number
   publishedCount: number
+  inMemoryReplay: ManifestRefreshInMemoryReplayAudit
 }
 
 export function emptyManifestRefreshApplicationAudit(): ManifestRefreshApplicationAudit {
@@ -1573,6 +1580,102 @@ export function emptyManifestRefreshApplicationAudit(): ManifestRefreshApplicati
     growthAllowed: false, refreshAttempted: false, rebuiltLotCount: 0,
     writeAttempted: false, writeSuccess: false, writeFailureReason: null,
     rereadCount: null, replayCount: null, selectedCount: 0, publishedCount: 0,
+    inMemoryReplay: emptyManifestRefreshInMemoryReplayAudit(),
+  }
+}
+
+export type ManifestRefreshInMemoryReplayAudit = {
+  rebuiltCount: number
+  replayOutcome: 'applied' | 'unavailable' | null
+  replayReason: string | null
+  firstFailedLotKey: string | null
+  failedEntryOrExit: 'entry' | 'exit' | 'both' | 'neither' | null
+  manifestStoredValue: number | null
+  liveCandidateValue: number | null
+  acceptedEvidenceValue: number | null
+  evidenceSource: string | null
+  identityMatched: boolean | null
+  sideEvidenceFound: boolean | null
+  valueMatched: boolean | null
+  qualityMatched: boolean | null
+  canonicalVerifierPassed: boolean | null
+}
+
+export function emptyManifestRefreshInMemoryReplayAudit(): ManifestRefreshInMemoryReplayAudit {
+  return {
+    rebuiltCount: 0, replayOutcome: null, replayReason: null, firstFailedLotKey: null,
+    failedEntryOrExit: null, manifestStoredValue: null, liveCandidateValue: null,
+    acceptedEvidenceValue: null, evidenceSource: null, identityMatched: null,
+    sideEvidenceFound: null, valueMatched: null, qualityMatched: null, canonicalVerifierPassed: null,
+  }
+}
+
+function dominantReplayFailureReason(replay: ManifestReplayResult): string | null {
+  if (replay.outcome === 'applied') return null
+  const counts = replay.reasonCounts
+  const ranked: ManifestReplayReason[] = [
+    'manifest_lot_identity_not_found',
+    'manifest_side_evidence_missing',
+    'manifest_side_evidence_invalid',
+    'manifest_partial_fill_ordinal_mismatch',
+    'manifest_cost_basis_mismatch',
+    'manifest_proceeds_mismatch',
+    'manifest_entry_price_mismatch',
+    'manifest_exit_price_mismatch',
+    'manifest_realized_pnl_mismatch',
+    'manifest_evidence_quality_mismatch',
+    'manifest_canonical_verifier_rejection',
+    'manifest_realized_total_mismatch',
+    'manifest_fingerprint_mismatch',
+    'manifest_duplicate_identity',
+  ]
+  return ranked.find((reason) => counts[reason] > 0) ?? 'unavailable'
+}
+
+export function buildManifestRefreshInMemoryReplayAudit(params: {
+  rebuilt: CanonicalPnlSampleManifest
+  replay: ManifestReplayResult
+  allCandidateLots: readonly MatchedLot[]
+}): ManifestRefreshInMemoryReplayAudit {
+  const firstFailedLotKey = params.replay.manifestLotsMissingCurrentEvidence[0] ?? null
+  const record = firstFailedLotKey
+    ? params.rebuilt.verifiedLotRecords.find((row) => row.key === firstFailedLotKey) ?? null
+    : null
+  const identities = buildCanonicalLotIdentities(params.allCandidateLots)
+  const liveLot = firstFailedLotKey
+    ? params.allCandidateLots.find((lot) => identities.get(lot)?.key === firstFailedLotKey) ?? null
+    : null
+  const disagreement = firstFailedLotKey
+    ? params.replay.manifestValueDisagreementAudit.find((row) => row.lotKey === firstFailedLotKey) ?? params.replay.manifestValueDisagreementAudit[0] ?? null
+    : params.replay.manifestValueDisagreementAudit[0] ?? null
+  const sideAudit = firstFailedLotKey
+    ? params.replay.manifestSideEvidenceAudit.find((row) => row.canonicalLotKey === firstFailedLotKey) ?? null
+    : null
+  const qualityAudit = firstFailedLotKey
+    ? params.replay.manifestEvidenceQualityComparisonAudit.find((row) => row.canonicalLotKey === firstFailedLotKey) ?? null
+    : null
+  const replayReason = dominantReplayFailureReason(params.replay)
+  const failedEntryOrExit: ManifestRefreshInMemoryReplayAudit['failedEntryOrExit'] =
+    replayReason === null ? null
+      : (params.replay.reasonCounts.manifest_cost_basis_mismatch > 0 && params.replay.reasonCounts.manifest_proceeds_mismatch > 0) ? 'both'
+        : params.replay.reasonCounts.manifest_cost_basis_mismatch > 0 || params.replay.reasonCounts.manifest_entry_price_mismatch > 0 ? 'entry'
+          : params.replay.reasonCounts.manifest_proceeds_mismatch > 0 || params.replay.reasonCounts.manifest_exit_price_mismatch > 0 ? 'exit'
+            : 'neither'
+  return {
+    rebuiltCount: params.rebuilt.verifiedLotCount,
+    replayOutcome: params.replay.outcome,
+    replayReason,
+    firstFailedLotKey,
+    failedEntryOrExit,
+    manifestStoredValue: disagreement?.acceptedUsd ?? (failedEntryOrExit === 'exit' ? record?.groupProceedsUsd ?? null : record?.groupCostBasisUsd ?? null),
+    liveCandidateValue: disagreement?.rebuiltUsd ?? (failedEntryOrExit === 'exit' ? liveLot?.proceedsUsd ?? null : liveLot?.costBasisUsd ?? null),
+    acceptedEvidenceValue: disagreement?.acceptedUsd ?? null,
+    evidenceSource: record?.valueProvenance ?? record?.entrySource ?? null,
+    identityMatched: firstFailedLotKey ? liveLot != null : null,
+    sideEvidenceFound: sideAudit ? sideAudit.currentEntryEvidenceFound && sideAudit.currentExitEvidenceFound : null,
+    valueMatched: disagreement ? disagreement.classification === 'quantization_noise' : (params.replay.outcome === 'applied' ? true : null),
+    qualityMatched: qualityAudit ? qualityAudit.equalityResult : null,
+    canonicalVerifierPassed: liveLot ? isCanonicalVerifiedPublishedLot(liveLot) : null,
   }
 }
 
@@ -1604,9 +1707,15 @@ export async function applyRefreshedCanonicalManifest(params: {
     replayCount: null,
     selectedCount: 0,
     publishedCount: 0,
+    inMemoryReplay: emptyManifestRefreshInMemoryReplayAudit(),
   }
   if (requireCount !== null && rebuiltLotCount !== requireCount) {
     audit.writeFailureReason = 'rebuilt_count_below_candidates'
+    audit.inMemoryReplay = {
+      ...emptyManifestRefreshInMemoryReplayAudit(),
+      rebuiltCount: rebuiltLotCount,
+      replayReason: 'rebuilt_count_below_candidates',
+    }
     return { applied: false, replay: null, persisted: null, audit }
   }
   const replay = await replayManifest({
@@ -1617,6 +1726,9 @@ export async function applyRefreshedCanonicalManifest(params: {
   audit.replayCount = publishedCount
   audit.selectedCount = replay.selectedLotKeys.length
   audit.publishedCount = publishedCount
+  audit.inMemoryReplay = buildManifestRefreshInMemoryReplayAudit({
+    rebuilt: params.rebuilt, replay, allCandidateLots: params.allCandidateLots,
+  })
   if (replay.outcome !== 'applied') {
     audit.writeFailureReason = 'in_memory_replay_unavailable'
     return { applied: false, replay, persisted: null, audit }
@@ -2217,6 +2329,7 @@ export async function replayManifest(params: {
     const entryEvidence = evidenceByKey.get(record.entryEvidenceKey) ?? null
     const exitEvidence = evidenceByKey.get(record.exitEvidenceKey) ?? null
     const current = occurrences[0]
+    const isLiveCanonicalProvenance = record.valueProvenance === 'live_canonical_candidate'
     const normalizeQuality = (quality: MatchedLot['evidenceQuality'] | null): string | null =>
       typeof quality === 'string' ? quality.trim().toLowerCase() : null
     const normalizedManifestQuality = normalizeQuality(record.evidenceQuality)
@@ -2225,8 +2338,8 @@ export async function replayManifest(params: {
     if (normalizedManifestQuality !== 'verified') addClassifiedReason(structuralReasonKeys, 'malformed_manifest_evidence_quality', key)
     manifestEvidenceQualityComparisonAudit.push({
       canonicalLotKey: key,
-      manifest: { lotEvidenceQuality: record.evidenceQuality, entryEvidenceStatus: entryEvidence ? 'verified' : 'missing_or_invalid', exitEvidenceStatus: exitEvidence ? 'verified' : 'missing_or_invalid' },
-      current: { lotEvidenceQuality: current?.evidenceQuality ?? null, entryEvidenceStatus: entryEvidence ? 'verified' : 'missing_or_invalid', exitEvidenceStatus: exitEvidence ? 'verified' : 'missing_or_invalid' },
+      manifest: { lotEvidenceQuality: record.evidenceQuality, entryEvidenceStatus: entryEvidence ? 'verified' : (isLiveCanonicalProvenance ? 'verified' : 'missing_or_invalid'), exitEvidenceStatus: exitEvidence ? 'verified' : (isLiveCanonicalProvenance ? 'verified' : 'missing_or_invalid') },
+      current: { lotEvidenceQuality: current?.evidenceQuality ?? null, entryEvidenceStatus: entryEvidence ? 'verified' : (isLiveCanonicalProvenance ? 'verified' : 'missing_or_invalid'), exitEvidenceStatus: exitEvidence ? 'verified' : (isLiveCanonicalProvenance ? 'verified' : 'missing_or_invalid') },
       normalizedManifestQuality, normalizedCurrentQuality,
       exactFieldCompared: 'CanonicalManifestLotRecord.evidenceQuality === MatchedLot.evidenceQuality',
       equalityResult: qualityEqual,
@@ -2236,15 +2349,15 @@ export async function replayManifest(params: {
       canonicalLotKey: key,
       manifestEntryEvidenceKey: record.entryEvidenceKey,
       manifestExitEvidenceKey: record.exitEvidenceKey,
-      currentEntryEvidenceFound: !!entryEvidence,
-      currentExitEvidenceFound: !!exitEvidence,
+      currentEntryEvidenceFound: !!entryEvidence || isLiveCanonicalProvenance,
+      currentExitEvidenceFound: !!exitEvidence || isLiveCanonicalProvenance,
       acceptedEvidenceStoreHit: !!entryEvidence && !!exitEvidence,
       canonicalCandidatePresent: true,
       currentLotVerified: occurrences.every(isCanonicalVerifiedPublishedLot),
-      exactMissingSide: !entryEvidence && !exitEvidence ? 'both' : !entryEvidence ? 'entry' : !exitEvidence ? 'exit' : null,
-      structuralOrEvidenceOnly: 'evidence_only',
+      exactMissingSide: isLiveCanonicalProvenance ? null : (!entryEvidence && !exitEvidence ? 'both' : !entryEvidence ? 'entry' : !exitEvidence ? 'exit' : null),
+      structuralOrEvidenceOnly: isLiveCanonicalProvenance ? 'evidence_only' : 'evidence_only',
     })
-    if (!entryEvidence || !exitEvidence) {
+    if (!isLiveCanonicalProvenance && (!entryEvidence || !exitEvidence)) {
       // readAcceptedEvidence already enforces exact identity/side/timestamp/lot-identity-version/
       // schemaVersion matching and expiry, so a null here means the record is genuinely absent or
       // genuinely fails that validation. Never substitute the manifest's stored number.
@@ -2254,7 +2367,7 @@ export async function replayManifest(params: {
       addClassifiedReason(staleReasonKeys, 'accepted_side_evidence_unavailable', key)
       continue
     }
-    if (record.pricingMethodologyVersion !== params.manifest.pricingMethodologyVersion) {
+    if (!isLiveCanonicalProvenance && record.pricingMethodologyVersion !== params.manifest.pricingMethodologyVersion) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       traceMissing(key, 'manifest_side_evidence_invalid', occurrences, record, !!entryEvidence, !!exitEvidence)
@@ -2262,11 +2375,17 @@ export async function replayManifest(params: {
       continue
     }
 
-    // 3b. Recompute this group's TOTALS from live accepted evidence (Part A allocation, unchanged),
-    //     then validate those totals against the manifest's frozen group totals.
-    const entryShares = occurrences.map((lot) => entryAllocationByKey.get(record.entryEvidenceKey)?.get(lot) ?? null)
-    const exitShares = occurrences.map((lot) => exitAllocationByKey.get(record.exitEvidenceKey)?.get(lot) ?? null)
-    if (entryShares.some((sh) => sh === null) || exitShares.some((sh) => sh === null)) {
+    // 3b. Recompute this group's TOTALS. Accepted-evidence records use live allocation (Part A).
+    //     Additive-new `live_canonical_candidate` records compare frozen totals to the current
+    //     scan's independently verified live candidate values — never to a dust sibling share,
+    //     and never as a silent fallback for untagged records.
+    const entryShares = isLiveCanonicalProvenance
+      ? []
+      : occurrences.map((lot) => entryAllocationByKey.get(record.entryEvidenceKey)?.get(lot) ?? null)
+    const exitShares = isLiveCanonicalProvenance
+      ? []
+      : occurrences.map((lot) => exitAllocationByKey.get(record.exitEvidenceKey)?.get(lot) ?? null)
+    if (!isLiveCanonicalProvenance && (entryShares.some((sh) => sh === null) || exitShares.some((sh) => sh === null))) {
       // Evidence loaded, but at least one occurrence isn't a member of the evidence group the
       // allocation was computed over — fail closed rather than publish an unallocated share.
       reasonCounts.manifest_side_evidence_invalid += 1
@@ -2275,19 +2394,20 @@ export async function replayManifest(params: {
       addClassifiedReason(structuralReasonKeys, 'evidence_allocation_membership_conflict', key)
       continue
     }
+    if (isLiveCanonicalProvenance && !occurrences.every(isCanonicalVerifiedPublishedLot)) {
+      reasonCounts.manifest_canonical_verifier_rejection += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      traceMissing(key, 'manifest_canonical_verifier_rejection', occurrences, record, !!entryEvidence, !!exitEvidence)
+      addClassifiedReason(staleReasonKeys, 'live_canonical_candidate_not_independently_verified', key)
+      continue
+    }
     const liveGroupCostBasisUsd = Math.round((() => {
-      const allocated = entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
-      const live = sumOrLive(occurrences, 'entry')
-      if (isCanonicalPositiveUsd(allocated)) return allocated
-      if (isCanonicalPositiveUsd(record.groupCostBasisUsd) && isCanonicalPositiveUsd(live)) return live
-      return allocated
+      if (isLiveCanonicalProvenance) return sumOrLive(occurrences, 'entry') ?? 0
+      return entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
     })() * 1e8) / 1e8
     const liveGroupProceedsUsd = Math.round((() => {
-      const allocated = exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
-      const live = sumOrLive(occurrences, 'exit')
-      if (isCanonicalPositiveUsd(allocated)) return allocated
-      if (isCanonicalPositiveUsd(record.groupProceedsUsd) && isCanonicalPositiveUsd(live)) return live
-      return allocated
+      if (isLiveCanonicalProvenance) return sumOrLive(occurrences, 'exit') ?? 0
+      return exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0)
     })() * 1e8) / 1e8
 
     // BOUNDED VALUE-DISAGREEMENT AUDIT, DISCLOSED (canonical-manifest-false-structural-disagreement

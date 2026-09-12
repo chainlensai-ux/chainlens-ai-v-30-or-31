@@ -2351,6 +2351,122 @@ describe('additive rebuild freezes live verified values instead of dust allocati
   })
 })
 
+describe('additive live-canonical provenance replay', () => {
+  function dustPair() {
+    const existing = lot({
+      lotId: 'existing-usdc', token: '0xusdc', amount: 10_000_000_000,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-existing', openedAt: 1, closedAt: 2,
+      costBasisUsd: 100, proceedsUsd: 110, realizedPnlUsd: 10,
+    })
+    const additive = lot({
+      lotId: 'additive-usdc', token: '0xusdc', amount: 1,
+      openedTxHash: '0xsharedbuy', closedTxHash: '0xsell-additive', openedAt: 1, closedAt: 3,
+      costBasisUsd: 42.5, proceedsUsd: 50, realizedPnlUsd: 7.5,
+    })
+    return { existing, additive }
+  }
+  function seedDust(existing: MatchedLot, additive: MatchedLot) {
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const write = (lotRef: MatchedLot, side: 'entry' | 'exit', priceUsd: number) => {
+      const identityFields = {
+        chain: lotRef.chain, token: lotRef.token,
+        txHash: side === 'entry' ? lotRef.openedTxHash : lotRef.closedTxHash,
+        side, timestamp: side === 'entry' ? lotRef.openedAt : lotRef.closedAt,
+        lotIdentityVersion: lotIdentityVersion(lotRef),
+      }
+      store.set(buildAcceptedEvidenceKey(identityFields), buildAcceptedEvidenceEnvelope({
+        identity: identityFields, priceUsd, valueUsd: priceUsd, source: 'canonical-upstream',
+        evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    write(existing, 'entry', 1)
+    write(existing, 'exit', existing.proceedsUsd as number)
+    write(additive, 'exit', additive.proceedsUsd as number)
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    return { loader }
+  }
+  async function rebuiltDustManifest() {
+    const { existing, additive } = dustPair()
+    const evidence = seedDust(existing, additive)
+    const original = await buildManifestFromCandidate({
+      identity: identity('live-prov'), allCandidateLots: [existing], candidateVerifiedLots: [existing],
+      structuralLotCount: 1, fingerprints: computeFingerprints([existing], realizedTotal([existing])),
+      realizedPnlUsd: realizedTotal([existing]), verifiedPricingCoverage: 1, now: NOW,
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    const rebuilt = await buildRefreshedManifest({
+      priorManifest: original, identity: identity('live-prov'),
+      allCandidateLots: [existing, additive], candidateVerifiedLots: [existing, additive],
+      structuralLotCount: 2, fingerprints: computeFingerprints([existing, additive], realizedTotal([existing, additive])),
+      realizedPnlUsd: realizedTotal([existing, additive]), verifiedPricingCoverage: 1, now: NOW + 1,
+      refreshReason: 'additive-candidate-evolution-strict-superset',
+      loadEvidence: evidence.loader, computeFingerprints,
+      preferLiveCanonicalValuesWhenAllocatedNotPositive: true,
+    })
+    return { existing, additive, evidence, original, rebuilt }
+  }
+
+  it('HARD ASSERTION: additive manifest record sourced from verified live canonical candidate replays successfully', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const additiveKey = [...buildCanonicalLotIdentities([additive]).values()][0].key
+    const additiveRecord = rebuilt.verifiedLotRecords.find((r) => r.key === additiveKey)
+    assert.equal(additiveRecord?.valueProvenance, 'live_canonical_candidate')
+    const replayResult = await replay(rebuilt, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'applied')
+    assert.equal(replayResult.reasonCounts.manifest_replay_success, 2)
+    const published = replayResult.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    assert.equal(published.length, 2)
+    const publishedAdditive = published.find((l) => l.closedTxHash === additive.closedTxHash)
+    assert.equal(publishedAdditive?.costBasisUsd, 42.5)
+    assert.equal(publishedAdditive?.proceedsUsd, 50)
+  })
+
+  it('HARD ASSERTION: same record with changed live value fails replay', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const changed = { ...additive, costBasisUsd: 99, proceedsUsd: 80, realizedPnlUsd: -19 }
+    const replayResult = await replay(rebuilt, [existing, changed], evidence.loader)
+    assert.equal(replayResult.outcome, 'unavailable')
+    assert.ok(replayResult.reasonCounts.manifest_cost_basis_mismatch > 0 || replayResult.reasonCounts.manifest_proceeds_mismatch > 0)
+  })
+
+  it('HARD ASSERTION: same record without provenance fails closed', async () => {
+    const { existing, additive, evidence, rebuilt } = await rebuiltDustManifest()
+    const additiveKey = [...buildCanonicalLotIdentities([additive]).values()][0].key
+    const stripped: CanonicalPnlSampleManifest = {
+      ...rebuilt,
+      verifiedLotRecords: rebuilt.verifiedLotRecords.map((record) => {
+        if (record.key !== additiveKey) return record
+        const { valueProvenance: _drop, ...rest } = record
+        return rest
+      }),
+    }
+    const replayResult = await replay(stripped, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'unavailable')
+    assert.equal(stripped.verifiedLotRecords.find((r) => r.key === additiveKey)?.valueProvenance, undefined)
+  })
+
+  it('HARD ASSERTION: existing accepted-evidence manifest records unchanged', async () => {
+    const { existing, additive, evidence, original, rebuilt } = await rebuiltDustManifest()
+    const existingKey = original.verifiedLotRecords[0].key
+    const existingRecord = rebuilt.verifiedLotRecords.find((r) => r.key === existingKey)!
+    assert.equal(existingRecord.valueProvenance, undefined)
+    assert.equal(existingRecord.costBasisUsd, original.verifiedLotRecords[0].costBasisUsd)
+    assert.equal(existingRecord.proceedsUsd, original.verifiedLotRecords[0].proceedsUsd)
+    const replayResult = await replay(rebuilt, [existing, additive], evidence.loader)
+    assert.equal(replayResult.outcome, 'applied')
+    const publishedExisting = replayResult.publishedLots.find((l) => l.closedTxHash === existing.closedTxHash)
+    assert.equal(publishedExisting?.costBasisUsd, original.verifiedLotRecords[0].costBasisUsd)
+    assert.equal(publishedExisting?.proceedsUsd, original.verifiedLotRecords[0].proceedsUsd)
+  })
+})
+
 describe('additive manifest refresh application / persistence', () => {
   async function builtAdditivePair(existingCount: number, newCount: number) {
     const oldLots = buildLots(existingCount, existingCount)

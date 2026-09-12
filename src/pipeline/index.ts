@@ -3654,6 +3654,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           requireVerifiedLotCount: additiveGrowthEligible ? candidateVerifiedLots.length : null,
           growthAllowed: additiveGrowthEligible,
         })
+        // eslint-disable-next-line no-console
+        console.warn('[manifest-refresh-in-memory-replay-audit]', application.audit.inMemoryReplay)
         refreshApplicationAudit = application.audit
         manifestWriteSuccess = application.audit.writeSuccess
         manifestWriteFailure = application.audit.writeAttempted && !application.audit.writeSuccess
