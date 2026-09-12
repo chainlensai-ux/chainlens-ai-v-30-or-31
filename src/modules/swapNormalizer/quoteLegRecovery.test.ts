@@ -51,6 +51,7 @@ test('decodeQuoteAssetTransfers finds a stable quote leg recovered from a Transf
   assert.equal(found.length, 1)
   assert.equal(found[0].symbol, 'USDC')
   assert.equal(found[0].kind, 'stable')
+  assert.equal(found[0].decimals, 6)
   assert.equal(found[0].direction, 'out')
 })
 

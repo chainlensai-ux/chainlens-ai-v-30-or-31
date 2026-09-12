@@ -71,6 +71,80 @@ describe('deriveSameTransactionQuotePrice — stablecoin quote', () => {
     assert.equal(rejected.priceUsd, null)
     assert.equal(rejected.evidence.rejectionReason, 'quote_amount_normalization_mismatch')
   })
+
+  it('Base USDC raw integer 2,996,415 → 2.996415 USD, derived price positive; already-normalized 2.996415 is not divided again', () => {
+    const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+    const targetQuantity = 100
+    const correctlyNormalized: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: targetQuantity, direction: 'inbound', logIndex: 0 },
+      { contract: USDC_BASE, symbol: 'USDC', decimals: 6, amount: 2.996415, rawAmount: '2996415', inputWasAlreadyNormalized: true, direction: 'outbound', logIndex: 1 },
+    ]
+    const accepted = deriveSameTransactionQuotePrice(baseParams({
+      chain: 'base',
+      groupedSwapLegs: correctlyNormalized,
+      targetQuantity,
+    }))
+    assert.equal(accepted.source, 'same_tx_stable_quote')
+    assert.equal(accepted.quoteQuantity, 2.996415)
+    assert.equal(accepted.quoteValueUsd, 2.996415)
+    assert.ok(accepted.priceUsd != null && accepted.priceUsd > 0)
+    assert.equal(accepted.evidence.quoteDecimals, 6)
+    assert.equal(accepted.evidence.normalizedAmount, 2.996415)
+
+    const alreadyHumanRaw: SwapLeg[] = [
+      correctlyNormalized[0],
+      { ...correctlyNormalized[1], rawAmount: '2.996415' },
+    ]
+    const passthrough = deriveSameTransactionQuotePrice(baseParams({
+      chain: 'base',
+      groupedSwapLegs: alreadyHumanRaw,
+      targetQuantity,
+    }))
+    assert.equal(passthrough.quoteQuantity, 2.996415, 'human rawAmount must not take a second 10^6 pass')
+
+    const providerSaidEighteen: SwapLeg[] = [
+      correctlyNormalized[0],
+      { ...correctlyNormalized[1], decimals: 18 },
+    ]
+    const overridden = deriveSameTransactionQuotePrice(baseParams({
+      chain: 'base',
+      groupedSwapLegs: providerSaidEighteen,
+      targetQuantity,
+    }))
+    assert.equal(overridden.quoteQuantity, 2.996415)
+    assert.equal(overridden.evidence.quoteDecimals, 6)
+
+    const eighteenDecimalPoison: SwapLeg[] = [
+      correctlyNormalized[0],
+      { ...correctlyNormalized[1], amount: 2.996415e-12, decimals: 18 },
+    ]
+    const rejected = deriveSameTransactionQuotePrice(baseParams({
+      chain: 'base',
+      groupedSwapLegs: eighteenDecimalPoison,
+      targetQuantity,
+    }))
+    assert.equal(rejected.priceUsd, null)
+    assert.equal(rejected.evidence.rejectionReason, 'quote_amount_normalization_mismatch')
+  })
+
+  it('production-shaped Base USDC raw 2996415704 yields ~2996.415704 USD, not 2.996415704e-9', () => {
+    const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+    const targetQuantity = 121140766.74509133
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: targetQuantity, direction: 'inbound', logIndex: 0 },
+      { contract: USDC_BASE, symbol: 'USDC', decimals: 18, amount: 2996.415704, rawAmount: '2996415704', inputWasAlreadyNormalized: true, direction: 'outbound', logIndex: 1 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({
+      chain: 'base',
+      groupedSwapLegs: legs,
+      targetQuantity,
+    }))
+    assert.ok(result.quoteQuantity != null && Math.abs(result.quoteQuantity - 2996.415704) < 1e-9)
+    assert.ok(result.quoteValueUsd != null && Math.abs(result.quoteValueUsd - 2996.415704) < 1e-9)
+    assert.ok(result.priceUsd != null && result.priceUsd > 0)
+    assert.ok(result.priceUsd! > 1e-6, 'must not accept the 18-decimal poison derived price (~2.47e-17)')
+    assert.equal(result.evidence.quoteDecimals, 6)
+  })
 })
 
 describe('deriveSameTransactionQuotePrice — native/WETH quote', () => {
@@ -181,14 +255,15 @@ describe('deriveSameTransactionQuotePrice — rejections', () => {
     }
   })
 
-  it('10. malformed decimals are rejected', () => {
+  it('10. malformed decimals on a canonical stable still quote using canonical 6, never fallback 18', () => {
     const legs: SwapLeg[] = [
       { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'inbound', logIndex: 0 },
       { contract: USDC_ETH, symbol: 'USDC', decimals: Number.NaN, amount: 500, direction: 'outbound', logIndex: 1 },
     ]
     const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs }))
-    assert.equal(result.priceUsd, null)
-    assert.equal(result.evidence.rejectionReason, 'no_opposite_leg_in_transaction')
+    assert.equal(result.source, 'same_tx_stable_quote')
+    assert.equal(result.quoteQuantity, 500)
+    assert.equal(result.evidence.quoteDecimals, 6)
   })
 
   it('11. zero quantity is rejected', () => {

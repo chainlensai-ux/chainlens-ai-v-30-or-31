@@ -34,8 +34,19 @@ export function isZeroAddress(address: string | null | undefined): boolean {
 // (sums, comparisons) stays well-defined.
 export function toDecimalAmount(amountRaw: string | null | undefined, decimals: number | null | undefined): number {
   if (amountRaw == null) return 0
+  const trimmed = String(amountRaw).trim()
+  if (!trimmed) return 0
+  let integerOrHuman = trimmed
+  if (/^0x[0-9a-fA-F]+$/i.test(trimmed)) {
+    try { integerOrHuman = BigInt(trimmed).toString(10) } catch { return 0 }
+  }
+  // Already-normalized human/scientific amount: never divide again (same invariant as parseAmount).
+  if (/[eE]/.test(integerOrHuman) || integerOrHuman.includes('.')) {
+    const parsed = Number(integerOrHuman)
+    return Number.isFinite(parsed) ? Math.abs(parsed) : 0
+  }
   const dec = typeof decimals === 'number' && Number.isFinite(decimals) ? decimals : 18
-  const parsed = Number(amountRaw)
+  const parsed = Number(integerOrHuman)
   if (!Number.isFinite(parsed)) return 0
   const value = Math.abs(parsed) / Math.pow(10, dec)
   return Number.isFinite(value) ? value : 0

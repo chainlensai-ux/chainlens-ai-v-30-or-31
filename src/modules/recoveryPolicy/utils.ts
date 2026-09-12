@@ -49,6 +49,26 @@ function alchemyApiKey(chain: SupportedChain): string {
   return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
+// Local copies of providerFetchWindow/utils.ts's alchemyHex helpers — this module is
+// intentionally self-contained (see file header: no runtime coupling to module 1). Same
+// conversions the shallow-window Alchemy path already applies: hex raw → decimal integer
+// string, hex decimal → number. Previously this recovery path stored the hex unmodified
+// and hardcoded tokenDecimals: null, so parseAmount's 18-fallback minted 2.99e-9 USDC.
+function alchemyHexAmountToDecimalString(hexValue: string | null): string | null {
+  if (hexValue == null) return null
+  try {
+    return BigInt(hexValue).toString()
+  } catch {
+    return null
+  }
+}
+
+function alchemyHexDecimalToNumber(hexDecimal: string | null): number | null {
+  if (hexDecimal == null) return null
+  const parsed = Number(hexDecimal)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
 function alchemyBaseUrl(chain: SupportedChain): string | null {
   const verified = ALCHEMY_VERIFIED_CHAINS[chain]
   if (!verified) return null
@@ -223,10 +243,12 @@ export async function fetchAlchemyTokenHistory(
             ? ((t.rawContract as Record<string, unknown>).address as string).toLowerCase()
             : null,
           symbol: typeof t.asset === 'string' ? t.asset : null,
-          amountRaw: typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
+          amountRaw: alchemyHexAmountToDecimalString(typeof (t.rawContract as Record<string, unknown> | undefined)?.value === 'string'
             ? ((t.rawContract as Record<string, unknown>).value as string)
-            : null,
-          tokenDecimals: null,
+            : null),
+          tokenDecimals: alchemyHexDecimalToNumber(typeof (t.rawContract as Record<string, unknown> | undefined)?.decimal === 'string'
+            ? ((t.rawContract as Record<string, unknown>).decimal as string)
+            : null),
         })
       }
     }

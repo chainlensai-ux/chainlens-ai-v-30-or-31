@@ -13,6 +13,7 @@ import type {
   NormalizedEvent,
 } from './types'
 import { firstFailingReason, isValidAddress, normalizedDedupeKey, parseAmount } from './utils'
+import { hexAmountToIntegerString, resolveTokenDecimals } from './canonicalDecimals'
 
 export type {
   Direction,
@@ -63,7 +64,13 @@ export function normalizeEvents(rawEvents: RawProviderEvent[], walletAddress: st
       continue
     }
 
-    const amount = parseAmount(event.amountRaw, event.tokenDecimals)
+    const resolved = resolveTokenDecimals({
+      chain: event.chain,
+      token: event.contract,
+      providerDecimals: event.tokenDecimals,
+    })
+    const amountRaw = hexAmountToIntegerString(event.amountRaw ?? '') ?? event.amountRaw
+    const amount = parseAmount(amountRaw, resolved.decimals)
     if (amount == null) {
       normalizationErrors.push(recordNormalizationError(event, 'invalid_amount'))
       continue
@@ -90,8 +97,8 @@ export function normalizeEvents(rawEvents: RawProviderEvent[], walletAddress: st
       contract: (event.contract as string).toLowerCase(),
       symbol: event.symbol ?? '?',
       amount,
-      amountRaw: event.amountRaw,
-      tokenDecimals: typeof event.tokenDecimals === 'number' ? event.tokenDecimals : 18,
+      amountRaw,
+      tokenDecimals: resolved.decimals,
       direction: classifyDirection(event, walletAddress),
     })
   }

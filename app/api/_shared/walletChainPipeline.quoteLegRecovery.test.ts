@@ -58,6 +58,7 @@ describe('recoverQuoteLegsForBundles', () => {
     assert.equal(bundles[0].transfers?.[0].contract, MEMECOIN, 'the original leg is untouched')
     const recoveredLeg = bundles[0].transfers?.[1]
     assert.equal(recoveredLeg?.contract.toLowerCase(), WETH_BASE)
+    assert.equal(recoveredLeg?.decimals, 18)
     assert.equal(recoveredLeg?.to.toLowerCase(), WALLET)
     assert.equal(audit.oneLegTxCount, 1)
     assert.equal(audit.candidateSwapTxs, 1)
@@ -65,6 +66,24 @@ describe('recoverQuoteLegsForBundles', () => {
     assert.equal(audit.quoteLegsRecovered, 1)
     assert.equal(audit.nativeQuoteLegsRecovered, 1)
     assert.equal(audit.stableQuoteLegsRecovered, 0)
+  })
+
+  it('recovered Base USDC quote legs carry canonical decimals=6, never undefined/18', async () => {
+    const USDC_BASE = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+    globalThis.fetch = (async () => ({
+      ok: true,
+      json: async () => receiptResponse([
+        { address: USDC_BASE, topics: [TRANSFER_TOPIC0, pad(ROUTER), pad(WALLET)], data: '0x' + Number(2996415).toString(16), logIndex: '0x3' },
+      ]),
+    })) as unknown as typeof fetch
+
+    const bundle: RawTxBundle = { chain: 'base', txHash: '0xsell-usdc', timestamp: 1000, transfers: [{ logIndex: 1, contract: MEMECOIN, from: WALLET, to: ROUTER, amountRaw: '1000' }] }
+    const { bundles, audit } = await recoverQuoteLegsForBundles([bundle], WALLET, 'base')
+    const recoveredLeg = bundles[0].transfers?.[1]
+    assert.equal(recoveredLeg?.contract.toLowerCase(), USDC_BASE)
+    assert.equal(recoveredLeg?.decimals, 6)
+    assert.equal(recoveredLeg?.amountRaw, '2996415')
+    assert.equal(audit.stableQuoteLegsRecovered, 1)
   })
 
   it('a genuine airdrop (single incoming transfer, no counter-leg anywhere in the receipt) is never fabricated into a swap', async () => {
