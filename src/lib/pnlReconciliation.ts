@@ -2901,7 +2901,11 @@ export function createPnlReconciliation(config: Config = {}) {
       ).map((reason) => reason.rule)
       const { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit } = computeVerifiedSampleAndFullHistoryPerformance({
         verifiedLots: verifiedUpdatedLots,
-        structuralLots: publishedFifoLots,
+        // Pairing universe is the full structural FIFO, including unpriced lots. Manifest-replayed
+        // quote/cash legs stay excluded when a counterpart risk lot exists here even if the bounded
+        // event window no longer contains those historical txs. Published verified lots remain the
+        // ROI membership set (`verifiedLots`); this array is identity-only.
+        structuralLots: consistentFifoLots,
         normalizedEvents: input.normalizedEvents,
         structuralLotCount: fifoLots.length,
         realizedPnlUsd,

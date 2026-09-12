@@ -304,4 +304,140 @@ describe('verifiedSampleRoiEligibility — quote/cash vs independent stablecoin'
     assert.equal(eligibility.quoteCashLegLots.length, 0)
     assert.equal(eligibility.classifications[0]?.roiDenominatorDisposition, 'include_economic_position')
   })
+
+  it('HARD ASSERTION: manifest-replayed historical quote lots stay excluded when bounded events omit those txs', () => {
+    // Published verified sample (manifest replay): one risk lot + its USDC quote/cash lot.
+    // Structural FIFO also includes an unpriced historical risk lot that financed a second
+    // manifest-replayed USDC lot. The current bounded event window contains neither historical
+    // tx — the live 72→16 failure mode. FIFO identity is primary; missing events must not
+    // reclassify a proven quote leg as independent.
+    const liveBuyTx = '0xlivebuy'
+    const liveSellTx = '0xlivesell'
+    const historicalBuyTx = '0xhistbuy'
+    const historicalSellTx = '0xhistsell'
+    const historicalUsdcOpenTx = '0xhistusdcopen'
+    const publishedRisk = lot({
+      lotId: 'published-risk',
+      token: TOKEN,
+      openedTxHash: liveBuyTx,
+      closedTxHash: liveSellTx,
+      openedAt: 100,
+      closedAt: 110,
+      amount: 50,
+      costBasisUsd: 1000,
+      proceedsUsd: 700,
+      realizedPnlUsd: -300,
+    })
+    const publishedUsdcQuote = lot({
+      lotId: 'published-usdc-quote',
+      token: USDC,
+      openedTxHash: historicalSellTx,
+      closedTxHash: liveBuyTx,
+      openedAt: 50,
+      closedAt: 100,
+      amount: 1000,
+      costBasisUsd: 1000,
+      proceedsUsd: 1000,
+      realizedPnlUsd: 0,
+    })
+    const historicalUsdcQuote = lot({
+      lotId: 'historical-usdc-quote',
+      token: USDC,
+      openedTxHash: historicalUsdcOpenTx,
+      closedTxHash: historicalBuyTx,
+      openedAt: 10,
+      closedAt: 20,
+      amount: 400,
+      costBasisUsd: 400,
+      proceedsUsd: 400,
+      realizedPnlUsd: 0,
+    })
+    const unpricedHistoricalRisk = lot({
+      lotId: 'unpriced-historical-risk',
+      token: TOKEN,
+      openedTxHash: historicalBuyTx,
+      closedTxHash: historicalSellTx,
+      openedAt: 20,
+      closedAt: 50,
+      amount: 12,
+      costBasisUsd: null,
+      proceedsUsd: null,
+      realizedPnlUsd: null,
+      evidenceQuality: 'unpriced',
+    })
+    const boundedEvents: NormalizedEvent[] = [
+      event({ txHash: liveBuyTx, contract: USDC, direction: 'outbound', fromAddress: WALLET, toAddress: SWAP_ROUTER02, amount: 1000 }),
+      event({ txHash: liveBuyTx, contract: TOKEN, symbol: 'CLANKER', direction: 'inbound', fromAddress: SWAP_ROUTER02, toAddress: WALLET, amount: 50 }),
+      event({ txHash: liveSellTx, contract: TOKEN, symbol: 'CLANKER', direction: 'outbound', fromAddress: WALLET, toAddress: SWAP_ROUTER02, amount: 50 }),
+      event({ txHash: liveSellTx, contract: USDC, direction: 'inbound', fromAddress: SWAP_ROUTER02, toAddress: WALLET, amount: 700 }),
+    ]
+
+    const eligibility = classifyVerifiedSampleRoiEligibility({
+      verifiedLots: [publishedRisk, publishedUsdcQuote, historicalUsdcQuote],
+      structuralLots: [publishedRisk, publishedUsdcQuote, historicalUsdcQuote, unpricedHistoricalRisk],
+      normalizedEvents: boundedEvents,
+    })
+
+    const publishedUsdcRow = eligibility.classifications.find((row) => row.lotKey === roiLotKey(publishedUsdcQuote))
+    const historicalUsdcRow = eligibility.classifications.find((row) => row.lotKey === roiLotKey(historicalUsdcQuote))
+    assert.equal(publishedUsdcRow?.roiDenominatorDisposition, 'exclude_quote_cash_leg')
+    assert.equal(publishedUsdcRow?.reason, 'fifo_paired_quote_cash')
+    assert.equal(publishedUsdcRow?.fifoPairAtOpen, true)
+    assert.equal(publishedUsdcRow?.openTxPresentInEvents, false)
+    assert.equal(historicalUsdcRow?.roiDenominatorDisposition, 'exclude_quote_cash_leg')
+    assert.equal(historicalUsdcRow?.reason, 'fifo_paired_quote_cash')
+    assert.equal(historicalUsdcRow?.fifoPairAtClose, true)
+    assert.equal(historicalUsdcRow?.openTxPresentInEvents, false)
+    assert.equal(historicalUsdcRow?.closeTxPresentInEvents, false)
+    assert.equal(historicalUsdcRow?.isIndependentStablecoinTrade, false)
+    assert.equal(eligibility.quoteCashLegLots.length, 2)
+    assert.equal(eligibility.unresolvedLots.length, 0)
+    assert.equal(eligibility.verifiedSampleRoiEligibleLots.length, 1)
+    assert.equal(eligibility.roiAvailable, true)
+    assert.equal(eligibility.realizedRoiCostBasisUsd, 1000)
+    assert.equal(eligibility.realizedRoiPnlUsd, -300)
+  })
+
+  it('HARD ASSERTION: missing bounded event context without a FIFO pair is unresolved, never independent', () => {
+    const historicalUsdc = lot({
+      lotId: 'historical-usdc-unpaired',
+      token: USDC,
+      openedTxHash: '0xmissingopen',
+      closedTxHash: '0xmissingclose',
+      openedAt: 1,
+      closedAt: 2,
+      amount: 800,
+      costBasisUsd: 800,
+      proceedsUsd: 800,
+      realizedPnlUsd: 0,
+    })
+    const unrelatedRisk = lot({
+      lotId: 'unrelated-risk',
+      token: TOKEN,
+      openedTxHash: '0xotherbuy',
+      closedTxHash: '0xothersell',
+      costBasisUsd: 2000,
+      proceedsUsd: 1500,
+      realizedPnlUsd: -500,
+    })
+    const boundedEvents: NormalizedEvent[] = [
+      event({ txHash: '0xotherbuy', contract: TOKEN, symbol: 'CLANKER', direction: 'inbound', fromAddress: SWAP_ROUTER02, toAddress: WALLET }),
+      event({ txHash: '0xothersell', contract: TOKEN, symbol: 'CLANKER', direction: 'outbound', fromAddress: WALLET, toAddress: SWAP_ROUTER02 }),
+    ]
+
+    const eligibility = classifyVerifiedSampleRoiEligibility({
+      verifiedLots: [historicalUsdc, unrelatedRisk],
+      structuralLots: [historicalUsdc, unrelatedRisk],
+      normalizedEvents: boundedEvents,
+    })
+    const usdcRow = eligibility.classifications.find((row) => row.token.toLowerCase() === USDC)
+    assert.equal(usdcRow?.roiDenominatorDisposition, 'unresolved')
+    assert.equal(usdcRow?.reason, 'unresolved_missing_event_context')
+    assert.equal(usdcRow?.isIndependentStablecoinTrade, false)
+    assert.equal(usdcRow?.openTxPresentInEvents, false)
+    assert.equal(usdcRow?.closeTxPresentInEvents, false)
+    assert.equal(eligibility.roiAvailable, false)
+    assert.equal(eligibility.realizedRoiPnlUsd, null)
+    assert.equal(eligibility.realizedRoiCostBasisUsd, null)
+  })
 })

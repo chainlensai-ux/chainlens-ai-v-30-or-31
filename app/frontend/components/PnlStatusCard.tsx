@@ -40,7 +40,7 @@ import { StatusBadge } from './StatusBadge'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
-import { buildWalletPnlViewModel, fmtSignedPercent, type WalletPnlBox, type WalletPnlBoxStatus, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
+import { buildWalletPnlViewModel, fmtSignedPercent, type WalletPnlBox, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
 
 // COMBINED-STATUS DISPLAY MAPS, DISCLOSED: presentation only — the underlying classification comes
 // entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here. "Combined "
@@ -56,29 +56,27 @@ const COMBINED_STATUS_TONE: Record<WalletPnlCombinedStatus, 'success' | 'warning
 const COMBINED_REASON_COLOR: Record<WalletPnlCombinedStatus, string> = {
   verified: '#4ade80', partial: '#fbbf24', locked: '#fbbf24', unavailable: 'rgba(226,232,240,0.75)',
 }
-const BOX_STATUS_TONE: Record<WalletPnlBoxStatus, 'success' | 'warning' | 'danger' | 'neutral'> = {
-  Verified: 'success', Partial: 'warning', Locked: 'danger', Unavailable: 'neutral',
-}
 const CHAIN_ROW_STATUS_TONE: Record<WalletPnlChainRow['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
   Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning',
 }
 
-// PNL BOX TILE, DISCLOSED: one clean tile per top-row figure (Realized/Unrealized/ROI/Cost Basis) —
-// value (only when the box's own status says there's a real one to show), a status badge, and a
-// single reason line. Replaces the old 6-tile MetricCard grid + separate confidence-status row.
+// PNL BOX TILE, DISCLOSED: one clean tile per top-row figure — title, value, optional detail.
+// Per-card status badges were removed (PnL Evidence UI cleanup): they overlapped titles/values and
+// repeated the section-level PARTIAL / VERIFIED BOUNDED SAMPLE label. Status lives on the section
+// badge and in the value/detail lines, never as a badge over the number.
 function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
+  const value = box.value ?? 'Unavailable'
   return (
     <div style={{
-      flex: '1 1 150px', minWidth: '150px', padding: '13px 15px', borderRadius: '13px',
+      minWidth: 0, padding: '14px 16px', borderRadius: '13px',
       background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '5px',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '8px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-        <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{label}</span>
-        <StatusBadge label={box.statusLabel ?? box.status} tone={BOX_STATUS_TONE[box.status]} />
-      </div>
-      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
-      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>{label}</span>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
+      {box.reason && (
+        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+      )}
     </div>
   )
 }
@@ -87,24 +85,21 @@ function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
 // "Robinhood Realized PnL" as its own top-row box with proof inline): a distinct tile from the
 // generic PnlBoxTile — shows the real gated value/reason plus the compact swaps/closed-lots/price-
 // evidence proof lines directly in the box, never merged with the Combined Realized PnL tile.
-const ROBINHOOD_BOX_STATUS_TONE: Record<WalletPnlRobinhoodBox['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
-  Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning',
-}
 function PnlRobinhoodBoxTile({ box }: { box: WalletPnlRobinhoodBox }) {
+  const value = box.value ?? (box.status === 'Not verified' ? 'Not Verified' : box.status === 'Unavailable' ? 'Unavailable' : '—')
   return (
     <div style={{
-      flex: '1 1 150px', minWidth: '150px', padding: '13px 15px', borderRadius: '13px',
+      minWidth: 0, padding: '14px 16px', borderRadius: '13px',
       background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
-      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '5px',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: '8px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-        <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Robinhood Realized PnL</span>
-        <StatusBadge label={box.status} tone={ROBINHOOD_BOX_STATUS_TONE[box.status]} />
-      </div>
-      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0' }}>{box.value ?? '—'}</div>
-      <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+      <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.3 }}>Robinhood PnL</span>
+      <div style={{ fontSize: '16px', fontWeight: 800, color: '#e2e8f0', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{value}</div>
+      {box.reason && (
+        <div style={{ fontSize: '10px', color: 'rgba(148,163,184,0.60)', lineHeight: 1.4 }}>{box.reason}</div>
+      )}
       {box.proof && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', marginTop: '2px', fontSize: '10px', color: 'rgba(148,163,184,0.85)' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', fontSize: '10px', color: 'rgba(148,163,184,0.85)' }}>
           <span>Source: {box.proof.source}</span>
           <span>Verified swaps: {box.proof.verifiedSwaps}</span>
           <span>Closed lots: {box.proof.closedLots}</span>
@@ -814,7 +809,7 @@ function sampleCostAndRoi(summary: PnlReconciliationSummary | null | undefined):
     roiLabel: roi != null
       ? (fmtSignedPercent(roi) ?? 'Not calculated for bounded sample')
       : unresolvedQuote
-        ? 'Verified Sample ROI unavailable — quote-leg identity unresolved.'
+        ? 'Quote-leg identity unresolved'
         : 'Verified Sample ROI unavailable — sample cost basis is not positive.',
   }
 }
@@ -1041,20 +1036,15 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             explicit requirement 3 — "PnL (Verified V2)" read as if EVERYTHING under this header,
             including the Robinhood row below, carried the same V2-verified guarantee. */}
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL Evidence</h3>
-        {/* ONE COMBINED BADGE, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task —
-            "remove noisy duplicate badges like PnL unavailable/Not verified/Active when they
-            conflict with per-chain states"): replaces the old "Active" + "Not reliable" + "PnL
-            unavailable" + limited-sample + coverage badge stack (up to 5 badges that could disagree
-            with the per-chain rows below) with the ONE combinedStatus every box/row below already
-            agrees with — see buildWalletPnlViewModel.ts's own header. */}
+        {/* ONE SECTION-LEVEL BADGE, DISCLOSED (PnL Evidence UI cleanup): when a verified bounded
+            sample is showing, that is the section status — PARTIAL / VERIFIED BOUNDED SAMPLE.
+            Combined status is the Full Wallet card's value, not a second header badge. Per-card
+            badges were removed because they overlapped titles/values and repeated this label. */}
         <StatusBadge
-          label={COMBINED_STATUS_LABEL[pnlViewModel.combinedStatus]}
-          tone={COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
-          glow={pnlViewModel.combinedStatus === 'verified'}
+          label={pnlViewModel.sampleStatusBadge ?? COMBINED_STATUS_LABEL[pnlViewModel.combinedStatus]}
+          tone={pnlViewModel.sampleStatusBadge ? 'warning' : COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
+          glow={!pnlViewModel.sampleStatusBadge && pnlViewModel.combinedStatus === 'verified'}
         />
-        {pnlViewModel.sampleStatusBadge && (
-          <StatusBadge label={pnlViewModel.sampleStatusBadge} tone="warning" />
-        )}
       </div>
       <p style={{ fontSize: '12px', fontWeight: 600, color: COMBINED_REASON_COLOR[pnlViewModel.combinedStatus], margin: '0 0 14px', lineHeight: 1.5 }}>
         {pnlViewModel.combinedReason}
@@ -1203,17 +1193,24 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
       ) : displayMode === 'synthetic_per_chain' && syntheticPnl ? (
         <SyntheticPerChainPnlBlock perChain={syntheticPnl.perChain} />
       ) : (
-        // TOP ROW BOXES, DISCLOSED (Smart Money Score + PnL Evidence UI simplification task): ONE
-        // box grid for both the bounded-sample and normal cases — buildWalletPnlViewModel already
-        // resolves which real source (reconciliationSummary vs pnlV2) and which status/reason each
-        // box gets, so this render no longer needs its own separate bounded/normal branches.
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
-          <PnlBoxTile label="Combined / Full Wallet Realized PnL" box={pnlViewModel.combinedRealizedBox} />
-          <PnlBoxTile label="Verified Sample Realized PnL" box={pnlViewModel.verifiedSampleRealizedBox} />
+        <>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '10px', alignItems: 'stretch' }}>
+          <PnlBoxTile label="Full Wallet PnL" box={pnlViewModel.combinedRealizedBox} />
+          <PnlBoxTile label="Verified Sample PnL" box={pnlViewModel.verifiedSampleRealizedBox} />
           <PnlBoxTile label="Verified Sample ROI" box={pnlViewModel.roiBox} />
           <PnlRobinhoodBoxTile box={pnlViewModel.robinhoodBox} />
-          <PnlBoxTile label="Unrealized PnL" box={pnlViewModel.unrealizedBox} />
         </div>
+        {pnlViewModel.unrealizedBox && (
+          <div style={{
+            display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '12px',
+            padding: '10px 16px', marginBottom: '10px', borderRadius: '13px',
+            background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+          }}>
+            <span style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.72)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Unrealized PnL</span>
+            <span style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0' }}>{pnlViewModel.unrealizedBox.value ?? 'Unavailable'}</span>
+          </div>
+        )}
+        </>
       )}
 
       {pnlViewModel.verifiedSampleRealizedBox.status === 'Partial' && pnlViewModel.verifiedSampleRealizedBox.value != null && (

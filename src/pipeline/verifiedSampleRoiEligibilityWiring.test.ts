@@ -1,5 +1,7 @@
 // STATIC WIRING GUARD: quote-cash ROI eligibility must see the same normalized events FIFO used,
-// so independent stablecoin lots can be proven and unresolved native-quote identity fails closed.
+// and pairing must use the full structural FIFO (including unpriced lots), not only the published
+// verified sample. Manifest-replayed historical quote legs must not lose identity just because
+// the bounded event window no longer contains those txs.
 //
 // Run with:
 //   npx tsx --test src/pipeline/verifiedSampleRoiEligibilityWiring.test.ts
@@ -31,4 +33,14 @@ test('computeVerifiedSampleAndFullHistoryPerformance classifies ROI membership f
   assert.match(reconcileSource, /structuralLots\?: readonly MatchedLot\[\]/)
   assert.match(reconcileSource, /verifiedSampleRoiEligibleLots/)
   assert.match(reconcileSource, /unresolved_quote_leg_identity/)
+})
+
+test('ROI pairing universe is the full structural FIFO, not only the published verified sample', () => {
+  const callStart = reconcileSource.indexOf('computeVerifiedSampleAndFullHistoryPerformance({')
+  assert.notEqual(callStart, -1, 'performance call site must remain in pnlReconciliation')
+  const callEnd = reconcileSource.indexOf('\n      })', callStart)
+  assert.notEqual(callEnd, -1)
+  const callBody = reconcileSource.slice(callStart, callEnd)
+  assert.match(callBody, /structuralLots: consistentFifoLots/, 'pairing must use all structural matched lots including unpriced')
+  assert.doesNotMatch(callBody, /structuralLots: publishedFifoLots/, 'published verified sample is not the pairing universe')
 })

@@ -13,6 +13,15 @@
 // non-USDC lots), $527,036.11 cost basis of which $278,198.83 was 77 Base USDC lots at $1/$1/$0.
 // That flattened published ROI toward 0 (−13.43%) without changing FIFO conservation.
 //
+// LIVE CLASSIFICATION REGRESSION THIS ALSO CLOSES (origin/main 46320a): pairing used the published
+// verified sample as the structural universe, and a provided-but-bounded `normalizedEvents` array
+// whose txs did not cover manifest-replayed historical lots fell through to independent (all event
+// flags false). Quote-leg count collapsed (72 → 16), independent USDC inflated, and a handful of
+// in-window router-only lots made ROI unavailable. Canonical FIFO lot identity is now the primary
+// proof; events only supplement. Missing historical/bounded event context is unresolved, never
+// independent. Independent EOA/CEX/mint still requires the lot's open AND close txs to be present
+// in the event set with no opposite-direction risk asset and no router ambiguity.
+//
 // PROOF STANDARD, DISCLOSED: a verified stablecoin lot is excluded from the ROI denominator only
 // when swap/FIFO identity proves it is the cash/quote leg of an already-represented economic
 // trade — never by symbol, never by a blanket stablecoin-address filter. Non-stablecoin verified
@@ -38,6 +47,16 @@ import { isKnownDexRouter } from './knownDexRouters'
 
 export type RoiDenominatorDisposition = 'include_economic_position' | 'exclude_quote_cash_leg' | 'unresolved'
 
+export type RoiClassificationReason =
+  | 'non_stable_economic_position'
+  | 'fifo_paired_quote_cash'
+  | 'event_paired_quote_cash'
+  | 'independent_eoa_cex_or_mint'
+  | 'unresolved_no_events_provided'
+  | 'unresolved_missing_event_context'
+  | 'unresolved_native_or_unknown_quote'
+  | 'unresolved_router_without_opposite_risk'
+
 export type VerifiedSampleRoiLotClassification = {
   lotKey: string
   token: string
@@ -53,9 +72,16 @@ export type VerifiedSampleRoiLotClassification = {
   openingSwapGroupId: string
   closingSwapGroupId: string
   pairedRiskAssetLotKeys: string[]
+  fifoPairAtOpen: boolean
+  fifoPairAtClose: boolean
+  eventPairAtOpen: boolean
+  eventPairAtClose: boolean
+  openTxPresentInEvents: boolean | null
+  closeTxPresentInEvents: boolean | null
   isQuoteLeg: boolean
   isIndependentStablecoinTrade: boolean
   roiDenominatorDisposition: RoiDenominatorDisposition
+  reason: RoiClassificationReason
 }
 
 export type VerifiedSampleRoiEligibility = {
@@ -86,6 +112,7 @@ function finiteOrZero(value: number | null | undefined): number {
 }
 
 type TxEventIndex = {
+  txPresent: boolean
   nonStableOppositeOpen: boolean
   nonStableOppositeClose: boolean
   openingCounterAsset: string | null
@@ -96,14 +123,38 @@ type TxEventIndex = {
   usdcOutboundToRouter: boolean
 }
 
+const EMPTY_TX_INDEX: TxEventIndex = {
+  txPresent: false,
+  nonStableOppositeOpen: false,
+  nonStableOppositeClose: false,
+  openingCounterAsset: null,
+  closingCounterAsset: null,
+  hasNonStable: false,
+  hasUnknownDirectionNonStable: false,
+  usdcInboundFromRouter: false,
+  usdcOutboundToRouter: false,
+}
+
+function indexEventsByTx(events: readonly NormalizedEvent[]): Map<string, NormalizedEvent[]> {
+  const grouped = new Map<string, NormalizedEvent[]>()
+  for (const event of events) {
+    const key = txGroupId(event.chain, event.txHash)
+    const existing = grouped.get(key)
+    if (existing) existing.push(event)
+    else grouped.set(key, [event])
+  }
+  return grouped
+}
+
 function indexEventsForLotToken(
-  events: readonly NormalizedEvent[],
+  eventsByTx: Map<string, NormalizedEvent[]>,
   chain: SupportedChain,
   txHash: string,
   stableToken: string,
 ): TxEventIndex {
-  const key = txGroupId(chain, txHash)
-  const grouped = events.filter((event) => txGroupId(event.chain, event.txHash) === key)
+  const grouped = eventsByTx.get(txGroupId(chain, txHash))
+  if (!grouped || grouped.length === 0) return EMPTY_TX_INDEX
+
   const stable = stableToken.toLowerCase()
   let openingCounterAsset: string | null = null
   let closingCounterAsset: string | null = null
@@ -134,6 +185,7 @@ function indexEventsForLotToken(
   }
 
   return {
+    txPresent: true,
     nonStableOppositeOpen,
     nonStableOppositeClose,
     openingCounterAsset,
@@ -153,6 +205,7 @@ export function classifyVerifiedSampleRoiEligibility(params: {
   const structuralLots = params.structuralLots ?? params.verifiedLots
   const events = params.normalizedEvents
   const eventsProvided = events != null
+  const eventsByTx = eventsProvided ? indexEventsByTx(events) : null
 
   const riskByOpenTx = new Map<string, MatchedLot[]>()
   const riskByCloseTx = new Map<string, MatchedLot[]>()
@@ -194,9 +247,16 @@ export function classifyVerifiedSampleRoiEligibility(params: {
         openingSwapGroupId,
         closingSwapGroupId,
         pairedRiskAssetLotKeys: [],
+        fifoPairAtOpen: false,
+        fifoPairAtClose: false,
+        eventPairAtOpen: false,
+        eventPairAtClose: false,
+        openTxPresentInEvents: eventsProvided ? (eventsByTx?.has(openingSwapGroupId) ?? false) : null,
+        closeTxPresentInEvents: eventsProvided ? (eventsByTx?.has(closingSwapGroupId) ?? false) : null,
         isQuoteLeg: false,
         isIndependentStablecoinTrade: false,
         roiDenominatorDisposition: 'include_economic_position',
+        reason: 'non_stable_economic_position',
       })
       verifiedSampleRoiEligibleLots.push(lot)
       continue
@@ -205,24 +265,40 @@ export function classifyVerifiedSampleRoiEligibility(params: {
     const pairedOnOpen = riskByCloseTx.get(openingSwapGroupId) ?? []
     const pairedOnClose = riskByOpenTx.get(closingSwapGroupId) ?? []
     const pairedRiskAssetLotKeys = [...new Set([...pairedOnOpen, ...pairedOnClose].map(roiLotKey))]
+    const fifoPairAtOpen = pairedOnOpen.length > 0
+    const fifoPairAtClose = pairedOnClose.length > 0
 
-    const openEvents = eventsProvided ? indexEventsForLotToken(events, lot.chain, lot.openedTxHash, lot.token) : null
-    const closeEvents = eventsProvided ? indexEventsForLotToken(events, lot.chain, lot.closedTxHash, lot.token) : null
+    const openEvents = eventsByTx ? indexEventsForLotToken(eventsByTx, lot.chain, lot.openedTxHash, lot.token) : null
+    const closeEvents = eventsByTx ? indexEventsForLotToken(eventsByTx, lot.chain, lot.closedTxHash, lot.token) : null
+    const openTxPresentInEvents = openEvents ? openEvents.txPresent : null
+    const closeTxPresentInEvents = closeEvents ? closeEvents.txPresent : null
+    const eventPairAtOpen = Boolean(openEvents?.txPresent && openEvents.nonStableOppositeOpen)
+    const eventPairAtClose = Boolean(closeEvents?.txPresent && closeEvents.nonStableOppositeClose)
 
-    const fifoProvenQuote = pairedRiskAssetLotKeys.length > 0
-    const eventProvenQuote = Boolean(openEvents?.nonStableOppositeOpen || closeEvents?.nonStableOppositeClose)
+    const fifoProvenQuote = fifoPairAtOpen || fifoPairAtClose
+    const eventProvenQuote = eventPairAtOpen || eventPairAtClose
 
     let disposition: RoiDenominatorDisposition
     let isQuoteLeg = false
     let isIndependentStablecoinTrade = false
+    let reason: RoiClassificationReason
 
     if (fifoProvenQuote || eventProvenQuote) {
+      // Canonical FIFO lot identity is primary; events only supplement. A proven quote leg stays
+      // excluded even when the bounded event window no longer contains its historical txs.
       disposition = 'exclude_quote_cash_leg'
       isQuoteLeg = true
+      reason = fifoProvenQuote ? 'fifo_paired_quote_cash' : 'event_paired_quote_cash'
     } else if (!eventsProvided) {
       // Structural lots alone cannot distinguish an EOA/CEX cash movement from a native-ETH swap
       // whose opposite leg never produced an ERC20 FIFO lot. Fail closed.
       disposition = 'unresolved'
+      reason = 'unresolved_no_events_provided'
+    } else if (!openEvents!.txPresent || !closeEvents!.txPresent) {
+      // Missing historical/bounded event context is not proof of an independent EOA/CEX/mint
+      // movement. Do not guess the lot into the ROI denominator.
+      disposition = 'unresolved'
+      reason = 'unresolved_missing_event_context'
     } else if (
       openEvents?.hasUnknownDirectionNonStable
       || closeEvents?.hasUnknownDirectionNonStable
@@ -230,15 +306,18 @@ export function classifyVerifiedSampleRoiEligibility(params: {
       || (closeEvents?.hasNonStable && !closeEvents.nonStableOppositeClose)
     ) {
       disposition = 'unresolved'
+      reason = 'unresolved_native_or_unknown_quote'
     } else if (openEvents?.usdcInboundFromRouter || closeEvents?.usdcOutboundToRouter) {
       // Router counterparty with no proven opposite-direction risk asset: could be a native quote
       // swap. Do not guess.
       disposition = 'unresolved'
+      reason = 'unresolved_router_without_opposite_risk'
     } else {
-      // No opposite-direction risk asset on either side. Counterparties are EOA/CEX or a 0x0 mint
-      // — a mint without a swap is cash issuance, not a quote leg.
+      // Both txs are present in events and show no opposite-direction risk asset. Counterparties
+      // are EOA/CEX or a 0x0 mint — a mint without a swap is cash issuance, not a quote leg.
       disposition = 'include_economic_position'
       isIndependentStablecoinTrade = true
+      reason = 'independent_eoa_cex_or_mint'
     }
 
     const openingCounterAsset = openEvents?.openingCounterAsset
@@ -261,9 +340,16 @@ export function classifyVerifiedSampleRoiEligibility(params: {
       openingSwapGroupId,
       closingSwapGroupId,
       pairedRiskAssetLotKeys,
+      fifoPairAtOpen,
+      fifoPairAtClose,
+      eventPairAtOpen,
+      eventPairAtClose,
+      openTxPresentInEvents,
+      closeTxPresentInEvents,
       isQuoteLeg,
       isIndependentStablecoinTrade,
       roiDenominatorDisposition: disposition,
+      reason,
     })
 
     if (disposition === 'include_economic_position') verifiedSampleRoiEligibleLots.push(lot)

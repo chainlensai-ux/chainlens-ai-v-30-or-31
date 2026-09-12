@@ -264,15 +264,19 @@ export function fmtSignedPercent(value: number | null | undefined, digits = 1): 
 }
 
 export const VERIFIED_SAMPLE_PNL_REASON = (verifiedLotCount: number, pricingCoverage: number): string =>
-  `PARTIAL · ${verifiedLotCount} verified closed lots · ${(pricingCoverage * 100).toFixed(0)}% pricing coverage`
+  `${verifiedLotCount} verified lots · ${(pricingCoverage * 100).toFixed(0)}% priced`
 
-export const VERIFIED_SAMPLE_ROI_REASON = 'PARTIAL · realized-only bounded sample'
+export const VERIFIED_SAMPLE_ROI_REASON = 'Realized-only bounded sample'
 
 export const VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL = 'PARTIAL / VERIFIED BOUNDED SAMPLE'
 
 export const VERIFIED_SAMPLE_UNAVAILABLE_REASON = 'Verified sample PnL is unavailable — included lot integrity failed.'
 
 export const FULL_WALLET_ROI_LOCKED_REASON = 'Full-wallet ROI is locked until complete-wallet history is verified. Verified Sample ROI is realized-only and does not include unrealized PnL.'
+
+export const ROI_UNAVAILABLE_UNRESOLVED_QUOTE_REASON = 'Quote-leg identity unresolved'
+
+export const ROI_UNAVAILABLE_NON_POSITIVE_COST_REASON = 'Sample cost basis is not positive'
 
 
 export function buildOfficialUnavailableReason(params: {
@@ -555,9 +559,9 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       : sampleRoiAllowed
         ? VERIFIED_SAMPLE_ROI_REASON
         : sampleWired && sample?.roiUnavailableReason === 'unresolved_quote_leg_identity'
-          ? 'Verified Sample ROI unavailable — quote-leg identity unresolved.'
+          ? ROI_UNAVAILABLE_UNRESOLVED_QUOTE_REASON
           : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
-          ? 'Verified Sample ROI unavailable — sample cost basis is not positive.'
+          ? ROI_UNAVAILABLE_NON_POSITIVE_COST_REASON
           : sampleWired
             ? VERIFIED_SAMPLE_UNAVAILABLE_REASON
             : roiStatus === 'Verified'
