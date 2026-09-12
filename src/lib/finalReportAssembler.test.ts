@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { createFinalReportAssembler } from './finalReportAssembler'
+import { createFinalReportAssembler, applyVerifiedSampleHeadline } from './finalReportAssembler'
 
 const quiet = { warn() {} }
 
@@ -127,9 +127,42 @@ describe('finalReportAssembler', () => {
     }))
     assert.equal(report.fifoAndPnl.realizedPnlUsd, 174.01)
     assert.equal(report.reconciliationSummary.realizedPnlUsd, 174.01)
-    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 270.02, 'pnlEngine keeps its own independent total')
-    assert.notEqual(report.fifoAndPnl.realizedPnlUsd, report.pnlSummaryV2.realizedPnlUsd)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 174.01, 'published pnlSummaryV2 realized is canonical fifo/reconciliation')
+    assert.equal(report.pnlSummaryV2.diagnosticRealizedPnlUsd, 270.02, 'pnlEngine keeps its own independent total as diagnostic')
+    assert.notEqual(report.fifoAndPnl.realizedPnlUsd, report.pnlSummaryV2.diagnosticRealizedPnlUsd)
     assert.equal(report.pnlSummaryV2.diagnosticOnly, true, 'the disagreeing engine must be marked diagnostic-only')
     assert.equal(report.fifoAndPnl.realizedPnlUsd, report.reconciliationSummary.realizedPnlUsd, 'published realized equals the canonical fifo/reconciliation source')
+  })
+
+  it('HARD ASSERTION: unavailable full-wallet + allowed sample → headline keeps Combined locked and still names verified sample PnL', () => {
+    const SAMPLE_PNL = -70794.97
+    const report = createFinalReportAssembler({ logger: quiet }).assemble(baseInput({
+      reconciledPnL: {
+        closedLots: 98, unmatchedBuys: 0, unmatchedSells: 2,
+        realizedPnlUsd: SAMPLE_PNL, unrealizedPnlUsd: null,
+        priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0,
+        missingEvidenceCount: 2, publicPnlStatus: 'unavailable', mismatches: [],
+        publicPnlGateAudit: { unmatchedSellCount: 2, verifiedClosedLots: 98, structuralClosedLots: 98, verifiedPricingCoverage: 1 },
+        verifiedSamplePerformance: {
+          status: 'verified_bounded_sample',
+          realizedPnlUsd: SAMPLE_PNL,
+          realizedCostBasisUsd: 307103.26,
+          realizedRoiPct: -23.05,
+          verifiedLotCount: 98,
+          structuralLotCount: 98,
+          pricingCoverage: 1,
+          excludedUnmatchedSellCount: 2,
+          isCompleteWalletHistory: false,
+        },
+      },
+    }))
+    assert.equal(report.finalSummary.financialStatus.officialPnlStatus, 'unavailable')
+    assert.match(report.finalSummary.financialStatus.headline, /2 unmatched sells prevent complete-wallet verification/)
+    assert.match(report.finalSummary.financialStatus.headline, /Verified sample realized PnL -\$70,794\.97/)
+    assert.match(report.finalSummary.financialStatus.headline, /PARTIAL \/ VERIFIED BOUNDED SAMPLE/)
+    assert.equal(
+      applyVerifiedSampleHeadline('PnL unavailable due to missing evidence.', report.reconciliationSummary),
+      report.finalSummary.financialStatus.headline,
+    )
   })
 })
