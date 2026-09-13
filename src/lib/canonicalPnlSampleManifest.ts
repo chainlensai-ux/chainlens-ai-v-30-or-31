@@ -1027,24 +1027,56 @@ export async function buildManifestFromCandidate(params: {
   const entryGroupTotalByKey = new Map<string, number>()
   const exitGroupTotalByKey = new Map<string, number>()
   if (params.loadEvidence) {
-    for (const [key, groupLots] of entryGroups) {
-      // eslint-disable-next-line no-await-in-loop
-      const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'entry'), lotIdentityVersion: null })
-      entryEvidenceByKey.set(key, evidence)
-      if (evidence) {
-        const groupTotal = stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)
-        entryGroupTotalByKey.set(key, groupTotal)
-        entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, groupTotal).map((s) => [s.lot, s])))
+    // BOUNDED-CONCURRENCY BATCH LOAD, DISCLOSED (Wallet Scanner performance bug hunt): previously
+    // every entry/exit group awaited serially (one KV round trip per group). Same evidence still
+    // loads once per unique group key; only the awaits are overlapped with concurrency 8, matching
+    // replayManifest's own defaultBatchLoad. Deterministic Map population order is preserved by
+    // writing results back in the original group iteration order after the batch settles.
+    const BUILD_EVIDENCE_CONCURRENCY = 8
+    type BuildEvidenceJob = {
+      key: string
+      groupLots: MatchedLot[]
+      side: AcceptedEvidenceSide
+      target: Map<string, AcceptedEvidenceEnvelope | null>
+      totals: Map<string, number>
+      allocations: Map<string, Map<MatchedLot, SideAllocationShare>>
+    }
+    const jobs: BuildEvidenceJob[] = [
+      ...[...entryGroups.entries()].map(([key, groupLots]) => ({
+        key, groupLots, side: 'entry' as const,
+        target: entryEvidenceByKey, totals: entryGroupTotalByKey, allocations: entryAllocationByKey,
+      })),
+      ...[...exitGroups.entries()].map(([key, groupLots]) => ({
+        key, groupLots, side: 'exit' as const,
+        target: exitEvidenceByKey, totals: exitGroupTotalByKey, allocations: exitAllocationByKey,
+      })),
+    ]
+    const results = new Array<{ job: BuildEvidenceJob; evidence: AcceptedEvidenceEnvelope | null }>(jobs.length)
+    let cursor = 0
+    async function worker(): Promise<void> {
+      for (;;) {
+        const index = cursor
+        cursor += 1
+        if (index >= jobs.length) return
+        const job = jobs[index]
+        // eslint-disable-next-line no-await-in-loop
+        const evidence = await params.loadEvidence!({
+          ...sideIdentityForLot(job.groupLots[0], job.side),
+          lotIdentityVersion: null,
+        })
+        results[index] = { job, evidence }
       }
     }
-    for (const [key, groupLots] of exitGroups) {
-      // eslint-disable-next-line no-await-in-loop
-      const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'exit'), lotIdentityVersion: null })
-      exitEvidenceByKey.set(key, evidence)
+    const workerCount = Math.max(1, Math.min(BUILD_EVIDENCE_CONCURRENCY, jobs.length))
+    if (jobs.length > 0) await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    for (const row of results) {
+      if (!row) continue
+      const { job, evidence } = row
+      job.target.set(job.key, evidence)
       if (evidence) {
-        const groupTotal = stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)
-        exitGroupTotalByKey.set(key, groupTotal)
-        exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, groupTotal).map((s) => [s.lot, s])))
+        const groupTotal = stablecoinNormalizedGroupTotal(job.groupLots, evidence.priceUsd)
+        job.totals.set(job.key, groupTotal)
+        job.allocations.set(job.key, new Map(allocateSideValueAcrossGroup(job.groupLots, groupTotal).map((s) => [s.lot, s])))
       }
     }
   }

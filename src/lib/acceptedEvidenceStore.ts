@@ -561,3 +561,84 @@ export function buildAcceptedEvidenceEnvelope(params: {
     migrationHistory,
   }
 }
+
+
+// REQUEST-SCOPED MEMO + IN-FLIGHT COALESCE, DISCLOSED (Wallet Scanner performance bug hunt):
+// a single scan's canonical-sample path can call `loadEvidence` many times for the SAME identity
+// (buildManifestFromCandidate, buildRefreshedManifest, multiple replayManifest passes, additive
+// audits). Each call was previously an independent KV get. Accepted evidence is immutable within a
+// scan for a given identity+validation mode, so memoizing by (mode, KV key[, version]) with
+// in-flight promise coalescing removes duplicate work without changing fail-closed semantics.
+// `now` is frozen at factory creation so TTL checks stay consistent across the memo window.
+export type MemoizedAcceptedEvidenceLoaderIdentity = {
+  chain: string
+  token: string
+  txHash: string
+  side: AcceptedEvidenceSide
+  timestamp: number
+  lotIdentityVersion: string | null
+}
+
+export type MemoizedAcceptedEvidenceLoaderStats = {
+  requests: number
+  uniqueWork: number
+  cacheHits: number
+}
+
+export function createMemoizedAcceptedEvidenceLoader(
+  kv: AcceptedEvidenceKvLike,
+  now: number,
+): {
+  load: (identity: MemoizedAcceptedEvidenceLoaderIdentity) => Promise<AcceptedEvidenceEnvelope | null>
+  stats: () => MemoizedAcceptedEvidenceLoaderStats
+} {
+  const cache = new Map<string, Promise<AcceptedEvidenceEnvelope | null>>()
+  const stats: MemoizedAcceptedEvidenceLoaderStats = { requests: 0, uniqueWork: 0, cacheHits: 0 }
+
+  function memoKey(identity: MemoizedAcceptedEvidenceLoaderIdentity): string {
+    const base = buildAcceptedEvidenceKey({
+      chain: identity.chain,
+      token: identity.token,
+      txHash: identity.txHash,
+      side: identity.side,
+      timestamp: identity.timestamp,
+      lotIdentityVersion: identity.lotIdentityVersion ?? '',
+    })
+    // Discovery and strict validation can return different results for the same KV row when the
+    // stored lotIdentityVersion differs from the requested one — keep them as separate memo slots.
+    return identity.lotIdentityVersion === null
+      ? `any:${base}`
+      : `strict:${base}:${identity.lotIdentityVersion}`
+  }
+
+  function load(identity: MemoizedAcceptedEvidenceLoaderIdentity): Promise<AcceptedEvidenceEnvelope | null> {
+    stats.requests += 1
+    const key = memoKey(identity)
+    const existing = cache.get(key)
+    if (existing) {
+      stats.cacheHits += 1
+      return existing
+    }
+    stats.uniqueWork += 1
+    const promise = identity.lotIdentityVersion === null
+      ? readAcceptedEvidenceAnyLotVersion(kv, {
+          chain: identity.chain,
+          token: identity.token,
+          txHash: identity.txHash,
+          side: identity.side,
+          timestamp: identity.timestamp,
+        }, now)
+      : readAcceptedEvidence(kv, {
+          chain: identity.chain,
+          token: identity.token,
+          txHash: identity.txHash,
+          side: identity.side,
+          timestamp: identity.timestamp,
+          lotIdentityVersion: identity.lotIdentityVersion,
+        }, now)
+    cache.set(key, promise)
+    return promise
+  }
+
+  return { load, stats: () => ({ ...stats }) }
+}

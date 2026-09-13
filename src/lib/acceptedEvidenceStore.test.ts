@@ -4,6 +4,7 @@ import {
   buildAcceptedEvidenceKey, buildAcceptedEvidenceEnvelope, isValidAcceptedEvidence,
   classifyAcceptedEvidence,
   readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
+  createMemoizedAcceptedEvidenceLoader,
   detectLegacyPerUnitTotalRecord, detectLegacyPerUnitTotalByLiveUpstreamProof,
   detectWrongDecimalScaleByLiveUpstreamProof,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
@@ -323,5 +324,80 @@ describe('detectWrongDecimalScaleByLiveUpstreamProof — same-tx Base USDC 18-vs
   it('does not treat the per-unit-as-total shape as a decimal-scale error (different proof)', () => {
     // per-unit 0.00001 * amount 1e6 = 10, live total 10 — that is the other migration, not 1e12.
     assert.equal(detectWrongDecimalScaleByLiveUpstreamProof(0.00001, 10).legacyProof, null)
+  })
+})
+
+
+describe('createMemoizedAcceptedEvidenceLoader', () => {
+  it('identical strict reads hit KV once and return the same envelope', async () => {
+    const kv = fakeKv()
+    let gets = 0
+    const countingKv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => { gets += 1; return kv.get<T>(key) },
+      set: kv.set,
+    }
+    const envelope = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 3.5, valueUsd: 35, source: 'geckoterminal',
+      evidenceType: 'chain-aware-historical', providerTimestampBucket: 990, now: 5000,
+    })
+    await writeAcceptedEvidence(kv, envelope)
+    const memo = createMemoizedAcceptedEvidenceLoader(countingKv, 5001)
+    const a = await memo.load({ ...IDENTITY })
+    const b = await memo.load({ ...IDENTITY })
+    assert.deepEqual(a, envelope)
+    assert.deepEqual(b, envelope)
+    assert.equal(gets, 1)
+    assert.deepEqual(memo.stats(), { requests: 2, uniqueWork: 1, cacheHits: 1 })
+  })
+
+  it('coalesces concurrent identical loads into one KV get', async () => {
+    const kv = fakeKv()
+    let gets = 0
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const countingKv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => {
+        gets += 1
+        await gate
+        return kv.get<T>(key)
+      },
+      set: kv.set,
+    }
+    const envelope = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 2, valueUsd: 20, source: 'geckoterminal',
+      evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: 5000,
+    })
+    await writeAcceptedEvidence(kv, envelope)
+    const memo = createMemoizedAcceptedEvidenceLoader(countingKv, 5001)
+    const p1 = memo.load({ ...IDENTITY })
+    const p2 = memo.load({ ...IDENTITY })
+    release()
+    const [a, b] = await Promise.all([p1, p2])
+    assert.deepEqual(a, envelope)
+    assert.deepEqual(b, envelope)
+    assert.equal(gets, 1)
+    assert.equal(memo.stats().uniqueWork, 1)
+    assert.equal(memo.stats().cacheHits, 1)
+  })
+
+  it('keeps discovery and strict validation as separate memo slots', async () => {
+    const kv = fakeKv()
+    let gets = 0
+    const countingKv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => { gets += 1; return kv.get<T>(key) },
+      set: kv.set,
+    }
+    const envelope = buildAcceptedEvidenceEnvelope({
+      identity: IDENTITY, priceUsd: 1, valueUsd: 10, source: 'geckoterminal',
+      evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: 5000,
+    })
+    await writeAcceptedEvidence(kv, envelope)
+    const memo = createMemoizedAcceptedEvidenceLoader(countingKv, 5001)
+    const discovery = await memo.load({ ...IDENTITY, lotIdentityVersion: null })
+    const strict = await memo.load({ ...IDENTITY })
+    assert.deepEqual(discovery, envelope)
+    assert.deepEqual(strict, envelope)
+    assert.equal(gets, 2)
+    assert.deepEqual(memo.stats(), { requests: 2, uniqueWork: 2, cacheHits: 0 })
   })
 })
