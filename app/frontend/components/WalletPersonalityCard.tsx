@@ -15,7 +15,8 @@
 // NO FALSE ZEROS / NO FAKE PRECISION, DISCLOSED: every metric is rendered through fmtMetric/
 // fmtPercent/RadarMeter below, which render `null` as "Unknown"/"Insufficient evidence" — never as
 // a literal 0/0%/a fabricated bar length. Win rate is only ever shown when
-// profitEvidence.evaluatedCount > 0, and the limited-sample win rate is always explicitly labeled
+// profitEvidence.winRatePercent != null (wins/(wins+losses) over the same population as the
+// Wins/Losses tiles; zero-PnL lots never silently become the denominator), and the limited-sample win rate is always explicitly labeled
 // "Not the wallet's official overall win rate."
 import { useState } from 'react'
 import type { WalletPersonalitySourceReport, TradingStyle, RiskClass, AxisScore } from '@/app/frontend/lib/walletPersonality'

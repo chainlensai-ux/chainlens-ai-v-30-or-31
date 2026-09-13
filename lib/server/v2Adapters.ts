@@ -32,6 +32,7 @@ import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
 import type { WalletLiteResult } from '@/lib/server/walletLite'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { isCanonicalVerifiedPublishedLot } from '@/src/lib/canonicalVerifiedLot'
+import { computeVerifiedSampleWinLoss } from '@/src/lib/verifiedSampleWinLoss'
 
 // Strips this machine's absolute filesystem prefix from a stack trace before it's ever logged or
 // returned in a diagnostic JSON response — "sanitized" per the request. Capped to 5 frames; a full
@@ -141,10 +142,8 @@ export function projectWalletV2ForClark(address: string, report: RunWalletScanV2
   const verifiedLots = publishedLots.filter(isCanonicalVerifiedPublishedLot)
   const pnlStatus = reconciliation?.publicPnlStatus ?? (report.canonicalPricedFifo.publicPnlStatus === 'ok' ? 'available' : report.canonicalPricedFifo.publicPnlStatus === 'limited_verified_sample' ? 'partial' : 'unavailable')
   const realizedPnlUsd = reconciliation?.realizedPnlUsd ?? report.canonicalPricedFifo.realizedPnlUsd
-  const wins = verifiedLots.filter((lot) => (lot.realizedPnlUsd ?? 0) > 0).length
-  const losses = verifiedLots.filter((lot) => (lot.realizedPnlUsd ?? 0) < 0).length
-  const evaluated = wins + losses
-  const publicWinRatePercent = evaluated > 0 ? Math.round((wins / evaluated) * 10_000) / 100 : null
+  const winLoss = computeVerifiedSampleWinLoss(verifiedLots)
+  const publicWinRatePercent = winLoss.winRate == null ? null : Math.round(winLoss.winRate * 10_000) / 100
   const symbolByKey = new Map<string, string>(report.portfolio.tokens.map((token) => [`${token.chain}:${token.contract.toLowerCase()}`, token.symbol]))
   const tokenRows = new Map<string, { symbol: string; chain: string; token: string; realizedPnlUsd: number; totalBoughtUsd: number; totalSoldUsd: number; closedFragments: number }>()
   for (const lot of verifiedLots) {

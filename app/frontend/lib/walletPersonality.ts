@@ -31,7 +31,7 @@ import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 // real, verified FIFO trade evidence for this wallet" — see that file's own header for why a
 // shared selector is what makes drift structurally impossible, not just unlikely.
 import { selectCanonicalPricedFifo } from '@/src/pipeline/selectCanonicalPricedFifo'
-import { isCanonicalVerifiedPublishedLot } from '@/src/lib/canonicalVerifiedLot'
+import { computeVerifiedSampleWinLoss } from '@/src/lib/verifiedSampleWinLoss'
 import type { PersonalityV2 } from '@/lib/engine/modules/personality/types'
 import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
@@ -225,30 +225,27 @@ export function computeRepeatedRouterPercent(counterparties: readonly (string | 
 }
 
 // PURE. Win/loss counts computed ONLY over VERIFIED matched lots — DELEGATES to
-// `isCanonicalVerifiedPublishedLot` (src/lib/canonicalVerifiedLot.ts), THE ONE shared predicate
-// every other "is this lot part of the canonical verified sample" consumer (the public PnL gate,
-// AYRI, Smart Money's own adapter — see adaptFifoMatchedLots.ts's own header) is required to use.
-// FIXED (Wallet Scanner final-state count convergence follow-up task): this function previously
-// re-implemented its own narrower check (`evidenceQuality === 'verified' && realizedPnlUsd != null`
-// only) — missing the non-positive cost/proceeds and chronology checks the shared predicate applies
-// — so it could count a lot the final canonical selection had already excluded, exactly the same
-// class of drift that produced adaptFifoMatchedLots' "provisional 41 vs final canonical 28" bug.
-// Never reads pnlSummaryV2's diagnostic rows.
+// `computeVerifiedSampleWinLoss` (src/lib/verifiedSampleWinLoss.ts), THE ONE helper for sample
+// wins/losses/evaluatedWinLossLots/winRate. `evaluated` remains the verified-lot count (Fully
+// Priced Trades). Win rate is wins/(wins+losses) and is null when that denominator is 0 — zero-PnL
+// quote/cash legs never silently become the rate denominator.
 export function computeVerifiedWinLoss(matchedLots: readonly Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>[]): {
   wins: number
   losses: number
   evaluated: number
+  evaluatedWinLossLots: number
+  winRate: number | null
+  zeroPnlCount: number
 } {
-  let wins = 0
-  let losses = 0
-  let evaluated = 0
-  for (const lot of matchedLots) {
-    if (!isCanonicalVerifiedPublishedLot(lot)) continue
-    evaluated += 1
-    if ((lot.realizedPnlUsd as number) > 0) wins += 1
-    else if ((lot.realizedPnlUsd as number) < 0) losses += 1
+  const wl = computeVerifiedSampleWinLoss(matchedLots)
+  return {
+    wins: wl.wins,
+    losses: wl.losses,
+    evaluated: wl.verifiedLots,
+    evaluatedWinLossLots: wl.evaluatedWinLossLots,
+    winRate: wl.winRate,
+    zeroPnlCount: wl.zeroPnlCount,
   }
-  return { wins, losses, evaluated }
 }
 
 function classifyHolding(averageHoldingDays: number | null): HoldingStyle {
@@ -724,19 +721,20 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   const riskClass = classifyRisk(radar.risk)
 
   const officialPnlStatus = report.finalSummary?.financialStatus?.officialPnlStatus ?? null
-  const { wins, losses, evaluated } = computeVerifiedWinLoss(matchedLots)
+  const { wins, losses, evaluated, winRate } = computeVerifiedWinLoss(matchedLots)
+  const winRatePercent = winRate == null ? null : winRate * 100
 
   const profitEvidence: ProfitEvidence = (() => {
     if (officialPnlStatus === 'ok' && evaluated > 0) {
-      const winRatePercent = (wins / evaluated) * 100
       const skill = canonicalFifo?.realizedPnlUsd != null
         ? canonicalFifo.realizedPnlUsd > 0 ? 'profitable' : canonicalFifo.realizedPnlUsd < 0 ? 'unprofitable' : 'breakeven'
         : null
+      const rateLabel = winRatePercent == null ? 'unavailable' : `${winRatePercent.toFixed(0)}%`
       return {
         kind: 'verified',
         message: skill
-          ? `Verified win rate: ${winRatePercent.toFixed(0)}% (${wins} wins / ${losses} losses) — ${skill} on a verified sample.`
-          : `Verified win rate: ${winRatePercent.toFixed(0)}% (${wins} wins / ${losses} losses).`,
+          ? `Verified win rate: ${rateLabel} (${wins} wins / ${losses} losses) — ${skill} on a verified sample.`
+          : `Verified win rate: ${rateLabel} (${wins} wins / ${losses} losses).`,
         winCount: wins, lossCount: losses, evaluatedCount: evaluated, winRatePercent,
       }
     }
@@ -745,7 +743,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
         kind: 'limited_sample',
         message: `Limited verified sample — ${wins} wins / ${losses} losses across ${evaluated} fully priced trades.`,
         winCount: wins, lossCount: losses, evaluatedCount: evaluated,
-        winRatePercent: (wins / evaluated) * 100,
+        winRatePercent,
       }
     }
     return {

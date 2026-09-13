@@ -13,6 +13,7 @@ import {
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
+import { buildVerifiedSampleWinRateAudit, type VerifiedSampleWinRateAudit } from './verifiedSampleWinLoss'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import {
@@ -1124,6 +1125,7 @@ export type PnlReconciliationSummary = {
   // manifest without touching fingerprints or sample values.
   roiQuoteLegProofsToPersist?: PersistedRoiQuoteLegProof[]
   roiQuoteLegTxBackfillAudit?: RoiQuoteLegTxBackfillAudit
+  verifiedSampleWinRateAudit?: VerifiedSampleWinRateAudit
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -3075,6 +3077,13 @@ export function createPnlReconciliation(config: Config = {}) {
         })
       }
 
+      const verifiedSampleWinRateAudit = buildVerifiedSampleWinRateAudit({
+        lots: verifiedUpdatedLots,
+        excludedQuoteCashCount: roiEligibility.quoteCashLegLots.length,
+        unresolvedCount: roiEligibility.unresolvedLots.length,
+      })
+      logger.warn('[verified-sample-win-rate-audit]', verifiedSampleWinRateAudit)
+
       // TEMPORARY DIAGNOSTIC, DISCLOSED (verified-sample-cost-basis-denominator-drift follow-up
       // task) — never repairs, never changes any published value. Added because
       // `canonicalPnlDiffAudit`'s own `changedGroups`/`previousRealizedPnlUsd`/`currentRealizedPnlUsd`
@@ -3159,6 +3168,7 @@ export function createPnlReconciliation(config: Config = {}) {
           backfillProofs,
         ),
         roiQuoteLegTxBackfillAudit,
+        verifiedSampleWinRateAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

@@ -283,7 +283,12 @@ test('computeVerifiedWinLoss: only counts verified, priced lots — never pnlSum
     { evidenceQuality: 'unpriced', costBasisUsd: null, proceedsUsd: null, openedAt: 0, closedAt: 1, realizedPnlUsd: null },
     { evidenceQuality: 'verified', costBasisUsd: 10, proceedsUsd: 10, openedAt: 0, closedAt: 1, realizedPnlUsd: 0 },
   ])
-  assert.deepEqual(result, { wins: 1, losses: 1, evaluated: 3 })
+  assert.equal(result.wins, 1)
+  assert.equal(result.losses, 1)
+  assert.equal(result.evaluated, 3)
+  assert.equal(result.evaluatedWinLossLots, 2)
+  assert.equal(result.zeroPnlCount, 1)
+  assert.equal(result.winRate, 0.5)
 })
 
 // SHARED-PREDICATE CONVERGENCE, DISCLOSED (Wallet Scanner final-state count convergence follow-up
@@ -297,7 +302,7 @@ test('HARD ASSERTION: a lot with a non-positive proceedsUsd is excluded from eva
     { evidenceQuality: 'verified', costBasisUsd: 100, proceedsUsd: 0, openedAt: 0, closedAt: 1, realizedPnlUsd: -100 },
     { evidenceQuality: 'verified', costBasisUsd: 100, proceedsUsd: -5, openedAt: 0, closedAt: 1, realizedPnlUsd: -105 },
   ])
-  assert.deepEqual(result, { wins: 1, losses: 0, evaluated: 1 }, 'only the genuinely verified lot counts — a non-positive exit value must never be evaluated as a real win/loss')
+  assert.deepEqual(result, { wins: 1, losses: 0, evaluated: 1, evaluatedWinLossLots: 1, winRate: 1, zeroPnlCount: 0 }, 'only the genuinely verified lot counts — a non-positive exit value must never be evaluated as a real win/loss')
 })
 
 test('evidence basis badges cover all four states', () => {
@@ -560,6 +565,27 @@ test('limited PnL sample surfaces the explicit "not official" disclosure via dis
   assert.equal(data.profitEvidence.lossCount, 3)
   assert.equal(data.profitEvidence.evaluatedCount, 7)
   assert.ok(Math.abs((data.profitEvidence.winRatePercent ?? 0) - (4 / 7) * 100) < 0.01)
+})
+
+test('HARD ASSERTION: sample win rate is wins/(wins+losses), not wins/verifiedLots, when quote/zero lots pad the sample', () => {
+  const wins = Array.from({ length: 8 }, (_, i) => lot({ lotId: `w${i}`, openedTxHash: `0xow${i}`, closedTxHash: `0xcw${i}`, realizedPnlUsd: 10, costBasisUsd: 100, proceedsUsd: 110 }))
+  const losses = Array.from({ length: 13 }, (_, i) => lot({ lotId: `l${i}`, openedTxHash: `0xol${i}`, closedTxHash: `0xcl${i}`, realizedPnlUsd: -10, costBasisUsd: 100, proceedsUsd: 90 }))
+  const zeros = Array.from({ length: 77 }, (_, i) => lot({ lotId: `z${i}`, openedTxHash: `0xoz${i}`, closedTxHash: `0xcz${i}`, realizedPnlUsd: 0, costBasisUsd: 400, proceedsUsd: 400 }))
+  const report = baseReport({
+    fifoAndPnl: {
+      ...baseReport().fifoAndPnl,
+      matchedLots: [...wins, ...losses, ...zeros],
+      publicPnlStatus: 'limited_verified_sample',
+    },
+    finalSummary: { ...baseReport().finalSummary, financialStatus: { officialPnlStatus: 'limited_verified_sample', headline: 'x' } },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.equal(data.profitEvidence.kind, 'limited_sample')
+  assert.equal(data.profitEvidence.winCount, 8)
+  assert.equal(data.profitEvidence.lossCount, 13)
+  assert.equal(data.profitEvidence.evaluatedCount, 98)
+  assert.ok(Math.abs((data.profitEvidence.winRatePercent ?? 0) - (8 / 21) * 100) < 0.01)
+  assert.ok(Math.abs((data.profitEvidence.winRatePercent ?? 0) - (8 / 98) * 100) > 20)
 })
 
 // ─── Two proven consistency bugs: General-User-despite-evidence title, riskOnOff-vs-calibrated-risk trait ───
