@@ -40,7 +40,7 @@ import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRec
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
-import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
+import { createMemoizedAcceptedEvidenceLoader, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
@@ -3336,6 +3336,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   let canonicalSampleManifestAudit: CanonicalSampleManifestAudit = emptyCanonicalSampleManifestAudit('')
   let sampleUpdated = false
   let roiQuoteLegManifestIdentity: CanonicalPnlSampleManifestIdentity | null = null
+  let acceptedEvidenceMemoStats: { requests: number; uniqueWork: number; cacheHits: number } | null = null
 
   const canonicalSampleSelector: CanonicalSampleSelector = async (reconciledLots) => {
     // The manifest's own lookup key is the STRUCTURAL fingerprint of the full reconciled lot array —
@@ -3364,14 +3365,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // `readAcceptedEvidence` already enforces everywhere else in this pipeline. Manifest replay
     // rebuilds every published lot from these records — never from the manifest's own stored numbers,
     // and never from the current scan's live provider values.
-    const loadAcceptedEvidence: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...sideIdentity }) => {
-      const kv = acceptedEvidenceRealKv as unknown as AcceptedEvidenceKvLike
-      // A null version is a build-time DISCOVERY read (which lot-identity version backs this tx
-      // side — see acceptedEvidenceStore's own header on partial fills). Every replay passes a real
-      // version and therefore takes the fully strict path.
-      return version === null
-        ? readAcceptedEvidenceAnyLotVersion(kv, sideIdentity, Date.now())
-        : readAcceptedEvidence(kv, { ...sideIdentity, lotIdentityVersion: version }, Date.now())
+    // PERF: memoize + coalesce identical accepted-evidence KV reads across the many
+    // build/replay/audit passes below. Immutable within this scan; fail-closed validation unchanged.
+    const acceptedEvidenceMemo = createMemoizedAcceptedEvidenceLoader(
+      acceptedEvidenceRealKv as unknown as AcceptedEvidenceKvLike,
+      Date.now(),
+    )
+    const loadAcceptedEvidence: AcceptedEvidenceLoader = async (identity) => {
+      const value = await acceptedEvidenceMemo.load(identity)
+      acceptedEvidenceMemoStats = acceptedEvidenceMemo.stats()
+      return value
     }
     const computeManifestFingerprints = (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => {
       const audit = buildScanDeterminismAudit({ matchedLots: lots, realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
@@ -4256,6 +4259,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     rateLimitDetected: slowProviderSignals.rateLimitDetected,
     transactionHistoryPartial: providerDiagnostics.some((d) => d.providerStatus === 'partial' || d.providerStatus === 'provider_unavailable'),
   }
+  console.warn('[accepted-evidence-loader-memo]', acceptedEvidenceMemoStats)
   const finalReportAssembler = createFinalReportAssembler()
   const finalReport = finalReportAssembler.assemble({
     scanMetadata,
