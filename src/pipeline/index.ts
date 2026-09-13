@@ -3768,6 +3768,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
     const replay = effectiveReplay
 
+    // Same opt-in convention as `receiptSwapCanonicalPromotionEnabled` above (see its own header):
+    // unset/false is the default (deferred, off the critical path); explicitly 'true' preserves the
+    // exact prior synchronous, awaited behavior — for a live before/after A/B comparison that wants
+    // deterministic completion before the scan returns.
+    const canonicalPnlDiffAuditEnabled = process.env.CANONICAL_PNL_DIFF_AUDIT_ENABLED === 'true'
+
     // CANONICAL PNL DIFF AUDIT, DISCLOSED (canonical-PnL-movement audit task) — DIAGNOSTIC ONLY.
     // Rebuilds this scan's OWN candidate manifest records purely in memory and diffs them against
     // the stored manifest, so a value movement on an unchanged lot set can be attributed to exact
@@ -3775,49 +3781,72 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // deliberately DISCARDED — nothing here writes, refreshes, or replaces the stored manifest, and
     // the published sample below is still decided solely by `replay` above. Wrapped so a diagnostic
     // failure can never take down a scan.
-    try {
-      const candidateManifestForDiff = await buildManifestFromCandidate({
-        identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,
-        structuralLotCount: reconciledLots.length,
-        fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
-        verifiedPricingCoverage: null, now: Date.now(),
-        loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
-      })
-      // Real accepted-evidence side totals for every key either snapshot references — enables the
-      // duplicated/allocated-once/priceUsd-semantics/side-total checks. Deduplicated first.
-      const diffEvidenceKeys = [...new Set([
-        ...candidateManifestForDiff.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
-        ...manifest.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
-      ])]
-      const allDiffRecords = [...candidateManifestForDiff.verifiedLotRecords, ...manifest.verifiedLotRecords]
-      // BOUNDED-CONCURRENT, ORDER-PRESERVING EVIDENCE LOAD, DISCLOSED (wallet-scanner speed audit):
-      // was one FULLY SERIAL KV round trip per key inside a `for` loop (plus an O(n) `find` per key)
-      // — for a 98-lot wallet that is hundreds of strictly-sequential reads blocking the scan for a
-      // DIAGNOSTIC. `loadDiffEvidenceByKey` issues the same reads, for the same keys, resolving the
-      // same owning record by the same first-match rule, and returns a Map identical entry-for-entry
-      // AND in the same insertion order — see that module's own header. `schemaVersion` is still
-      // real, from the envelope itself, never guessed, so the diff audit's own obsolete-v1 exemption
-      // (canonicalPnlDiffAudit.ts's OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION) still only ever
-      // suppresses a finding for evidence that genuinely IS the known-obsolete version.
-      const diffEvidenceByKey = await loadDiffEvidenceByKey({
-        keys: diffEvidenceKeys,
-        records: allDiffRecords,
-        loadEvidence: loadAcceptedEvidence,
-      })
-      const amountByGroupKey = new Map<string, number>()
-      for (const [lotObject, lotIdentity] of buildCanonicalLotIdentities(reconciledLots)) {
-        if (!amountByGroupKey.has(lotIdentity.key)) amountByGroupKey.set(lotIdentity.key, lotObject.amount)
+    //
+    // OFF THE SYNCHRONOUS CRITICAL PATH, DISCLOSED (wallet-scanner speed audit, opportunity #3):
+    // this block's own three variables (`candidateManifestForDiff`, `diffEvidenceKeys`/
+    // `diffEvidenceByKey`, `amountByGroupKey`) are never read anywhere outside this function body —
+    // not by `canonicalSampleManifestAudit` below, not by the `{ publishedLots,
+    // forcePublicPnlUnavailable, manifestApplied, roiQuoteLegProofs }` this function returns, not by
+    // canonical PnL/ROI, not by any public/full-history gate, not by manifest persistence (this
+    // block never writes), and not by the UI. Every input it reads (`manifestIdentity`,
+    // `reconciledLots`, `candidateVerifiedLots`, `manifest`, `computeManifestFingerprints`,
+    // `loadAcceptedEvidence`) is a `const`/function-parameter never reassigned anywhere else in this
+    // closure, so running this block ONE TICK LATER via `setImmediate` reads the exact same values
+    // it would have read synchronously — deferring it cannot change what it computes OR what
+    // anything else in this scan computes. Same dispatch shape as `runShadowReceiptDecodeBlock`
+    // above: awaited (unchanged behavior) when explicitly enabled for a live A/B comparison,
+    // deferred off the critical path by default — never silently dropped, always still executed and
+    // still logged, just after this scan has already returned its result.
+    const runCanonicalPnlDiffAudit = async (): Promise<void> => {
+      try {
+        const candidateManifestForDiff = await buildManifestFromCandidate({
+          identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,
+          structuralLotCount: reconciledLots.length,
+          fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
+          verifiedPricingCoverage: null, now: Date.now(),
+          loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+        })
+        // Real accepted-evidence side totals for every key either snapshot references — enables the
+        // duplicated/allocated-once/priceUsd-semantics/side-total checks. Deduplicated first.
+        const diffEvidenceKeys = [...new Set([
+          ...candidateManifestForDiff.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
+          ...manifest.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
+        ])]
+        const allDiffRecords = [...candidateManifestForDiff.verifiedLotRecords, ...manifest.verifiedLotRecords]
+        // BOUNDED-CONCURRENT, ORDER-PRESERVING EVIDENCE LOAD, DISCLOSED (wallet-scanner speed audit):
+        // was one FULLY SERIAL KV round trip per key inside a `for` loop (plus an O(n) `find` per key)
+        // — for a 98-lot wallet that is hundreds of strictly-sequential reads blocking the scan for a
+        // DIAGNOSTIC. `loadDiffEvidenceByKey` issues the same reads, for the same keys, resolving the
+        // same owning record by the same first-match rule, and returns a Map identical entry-for-entry
+        // AND in the same insertion order — see that module's own header. `schemaVersion` is still
+        // real, from the envelope itself, never guessed, so the diff audit's own obsolete-v1 exemption
+        // (canonicalPnlDiffAudit.ts's OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION) still only ever
+        // suppresses a finding for evidence that genuinely IS the known-obsolete version.
+        const diffEvidenceByKey = await loadDiffEvidenceByKey({
+          keys: diffEvidenceKeys,
+          records: allDiffRecords,
+          loadEvidence: loadAcceptedEvidence,
+        })
+        const amountByGroupKey = new Map<string, number>()
+        for (const [lotObject, lotIdentity] of buildCanonicalLotIdentities(reconciledLots)) {
+          if (!amountByGroupKey.has(lotIdentity.key)) amountByGroupKey.set(lotIdentity.key, lotObject.amount)
+        }
+        logCanonicalPnlDiffAudit(buildCanonicalPnlDiffAudit({
+          currentRecords: candidateManifestForDiff.verifiedLotRecords,
+          previousRecords: manifest.verifiedLotRecords,
+          evidenceByKey: diffEvidenceByKey,
+          isStablecoin: (chain, token) => isVerifiedStablecoinAddress(chain as SupportedChain, token),
+          amountByGroupKey,
+        }))
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('[canonical-pnl-diff-audit] skipped — diagnostic failure never blocks a scan', { error: String(error) })
       }
-      logCanonicalPnlDiffAudit(buildCanonicalPnlDiffAudit({
-        currentRecords: candidateManifestForDiff.verifiedLotRecords,
-        previousRecords: manifest.verifiedLotRecords,
-        evidenceByKey: diffEvidenceByKey,
-        isStablecoin: (chain, token) => isVerifiedStablecoinAddress(chain as SupportedChain, token),
-        amountByGroupKey,
-      }))
-    } catch (error) {
-      // eslint-disable-next-line no-console
-      console.warn('[canonical-pnl-diff-audit] skipped — diagnostic failure never blocks a scan', { error: String(error) })
+    }
+    if (canonicalPnlDiffAuditEnabled) {
+      await runCanonicalPnlDiffAudit()
+    } else {
+      setImmediate(() => { runCanonicalPnlDiffAudit().catch(() => {}) })
     }
 
     const publishedVerifiedLotCount = replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length
