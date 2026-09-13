@@ -39,6 +39,7 @@ import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
+import { loadDiffEvidenceByKey } from './diffEvidenceLoader'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
 import { createAyriAttribution } from '../lib/ayriAttribution'
@@ -3788,24 +3789,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         ...candidateManifestForDiff.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
         ...manifest.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
       ])]
-      const diffEvidenceByKey = new Map<string, { priceUsd: number; valueUsd: number; schemaVersion: number } | null>()
       const allDiffRecords = [...candidateManifestForDiff.verifiedLotRecords, ...manifest.verifiedLotRecords]
-      for (const key of diffEvidenceKeys) {
-        const owner = allDiffRecords.find((r) => r.entryEvidenceKey === key || r.exitEvidenceKey === key)
-        if (!owner) continue
-        const side = owner.entryEvidenceKey === key ? 'entry' as const : 'exit' as const
-        // eslint-disable-next-line no-await-in-loop
-        const envelope = await loadAcceptedEvidence({
-          chain: owner.chain, token: owner.token,
-          txHash: side === 'entry' ? owner.openedTxHash : owner.closedTxHash,
-          side, timestamp: side === 'entry' ? owner.openedAt : owner.closedAt,
-          lotIdentityVersion: null,
-        })
-        // schemaVersion is real, from the envelope itself — never guessed — so the diff audit's own
-        // obsolete-v1 exemption (canonicalPnlDiffAudit.ts's OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION)
-        // only ever suppresses a finding for evidence that genuinely IS the known-obsolete version.
-        diffEvidenceByKey.set(key, envelope ? { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd, schemaVersion: envelope.schemaVersion } : null)
-      }
+      // BOUNDED-CONCURRENT, ORDER-PRESERVING EVIDENCE LOAD, DISCLOSED (wallet-scanner speed audit):
+      // was one FULLY SERIAL KV round trip per key inside a `for` loop (plus an O(n) `find` per key)
+      // — for a 98-lot wallet that is hundreds of strictly-sequential reads blocking the scan for a
+      // DIAGNOSTIC. `loadDiffEvidenceByKey` issues the same reads, for the same keys, resolving the
+      // same owning record by the same first-match rule, and returns a Map identical entry-for-entry
+      // AND in the same insertion order — see that module's own header. `schemaVersion` is still
+      // real, from the envelope itself, never guessed, so the diff audit's own obsolete-v1 exemption
+      // (canonicalPnlDiffAudit.ts's OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION) still only ever
+      // suppresses a finding for evidence that genuinely IS the known-obsolete version.
+      const diffEvidenceByKey = await loadDiffEvidenceByKey({
+        keys: diffEvidenceKeys,
+        records: allDiffRecords,
+        loadEvidence: loadAcceptedEvidence,
+      })
       const amountByGroupKey = new Map<string, number>()
       for (const [lotObject, lotIdentity] of buildCanonicalLotIdentities(reconciledLots)) {
         if (!amountByGroupKey.has(lotIdentity.key)) amountByGroupKey.set(lotIdentity.key, lotObject.amount)
