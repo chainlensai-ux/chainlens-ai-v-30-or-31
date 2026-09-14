@@ -1780,7 +1780,12 @@ function cortexSrTopTier(overrides = {}) {
   // feature's score reused, and never a fabricated number independent of evidence.
   const { readFileSync } = await import('node:fs')
   const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
-  check('Dev Control score is derived from the real sr.developerScore composite', page.includes('const devScore = sr.developerScore.score'))
+  // Solana risk-score consistency cleanup, DISCLOSED: the hero score is now the canonical
+  // (higher = riskier) presentation of the same real sr.developerScore composite, converted via
+  // the same normalizeRiskScore({ rawScoreType: 'safety_score' }) helper EVM's own Dev Control
+  // Read already uses — never a fabricated number, never EVM's score reused.
+  check('Dev Control score is derived from the real sr.developerScore composite', page.includes('sr.developerScore.score / sr.developerScore.scaledMaxScore'))
+  check('Dev Control score is presented as the canonical (higher = riskier) risk score, matching EVM\'s own Dev Control Read', page.includes("rawScore: devScorePercent, rawScoreType: 'safety_score'"))
   check('Watch Plan renders the full explainable score breakdown (every component has a reason)', page.includes('Developer Score Breakdown') && page.includes('sr.developerScore.components'))
   check('Creator Analysis renders the tiered Confirmed/Likely/Possible/Unknown verdict, not a binary matched/not-matched', page.includes('sr.creatorConfidence.tier'))
   check('Pattern Analysis renders every checkable pattern with a real evidence-cited verdict', page.includes('sr.patternAnalysis.patterns.map'))

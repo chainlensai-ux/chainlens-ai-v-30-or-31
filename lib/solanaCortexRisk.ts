@@ -97,6 +97,14 @@ export type SolanaSecurityRead = {
   percent: number
   verdict: SolanaCortexVerdict
   verdictColor: string
+  // CANONICAL RISK SCORE, DISCLOSED (Solana risk-score consistency cleanup task): `score`/
+  // `percent`/`verdict`/`verdictColor` above stay a SAFETY-style read (higher = safer), untouched.
+  // `riskScore`/`riskLabel`/`riskColor` are the same additive canonical view every other read in
+  // this file carries, converted once from `percent` — this is what the CONTRACT SECURITY UI strip
+  // must pair its risk-tier verdict text with, never the raw `score`/`percent`.
+  riskScore: number
+  riskLabel: CanonicalRiskLabel
+  riskColor: string
 }
 
 export type SolanaCortexRisk = {
@@ -501,10 +509,18 @@ export function computeSolanaCortexRisk(sr: ScanInput): SolanaCortexRisk {
   const securityScoreMax = securityModules.reduce((s, m) => s + m.scoreMax, 0)
   const securityBandRank = VERDICT_RANK[bandVerdict(securityScore, securityScoreMax)]
   const securityVerdict = RANK_VERDICT[Math.max(securityBandRank, overrideRank)]
+  const securityPercent = securityScoreMax > 0 ? Math.round((securityScore / securityScoreMax) * 100) : 0
+  const securityCanonicalRisk = normalizeRiskScore({
+    rawScore: securityPercent, rawScoreType: 'safety_score',
+    source: 'solana_cortex_risk_security_read', displayLocation: 'token_scanner_solana_risk_engine_contract_security',
+  })
   const securityRead: SolanaSecurityRead = {
     score: securityScore, scoreMax: securityScoreMax,
-    percent: securityScoreMax > 0 ? Math.round((securityScore / securityScoreMax) * 100) : 0,
+    percent: securityPercent,
     verdict: securityVerdict, verdictColor: VERDICT_COLOR[securityVerdict],
+    riskScore: securityCanonicalRisk.riskScore0To100 ?? 100 - securityPercent,
+    riskLabel: securityCanonicalRisk.riskLabel ?? 'Moderate Risk',
+    riskColor: riskColorFromCanonicalLabel(securityCanonicalRisk.riskLabel ?? 'Moderate Risk'),
   }
 
   // ── Real evidence coverage: which trackable categories actually resolved this scan ───────────

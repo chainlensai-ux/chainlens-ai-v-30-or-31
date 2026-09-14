@@ -6666,16 +6666,22 @@ export default function TerminalTokenScanner() {
                   const confColor = (c: typeof cx.overallConfidence) => c === 'High' ? '#34d399' : c === 'Medium' ? '#fbbf24' : c === 'Low' ? '#fb923c' : '#64748b'
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                      {/* Hero — gauge + 5-tier verdict + overall (weighted-aggregate) confidence. */}
-                      <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${cx.verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${cx.verdictColor}0c` }}>
+                      {/* Hero — gauge + 5-tier verdict + overall (weighted-aggregate) confidence.
+                          DIRECTION FIX, DISCLOSED (Solana risk-score consistency cleanup task): now
+                          reads the canonical cx.riskScore/cx.riskLabel/cx.riskColor (higher = riskier,
+                          scoreType="risk") instead of the raw safety-style cx.score/cx.verdict/
+                          cx.verdictColor — matching EVM's own Risk Engine gauge (score={'{displayCortexScore}'}
+                          scoreType="risk") and the Overview hero/Track Outcome gate above. Nothing
+                          about the underlying 9-category composite, module scores, or caps changed. */}
+                      <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${cx.riskColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${cx.riskColor}0c` }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
                           <div style={{ flexShrink: 0 }}>
-                            <RiskGaugeCircle score={cx.score} color={cx.verdictColor} />
+                            <RiskGaugeCircle score={cx.riskScore} color={cx.riskColor} scoreType="risk" />
                           </div>
                           <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
                             <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE · INVESTMENT RISK</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.verdictColor, background: `${cx.verdictColor}14`, border: `1px solid ${cx.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</span>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.riskColor, background: `${cx.riskColor}14`, border: `1px solid ${cx.riskColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.riskLabel}</span>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor(cx.overallConfidence), background: `${confColor(cx.overallConfidence)}14`, border: `1px solid ${confColor(cx.overallConfidence)}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.overallConfidence.toUpperCase()} OVERALL CONFIDENCE</span>
                             </div>
                             {/* REASONING ENGINE, DISCLOSED: composed from conditional branches over
@@ -6692,15 +6698,20 @@ export default function TerminalTokenScanner() {
                           is the full 9-category composite, capped by token age / evidence depth /
                           creator verification. A token can score cleanly here while still reading as
                           Speculative or worse above — that gap IS the signal: clean code, unproven
-                          track record. See lib/solanaCortexRisk.ts's own header for the full rationale. */}
-                      <div style={{ padding: '14px 18px', borderRadius: '14px', background: `linear-gradient(160deg, ${cx.securityRead.verdictColor}10, rgba(6,10,20,0.7))`, border: `1px solid ${cx.securityRead.verdictColor}30`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                          track record. See lib/solanaCortexRisk.ts's own header for the full rationale.
+                          DIRECTION FIX, DISCLOSED: now shows securityRead.riskScore/riskLabel/
+                          riskColor (canonical) instead of the raw safety-style score/percent/verdict,
+                          so this strip's own number and risk-tier badge text always agree, matching
+                          the hero above. The underlying Contract Security + Supply Control module
+                          math is unchanged — only this presentation layer was converted. */}
+                      <div style={{ padding: '14px 18px', borderRadius: '14px', background: `linear-gradient(160deg, ${cx.securityRead.riskColor}10, rgba(6,10,20,0.7))`, border: `1px solid ${cx.securityRead.riskColor}30`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                         <div>
                           <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.16em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>CONTRACT SECURITY (Mint/Freeze Authority + Token-2022 Extensions Only)</p>
-                          <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.08em', color: cx.securityRead.verdictColor, background: `${cx.securityRead.verdictColor}18`, border: `1px solid ${cx.securityRead.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.verdict}</span>
-                          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.score}/{cx.securityRead.scoreMax} ({cx.securityRead.percent}%)</span>
+                          <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.08em', color: cx.securityRead.riskColor, background: `${cx.securityRead.riskColor}18`, border: `1px solid ${cx.securityRead.riskColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.riskLabel}</span>
+                          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.riskScore}/100</span>
                         </div>
-                        {cx.verdict !== cx.securityRead.verdict && (
-                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5, flex: 1, minWidth: '220px' }}>Contract security and overall investment risk disagree here — the contract itself reads {cx.securityRead.verdict.toLowerCase()}, but the overall verdict is {cx.verdict.toLowerCase()} once token age, evidence depth, and creator verification are weighed in.</p>
+                        {cx.riskLabel !== cx.securityRead.riskLabel && (
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5, flex: 1, minWidth: '220px' }}>Contract security and overall investment risk disagree here — the contract itself reads {cx.securityRead.riskLabel.toLowerCase()}, but the overall verdict is {cx.riskLabel.toLowerCase()} once token age, evidence depth, and creator verification are weighed in.</p>
                         )}
                       </div>
 
@@ -6890,9 +6901,24 @@ export default function TerminalTokenScanner() {
                   // Real, explainable composite — see developerScoreAnalyzer.ts. Each component
                   // (creator confidence / authority safety / supply safety / cluster confidence /
                   // pattern safety) is rendered with its own reason in the Watch Plan tab below.
-                  const devScore = sr.developerScore.score
-                  const devVerdict = devScore >= 80 ? 'LOW RISK' : devScore >= 56 ? 'WATCH' : devScore >= 35 ? 'HIGH RISK' : 'CRITICAL'
-                  const devVerdictColor = devVerdict === 'LOW RISK' ? '#34d399' : devVerdict === 'WATCH' ? '#fbbf24' : devVerdict === 'HIGH RISK' ? '#fb923c' : '#f87171'
+                  // DIRECTION FIX, DISCLOSED (Solana risk-score consistency cleanup task):
+                  // sr.developerScore.score is, and remains, a SAFETY-style composite (higher =
+                  // safer) — developerScoreAnalyzer.ts and every one of its components is
+                  // completely untouched. This hero used to display that raw safety score under
+                  // hand-rolled thresholds (>=80 "LOW RISK" ... <35 "CRITICAL") that read
+                  // backwards next to a risk-labeled badge. Now reuses the exact same
+                  // normalizeRiskScore({ rawScoreType: 'safety_score' }) pattern the EVM CORTEX Dev
+                  // Control Read already applies to its own dev safety score (see the ~line 9590
+                  // Dev tab below), producing a genuinely canonical (higher = riskier) 0-100 number
+                  // and label — never a second, competing threshold.
+                  const devScorePercent = sr.developerScore.scaledMaxScore > 0 ? (sr.developerScore.score / sr.developerScore.scaledMaxScore) * 100 : 0
+                  const normalizedDevScore = normalizeRiskScore({
+                    rawScore: devScorePercent, rawScoreType: 'safety_score',
+                    source: 'solana_developer_score', displayLocation: 'token_scanner_solana_dev_tab',
+                  })
+                  const devScore = normalizedDevScore.riskScore0To100 ?? 0
+                  const devVerdict = (normalizedDevScore.riskLabel ?? 'Moderate Risk').toUpperCase()
+                  const devVerdictColor = riskColorFromCanonicalLabel(normalizedDevScore.riskLabel ?? 'Moderate Risk')
                   const devConfidence = sr.authorityReadSucceeded && creatorResolved ? 'HIGH' : sr.authorityReadSucceeded ? 'MEDIUM' : 'LOW'
                   const cxForDev = computeSolanaCortexRisk(sr)
                   const fmtAddr = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : null
@@ -10090,7 +10116,13 @@ export default function TerminalTokenScanner() {
                 <div style={{ padding: '16px', border: `1px solid ${cx.verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${cx.verdictColor}08` }}>
                   <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA</div>
                   <div style={{ fontSize: '17px', fontWeight: 800, color: cx.verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</div>
-                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.score}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
+                  {/* DIRECTION FIX, DISCLOSED (Solana risk-score consistency cleanup task): shows
+                      the canonical cx.riskScore (higher = riskier) instead of the raw safety-style
+                      cx.score, so this number agrees with the risk-severity verdict above it and
+                      with the hero/Risk Engine tab/Track Outcome gate elsewhere on this scan. The
+                      verdict badge text/color are unchanged — that vocabulary is already
+                      risk-oriented, only the number was inverted. */}
+                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.riskScore}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
                   <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{verdictMeaning[cx.verdict]}</p>
                 </div>
                 <div style={ss}><p style={stitle}>Can the owner touch your tokens?</p><p style={sbody}>{authorityLine}</p></div>
