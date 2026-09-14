@@ -164,6 +164,26 @@ export async function dexScreenerMarketProvider(symbolOrAddress: string, _chain:
   }
 }
 
+/** Address-only outcome lookup. Unlike ticker search, every accepted pair must prove the exact
+ * requested chain and base-token contract before liquidity ranking can select it. */
+export async function dexScreenerOutcomeMarketProvider(address: string, chain: string): Promise<{ quote: ClarkMarketQuote; matches: ClarkMarketQuote[] } | null> {
+  const requestedAddress = chain === 'solana' ? address : address.toLowerCase()
+  const requestedChain = chain === 'eth' ? 'ethereum' : chain === 'bnb' ? 'bsc' : chain
+  try {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
+    if (!res.ok) return null
+    const json = await res.json().catch(() => null) as { pairs?: Array<Record<string, unknown>> } | null
+    const candidates = (json?.pairs ?? []).filter(pair => {
+      const pairChain = typeof pair.chainId === 'string' ? pair.chainId.toLowerCase() : ''
+      const baseAddress = (pair.baseToken as Record<string, unknown> | undefined)?.address
+      const normalizedBase = typeof baseAddress === 'string' && chain !== 'solana' ? baseAddress.toLowerCase() : baseAddress
+      return pairChain === requestedChain && normalizedBase === requestedAddress
+    }).sort((a, b) => Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0) - Number((a.liquidity as Record<string, unknown> | undefined)?.usd ?? 0))
+    const quote = candidates.map(dexScreenerPairToQuote).find((candidate): candidate is ClarkMarketQuote => candidate != null && typeof candidate.priceUsd === 'number' && Number.isFinite(candidate.priceUsd) && candidate.priceUsd > 0) ?? null
+    return quote ? { quote, matches: [quote] } : null
+  } catch { return null }
+}
+
 /** Real GeckoTerminal provider — address-keyed only, used when DexScreener has nothing for a
  * specific chain+address pair. */
 export async function geckoTerminalMarketProvider(address: string, chain: string | null): Promise<ClarkMarketQuote | null> {
@@ -173,9 +193,13 @@ export async function geckoTerminalMarketProvider(address: string, chain: string
       headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(7000),
     });
     if (!res.ok) return null;
-    const json = await res.json().catch(() => null) as { data?: { attributes?: Record<string, unknown> } } | null;
+    const json = await res.json().catch(() => null) as { data?: { id?: string; attributes?: Record<string, unknown> } } | null;
     const attrs = json?.data?.attributes;
     if (!attrs) return null;
+    const responseId = json?.data?.id
+    const responseAddress = typeof attrs.address === 'string' ? attrs.address : typeof responseId === 'string' ? responseId.slice(responseId.indexOf('_') + 1) : null
+    const identityMatches = chain === 'solana' ? responseAddress === address : responseAddress?.toLowerCase() === address.toLowerCase()
+    if (!identityMatches) return null
     const priceUsd = typeof attrs.price_usd === "string" ? parseFloat(attrs.price_usd) : null;
     return {
       provider: "geckoterminal",

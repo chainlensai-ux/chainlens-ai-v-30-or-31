@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
-import { OUTCOME_POLICY, classifyOutcome, numberOrNull, percentChange, type TrackedOutcome } from '../tokenOutcomes'
-import { dexScreenerMarketProvider, geckoTerminalMarketProvider } from './clarkMarketDataProviders'
+import { OUTCOME_POLICY, classifyOutcome, numberOrNull, percentChange, validPriceOrNull, type TrackedOutcome } from '../tokenOutcomes'
+import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from './clarkMarketDataProviders'
 import type { ClarkMarketQuote } from './clarkMarketData'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { afterScanProof } from '../tokenOutcomeProof'
@@ -14,21 +14,64 @@ export function outcomeDb() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 const chainAlias = (c: string | null) => c === 'ethereum' ? 'eth' : c === 'bsc' ? 'bnb' : c
+const chainIdBySlug: Record<string, number> = { base: 8453, eth: 1, bnb: 56, robinhood: 4663 }
 export function quoteMatches(q: ClarkMarketQuote | null, chain: string, address: string): q is ClarkMarketQuote {
-  return !!q && chainAlias(q.chain) === chain && (chain === 'solana' ? q.address === address : q.address?.toLowerCase() === address.toLowerCase())
+  const expectedChain = chainAlias(chain)
+  const expectedChainId = chainIdBySlug[expectedChain ?? '']
+  return !!q && chainAlias(q.chain) === expectedChain && (q.chainId == null || expectedChainId == null || q.chainId === expectedChainId)
+    && (expectedChain === 'solana' ? q.address === address : q.address?.toLowerCase() === address.toLowerCase())
 }
-export async function resolveOutcomeQuote(chain: string, address: string, providers = { dex: dexScreenerMarketProvider, gecko: geckoTerminalMarketProvider }): Promise<ClarkMarketQuote | null> {
-  const key = `outcomeMarket:v1:${chain}:${address}`
+const usableQuote = (quote: ClarkMarketQuote | null, chain: string, address: string): quote is ClarkMarketQuote => quoteMatches(quote, chain, address) && validPriceOrNull(quote.priceUsd) != null
+export async function resolveOutcomeQuote(chain: string, address: string, providers = { dex: dexScreenerOutcomeMarketProvider, gecko: geckoTerminalMarketProvider }): Promise<ClarkMarketQuote | null> {
+  const normalizedChain = chainAlias(chain) ?? chain
+  const normalizedAddress = normalizedChain === 'solana' ? address : address.toLowerCase()
+  const key = `outcomeMarket:v2:${normalizedChain}:${normalizedAddress}`
   const cached = await getTokenCache<ClarkMarketQuote>(key)
-  if (quoteMatches(cached, chain, address) && Date.now() - cached.fetchedAt < OUTCOME_POLICY.staleMs) return cached
-  const dex = await providers.dex(address, chain)
-  let quote = (dex?.matches ?? []).find(q => quoteMatches(q, chain, address) && (q.priceUsd ?? 0) > 0) ?? null
+  if (usableQuote(cached, normalizedChain, normalizedAddress) && Date.now() - cached.fetchedAt < OUTCOME_POLICY.staleMs) return cached
+  const dex = await providers.dex(normalizedAddress, normalizedChain)
+  let quote = (dex?.matches ?? []).find(q => usableQuote(q, normalizedChain, normalizedAddress)) ?? null
   if (!quote) {
-    const gecko = await providers.gecko(address, chain)
-    if (quoteMatches(gecko, chain, address)) quote = gecko
+    const gecko = await providers.gecko(normalizedAddress, normalizedChain)
+    if (usableQuote(gecko, normalizedChain, normalizedAddress)) quote = gecko
   }
   if (quote) await setTokenCache(key, quote, OUTCOME_POLICY.staleMs / 1000)
   return quote
+}
+
+export function sanitizeTrackedOutcome(row: TrackedOutcome): TrackedOutcome {
+  const baselinePrice = validPriceOrNull(row.baseline_price_usd)
+  const currentPrice = validPriceOrNull(row.current_price_usd)
+  const proof = row.after_evidence_json
+  const result = classifyOutcome({ price: baselinePrice, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
+    price: currentPrice, liquidity: numberOrNull(row.current_liquidity_usd), verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
+  })
+  return { ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
+    price_change_pct: percentChange(baselinePrice, currentPrice), outcome_status: result.status,
+    outcome_confidence: result.confidence, outcome_reasons_json: currentPrice == null && result.status === 'unavailable'
+      ? ['Current market price unavailable. Outcome pending; no loss is inferred from missing data.'] : row.outcome_reasons_json }
+}
+
+export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarketQuote | null, proof: TrackedOutcome['after_evidence_json'], checkedAt = new Date().toISOString()) {
+  const observedPrice = usableQuote(quote, row.chain, row.token_address) ? validPriceOrNull(quote.priceUsd) : null
+  const previousPrice = validPriceOrNull(row.current_price_usd)
+  const price = observedPrice ?? previousPrice
+  const liquidity = observedPrice != null ? numberOrNull(quote?.liquidityUsd) : numberOrNull(row.current_liquidity_usd)
+  const result = classifyOutcome({ price: validPriceOrNull(row.baseline_price_usd), liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
+    price, liquidity, verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
+  })
+  const refreshFailed = observedPrice == null
+  return {
+    current_price_usd: price, current_liquidity_usd: liquidity,
+    price_change_pct: percentChange(validPriceOrNull(row.baseline_price_usd), price), liquidity_change_pct: null,
+    outcome_status: result.status, outcome_confidence: result.confidence,
+    outcome_reasons_json: refreshFailed
+      ? previousPrice != null
+        ? ['Latest refresh returned no usable chain-and-contract-matched price. Retaining the previous verified observation.']
+        : proof ? [proof.reason, 'Current market price unavailable. Outcome pending.'] : ['Market providers returned no usable chain-and-contract-matched price. Outcome pending.']
+      : proof ? [proof.reason, ...result.reasons] : result.reasons,
+    after_evidence_json: proof, market_source: observedPrice != null ? quote?.provider ?? null : row.market_source,
+    last_checked_at: observedPrice != null ? checkedAt : row.last_checked_at, refresh_claimed_at: null,
+  }
 }
 export async function refreshOutcomes(userId: string) {
   const db = outcomeDb()
@@ -47,22 +90,13 @@ export async function refreshOutcomes(userId: string) {
       .or(`refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`).select('id')
     if (claim.error || !claim.data?.length) return
     const quote = await resolveOutcomeQuote(row.chain, row.token_address).catch(() => null)
-    const price = numberOrNull(quote?.priceUsd)
-    const liquidity = numberOrNull(quote?.liquidityUsd)
-    const chainId = ({ base: 8453, eth: 1, bnb: 56, robinhood: 4663 } as Record<string, number>)[row.chain]
+    const chainId = chainIdBySlug[row.chain]
     const laterScan = chainId ? await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(row.chain as EvmChainSlug, chainId, row.token_address)) : null
     const proof = afterScanProof(row, laterScan) ?? row.after_evidence_json ?? null
-    const result = classifyOutcome({ price: row.baseline_price_usd, liquidity: row.baseline_liquidity_usd }, { price, liquidity, verifiedTradingBlocked: proof?.verifiedTradingBlocked === true })
     // No extra expensive token scan. Existing fresh server cache can corroborate a later honeypot.
     // Aggregate market reserves alone never become burn/drain/pool-death evidence.
-    const update = await db.from('tracked_token_outcomes').update({
-      current_price_usd: price && price > 0 ? price : null, current_liquidity_usd: liquidity,
-      price_change_pct: price && price > 0 ? percentChange(row.baseline_price_usd, price) : null,
-      liquidity_change_pct: null, outcome_status: result.status, outcome_confidence: result.confidence,
-      outcome_reasons_json: proof ? [proof.reason, ...(!quote ? ['Current market price unavailable.'] : [])] : quote ? result.reasons : ['Market providers returned no usable chain-matched quote. Retry after the refresh window.'],
-      after_evidence_json: proof,
-      market_source: quote?.provider ?? null, last_checked_at: new Date().toISOString(), refresh_claimed_at: null,
-    }).eq('id', row.id).eq('user_id', userId).eq('refresh_claimed_at', claimedAt)
+    const update = await db.from('tracked_token_outcomes').update(buildOutcomeRefreshUpdate(row, quote, proof))
+      .eq('id', row.id).eq('user_id', userId).eq('refresh_claimed_at', claimedAt)
     if (update.error) throw new Error('Unable to save the latest outcome observation.')
   }))
 }

@@ -30,12 +30,19 @@ export function numberOrNull(value: unknown): number | null {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(n) && n >= 0 ? n : null
 }
+/** Market price observations must be strictly positive. Provider gaps and malformed zeroes are unknown, not economic zero. */
+export function validPriceOrNull(value: unknown): number | null {
+  const valueAsNumber = numberOrNull(value)
+  return valueAsNumber != null && valueAsNumber > 0 ? valueAsNumber : null
+}
 export function canTrackOutcome(score: unknown): score is number {
   return typeof score === 'number' && Number.isFinite(score) && score >= OUTCOME_POLICY.minRisk && score <= 100
 }
 export function percentChange(baseline: number | null, current: number | null): number | null {
-  if (baseline == null || current == null || !Number.isFinite(baseline) || !Number.isFinite(current) || baseline <= 0 || current < 0) return null
-  const result = (current / baseline - 1) * 100
+  const validBaseline = validPriceOrNull(baseline)
+  const validCurrent = validPriceOrNull(current)
+  if (validBaseline == null || validCurrent == null) return null
+  const result = (validCurrent / validBaseline - 1) * 100
   return Number.isFinite(result) ? result : null
 }
 export function hypothetical(baseline: number | null, current: number | null) {
@@ -51,6 +58,8 @@ export type AfterEvidence = {
   /** Only fresh independently verified facts may enter these fields, never baseline warnings. */
   verifiedDeployerDrain?: boolean; verifiedTradingBlocked?: boolean;
   comparableLiquidity?: boolean; verifiedPoolDead?: boolean;
+  /** Separate positive evidence; a provider's missing/malformed numeric zero never sets this. */
+  verifiedEconomicZero?: boolean;
 }
 export function classifyOutcome(baseline: { price: number | null; liquidity: number | null }, now: AfterEvidence): Outcome {
   const price = percentChange(baseline.price, now.price)
@@ -61,7 +70,8 @@ export function classifyOutcome(baseline: { price: number | null; liquidity: num
   // Aggregate reserves and individual pools are NOT comparable. A missing pair is NOT a dead pool.
   if (now.comparableLiquidity && now.verifiedPoolDead && (baseline.liquidity ?? 0) >= OUTCOME_POLICY.minimumBaselineLiquidity && liquidity != null && liquidity <= OUTCOME_POLICY.catastrophicLiquidityPct) strong.push('Comparable liquidity collapsed at least 99% and pool death was independently verified.')
   if (strong.length) return { status: 'rugged', confidence: 'high', reasons: strong }
-  if (price == null || now.price === 0) return { status: 'unavailable', confidence: 'low', reasons: ['Valid baseline and current prices are required; no outcome inferred from missing data.'] }
+  if (now.verifiedEconomicZero) return { status: 'dumped', confidence: 'high', reasons: ['Independent evidence confirmed effectively zero current economic value. No rug inferred without separate rug proof.'] }
+  if (price == null) return { status: 'unavailable', confidence: 'low', reasons: ['Valid baseline and current prices are required; no outcome inferred from missing data.'] }
   if (price >= OUTCOME_POLICY.pumpedPct) return { status: 'pumped', confidence: 'medium', reasons: ['Price increased at least 50% since the scan. Market estimate, not executable returns.'] }
   if (price <= OUTCOME_POLICY.dumpedPct) return { status: 'dumped', confidence: 'medium', reasons: ['Price fell at least 50% since the scan. No verified rug evidence.'] }
   return { status: 'watching', confidence: 'medium', reasons: ['Price remains within the ±50% outcome window. No verified rug evidence.'] }

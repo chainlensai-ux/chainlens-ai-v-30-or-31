@@ -9,18 +9,32 @@ test('outcome migration enforces RLS, immutable snapshots, limits and duplicates
   const db = new PGlite()
   const a = '11111111-1111-4111-8111-111111111111'
   const b = '22222222-2222-4222-8222-222222222222'
+  const c = '33333333-3333-4333-8333-333333333333'
   try {
     await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
       create schema auth; create table auth.users(id uuid primary key);
       create function auth.uid() returns uuid language sql as 'select nullif(current_setting(''request.jwt.claim.sub'',true),'''')::uuid';
       grant usage on schema auth,public to authenticated,service_role;
-      insert into auth.users values ('${a}'),('${b}');`)
+      insert into auth.users values ('${a}'),('${b}'),('${c}');`)
     await db.exec(readFileSync(new URL('../docs/migrations/20260914_tracked_token_outcomes.sql', import.meta.url), 'utf8'))
+    await db.exec(`set role service_role;
+      insert into public.tracked_token_outcomes(user_id,chain,token_address,scan_id,baseline_price_usd,baseline_risk_score,baseline_verdict,baseline_snapshot_json,current_price_usd,price_change_pct,outcome_status)
+      values('${c}','base','0xcccccccccccccccccccccccccccccccccccccccc','legacy-zero',10,70,'High Risk','{}',0,-100,'dumped')`)
+    await db.exec('reset role')
+    await db.exec(readFileSync(new URL('../docs/migrations/20260914_token_outcome_price_integrity.sql', import.meta.url), 'utf8'))
     const snapshot = (userId: string, scanId = 'scan-1') => ({ userId, chain: 'base', tokenAddress: `0x${'a'.repeat(40)}`, scanId, baselineRiskScore: 78, baselineVerdict: 'Critical Risk', baselinePriceUsd: 10, baselineLiquidityUsd: 20000 })
     async function create(userId: string, scanId = 'scan-1', limit = 5) {
       await db.exec('set role service_role')
       return db.query('select public.create_tracked_outcome($1::uuid,$2::jsonb,$3::integer) as result', [userId, JSON.stringify(snapshot(userId, scanId)), limit])
     }
+    await t.test('integrity migration repairs legacy zero and fabricated -100% observations', async () => {
+      await db.exec('set role service_role')
+      const legacy = (await db.query(`select current_price_usd,price_change_pct,outcome_status,outcome_confidence from public.tracked_token_outcomes where user_id='${c}'`)).rows[0]
+      assert.equal(legacy.current_price_usd, null)
+      assert.equal(legacy.price_change_pct, null)
+      assert.equal(legacy.outcome_status, 'unavailable')
+      assert.equal(legacy.outcome_confidence, 'low')
+    })
     await t.test('same user+chain+token+scan is idempotent, even at the limit', async () => {
       const first = await create(a, 'scan-1', 1)
       const second = await create(a, 'scan-1', 1)
@@ -47,6 +61,7 @@ test('outcome migration enforces RLS, immutable snapshots, limits and duplicates
       await db.exec(`update public.tracked_token_outcomes set current_price_usd=1 where user_id='${a}'`)
       const row = (await db.query(`select baseline_risk_score,current_price_usd from public.tracked_token_outcomes where user_id='${a}'`)).rows[0]
       assert.equal(row.baseline_risk_score,78); assert.equal(row.current_price_usd,1)
+      await assert.rejects(db.exec(`update public.tracked_token_outcomes set current_price_usd=0,price_change_pct=-100 where user_id='${a}'`), /tracked_outcome_current_price_positive/)
     })
     await t.test('server function rejects mismatched snapshot owner', async () => {
       await assert.rejects(db.query('select public.create_tracked_outcome($1::uuid,$2::jsonb,200)', [a, JSON.stringify(snapshot(b))]), /Snapshot user mismatch/)

@@ -27,6 +27,8 @@ Modified only the additive scanner response/button and navigation wiring in `app
 
 Apply `docs/migrations/20260914_tracked_token_outcomes.sql` to the project's Supabase database **before deploying the feature**. This change was validated with an isolated PostgreSQL engine, not applied to production from this checkout. No production database credentials were available here.
 
+Apply `docs/migrations/20260914_token_outcome_price_integrity.sql` after the base migration. It repairs legacy zero-price observations and prevents unresolved prices from being stored as economic zero.
+
 Existing server environment: `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Optional server-only `TOKEN_OUTCOME_SIGNING_SECRET` overrides the service-role key for receipt signing. Never put either secret in a public environment variable. Rotating the signing key invalidates unsubmitted receipts, not saved outcomes.
 
 Missing storage fails explicitly; it never creates an in-memory fake saved outcome. A missing signing key does not fail Token Scanner. The tracking action instead requests a rescan/configuration check.
