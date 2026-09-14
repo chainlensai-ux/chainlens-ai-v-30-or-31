@@ -33,6 +33,8 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { consumeTokenScan, snapshotTokenScan } from '@/lib/tokenScanQuota'
 import { tokenScanLimitReachedMessage } from '@/lib/pricingPlans'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { withOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
+import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
@@ -3734,7 +3736,8 @@ export async function POST(req: Request) {
   // not, silently downgraded to the Free plan's rate limit. Every scan now requires a real, verified
   // Supabase session — checked before rate limiting or any scan work begins, so an anonymous caller
   // never reaches (or costs) any of the provider calls below.
-  if (!(await requireAuthenticatedUser(req))) return unauthorizedResponse()
+  const outcomeUser = await requireAuthenticatedUser(req)
+  if (!outcomeUser) return unauthorizedResponse()
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
   const _tokenScanIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
@@ -3826,7 +3829,7 @@ export async function POST(req: Request) {
         })
       }
       const failed = 'status' in solanaResult
-      return NextResponse.json(solanaResult, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
+      return NextResponse.json(failed ? solanaResult : { ...solanaResult, outcomeReceipt: solanaOutcomeReceipt(solanaResult, outcomeUser.userId, scanRequestId, scanRequestStartedAt) }, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
     }
 
     if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood') {
@@ -4100,7 +4103,7 @@ export async function POST(req: Request) {
           const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
           const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
           _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true }
-          return NextResponse.json(_gated)
+          return NextResponse.json(withOutcomeReceipt(_gated, outcomeUser.userId))
         }
         // Cross-chain / mismatched cache entry — never served; falls through to a fresh scan.
       }
@@ -9919,7 +9922,7 @@ export async function POST(req: Request) {
         }, 45)
       }
     }
-    return NextResponse.json(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan))
+    return NextResponse.json(withOutcomeReceipt(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan), outcomeUser.userId))
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'

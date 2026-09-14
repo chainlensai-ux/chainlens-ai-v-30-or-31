@@ -16,6 +16,7 @@ const PATH_TO_KEY: Record<string, string> = {
   '/terminal/pump-alerts':      'pump-alerts',
   '/terminal/base-radar':       'base-radar',
   '/terminal/watchlist':        'watchlist',
+  '/terminal/track':            'track',
   '/terminal/clark-ai':         'clark-ai',
   '/terminal/settings':         'settings',
 }

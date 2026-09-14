@@ -152,6 +152,7 @@ const TOOLS: Item[] = [
   { key: 'pump-alerts',         label: 'Pump Alerts',         icon: <IcPumpAlerts />,         accent: PINK,   iconColor: PINK,   href: '/terminal/pump-alerts'    },
   { key: 'base-radar',          label: 'Base Radar',          icon: <IcRadar />,              accent: PURPLE, iconColor: PURPLE, href: '/terminal/base-radar'     },
   { key: 'watchlist',           label: 'Watchlist',           icon: <IcWatchlist />,          accent: MINT,   iconColor: MINT,   href: '/terminal/watchlist'      },
+  { key: 'track', label: 'Track', icon: <IcRadar />, accent: MINT, iconColor: MINT, href: '/terminal/track' },
   { key: 'clark-ai',            label: 'Clark AI',            icon: <IcClarkAI />,            accent: PURPLE, iconColor: PURPLE, href: '/terminal/clark-ai'       },
 ]
 

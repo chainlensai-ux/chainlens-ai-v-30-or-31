@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -51,7 +52,7 @@ import {
 } from '@/lib/riskScoreDirection'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
-type SolanaBetaResult = SolanaBetaScanResult
+type SolanaBetaResult = SolanaBetaScanResult & { outcomeReceipt?: string | null }
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -788,6 +789,7 @@ type ScanResult = {
     confidence?: string
   }
   riskScore?: number
+  outcomeReceipt?: string | null
   riskScoreSource?: string
   riskInputsUsed?: string[]
   riskInputStatuses?: Record<string, string>
@@ -5402,6 +5404,7 @@ export default function TerminalTokenScanner() {
           cortexScore: json.cortexScore ?? null,
           cortexVerdict: json.cortexVerdict ?? undefined,
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
+          outcomeReceipt: json.outcomeReceipt ?? null,
           riskScoreSource: json.riskScoreSource ?? undefined,
           riskInputsUsed: json.riskInputsUsed ?? undefined,
           safetyScore: typeof json.safetyScore === 'number' ? json.safetyScore : undefined,
@@ -6079,6 +6082,7 @@ export default function TerminalTokenScanner() {
                   const overviewCx = computeSolanaCortexRisk(sr)
                   return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <TrackOutcomeButton key={sr.outcomeReceipt ?? sr.mintAddress} score={overviewCx.score} receipt={sr.outcomeReceipt} />
                     {/* Main score hero — same footprint/typography as EVM's "TOKEN SAFETY SCORE"
                         card, never a "— /100" placeholder: sc.score is always a real number. */}
                     <div style={{ marginBottom: '0', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${sc.color}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${sc.color}10, 0 0 0 1px ${sc.color}06 inset` }}>
@@ -7436,6 +7440,9 @@ export default function TerminalTokenScanner() {
               })()}
 
               {/* ── CORTEX READ ───────────────────────────────────────── */}
+              <div style={{ maxWidth: 300, marginBottom: 18 }}>
+                <TrackOutcomeButton key={result.outcomeReceipt ?? `${result.chain}:${result.contract}`} score={result.riskScore} receipt={result.outcomeReceipt} />
+              </div>
               {activeSection === 'cortex-read' && (() => {
                 const holderState = deriveHolderState(result)
                 const scanEvidence = scanEvidenceFor(result)
