@@ -4565,6 +4565,164 @@ function RiskPill({ label, value }: { label: string; value: PillStyle & { label:
   )
 }
 
+// ─── Track Outcome CTA ───────────────────────────────────────────────
+//
+// TRACK-OUTCOME-CTA, DISCLOSED (Token Scanner locked-CTA polish task): this is a NEW, self-
+// contained UI gate for a "Track Outcome" affordance — no tracking/outcome-recording backend
+// exists anywhere in this codebase today, so the unlocked state's onClick is a deliberate no-op,
+// left ready for real wiring later (see its own comment below). This component reads the SAME
+// canonical `riskScore` the Risk Score Hero above already computes/displays (`riskScoreVal`,
+// derived from `normalizeRiskScore` — never a second score), gated behind ONE new, UI-only
+// threshold constant declared here. Nothing here touches the risk engine, its breakdown scoring,
+// or any existing threshold used elsewhere on this page (e.g. the 70/40 strong/moderate/weak
+// breakdown-row cutoffs) — this is strictly a new, additive display gate on top of an unchanged
+// score.
+export const TRACK_OUTCOME_MIN_RISK_SCORE = 50
+
+function LockIcon({ size = 12, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <rect x="5" y="11" width="14" height="9" rx="2.2" stroke={color} strokeWidth="2" />
+      <path d="M8 11V7.5a4 4 0 0 1 8 0V11" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function InfoIcon({ size = 12, color = 'currentColor' }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <circle cx="12" cy="12" r="9" stroke={color} strokeWidth="2" />
+      <circle cx="12" cy="8.1" r="1.15" fill={color} />
+      <path d="M12 11.2V16.4" stroke={color} strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+// WHY-LOCKED TOOLTIP/POPOVER, DISCLOSED: shared by the CTA itself and the small info icon beside
+// it (task item 6) — same content, same trigger logic, so there is only ever one explanation to
+// keep in sync. Opens on desktop hover (onMouseEnter/onMouseLeave) AND on mobile tap (onClick
+// toggling `open`, closed again by a document-level click-outside listener) — both paths funnel
+// into the same `open` state, so there is only one thing to test.
+function TrackOutcomeWhyLockedTooltip({ riskScore }: { riskScore: number | null }) {
+  return (
+    <div
+      role="tooltip"
+      style={{
+        position: 'absolute', top: 'calc(100% + 8px)', left: 0, zIndex: 30,
+        width: 'min(272px, 80vw)', padding: '12px 14px', borderRadius: '12px',
+        background: 'linear-gradient(160deg,rgba(10,16,30,.99),rgba(5,9,18,.98))',
+        border: '1px solid rgba(148,163,184,0.30)',
+        boxShadow: '0 18px 44px rgba(0,0,0,0.55), 0 0 0 1px rgba(148,163,184,0.05) inset',
+      }}
+    >
+      <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
+        Why is this locked?
+      </p>
+      <p style={{ margin: '0 0 9px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>
+        Track Outcome is only available for higher-risk scans (50+) so ChainLens can measure whether a risky token later pumped, dumped, or rugged.
+      </p>
+      <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, paddingTop: '8px', borderTop: '1px solid rgba(148,163,184,0.14)' }}>
+        {riskScore != null
+          ? `This token scored ${riskScore}/100, so tracking is locked for this scan.`
+          : 'This scan has no risk score yet, so tracking is locked for this scan.'}
+      </p>
+    </div>
+  )
+}
+
+function TrackOutcomeCta({ riskScore }: { riskScore: number | null }) {
+  const [tooltipOpen, setTooltipOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const unlocked = riskScore != null && riskScore >= TRACK_OUTCOME_MIN_RISK_SCORE
+
+  useEffect(() => {
+    if (!tooltipOpen) return
+    const onDocClick = (e: globalThis.MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setTooltipOpen(false)
+    }
+    document.addEventListener('click', onDocClick)
+    return () => document.removeEventListener('click', onDocClick)
+  }, [tooltipOpen])
+
+  if (unlocked) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <button
+          type="button"
+          // UNLOCKED CLICK, DISCLOSED: no tracking/outcome-recording backend exists yet anywhere in
+          // this codebase — this is a deliberate no-op placeholder, not a fabricated feature. Wire
+          // the real action here once that backend exists; the unlocked visual state itself is
+          // fully real and does not depend on it.
+          onClick={() => {}}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: '8px',
+            padding: '11px 20px', borderRadius: '12px', cursor: 'pointer',
+            background: 'linear-gradient(135deg, rgba(45,212,191,0.24), rgba(56,189,248,0.15))',
+            border: '1px solid rgba(45,212,191,0.55)',
+            boxShadow: '0 0 26px rgba(45,212,191,0.18), 0 0 0 1px rgba(45,212,191,0.08) inset',
+            color: '#5eead4', fontSize: '12.5px', fontWeight: 800, letterSpacing: '0.04em',
+            fontFamily: 'var(--font-plex-mono)',
+          }}
+        >
+          Track Outcome
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+        <button
+          type="button"
+          aria-disabled="true"
+          aria-describedby="track-outcome-why-locked"
+          onClick={() => setTooltipOpen((o) => !o)}
+          onMouseEnter={() => setTooltipOpen(true)}
+          onMouseLeave={() => setTooltipOpen(false)}
+          onFocus={() => setTooltipOpen(true)}
+          onBlur={() => setTooltipOpen(false)}
+          style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '3px',
+            padding: '10px 16px', borderRadius: '12px', cursor: 'not-allowed',
+            background: 'linear-gradient(160deg, rgba(36,48,68,0.55), rgba(13,20,34,0.80))',
+            border: '1px solid rgba(148,163,184,0.30)',
+            boxShadow: '0 0 0 1px rgba(148,163,184,0.06) inset, 0 4px 18px rgba(0,0,0,0.25)',
+            opacity: 0.88,
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.04em', color: '#9fb1c4', fontFamily: 'var(--font-plex-mono)' }}>
+            <LockIcon size={12} color="#8497ad" />
+            Track Outcome
+          </span>
+          <span style={{ fontSize: '9.5px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>
+            Unlocks at 50+ risk
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label="Why is Track Outcome locked?"
+          onClick={() => setTooltipOpen((o) => !o)}
+          onMouseEnter={() => setTooltipOpen(true)}
+          onMouseLeave={() => setTooltipOpen(false)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: '22px', height: '22px', borderRadius: '999px', cursor: 'pointer',
+            background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.24)',
+            color: '#7f93a8',
+          }}
+        >
+          <InfoIcon size={11} color="#7f93a8" />
+        </button>
+      </div>
+      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.01em' }}>
+        Available for higher-risk scans (50+)
+      </p>
+      {tooltipOpen && <div id="track-outcome-why-locked"><TrackOutcomeWhyLockedTooltip riskScore={riskScore} /></div>}
+    </div>
+  )
+}
+
 type HoneypotData = {
   isHoneypot: boolean | null
   buyTax: number | null
@@ -7591,6 +7749,12 @@ export default function TerminalTokenScanner() {
                             : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
                         </div>
                       )}
+                    </div>
+
+                    {/* Track Outcome CTA — locked below TRACK_OUTCOME_MIN_RISK_SCORE (50), active
+                        at/above it. Reads the SAME riskScoreVal the hero above just displayed. */}
+                    <div style={{ marginBottom: '14px' }}>
+                      <TrackOutcomeCta riskScore={riskScoreVal} />
                     </div>
 
                     {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety /
