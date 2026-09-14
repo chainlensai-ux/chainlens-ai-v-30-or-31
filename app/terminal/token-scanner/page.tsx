@@ -9,10 +9,6 @@ import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, typ
 // lib/server/solanaChainConfig.ts, which must never be imported here).
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
-// Pure presentation mapping over solanaResult — see lib/solanaConfidenceScore.ts's own header for
-// the full disclosure on why a capped, clearly-labeled score replaced the earlier "no score shown"
-// design (this task explicitly permits it). Client-safe, no env var, no secret.
-import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
 import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'
 import { resolveDeployerWalletIntel } from '@/lib/deployerWalletIntel'
 import { resolveRobinhoodTokenEvidence } from '@/lib/robinhoodTokenEvidence'
@@ -5972,7 +5968,6 @@ export default function TerminalTokenScanner() {
 
           {solanaResult && !loading && (() => {
             const sr = solanaResult
-            const sc = computeSolanaConfidenceScore(sr)
             // The betaRisk verdict/color pair that used to live here is gone: its top label was the
             // literal string "Open Check", and every surface that showed it now reads the real
             // graded computeSolanaCortexRisk verdict instead (see the CORTEX RISK READ strip).
@@ -6075,58 +6070,74 @@ export default function TerminalTokenScanner() {
                 {/* OVERVIEW-PARITY, DISCLOSED (Token Scanner Solana premium-parity task): now
                     mirrors the EVM Overview's exact three-tier structure — a main score hero,
                     a Score Breakdown card underneath, then a secondary CORTEX read — instead of
-                    a single status card. Same underlying data, real computed sc/betaRisk values. */}
+                    a single status card. Same underlying data, real computed overviewCx/betaRisk values. */}
                 {activeSection === 'cortex-read' && (() => {
                   // Same engine the Risk Engine tab and the side receipt read — see the CORTEX RISK
                   // READ strip below for why this replaced sr.betaRisk here.
                   const overviewCx = computeSolanaCortexRisk(sr)
                   return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <TrackOutcomeButton key={sr.outcomeReceipt ?? sr.mintAddress} score={overviewCx.score} receipt={sr.outcomeReceipt} />
+                    <TrackOutcomeButton key={sr.outcomeReceipt ?? sr.mintAddress} score={overviewCx.riskScore} receipt={sr.outcomeReceipt} />
                     {/* Main score hero — same footprint/typography as EVM's "TOKEN SAFETY SCORE"
-                        card, never a "— /100" placeholder: sc.score is always a real number. */}
-                    <div style={{ marginBottom: '0', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${sc.color}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${sc.color}10, 0 0 0 1px ${sc.color}06 inset` }}>
-                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>SOLANA CONFIDENCE SCORE</div>
+                        card, never a "— /100" placeholder: overviewCx.riskScore is always a real
+                        number.
+                        DIRECTION FIX, DISCLOSED (Solana risk-score-direction task): this card used
+                        to show sc.score/sc.verdict — a SAFETY-style read (higher = safer) under a
+                        "CONFIDENCE SCORE" label paired with risk-sounding badges like "HIGH RISK",
+                        which read backwards next to EVM's canonical Risk Score (higher = riskier)
+                        and fed Track Outcome eligibility a different, uninverted number than what
+                        was shown here. Now shows the SAME canonical overviewCx.riskScore the
+                        TrackOutcomeButton immediately above reads (and the frozen receipt saves,
+                        see lib/server/solanaOutcomeReceipt.ts) — one number, one direction, no
+                        second threshold. Category evidence in the Score Breakdown card below is
+                        untouched: only this single, final composite was converted. */}
+                    <div style={{ marginBottom: '0', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${overviewCx.riskColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${overviewCx.riskColor}10, 0 0 0 1px ${overviewCx.riskColor}06 inset` }}>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-                          <span style={{ fontSize: '52px', fontWeight: 800, color: sc.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 24px ${sc.color}38` }}>{sc.score}</span>
-                          <span style={{ fontSize: '16px', color: `${sc.color}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                          <span style={{ fontSize: '52px', fontWeight: 800, color: overviewCx.riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 24px ${overviewCx.riskColor}38` }}>{overviewCx.riskScore}</span>
+                          <span style={{ fontSize: '16px', color: `${overviewCx.riskColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
                         </div>
-                        <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: sc.color, background: `${sc.color}14`, border: `1px solid ${sc.color}45`, fontFamily: 'var(--font-plex-mono)' }}>{sc.verdict.toUpperCase()}</span>
+                        <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: overviewCx.riskColor, background: `${overviewCx.riskColor}14`, border: `1px solid ${overviewCx.riskColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{overviewCx.riskLabel.toUpperCase()}</span>
                       </div>
                       <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
-                        <div style={{ height: '100%', width: `${sc.score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${sc.color},${sc.color}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${sc.color}55` }} />
+                        <div style={{ height: '100%', width: `${overviewCx.riskScore}%`, borderRadius: '999px', background: `linear-gradient(90deg,${overviewCx.riskColor},${overviewCx.riskColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${overviewCx.riskColor}55` }} />
                       </div>
                       <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>
-                        Computed from supported Solana evidence only — authority status, top-account concentration, market health, and track record (creator verification + pool age). Scaled down proportionally to this token&apos;s own real age, evidence coverage, and creator verification — never to a shared ceiling — so this can never read as a full safety verdict, and two different tokens are never forced to the same number.
-                        {sc.scoreCapReasons.length > 0 && <span style={{ display: 'block', marginTop: '6px', color: '#8ea0b5' }}>{sc.scoreCapReasons.join(' ')}</span>}
+                        Computed from supported Solana evidence only — authority status, top-account concentration, market health, and track record (creator verification + pool age). Higher score means higher risk, matching every other chain in Token Scanner. Scaled down proportionally to this token&apos;s own real age, evidence coverage, and creator verification — never to a shared ceiling — so this can never read as a full safety verdict, and two different tokens are never forced to the same number.
+                        {overviewCx.scoreCapReasons.length > 0 && <span style={{ display: 'block', marginTop: '6px', color: '#8ea0b5' }}>{overviewCx.scoreCapReasons.join(' ')}</span>}
                       </div>
                     </div>
 
-                    {/* Score Breakdown — same visual language as EVM: label, status pill, bar, reason chips. */}
+                    {/* Score Breakdown — same visual language as EVM: label, status pill, bar, reason chips.
+                        SOURCE CHANGED, DISCLOSED (Solana risk-score-direction task): now reads
+                        overviewCx.modules instead of the separate sc.categories, so this breakdown
+                        decomposes the SAME hero number above (overviewCx.riskScore) instead of an
+                        unrelated engine's total. Per-module bars/labels stay their own evidence-style
+                        read (Strong/Moderate/Weak on this module's own scoreEarned/scoreMax) — only
+                        the single top-line composite above was converted to canonical risk direction,
+                        never these per-category evidence values. */}
                     <div style={{ padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
                       <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
                       <div style={{ display: 'grid', gap: '10px' }}>
-                        {sc.categories.map((cat, rIdx) => {
-                          const pct = cat.max > 0 ? Math.max(0, Math.min(100, (cat.score / cat.max) * 100)) : 0
+                        {overviewCx.modules.map((mod, rIdx) => {
+                          const pct = mod.scoreMax > 0 ? Math.max(0, Math.min(100, (mod.scoreEarned / mod.scoreMax) * 100)) : 0
                           const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
                           const statusLabel = pct >= 70 ? 'Strong' : pct >= 40 ? 'Moderate' : 'Weak'
                           return (
-                            <div key={cat.label} style={{ paddingBottom: '10px', borderBottom: rIdx < sc.categories.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
+                            <div key={mod.module} style={{ paddingBottom: '10px', borderBottom: rIdx < overviewCx.modules.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px', gap: '8px' }}>
-                                <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{cat.label}</span>
+                                <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{mod.module}</span>
                                 <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '7px' }}>
                                   <span style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', color: barColor, background: `${barColor}14`, border: `1px solid ${barColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{statusLabel}</span>
-                                  <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{cat.score}/{cat.max}</span>
+                                  <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{mod.scoreEarned}/{mod.scoreMax}</span>
                                 </span>
                               </div>
                               <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '7px' }}>
                                 <div style={{ height: '100%', width: `${pct}%`, borderRadius: '999px', background: `linear-gradient(90deg,${barColor},${barColor}80)`, transition: 'width 0.7s ease' }} />
                               </div>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                {cat.reasons.map((r, i) => (
-                                  <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#a3b4c5', background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{r}</span>
-                                ))}
+                                <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#a3b4c5', background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{mod.reason}</span>
                               </div>
                             </div>
                           )
@@ -6147,7 +6158,12 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline' }}>
                         <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
                         <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Verdict: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.verdict}</span></div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Score: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.score}/{overviewCx.scoreMax}</span></div>
+                        {/* DIRECTION FIX, DISCLOSED (Solana risk-score-direction task): shows the
+                            canonical overviewCx.riskScore (higher = riskier) instead of the raw
+                            safety-style overviewCx.score, so this number now agrees with the
+                            risk-severity verdict beside it and with the hero card above — same
+                            engine, same canonical direction, everywhere on this tab. */}
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Score: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.riskScore}/{overviewCx.scoreMax}</span></div>
                         <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Evidence: <span style={{ color: confColor, fontWeight: 700 }}>{overviewCx.overallConfidence}</span></div>
                       </div>
                     </div>

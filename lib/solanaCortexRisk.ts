@@ -57,6 +57,7 @@
 // and this module's own test script.
 
 import type { SolanaBetaScanResult } from './server/solanaTokenScannerBeta.ts'
+import { normalizeRiskScore, riskColorFromCanonicalLabel, type CanonicalRiskLabel } from './riskScoreDirection.ts'
 
 export type SolanaCortexVerdict = 'Low Contract Risk' | 'Speculative' | 'High Speculation' | 'High Risk' | 'Critical Risk'
 export type SolanaModuleConfidence = 'High' | 'Medium' | 'Low' | 'Unavailable'
@@ -104,6 +105,21 @@ export type SolanaCortexRisk = {
   verdict: SolanaCortexVerdict
   verdictColor: string
   overallConfidence: SolanaModuleConfidence
+
+  // CANONICAL RISK SCORE, DISCLOSED (Solana risk-direction fix task): `score`/`verdict`/
+  // `verdictColor` above are, and remain, a SAFETY-style read (higher = safer, matching every
+  // existing test in scripts/test-solana-token-scanner.mjs, e.g. "the more mature token scores
+  // meaningfully higher") — completely untouched, along with every module/factor/cap computation.
+  // `riskScore`/`riskLabel`/`riskColor` are a SEPARATE, additive canonical view of the exact same,
+  // already-computed `score`, converted exactly once at this single boundary via the same
+  // `normalizeRiskScore` helper (lib/riskScoreDirection.ts) EVM's Risk Score already uses
+  // (`rawScoreType: 'safety_score'` → `100 - score`). This is the field Track Outcome eligibility
+  // and the frozen Solana outcome receipt must read (lib/server/solanaOutcomeReceipt.ts) — never
+  // `score` directly, which is why a genuinely dangerous, low-`score` token used to read as
+  // ineligible (`canTrackOutcome` gates on >= 50 meaning higher risk, not higher safety).
+  riskScore: number
+  riskLabel: CanonicalRiskLabel
+  riskColor: string
 
   /** Contract-security-only read (Contract Security + Supply Control) — see this file's header. */
   securityRead: SolanaSecurityRead
@@ -661,8 +677,20 @@ export function computeSolanaCortexRisk(sr: ScanInput): SolanaCortexRisk {
   if (!(sr.poolProgram.resolved && sr.poolProgram.label)) nextActions.push('Verify pool authority manually')
   if (nextActions.length === 0) nextActions.push('No further action required')
 
+  // ── CANONICAL RISK SCORE, DISCLOSED: single normalization boundary — see this type's own header
+  // above. `score` is always a real, finite 0-scoreMax(=100) safety read, so this never returns
+  // null. ─────────────────────────────────────────────────────────────────────────────────────
+  const canonicalRisk = normalizeRiskScore({
+    rawScore: score, rawScoreType: 'safety_score',
+    source: 'solana_cortex_risk', displayLocation: 'token_scanner_solana_track_outcome',
+  })
+  const riskScore = canonicalRisk.riskScore0To100 ?? 100 - score
+  const riskLabel = canonicalRisk.riskLabel ?? 'Moderate Risk'
+  const riskColor = riskColorFromCanonicalLabel(riskLabel)
+
   return {
     score, scoreMax, verdict, verdictColor, overallConfidence,
+    riskScore, riskLabel, riskColor,
     securityRead, uncappedScore, scoreCapReasons,
     modules,
     evidenceCoveragePercent, completedEvidence, unavailableEvidence,

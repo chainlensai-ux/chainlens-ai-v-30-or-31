@@ -1,4 +1,4 @@
-import { cautionRiskCopy, CAUTION_ELEVATED_COPY as SHARED_CAUTION_ELEVATED_COPY } from './tokenScannerEvidence'
+import { cautionRiskCopy, CAUTION_ELEVATED_COPY as SHARED_CAUTION_ELEVATED_COPY } from './tokenScannerEvidence.ts'
 
 export type RiskScoreType = 'risk_score' | 'safety_score' | 'unknown'
 export type CanonicalRiskLabel = 'Low Risk' | 'Moderate Risk' | 'Caution' | 'High Risk' | 'Extreme Risk'

@@ -51,6 +51,7 @@
 // and this module's own test script.
 
 import type { SolanaBetaScanResult } from './server/solanaTokenScannerBeta'
+import { normalizeRiskScore, riskColorFromCanonicalLabel, type CanonicalRiskLabel } from './riskScoreDirection.ts'
 
 export type SolanaConfidenceCategory = { label: string; score: number; max: number; reasons: string[] }
 export type SolanaConfidenceRead = {
@@ -62,6 +63,18 @@ export type SolanaConfidenceRead = {
   verdict: 'Low Risk Signals' | 'Caution' | 'High Risk'
   color: string
   categories: SolanaConfidenceCategory[]
+  // CANONICAL RISK SCORE, DISCLOSED (Solana risk-direction fix task): `score`/`verdict`/`color`
+  // above are, and remain, a SAFETY-style read (higher = safer) — every category, cap multiplier,
+  // and existing regression test in scripts/test-solana-token-scanner.mjs stays exactly as it was,
+  // untouched. `riskScore`/`riskLabel`/`riskColor` are a SEPARATE, additive canonical view of the
+  // exact same, already-computed `score` — converted exactly once, at this single normalization
+  // boundary, via the same `normalizeRiskScore` helper (lib/riskScoreDirection.ts) the EVM Risk
+  // Score already uses (`rawScoreType: 'safety_score'` → `100 - score`). Higher `riskScore` always
+  // means higher risk here, matching the canonical EVM semantics — this is the field the Token
+  // Scanner UI's "RISK SCORE" hero and Track Outcome eligibility must read, never `score` directly.
+  riskScore: number
+  riskLabel: CanonicalRiskLabel
+  riskColor: string
 }
 
 function fmtLargeUsd(v: number | null | undefined): string {
@@ -175,5 +188,16 @@ export function computeSolanaConfidenceScore(
 
   const verdict: SolanaConfidenceRead['verdict'] = score >= 75 ? 'Low Risk Signals' : score >= 40 ? 'Caution' : 'High Risk'
   const color = verdict === 'Low Risk Signals' ? '#34d399' : verdict === 'Caution' ? '#fbbf24' : '#f87171'
-  return { score, uncappedScore, scoreCapReasons: activeCapReasons, verdict, color, categories }
+
+  // ── CANONICAL RISK SCORE, DISCLOSED: single normalization boundary — see this file's type
+  // header. `score` above is a real, finite 0-100 safety read, so this never returns null. ────────
+  const canonicalRisk = normalizeRiskScore({
+    rawScore: score, rawScoreType: 'safety_score',
+    source: 'solana_confidence_score', displayLocation: 'token_scanner_solana_overview',
+  })
+  const riskScore = canonicalRisk.riskScore0To100 ?? 100 - score
+  const riskLabel = canonicalRisk.riskLabel ?? 'Moderate Risk'
+  const riskColor = riskColorFromCanonicalLabel(riskLabel)
+
+  return { score, uncappedScore, scoreCapReasons: activeCapReasons, verdict, color, categories, riskScore, riskLabel, riskColor }
 }

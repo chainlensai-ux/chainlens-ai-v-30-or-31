@@ -113,6 +113,9 @@ test('Token Scanner still mounts only the real TrackOutcomeButton, at both exist
   assert.match(pageSrc, /import TrackOutcomeButton from '@\/components\/outcomes\/TrackOutcomeButton'/)
   const mounts = (pageSrc.match(/<TrackOutcomeButton\b/g) ?? []).length
   assert.equal(mounts, 2, 'Token Scanner must mount exactly the two existing real call sites (Solana overview + EVM result) — no new/duplicate mount added')
-  assert.match(pageSrc, /<TrackOutcomeButton key=\{sr\.outcomeReceipt \?\? sr\.mintAddress\} score=\{overviewCx\.score\} receipt=\{sr\.outcomeReceipt\} \/>/)
+  // Solana risk-score-direction fix, DISCLOSED: score now reads overviewCx.riskScore (the
+  // canonical, higher-is-riskier field), not overviewCx.score (a safety-style read) — see
+  // tests/solana-risk-score-direction.test.ts for the dedicated regression coverage of that fix.
+  assert.match(pageSrc, /<TrackOutcomeButton key=\{sr\.outcomeReceipt \?\? sr\.mintAddress\} score=\{overviewCx\.riskScore\} receipt=\{sr\.outcomeReceipt\} \/>/)
   assert.match(pageSrc, /<TrackOutcomeButton key=\{result\.outcomeReceipt \?\? `\$\{result\.chain\}:\$\{result\.contract\}`\} score=\{result\.riskScore\} receipt=\{result\.outcomeReceipt\} \/>/)
 })
