@@ -436,6 +436,50 @@ export async function writeAcceptedEvidence(kv: AcceptedEvidenceKvLike, envelope
   }
 }
 
+// SLIDING EXPIRY ON PROVEN REUSE, DISCLOSED (28-lost-verified-lot production regression, wallet
+// 0x4dbb…ef96 — CONFIRMED ROOT CAUSE this fixes).
+//
+// THE BUG: `expiresAt` (and the KV `ex`) are only ever set by a WRITE. The canonical seeding pass
+// deliberately skips the write whenever an existing record already covers the identical composition
+// ("skip_already_covers" — correctly, since re-writing an unchanged value would be pointless churn
+// and risks laundering provenance). The consequence nobody had modelled: a record that is
+// successfully reused by EVERY scan still dies exactly ACCEPTED_EVIDENCE_TTL_SECONDS after its FIRST
+// write. On expiry the fast-path hydration finds nothing, those sides fall through to live
+// historical pricing, and trades too old for any provider to re-price become `missing_price`
+// candidates — 98 verified lots collapsing to 70 with 19 wasted GoldRush calls, on a 30-day fuse,
+// for every wallet.
+//
+// THE FIX IS NOT A WEAKENING: this re-persists the SAME envelope with only `expiresAt` advanced.
+// The caller may only invoke it for a record whose identity, coverage fingerprint AND value it has
+// just re-verified as unchanged, so no threshold moves, no unverified price is promoted, and no
+// stronger record is overwritten. `acceptedAt` deliberately stays at the true original acceptance
+// instant (it records when the evidence was accepted, not when it was last seen) — nothing in
+// `classifyAcceptedEvidence` couples the two, it only requires `expiresAt > now`.
+//
+// REFRESH-AHEAD THRESHOLD, DISCLOSED: refreshing on every scan would add a KV write per side per
+// scan. Refreshing only once a record is past the halfway point of its life bounds that to at most
+// one extra write per side per half-TTL while still guaranteeing the contract that matters: a record
+// reused at least once every ACCEPTED_EVIDENCE_REFRESH_AFTER_MS can never expire under active use.
+export const ACCEPTED_EVIDENCE_REFRESH_AFTER_MS = (ACCEPTED_EVIDENCE_TTL_SECONDS * 1000) / 2
+
+/** True when `envelope` has less than half its TTL left and should have its expiry sled forward. */
+export function acceptedEvidenceNeedsTtlRefresh(envelope: AcceptedEvidenceEnvelope, now: number): boolean {
+  return envelope.expiresAt - now < ACCEPTED_EVIDENCE_REFRESH_AFTER_MS
+}
+
+/**
+ * Re-persists an already-verified record with its expiry advanced one full TTL from `now`, changing
+ * NOTHING else — same price, same value, same identity, same coverage, same provenance. Returns
+ * false (never throws) when the write fails, exactly like `writeAcceptedEvidence`.
+ */
+export async function refreshAcceptedEvidenceTtl(
+  kv: AcceptedEvidenceKvLike,
+  envelope: AcceptedEvidenceEnvelope,
+  now: number,
+): Promise<boolean> {
+  return writeAcceptedEvidence(kv, { ...envelope, expiresAt: now + ACCEPTED_EVIDENCE_TTL_SECONDS * 1000 })
+}
+
 // BOUNDED-CONCURRENCY BATCH READ, DISCLOSED, ADDITIVE (canonical-manifest-fast-path follow-up task,
 // Part C — confirmed perf issue: a manifest replay/pre-validation over N lots was issuing 2*N fully
 // SEQUENTIAL `await`s, one per side, each a real KV round trip; for 26 manifest lots that is 52

@@ -6,6 +6,7 @@ import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
+  acceptedEvidenceNeedsTtlRefresh, refreshAcceptedEvidenceTtl,
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
   detectLegacyPerUnitTotalByLiveUpstreamProof, detectWrongDecimalScaleByLiveUpstreamProof,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
@@ -881,6 +882,11 @@ export type AcceptedEvidenceAudit = {
   // evidence back, not writing it).
   verifiedSidesEligibleForPersistence: number
   verifiedSidesAlreadyPersisted: number
+  // SLIDING EXPIRY, DISCLOSED (28-lost-verified-lot regression): real counts of records whose
+  // expiry this scan advanced because it re-verified them as still covering their side unchanged.
+  // A TTL refresh never changes a value — see refreshAcceptedEvidenceTtl's own header.
+  verifiedSidesTtlRefreshed: number
+  verifiedSideTtlRefreshFailures: number
   verifiedSidesWritten: number
   verifiedSideWriteFailures: number
   verifiedSidesSkippedUnverified: number
@@ -1493,6 +1499,7 @@ export function createPnlReconciliation(config: Config = {}) {
       recoveryEvidenceWriteSuccesses: 0, recoveryEvidenceWriteFailures: 0,
       canonicalSeedingWriteSuccesses: 0, canonicalSeedingWriteFailures: 0,
       verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
+      verifiedSidesTtlRefreshed: 0, verifiedSideTtlRefreshFailures: 0,
       verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
       missingVerifiedEvidenceMetadata: 0,
       invalidAcceptedEvidenceReasons: {
@@ -2232,6 +2239,20 @@ export function createPnlReconciliation(config: Config = {}) {
       if (existing && (compositionUnchanged || existingCoveredLotCount > group.lots.length)) {
         audit.verifiedSidesAlreadyPersisted += group.lots.length
         pushMutationAudit('skip_already_covers', true, 'none')
+        // SLIDING EXPIRY ON PROVEN REUSE, DISCLOSED (28-lost-verified-lot regression — see
+        // refreshAcceptedEvidenceTtl's own header in acceptedEvidenceStore.ts for the full trace).
+        // Reaching this branch means this scan just re-verified that the persisted record still
+        // covers this exact side: same identity, same coverage composition, and a value this pass
+        // did not need to change. Skipping the write was correct for the VALUE, but it also left
+        // `expiresAt` frozen at its original seed instant — so a record reused by every scan still
+        // died 30 days after its FIRST write, taking its lots down to `missing_price` with it.
+        // Advancing only the expiry (never the value, identity or provenance) is what stops that
+        // fuse without weakening a single verification rule.
+        if (acceptedEvidenceNeedsTtlRefresh(existing, now)) {
+          const refreshed = await refreshAcceptedEvidenceTtl(acceptedEvidenceKv, existing, now)
+          if (refreshed) audit.verifiedSidesTtlRefreshed += group.lots.length
+          else audit.verifiedSideTtlRefreshFailures += group.lots.length
+        }
         return
       }
       const identity = { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp, lotIdentityVersion: representativeVersion(group) }

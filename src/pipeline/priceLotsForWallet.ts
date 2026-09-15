@@ -450,13 +450,46 @@ export type ManifestFastPathAudit = {
   candidateDiscoveryCalls: number
   fastPathApplied: boolean
   fastPathFailureReason: string | null
+  // LOST-COVERAGE FORENSICS, DISCLOSED, ADDITIVE (28-lost-verified-lot regression, wallet
+  // 0x4dbb…ef96). This gate is the FIRST stage at which a previously-verified lot loses its trusted
+  // price: if no valid persisted record backs its side here, the side is not skipped, falls through
+  // to live historical pricing, and any trade too old to re-price becomes a `missing_price`
+  // candidate. Recording per side exactly what was found — and why it did not provide coverage —
+  // makes that first divergence directly observable in production instead of inferable only from
+  // aggregate counters. Bounded (see LOST_COVERAGE_AUDIT_LIMIT); every field is a real, measured
+  // value from this pass, never a guess.
+  lostCoverageSides: Array<{
+    evidenceKey: string
+    chain: string
+    token: string
+    txHash: string
+    side: 'entry' | 'exit'
+    timestamp: number
+    /** Lots on this side that lose their trusted price when it fails to provide coverage. */
+    affectedLotCount: number
+    /** True when a valid, non-expired record was returned by the discovery read. */
+    persistedEvidenceFound: boolean
+    /** The record's own total side value, when one was found. */
+    persistedPriceUsd: number | null
+    /** Always the relaxed discovery read at this gate — recorded so a later strict-vs-discovery
+     *  mismatch can never be silently assumed. */
+    memoMode: 'discovery_any_lot_version'
+    /** Why this side did not provide coverage — the real first-failure reason. */
+    rejectionReason: 'no_persisted_record_found' | 'non_positive_persisted_value' | 'allocation_floors_a_sibling_to_zero'
+    firstFailureStage: 'accepted_evidence_fast_path'
+  }>
 }
+
+// Bounded so a wallet with hundreds of degraded sides can never grow this log unboundedly inside a
+// serverless invocation; the aggregate counts above stay exact regardless of this cap.
+const LOST_COVERAGE_AUDIT_LIMIT = 40
 
 function emptyManifestFastPathAudit(): ManifestFastPathAudit {
   return {
     manifestLoadedBeforePricing: false, allClosedLotSidesCovered: false,
     allClosedLotSidesPresent: false, allClosedLotSidesVerified: false,
     unmatchedSellRequirementsSuppressed: 0, openPositionRequirementsRetained: 0,
+    lostCoverageSides: [],
     manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
     manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, goldrushCallsPrevented: 0,
     dexCallsPrevented: 0, alchemyCallsPrevented: 0, recoveryLookupsPrevented: 0, candidateDiscoveryCalls: 0,
@@ -666,7 +699,38 @@ export async function priceLotsForWallet(params: {
         dict.set(txHash, canonicalPriceUsd)
       } else {
         acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length
+        // LOST-COVERAGE FORENSICS, DISCLOSED — see ManifestFastPathAudit.lostCoverageSides. Reaching
+        // this branch is the exact first divergence: this side will NOT be skipped, so every lot on
+        // it falls through to live historical pricing and risks becoming `missing_price`.
+        if (manifestFastPathAudit.lostCoverageSides.length < LOST_COVERAGE_AUDIT_LIMIT) {
+          manifestFastPathAudit.lostCoverageSides.push({
+            evidenceKey: evidenceKvKey,
+            chain: representative.chain,
+            token: representative.token,
+            txHash,
+            side,
+            timestamp,
+            affectedLotCount: groupedLots.length,
+            persistedEvidenceFound: evidence !== null,
+            persistedPriceUsd: canonicalPriceUsd,
+            memoMode: 'discovery_any_lot_version',
+            rejectionReason: evidence === null
+              ? 'no_persisted_record_found'
+              : !isCanonicalPositiveUsd(canonicalPriceUsd)
+                ? 'non_positive_persisted_value'
+                : 'allocation_floors_a_sibling_to_zero',
+            firstFailureStage: 'accepted_evidence_fast_path',
+          })
+        }
       }
+    }
+    if (manifestFastPathAudit.lostCoverageSides.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[accepted-evidence-lost-coverage]', {
+        sidesLosingCoverage: manifestFastPathAudit.lostCoverageSides.length,
+        lotsAffected: manifestFastPathAudit.lostCoverageSides.reduce((sum, s) => sum + s.affectedLotCount, 0),
+        examples: manifestFastPathAudit.lostCoverageSides,
+      })
     }
   }
   function isSkippableByAcceptedEvidence(chain: NormalizedEvent['chain'], txHash: string, side: 'entry' | 'exit'): boolean {

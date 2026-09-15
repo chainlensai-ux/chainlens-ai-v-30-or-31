@@ -79,6 +79,7 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
       recoveryEvidenceWriteSuccesses: 0, recoveryEvidenceWriteFailures: 0,
       canonicalSeedingWriteSuccesses: 0, canonicalSeedingWriteFailures: 0,
       verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
+      verifiedSidesTtlRefreshed: 0, verifiedSideTtlRefreshFailures: 0,
       verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
       missingVerifiedEvidenceMetadata: 0,
       acceptedSidesRequestedBeforePricing: 0, acceptedSidesLoadedBeforePricing: 0, acceptedSidesAppliedBeforePricing: 0,
