@@ -71,7 +71,12 @@ describe('scanPerformanceSummary (perf-sprint: "per-stage timings, percentage of
     assert.match(src, /criticalPath: stageEntries\.map\(\(\[name\]\) => name\)/, 'critical path must be derived from the real stage execution order, not a guessed/hardcoded list')
     assert.match(src, /providerLatencyMs: chainLatencies\.map/, 'provider latency must come from the real per-chain chainLatencies array, not new instrumentation')
     assert.match(src, /cacheHitRate: \{/, 'cache hit rate must be present')
-    assert.match(src, /scanPerformanceSummary,\s*\n\s*\/\/ GOLDRUSH CALL SPLIT/, 'scanPerformanceSummary must actually be attached to the object this function returns, not just logged')
+    // LATENCY-AUDIT NOTE, DISCLOSED: `scanStageProfile` (the unexplained-latency audit's own
+    // reconciliation over the regions scanTimer cannot see) is now returned as an ADDITIVE sibling
+    // right after this field. The property under test is unchanged — scanPerformanceSummary must
+    // still be attached to the returned object, not merely logged — so the optional sibling is
+    // permitted here rather than pinning the two fields as immediate neighbours forever.
+    assert.match(src, /scanPerformanceSummary,\s*\n(\s*scanStageProfile,\s*\n)?\s*\/\/ GOLDRUSH CALL SPLIT/, 'scanPerformanceSummary must actually be attached to the object this function returns, not just logged')
   })
 
   it('marks fifoEngine (the real, load-bearing FIFO run only) and receiptDecoding, so "Measure FIFO/PnL time" and "Measure receipt decoding time" are both real, not omitted', () => {

@@ -38,6 +38,7 @@ import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/veri
 import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
+import { createScanStageProfiler } from './scanStageProfiler'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { createMemoizedAcceptedEvidenceLoader, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
@@ -1379,6 +1380,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const scanTimestamp = new Date().toISOString()
   const scanStartedAtMs = performance.now()
   const scanTimer = startStageTimer()
+  // UNEXPLAINED-LATENCY INSTRUMENTATION, DISCLOSED, ADDITIVE (Wallet Scanner latency audit): every
+  // stage `scanTimer` above structurally cannot see — i.e. everything after its last `pricingAtTime`
+  // mark — is measured here instead. Pure instrumentation: each `stage()` returns its wrapped
+  // region's own value unchanged and rethrows its error unchanged. See scanStageProfiler.ts.
+  const stageProfiler = createScanStageProfiler()
   const providerFetchWindowKvWriter = createProviderWindowKvWriter()
   // CACHE-HIT-RATE TRACKING, DISCLOSED, ADDITIVE: real hit/miss counts for the two stage caches
   // this file wraps directly (providerFetchWindow, recoveryPolicy) via withStageCache's optional
@@ -3031,8 +3037,64 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       if (data) syntheticPoolData[key] = data
     }
   }
-  await recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
-  await recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
+  // PROVEN SERIAL-WAIT FIX, DISCLOSED (Wallet Scanner unexplained-latency audit): the loop above
+  // awaits `discoverAerodromePools` INSIDE its own iteration, so each distinct Base token's pool
+  // discovery — itself up to THREE sequential subgraph queries (see discoverAerodromePools in
+  // src/pipeline/metadata.ts) — only started after the previous token's had fully finished. For a
+  // wallet holding N Base tokens that is N fully-serialized network round-trip chains on the
+  // critical path, and it was entirely invisible to the old scanTimer (which stops at
+  // `pricingAtTime`).
+  //
+  // The fix starts those INDEPENDENT discoveries up front with bounded concurrency, populating the
+  // SAME `aerodromeDiscovery` promise memo the loop already reads. The loop below is otherwise
+  // untouched: it still calls `discoverAerodromePools` for any token not pre-warmed, still dedupes
+  // by `chain:token`, and now simply awaits an already-in-flight promise instead of starting one.
+  //
+  // IDENTICAL WORK, DISCLOSED: the pre-warm set is exactly the set of distinct Base `chain:token`
+  // keys across the same two entry lists the loop itself walks, so the number of
+  // `discoverAerodromePools` calls, their results, and the resulting `syntheticPoolData` are
+  // unchanged — only their start time moves earlier. No provider coverage is added or removed, and
+  // no evidence value changes.
+  //
+  // CASE EQUIVALENCE, DISCLOSED: the loop keys `aerodromeDiscovery` by `token.toLowerCase()` but
+  // passes the original-cased `entry.token` to `discoverAerodromePools`, while this pre-warm passes
+  // the lowercased form. Those are provably the same request: `discoverAerodromePools` only
+  // `.trim()`-checks the string and forwards it to `query()`, which lowercases it itself before it
+  // ever reaches the subgraph (`variables: { token: token.toLowerCase() }`, see
+  // src/pipeline/metadata.ts). The request body is byte-identical either way.
+  const AERODROME_DISCOVERY_CONCURRENCY = 8
+  const baseTokensToPrewarm = [...new Set(
+    [...displayBuyEntries, ...sellTimelineV2.entries]
+      .filter((entry) => entry.chain === 'base')
+      .map((entry) => entry.token.toLowerCase()),
+  )]
+  await stageProfiler.stage('aerodromePoolDiscoveryPrewarm', { awaitedSerially: false }, async () => {
+    stageProfiler.count({ providerCalls: baseTokensToPrewarm.length })
+    let cursor = 0
+    const workerCount = Math.max(1, Math.min(AERODROME_DISCOVERY_CONCURRENCY, baseTokensToPrewarm.length))
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor
+        cursor += 1
+        if (index >= baseTokensToPrewarm.length) return
+        const token = baseTokensToPrewarm[index]
+        if (aerodromeDiscovery.has(token)) continue
+        // Failures are deliberately NOT caught here: the promise is stored exactly as
+        // `discoverAerodromePools` returned it, so the loop below observes the identical
+        // resolution/rejection it would have observed had it started the call itself.
+        const discovery = discoverAerodromePools(token)
+        aerodromeDiscovery.set(token, discovery)
+        // Settle without rethrowing so one token's failure cannot abort the pre-warm of the
+        // others — the stored promise still carries that rejection to whoever awaits it below.
+        await discovery.catch(() => undefined)
+      }
+    }
+    if (baseTokensToPrewarm.length > 0) await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  })
+  await stageProfiler.stage('syntheticPoolPricing', { awaitedSerially: true }, async () => {
+    await recordSyntheticPoolPrice(displayBuyEntries, pricingAtTime.costUsd)
+    await recordSyntheticPoolPrice(sellTimelineV2.entries, pricingAtTime.proceedsUsd)
+  })
   // This is the mandatory successor to pricingAtTime. Keep the complete hand-off in one call so
   // provider-only, diagnostics, and full scans cannot make pricingAtTime their terminal stage.
   // Final observability is owned by the assembly function and therefore runs for an empty result
@@ -3187,17 +3249,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const preResolverBuckets = new Map(boundaryRequiredSells.map((sell) => [unmatchedSellProofKey(sell), sell.reason] as const))
   const boundaryDependentSellsToResolve = fifoAndPnl.unmatchedSellEvents.filter((sell) =>
     boundaryRequiredKeys.has(unmatchedSellProofKey(sell)))
-  const boundaryDependentSellResolutionAudit = await resolveBoundaryDependentSells({
-    sells: boundaryDependentSellsToResolve,
-    classified: structuralCoverageClassified,
-    recoveredClassified: recoveredClassifiedForJoin,
-    recoveredRawEvents: recoveredRawEventsForPricing,
-    windowStartTimestamp: requestedWindowStart,
-    walletAddress: params.walletAddress,
-    receiptProofByTx: receiptProofByTxHash,
-    fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
-    preResolverBuckets,
-  })
+  const boundaryDependentSellResolutionAudit = await stageProfiler.stage(
+    'boundaryDependentSellResolution', { awaitedSerially: true },
+    () => resolveBoundaryDependentSells({
+      sells: boundaryDependentSellsToResolve,
+      classified: structuralCoverageClassified,
+      recoveredClassified: recoveredClassifiedForJoin,
+      recoveredRawEvents: recoveredRawEventsForPricing,
+      windowStartTimestamp: requestedWindowStart,
+      walletAddress: params.walletAddress,
+      receiptProofByTx: receiptProofByTxHash,
+      fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
+      preResolverBuckets,
+    }),
+  )
   if (boundaryDependentSellResolutionAudit.sellsConsidered > 0) {
     unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
       structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
@@ -3338,7 +3403,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   let roiQuoteLegManifestIdentity: CanonicalPnlSampleManifestIdentity | null = null
   let acceptedEvidenceMemoStats: { requests: number; uniqueWork: number; cacheHits: number } | null = null
 
-  const canonicalSampleSelector: CanonicalSampleSelector = async (reconciledLots) => {
+  // PROFILED BY DELEGATION, DISCLOSED (Wallet Scanner latency audit): the selector body below is
+  // byte-for-byte unchanged — it is simply named `canonicalSampleSelectorInner` and invoked through
+  // the thin profiled wrapper defined immediately after it. Wrapping this way (rather than
+  // re-indenting the whole body inside a `stage()` callback) keeps the diff to two lines and makes
+  // it trivially reviewable that no manifest read/replay/refresh/build/write logic moved.
+  const canonicalSampleSelectorInner: CanonicalSampleSelector = async (reconciledLots) => {
     // The manifest's own lookup key is the STRUCTURAL fingerprint of the full reconciled lot array —
     // chain/token/tx-hash/timestamp/amount identity only, never evidenceQuality or price (see
     // scanDeterminismAudit.ts's own `lotIdentityKey`), so the same structural lot set produces the
@@ -3892,7 +3962,26 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
   }
 
-  const reconciledPnlSummary = await pnlReconciliation.reconcile({
+  // The profiled wrapper — see the DISCLOSED note on `canonicalSampleSelectorInner` above. This runs
+  // INSIDE `pnlReconciliation.reconcile` below, so it is recorded as a nested (depth 1) stage and is
+  // deliberately excluded from the reconciliation sum to avoid double-counting its parent's time,
+  // while still being fully visible for attribution. The accepted-evidence memo's own final counters
+  // are attached here so this stage reports real KV reads vs memo hits rather than 0.
+  const canonicalSampleSelector: CanonicalSampleSelector = (reconciledLots) =>
+    stageProfiler.stage('canonicalSampleSelection', { awaitedSerially: true }, async () => {
+      const selection = await canonicalSampleSelectorInner(reconciledLots)
+      if (acceptedEvidenceMemoStats) {
+        stageProfiler.count({
+          kvReads: acceptedEvidenceMemoStats.uniqueWork,
+          cacheHits: acceptedEvidenceMemoStats.cacheHits,
+        })
+      }
+      return selection
+    })
+
+  const reconciledPnlSummary = await stageProfiler.stage(
+    'pnlReconciliation', { awaitedSerially: true },
+    () => pnlReconciliation.reconcile({
     fifoEngineResult: fifoAndPnl,
     pnlEngineResult: adaptedPnlSummary,
     routerInferenceOutput: routerInferenceResult,
@@ -3915,13 +4004,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     canonicalSampleSelector,
     normalizedEvents: [...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
-  })
+    }),
+  )
   if (roiQuoteLegManifestIdentity) {
-    await persistRoiQuoteLegProofs(
-      canonicalSampleManifestKv,
-      roiQuoteLegManifestIdentity,
-      reconciledPnlSummary.roiQuoteLegProofsToPersist ?? [],
-    )
+    await stageProfiler.stage('roiQuoteLegProofPersistence', { awaitedSerially: true }, () =>
+      persistRoiQuoteLegProofs(
+        canonicalSampleManifestKv,
+        roiQuoteLegManifestIdentity as CanonicalPnlSampleManifestIdentity,
+        reconciledPnlSummary.roiQuoteLegProofsToPersist ?? [],
+      ))
   }
   console.warn('[verified-sample-performance-audit]', reconciledPnlSummary.verifiedSamplePerformanceAudit)
   {
@@ -4381,7 +4472,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // forced it to resolve early has already run. Awaited BEFORE scanTotalMs below so the reported
   // total honestly includes any residual wait (capped at 300ms per chain, same as before) rather
   // than silently undercounting it.
-  await providerFetchWindowKvWriteSettled
+  await stageProfiler.stage('providerWindowKvWriteSettle', { awaitedSerially: false }, () => providerFetchWindowKvWriteSettled)
 
   // SCAN PERFORMANCE SUMMARY, DISCLOSED (perf-sprint task) — see ScanPerformanceSummary's own type
   // header (src/pipeline/types.ts) for what each field means and why the stage order IS the
@@ -4415,6 +4506,30 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   }
   console.warn('[pipeline] scanPerformanceSummary', scanPerformanceSummary)
 
+  // UNEXPLAINED-LATENCY RECONCILIATION, DISCLOSED (Wallet Scanner latency audit): the seven legacy
+  // `scanTimer` stages are folded into the profiler as already-measured depth-0 samples (via
+  // `record`, not re-measured), so a single reconciliation covers BOTH the stages the old timer
+  // could see and the post-`pricingAtTime` regions it structurally could not. Any residue is
+  // reported as `unexplainedMs`/`unexplainedPercent` rather than silently absorbed — a scan whose
+  // residue exceeds 5% fails `withinTolerance` and is the signal to instrument further.
+  //
+  // `startedAt`/`endedAt` for the legacy stages are honestly derived from this scan's own start
+  // wall-clock plus the timer's measured ms; the legacy timer only ever recorded durations, so an
+  // exact original start instant for them genuinely does not exist to report.
+  const scanStartedWallClockMs = Date.parse(scanTimestamp)
+  for (const [name, ms] of stageEntries) {
+    stageProfiler.record({
+      name, startedAt: scanStartedWallClockMs, endedAt: scanStartedWallClockMs + ms, durationMs: ms,
+      providerCalls: 0, kvReads: 0, cacheHits: 0, awaitedSerially: true,
+    })
+  }
+  const scanStageProfile = stageProfiler.build({ totalMs: scanTotalMs })
+  console.warn('[wallet-scan-stage-profile]', {
+    reconciliation: scanStageProfile.reconciliation,
+    slowest: scanStageProfile.slowest,
+    stages: scanStageProfile.samples,
+  })
+
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
@@ -4425,6 +4540,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     walletPnlCoverageRecoveryAudit,
     walletScannerPipelineAudit,
     scanPerformanceSummary,
+    scanStageProfile,
     // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
     // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the
     // final result so the worker's own [wallet-provider-cost-audit] log can attribute calls

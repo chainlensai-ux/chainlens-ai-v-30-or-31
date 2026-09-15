@@ -22,7 +22,11 @@ describe('providerFetchWindow KV write overlaps with unrelated CPU work (perf-sp
   })
 
   it('is awaited exactly once, before scanTotalMs is measured (so the reported total honestly includes any residual wait)', () => {
-    const awaitIndex = src.indexOf('await providerFetchWindowKvWriteSettled')
+    // LATENCY-AUDIT NOTE, DISCLOSED: the settle is now awaited THROUGH the stage profiler
+    // (`await stageProfiler.stage('providerWindowKvWriteSettle', ..., () => providerFetchWindowKvWriteSettled)`)
+    // so this previously-invisible residual wait is attributed to a named stage. Still exactly one
+    // await, still before scanTotalMs — only the wrapper changed.
+    const awaitIndex = src.indexOf("await stageProfiler.stage('providerWindowKvWriteSettle'")
     const scanTotalMsIndex = src.indexOf('const scanTotalMs = Math.round(performance.now() - scanStartedAtMs)')
     assert.notEqual(awaitIndex, -1, 'must be awaited somewhere')
     assert.notEqual(scanTotalMsIndex, -1, 'scanTotalMs computation must exist')

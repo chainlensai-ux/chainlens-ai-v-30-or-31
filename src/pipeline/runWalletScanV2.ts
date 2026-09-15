@@ -24,6 +24,7 @@ import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils'
 import { buildWalletScanPerformanceAudit, type WalletScanPerformanceAudit } from './walletScanPerformanceAudit'
 import { buildUnrealizedPriceUsageAudit, type UnrealizedPriceUsageAudit } from './unrealizedPriceUsageAudit'
 import { buildOpenPositionExclusionAudit, type OpenPositionExclusionAudit } from './openPositionExclusionAudit'
+import { createScanStageProfiler, type ScanStageProfile } from './scanStageProfiler'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
@@ -40,6 +41,10 @@ export type RunWalletScanV2Result = RunWalletScanResult & {
   // made but not used" with real, measured reconciliation data.
   unrealizedPriceUsageAudit: UnrealizedPriceUsageAudit
   openPositionExclusionAudit: OpenPositionExclusionAudit
+  // JOB-LEVEL stage profile (holdings fetch + current pricing + runWalletScan + portfolio), with its
+  // own reconciliation against the full job wall-clock. `scanStageProfile` inherited from
+  // RunWalletScanResult remains the INNER profile for everything inside runWalletScan.
+  jobStageProfile: ScanStageProfile
 }
 
 function emptyPortfolio(): PortfolioSummary {
@@ -208,15 +213,24 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   // this chain" fact. Excluding it from the write (shouldCache below) stops that failure from being
   // replayed as a cached "healthy, zero holdings" hit for the next 20s — a caller within that window
   // now genuinely retries live instead.
+  // UNEXPLAINED-LATENCY INSTRUMENTATION, DISCLOSED, ADDITIVE (Wallet Scanner latency audit): this
+  // per-chain holdings fetch runs BEFORE runWalletScan() is even called, so runWalletScan's own
+  // scanTimer/profiler structurally cannot see it — it was previously counted in the job total but
+  // attributable to no stage at all. Measured here and merged into the job-level reconciliation
+  // below. Pure instrumentation: the stage wrapper returns the same value and rethrows unchanged.
+  const outerProfiler = createScanStageProfiler()
   const holdingsResults = preScan.valid
-    ? await Promise.all(preScan.sanitizedChains.map((chain) =>
-        withStageCache(
-          `v2:holdings:${chain}:${params.walletAddress.toLowerCase()}`,
-          20,
-          () => fetchHoldings(chain, params.walletAddress),
-          { writer: holdingsKvWriter, shouldCache: (r) => r.providerStatus !== 'provider_unavailable' },
-        ),
-      ))
+    ? await outerProfiler.stage('holdingsFetch', { awaitedSerially: false }, async () => {
+        outerProfiler.count({ providerCalls: preScan.sanitizedChains.length })
+        return Promise.all(preScan.sanitizedChains.map((chain) =>
+          withStageCache(
+            `v2:holdings:${chain}:${params.walletAddress.toLowerCase()}`,
+            20,
+            () => fetchHoldings(chain, params.walletAddress),
+            { writer: holdingsKvWriter, shouldCache: (r) => r.providerStatus !== 'provider_unavailable' },
+          ),
+        ))
+      })
     : []
 
   const holdings: TokenHolding[] = holdingsResults.flatMap((r) => r.holdings)
@@ -231,23 +245,29 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   let pricingAudit: PricingResolutionAudit | null = null
   let noLiquidityFoundKeys: string[] = []
   const currentPricingStartedAtMs = Date.now()
-  try {
-    const pricingRequests: PricingRequest[] = holdings.map((h) => ({
-      chain: h.chain,
-      contract: h.contract,
-      knownPriceUsd: h.providerPriceUsd,
-      symbol: h.symbol,
-      amount: h.amount,
-    }))
-    const resolved = await resolvePricesDetailed(pricingRequests)
-    prices = resolved.prices
-    pricingAudit = resolved.audit
-    noLiquidityFoundKeys = resolved.noLiquidityFoundKeys
-  } catch {
-    prices = []
-    pricingAudit = null
-    noLiquidityFoundKeys = []
-  }
+  await outerProfiler.stage('currentPriceResolution', { awaitedSerially: true }, async () => {
+    try {
+      const pricingRequests: PricingRequest[] = holdings.map((h) => ({
+        chain: h.chain,
+        contract: h.contract,
+        knownPriceUsd: h.providerPriceUsd,
+        symbol: h.symbol,
+        amount: h.amount,
+      }))
+      const resolved = await resolvePricesDetailed(pricingRequests)
+      prices = resolved.prices
+      pricingAudit = resolved.audit
+      noLiquidityFoundKeys = resolved.noLiquidityFoundKeys
+    } catch {
+      prices = []
+      pricingAudit = null
+      noLiquidityFoundKeys = []
+    }
+    outerProfiler.count({
+      providerCalls: (pricingAudit?.dexscreenerCalls ?? 0) + (pricingAudit?.geckoTerminalCalls ?? 0),
+      cacheHits: pricingAudit?.cacheHits ?? 0,
+    })
+  })
   const currentPricingMs = Date.now() - currentPricingStartedAtMs
   const noLiquidityFoundSet = new Set(noLiquidityFoundKeys)
 
@@ -256,7 +276,7 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
     for (const key of nativeAliasKeys(h.chain, h.contract)) canonicalHoldingKeys.add(key)
   }
 
-  const report = await runWalletScan({
+  const report = await outerProfiler.stage('runWalletScan', { awaitedSerially: true }, () => runWalletScan({
     ...params,
     canonicalBalanceLookup: buildCanonicalBalanceLookup(holdings),
     canonicalHoldingKeys,
@@ -268,14 +288,15 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
       // computePnl's own "CANONICAL PRICE PREFERENCE" comment), so this legacy field is left unset.
       noLiquidityFoundLookup: (token, chain) => noLiquidityFoundSet.has(`${chain}:${token.toLowerCase()}`),
     },
-  })
+  }))
 
-  let portfolio: PortfolioSummary
-  try {
-    portfolio = buildPortfolioSummary(holdings, prices)
-  } catch {
-    portfolio = emptyPortfolio()
-  }
+  const portfolio: PortfolioSummary = outerProfiler.stageSync('portfolioSummary', { awaitedSerially: false }, () => {
+    try {
+      return buildPortfolioSummary(holdings, prices)
+    } catch {
+      return emptyPortfolio()
+    }
+  })
 
   const walletScanPerformanceAudit = buildWalletScanPerformanceAudit({
     totalMs: Date.now() - scanStartedAtMs,
@@ -295,5 +316,21 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   const openPositionExclusionAudit = buildOpenPositionExclusionAudit(report.fifoAndPnl.unrealizedReconciliation)
   console.warn('[open-position-exclusion-audit]', openPositionExclusionAudit)
 
-  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit, unrealizedPriceUsageAudit, openPositionExclusionAudit }
+  // JOB-LEVEL RECONCILIATION, DISCLOSED (Wallet Scanner unexplained-latency audit): reconciles the
+  // FULL job wall-clock (the same `totalMs` walletScanPerformanceAudit reports) against this outer
+  // profiler's own stages — holdings fetch, current-price resolution, runWalletScan itself, and
+  // portfolio assembly. `runWalletScan`'s inner profile is nested underneath and carries its own
+  // independent reconciliation for everything inside it, so the two together attribute the whole
+  // job: any residue here is time spent in runWalletScanV2 OUTSIDE all four stages, and any residue
+  // there is time inside runWalletScan outside its own measured regions. Both are reported
+  // explicitly rather than absorbed.
+  const jobStageProfile = outerProfiler.build({ totalMs: Date.now() - scanStartedAtMs })
+  console.warn('[wallet-scan-job-stage-profile]', {
+    reconciliation: jobStageProfile.reconciliation,
+    slowest: jobStageProfile.slowest,
+    stages: jobStageProfile.samples,
+    innerScanReconciliation: report.scanStageProfile?.reconciliation ?? null,
+  })
+
+  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit, unrealizedPriceUsageAudit, openPositionExclusionAudit, jobStageProfile }
 }

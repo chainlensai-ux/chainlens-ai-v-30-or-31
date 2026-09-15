@@ -109,6 +109,14 @@ export type RunWalletScanResult = FinalReport & {
   // or fabricated — a stage this scan didn't reach (e.g. recoveryPolicy on a 'normal' scan) is
   // simply absent from `stages`, not zero-filled.
   scanPerformanceSummary?: ScanPerformanceSummary
+  // SCAN STAGE PROFILE, DISCLOSED, ADDITIVE (Wallet Scanner unexplained-latency audit). Complements
+  // `scanPerformanceSummary` above rather than replacing it: that summary reports only the seven
+  // stages `scanTimer` can observe, all of which finish at `pricingAtTime`. This profile ALSO covers
+  // every region after that mark (synthetic pool pricing, boundary-dependent sell resolution,
+  // canonical sample selection, PnL reconciliation, ROI proof persistence, provider-window KV write
+  // settle) and reconciles the sum against the real scan total, reporting any residue explicitly as
+  // `unexplainedMs`. See src/pipeline/scanStageProfiler.ts for the measurement contract.
+  scanStageProfile?: import('./scanStageProfiler').ScanStageProfile
 }
 
 export type ScanPerformanceSummary = {

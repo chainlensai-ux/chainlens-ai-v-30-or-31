@@ -20,8 +20,10 @@ function position(label: string, needle: string, source = pipelineSource): numbe
 }
 
 test('reconcile receives normalizedEvents so unpaired stablecoin lots are not left unresolved by omission', () => {
-  const callStart = position('reconcile call site', 'const reconciledPnlSummary = await pnlReconciliation.reconcile({')
-  const callEnd = pipelineSource.indexOf('\n  })', callStart)
+  // LATENCY-AUDIT NOTE, DISCLOSED: the reconcile call is now wrapped in a stage profiler, so this
+  // anchors on `pnlReconciliation.reconcile({` itself. The property under test is unchanged.
+  const callStart = position('reconcile call site', 'pnlReconciliation.reconcile({')
+  const callEnd = pipelineSource.indexOf('\n  )', callStart)
   assert.notEqual(callEnd, -1)
   const callBody = pipelineSource.slice(callStart, callEnd)
   assert.match(callBody, /normalizedEvents:/, 'reconcile must receive normalizedEvents for ROI quote-leg identity')
@@ -54,8 +56,8 @@ test('ROI pairing universe is closed FIFO lots plus unmatched non-stable buy/sel
 test('pipeline replays persisted ROI quote-leg proofs from the canonical sample and writes newly proven ones back', () => {
   assert.match(pipelineSource, /roiQuoteLegProofs:/, 'selector must return existing ROI quote-leg proofs')
   assert.match(pipelineSource, /persistRoiQuoteLegProofs\(/, 'pipeline must persist live-proven ROI quote-leg proofs after reconcile')
-  const reconcileCall = pipelineSource.indexOf('const reconciledPnlSummary = await pnlReconciliation.reconcile({')
-  const persistCall = pipelineSource.indexOf('await persistRoiQuoteLegProofs(')
+  const reconcileCall = pipelineSource.indexOf('pnlReconciliation.reconcile({')
+  const persistCall = pipelineSource.indexOf('persistRoiQuoteLegProofs(\n')
   assert.notEqual(reconcileCall, -1)
   assert.notEqual(persistCall, -1)
   assert.ok(persistCall > reconcileCall, 'proof persist must run after reconcile so live-proven identities from this scan are included')

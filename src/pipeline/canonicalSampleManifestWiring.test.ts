@@ -24,9 +24,16 @@ function position(label: string, needle: string): number {
   return index
 }
 
+// LATENCY-AUDIT NOTE, DISCLOSED: the reconcile call is now wrapped in a stage profiler
+// (`await stageProfiler.stage('pnlReconciliation', ..., () => pnlReconciliation.reconcile({...}))`),
+// so these checks anchor on `pnlReconciliation.reconcile({` itself rather than on the assignment
+// text that used to precede it. The property under test is unchanged: the selector is defined
+// first and passed INTO reconcile, never applied to its output.
+const RECONCILE_CALL_NEEDLE = 'pnlReconciliation.reconcile({'
+
 test('the canonical sample selector is passed INTO reconcile, so manifest selection precedes every gate calculation', () => {
-  const callStart = position('reconcile call site', 'const reconciledPnlSummary = await pnlReconciliation.reconcile({')
-  const callEnd = pipelineSource.indexOf('\n  })', callStart)
+  const callStart = position('reconcile call site', RECONCILE_CALL_NEEDLE)
+  const callEnd = pipelineSource.indexOf('\n  )', callStart)
   assert.notEqual(callEnd, -1)
   const callBody = pipelineSource.slice(callStart, callEnd)
   assert.match(callBody, /canonicalSampleSelector,?/, 'reconcile must receive the canonical sample selector')
@@ -34,7 +41,7 @@ test('the canonical sample selector is passed INTO reconcile, so manifest select
 
 test('the selector is defined before the reconcile call it is passed to', () => {
   const selectorDefinition = position('canonical sample selector definition', 'const canonicalSampleSelector: CanonicalSampleSelector =')
-  const reconcileCall = position('reconcile call site', 'const reconciledPnlSummary = await pnlReconciliation.reconcile({')
+  const reconcileCall = position('reconcile call site', RECONCILE_CALL_NEEDLE)
   assert.ok(selectorDefinition < reconcileCall)
 })
 
