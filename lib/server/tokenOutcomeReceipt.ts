@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto'
-import { canTrackOutcome, numberOrNull, type ScanSnapshot } from '../tokenOutcomes'
+import { canTrackOutcome, numberOrNull, validPriceOrNull, type ScanSnapshot } from '../tokenOutcomes'
 
 function secret() { return process.env.TOKEN_OUTCOME_SIGNING_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY }
 export function snapshotFromScan(scan: Record<string, unknown>, userId: string): ScanSnapshot | null {
@@ -9,12 +9,14 @@ export function snapshotFromScan(scan: Record<string, unknown>, userId: string):
   if (!['eth', 'base', 'bnb', 'robinhood', 'solana'].includes(chain) || !(chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/ : /^0x[\da-f]{40}$/i).test(address)) return null
   // Copy only public, canonical sections AFTER the existing plan gate. Never include provider debug payloads.
   return JSON.parse(JSON.stringify({
+    snapshotVersion: 2, riskScoreDirection: 'higher_is_riskier',
     userId, chain, tokenAddress: chain === 'solana' ? address : address.toLowerCase(),
     tokenSymbol: scan.symbol ?? '', tokenName: scan.name ?? '',
     scanId: scan.scanRequestId || randomUUID(), scannedAt: new Date(typeof scan.scanRequestStartedAt === 'number' ? scan.scanRequestStartedAt : Date.now()).toISOString(),
-    baselinePriceUsd: numberOrNull(scan.priceUsd), baselineLiquidityUsd: numberOrNull(scan.liquidityUsd),
+    baselinePriceUsd: validPriceOrNull(scan.priceUsd), baselineLiquidityUsd: numberOrNull(scan.liquidityUsd),
     baselineMarketCapUsd: numberOrNull(scan.marketCapUsd), baselineRiskScore: scan.riskScore,
     baselineVerdict: scan.riskLabel ?? scan.cortexVerdict ?? 'Verdict not recorded',
+    baselineConfidence: typeof scan.cortexConfidence === 'string' ? scan.cortexConfidence : null,
     baselineRiskReasons: scan.riskBreakdown ?? scan.scoreReasons ?? null,
     baselineSecuritySignals: { security: scan.security ?? null, honeypot: scan.honeypot ?? null, contractSecurity: scan.contractSecurity ?? null },
     baselineLpSignals: { lpControl: scan.lpControl ?? null, model: scan.lpModelProof ?? null, proof: scan.lpProofStatus ?? null },
@@ -26,7 +28,7 @@ export function snapshotFromScan(scan: Record<string, unknown>, userId: string):
 export function signOutcomeSnapshot(snapshot: ScanSnapshot): string | null {
   const key = secret()
   if (!key) return null
-  const payload = Buffer.from(JSON.stringify({ version: 1, snapshot })).toString('base64url')
+  const payload = Buffer.from(JSON.stringify({ version: 2, snapshot })).toString('base64url')
   if (payload.length > 180_000) return null
   return `${payload}.${createHmac('sha256', key).update(payload).digest('base64url')}`
 }
@@ -40,7 +42,11 @@ export function verifyOutcomeReceipt(receipt: unknown, userId: string): ScanSnap
     const supplied = Buffer.from(parts[1], 'base64url')
     if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null
     const { version, snapshot } = JSON.parse(Buffer.from(parts[0], 'base64url').toString())
-    if (version !== 1 || snapshot.userId !== userId || !canTrackOutcome(snapshot.baselineRiskScore)) return null
+    if (![1, 2].includes(version) || snapshot.userId !== userId || !canTrackOutcome(snapshot.baselineRiskScore)) return null
+    if (!['eth', 'base', 'bnb', 'robinhood', 'solana'].includes(snapshot.chain)) return null
+    const addressOk = snapshot.chain === 'solana' ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(snapshot.tokenAddress) : /^0x[\da-f]{40}$/.test(snapshot.tokenAddress)
+    if (!addressOk || (snapshot.chain !== 'solana' && snapshot.tokenAddress !== snapshot.tokenAddress.toLowerCase()) || (version === 1 && snapshot.chain === 'solana')) return null
+    if (version === 2 && (snapshot.snapshotVersion !== 2 || snapshot.riskScoreDirection !== 'higher_is_riskier')) return null
     return snapshot
   } catch { return null }
 }

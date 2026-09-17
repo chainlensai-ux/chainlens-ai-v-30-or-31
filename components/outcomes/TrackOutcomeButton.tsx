@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { canTrackOutcome, OUTCOME_LOCK_COPY, OUTCOME_POLICY } from '@/lib/tokenOutcomes'
 
-export async function outcomeRequest(method: 'GET' | 'POST', body?: unknown, outcomeId?: string) {
+export async function outcomeRequest(method: 'GET' | 'POST' | 'DELETE', body?: unknown, outcomeId?: string) {
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
   if (!token) throw new Error('Sign in to track outcomes.')

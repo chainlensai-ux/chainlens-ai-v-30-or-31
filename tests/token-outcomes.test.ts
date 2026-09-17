@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createHmac } from 'node:crypto'
 import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, quoteIsFreshForOutcome, quoteMatches, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
@@ -25,6 +26,11 @@ test('threshold is inclusive at 50 and rejects missing, nonfinite and safety val
   for (const v of [50, 78, 100]) assert.equal(canTrackOutcome(v), true)
   assert.equal(snapshotFromScan({ ...scan(), riskScoreType: 'safety_score' }, user), null)
 })
+test('percent math uses unrounded positive prices', () => {
+  assert.equal(percentChange(1, 0.75), -25)
+  assert.equal(percentChange(1, 1.25), 25)
+  assert.ok(Math.abs(percentChange(0.0005, 0.00075)! - 50) < 1e-12)
+})
 test('snapshot is a deep frozen-in-time copy, never FDV as market cap', () => {
   const original = scan(); const s = snapshotFromScan(original, user)!
   original.riskBreakdown.holders[0] = 'Changed by next scan'; original.riskScore = 20
@@ -43,6 +49,14 @@ test('receipt preserves duplicate identity and rejects another user or tampered 
   const changedPayload = Buffer.from(JSON.stringify({ version: 1, snapshot: { ...s, baselineRiskScore: 99 } })).toString('base64url')
   assert.equal(verifyOutcomeReceipt(`${changedPayload}.${receipt.split('.')[1]}`, user), null)
   assert.equal(verifyOutcomeReceipt(receipt, user)?.scanId, verifyOutcomeReceipt(signOutcomeSnapshot(s), user)?.scanId)
+})
+test('new receipts version canonical risk direction and legacy Solana receipts fail closed', () => {
+  const current = snapshotFromScan(scan(), user)!
+  assert.equal(current.snapshotVersion, 2); assert.equal(current.riskScoreDirection, 'higher_is_riskier')
+  const legacy = { ...current } as Record<string, unknown>; delete legacy.snapshotVersion; delete legacy.riskScoreDirection; legacy.chain = 'solana'; legacy.tokenAddress = '52qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+  const payload = Buffer.from(JSON.stringify({ version: 1, snapshot: legacy })).toString('base64url')
+  const receipt = `${payload}.${createHmac('sha256', process.env.TOKEN_OUTCOME_SIGNING_SECRET!).update(payload).digest('base64url')}`
+  assert.equal(verifyOutcomeReceipt(receipt, user), null)
 })
 test('adding receipt changes no existing scanner output and never mutates input/cache', () => {
   const original = scan(); const before = structuredClone(original)
@@ -76,7 +90,7 @@ test('failed or null current price cannot produce a -100% outcome or hypothetica
   }
 })
 test('a valid 90% decline remains a real -90% dumped outcome', () => {
-  const row = sanitizeTrackedOutcome({ ...outcomeRow(), current_price_usd: 1, price_change_pct: null })
+  const row = sanitizeTrackedOutcome(withObservation({ ...outcomeRow(), current_price_usd: 1, price_change_pct: null }, 1))
   assert.ok(Math.abs(row.price_change_pct! + 90) < 1e-8)
   assert.equal(row.outcome_status, 'dumped')
   assert.deepEqual(hypothetical(row.baseline_price_usd, row.current_price_usd), { value: 100, pnl: -900, potentialLossAvoided: 900 })
@@ -101,7 +115,7 @@ test('classifier fails closed on gaps, incomparable or tiny liquidity', () => {
   assert.equal(classifyOutcome({ price: 1, liquidity: null }, { price: 2, liquidity: null }).status, 'pumped')
 })
 test('wrong chain/address cache is rejected and Solana address casing is preserved', () => {
-  const quote = { chain: 'ethereum', address } as ClarkMarketQuote
+  const quote = { chain: 'ethereum', address, marketIdentity: { selectedPoolAddress: null, baseTokenAddress: address, quoteTokenAddress: null } } as ClarkMarketQuote
   assert.equal(quoteMatches(quote, 'base', address), false)
   assert.equal(quoteMatches(quote, 'eth', address), true)
   assert.equal(quoteMatches({ ...quote, chain: 'solana', address: 'AbCd' }, 'solana', 'abcd'), false)
@@ -130,7 +144,7 @@ test('DexScreener outcome provider selects only exact chain plus canonical contr
   } finally { globalThis.fetch = originalFetch }
 })
 test('malformed provider zero is unresolved and failed refresh retains a prior valid observation', async () => {
-  const row: TrackedOutcome = { ...outcomeRow(), current_price_usd: 4, price_change_pct: -60, outcome_status: 'dumped', market_source: 'dexscreener', last_checked_at: '2026-09-14T00:00:00.000Z' }
+  const row: TrackedOutcome = withObservation({ ...outcomeRow(), current_price_usd: 4, price_change_pct: -60, outcome_status: 'dumped', market_source: 'dexscreener', last_checked_at: '2026-09-14T00:00:00.000Z' }, 4)
   const malformed = marketQuote(row.token_address, 0)
   const providers = { dex: async () => ({ quote: malformed, matches: [malformed] }), gecko: async () => null }
   assert.equal(await resolveOutcomeQuote('base', row.token_address, providers), null)
@@ -144,7 +158,7 @@ test('malformed provider zero is unresolved and failed refresh retains a prior v
 test('market refresh rejects wrong-chain quotes, falls back, caches successes and retries misses', async () => {
   let dexCalls = 0; let geckoCalls = 0
   const token = `0x${'b'.repeat(40)}`
-  const quote: ClarkMarketQuote = { provider: 'geckoterminal', name: 'Fixture', symbol: 'FX', chain: 'base', chainId: 8453, address: token, priceUsd: 2, liquidityUsd: 5000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now() }
+  const quote: ClarkMarketQuote = { ...marketQuote(token, 2), provider: 'geckoterminal', name: 'Fixture', symbol: 'FX' }
   const providers = {
     dex: async () => { dexCalls++; return { quote: { ...quote, chain: 'eth' }, matches: [{ ...quote, chain: 'eth' }] } },
     gecko: async () => { geckoCalls++; return quote },
@@ -157,6 +171,17 @@ test('market refresh rejects wrong-chain quotes, falls back, caches successes an
   await resolveOutcomeQuote('base', `0x${'c'.repeat(40)}`, missing)
   await resolveOutcomeQuote('base', `0x${'c'.repeat(40)}`, missing)
   assert.equal(failures, 2)
+})
+test('provider timeout or 429-style throw falls back without accepting malformed or empty rows', async () => {
+  const token = `0x${'9'.repeat(40)}`, valid = { ...marketQuote(token, 3), provider: 'geckoterminal' as const }
+  const timeout = { dex: async () => { throw new Error('timeout') }, gecko: async () => valid }
+  assert.equal((await resolveOutcomeQuote('base', token, timeout, { force: true }))?.priceUsd, 3)
+  const empty = { dex: async () => ({ quote: marketQuote(token, 0), matches: [marketQuote(token, 0)] }), gecko: async () => null }
+  assert.equal(await resolveOutcomeQuote('base', token, empty, { force: true }), null)
+})
+test('legacy nonzero observations without exact identity proof are pending until refreshed', () => {
+  const row = sanitizeTrackedOutcome({ ...outcomeRow(), current_price_usd: 7, market_source: 'dexscreener', price_change_pct: -30 })
+  assert.equal(row.current_price_usd, null); assert.equal(row.price_change_pct, null); assert.equal(row.outcome_status, 'unavailable')
 })
 test('only fresh later chain-matched confirmed sell-block evidence can corroborate a rug', () => {
   const now = Date.now()
@@ -171,7 +196,7 @@ test('only fresh later chain-matched confirmed sell-block evidence can corrobora
   assert.equal(afterScanProof(priorBlocked, later, now), null)
 })
 test('share text uses frozen score and current math without exposing receipt, account or private link', () => {
-  const row = { baseline_snapshot_json: snapshotFromScan(scan(), user)!, baseline_price_usd: 10, current_price_usd: 1 } as TrackedOutcome
+  const row = withObservation({ ...outcomeRow(), baseline_snapshot_json: snapshotFromScan(scan(), user)!, baseline_price_usd: 10, current_price_usd: 1 }, 1)
   const text = shareOutcome(row)
   assert.match(text, /78\/100/); assert.match(text, /-90\.0%/); assert.match(text, /\$100\.00/)
   assert.doesNotMatch(text, /saved|11111111|\/terminal\/track|user_id/)
@@ -205,12 +230,18 @@ function outcomeRow(): TrackedOutcome {
 }
 function marketQuote(tokenAddress: string, priceUsd: number | null): ClarkMarketQuote {
   return { provider: 'dexscreener', name: 'Test token', symbol: 'TEST', chain: 'base', chainId: 8453, address: tokenAddress,
-    priceUsd, liquidityUsd: 5000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now() }
+    priceUsd, liquidityUsd: 5000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now(),
+    marketIdentity: { selectedPoolAddress: 'pool', baseTokenAddress: tokenAddress, quoteTokenAddress: null } }
+}
+function withObservation<T extends TrackedOutcome>(row: T, price: number): T {
+  return { ...row, market_source: row.market_source ?? 'dexscreener', market_observation_json: { version: 1, chain: row.chain,
+    tokenAddress: row.token_address, provider: row.market_source ?? 'dexscreener', fetchedAt: row.last_checked_at ?? new Date().toISOString(),
+    priceUsd: price, identityMatched: true, selectedPoolAddress: 'pool', selectedBaseTokenAddress: row.token_address, selectedQuoteTokenAddress: null } }
 }
 
 test('1. baseline 1 → current 0.75 is -25%, never -100%', () => {
   assert.equal(percentChange(1, 0.75), -25)
-  const row = sanitizeTrackedOutcome({ ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0.75, last_checked_at: new Date().toISOString(), market_source: 'dexscreener' })
+  const row = sanitizeTrackedOutcome(withObservation({ ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0.75, last_checked_at: new Date().toISOString(), market_source: 'dexscreener' }, 0.75))
   assert.equal(row.price_change_pct, -25)
   assert.equal(row.outcome_status, 'watching')
   assert.notEqual(row.price_change_pct, -100)
@@ -322,7 +353,7 @@ test('9. manual refresh wiring force-updates visible receipts', () => {
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
-  assert.match(page, /action: 'refresh', force, ids: visibleIds.current/)
+  assert.match(page, /force \? \{ ids: visibleIds.current \} : \{\}/)
   assert.match(page, /refreshAction.current\?\.\(true\)/)
   assert.match(route, /force: body.force === true/)
   assert.match(service, /force: opts.force === true/)
@@ -352,10 +383,10 @@ test('11. KAI-like quote-token pair cannot produce -100% when the priced KAI pai
     const result = await dexScreenerOutcomeMarketProvider(kai, 'base')
     assert.equal(result?.quote.priceUsd, 0.75)
     assert.equal(result?.quote.address?.toLowerCase(), kai)
-    const row = sanitizeTrackedOutcome({
+    const row = sanitizeTrackedOutcome(withObservation({
       ...outcomeRow(), token_address: kai, baseline_price_usd: 1, current_price_usd: 0.75,
       last_checked_at: new Date().toISOString(), market_source: 'dexscreener',
-    })
+    }, 0.75))
     assert.equal(percentChange(1, result!.quote.priceUsd), -25)
     assert.equal(row.price_change_pct, -25)
     assert.notEqual(row.outcome_status, 'dumped')
@@ -368,6 +399,7 @@ test('12. Solana receipt does not stick at 0% when a fresh valid price exists', 
   const live: ClarkMarketQuote = {
     provider: 'dexscreener', name: 'Paid Doge', symbol: 'PAIDDOGE', chain: 'solana', chainId: null, address: mint,
     priceUsd: 0.00075, liquidityUsd: 70_000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now(),
+    marketIdentity: { selectedPoolAddress: 'pool', baseTokenAddress: mint, quoteTokenAddress: null },
   }
   const providers = { dex: async () => ({ quote: live, matches: [live] }), gecko: async () => null }
   const quote = await resolveOutcomeQuote('solana', mint, providers, { force: true })
@@ -384,10 +416,10 @@ test('12. Solana receipt does not stick at 0% when a fresh valid price exists', 
 
 test('fresh genuinely sourced dust may still display as -100% dumped, missing price never does', () => {
   const now = Date.now()
-  const genuine = sanitizeTrackedOutcome({
+  const genuine = sanitizeTrackedOutcome(withObservation({
     ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 1e-12, price_change_pct: -100,
     outcome_status: 'dumped', last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
-  }, now)
+  }, 1e-12), now)
   assert.ok((genuine.price_change_pct ?? 0) <= -99.95)
   assert.equal(genuine.outcome_status, 'dumped')
   assert.equal(displayableCurrentPrice({ baseline_price_usd: 1, current_price_usd: 1e-12, last_checked_at: new Date(now - 20 * 60_000).toISOString(), market_source: 'dexscreener' }, now), null)
@@ -414,14 +446,15 @@ function paidDogeQuote(priceUsd: number, fetchedAt: number): ClarkMarketQuote {
     provider: 'dexscreener', name: 'Paid Doge', symbol: 'PAIDDOGE', chain: 'solana', chainId: null,
     address: PAID_DOGE_MINT, priceUsd, liquidityUsd: 83_000, marketCapUsd: null, fdvUsd: null,
     volume24hUsd: null, change24hPct: null, fetchedAt,
+    marketIdentity: { selectedPoolAddress: PAID_DOGE_PUMPSWAP, baseTokenAddress: PAID_DOGE_MINT, quoteTokenAddress: WSOL_MINT },
   }
 }
 function paidDogeRow(now: number, current = 0.0005, pct: number | null = 0): TrackedOutcome {
-  return {
+  return withObservation({
     ...outcomeRow(), id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', chain: 'solana', token_address: PAID_DOGE_MINT,
     baseline_price_usd: 0.0005, current_price_usd: current, price_change_pct: pct, outcome_status: 'watching',
     last_checked_at: new Date(now - 60_000).toISOString(), market_source: 'dexscreener',
-  }
+  }, current)
 }
 
 test('solana 1. baseline 0.0005 to live 0.00075 is +50% even when Dex stamps fetchedAt after frozen now', async () => {
@@ -452,10 +485,10 @@ test('solana 1. baseline 0.0005 to live 0.00075 is +50% even when Dex stamps fet
   assert.equal(update.current_price_usd, 0.00075)
   assert.equal(update.price_change_pct, 50)
   assert.equal(percentChange(0.0005, 0.00075), 50)
-  const shown = sanitizeTrackedOutcome({
+  const shown = sanitizeTrackedOutcome(withObservation({
     ...paidDogeRow(now), current_price_usd: 0.00075, price_change_pct: 50,
     last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
-  }, now)
+  }, 0.00075), now)
   assert.equal(shown.price_change_pct, 50)
   assert.notEqual(shown.price_change_pct, 0)
 })
@@ -522,7 +555,7 @@ test('solana 6. Track UI renders POST-returned outcomes immediately without anot
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
-  assert.match(page, /action: 'refresh', force, ids: visibleIds.current/)
+  assert.match(page, /force \? \{ ids: visibleIds.current \} : \{\}/)
   assert.match(page, /Array\.isArray\(result\.outcomes\)/)
   assert.match(page, /setRows\(outcomes\)/)
   assert.match(page, /return true/)

@@ -22,6 +22,7 @@ test('outcome migration enforces RLS, immutable snapshots, limits and duplicates
       values('${c}','base','0xcccccccccccccccccccccccccccccccccccccccc','legacy-zero',10,70,'High Risk','{}',0,-100,'dumped')`)
     await db.exec('reset role')
     await db.exec(readFileSync(new URL('../docs/migrations/20260914_token_outcome_price_integrity.sql', import.meta.url), 'utf8'))
+    await db.exec(readFileSync(new URL('../docs/migrations/20260918_track_outcome_identity_proof.sql', import.meta.url), 'utf8'))
     const snapshot = (userId: string, scanId = 'scan-1') => ({ userId, chain: 'base', tokenAddress: `0x${'a'.repeat(40)}`, scanId, baselineRiskScore: 78, baselineVerdict: 'Critical Risk', baselinePriceUsd: 10, baselineLiquidityUsd: 20000 })
     async function create(userId: string, scanId = 'scan-1', limit = 5) {
       await db.exec('set role service_role')
@@ -69,6 +70,15 @@ test('outcome migration enforces RLS, immutable snapshots, limits and duplicates
     await t.test('anonymous users cannot read outcomes', async () => {
       await db.exec('set role anon')
       await assert.rejects(db.query('select * from public.tracked_token_outcomes'), /permission denied/)
+    })
+    await t.test('clients cannot delete receipts; service deletion is exact and removes the observation row', async () => {
+      await db.exec(`set role authenticated; set "request.jwt.claim.sub"='${a}'`)
+      await assert.rejects(db.exec(`delete from public.tracked_token_outcomes where user_id='${a}'`), /permission denied/)
+      await db.exec('set role service_role')
+      const target = (await db.query(`select id from public.tracked_token_outcomes where user_id='${b}' limit 1`)).rows[0].id
+      await db.query('delete from public.tracked_token_outcomes where id=$1 and user_id=$2', [target, b])
+      assert.equal((await db.query('select id from public.tracked_token_outcomes where id=$1', [target])).rows.length, 0)
+      assert.ok((await db.query(`select id from public.tracked_token_outcomes where user_id='${a}'`)).rows.length > 0)
     })
   } finally { await db.close() }
 })

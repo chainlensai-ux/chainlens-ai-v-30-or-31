@@ -17,16 +17,17 @@ function Evidence({ value }: { value: unknown }) {
   if (Array.isArray(value)) return value.length ? <ul className={styles.evidenceList}>{value.map((v, i) => <li key={i}><Evidence value={v} /></li>)}</ul> : <p className={styles.muted}>No entries recorded.</p>
   return <dl className={styles.evidenceFields}>{Object.entries(value).map(([key, v]) => <div key={key}><dt>{label(key)}</dt><dd><Evidence value={v} /></dd></div>)}</dl>
 }
-export function OutcomeCard({ row, onOpen }: { row: TrackedOutcome; onOpen: () => void }) {
+export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; onOpen: () => void; onDelete: () => void }) {
   const snapshot = row.baseline_snapshot_json
-  return <button className={styles.card} onClick={onOpen} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
+  const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score unavailable' : `${row.baseline_risk_score}/100`
+  return <article className={styles.card} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
     <div className={styles.spread}><span className={styles.chain}>{row.chain}</span><span className={styles.status} data-status={row.outcome_status}>{statusLabel(row)}</span></div>
     <h2>{snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'}</h2>
     <p className={styles.muted}>{snapshot.tokenName}</p>
     <p className={styles.address} title={row.token_address}>{row.token_address}</p>
-    <div className={styles.metrics}><div><span>Original risk</span><strong>{row.baseline_risk_score}<small>/100</small></strong><p>{row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
-    <footer><span>Tracked {date(row.tracked_at)}</span><span className={styles.accent}>View receipt ↗</span></footer>
-  </button>
+    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
+    <footer><span>Tracked {date(row.tracked_at)}</span><span><button className={styles.close} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button> <span className={styles.accent}>View receipt ↗</span></span></footer>
+  </article>
 }
 export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidenceError = '' }: { row: TrackedOutcome; onClose: () => void; loadingEvidence?: boolean; evidenceError?: string }) {
   const dialog = useRef<HTMLDialogElement>(null)
@@ -43,7 +44,7 @@ export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidence
       <div className={styles.spread}><span className={styles.eyebrow}>ChainLens · Outcome receipt</span><button autoFocus className={styles.close} onClick={onClose} aria-label="Close receipt">×</button></div>
       <h2 id="outcome-receipt-title">{snapshot.tokenSymbol || snapshot.tokenName || 'Token'} <span className={styles.chain}>{row.chain}</span></h2>
       <p className={styles.address}>{row.token_address}</p>
-      <p>ChainLens scanned this token at <strong>{snapshot.baselineRiskScore}/100 · {snapshot.baselineVerdict}</strong></p>
+      <p>ChainLens scanned this token at <strong>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score direction unavailable · Rescan required' : `${snapshot.baselineRiskScore}/100 · ${snapshot.baselineVerdict}`}</strong></p>
       <p className={styles.muted}>Scanned {date(snapshot.scannedAt)} · Tracked {date(row.tracked_at)}</p>
       <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
       <div className={styles.math}><p>If you had bought $1,000 at the scan price…</p><strong>{h ? `${money(h.value)} remaining` : 'Hypothetical value unavailable'}</strong><div className={styles.spread}><span>Hypothetical PnL</span><b>{h ? money(h.pnl) : 'Unavailable'}</b></div><div className={styles.spread}><span>Potential loss avoided</span><b>{h ? money(h.potentialLossAvoided) : 'Unavailable'}</b></div><small>Illustration only. Not an actual purchase or saving. Excludes fees, slippage and ability to sell.</small></div>

@@ -96,6 +96,7 @@ export async function coingeckoMarketProvider(symbol: string): Promise<{ quote: 
 
 function dexScreenerPairToQuote(pair: Record<string, unknown>): ClarkMarketQuote | null {
   const baseToken = pair.baseToken as Record<string, unknown> | undefined;
+  const quoteToken = pair.quoteToken as Record<string, unknown> | undefined;
   if (!baseToken) return null;
   const priceUsd = parsePositiveUsd(pair.priceUsd)
   const change24h = pair.priceChange && typeof (pair.priceChange as Record<string, unknown>).h24 === "number"
@@ -119,6 +120,9 @@ function dexScreenerPairToQuote(pair: Record<string, unknown>): ClarkMarketQuote
     volume24hUsd: volume24h,
     liquidityUsd: liquidity,
     fetchedAt: Date.now(),
+    marketIdentity: { selectedPoolAddress: typeof pair.pairAddress === "string" ? pair.pairAddress : null,
+      baseTokenAddress: typeof baseToken.address === "string" ? baseToken.address : "",
+      quoteTokenAddress: typeof quoteToken?.address === "string" ? quoteToken.address : null },
   };
 }
 
@@ -127,6 +131,7 @@ function dexScreenerPairToQuote(pair: Record<string, unknown>): ClarkMarketQuote
  * several distinct base-token addresses share the ticker — returns them all as `matches` rather
  * than silently picking the highest-liquidity one. */
 export async function dexScreenerMarketProvider(symbolOrAddress: string, _chain: string | null): Promise<{ quote: ClarkMarketQuote; matches: ClarkMarketQuote[] } | null> {
+  void _chain;
   const isAddress = /^0x[a-fA-F0-9]{40}$/.test(symbolOrAddress) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(symbolOrAddress);
   try {
     if (isAddress) {
@@ -249,6 +254,7 @@ export async function geckoTerminalMarketProvider(address: string, chain: string
       volume24hUsd: attrs.volume_usd ? parsePositiveUsd((attrs.volume_usd as Record<string, unknown>).h24) : null,
       liquidityUsd: parsePositiveUsd(attrs.total_reserve_in_usd),
       fetchedAt: Date.now(),
+      marketIdentity: { selectedPoolAddress: null, baseTokenAddress: address, quoteTokenAddress: null },
     };
   } catch {
     return null;

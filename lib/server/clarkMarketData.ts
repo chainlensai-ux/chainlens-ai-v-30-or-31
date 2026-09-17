@@ -41,6 +41,7 @@ export interface ClarkMarketQuote {
   volume24hUsd: number | null;
   liquidityUsd: number | null;
   fetchedAt: number;
+  marketIdentity?: { selectedPoolAddress: string | null; baseTokenAddress: string; quoteTokenAddress: string | null };
 }
 
 export interface ClarkMarketDataProviders {

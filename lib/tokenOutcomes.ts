@@ -13,9 +13,10 @@ export const OUTCOME_LOCK_COPY = 'Outcome tracking unlocks for higher-risk scans
 export type OutcomeStatus = 'watching' | 'pumped' | 'dumped' | 'rugged' | 'unavailable'
 export type Outcome = { status: OutcomeStatus; confidence: 'low' | 'medium' | 'high'; reasons: string[] }
 export type ScanSnapshot = {
+  snapshotVersion: 2; riskScoreDirection: 'higher_is_riskier';
   userId: string; chain: string; tokenAddress: string; tokenSymbol: string; tokenName: string;
   scanId: string; scannedAt: string; baselinePriceUsd: number | null; baselineLiquidityUsd: number | null;
-  baselineMarketCapUsd: number | null; baselineRiskScore: number; baselineVerdict: string;
+  baselineMarketCapUsd: number | null; baselineRiskScore: number; baselineVerdict: string; baselineConfidence: string | null;
   baselineRiskReasons: unknown; baselineSecuritySignals: unknown; baselineLpSignals: unknown;
   baselineHolderSignals: unknown; baselineDevSignals: unknown; baselineMarketQualitySignals: unknown;
   baselineOwnershipSignals: unknown;
@@ -29,6 +30,12 @@ export type TrackedOutcome = {
   outcome_status: OutcomeStatus; outcome_confidence: Outcome['confidence']; outcome_reasons_json: string[];
   last_checked_at: string | null; market_source: string | null;
   after_evidence_json?: import('./tokenOutcomeProof').OutcomeProof | null;
+  market_observation_json?: MarketObservationProof | null;
+  baseline_risk_semantics?: 'canonical' | 'legacy_unverified';
+}
+export type MarketObservationProof = {
+  version: 1; chain: string; tokenAddress: string; provider: string; fetchedAt: string; priceUsd: number;
+  identityMatched: true; selectedPoolAddress: string | null; selectedBaseTokenAddress: string; selectedQuoteTokenAddress: string | null;
 }
 export function numberOrNull(value: unknown): number | null {
   if (value == null || value === '' || typeof value === 'boolean') return null
@@ -75,19 +82,26 @@ export function observationIsSourced(row: { market_source?: string | null }): bo
 }
 /**
  * A persisted current price may be shown only when it is a real positive number.
- * Legacy 0 / -100 rows, and stale dust observations that would render as -100.0%, stay pending
- * until a fresh identity-verified refresh. Genuine fresh sourced dust may still display as -100%.
+ * Legacy rows without versioned identity proof stay pending until an exact-identity refresh.
+ * Once proven, the last valid observation remains usable when a later provider request fails.
  */
 export function displayableCurrentPrice(row: {
+  chain?: string
+  token_address?: string
   baseline_price_usd?: number | null
   current_price_usd?: number | null
   last_checked_at?: string | null
   market_source?: string | null
+  market_observation_json?: MarketObservationProof | null
 }, now = Date.now()): number | null {
+  void now
   const current = validPriceOrNull(row.current_price_usd)
   if (current == null) return null
-  if (!isEffectivelyZeroRelativeToBaseline(row.baseline_price_usd ?? null, current)) return current
-  return observationIsFresh(row, now) && observationIsSourced(row) ? current : null
+  const proof = row.market_observation_json
+  if (!proof || proof.version !== 1 || proof.identityMatched !== true || validPriceOrNull(proof.priceUsd) !== current) return null
+  if (!row.chain || !row.token_address || proof.chain !== row.chain) return null
+  const same = row.chain === 'solana' ? proof.tokenAddress === row.token_address : proof.tokenAddress.toLowerCase() === row.token_address.toLowerCase()
+  return same && observationIsSourced(row) ? current : null
 }
 export function pendingUnavailableReasons(): string[] {
   return ['Current price unavailable — Outcome pending']
@@ -131,5 +145,6 @@ export function shareOutcome(row: TrackedOutcome): string {
   const current = displayableCurrentPrice(row)
   const h = hypothetical(row.baseline_price_usd, current)
   const change = percentChange(row.baseline_price_usd, current)
-  return `ChainLens flagged ${s.tokenSymbol || 'this token'} at ${s.baselineRiskScore}/100 risk.\nSince the scan: ${change == null || !h ? 'price comparison unavailable' : `${change.toFixed(1)}%`}.\n${h ? `$1,000 at scan would be worth $${h.value.toFixed(2)} at the latest observed price (hypothetical).` : 'Hypothetical value unavailable.'}\nchainlensai.app`
+  const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'an unversioned legacy risk score (rescan required)' : `${s.baselineRiskScore}/100 risk`
+  return `ChainLens flagged ${s.tokenSymbol || 'this token'} at ${risk}.\nSince the scan: ${change == null || !h ? 'price comparison unavailable' : `${change.toFixed(1)}%`}.\n${h ? `$1,000 at scan would be worth $${h.value.toFixed(2)} at the latest observed price (hypothetical).` : 'Hypothetical value unavailable.'}\nchainlensai.app`
 }

@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import {
   OUTCOME_POLICY, classifyOutcome, displayableCurrentPrice, numberOrNull, pendingUnavailableReasons,
   percentChange, validPriceOrNull, type TrackedOutcome,
+  type MarketObservationProof,
 } from '../tokenOutcomes'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider, outcomeTokenAddressEquals } from './clarkMarketDataProviders'
 import type { ClarkMarketQuote } from './clarkMarketData'
@@ -19,13 +20,15 @@ export function outcomeDb() {
 const chainAlias = (c: string | null) => c === 'ethereum' ? 'eth' : c === 'bsc' ? 'bnb' : c
 const chainIdBySlug: Record<string, number> = { base: 8453, eth: 1, bnb: 56, robinhood: 4663 }
 const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
-const LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt'
+const LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,market_observation_json,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
 
 export function quoteMatches(q: ClarkMarketQuote | null, chain: string, address: string): q is ClarkMarketQuote {
   const expectedChain = chainAlias(chain)
   const expectedChainId = chainIdBySlug[expectedChain ?? '']
+  const expectedAddress = expectedChain === 'solana' ? address : address.toLowerCase()
   return !!q && chainAlias(q.chain) === expectedChain && (q.chainId == null || expectedChainId == null || q.chainId === expectedChainId)
-    && outcomeTokenAddressEquals(expectedChain, q.address, expectedChain === 'solana' ? address : address.toLowerCase())
+    && outcomeTokenAddressEquals(expectedChain, q.address, expectedAddress)
+    && !!q.marketIdentity && outcomeTokenAddressEquals(expectedChain, q.marketIdentity.baseTokenAddress, expectedAddress)
 }
 
 /** A quote stamped during this refresh (fetchedAt slightly after frozen `now`) is live, not stale. */
@@ -90,14 +93,14 @@ export async function resolveOutcomeQuoteDetailed(
   const now = opts?.now ?? Date.now()
   const normalizedChain = chainAlias(chain) ?? chain
   const normalizedAddress = normalizedChain === 'solana' ? address : address.toLowerCase()
-  const key = `outcomeMarket:v3:${normalizedChain}:${normalizedAddress}`
+  const key = `outcomeMarket:v4:${normalizedChain}:${normalizedAddress}`
   const empty: ResolveOutcomeQuoteResult = {
     quote: null, cacheHit: false, fetchAttempted: false, candidatePrices: [],
     selectedPairOrPool: null, selectedBaseMint: null, selectedQuoteMint: null,
     identityMatched: false, fetchedCurrentPrice: null, fetchedAt: null, rejectionReason: null,
   }
   if (!opts?.force) {
-    const cached = await getTokenCache<ClarkMarketQuote>(key)
+    const cached = await getTokenCache<ClarkMarketQuote>(key).catch(() => null)
     if (usableQuote(cached, normalizedChain, normalizedAddress, now)) {
       return {
         ...empty, quote: cached, cacheHit: true, identityMatched: true,
@@ -109,7 +112,8 @@ export async function resolveOutcomeQuoteDetailed(
     }
   }
   empty.fetchAttempted = true
-  const dex = await providers.dex(normalizedAddress, normalizedChain)
+  let dex: Awaited<ReturnType<ResolveOutcomeQuoteProviders['dex']>> = null
+  try { dex = await providers.dex(normalizedAddress, normalizedChain) } catch { dex = null }
   const dexCandidates = dex?.candidatePairs ?? []
   empty.candidatePrices = dexCandidates.map(c => c.priceUsd).filter((n): n is number => n != null)
   const identityFromDex = (dex?.matches ?? []).find(q => quoteMatches(q, normalizedChain, normalizedAddress)) ?? null
@@ -136,7 +140,8 @@ export async function resolveOutcomeQuoteDetailed(
     empty.rejectionReason = 'dex_identity_mismatch'
   }
   if (!quote) {
-    const gecko = await providers.gecko(normalizedAddress, normalizedChain)
+    let gecko: ClarkMarketQuote | null = null
+    try { gecko = await providers.gecko(normalizedAddress, normalizedChain) } catch { gecko = null }
     const geckoPrice = gecko ? validPriceOrNull(gecko.priceUsd) : null
     if (geckoPrice != null) empty.candidatePrices.push(geckoPrice)
     const geckoUsable = !!gecko && quoteMatches(gecko, normalizedChain, normalizedAddress) && geckoPrice != null && quoteIsFreshForOutcome(gecko, now)
@@ -159,7 +164,7 @@ export async function resolveOutcomeQuoteDetailed(
     }
   }
   if (quote) {
-    await setTokenCache(key, quote, Math.ceil(OUTCOME_POLICY.priceStaleMs / 1000))
+    await setTokenCache(key, quote, Math.ceil(OUTCOME_POLICY.priceStaleMs / 1000)).catch(() => undefined)
     empty.rejectionReason = null
   }
   return { ...empty, quote }
@@ -181,6 +186,7 @@ export function hydrateTrackedOutcomeListRow(row: Record<string, unknown>, now =
       tokenSymbol: typeof row.tokenSymbol === 'string' ? row.tokenSymbol : '',
       tokenName: typeof row.tokenName === 'string' ? row.tokenName : '',
       scannedAt: typeof row.scannedAt === 'string' ? row.scannedAt : row.tracked_at,
+      snapshotVersion: row.snapshotVersion,
       baselineRiskScore: row.baseline_risk_score, baselineVerdict: row.baseline_verdict,
     },
   } as unknown as TrackedOutcome, now)
@@ -200,11 +206,14 @@ export function sanitizeTrackedOutcome(row: TrackedOutcome, now = Date.now()): T
     price: currentPrice, liquidity: numberOrNull(row.current_liquidity_usd), verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
   })
   const pending = currentPrice == null && result.status === 'unavailable'
+  const snapshotVersion = row.baseline_snapshot_json?.snapshotVersion
+  const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
   return {
     ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
     price_change_pct: percentChange(baselinePrice, currentPrice),
     outcome_status: result.status, outcome_confidence: result.confidence,
     outcome_reasons_json: pending ? pendingUnavailableReasons() : row.outcome_reasons_json,
+    baseline_risk_semantics: legacySolana ? 'legacy_unverified' : 'canonical',
   }
 }
 
@@ -222,6 +231,13 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
   })
   const refreshFailed = observedPrice == null
   const pending = price == null && result.status === 'unavailable'
+  const marketObservation: MarketObservationProof | null = observedPrice != null && quote?.marketIdentity ? {
+    version: 1, chain: row.chain, tokenAddress: row.chain === 'solana' ? row.token_address : row.token_address.toLowerCase(),
+    provider: quote.provider, fetchedAt: checkedAt, priceUsd: observedPrice, identityMatched: true,
+    selectedPoolAddress: quote.marketIdentity.selectedPoolAddress,
+    selectedBaseTokenAddress: quote.marketIdentity.baseTokenAddress,
+    selectedQuoteTokenAddress: quote.marketIdentity.quoteTokenAddress,
+  } : row.market_observation_json ?? null
   return {
     current_price_usd: price, current_liquidity_usd: liquidity,
     price_change_pct: percentChange(validPriceOrNull(row.baseline_price_usd), price), liquidity_change_pct: null,
@@ -231,6 +247,7 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
         ? ['Latest refresh returned no usable chain-and-contract-matched price. Retaining the previous verified observation.']
         : proof ? [proof.reason, ...result.reasons] : result.reasons,
     after_evidence_json: proof, market_source: observedPrice != null ? quote?.provider ?? null : (price != null ? row.market_source : null),
+    market_observation_json: marketObservation,
     last_checked_at: observedPrice != null ? checkedAt : row.last_checked_at, refresh_claimed_at: null,
   }
 }
@@ -256,13 +273,17 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     .or(`refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`)
     .order('last_checked_at', { ascending: true, nullsFirst: true }).limit(OUTCOME_POLICY.refreshBatch)
   if (error) throw new Error('Outcome storage unavailable. Check the tracked-token-outcomes migration.')
+  const resolutions = new Map<string, Promise<Awaited<ReturnType<typeof resolveOutcomeQuoteDetailed>>>>()
   await Promise.all(((data ?? []) as TrackedOutcome[]).map(async row => {
     const claimedAt = new Date(now).toISOString()
     let claimQuery = db.from('tracked_token_outcomes').update({ refresh_claimed_at: claimedAt }).eq('id', row.id).eq('user_id', userId)
     if (!opts.force) claimQuery = claimQuery.or(`last_checked_at.is.null,last_checked_at.lt.${stale},price_change_pct.lte.-99.95`)
     const claim = await claimQuery.or(`refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`).select('id')
     if (claim.error || !claim.data?.length) return
-    const resolved = await resolveOutcomeQuoteDetailed(row.chain, row.token_address, undefined, { force: opts.force === true, now }).catch(() => null)
+    const identityKey = `${row.chain}:${row.chain === 'solana' ? row.token_address : row.token_address.toLowerCase()}`
+    let resolution = resolutions.get(identityKey)
+    if (!resolution) { resolution = resolveOutcomeQuoteDetailed(row.chain, row.token_address, undefined, { force: opts.force === true, now }); resolutions.set(identityKey, resolution) }
+    const resolved = await resolution.catch(() => null)
     const quote = resolved?.quote ?? null
     const chainId = chainIdBySlug[row.chain]
     const laterScan = chainId ? await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(row.chain as EvmChainSlug, chainId, row.token_address)) : null
@@ -277,7 +298,7 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
       chain: row.chain,
       mint: row.token_address,
       baselinePrice: validPriceOrNull(row.baseline_price_usd),
-      previousCurrentPrice: validPriceOrNull(row.current_price_usd),
+      previousCurrentPrice: displayableCurrentPrice(row, now),
       refreshForced: opts.force === true,
       cacheHit: resolved?.cacheHit ?? false,
       fetchAttempted: resolved?.fetchAttempted ?? false,

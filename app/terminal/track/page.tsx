@@ -37,7 +37,7 @@ export default function TrackPage() {
       if (valid()) { setError(''); if (refresh) setRefreshing(true) }
       try {
         if (refresh) {
-          const result = await outcomeRequest('POST', { action: 'refresh', force, ids: visibleIds.current })
+          const result = await outcomeRequest('POST', { action: 'refresh', force, ...(force ? { ids: visibleIds.current } : {}) })
           if (valid() && Array.isArray(result.outcomes)) {
             const outcomes = result.outcomes as TrackedOutcome[]
             visibleIds.current = outcomes.map(row => row.id)
@@ -77,11 +77,15 @@ export default function TrackPage() {
     return () => { disposed = true; listener.subscription.unsubscribe(); refreshAction.current = null }
   }, [])
   const active = rows.find(row => row.id === selected)
+  async function deleteOutcome(id: string) {
+    try { await outcomeRequest('DELETE', undefined, id); setRows(current => current.filter(row => row.id !== id)); visibleIds.current = visibleIds.current.filter(value => value !== id); if (selected === id) setSelected(null) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to delete outcome.') }
+  }
   return <main className={styles.page}>
     <header className={styles.header}><div><span className={styles.eyebrow}>Evidence, measured over time</span><h1>Track</h1><p>The original risk call. What happened next. Private to your account.</p><p>{limit == null ? 'Outcome receipts' : `${rows.length} / ${limit} outcomes tracked`}</p></div><button className={styles.button} disabled={loading || refreshing || !signedIn} onClick={() => void refreshAction.current?.(true)}>{refreshing ? 'Checking stale outcomes…' : 'Refresh outcomes'}</button></header>
     <p className={styles.muted}>Watchlist follows tokens. Track preserves a scan and measures its outcome. Page load refreshes stale receipts. Manual refresh re-checks up to {OUTCOME_POLICY.refreshBatch} visible receipts even if they were cached. Live prices are reused for {PRICE_CACHE_MINUTES} minutes.</p>
     {error && <div role="alert" className={styles.notice}>{error} <button className={styles.button} onClick={() => void refreshAction.current?.(true)} disabled={refreshing}>Retry</button></div>}
-    {loading ? <div className={styles.grid} aria-busy="true" aria-label="Loading outcomes">{[1,2,3].map(i => <div key={i} className={styles.skeleton}>Loading outcome receipt…</div>)}</div> : rows.length > 0 ? <div className={styles.grid}>{rows.map(row => <OutcomeCard key={row.id} row={row} onOpen={() => openReceipt(row.id)} />)}</div> : !error && <section className={styles.empty}><h2>No outcome receipts yet</h2><p className={styles.muted}>Scan a token with a Risk Score of 50 or higher, then select Track Outcome to freeze its evidence.</p><Link href="/terminal/token-scanner" className={styles.button}>Open Token Scanner →</Link></section>}
+    {loading ? <div className={styles.grid} aria-busy="true" aria-label="Loading outcomes">{[1,2,3].map(i => <div key={i} className={styles.skeleton}>Loading outcome receipt…</div>)}</div> : rows.length > 0 ? <div className={styles.grid}>{rows.map(row => <OutcomeCard key={row.id} row={row} onOpen={() => openReceipt(row.id)} onDelete={() => void deleteOutcome(row.id)} />)}</div> : !error && <section className={styles.empty}><h2>No outcome receipts yet</h2><p className={styles.muted}>Scan a token with a Risk Score of 50 or higher, then select Track Outcome to freeze its evidence.</p><Link href="/terminal/token-scanner" className={styles.button}>Open Token Scanner →</Link></section>}
     {active && <OutcomeReceipt row={receipt?.id === active.id ? receipt : active} loadingEvidence={!receipt && !receiptError} evidenceError={receiptError} onClose={() => setSelected(null)} />}
   </main>
 }

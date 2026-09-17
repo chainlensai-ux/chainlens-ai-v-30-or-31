@@ -9,13 +9,14 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 const limiter = createRateLimiter({ windowMs: 60_000, max: 10 })
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'private, no-store' } })
+const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
 export async function GET(req: Request) {
   const user = await requireAuthenticatedUser(req)
   if (!user) return unauthorizedResponse()
   try {
     const id = new URL(req.url).searchParams.get('id')
     if (id) {
-      if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
+      if (!OUTCOME_ID_RE.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
       const { data, error } = await outcomeDb().from('tracked_token_outcomes').select('*').eq('user_id', user.userId).eq('id', id).maybeSingle()
       if (error) return json({ error: 'Unable to load the frozen receipt.' }, 503)
       if (!data) return json({ error: 'Outcome not found.' }, 404)
@@ -47,4 +48,16 @@ export async function POST(req: Request) {
     if (error) return json({ error: error.message.includes('plan limit') ? 'Your tracked outcome limit has been reached.' : 'Outcome could not be saved. Check storage configuration and migration.' }, error.message.includes('plan limit') ? 409 : 503)
     return json(data)
   } catch { return json({ error: 'Outcome request failed. Please retry.' }, 503) }
+}
+export async function DELETE(req: Request) {
+  const user = await requireAuthenticatedUser(req)
+  if (!user) return unauthorizedResponse()
+  const id = new URL(req.url).searchParams.get('id')
+  if (!id || !OUTCOME_ID_RE.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
+  try {
+    const { data, error } = await outcomeDb().from('tracked_token_outcomes').delete().eq('id', id).eq('user_id', user.userId).select('id').maybeSingle()
+    if (error) return json({ error: 'Unable to delete this tracked outcome.' }, 503)
+    if (!data) return json({ error: 'Outcome not found.' }, 404)
+    return json({ deleted: true, id })
+  } catch { return json({ error: 'Outcome storage is not configured or reachable.' }, 503) }
 }
