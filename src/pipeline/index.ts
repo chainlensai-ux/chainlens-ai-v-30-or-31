@@ -36,6 +36,7 @@ import {
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
 import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
+import { maybeRepairExpiredAcceptedEvidenceFromManifest } from '../lib/acceptedEvidenceManifestRepair'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
 import { createScanStageProfiler } from './scanStageProfiler'
@@ -2250,6 +2251,41 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   const normalizedEventsForPricing = buildFilteredEventsForPricing(canonicalNormalizedEvents, dustSuppressedKeys)
   const recoveredEventsForPricing = buildFilteredEventsForPricing(recoveredNormalizedForPricing, dustSuppressedKeys)
+
+  // ACCEPTED-EVIDENCE MANIFEST REPAIR, DISCLOSED (expired-TTL 98→70 follow-up): the earliest live
+  // point where (1) a durable canonical manifest can be looked up from this scan's STRUCTURAL
+  // matched-lot fingerprint, (2) accepted-evidence KV can be checked, and (3) reseeded records can
+  // still reach priceLotsForWallet's same-scan hydration/skip pass. Running after candidate
+  // selection / reconcile would only help the NEXT scan. Unpriced FIFO here is CPU-only — same
+  // filterToFifoEligible path as the later priced fifoEngine call, never a provider call. Seven
+  // repair gates are unchanged; missing/stale sides stay unresolved if any gate refuses.
+  const structuralLotsForAcceptedEvidenceRepair = safeRunFifoEngine({
+    normalizedEvents: canonicalNormalizedEvents,
+    recoveryPolicy,
+    walletAddress: params.walletAddress,
+    buyTimeline: timelines.buyTimeline,
+    sellTimeline: timelines.sellTimeline,
+  }).matchedLots
+  const acceptedEvidenceManifestRepairAudit = await maybeRepairExpiredAcceptedEvidenceFromManifest({
+    kv: acceptedEvidenceRealKv,
+    walletAddress: params.walletAddress,
+    chains: preScan.sanitizedChains,
+    configuredWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    structuralMatchedLots: structuralLotsForAcceptedEvidenceRepair,
+    now: Date.now(),
+  })
+  console.warn('[accepted-evidence-manifest-repair]', {
+    sidesConsidered: acceptedEvidenceManifestRepairAudit.sidesConsidered,
+    sidesMissingOrStale: acceptedEvidenceManifestRepairAudit.sidesMissingOrStale,
+    sidesReseeded: acceptedEvidenceManifestRepairAudit.sidesReseeded,
+    identityMismatch: acceptedEvidenceManifestRepairAudit.identityMismatch,
+    methodologyMismatch: acceptedEvidenceManifestRepairAudit.methodologyMismatch,
+    contradictoryEvidence: acceptedEvidenceManifestRepairAudit.contradictoryEvidence,
+    invalidValue: acceptedEvidenceManifestRepairAudit.invalidValue,
+    existingStrongerEvidence: acceptedEvidenceManifestRepairAudit.existingStrongerEvidence,
+    writeFailures: acceptedEvidenceManifestRepairAudit.writeFailures,
+    affectedCurrentScan: acceptedEvidenceManifestRepairAudit.affectedCurrentScan,
+  })
 
   const priceLotsForWalletStart = performance.now()
   const rpcLogSnapshotBeforePriceLots = rpcDebugLog.length

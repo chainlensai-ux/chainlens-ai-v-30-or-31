@@ -25,7 +25,12 @@ import {
   buildAcceptedEvidenceEnvelope, buildAcceptedEvidenceKey, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence,
   type AcceptedEvidenceEnvelope, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike, type AcceptedEvidenceSide,
 } from './acceptedEvidenceStore.ts'
-import type { CanonicalManifestLotRecord, CanonicalPnlSampleManifest, CanonicalPnlSampleManifestIdentity } from './canonicalPnlSampleManifest.ts'
+import {
+  buildManifestIdentity, readCanonicalPnlSampleManifest,
+  type CanonicalManifestLotRecord, type CanonicalPnlSampleManifest, type CanonicalPnlSampleManifestIdentity,
+} from './canonicalPnlSampleManifest.ts'
+import type { MatchedLot } from '../modules/fifoEngine/types.ts'
+import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
 
 const REPAIR_WRITER = 'canonical_manifest_reseed'
 const REPAIR_REASON = 'expired_accepted_evidence' as const
@@ -79,6 +84,67 @@ function emptyAudit(): AcceptedEvidenceRepairAudit {
     identityMismatch: 0, methodologyMismatch: 0, contradictoryEvidence: 0,
     invalidValue: 0, existingStrongerEvidence: 0, writeFailures: 0,
     results: [],
+  }
+}
+
+export type LiveAcceptedEvidenceRepairAudit = AcceptedEvidenceRepairAudit & {
+  manifestFound: boolean
+  affectedCurrentScan: boolean
+}
+
+export function emptyLiveAcceptedEvidenceRepairAudit(): LiveAcceptedEvidenceRepairAudit {
+  return { ...emptyAudit(), manifestFound: false, affectedCurrentScan: false }
+}
+
+export type LiveAcceptedEvidenceRepairParams = {
+  kv: AcceptedEvidenceKvLike | null | undefined
+  walletAddress: string
+  chains: readonly string[]
+  configuredWindowDays: number
+  structuralMatchedLots: readonly MatchedLot[]
+  now: number
+}
+
+// LIVE-SCAN WRAPPER, DISCLOSED: does not change the seven repair gates. Looks up the durable
+// canonical manifest from this scan's STRUCTURAL (price-free) matched-lot fingerprint, and only
+// then calls repairExpiredAcceptedEvidenceFromManifest. Must run BEFORE priceLotsForWallet's
+// accepted-evidence hydration so reseeded sides can skip live pricing on THIS scan. No-op when
+// there is no KV, no structural lots, or no valid manifest — never a fabricated repair.
+export async function maybeRepairExpiredAcceptedEvidenceFromManifest(
+  params: LiveAcceptedEvidenceRepairParams,
+): Promise<LiveAcceptedEvidenceRepairAudit> {
+  const empty = emptyLiveAcceptedEvidenceRepairAudit()
+  if (!params.kv || params.structuralMatchedLots.length === 0) return empty
+  const structuralAudit = buildScanDeterminismAudit({
+    matchedLots: params.structuralMatchedLots,
+    realizedPnlUsd: null,
+    persistedEvidenceHits: 0,
+    liveEvidenceMisses: 0,
+  })
+  const currentIdentity = buildManifestIdentity({
+    walletAddress: params.walletAddress,
+    chains: params.chains,
+    configuredWindowDays: params.configuredWindowDays,
+    matchedLotFingerprint: structuralAudit.matchedLotFingerprint,
+  })
+  let manifest: CanonicalPnlSampleManifest | null = null
+  try {
+    const read = await readCanonicalPnlSampleManifest(params.kv, currentIdentity)
+    manifest = read.manifest
+  } catch {
+    return empty
+  }
+  if (!manifest) return empty
+  const audit = await repairExpiredAcceptedEvidenceFromManifest({
+    kv: params.kv,
+    manifest,
+    currentIdentity,
+    now: params.now,
+  })
+  return {
+    ...audit,
+    manifestFound: true,
+    affectedCurrentScan: audit.sidesReseeded > 0,
   }
 }
 
