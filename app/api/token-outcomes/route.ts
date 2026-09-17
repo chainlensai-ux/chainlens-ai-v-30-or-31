@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
-import { OUTCOME_POLICY, type TrackedOutcome } from '@/lib/tokenOutcomes'
+import { OUTCOME_POLICY } from '@/lib/tokenOutcomes'
 import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
-import { outcomeDb, refreshOutcomes, sanitizeTrackedOutcome } from '@/lib/server/tokenOutcomeService'
+import { outcomeDb, refreshOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
@@ -22,14 +22,7 @@ export async function GET(req: Request) {
       return json({ outcome: sanitizeTrackedOutcome(data) })
     }
     // Keep the list small even for Elite. Full immutable evidence loads on receipt open only.
-    const { data, error } = await outcomeDb().from('tracked_token_outcomes').select('id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt').eq('user_id', user.userId).order('tracked_at', { ascending: false }).limit(OUTCOME_POLICY.limits.elite)
-    if (error) return json({ error: 'Outcome storage unavailable. The tracked-token-outcomes migration must be applied.' }, 503)
-    const outcomes = (data ?? []).map(row => sanitizeTrackedOutcome({ ...row, baseline_snapshot_json: {
-      tokenSymbol: typeof row.tokenSymbol === 'string' ? row.tokenSymbol : '',
-      tokenName: typeof row.tokenName === 'string' ? row.tokenName : '',
-      scannedAt: typeof row.scannedAt === 'string' ? row.scannedAt : row.tracked_at,
-      baselineRiskScore: row.baseline_risk_score, baselineVerdict: row.baseline_verdict,
-    } } as unknown as TrackedOutcome))
+    const outcomes = await listTrackedOutcomes(user.userId)
     return json({ outcomes, limit: OUTCOME_POLICY.limits[user.plan] })
   } catch { return json({ error: 'Outcome storage is not configured or reachable.' }, 503) }
 }
@@ -45,8 +38,8 @@ export async function POST(req: Request) {
     if (!body || typeof body !== 'object') return json({ error: 'Invalid request.' }, 400)
     if (body.action === 'refresh') {
       const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined
-      await refreshOutcomes(user.userId, { force: body.force === true, ids })
-      return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch, force: body.force === true })
+      const outcomes = await refreshOutcomes(user.userId, { force: body.force === true, ids })
+      return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch, force: body.force === true, outcomes, limit: OUTCOME_POLICY.limits[user.plan] })
     }
     const snapshot = verifyOutcomeReceipt(body.receipt, user.userId)
     if (!snapshot) return json({ error: 'Valid signed scan with Risk Score ≥50 required. Rescan the token while signed in.' }, 400)

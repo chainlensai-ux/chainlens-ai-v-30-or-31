@@ -183,9 +183,29 @@ export function dexScreenerPairIsRequestedPricedToken(pair: Record<string, unkno
   return typeof baseAddress === 'string' && outcomeTokenAddressEquals(chain, baseAddress, address)
 }
 
+export type OutcomeDexCandidatePair = {
+  priceUsd: number | null
+  pairAddress: string | null
+  baseMint: string | null
+  quoteMint: string | null
+  dexId: string | null
+}
+
+function outcomeCandidateFromPair(pair: Record<string, unknown>): OutcomeDexCandidatePair {
+  const base = pair.baseToken as Record<string, unknown> | undefined
+  const quote = pair.quoteToken as Record<string, unknown> | undefined
+  return {
+    priceUsd: parsePositiveUsd(pair.priceUsd),
+    pairAddress: typeof pair.pairAddress === 'string' ? pair.pairAddress : null,
+    baseMint: typeof base?.address === 'string' ? base.address : null,
+    quoteMint: typeof quote?.address === 'string' ? quote.address : null,
+    dexId: typeof pair.dexId === 'string' ? pair.dexId : null,
+  }
+}
+
 /** Address-only outcome lookup. Unlike ticker search, every accepted pair must prove the exact
  * requested chain and base-token contract before liquidity ranking can select it. */
-export async function dexScreenerOutcomeMarketProvider(address: string, chain: string): Promise<{ quote: ClarkMarketQuote; matches: ClarkMarketQuote[] } | null> {
+export async function dexScreenerOutcomeMarketProvider(address: string, chain: string): Promise<{ quote: ClarkMarketQuote; matches: ClarkMarketQuote[]; candidatePairs?: OutcomeDexCandidatePair[] } | null> {
   const requestedAddress = chain === 'solana' ? address : address.toLowerCase()
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
@@ -193,8 +213,9 @@ export async function dexScreenerOutcomeMarketProvider(address: string, chain: s
     const json = await res.json().catch(() => null) as { pairs?: Array<Record<string, unknown>> } | null
     const candidates = (json?.pairs ?? []).filter(pair => dexScreenerPairIsRequestedPricedToken(pair, requestedAddress, chain))
       .sort((a, b) => Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0) - Number((a.liquidity as Record<string, unknown> | undefined)?.usd ?? 0))
+    const candidatePairs = candidates.map(outcomeCandidateFromPair)
     const quote = candidates.map(dexScreenerPairToQuote).find((candidate): candidate is ClarkMarketQuote => candidate != null && parsePositiveUsd(candidate.priceUsd) != null) ?? null
-    return quote ? { quote, matches: [quote] } : null
+    return quote ? { quote, matches: [quote], candidatePairs } : null
   } catch { return null }
 }
 

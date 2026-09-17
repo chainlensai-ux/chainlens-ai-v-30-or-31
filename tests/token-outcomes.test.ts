@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { buildOutcomeRefreshUpdate, quoteMatches, resolveOutcomeQuote, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
+import { buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, quoteIsFreshForOutcome, quoteMatches, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -404,4 +404,180 @@ test('failed refresh does not retain a stale -100 dust tick', () => {
   assert.equal(update.current_price_usd, null)
   assert.equal(update.price_change_pct, null)
   assert.equal(update.outcome_status, 'unavailable')
+})
+
+const PAID_DOGE_MINT = '52qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+const WSOL_MINT = 'So11111111111111111111111111111111111111112'
+const PAID_DOGE_PUMPSWAP = 'Bs7Ad8EhZb4NjfcsnewodG2yULXrvdNpLU4wgKJJ2sqj'
+function paidDogeQuote(priceUsd: number, fetchedAt: number): ClarkMarketQuote {
+  return {
+    provider: 'dexscreener', name: 'Paid Doge', symbol: 'PAIDDOGE', chain: 'solana', chainId: null,
+    address: PAID_DOGE_MINT, priceUsd, liquidityUsd: 83_000, marketCapUsd: null, fdvUsd: null,
+    volume24hUsd: null, change24hPct: null, fetchedAt,
+  }
+}
+function paidDogeRow(now: number, current = 0.0005, pct: number | null = 0): TrackedOutcome {
+  return {
+    ...outcomeRow(), id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', chain: 'solana', token_address: PAID_DOGE_MINT,
+    baseline_price_usd: 0.0005, current_price_usd: current, price_change_pct: pct, outcome_status: 'watching',
+    last_checked_at: new Date(now - 60_000).toISOString(), market_source: 'dexscreener',
+  }
+}
+
+test('solana 1. baseline 0.0005 to live 0.00075 is +50% even when Dex stamps fetchedAt after frozen now', async () => {
+  __resetMemoryFallbackForTest()
+  const now = 1_800_000_000_000
+  const live = paidDogeQuote(0.00075, now + 25)
+  assert.equal(quoteIsFreshForOutcome(live, now), true)
+  assert.equal(quoteIsFreshForOutcome({ fetchedAt: now - OUTCOME_POLICY.priceStaleMs - 1 }, now), false)
+  assert.equal(quoteIsFreshForOutcome({ fetchedAt: now + 61_000 }, now), false)
+  const providers = {
+    dex: async () => ({
+      quote: live, matches: [live],
+      candidatePairs: [{ priceUsd: 0.00075, pairAddress: PAID_DOGE_PUMPSWAP, baseMint: PAID_DOGE_MINT, quoteMint: WSOL_MINT, dexId: 'pumpswap' }],
+    }),
+    gecko: async () => null,
+  }
+  const detailed = await resolveOutcomeQuoteDetailed('solana', PAID_DOGE_MINT, providers, { force: true, now })
+  assert.equal(detailed.quote?.priceUsd, 0.00075)
+  assert.equal(detailed.cacheHit, false)
+  assert.equal(detailed.fetchAttempted, true)
+  assert.equal(detailed.identityMatched, true)
+  assert.equal(detailed.selectedBaseMint, PAID_DOGE_MINT)
+  assert.equal(detailed.selectedQuoteMint, WSOL_MINT)
+  assert.equal(detailed.selectedPairOrPool, PAID_DOGE_PUMPSWAP)
+  assert.equal(detailed.fetchedCurrentPrice, 0.00075)
+  assert.equal(detailed.rejectionReason, null)
+  const update = buildOutcomeRefreshUpdate(paidDogeRow(now), detailed.quote, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.00075)
+  assert.equal(update.price_change_pct, 50)
+  assert.equal(percentChange(0.0005, 0.00075), 50)
+  const shown = sanitizeTrackedOutcome({
+    ...paidDogeRow(now), current_price_usd: 0.00075, price_change_pct: 50,
+    last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, now)
+  assert.equal(shown.price_change_pct, 50)
+  assert.notEqual(shown.price_change_pct, 0)
+})
+
+test('solana 2. forced refresh bypasses the 3-minute outcome price cache', async () => {
+  __resetMemoryFallbackForTest()
+  const now = Date.now()
+  let calls = 0
+  const first = paidDogeQuote(0.0005, now)
+  const second = paidDogeQuote(0.00075, now + 10)
+  const providers = {
+    dex: async () => {
+      calls += 1
+      const quote = calls === 1 ? first : second
+      return { quote, matches: [quote] }
+    },
+    gecko: async () => null,
+  }
+  assert.equal((await resolveOutcomeQuote('solana', PAID_DOGE_MINT, providers, { now }))?.priceUsd, 0.0005)
+  assert.equal((await resolveOutcomeQuote('solana', PAID_DOGE_MINT, providers, { now: now + 30_000 }))?.priceUsd, 0.0005)
+  assert.equal(calls, 1)
+  assert.equal((await resolveOutcomeQuote('solana', PAID_DOGE_MINT, providers, { force: true, now: now + 30_000 }))?.priceUsd, 0.00075)
+  assert.equal(calls, 2)
+})
+
+test('solana 3. fresh valid price overwrites an older 0% observation', () => {
+  const now = 1_800_000_000_000
+  const stuck = paidDogeRow(now, 0.0005, 0)
+  const live = paidDogeQuote(0.00075, now + 40)
+  const update = buildOutcomeRefreshUpdate(stuck, live, null, new Date(now).toISOString(), now)
+  assert.equal(stuck.price_change_pct, 0)
+  assert.equal(update.current_price_usd, 0.00075)
+  assert.equal(update.price_change_pct, 50)
+  assert.equal(update.last_checked_at, new Date(now).toISOString())
+  assert.equal(update.market_source, 'dexscreener')
+})
+
+test('solana 4. DB/list read prefers the newest valid observation over a stored 0%', () => {
+  const now = 1_800_000_000_000
+  const listed = hydrateTrackedOutcomeListRow({
+    ...paidDogeRow(now, 0.00075, 0),
+    tokenSymbol: 'PAIDDOGE', tokenName: 'Paid Doge', scannedAt: new Date(now - 3_600_000).toISOString(),
+    last_checked_at: new Date(now).toISOString(),
+  }, now)
+  assert.equal(listed.current_price_usd, 0.00075)
+  assert.equal(listed.price_change_pct, 50)
+  assert.notEqual(listed.price_change_pct, 0)
+  assert.equal(listed.baseline_snapshot_json.tokenSymbol, 'PAIDDOGE')
+})
+
+test('solana 5. failed refresh preserves last valid observation and does not bump last_checked_at', () => {
+  const now = 1_800_000_000_000
+  const checked = new Date(now - 60_000).toISOString()
+  const row = { ...paidDogeRow(now, 0.00075, 50), last_checked_at: checked }
+  const update = buildOutcomeRefreshUpdate(row, null, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.00075)
+  assert.equal(update.price_change_pct, 50)
+  assert.equal(update.last_checked_at, checked)
+  assert.equal(update.market_source, 'dexscreener')
+  assert.match(update.outcome_reasons_json[0] ?? '', /Retaining the previous verified observation/)
+})
+
+test('solana 6. Track UI renders POST-returned outcomes immediately without another GET', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  assert.match(page, /action: 'refresh', force, ids: visibleIds.current/)
+  assert.match(page, /Array\.isArray\(result\.outcomes\)/)
+  assert.match(page, /setRows\(outcomes\)/)
+  assert.match(page, /return true/)
+  assert.match(route, /outcomes, limit: OUTCOME_POLICY\.limits\[user\.plan\]/)
+  assert.match(service, /return listTrackedOutcomes\(userId, now\)/)
+  for (const field of [
+    'trackedOutcomeId', 'chain', 'mint', 'baselinePrice', 'previousCurrentPrice', 'refreshForced',
+    'cacheHit', 'fetchAttempted', 'provider', 'candidatePrices', 'selectedPairOrPool', 'selectedBaseMint',
+    'selectedQuoteMint', 'identityMatched', 'fetchedCurrentPrice', 'fetchedAt', 'persistedCurrentPrice',
+    'persistedLastCheckedAt', 'rereadCurrentPrice', 'computedPercentChange', 'rejectionReason',
+  ]) assert.match(service, new RegExp(field))
+  assert.match(service, /\[outcome-refresh-forensic\]/)
+})
+
+test('solana 7. exact mint match is still required; case-folded Solana mint is rejected', async () => {
+  __resetMemoryFallbackForTest()
+  const now = 1_800_000_000_000
+  const wrongCase = PAID_DOGE_MINT.toLowerCase()
+  assert.notEqual(wrongCase, PAID_DOGE_MINT)
+  const live = { ...paidDogeQuote(0.00075, now + 10), address: wrongCase }
+  const providers = { dex: async () => ({ quote: live, matches: [live] }), gecko: async () => live }
+  assert.equal(quoteMatches(live, 'solana', PAID_DOGE_MINT), false)
+  assert.equal(await resolveOutcomeQuote('solana', PAID_DOGE_MINT, providers, { force: true, now }), null)
+  const otherMint = '51qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+  const other = { ...paidDogeQuote(0.00075, now + 10), address: otherMint }
+  assert.equal(quoteMatches(other, 'solana', PAID_DOGE_MINT), false)
+})
+
+test('solana 8. quote-token pool is rejected; PumpSwap mint-as-base pair is accepted', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    pairs: [
+      {
+        chainId: 'solana', dexId: 'pumpswap', pairAddress: 'QuoteHeavy111111111111111111111111111111111',
+        priceUsd: '9.99', liquidity: { usd: 1_000_000 },
+        baseToken: { address: WSOL_MINT, symbol: 'SOL', name: 'Wrapped SOL' },
+        quoteToken: { address: PAID_DOGE_MINT, symbol: 'PAIDDOGE', name: 'Paid Doge' },
+      },
+      {
+        chainId: 'solana', dexId: 'pumpswap', pairAddress: PAID_DOGE_PUMPSWAP,
+        priceUsd: '0.00075', liquidity: { usd: 70_000 },
+        baseToken: { address: PAID_DOGE_MINT, symbol: 'PAIDDOGE', name: 'Paid Doge' },
+        quoteToken: { address: WSOL_MINT, symbol: 'SOL', name: 'Wrapped SOL' },
+      },
+    ],
+  }), { status: 200 })
+  try {
+    const result = await dexScreenerOutcomeMarketProvider(PAID_DOGE_MINT, 'solana')
+    assert.equal(result?.quote.priceUsd, 0.00075)
+    assert.equal(result?.quote.address, PAID_DOGE_MINT)
+    assert.equal(result?.candidatePairs?.some(c => c.quoteMint === PAID_DOGE_MINT && c.baseMint === WSOL_MINT), false)
+    assert.equal(result?.candidatePairs?.some(c => c.baseMint === PAID_DOGE_MINT && c.pairAddress === PAID_DOGE_PUMPSWAP), true)
+    const now = Date.now()
+    const update = buildOutcomeRefreshUpdate(paidDogeRow(now), result!.quote, null, new Date(now).toISOString(), now)
+    assert.equal(update.current_price_usd, 0.00075)
+    assert.equal(update.price_change_pct, 50)
+  } finally { globalThis.fetch = originalFetch }
 })
