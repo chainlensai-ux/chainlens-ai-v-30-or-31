@@ -124,6 +124,19 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   originMethodologyVersion: string
   lastWriter: string
   migrationHistory: AcceptedEvidenceMigrationHistoryEntry[]
+  // REPAIR PROVENANCE, DISCLOSED, ADDITIVE (canonical-manifest-reseed follow-up task — 28-lost-
+  // verified-lot regression, wallet 0x4dbb…ef96). Set ONLY by
+  // acceptedEvidenceManifestRepair.ts's reseed pass, when it reconstructs a record from the
+  // canonical manifest's own frozen side value because the live accepted-evidence record was
+  // missing or expired — never by any live provider/recovery/seeding writer. Absent (undefined) on
+  // every organically-written record, which is how a reader tells "this value came from a live
+  // pricing pass" apart from "this value was restored from a prior scan's own frozen manifest".
+  // `repairedFromManifestSource` retains the ORIGINAL evidence's own `source` string as recorded on
+  // the manifest record (e.g. 'goldrush-historical', 'recovery-lane') purely for audit trail — it
+  // is never used for validation and never overrides `source`/`evidenceType` above, which this
+  // repair pass sets to its own honest writer identity (`canonical_manifest_reseed`).
+  repairReason?: 'expired_accepted_evidence'
+  repairedFromManifestSource?: string | null
 }
 
 export type AcceptedEvidenceMigrationHistoryEntry = {
@@ -575,6 +588,10 @@ export function buildAcceptedEvidenceEnvelope(params: {
   // when the writer identity actually changes from the previous envelope's own `lastWriter`.
   previousEnvelope?: Pick<AcceptedEvidenceEnvelope, 'originWriter' | 'originMethodologyVersion' | 'lastWriter' | 'migrationHistory' | 'source' | 'evidenceType'> | null
   writerReason?: string
+  // See AcceptedEvidenceEnvelope.repairReason's own header — omit (the default) for every ordinary
+  // write; only acceptedEvidenceManifestRepair.ts's reseed pass ever sets these.
+  repairReason?: 'expired_accepted_evidence'
+  repairedFromManifestSource?: string | null
 }): AcceptedEvidenceEnvelope {
   const prev = params.previousEnvelope ?? null
   const originWriter = prev?.originWriter ?? prev?.source ?? params.source
@@ -603,6 +620,8 @@ export function buildAcceptedEvidenceEnvelope(params: {
     originMethodologyVersion,
     lastWriter: params.source,
     migrationHistory,
+    ...(params.repairReason !== undefined ? { repairReason: params.repairReason } : {}),
+    ...(params.repairedFromManifestSource !== undefined ? { repairedFromManifestSource: params.repairedFromManifestSource } : {}),
   }
 }
 
