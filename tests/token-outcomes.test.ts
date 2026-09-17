@@ -1,12 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { OUTCOME_POLICY, canTrackOutcome, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { buildOutcomeRefreshUpdate, quoteMatches, resolveOutcomeQuote, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
-import { dexScreenerOutcomeMarketProvider } from '../lib/server/clarkMarketDataProviders'
+import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
+import { __resetMemoryFallbackForTest } from '../lib/server/cache/tokenCache'
 
 const user = '11111111-1111-4111-8111-111111111111'
 const address = `0x${'a'.repeat(40)}`
@@ -177,7 +178,7 @@ test('share text uses frozen score and current math without exposing receipt, ac
 })
 test('outcome UI renders pending copy and never coerces missing price into loss copy', () => {
   const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
-  assert.match(source, /Current price unavailable/)
+  assert.match(source, /Current price unavailable — Outcome pending/)
   assert.match(source, /Outcome pending/)
   assert.match(source, /h \? money\(h\.pnl\) : 'Unavailable'/)
 })
@@ -206,3 +207,201 @@ function marketQuote(tokenAddress: string, priceUsd: number | null): ClarkMarket
   return { provider: 'dexscreener', name: 'Test token', symbol: 'TEST', chain: 'base', chainId: 8453, address: tokenAddress,
     priceUsd, liquidityUsd: 5000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now() }
 }
+
+test('1. baseline 1 → current 0.75 is -25%, never -100%', () => {
+  assert.equal(percentChange(1, 0.75), -25)
+  const row = sanitizeTrackedOutcome({ ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0.75, last_checked_at: new Date().toISOString(), market_source: 'dexscreener' })
+  assert.equal(row.price_change_pct, -25)
+  assert.equal(row.outcome_status, 'watching')
+  assert.notEqual(row.price_change_pct, -100)
+})
+
+test('2. current 0 is rejected as unknown, not an economic zero', () => {
+  assert.equal(parsePositiveUsd(0), null)
+  assert.equal(validPriceOrNull(0), null)
+  assert.equal(percentChange(1, 0), null)
+  const row = sanitizeTrackedOutcome({ ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0, price_change_pct: -100, outcome_status: 'dumped' })
+  assert.equal(row.current_price_usd, null)
+  assert.equal(row.price_change_pct, null)
+  assert.equal(row.outcome_status, 'unavailable')
+})
+
+test('3. missing current price is pending, not -100 dumped', () => {
+  for (const current of [null, undefined, NaN, Number.POSITIVE_INFINITY]) {
+    const row = sanitizeTrackedOutcome({ ...outcomeRow(), baseline_price_usd: 1, current_price_usd: current as number, price_change_pct: -100, outcome_status: 'dumped' })
+    assert.equal(row.price_change_pct, null)
+    assert.equal(row.outcome_status, 'unavailable')
+    assert.deepEqual(row.outcome_reasons_json, ['Current price unavailable — Outcome pending'])
+    assert.equal(hypothetical(1, row.current_price_usd), null)
+  }
+})
+
+test('4. DexScreener result for the wrong contract is rejected', async () => {
+  const requested = `0x${'1'.repeat(40)}`
+  const wrong = `0x${'2'.repeat(40)}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    pairs: [{ chainId: 'base', priceUsd: '0.75', liquidity: { usd: 1_000_000 }, baseToken: { address: wrong, symbol: 'KAI', name: 'Kai' } }],
+  }), { status: 200 })
+  try {
+    const result = await dexScreenerOutcomeMarketProvider(requested, 'base')
+    assert.equal(result, null)
+    const providers = { dex: async () => ({ quote: marketQuote(wrong, 0.75), matches: [marketQuote(wrong, 0.75)] }), gecko: async () => null }
+    assert.equal(await resolveOutcomeQuote('base', requested, providers), null)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('5. Solana quote for the wrong mint is rejected even when the ticker matches', async () => {
+  const paidDoge = '52qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+  const otherMint = '51qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('dexscreener')) {
+      return new Response(JSON.stringify({
+        pairs: [{ chainId: 'solana', priceUsd: '0.00066', liquidity: { usd: 80_000 }, baseToken: { address: otherMint, symbol: 'PAIDDOGE', name: 'Paid Doge' } }],
+      }), { status: 200 })
+    }
+    return new Response(JSON.stringify({
+      data: { id: `solana_${otherMint}`, attributes: { address: otherMint, symbol: 'PAIDDOGE', name: 'Paid Doge', price_usd: '0.00066' } },
+    }), { status: 200 })
+  }
+  try {
+    assert.equal(await dexScreenerOutcomeMarketProvider(paidDoge, 'solana'), null)
+    assert.equal(await geckoTerminalMarketProvider(paidDoge, 'solana'), null)
+    const wrongQuote: ClarkMarketQuote = { ...marketQuote(otherMint, 0.00066), chain: 'solana', chainId: null, address: otherMint }
+    assert.equal(quoteMatches(wrongQuote, 'solana', paidDoge), false)
+    const providers = { dex: async () => ({ quote: wrongQuote, matches: [wrongQuote] }), gecko: async () => wrongQuote }
+    assert.equal(await resolveOutcomeQuote('solana', paidDoge, providers), null)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('6. a valid cached observation is reused only while fresh', async () => {
+  __resetMemoryFallbackForTest()
+  const token = `0x${'c'.repeat(40)}`
+  let calls = 0
+  const quote = marketQuote(token, 0.8)
+  const providers = { dex: async () => { calls += 1; return { quote, matches: [quote] } }, gecko: async () => null }
+  assert.equal((await resolveOutcomeQuote('base', token, providers))?.priceUsd, 0.8)
+  assert.equal((await resolveOutcomeQuote('base', token, providers))?.priceUsd, 0.8)
+  assert.equal(calls, 1)
+  const stale = { ...quote, fetchedAt: Date.now() - OUTCOME_POLICY.priceStaleMs - 1 }
+  const staleProviders = { dex: async () => { calls += 1; return { quote: stale, matches: [stale] } }, gecko: async () => null }
+  __resetMemoryFallbackForTest()
+  assert.equal(await resolveOutcomeQuote('base', token, staleProviders), null)
+  assert.equal(calls, 2)
+})
+
+test('7. stale invalid -100 observation is rejected on read', () => {
+  const now = Date.now()
+  const stale = new Date(now - 20 * 60_000).toISOString()
+  const row = sanitizeTrackedOutcome({
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 1e-12, price_change_pct: -100,
+    outcome_status: 'dumped', last_checked_at: stale, market_source: 'dexscreener',
+  }, now)
+  assert.equal(row.current_price_usd, null)
+  assert.equal(row.price_change_pct, null)
+  assert.equal(row.outcome_status, 'unavailable')
+  assert.deepEqual(row.outcome_reasons_json, ['Current price unavailable — Outcome pending'])
+})
+
+test('8. a newer valid observation beats an older invalid one', () => {
+  const now = Date.now()
+  const row: TrackedOutcome = {
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 1e-12, price_change_pct: -100,
+    outcome_status: 'dumped', market_source: 'dexscreener', last_checked_at: new Date(now - 20 * 60_000).toISOString(),
+  }
+  const update = buildOutcomeRefreshUpdate(row, marketQuote(row.token_address, 0.75), null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.75)
+  assert.equal(update.price_change_pct, -25)
+  assert.equal(update.outcome_status, 'watching')
+  assert.equal(update.market_source, 'dexscreener')
+})
+
+test('9. manual refresh wiring force-updates visible receipts', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  assert.match(page, /action: 'refresh', force, ids: visibleIds.current/)
+  assert.match(page, /refreshAction.current\?\.\(true\)/)
+  assert.match(route, /force: body.force === true/)
+  assert.match(service, /force: opts.force === true/)
+})
+
+test('10. page-load refresh updates stale tracked receipts without polling', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /load\(false, version\)\.then\(loaded => \{ if \(loaded && !disposed && version === generation\) return load\(true, version, false\) \}\)/)
+  assert.doesNotMatch(page, /setInterval/)
+  const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  assert.match(service, /priceStaleMs/)
+  assert.match(service, /last_checked_at\.lt\.\$\{stale\}/)
+})
+
+test('11. KAI-like quote-token pair cannot produce -100% when the priced KAI pair is -25%', async () => {
+  const kai = `0x${'c'.repeat(40)}`
+  const kdiem = `0x${'d'.repeat(40)}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    pairs: [
+      { chainId: 'base', priceUsd: 2820.76, liquidity: { usd: 342_254 }, baseToken: { address: kdiem, symbol: 'kDIEM', name: 'kDIEM' }, quoteToken: { address: kai, symbol: 'KAI' } },
+      { chainId: 'base', priceUsd: '0.75', liquidity: { usd: 55_000 }, baseToken: { address: kai, symbol: 'KAI', name: 'Kairence' }, quoteToken: { address: `0x${'e'.repeat(40)}`, symbol: 'USDC' } },
+      { chainId: 'robinhood', priceUsd: '0.71', liquidity: { usd: 74_000 }, baseToken: { address: kai, symbol: 'KAI', name: 'Kairence' } },
+    ],
+  }), { status: 200 })
+  try {
+    const result = await dexScreenerOutcomeMarketProvider(kai, 'base')
+    assert.equal(result?.quote.priceUsd, 0.75)
+    assert.equal(result?.quote.address?.toLowerCase(), kai)
+    const row = sanitizeTrackedOutcome({
+      ...outcomeRow(), token_address: kai, baseline_price_usd: 1, current_price_usd: 0.75,
+      last_checked_at: new Date().toISOString(), market_source: 'dexscreener',
+    })
+    assert.equal(percentChange(1, result!.quote.priceUsd), -25)
+    assert.equal(row.price_change_pct, -25)
+    assert.notEqual(row.outcome_status, 'dumped')
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('12. Solana receipt does not stick at 0% when a fresh valid price exists', async () => {
+  __resetMemoryFallbackForTest()
+  const mint = '52qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump'
+  const live: ClarkMarketQuote = {
+    provider: 'dexscreener', name: 'Paid Doge', symbol: 'PAIDDOGE', chain: 'solana', chainId: null, address: mint,
+    priceUsd: 0.00075, liquidityUsd: 70_000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now(),
+  }
+  const providers = { dex: async () => ({ quote: live, matches: [live] }), gecko: async () => null }
+  const quote = await resolveOutcomeQuote('solana', mint, providers, { force: true })
+  assert.equal(quote?.priceUsd, 0.00075)
+  const stuck: TrackedOutcome = {
+    ...outcomeRow(), chain: 'solana', token_address: mint, baseline_price_usd: 0.00075, current_price_usd: 0.00075,
+    price_change_pct: 0, outcome_status: 'watching', last_checked_at: new Date(Date.now() - 20 * 60_000).toISOString(), market_source: 'dexscreener',
+  }
+  const moved: ClarkMarketQuote = { ...live, priceUsd: 0.001 }
+  const update = buildOutcomeRefreshUpdate(stuck, moved, null)
+  assert.ok(Math.abs((update.price_change_pct ?? 0) - ((0.001 - 0.00075) / 0.00075) * 100) < 1e-8)
+  assert.notEqual(update.price_change_pct, 0)
+})
+
+test('fresh genuinely sourced dust may still display as -100% dumped, missing price never does', () => {
+  const now = Date.now()
+  const genuine = sanitizeTrackedOutcome({
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 1e-12, price_change_pct: -100,
+    outcome_status: 'dumped', last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, now)
+  assert.ok((genuine.price_change_pct ?? 0) <= -99.95)
+  assert.equal(genuine.outcome_status, 'dumped')
+  assert.equal(displayableCurrentPrice({ baseline_price_usd: 1, current_price_usd: 1e-12, last_checked_at: new Date(now - 20 * 60_000).toISOString(), market_source: 'dexscreener' }, now), null)
+  assert.equal(classifyOutcome({ price: 1, liquidity: 20_000 }, { price: null, liquidity: null }).status, 'unavailable')
+})
+
+test('failed refresh does not retain a stale -100 dust tick', () => {
+  const now = Date.now()
+  const row: TrackedOutcome = {
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 1e-12, price_change_pct: -100,
+    outcome_status: 'dumped', market_source: 'dexscreener', last_checked_at: new Date(now - 20 * 60_000).toISOString(),
+  }
+  const update = buildOutcomeRefreshUpdate(row, null, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, null)
+  assert.equal(update.price_change_pct, null)
+  assert.equal(update.outcome_status, 'unavailable')
+})

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { hypothetical, shareOutcome, type TrackedOutcome } from '@/lib/tokenOutcomes'
 import styles from './outcomes.module.css'
 
+const PENDING_PRICE = 'Current price unavailable — Outcome pending'
 const pct = (n: number | null) => n == null ? 'Unavailable' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
 const date = (value: string | null) => value ? new Date(value).toLocaleString() : 'Not checked yet'
@@ -23,7 +24,7 @@ export function OutcomeCard({ row, onOpen }: { row: TrackedOutcome; onOpen: () =
     <h2>{snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'}</h2>
     <p className={styles.muted}>{snapshot.tokenName}</p>
     <p className={styles.address} title={row.token_address}>{row.token_address}</p>
-    <div className={styles.metrics}><div><span>Original risk</span><strong>{row.baseline_risk_score}<small>/100</small></strong><p>{row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? 'Current price unavailable' : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
+    <div className={styles.metrics}><div><span>Original risk</span><strong>{row.baseline_risk_score}<small>/100</small></strong><p>{row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
     <footer><span>Tracked {date(row.tracked_at)}</span><span className={styles.accent}>View receipt ↗</span></footer>
   </button>
 }
@@ -44,7 +45,7 @@ export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidence
       <p className={styles.address}>{row.token_address}</p>
       <p>ChainLens scanned this token at <strong>{snapshot.baselineRiskScore}/100 · {snapshot.baselineVerdict}</strong></p>
       <p className={styles.muted}>Scanned {date(snapshot.scannedAt)} · Tracked {date(row.tracked_at)}</p>
-      <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? 'Current price unavailable' : pct(row.price_change_pct)}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
+      <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
       <div className={styles.math}><p>If you had bought $1,000 at the scan price…</p><strong>{h ? `${money(h.value)} remaining` : 'Hypothetical value unavailable'}</strong><div className={styles.spread}><span>Hypothetical PnL</span><b>{h ? money(h.pnl) : 'Unavailable'}</b></div><div className={styles.spread}><span>Potential loss avoided</span><b>{h ? money(h.potentialLossAvoided) : 'Unavailable'}</b></div><small>Illustration only. Not an actual purchase or saving. Excludes fees, slippage and ability to sell.</small></div>
       {loadingEvidence ? <p role="status">Loading frozen evidence…</p> : evidenceError ? <p role="alert">{evidenceError} Close and reopen this receipt to retry.</p> : <details className={styles.why}><summary>Why? See the frozen scan evidence</summary><h3>What ChainLens saw at scan time</h3>
         <details><summary>Original risk reasons</summary><Evidence value={snapshot.baselineRiskReasons} /></details>

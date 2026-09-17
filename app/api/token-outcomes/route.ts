@@ -40,12 +40,13 @@ export async function POST(req: Request) {
   try {
     const bodyText = await req.text()
     if (bodyText.length > 182_000) return json({ error: 'Outcome receipt too large.' }, 413)
-    let body: { action?: string; receipt?: unknown }
+    let body: { action?: string; receipt?: unknown; force?: unknown; ids?: unknown }
     try { body = JSON.parse(bodyText) } catch { return json({ error: 'Invalid request.' }, 400) }
     if (!body || typeof body !== 'object') return json({ error: 'Invalid request.' }, 400)
     if (body.action === 'refresh') {
-      await refreshOutcomes(user.userId)
-      return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch })
+      const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined
+      await refreshOutcomes(user.userId, { force: body.force === true, ids })
+      return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch, force: body.force === true })
     }
     const snapshot = verifyOutcomeReceipt(body.receipt, user.userId)
     if (!snapshot) return json({ error: 'Valid signed scan with Risk Score ≥50 required. Rescan the token while signed in.' }, 400)

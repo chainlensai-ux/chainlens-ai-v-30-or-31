@@ -6,6 +6,7 @@
 // a quote.
 
 import type { ClarkMarketDataProviders, ClarkMarketQuote } from "./clarkMarketData";
+import { parsePositiveUsd } from "../tokenOutcomes";
 
 const CHAIN_ID_BY_SLUG: Record<string, number> = {
   ethereum: 1, eth: 1, base: 8453, bnb: 56, bsc: 56, polygon: 137, robinhood: 4663,
@@ -96,7 +97,7 @@ export async function coingeckoMarketProvider(symbol: string): Promise<{ quote: 
 function dexScreenerPairToQuote(pair: Record<string, unknown>): ClarkMarketQuote | null {
   const baseToken = pair.baseToken as Record<string, unknown> | undefined;
   if (!baseToken) return null;
-  const priceUsd = typeof pair.priceUsd === "string" ? parseFloat(pair.priceUsd) : null;
+  const priceUsd = parsePositiveUsd(pair.priceUsd)
   const change24h = pair.priceChange && typeof (pair.priceChange as Record<string, unknown>).h24 === "number"
     ? (pair.priceChange as Record<string, unknown>).h24 as number : null;
   const liquidity = pair.liquidity && typeof (pair.liquidity as Record<string, unknown>).usd === "number"
@@ -111,7 +112,7 @@ function dexScreenerPairToQuote(pair: Record<string, unknown>): ClarkMarketQuote
     address: typeof baseToken.address === "string" ? baseToken.address : null,
     chainId: chainSlug ? (CHAIN_ID_BY_SLUG[chainSlug] ?? null) : null,
     chain: chainSlug,
-    priceUsd: priceUsd != null && Number.isFinite(priceUsd) ? priceUsd : null,
+    priceUsd,
     change24hPct: change24h,
     marketCapUsd: typeof pair.marketCap === "number" ? pair.marketCap : null,
     fdvUsd: typeof pair.fdv === "number" ? pair.fdv : null,
@@ -164,22 +165,35 @@ export async function dexScreenerMarketProvider(symbolOrAddress: string, _chain:
   }
 }
 
+/** Exact chain+contract identity. Solana mints are case-sensitive; EVM contracts are not. Never symbol matching. */
+export function outcomeTokenAddressEquals(chain: string | null | undefined, left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false
+  return chain === 'solana' ? left === right : left.toLowerCase() === right.toLowerCase()
+}
+
+function dexScreenerRequestedChain(chain: string): string {
+  return chain === 'eth' ? 'ethereum' : chain === 'bnb' ? 'bsc' : chain
+}
+
+/** The requested token must be the priced asset (baseToken). Quote-token pairs carry the OTHER token's priceUsd. */
+export function dexScreenerPairIsRequestedPricedToken(pair: Record<string, unknown>, address: string, chain: string): boolean {
+  const pairChain = typeof pair.chainId === 'string' ? pair.chainId.toLowerCase() : ''
+  if (pairChain !== dexScreenerRequestedChain(chain)) return false
+  const baseAddress = (pair.baseToken as Record<string, unknown> | undefined)?.address
+  return typeof baseAddress === 'string' && outcomeTokenAddressEquals(chain, baseAddress, address)
+}
+
 /** Address-only outcome lookup. Unlike ticker search, every accepted pair must prove the exact
  * requested chain and base-token contract before liquidity ranking can select it. */
 export async function dexScreenerOutcomeMarketProvider(address: string, chain: string): Promise<{ quote: ClarkMarketQuote; matches: ClarkMarketQuote[] } | null> {
   const requestedAddress = chain === 'solana' ? address : address.toLowerCase()
-  const requestedChain = chain === 'eth' ? 'ethereum' : chain === 'bnb' ? 'bsc' : chain
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${encodeURIComponent(address)}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
     if (!res.ok) return null
     const json = await res.json().catch(() => null) as { pairs?: Array<Record<string, unknown>> } | null
-    const candidates = (json?.pairs ?? []).filter(pair => {
-      const pairChain = typeof pair.chainId === 'string' ? pair.chainId.toLowerCase() : ''
-      const baseAddress = (pair.baseToken as Record<string, unknown> | undefined)?.address
-      const normalizedBase = typeof baseAddress === 'string' && chain !== 'solana' ? baseAddress.toLowerCase() : baseAddress
-      return pairChain === requestedChain && normalizedBase === requestedAddress
-    }).sort((a, b) => Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0) - Number((a.liquidity as Record<string, unknown> | undefined)?.usd ?? 0))
-    const quote = candidates.map(dexScreenerPairToQuote).find((candidate): candidate is ClarkMarketQuote => candidate != null && typeof candidate.priceUsd === 'number' && Number.isFinite(candidate.priceUsd) && candidate.priceUsd > 0) ?? null
+    const candidates = (json?.pairs ?? []).filter(pair => dexScreenerPairIsRequestedPricedToken(pair, requestedAddress, chain))
+      .sort((a, b) => Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0) - Number((a.liquidity as Record<string, unknown> | undefined)?.usd ?? 0))
+    const quote = candidates.map(dexScreenerPairToQuote).find((candidate): candidate is ClarkMarketQuote => candidate != null && parsePositiveUsd(candidate.priceUsd) != null) ?? null
     return quote ? { quote, matches: [quote] } : null
   } catch { return null }
 }
@@ -198,9 +212,8 @@ export async function geckoTerminalMarketProvider(address: string, chain: string
     if (!attrs) return null;
     const responseId = json?.data?.id
     const responseAddress = typeof attrs.address === 'string' ? attrs.address : typeof responseId === 'string' ? responseId.slice(responseId.indexOf('_') + 1) : null
-    const identityMatches = chain === 'solana' ? responseAddress === address : responseAddress?.toLowerCase() === address.toLowerCase()
-    if (!identityMatches) return null
-    const priceUsd = typeof attrs.price_usd === "string" ? parseFloat(attrs.price_usd) : null;
+    if (!outcomeTokenAddressEquals(chain, responseAddress, address)) return null
+    const priceUsd = parsePositiveUsd(attrs.price_usd)
     return {
       provider: "geckoterminal",
       name: typeof attrs.name === "string" ? attrs.name : null,
@@ -208,13 +221,12 @@ export async function geckoTerminalMarketProvider(address: string, chain: string
       address,
       chainId: chain ? (CHAIN_ID_BY_SLUG[chain] ?? null) : null,
       chain,
-      priceUsd: priceUsd != null && Number.isFinite(priceUsd) ? priceUsd : null,
+      priceUsd,
       change24hPct: null,
-      marketCapUsd: typeof attrs.market_cap_usd === "string" ? parseFloat(attrs.market_cap_usd) : null,
-      fdvUsd: typeof attrs.fdv_usd === "string" ? parseFloat(attrs.fdv_usd) : null,
-      volume24hUsd: attrs.volume_usd && typeof (attrs.volume_usd as Record<string, unknown>).h24 === "string"
-        ? parseFloat((attrs.volume_usd as Record<string, unknown>).h24 as string) : null,
-      liquidityUsd: typeof attrs.total_reserve_in_usd === "string" ? parseFloat(attrs.total_reserve_in_usd) : null,
+      marketCapUsd: parsePositiveUsd(attrs.market_cap_usd),
+      fdvUsd: parsePositiveUsd(attrs.fdv_usd),
+      volume24hUsd: attrs.volume_usd ? parsePositiveUsd((attrs.volume_usd as Record<string, unknown>).h24) : null,
+      liquidityUsd: parsePositiveUsd(attrs.total_reserve_in_usd),
       fetchedAt: Date.now(),
     };
   } catch {
