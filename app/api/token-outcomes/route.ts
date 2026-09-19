@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { OUTCOME_POLICY } from '@/lib/tokenOutcomes'
 import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
-import { outcomeDb, refreshOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes } from '@/lib/server/tokenOutcomeService'
+import { outcomeDb, refreshOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
@@ -18,14 +18,21 @@ export async function GET(req: Request) {
     if (id) {
       if (!OUTCOME_ID_RE.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
       const { data, error } = await outcomeDb().from('tracked_token_outcomes').select('*').eq('user_id', user.userId).eq('id', id).maybeSingle()
-      if (error) return json({ error: 'Unable to load the frozen receipt.' }, 503)
+      if (error) {
+        logOutcomeStorageError('get_receipt', error)
+        return json({ error: 'Unable to load the frozen receipt.', code: sanitizeOutcomeStorageError(error).code }, 503)
+      }
       if (!data) return json({ error: 'Outcome not found.' }, 404)
       return json({ outcome: sanitizeTrackedOutcome(data) })
     }
     // Keep the list small even for Elite. Full immutable evidence loads on receipt open only.
     const outcomes = await listTrackedOutcomes(user.userId)
     return json({ outcomes, limit: OUTCOME_POLICY.limits[user.plan] })
-  } catch { return json({ error: 'Outcome storage is not configured or reachable.' }, 503) }
+  } catch (error) {
+    logOutcomeStorageError('GET', error)
+    const { code } = sanitizeOutcomeStorageError(error)
+    return json({ error: 'Outcome storage is not configured or reachable.', code }, 503)
+  }
 }
 export async function POST(req: Request) {
   const user = await requireAuthenticatedUser(req)
@@ -47,7 +54,10 @@ export async function POST(req: Request) {
     const { data, error } = await outcomeDb().rpc('create_tracked_outcome', { p_user: user.userId, p_snapshot: snapshot, p_limit: OUTCOME_POLICY.limits[user.plan] })
     if (error) return json({ error: error.message.includes('plan limit') ? 'Your tracked outcome limit has been reached.' : 'Outcome could not be saved. Check storage configuration and migration.' }, error.message.includes('plan limit') ? 409 : 503)
     return json(data)
-  } catch { return json({ error: 'Outcome request failed. Please retry.' }, 503) }
+  } catch (error) {
+    logOutcomeStorageError('POST', error)
+    return json({ error: 'Outcome request failed. Please retry.', code: sanitizeOutcomeStorageError(error).code }, 503)
+  }
 }
 export async function DELETE(req: Request) {
   const user = await requireAuthenticatedUser(req)
@@ -56,8 +66,14 @@ export async function DELETE(req: Request) {
   if (!id || !OUTCOME_ID_RE.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
   try {
     const { data, error } = await outcomeDb().from('tracked_token_outcomes').delete().eq('id', id).eq('user_id', user.userId).select('id').maybeSingle()
-    if (error) return json({ error: 'Unable to delete this tracked outcome.' }, 503)
+    if (error) {
+      logOutcomeStorageError('DELETE', error)
+      return json({ error: 'Unable to delete this tracked outcome.', code: sanitizeOutcomeStorageError(error).code }, 503)
+    }
     if (!data) return json({ error: 'Outcome not found.' }, 404)
     return json({ deleted: true, id })
-  } catch { return json({ error: 'Outcome storage is not configured or reachable.' }, 503) }
+  } catch (error) {
+    logOutcomeStorageError('DELETE', error)
+    return json({ error: 'Outcome storage is not configured or reachable.', code: sanitizeOutcomeStorageError(error).code }, 503)
+  }
 }

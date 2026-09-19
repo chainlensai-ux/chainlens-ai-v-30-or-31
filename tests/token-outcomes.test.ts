@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, quoteIsFreshForOutcome, quoteMatches, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
+import { buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -613,4 +613,139 @@ test('solana 8. quote-token pool is rejected; PumpSwap mint-as-base pair is acce
     assert.equal(update.current_price_usd, 0.00075)
     assert.equal(update.price_change_pct, 50)
   } finally { globalThis.fetch = originalFetch }
+})
+
+function mockListDb(opts: {
+  observationError?: { code: string; message: string } | null
+  baseError?: { code: string; message: string } | null
+  rows?: Record<string, unknown>[]
+}) {
+  const calls: string[] = []
+  const userFilters: string[] = []
+  const db = {
+    from() {
+      const q: { columns?: string } = {}
+      const self = {
+        select(columns: string) { calls.push(columns); q.columns = columns; return self },
+        eq(key: string, value: string) { if (key === 'user_id') userFilters.push(value); return self },
+        order() { return self },
+        limit() {
+          if (String(q.columns).includes('market_observation_json') && opts.observationError) return { data: null, error: opts.observationError }
+          if (opts.baseError) return { data: null, error: opts.baseError }
+          return { data: opts.rows ?? [], error: null }
+        },
+      }
+      return self
+    },
+  }
+  return { db, calls, userFilters }
+}
+
+function storageListRow(symbol: string, tokenAddress: string, id: string) {
+  return {
+    id, chain: symbol === 'PAIDDOGE' ? 'solana' : 'base', token_address: tokenAddress, scan_id: `scan-${symbol}`,
+    tracked_at: '2026-09-14T00:00:00.000Z', baseline_price_usd: 0.0005, baseline_liquidity_usd: 50_000,
+    baseline_market_cap_usd: null, baseline_risk_score: 60, baseline_verdict: 'High Risk',
+    current_price_usd: 0.00075, current_liquidity_usd: 80_000, price_change_pct: 50, liquidity_change_pct: null,
+    outcome_status: 'pumped', outcome_confidence: 'medium',
+    outcome_reasons_json: ['Price increased at least 50% since the scan. Market estimate, not executable returns.'],
+    last_checked_at: new Date().toISOString(), market_source: 'dexscreener', after_evidence_json: null,
+    tokenSymbol: symbol, tokenName: symbol, scannedAt: '2026-09-14T00:00:00.000Z',
+  }
+}
+
+test('storage: missing optional observation column still lists existing owner receipts', async () => {
+  const paid = storageListRow('PAIDDOGE', PAID_DOGE_MINT, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+  const kai = storageListRow('KAI', `0x${'c'.repeat(40)}`, 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')
+  const { db, calls, userFilters } = mockListDb({
+    observationError: { code: 'PGRST204', message: "Could not find the 'market_observation_json' column of 'tracked_token_outcomes' in the schema cache" },
+    rows: [paid, kai],
+  })
+  const rows = await listTrackedOutcomes(user, Date.now(), db as never)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0]?.baseline_snapshot_json.tokenSymbol, 'PAIDDOGE')
+  assert.equal(rows[1]?.baseline_snapshot_json.tokenSymbol, 'KAI')
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0]?.includes('market_observation_json'), true)
+  assert.equal(calls[1]?.includes('market_observation_json'), false)
+  assert.deepEqual(userFilters, [user, user])
+})
+
+test('storage: genuine empty account is an empty list, not a storage error', async () => {
+  const { db } = mockListDb({ rows: [] })
+  const rows = await listTrackedOutcomes(user, Date.now(), db as never)
+  assert.deepEqual(rows, [])
+})
+
+test('storage: missing table is a storage error, never an empty list', async () => {
+  const { db } = mockListDb({
+    observationError: { code: '42P01', message: 'relation "tracked_token_outcomes" does not exist' },
+    baseError: { code: '42P01', message: 'relation "tracked_token_outcomes" does not exist' },
+  })
+  await assert.rejects(() => listTrackedOutcomes(user, Date.now(), db as never), /tracked-token-outcomes migration/)
+})
+
+test('storage: unrelated database failure is a storage error, never an empty list', async () => {
+  const { db } = mockListDb({
+    observationError: { code: '08006', message: 'connection timeout talking to postgres' },
+  })
+  await assert.rejects(() => listTrackedOutcomes(user, Date.now(), db as never), /Outcome storage unavailable/)
+})
+
+test('storage: owner filter is required and another user id is not used', async () => {
+  const { db, userFilters } = mockListDb({ rows: [storageListRow('PAIDDOGE', PAID_DOGE_MINT, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')] })
+  await listTrackedOutcomes(user, Date.now(), db as never)
+  assert.ok(userFilters.length > 0)
+  assert.ok(userFilters.every(id => id === user))
+})
+
+test('storage: refresh write retries without the optional observation column', async () => {
+  const captured: Record<string, unknown>[] = []
+  let writes = 0
+  const db = {
+    from() {
+      const self = {
+        update(payload: Record<string, unknown>) { captured.push(payload); return self },
+        eq() { return self },
+        select() {
+          writes += 1
+          if (writes === 1) return { data: null, error: { code: 'PGRST204', message: "Could not find the 'market_observation_json' column of 'tracked_token_outcomes' in the schema cache" } }
+          return { data: [{ current_price_usd: 0.00075, last_checked_at: '2026-09-17T00:00:00.000Z', price_change_pct: 50 }], error: null }
+        },
+      }
+      return self
+    },
+  }
+  const written = await persistOutcomeRefreshUpdate(db as never, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', user, 'claim', {
+    current_price_usd: 0.00075, market_observation_json: { version: 1 }, last_checked_at: '2026-09-17T00:00:00.000Z',
+  })
+  assert.equal(written.error, null)
+  assert.equal(captured.length, 2)
+  assert.equal('market_observation_json' in captured[0]!, true)
+  assert.equal('market_observation_json' in captured[1]!, false)
+  assert.equal(captured[1]!.current_price_usd, 0.00075)
+})
+
+test('storage: schema helpers distinguish missing column, missing table, and secrets', () => {
+  assert.equal(isMissingOutcomeColumnError({ code: 'PGRST204', message: "Could not find the 'market_observation_json' column of 'tracked_token_outcomes' in the schema cache" }), true)
+  assert.equal(isMissingOutcomeColumnError({ code: '42703', message: 'column tracked_token_outcomes.market_observation_json does not exist' }), true)
+  assert.equal(isMissingOutcomeTableError({ code: '42P01', message: 'relation "tracked_token_outcomes" does not exist' }), true)
+  assert.equal(isMissingOutcomeColumnError({ code: '42P01', message: 'relation "tracked_token_outcomes" does not exist' }), false)
+  const sanitized = sanitizeOutcomeStorageError({ code: 'PGRST204', message: 'fail https://abcd.supabase.co/rest/v1 eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb' })
+  assert.equal(sanitized.code, 'storage_schema')
+  assert.doesNotMatch(sanitized.message, /eyJ/)
+  assert.doesNotMatch(sanitized.message, /https:\/\//)
+  assert.equal('market_observation_json' in omitOptionalObservationColumn({ current_price_usd: 1, market_observation_json: { version: 1 } }), false)
+})
+
+test('storage: GET 401 expired session is not a storage failure; retry falls back to GET', () => {
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(route, /if \(!user\) return unauthorizedResponse\(\)/)
+  assert.match(route, /logOutcomeStorageError\('GET', error\)/)
+  assert.doesNotMatch(route, /outcomes:\s*\[\]/)
+  assert.match(page, /Sign in to view your private outcomes/)
+  assert.match(page, /A refresh write failure must not hide saved receipts/)
+  assert.match(page, /const data = await outcomeRequest\('GET'\)/)
+  assert.match(page, /!error && <section className=\{styles.empty\}>/)
 })

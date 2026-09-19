@@ -20,7 +20,41 @@ export function outcomeDb() {
 const chainAlias = (c: string | null) => c === 'ethereum' ? 'eth' : c === 'bsc' ? 'bnb' : c
 const chainIdBySlug: Record<string, number> = { base: 8453, eth: 1, bnb: 56, robinhood: 4663 }
 const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
-const LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,market_observation_json,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
+/** Compact list columns that exist since the original tracked_token_outcomes migration. */
+export const OUTCOME_LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
+/** Optional identity-proof column from 20260918. Never required to list existing receipts. */
+export const OUTCOME_LIST_COLUMNS_WITH_OBSERVATION = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,market_observation_json,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
+
+export type OutcomeStorageError = { code?: string | null; message?: string | null; details?: string | null; hint?: string | null }
+export function isMissingOutcomeColumnError(error: OutcomeStorageError | null | undefined, column = 'market_observation_json'): boolean {
+  if (!error) return false
+  const code = String(error.code ?? '')
+  if (code === 'PGRST204' || code === '42703') return true
+  const text = `${error.message ?? ''} ${error.details ?? ''} ${error.hint ?? ''}`.toLowerCase()
+  return text.includes(column.toLowerCase()) && /does not exist|could not find|schema cache/.test(text)
+}
+export function isMissingOutcomeTableError(error: OutcomeStorageError | null | undefined): boolean {
+  if (!error) return false
+  const code = String(error.code ?? '')
+  const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase()
+  return code === '42P01' || code === 'PGRST205' || (text.includes('tracked_token_outcomes') && /does not exist|could not find the table|schema cache/.test(text))
+}
+export function sanitizeOutcomeStorageError(error: unknown): { code: string; message: string } {
+  if (error && typeof error === 'object' && ('code' in error || 'message' in error)) {
+    const row = error as OutcomeStorageError
+    const message = String(row.message ?? 'storage_unavailable').replace(/https?:\/\/\S+/gi, '[redacted]').replace(/eyJ[\w.-]{20,}/g, '[redacted]').slice(0, 180)
+    if (isMissingOutcomeTableError(row) || isMissingOutcomeColumnError(row)) return { code: 'storage_schema', message }
+    return { code: String(row.code ?? 'storage_unavailable'), message }
+  }
+  if (error instanceof Error) {
+    const message = error.message.replace(/https?:\/\/\S+/gi, '[redacted]').slice(0, 180)
+    return { code: message.includes('not configured') ? 'storage_unconfigured' : 'storage_unavailable', message }
+  }
+  return { code: 'storage_unavailable', message: 'unknown' }
+}
+export function logOutcomeStorageError(stage: string, error: unknown) {
+  console.warn('[token-outcomes]', { stage, ...sanitizeOutcomeStorageError(error) })
+}
 
 export function quoteMatches(q: ClarkMarketQuote | null, chain: string, address: string): q is ClarkMarketQuote {
   const expectedChain = chainAlias(chain)
@@ -192,10 +226,20 @@ export function hydrateTrackedOutcomeListRow(row: Record<string, unknown>, now =
   } as unknown as TrackedOutcome, now)
 }
 
-export async function listTrackedOutcomes(userId: string, now = Date.now()): Promise<TrackedOutcome[]> {
-  const { data, error } = await outcomeDb().from('tracked_token_outcomes').select(LIST_COLUMNS).eq('user_id', userId).order('tracked_at', { ascending: false }).limit(OUTCOME_POLICY.limits.elite)
-  if (error) throw new Error('Outcome storage unavailable. The tracked-token-outcomes migration must be applied.')
-  return (data ?? []).map(row => hydrateTrackedOutcomeListRow({ ...row }, now))
+export async function listTrackedOutcomes(userId: string, now = Date.now(), db: ReturnType<typeof outcomeDb> = outcomeDb()): Promise<TrackedOutcome[]> {
+  const read = (columns: string) => db.from('tracked_token_outcomes').select(columns).eq('user_id', userId).order('tracked_at', { ascending: false }).limit(OUTCOME_POLICY.limits.elite)
+  let { data, error } = await read(OUTCOME_LIST_COLUMNS_WITH_OBSERVATION)
+  if (error && isMissingOutcomeColumnError(error, 'market_observation_json')) {
+    logOutcomeStorageError('list_optional_column', error)
+    ;({ data, error } = await read(OUTCOME_LIST_COLUMNS))
+  }
+  if (error) {
+    logOutcomeStorageError('list', error)
+    throw new Error(isMissingOutcomeTableError(error)
+      ? 'Outcome storage unavailable. The tracked-token-outcomes migration must be applied.'
+      : 'Outcome storage unavailable. Check the tracked-token-outcomes migration.')
+  }
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map(row => hydrateTrackedOutcomeListRow({ ...row }, now))
 }
 
 export function sanitizeTrackedOutcome(row: TrackedOutcome, now = Date.now()): TrackedOutcome {
@@ -257,6 +301,29 @@ function logOutcomeRefreshForensic(forensic: OutcomeRefreshForensic) {
   console.warn('[outcome-refresh-forensic]', forensic)
 }
 
+export function omitOptionalObservationColumn<T extends Record<string, unknown>>(update: T): Omit<T, 'market_observation_json'> {
+  const rest = { ...update }
+  delete rest.market_observation_json
+  return rest
+}
+
+export async function persistOutcomeRefreshUpdate(
+  db: ReturnType<typeof outcomeDb>,
+  rowId: string,
+  userId: string,
+  claimedAt: string,
+  update: Record<string, unknown>,
+) {
+  const write = (payload: Record<string, unknown>) => db.from('tracked_token_outcomes').update(payload)
+    .eq('id', rowId).eq('user_id', userId).eq('refresh_claimed_at', claimedAt).select('current_price_usd,last_checked_at,price_change_pct')
+  let written = await write(update)
+  if (written.error && isMissingOutcomeColumnError(written.error, 'market_observation_json')) {
+    logOutcomeStorageError('refresh_optional_column', written.error)
+    written = await write(omitOptionalObservationColumn(update))
+  }
+  return written
+}
+
 export type RefreshOutcomesOptions = { force?: boolean; ids?: string[]; now?: number }
 export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptions = {}): Promise<TrackedOutcome[]> {
   const db = outcomeDb()
@@ -290,8 +357,7 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     const proof = afterScanProof(row, laterScan, now) ?? row.after_evidence_json ?? null
     const checkedAt = new Date(now).toISOString()
     const update = buildOutcomeRefreshUpdate(row, quote, proof, checkedAt, now)
-    const written = await db.from('tracked_token_outcomes').update(update)
-      .eq('id', row.id).eq('user_id', userId).eq('refresh_claimed_at', claimedAt).select('current_price_usd,last_checked_at,price_change_pct')
+    const written = await persistOutcomeRefreshUpdate(db, row.id, userId, claimedAt, update)
     const persisted = written.data?.[0] as { current_price_usd?: number | null; last_checked_at?: string | null; price_change_pct?: number | null } | undefined
     logOutcomeRefreshForensic({
       trackedOutcomeId: row.id,

@@ -37,17 +37,21 @@ export default function TrackPage() {
       if (valid()) { setError(''); if (refresh) setRefreshing(true) }
       try {
         if (refresh) {
-          const result = await outcomeRequest('POST', { action: 'refresh', force, ...(force ? { ids: visibleIds.current } : {}) })
-          if (valid() && Array.isArray(result.outcomes)) {
-            const outcomes = result.outcomes as TrackedOutcome[]
-            visibleIds.current = outcomes.map(row => row.id)
-            setRows(outcomes)
-            if (typeof result.limit === 'number') setLimit(result.limit)
-            setReceipt(prev => {
-              if (!prev) return prev
-              return outcomes.find(row => row.id === prev.id) ?? prev
-            })
-            return true
+          try {
+            const result = await outcomeRequest('POST', { action: 'refresh', force, ...(force ? { ids: visibleIds.current } : {}) })
+            if (valid() && Array.isArray(result.outcomes)) {
+              const outcomes = result.outcomes as TrackedOutcome[]
+              visibleIds.current = outcomes.map(row => row.id)
+              setRows(outcomes)
+              if (typeof result.limit === 'number') setLimit(result.limit)
+              setReceipt(prev => {
+                if (!prev) return prev
+                return outcomes.find(row => row.id === prev.id) ?? prev
+              })
+              return true
+            }
+          } catch {
+            // A refresh write failure must not hide saved receipts. Fall through to GET.
           }
         }
         const data = await outcomeRequest('GET')
