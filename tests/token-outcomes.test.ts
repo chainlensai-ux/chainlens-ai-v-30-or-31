@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, adoptNewerOutcomeObservation, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
@@ -205,8 +205,10 @@ test('outcome UI renders compact card pending copy and keeps the full modal sent
   const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
   const css = readFileSync(new URL('../components/outcomes/outcomes.module.css', import.meta.url), 'utf8')
   assert.match(source, /const CARD_PENDING_PRICE = 'Price unavailable'/)
+  assert.match(source, /const CARD_COMPARISON_UNAVAILABLE = 'Comparison unavailable'/)
   assert.match(source, /const PENDING_PRICE = 'Current price unavailable — Outcome pending'/)
-  assert.match(source, /price_change_pct == null \? CARD_PENDING_PRICE/)
+  assert.match(source, /cardSinceScan\(row\)/)
+  assert.match(source, /CARD_COMPARISON_UNAVAILABLE : CARD_PENDING_PRICE/)
   assert.match(source, /Original scan price could not be verified/)
   assert.match(source, /comparableOutcomeBaselinePrice/)
   assert.match(source, /Hypothetical performance unavailable/)
@@ -577,8 +579,9 @@ test('solana 6. Track UI renders POST-returned outcomes immediately without anot
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
   assert.match(page, /visibleIds\.current\.length \? \{ ids: visibleIds\.current \} : \{\}/)
   assert.match(page, /Array\.isArray\(result\.outcomes\)/)
-  assert.match(page, /setRows\(outcomes\)/)
-  assert.match(page, /mergeListedOutcomeObservation/)
+  assert.match(page, /mergeTrackedOutcomeRows\(current, outcomes\)/)
+  assert.doesNotMatch(page, /setRows\(outcomes\)/)
+  assert.match(page, /adoptNewerOutcomeObservation/)
   assert.match(page, /return true/)
   assert.match(route, /outcomes, limit: OUTCOME_POLICY\.limits\[user\.plan\]/)
   assert.match(service, /applyRefreshObservationOverlay\(await listTrackedOutcomes/)
@@ -947,7 +950,11 @@ test('live receipt: opening forces a single-id lookup, polls on the modal, and u
   const button = readFileSync(new URL('../components/outcomes/TrackOutcomeButton.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(page, /setInterval/)
   assert.match(page, /onLiveUpdate=\{applyLiveObservation\}/)
-  assert.match(page, /mergeListedOutcomeObservation\(row, updated\)/)
+  assert.match(page, /adoptNewerOutcomeObservation\(row, updated\)/)
+  assert.match(page, /adoptNewerOutcomeObservation\(prev, updated\)/)
+  assert.match(page, /snapshotHasFrozenEvidence/)
+  assert.match(page, /setSelected\(null\)/)
+  assert.doesNotMatch(page, /onClose=\{\(\) => \{ setSelected\(null\); setRows/)
   assert.match(modal, /action: 'live', ids: \[row\.id\]/)
   assert.doesNotMatch(modal, /action: 'refresh', force: true, ids: \[row\.id\]/)
   assert.match(modal, /OUTCOME_POLICY\.receiptLiveRefreshMs/)
@@ -1321,4 +1328,258 @@ test('live receipt: valid baseline produces percent and hypothetical together', 
   assert.equal(shown?.outcome_status, 'pumped')
   assert.deepEqual(outcomeHypothetical(shown!, now), { value: 1500, pnl: 500, potentialLossAvoided: 0 })
   assert.equal(percentChange(40_000, 60_000), 50)
+})
+
+const MCAT_BASE = '0x1932813d0A8Bb9194d0A2E8D1DC1dF3De526EF8d'
+function observationAt(row: TrackedOutcome, price: number, at: number, marketCapUsd: number | null = null): TrackedOutcome {
+  return withObservation({
+    ...row,
+    current_price_usd: price,
+    last_checked_at: new Date(at).toISOString(),
+    market_source: 'dexscreener',
+    price_change_pct: percentChange(row.baseline_price_usd, price),
+  }, price, marketCapUsd)
+}
+function compactListed(row: TrackedOutcome, now: number): TrackedOutcome {
+  return hydrateTrackedOutcomeListRow({
+    ...row,
+    tokenSymbol: row.baseline_snapshot_json.tokenSymbol,
+    tokenName: row.baseline_snapshot_json.tokenName,
+    scannedAt: row.baseline_snapshot_json.scannedAt,
+    snapshotVersion: row.baseline_snapshot_json.snapshotVersion,
+  }, now)
+}
+function applySurfaces(card: TrackedOutcome, receipt: TrackedOutcome, incoming: TrackedOutcome, now: number) {
+  return {
+    card: adoptNewerOutcomeObservation(card, incoming, now),
+    receipt: adoptNewerOutcomeObservation(receipt, incoming, now),
+  }
+}
+function assertPct(actual: number | null | undefined, expected: number) {
+  assert.ok(actual != null && Math.abs(actual - expected) < 1e-10, `expected ${expected}, got ${actual}`)
+}
+function assertSameLiveView(card: TrackedOutcome, receipt: TrackedOutcome) {
+  assert.equal(card.id, receipt.id)
+  assert.equal(card.current_price_usd, receipt.current_price_usd)
+  assert.equal(card.price_change_pct, receipt.price_change_pct)
+  assert.equal(card.outcome_status, receipt.outcome_status)
+  assert.equal(card.last_checked_at, receipt.last_checked_at)
+  assert.equal(card.current_market_cap_usd ?? null, receipt.current_market_cap_usd ?? null)
+  assert.deepEqual(outcomeHypothetical(card), outcomeHypothetical(receipt))
+}
+
+test('card and receipt converge on the same live observation after a newer tick', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), token_address: MCAT_BASE, baseline_price_usd: 1, baseline_market_cap_usd: 100_000 }
+  const older = sanitizeTrackedOutcome(observationAt(frozen, 1.511, now - 120_000, 151_100), now)
+  const live = sanitizeTrackedOutcome(observationAt(frozen, 2.156, now, 215_600), now)
+  assertPct(older.price_change_pct, 51.1)
+  assertPct(live.price_change_pct, 115.6)
+  const card = compactListed(older, now)
+  const receipt = older
+  assert.equal(snapshotHasFrozenEvidence(card.baseline_snapshot_json), false)
+  assert.equal(snapshotHasFrozenEvidence(receipt.baseline_snapshot_json), true)
+  const next = applySurfaces(card, receipt, live, now)
+  assertSameLiveView(next.card, next.receipt)
+  assertPct(next.card.price_change_pct, 115.6)
+  assertPct(next.receipt.price_change_pct, 115.6)
+  assert.equal(next.card.outcome_status, 'pumped')
+  assert.equal(next.receipt.outcome_status, 'pumped')
+  assert.equal(next.card.last_checked_at, live.last_checked_at)
+  assert.equal(next.receipt.baseline_snapshot_json.scanId, frozen.baseline_snapshot_json.scanId)
+})
+
+test('older page-load list cannot overwrite a newer live observation on the card or receipt', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), token_address: MCAT_BASE, baseline_price_usd: 1, baseline_market_cap_usd: 100_000 }
+  const live = sanitizeTrackedOutcome(observationAt(frozen, 2.156, now, 215_600), now)
+  const stale = compactListed(sanitizeTrackedOutcome(observationAt(frozen, 1.511, now - 180_000, 151_100), now), now)
+  const [card] = mergeTrackedOutcomeRows([live], [stale], now)
+  const receipt = adoptNewerOutcomeObservation(live, stale, now)
+  assertSameLiveView(card, receipt)
+  assertPct(card.price_change_pct, 115.6)
+  assert.equal(card.current_price_usd, 2.156)
+  assert.notEqual(card.price_change_pct, stale.price_change_pct)
+  assert.equal(card.baseline_snapshot_json.scanId, frozen.baseline_snapshot_json.scanId)
+})
+
+test('closing the receipt keeps the latest card observation', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), token_address: MCAT_BASE, baseline_price_usd: 1 }
+  const first = sanitizeTrackedOutcome(observationAt(frozen, 1.511, now - 40_000), now)
+  const live = sanitizeTrackedOutcome(observationAt(frozen, 2.156, now), now)
+  const open = applySurfaces(compactListed(first, now), first, live, now)
+  const closedCard = open.card
+  const staleRefresh = compactListed(first, now)
+  const afterClose = mergeTrackedOutcomeRows([closedCard], [staleRefresh], now)[0]
+  assertPct(afterClose.price_change_pct, 115.6)
+  assert.equal(afterClose.current_price_usd, 2.156)
+  assert.equal(afterClose.last_checked_at, live.last_checked_at)
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /onClose=\{\(\) => setSelected\(null\)\}/)
+  assert.doesNotMatch(page, /onClose=\{\(\) => \{[\s\S]*setRows/)
+})
+
+test('a second valid live tick updates card and receipt together', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), token_address: MCAT_BASE, baseline_price_usd: 1, baseline_market_cap_usd: 100_000 }
+  const first = sanitizeTrackedOutcome(observationAt(frozen, 1.511, now - 40_000, 151_100), now)
+  const second = sanitizeTrackedOutcome(observationAt(frozen, 2.156, now - 20_000, 215_600), now)
+  const third = sanitizeTrackedOutcome(observationAt(frozen, 1.8, now, 180_000), now)
+  let surfaces = applySurfaces(compactListed(first, now), first, second, now)
+  assertSameLiveView(surfaces.card, surfaces.receipt)
+  assertPct(surfaces.card.price_change_pct, 115.6)
+  surfaces = applySurfaces(surfaces.card, surfaces.receipt, third, now)
+  assertSameLiveView(surfaces.card, surfaces.receipt)
+  assertPct(surfaces.card.price_change_pct, 80)
+  assert.equal(surfaces.card.outcome_status, 'pumped')
+  assert.equal(surfaces.card.last_checked_at, third.last_checked_at)
+  assert.deepEqual(outcomeHypothetical(surfaces.receipt, now), { value: 1800, pnl: 800, potentialLossAvoided: 0 })
+})
+
+function legacySolanaSnapshot(priceUsd: number): TrackedOutcome['baseline_snapshot_json'] {
+  const current = snapshotFromScan({
+    ...scan(), chain: 'solana', contract: PAID_DOGE_MINT, symbol: 'PAIDDOGE', name: 'Paid Doge',
+    priceUsd, marketCapUsd: 50_000, liquidityUsd: 83_000,
+  }, user)!
+  const legacy = { ...current, chain: 'solana', tokenAddress: PAID_DOGE_MINT } as Record<string, unknown>
+  delete legacy.snapshotVersion
+  delete legacy.riskScoreDirection
+  return legacy as TrackedOutcome['baseline_snapshot_json']
+}
+
+test('legacy Solana receipt with a verified baseline keeps genuine performance including -99.6%', () => {
+  const now = Date.now()
+  const snapshot = legacySolanaSnapshot(0.0005)
+  assert.notEqual(snapshot.snapshotVersion, 2)
+  const row = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), chain: 'solana', token_address: PAID_DOGE_MINT, baseline_snapshot_json: snapshot,
+    baseline_price_usd: 0.0005, baseline_market_cap_usd: 50_000, baseline_risk_score: 78,
+    current_price_usd: 0.000002, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+    price_change_pct: 0, outcome_status: 'watching',
+  }, 0.000002, 200), now)
+  assert.equal(row.baseline_risk_semantics, 'legacy_unverified')
+  assert.equal(percentChange(0.0005, 0.000002), -99.6)
+  assert.equal(row.price_change_pct, -99.6)
+  assert.equal(row.outcome_status, 'dumped')
+  assert.equal(row.current_price_usd, 0.000002)
+  assert.equal(comparableOutcomeBaselinePrice(row, now), 0.0005)
+  assert.ok(outcomeHypothetical(row, now) != null)
+  assert.equal(row.baseline_price_usd, 0.0005)
+  assert.deepEqual(row.baseline_snapshot_json, snapshot)
+  const capChange = percentChange(50_000, 200)
+  assert.equal(capChange, -99.6)
+  assert.equal(row.price_change_pct, capChange)
+})
+
+test('legacy receipt with an unverified baseline cannot display a fabricated return', () => {
+  const now = Date.now()
+  const snapshot = legacySolanaSnapshot(2579.35)
+  const row = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), chain: 'solana', token_address: PAID_DOGE_MINT, baseline_snapshot_json: snapshot,
+    baseline_price_usd: 2579.35, baseline_market_cap_usd: 50_000,
+    current_price_usd: 0.000002, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+    price_change_pct: -99.6, outcome_status: 'dumped',
+  }, 0.000002, 200), now)
+  assert.equal(row.baseline_risk_semantics, 'legacy_unverified')
+  assert.equal(row.current_price_usd, 0.000002)
+  assert.equal(row.current_market_cap_usd, 200)
+  assert.equal(comparableOutcomeBaselinePrice(row, now), null)
+  assert.equal(row.price_change_pct, null)
+  assert.equal(row.outcome_status, 'unavailable')
+  assert.equal(outcomeHypothetical(row, now), null)
+  assert.notEqual(row.price_change_pct, -99.6)
+  assert.equal(row.baseline_price_usd, 2579.35)
+  assert.deepEqual(row.baseline_snapshot_json, snapshot)
+})
+
+test('historical risk-score versioning does not invalidate a valid historical price', () => {
+  const now = Date.now()
+  const snapshot = legacySolanaSnapshot(0.0005)
+  const row = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), chain: 'solana', token_address: PAID_DOGE_MINT, baseline_snapshot_json: snapshot,
+    baseline_price_usd: 0.0005, baseline_market_cap_usd: 50_000,
+    current_price_usd: 0.00075, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, 0.00075, 75_000), now)
+  assert.equal(row.baseline_risk_semantics, 'legacy_unverified')
+  assert.equal(row.price_change_pct, 50)
+  assert.equal(row.outcome_status, 'pumped')
+  assert.deepEqual(outcomeHypothetical(row, now), { value: 1500, pnl: 500, potentialLossAvoided: 0 })
+  const canonical = sanitizeTrackedOutcome({
+    ...row,
+    baseline_snapshot_json: { ...snapshot, snapshotVersion: 2, riskScoreDirection: 'higher_is_riskier' },
+  }, now)
+  assert.equal(canonical.baseline_risk_semantics, 'canonical')
+  assert.equal(canonical.price_change_pct, 50)
+  assert.equal(canonical.current_price_usd, 0.00075)
+})
+
+test('KAI-like contaminated baseline stays unavailable on card and receipt while live market updates', () => {
+  const now = Date.now()
+  const frozen = kaiContaminatedRow(now)
+  const snapshot = frozen.baseline_snapshot_json
+  const first = sanitizeTrackedOutcome(frozen, now)
+  const later = sanitizeTrackedOutcome(withObservation({
+    ...frozen, current_price_usd: 0.0009, last_checked_at: new Date(now + 20_000).toISOString(),
+  }, 0.0009, 850_000), now + 20_000)
+  const card = compactListed(first, now)
+  const next = applySurfaces(card, first, later, now + 20_000)
+  assertSameLiveView(next.card, next.receipt)
+  assert.equal(next.card.current_price_usd, 0.0009)
+  assert.equal(next.receipt.current_price_usd, 0.0009)
+  assert.equal(next.card.current_market_cap_usd, 850_000)
+  assert.equal(next.card.price_change_pct, null)
+  assert.equal(next.receipt.price_change_pct, null)
+  assert.equal(next.card.outcome_status, 'unavailable')
+  assert.equal(next.receipt.outcome_status, 'unavailable')
+  assert.notEqual(next.card.outcome_status, 'dumped')
+  assert.notEqual(next.card.outcome_status, 'pumped')
+  assert.equal(outcomeHypothetical(next.receipt, now + 20_000), null)
+  assert.equal(next.card.baseline_price_usd, 2579.35)
+  assert.deepEqual(next.receipt.baseline_snapshot_json, snapshot)
+  const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
+  assert.match(source, /CARD_COMPARISON_UNAVAILABLE/)
+  assert.match(source, /comparison unavailable/)
+})
+
+test('valid price change and market-cap change stay independent on both surfaces', () => {
+  const now = Date.now()
+  const row = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 1_081_373,
+    current_price_usd: 0.75, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, 0.75, 774_756), now)
+  const card = presentTrackedOutcome(row, now)
+  const receipt = presentTrackedOutcome(row, now)
+  assertSameLiveView(card, receipt)
+  assert.equal(card.price_change_pct, -25)
+  const capChange = percentChange(frozenBaselineMarketCapUsd(receipt), receipt.current_market_cap_usd ?? null)
+  assert.ok(capChange != null && capChange > -30 && capChange < -27)
+  assert.notEqual(card.price_change_pct, capChange)
+  assert.deepEqual(outcomeHypothetical(card, now), { value: 750, pnl: -250, potentialLossAvoided: 250 })
+})
+
+test('frozen snapshot and original scan evidence are never modified by live merge or presentation', () => {
+  const now = Date.now()
+  const frozen = kaiContaminatedRow(now)
+  const snapshot = structuredClone(frozen.baseline_snapshot_json)
+  const presented = presentTrackedOutcome(frozen, now)
+  const live = sanitizeTrackedOutcome(withObservation({
+    ...frozen, current_price_usd: 0.0009, last_checked_at: new Date(now + 5_000).toISOString(),
+  }, 0.0009, 850_000), now + 5_000)
+  const merged = adoptNewerOutcomeObservation(presented, live, now + 5_000)
+  const listed = mergeTrackedOutcomeRows([presented], [compactListed(live, now + 5_000)], now + 5_000)[0]
+  assert.deepEqual(frozen.baseline_snapshot_json, snapshot)
+  assert.deepEqual(presented.baseline_snapshot_json, snapshot)
+  assert.deepEqual(merged.baseline_snapshot_json, snapshot)
+  assert.equal(merged.baseline_price_usd, 2579.35)
+  assert.equal(merged.baseline_market_cap_usd, 1_081_373)
+  assert.equal(listed.baseline_price_usd, 2579.35)
+  assert.equal((live as { baseline_price_usd: number }).baseline_price_usd, 2579.35)
+  assert.equal(merged.scan_id, frozen.scan_id)
+  const update = buildOutcomeRefreshUpdate(frozen, {
+    ...marketQuote(KAI_BASE, 0.0009), marketCapUsd: 850_000, address: KAI_BASE,
+    marketIdentity: { selectedPoolAddress: '0x84bb5de3', baseTokenAddress: KAI_BASE, quoteTokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' },
+  }, null, new Date(now + 5_000).toISOString(), now + 5_000)
+  assert.equal((update as { baseline_price_usd?: number }).baseline_price_usd, undefined)
+  assert.equal((update as { baseline_snapshot_json?: unknown }).baseline_snapshot_json, undefined)
 })

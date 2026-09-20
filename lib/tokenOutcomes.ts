@@ -247,30 +247,98 @@ export function classifyOutcome(baseline: { price: number | null; liquidity: num
   if (price <= OUTCOME_POLICY.dumpedPct) return { status: 'dumped', confidence: 'medium', reasons: ['Price fell at least 50% since the scan. No verified rug evidence.'] }
   return { status: 'watching', confidence: 'medium', reasons: ['Price remains within the ±50% outcome window. No verified rug evidence.'] }
 }
+export function snapshotHasFrozenEvidence(snapshot: TrackedOutcome['baseline_snapshot_json'] | null | undefined): boolean {
+  return typeof snapshot?.scanId === 'string' && snapshot.scanId.length > 0
+}
 /**
- * Keep frozen GET evidence, but prefer a same-request identity-proven list observation when
- * storage could not persist `market_observation_json`. Never copies an unproven listed price.
+ * One canonical view for cards and receipts. Percent, class and hypothetical all use the same
+ * comparable baseline + identity-proven current price. Risk-score versioning is separate.
  */
-export function mergeListedOutcomeObservation(full: TrackedOutcome, listed?: TrackedOutcome | null): TrackedOutcome {
-  if (!listed || listed.id !== full.id) return full
-  if (displayableCurrentPrice(listed) == null) return full
-  const fullChecked = observationCheckedAtMs(full)
-  const listedChecked = observationCheckedAtMs(listed)
-  if (displayableCurrentPrice(full) != null && fullChecked != null && listedChecked != null && listedChecked < fullChecked) return full
+export function presentTrackedOutcome(row: TrackedOutcome, now = Date.now()): TrackedOutcome {
+  const baselinePrice = validPriceOrNull(row.baseline_price_usd)
+  const currentPrice = displayableCurrentPrice({ ...row, baseline_price_usd: baselinePrice }, now)
+  const comparableBaseline = comparableOutcomeBaselinePrice({ ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice }, now)
+  const proof = row.after_evidence_json
+  const result = classifyOutcome({ price: comparableBaseline, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
+    price: currentPrice, liquidity: numberOrNull(row.current_liquidity_usd), verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
+  })
+  const pendingCurrent = currentPrice == null && result.status === 'unavailable'
+  const pendingBaseline = comparableBaseline == null && currentPrice != null && result.status === 'unavailable'
+  const snapshotVersion = row.baseline_snapshot_json?.snapshotVersion
+  const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
   return {
-    ...full,
-    current_price_usd: listed.current_price_usd,
-    current_liquidity_usd: listed.current_liquidity_usd ?? full.current_liquidity_usd,
-    current_market_cap_usd: listed.current_market_cap_usd ?? full.current_market_cap_usd,
-    price_change_pct: listed.price_change_pct,
-    liquidity_change_pct: listed.liquidity_change_pct,
-    market_source: listed.market_source,
-    market_observation_json: listed.market_observation_json ?? full.market_observation_json,
-    last_checked_at: listed.last_checked_at ?? full.last_checked_at,
-    outcome_status: listed.outcome_status,
-    outcome_confidence: listed.outcome_confidence,
-    outcome_reasons_json: listed.outcome_reasons_json,
+    ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
+    current_market_cap_usd: displayableCurrentMarketCap({ ...row, current_price_usd: currentPrice }, now),
+    price_change_pct: percentChange(comparableBaseline, currentPrice),
+    outcome_status: result.status, outcome_confidence: result.confidence,
+    outcome_reasons_json: pendingCurrent ? pendingUnavailableReasons() : pendingBaseline ? incomparableBaselineReasons() : row.outcome_reasons_json,
+    baseline_risk_semantics: legacySolana ? 'legacy_unverified' : 'canonical',
   }
+}
+function copyFrozenSnapshot(preferred: TrackedOutcome, fallback: TrackedOutcome): TrackedOutcome {
+  const snapshot = snapshotHasFrozenEvidence(preferred.baseline_snapshot_json) ? preferred.baseline_snapshot_json
+    : snapshotHasFrozenEvidence(fallback.baseline_snapshot_json) ? fallback.baseline_snapshot_json
+    : preferred.baseline_snapshot_json
+  return {
+    ...preferred,
+    baseline_price_usd: validPriceOrNull(preferred.baseline_price_usd) ?? validPriceOrNull(fallback.baseline_price_usd),
+    baseline_liquidity_usd: numberOrNull(preferred.baseline_liquidity_usd) ?? numberOrNull(fallback.baseline_liquidity_usd),
+    baseline_market_cap_usd: validPriceOrNull(preferred.baseline_market_cap_usd) ?? validPriceOrNull(fallback.baseline_market_cap_usd),
+    baseline_risk_score: preferred.baseline_risk_score ?? fallback.baseline_risk_score,
+    baseline_verdict: preferred.baseline_verdict || fallback.baseline_verdict,
+    baseline_snapshot_json: snapshot,
+    scan_id: preferred.scan_id || fallback.scan_id,
+  }
+}
+function observationFields(from: TrackedOutcome, onto: TrackedOutcome): TrackedOutcome {
+  return {
+    ...onto,
+    current_price_usd: from.current_price_usd,
+    current_liquidity_usd: from.current_liquidity_usd ?? onto.current_liquidity_usd,
+    current_market_cap_usd: from.current_market_cap_usd ?? onto.current_market_cap_usd,
+    price_change_pct: from.price_change_pct,
+    liquidity_change_pct: from.liquidity_change_pct,
+    market_source: from.market_source,
+    market_observation_json: from.market_observation_json ?? onto.market_observation_json,
+    last_checked_at: from.last_checked_at ?? onto.last_checked_at,
+    outcome_status: from.outcome_status,
+    outcome_confidence: from.outcome_confidence,
+    outcome_reasons_json: from.outcome_reasons_json,
+    after_evidence_json: from.after_evidence_json ?? onto.after_evidence_json,
+  }
+}
+/**
+ * Newer identity-proven observation wins. An older page-load or list refresh cannot roll back a
+ * live tick. Frozen scan evidence is preserved from the more complete snapshot.
+ */
+export function adoptNewerOutcomeObservation(current: TrackedOutcome, incoming?: TrackedOutcome | null, now = Date.now()): TrackedOutcome {
+  if (!incoming || incoming.id !== current.id) return presentTrackedOutcome(current, now)
+  const frozen = snapshotHasFrozenEvidence(current.baseline_snapshot_json) ? copyFrozenSnapshot(current, incoming) : copyFrozenSnapshot(incoming, current)
+  const incomingPrice = displayableCurrentPrice(incoming, now)
+  const currentPrice = displayableCurrentPrice(current, now)
+  const incomingChecked = observationCheckedAtMs(incoming)
+  const currentChecked = observationCheckedAtMs(current)
+  const incomingWins = incomingPrice != null && (
+    currentPrice == null
+    || currentChecked == null
+    || (incomingChecked != null && incomingChecked > currentChecked)
+  )
+  const merged = incomingWins ? observationFields(incoming, frozen) : observationFields(current, frozen)
+  return presentTrackedOutcome(merged, now)
+}
+export function mergeTrackedOutcomeRows(current: TrackedOutcome[], incoming: TrackedOutcome[], now = Date.now()): TrackedOutcome[] {
+  const byId = new Map(current.map(row => [row.id, row]))
+  return incoming.map(row => {
+    const prev = byId.get(row.id)
+    return prev ? adoptNewerOutcomeObservation(prev, row, now) : presentTrackedOutcome(row, now)
+  })
+}
+/**
+ * Keep frozen GET evidence, but prefer a newer identity-proven observation. Never copies an
+ * unproven listed price and never lets an older response replace a newer live tick.
+ */
+export function mergeListedOutcomeObservation(full: TrackedOutcome, listed?: TrackedOutcome | null, now = Date.now()): TrackedOutcome {
+  return adoptNewerOutcomeObservation(full, listed, now)
 }
 export function shareOutcome(row: TrackedOutcome): string {
   const s = row.baseline_snapshot_json

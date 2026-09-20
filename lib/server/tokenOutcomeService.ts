@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import {
-  OUTCOME_POLICY, classifyOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, incomparableBaselineReasons, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
-  percentChange, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome,
+  OUTCOME_POLICY, classifyOutcome, comparableOutcomeBaselinePrice, displayableCurrentPrice, incomparableBaselineReasons, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
+  percentChange, presentTrackedOutcome, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome,
   type MarketObservationProof,
 } from '../tokenOutcomes'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider, outcomeTokenAddressEquals } from './clarkMarketDataProviders'
@@ -283,25 +283,7 @@ export async function listTrackedOutcomes(userId: string, now = Date.now(), db: 
 }
 
 export function sanitizeTrackedOutcome(row: TrackedOutcome, now = Date.now()): TrackedOutcome {
-  const baselinePrice = validPriceOrNull(row.baseline_price_usd)
-  const currentPrice = displayableCurrentPrice({ ...row, baseline_price_usd: baselinePrice }, now)
-  const comparableBaseline = comparableOutcomeBaselinePrice({ ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice }, now)
-  const proof = row.after_evidence_json
-  const result = classifyOutcome({ price: comparableBaseline, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
-    price: currentPrice, liquidity: numberOrNull(row.current_liquidity_usd), verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
-  })
-  const pendingCurrent = currentPrice == null && result.status === 'unavailable'
-  const pendingBaseline = comparableBaseline == null && currentPrice != null && result.status === 'unavailable'
-  const snapshotVersion = row.baseline_snapshot_json?.snapshotVersion
-  const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
-  return {
-    ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
-    current_market_cap_usd: displayableCurrentMarketCap({ ...row, current_price_usd: currentPrice }, now),
-    price_change_pct: percentChange(comparableBaseline, currentPrice),
-    outcome_status: result.status, outcome_confidence: result.confidence,
-    outcome_reasons_json: pendingCurrent ? pendingUnavailableReasons() : pendingBaseline ? incomparableBaselineReasons() : row.outcome_reasons_json,
-    baseline_risk_semantics: legacySolana ? 'legacy_unverified' : 'canonical',
-  }
+  return presentTrackedOutcome(row, now)
 }
 
 function retainPreviousObservation(row: TrackedOutcome, now: number): number | null {

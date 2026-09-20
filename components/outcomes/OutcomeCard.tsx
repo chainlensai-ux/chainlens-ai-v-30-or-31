@@ -9,6 +9,7 @@ import styles from './outcomes.module.css'
 
 const PENDING_PRICE = 'Current price unavailable — Outcome pending'
 const CARD_PENDING_PRICE = 'Price unavailable'
+const CARD_COMPARISON_UNAVAILABLE = 'Comparison unavailable'
 const UNVERIFIED_BASELINE = 'Original scan price could not be verified. Live market data is available, but historical price performance cannot be calculated.'
 const pct = (n: number | null) => n == null ? 'Unavailable' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
@@ -21,7 +22,20 @@ const date = (value: string | null) => value ? new Date(value).toLocaleString() 
 const shortDate = (value: string | null) => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown'
 const label = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
 const shortAddress = (address: string) => address.length < 12 ? address : `${address.slice(0, 6)}…${address.slice(-4)}`
-const statusLabel = (row: TrackedOutcome) => row.price_change_pct == null && row.outcome_status === 'unavailable' ? 'outcome pending' : row.outcome_status
+const statusLabel = (row: TrackedOutcome) => {
+  if (row.price_change_pct == null && row.outcome_status === 'unavailable') {
+    return validPriceOrNull(row.current_price_usd) != null ? 'comparison unavailable' : 'outcome pending'
+  }
+  return row.outcome_status
+}
+const cardSinceScan = (row: TrackedOutcome) => {
+  if (row.price_change_pct != null) return pct(row.price_change_pct)
+  return validPriceOrNull(row.current_price_usd) != null ? CARD_COMPARISON_UNAVAILABLE : CARD_PENDING_PRICE
+}
+const cardSinceScanHint = (row: TrackedOutcome) => {
+  if (row.price_change_pct != null) return `${row.outcome_confidence} confidence`
+  return validPriceOrNull(row.current_price_usd) != null ? 'Comparison unavailable' : 'Outcome pending'
+}
 function liveStatusLabel(checkedAt: string | null, now: number, failed: boolean, updating: boolean): string {
   if (updating) return 'Updating…'
   const ms = observationCheckedAtMs({ last_checked_at: checkedAt })
@@ -48,7 +62,7 @@ export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; on
     <h2>{snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'}</h2>
     <p className={styles.muted}>{snapshot.tokenName}</p>
     <p className={styles.address} title={row.token_address}>{row.token_address}</p>
-    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0} data-neutral={row.price_change_pct == null}>{row.price_change_pct == null ? CARD_PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
+    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0} data-neutral={row.price_change_pct == null}>{cardSinceScan(row)}</strong><p>{cardSinceScanHint(row)}</p></div></div>
     <footer className={styles.cardFooter}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
   </article>
 }

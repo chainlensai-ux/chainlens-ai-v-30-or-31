@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { OUTCOME_POLICY, mergeListedOutcomeObservation, type TrackedOutcome } from '@/lib/tokenOutcomes'
+import { OUTCOME_POLICY, adoptNewerOutcomeObservation, mergeTrackedOutcomeRows, snapshotHasFrozenEvidence, type TrackedOutcome } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import { OutcomeCard, OutcomeReceipt } from '@/components/outcomes/OutcomeCard'
 import styles from '@/components/outcomes/outcomes.module.css'
@@ -22,24 +22,44 @@ export default function TrackPage() {
   const refreshAction = useRef<((force?: boolean) => Promise<void>) | null>(null)
   const visibleIds = useRef<string[]>([])
   const rowsRef = useRef<TrackedOutcome[]>([])
-  useEffect(() => { rowsRef.current = rows }, [rows])
+  const receiptRef = useRef<TrackedOutcome | null>(null)
+  function writeRows(updater: (current: TrackedOutcome[]) => TrackedOutcome[]) {
+    setRows(current => {
+      const next = updater(current)
+      rowsRef.current = next
+      return next
+    })
+  }
+  function writeReceipt(updater: (prev: TrackedOutcome | null) => TrackedOutcome | null) {
+    setReceipt(prev => {
+      const next = updater(prev)
+      receiptRef.current = next
+      return next
+    })
+  }
   useEffect(() => {
     if (!selected) return
     let cancelled = false
     void outcomeRequest('GET', undefined, selected).then(data => {
-      if (!cancelled && data.outcome) {
-        setReceipt(prev => mergeListedOutcomeObservation(
-          data.outcome as TrackedOutcome,
-          prev?.id === selected ? prev : rowsRef.current.find(row => row.id === selected),
-        ))
-      }
+      if (cancelled || !data.outcome) return
+      const full = data.outcome as TrackedOutcome
+      const open = receiptRef.current?.id === selected ? receiptRef.current : rowsRef.current.find(row => row.id === selected)
+      const canonical = adoptNewerOutcomeObservation(full, open)
+      writeReceipt(() => canonical)
+      writeRows(current => current.map(row => row.id === canonical.id ? adoptNewerOutcomeObservation(row, canonical) : row))
     }).catch(e => { if (!cancelled) setReceiptError(e instanceof Error ? e.message : 'Receipt unavailable.') })
     return () => { cancelled = true }
   }, [selected])
-  function openReceipt(id: string) { setReceipt(null); setReceiptError(''); setSelected(id) }
+  function openReceipt(id: string) {
+    const current = rowsRef.current.find(row => row.id === id) ?? null
+    receiptRef.current = current
+    setReceiptError('')
+    setReceipt(current)
+    setSelected(id)
+  }
   function applyLiveObservation(updated: TrackedOutcome) {
-    setRows(current => current.map(row => row.id === updated.id ? mergeListedOutcomeObservation(row, updated) : row))
-    setReceipt(prev => prev && prev.id === updated.id ? mergeListedOutcomeObservation(prev, updated) : prev)
+    writeRows(current => current.map(row => row.id === updated.id ? adoptNewerOutcomeObservation(row, updated) : row))
+    writeReceipt(prev => prev && prev.id === updated.id ? adoptNewerOutcomeObservation(prev, updated) : prev)
   }
   useEffect(() => {
     let disposed = false
@@ -55,9 +75,9 @@ export default function TrackPage() {
             if (valid() && Array.isArray(result.outcomes)) {
               const outcomes = result.outcomes as TrackedOutcome[]
               visibleIds.current = outcomes.map(row => row.id)
-              setRows(outcomes)
+              writeRows(current => mergeTrackedOutcomeRows(current, outcomes))
               if (typeof result.limit === 'number') setLimit(result.limit)
-              setReceipt(prev => prev ? mergeListedOutcomeObservation(prev, outcomes.find(row => row.id === prev.id)) : prev)
+              writeReceipt(prev => prev ? adoptNewerOutcomeObservation(prev, outcomes.find(row => row.id === prev.id)) : prev)
               return true
             }
           } catch {
@@ -68,7 +88,7 @@ export default function TrackPage() {
         if (valid()) {
           const outcomes = data.outcomes as TrackedOutcome[]
           visibleIds.current = outcomes.map(row => row.id)
-          setRows(outcomes); setLimit(data.limit)
+          writeRows(current => mergeTrackedOutcomeRows(current, outcomes)); setLimit(data.limit)
         }
         return true
       } catch (e) { if (valid()) setError(e instanceof Error ? e.message : 'Unable to load outcomes.'); return false }
@@ -80,6 +100,8 @@ export default function TrackPage() {
       currentUser = userId
       const version = ++generation
       setSignedIn(!!userId)
+      rowsRef.current = []
+      receiptRef.current = null
       setRows([]); setSelected(null); setReceipt(null); setLimit(null); setLoading(true)
       visibleIds.current = []
       if (!userId) { setLoading(false); setRefreshing(false); setError('Sign in to view your private outcomes.'); return }
@@ -92,14 +114,15 @@ export default function TrackPage() {
   }, [])
   const active = rows.find(row => row.id === selected)
   async function deleteOutcome(id: string) {
-    try { await outcomeRequest('DELETE', undefined, id); setRows(current => current.filter(row => row.id !== id)); visibleIds.current = visibleIds.current.filter(value => value !== id); if (selected === id) setSelected(null) }
+    try { await outcomeRequest('DELETE', undefined, id); writeRows(current => current.filter(row => row.id !== id)); visibleIds.current = visibleIds.current.filter(value => value !== id); if (selected === id) { setSelected(null); receiptRef.current = null; setReceipt(null) } }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to delete outcome.') }
   }
+  const receiptRow = receipt?.id === active?.id ? receipt : active
   return <main className={styles.page}>
     <header className={styles.header}><div><span className={styles.eyebrow}>Evidence, measured over time</span><h1>Track</h1><p>The original risk call. What happened next. Private to your account.</p><p>{limit == null ? 'Outcome receipts' : `${rows.length} / ${limit} outcomes tracked`}</p></div><button className={styles.button} disabled={loading || refreshing || !signedIn} onClick={() => void refreshAction.current?.(true)}>{refreshing ? 'Checking stale outcomes…' : 'Refresh outcomes'}</button></header>
     <p className={styles.muted}>Watchlist follows tokens. Track preserves a scan and measures its outcome. Page load refreshes stale receipts. Manual refresh re-checks up to {OUTCOME_POLICY.refreshBatch} visible receipts even if they were cached. Opening a receipt looks up that token live about every {Math.round(OUTCOME_POLICY.receiptLiveRefreshMs / 1000)} seconds and stops when you close it. List prices are reused for {PRICE_CACHE_MINUTES} minutes.</p>
     {error && <div role="alert" className={styles.notice}>{error} <button className={styles.button} onClick={() => void refreshAction.current?.(true)} disabled={refreshing}>Retry</button></div>}
     {loading ? <div className={styles.grid} aria-busy="true" aria-label="Loading outcomes">{[1,2,3].map(i => <div key={i} className={styles.skeleton}>Loading outcome receipt…</div>)}</div> : rows.length > 0 ? <div className={styles.grid}>{rows.map(row => <OutcomeCard key={row.id} row={row} onOpen={() => openReceipt(row.id)} onDelete={() => void deleteOutcome(row.id)} />)}</div> : !error && <section className={styles.empty}><h2>No outcome receipts yet</h2><p className={styles.muted}>Scan a token with a Risk Score of 50 or higher, then select Track Outcome to freeze its evidence.</p><Link href="/terminal/token-scanner" className={styles.button}>Open Token Scanner →</Link></section>}
-    {active && <OutcomeReceipt row={receipt?.id === active.id ? receipt : active} loadingEvidence={!receipt && !receiptError} evidenceError={receiptError} onClose={() => setSelected(null)} onLiveUpdate={applyLiveObservation} />}
+    {active && <OutcomeReceipt row={receiptRow ?? active} loadingEvidence={!snapshotHasFrozenEvidence(receiptRow?.baseline_snapshot_json) && !receiptError} evidenceError={receiptError} onClose={() => setSelected(null)} onLiveUpdate={applyLiveObservation} />}
   </main>
 }
