@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto'
-import { canTrackOutcome, numberOrNull, validPriceOrNull, type ScanSnapshot } from '../tokenOutcomes'
+import { canTrackOutcome, freezeableBaselinePriceUsd, numberOrNull, type ScanSnapshot } from '../tokenOutcomes'
 
 function secret() { return process.env.TOKEN_OUTCOME_SIGNING_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY }
 export function snapshotFromScan(scan: Record<string, unknown>, userId: string): ScanSnapshot | null {
@@ -13,7 +13,12 @@ export function snapshotFromScan(scan: Record<string, unknown>, userId: string):
     userId, chain, tokenAddress: chain === 'solana' ? address : address.toLowerCase(),
     tokenSymbol: scan.symbol ?? '', tokenName: scan.name ?? '',
     scanId: scan.scanRequestId || randomUUID(), scannedAt: new Date(typeof scan.scanRequestStartedAt === 'number' ? scan.scanRequestStartedAt : Date.now()).toISOString(),
-    baselinePriceUsd: validPriceOrNull(scan.priceUsd), baselineLiquidityUsd: numberOrNull(scan.liquidityUsd),
+    baselinePriceUsd: freezeableBaselinePriceUsd({
+      priceUsd: scan.priceUsd, marketCapUsd: scan.marketCapUsd,
+      circulatingSupply: scan.circulating_supply ?? scan.circulatingSupply,
+      chain, tokenAddress: chain === 'solana' ? address : address.toLowerCase(),
+      pricedBaseTokenAddress: (scan.baseToken as { address?: unknown } | null | undefined)?.address ?? scan.priceBaseTokenAddress,
+    }), baselineLiquidityUsd: numberOrNull(scan.liquidityUsd),
     baselineMarketCapUsd: numberOrNull(scan.marketCapUsd), baselineRiskScore: scan.riskScore,
     baselineVerdict: scan.riskLabel ?? scan.cortexVerdict ?? 'Verdict not recorded',
     baselineConfidence: typeof scan.cortexConfidence === 'string' ? scan.cortexConfidence : null,

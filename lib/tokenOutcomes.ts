@@ -131,8 +131,77 @@ export function frozenBaselineMarketCapUsd(row: {
 }): number | null {
   return validPriceOrNull(row.baseline_market_cap_usd) ?? validPriceOrNull(row.baseline_snapshot_json?.baselineMarketCapUsd)
 }
+/** Price vs market-cap implied-supply divergence beyond this is not the same token. */
+export const BASELINE_PRICE_MCAP_MAX_DIVERGENCE = 100
+function outcomeTokenAddressEqualsLocal(chain: string, left: string, right: string): boolean {
+  return chain === 'solana' ? left === right : left.toLowerCase() === right.toLowerCase()
+}
+/**
+ * Freeze a scan price only when it can be the priced token. Quote-side identity fails closed.
+ * Unknown identity still fails when price × circulating supply contradicts the frozen market cap
+ * by orders of magnitude. Never invents a replacement price.
+ */
+export function freezeableBaselinePriceUsd(args: {
+  priceUsd: unknown
+  marketCapUsd?: unknown
+  circulatingSupply?: unknown
+  chain?: string
+  tokenAddress?: string
+  pricedBaseTokenAddress?: unknown
+}): number | null {
+  const price = validPriceOrNull(args.priceUsd)
+  if (price == null) return null
+  const chain = typeof args.chain === 'string' ? args.chain : ''
+  const token = typeof args.tokenAddress === 'string' ? args.tokenAddress : ''
+  const base = typeof args.pricedBaseTokenAddress === 'string' ? args.pricedBaseTokenAddress : ''
+  if (base && token) {
+    return outcomeTokenAddressEqualsLocal(chain, base, token) ? price : null
+  }
+  const mcap = validPriceOrNull(args.marketCapUsd)
+  const supply = validPriceOrNull(args.circulatingSupply)
+  if (mcap != null && supply != null && supply > 0) {
+    const implied = price * supply
+    const divergence = implied / mcap
+    if (!Number.isFinite(divergence) || divergence >= BASELINE_PRICE_MCAP_MAX_DIVERGENCE || divergence <= 1 / BASELINE_PRICE_MCAP_MAX_DIVERGENCE) return null
+  }
+  return price
+}
+/**
+ * A stored baseline may be shown as the original price, but percent/PnL may use it only when it
+ * is economically the same series as the frozen market cap and the identity-matched current quote.
+ * Never rewrites the frozen columns and never derives a replacement original price.
+ */
+export function comparableOutcomeBaselinePrice(row: {
+  chain?: string
+  token_address?: string
+  baseline_price_usd?: number | null
+  baseline_market_cap_usd?: number | null
+  baseline_snapshot_json?: { baselinePriceUsd?: number | null; baselineMarketCapUsd?: number | null }
+  current_price_usd?: number | null
+  current_market_cap_usd?: number | null
+  last_checked_at?: string | null
+  market_source?: string | null
+  market_observation_json?: MarketObservationProof | null
+}, now = Date.now()): number | null {
+  const baseline = validPriceOrNull(row.baseline_price_usd) ?? validPriceOrNull(row.baseline_snapshot_json?.baselinePriceUsd)
+  if (baseline == null) return null
+  const originalCap = frozenBaselineMarketCapUsd(row)
+  const current = displayableCurrentPrice(row, now)
+  const currentCap = displayableCurrentMarketCap(row, now)
+  if (originalCap != null && current != null && currentCap != null) {
+    const priceRatio = current / baseline
+    const mcapRatio = currentCap / originalCap
+    if (!(priceRatio > 0) || !(mcapRatio > 0)) return null
+    const divergence = priceRatio / mcapRatio
+    if (!Number.isFinite(divergence) || divergence >= BASELINE_PRICE_MCAP_MAX_DIVERGENCE || divergence <= 1 / BASELINE_PRICE_MCAP_MAX_DIVERGENCE) return null
+  }
+  return baseline
+}
 export function pendingUnavailableReasons(): string[] {
   return ['Current price unavailable — Outcome pending']
+}
+export function incomparableBaselineReasons(): string[] {
+  return ['Original scan price is not a verified price of this token — Outcome pending']
 }
 export function hypothetical(baseline: number | null, current: number | null) {
   const change = percentChange(baseline, current)
@@ -144,6 +213,9 @@ export function hypothetical(baseline: number | null, current: number | null) {
   const value = 1000 * (validCurrent / validBaseline)
   if (!Number.isFinite(value)) return null
   return { value, pnl: value - 1000, potentialLossAvoided: Math.max(0, 1000 - value) }
+}
+export function outcomeHypothetical(row: Parameters<typeof comparableOutcomeBaselinePrice>[0], now = Date.now()) {
+  return hypothetical(comparableOutcomeBaselinePrice(row, now), displayableCurrentPrice(row, now))
 }
 export type AfterEvidence = {
   price: number | null; liquidity: number | null;
@@ -196,8 +268,9 @@ export function mergeListedOutcomeObservation(full: TrackedOutcome, listed?: Tra
 export function shareOutcome(row: TrackedOutcome): string {
   const s = row.baseline_snapshot_json
   const current = displayableCurrentPrice(row)
-  const h = hypothetical(row.baseline_price_usd, current)
-  const change = percentChange(row.baseline_price_usd, current)
+  const baseline = comparableOutcomeBaselinePrice(row)
+  const h = hypothetical(baseline, current)
+  const change = percentChange(baseline, current)
   const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'an unversioned legacy risk score (rescan required)' : `${s.baselineRiskScore}/100 risk`
   return `ChainLens flagged ${s.tokenSymbol || 'this token'} at ${risk}.\nSince the scan: ${change == null || !h ? 'price comparison unavailable' : `${change.toFixed(1)}%`}.\n${h ? `$1,000 at scan would be worth $${h.value.toFixed(2)} at the latest observed price (hypothetical).` : 'Hypothetical value unavailable.'}\nchainlensai.app`
 }

@@ -45,7 +45,8 @@ describe('DexScreener fallback retries once on a transient failure, never on a g
     assert.notEqual(nextFnLine, -1, 'must find the next top-level function to bound the search')
     const fnBody = lines.slice(startLine, nextFnLine).join('\n')
     assert.match(fnBody, /for \(let attempt = 0; attempt < 2; attempt\+\+\) \{/, 'the fetch must be attempted at most twice (one retry)')
-    assert.match(fnBody, /if \(res && \(res\.ok \|\| res\.status === 404\)\) break/, 'a real 404 or a successful response must stop retrying immediately')
+    assert.match(fnBody, /if \(res && \(res.ok \|\| res.status === 404\)\) break/, 'a real 404 or a successful response must stop retrying immediately')
+    assert.match(fnBody, /dexScreenerPairIsRequestedPricedToken/, 'Dex fallback may only price pairs where the requested token is baseToken')
   })
 })
 

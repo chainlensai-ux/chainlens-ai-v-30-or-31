@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentMarketCap, displayableCurrentPrice, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshOutcomes, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
@@ -207,7 +207,9 @@ test('outcome UI renders compact card pending copy and keeps the full modal sent
   assert.match(source, /const CARD_PENDING_PRICE = 'Price unavailable'/)
   assert.match(source, /const PENDING_PRICE = 'Current price unavailable — Outcome pending'/)
   assert.match(source, /price_change_pct == null \? CARD_PENDING_PRICE/)
-  assert.match(source, /receiptHero[\s\S]*PENDING_PRICE/)
+  assert.match(source, /receiptHero[\s\S]*sinceScan/)
+  assert.match(source, /Price comparison unavailable/)
+  assert.match(source, /comparableOutcomeBaselinePrice/)
   assert.match(source, /Outcome pending/)
   assert.match(source, /h \? money\(h\.pnl\) : 'Unavailable'/)
   assert.match(source, /styles\.delete/)
@@ -246,10 +248,11 @@ function marketQuote(tokenAddress: string, priceUsd: number | null): ClarkMarket
     priceUsd, liquidityUsd: 5000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: Date.now(),
     marketIdentity: { selectedPoolAddress: 'pool', baseTokenAddress: tokenAddress, quoteTokenAddress: null } }
 }
-function withObservation<T extends TrackedOutcome>(row: T, price: number): T {
+function withObservation<T extends TrackedOutcome>(row: T, price: number, marketCapUsd: number | null = null): T {
   return { ...row, market_source: row.market_source ?? 'dexscreener', market_observation_json: { version: 1, chain: row.chain,
     tokenAddress: row.token_address, provider: row.market_source ?? 'dexscreener', fetchedAt: row.last_checked_at ?? new Date().toISOString(),
-    priceUsd: price, identityMatched: true, selectedPoolAddress: 'pool', selectedBaseTokenAddress: row.token_address, selectedQuoteTokenAddress: null } }
+    priceUsd: price, identityMatched: true, selectedPoolAddress: 'pool', selectedBaseTokenAddress: row.token_address, selectedQuoteTokenAddress: null,
+    ...(marketCapUsd != null ? { marketCapUsd } : {}) } }
 }
 
 test('1. baseline 1 → current 0.75 is -25%, never -100%', () => {
@@ -1064,4 +1067,131 @@ test('live receipt: DexScreener marketCap is kept distinct from fdv on the ident
     assert.equal(result?.quote.fdvUsd, 900_000)
     assert.equal(verifiedMarketCapOrNull(result?.quote.marketCapUsd, result?.quote.fdvUsd), 50_000)
   } finally { globalThis.fetch = originalFetch }
+})
+
+const KDIEM_BASE = '0xf8b22f75b7ee248ff723650f43c98b253e7dfb60'
+function kaiContaminatedRow(now: number): TrackedOutcome {
+  return withObservation({
+    ...outcomeRow(), token_address: KAI_BASE,
+    baseline_price_usd: 2579.35, baseline_market_cap_usd: 1_081_373,
+    current_price_usd: 0.0008214, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+    price_change_pct: -100, outcome_status: 'dumped',
+  }, 0.0008214, 774_756)
+}
+
+test('legacy KAI quote-token baseline cannot produce -100% or $0 hypothetical', () => {
+  const now = Date.now()
+  const frozen = kaiContaminatedRow(now)
+  const shown = sanitizeTrackedOutcome(frozen, now)
+  assert.equal(shown.baseline_price_usd, 2579.35)
+  assert.equal(shown.baseline_market_cap_usd, 1_081_373)
+  assert.equal(shown.current_price_usd, 0.0008214)
+  assert.equal(shown.current_market_cap_usd, 774_756)
+  assert.equal(comparableOutcomeBaselinePrice(shown, now), null)
+  assert.equal(shown.price_change_pct, null)
+  assert.equal(shown.outcome_status, 'unavailable')
+  assert.equal(outcomeHypothetical(shown, now), null)
+  const naive = hypothetical(2579.35, 0.0008214)!
+  assert.ok(naive.value < 1)
+  assert.ok((percentChange(2579.35, 0.0008214) ?? 0) <= -99.95)
+  assert.deepEqual(shown.baseline_snapshot_json, frozen.baseline_snapshot_json)
+  const capChange = percentChange(1_081_373, 774_756)
+  assert.ok(capChange != null && capChange > -30 && capChange < -27)
+  assert.notEqual(capChange, shown.price_change_pct)
+  assert.match(shareOutcome(shown), /price comparison unavailable/)
+  assert.doesNotMatch(shareOutcome(shown), /-100\.0%/)
+})
+
+test('quote-token or wrong-side identity cannot freeze as the original price', () => {
+  const quoteSide = snapshotFromScan({
+    ...scan(), priceUsd: 2579.35, marketCapUsd: 1_081_373,
+    baseToken: { address: KDIEM_BASE, symbol: 'kDIEM' },
+  }, user)!
+  assert.equal(quoteSide.baselinePriceUsd, null)
+  assert.equal(quoteSide.baselineMarketCapUsd, 1_081_373)
+  const supplyMismatch = snapshotFromScan({
+    ...scan(), contract: KAI_BASE, priceUsd: 2579.35, marketCapUsd: 1_081_373, circulating_supply: 943_214_025,
+  }, user)!
+  assert.equal(supplyMismatch.baselinePriceUsd, null)
+  assert.equal(supplyMismatch.baselineMarketCapUsd, 1_081_373)
+  assert.equal(freezeableBaselinePriceUsd({
+    priceUsd: 2579.35, chain: 'base', tokenAddress: KAI_BASE, pricedBaseTokenAddress: KDIEM_BASE,
+  }), null)
+  const identityMatched = snapshotFromScan({
+    ...scan(), priceUsd: 0.0011465, marketCapUsd: 1_081_373, circulating_supply: 943_214_025,
+    baseToken: { address },
+  }, user)!
+  assert.equal(identityMatched.baselinePriceUsd, 0.0011465)
+})
+
+test('valid historical baseline of -25% stays -25% even when market-cap change differs', () => {
+  const now = Date.now()
+  const shown = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 1_081_373,
+    current_price_usd: 0.75, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, 0.75, 774_756), now)
+  assert.equal(shown.price_change_pct, -25)
+  assert.equal(shown.outcome_status, 'watching')
+  assert.deepEqual(outcomeHypothetical(shown, now), { value: 750, pnl: -250, potentialLossAvoided: 250 })
+  const capChange = percentChange(1_081_373, 774_756)!
+  assert.ok(capChange > -30 && capChange < -27)
+  assert.notEqual(shown.price_change_pct, capChange)
+  assert.equal(shown.baseline_price_usd, 1)
+})
+
+test('genuine dust still displays as -100% when market cap also collapsed', () => {
+  const now = Date.now()
+  const shown = sanitizeTrackedOutcome(withObservation({
+    ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 1_000_000,
+    current_price_usd: 1e-12, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+  }, 1e-12, 1e-6), now)
+  assert.ok((shown.price_change_pct ?? 0) <= -99.95)
+  assert.equal(shown.outcome_status, 'dumped')
+  assert.ok(outcomeHypothetical(shown, now) != null)
+  assert.ok((outcomeHypothetical(shown, now)?.value ?? 1) < 0.01)
+})
+
+test('missing or invalid original price is pending, not -100, and hypothetical does not fabricate $0', () => {
+  const now = Date.now()
+  for (const baseline of [null, 0, -1, NaN]) {
+    const shown = sanitizeTrackedOutcome(withObservation({
+      ...outcomeRow(), baseline_price_usd: baseline as number, baseline_market_cap_usd: 1_081_373,
+      current_price_usd: 0.0008214, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener',
+    }, 0.0008214, 774_756), now)
+    assert.equal(shown.current_price_usd, 0.0008214)
+    assert.equal(shown.price_change_pct, null)
+    assert.equal(shown.outcome_status, 'unavailable')
+    assert.equal(outcomeHypothetical(shown, now), null)
+    assert.notEqual(shown.price_change_pct, -100)
+  }
+  const contaminated = sanitizeTrackedOutcome(kaiContaminatedRow(now), now)
+  assert.equal(outcomeHypothetical(contaminated, now), null)
+  assert.notEqual(contaminated.current_price_usd, 0)
+})
+
+test('contaminated baseline refresh keeps current price and original mcap, never rewrites the frozen snapshot', () => {
+  const now = Date.now()
+  const row = kaiContaminatedRow(now)
+  const snapshot = row.baseline_snapshot_json
+  const quote = { ...marketQuote(KAI_BASE, 0.0008214), marketCapUsd: 774_756, address: KAI_BASE,
+    marketIdentity: { selectedPoolAddress: '0x84bb5de3', baseTokenAddress: KAI_BASE, quoteTokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' } }
+  const update = buildOutcomeRefreshUpdate(row, quote, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.0008214)
+  assert.equal(update.market_observation_json?.marketCapUsd, 774_756)
+  assert.equal(update.price_change_pct, null)
+  assert.equal(update.outcome_status, 'unavailable')
+  assert.equal(row.baseline_price_usd, 2579.35)
+  assert.equal(row.baseline_market_cap_usd, 1_081_373)
+  assert.equal(row.baseline_snapshot_json, snapshot)
+  assert.equal((update as { baseline_price_usd?: number }).baseline_price_usd, undefined)
+  const shown = sanitizeTrackedOutcome({
+    ...row, current_price_usd: update.current_price_usd, market_source: 'dexscreener',
+    last_checked_at: new Date(now).toISOString(), market_observation_json: update.market_observation_json,
+    price_change_pct: update.price_change_pct, outcome_status: update.outcome_status,
+  }, now)
+  assert.equal(shown.baseline_price_usd, 2579.35)
+  assert.equal(shown.current_price_usd, 0.0008214)
+  assert.equal(shown.current_market_cap_usd, 774_756)
+  assert.equal(shown.price_change_pct, null)
+  assert.ok(percentChange(frozenBaselineMarketCapUsd(shown), shown.current_market_cap_usd)! < 0)
 })

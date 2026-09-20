@@ -34,6 +34,7 @@ import { consumeTokenScan, snapshotTokenScan } from '@/lib/tokenScanQuota'
 import { tokenScanLimitReachedMessage } from '@/lib/pricingPlans'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { withOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
+import { dexScreenerPairIsRequestedPricedToken, outcomeTokenAddressEquals } from '@/lib/server/clarkMarketDataProviders'
 import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
@@ -2442,21 +2443,11 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
       : Array.isArray(raw.pairs) ? raw.pairs as unknown[]
       : []
 
-    const addrLower = tokenAddress.toLowerCase()
-    const basePairs = pairs.filter((p) => {
-      const pair = p as Record<string, unknown>
-      const bt = pair.baseToken as Record<string, unknown> | null
-      const qt = pair.quoteToken as Record<string, unknown> | null
-      return (
-        pair.chainId === dexChainId &&
-        (String(bt?.address ?? '').toLowerCase() === addrLower ||
-         String(qt?.address ?? '').toLowerCase() === addrLower)
-      )
-    })
+    const basePairs = pairs.filter((p) => dexScreenerPairIsRequestedPricedToken(p as Record<string, unknown>, tokenAddress, chain))
 
     if (basePairs.length === 0) return miss(null)
 
-    // Highest liquidity.usd among pairs that include this token
+    // Highest liquidity.usd among pairs where this token is the priced baseToken.
     const best = basePairs.reduce<Record<string, unknown>>((acc, p) => {
       const pair = p as Record<string, unknown>
       const liqP = Number((pair.liquidity as Record<string, unknown> | null)?.usd ?? 0)
@@ -6194,19 +6185,23 @@ export async function POST(req: Request) {
     // - forceDexFallback (debug only): fallback values override primary
     const _cgMarketData = _cgMarketDataEarly
     const _geckoPrice = pickNum((_cgMarketData?.current_price as Record<string, unknown> | null | undefined)?.usd) ?? null
+    const _dexPriceUsd = (_dexFb?.priceUsd != null && typeof _dexFb.baseToken?.address === 'string'
+      && outcomeTokenAddressEquals(chain, _dexFb.baseToken.address, contract))
+      ? pickNum(_dexFb.priceUsd)
+      : null
     const _efdv = forceDexFallback ? (_dexFb?.fdv ?? null) : (fdv ?? _dexFb?.fdv ?? null)
     // FDV-derived price: approximate price = FDV ÷ total supply in token units.
     // Only fires when no real price source (DS, CG, GT) is available.
     const _gtSupplyForFdv = pickNum(gtToken?.total_supply) ?? pickNum(gtToken?.circulating_supply) ?? circulatingSupply
-    const _fdvDerivedPrice = (_efdv != null && _gtSupplyForFdv != null && _gtSupplyForFdv > 0 && priceUsd == null && (_dexFb?.priceUsd ?? null) == null && _geckoPrice == null)
+    const _fdvDerivedPrice = (_efdv != null && _gtSupplyForFdv != null && _gtSupplyForFdv > 0 && priceUsd == null && _dexPriceUsd == null && _geckoPrice == null)
       ? _efdv / _gtSupplyForFdv
       : null
-    const _ep   = forceDexFallback ? (_dexFb?.priceUsd ?? null) : (_dexFb?.priceUsd ?? _geckoPrice ?? priceUsd ?? _fdvDerivedPrice ?? null)
+    const _ep   = forceDexFallback ? (_dexPriceUsd ?? null) : (_dexPriceUsd ?? _geckoPrice ?? priceUsd ?? _fdvDerivedPrice ?? null)
     const _el   = forceDexFallback ? (_dexFb?.liquidityUsd ?? null)   : (liquidityUsd ?? _dexFb?.liquidityUsd ?? null)
     const _ev   = forceDexFallback ? (_dexFb?.volume24h ?? null)      : (resolvedVolume24hUsd ?? _dexFb?.volume24h ?? null)
     const _priceSource: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null =
-      forceDexFallback ? (_dexFb?.priceUsd != null ? 'dexscreener' : null) :
-      _dexFb?.priceUsd != null ? 'dexscreener' :
+      forceDexFallback ? (_dexPriceUsd != null ? 'dexscreener' : null) :
+      _dexPriceUsd != null ? 'dexscreener' :
       _geckoPrice != null ? 'coingecko' :
       priceUsd != null ? 'geckoterminal' :
       _fdvDerivedPrice != null ? 'fdv_derived' :

@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import {
-  OUTCOME_POLICY, classifyOutcome, displayableCurrentMarketCap, displayableCurrentPrice, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
+  OUTCOME_POLICY, classifyOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, incomparableBaselineReasons, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
   percentChange, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome,
   type MarketObservationProof,
 } from '../tokenOutcomes'
@@ -245,19 +245,21 @@ export async function listTrackedOutcomes(userId: string, now = Date.now(), db: 
 export function sanitizeTrackedOutcome(row: TrackedOutcome, now = Date.now()): TrackedOutcome {
   const baselinePrice = validPriceOrNull(row.baseline_price_usd)
   const currentPrice = displayableCurrentPrice({ ...row, baseline_price_usd: baselinePrice }, now)
+  const comparableBaseline = comparableOutcomeBaselinePrice({ ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice }, now)
   const proof = row.after_evidence_json
-  const result = classifyOutcome({ price: baselinePrice, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
+  const result = classifyOutcome({ price: comparableBaseline, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
     price: currentPrice, liquidity: numberOrNull(row.current_liquidity_usd), verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
   })
-  const pending = currentPrice == null && result.status === 'unavailable'
+  const pendingCurrent = currentPrice == null && result.status === 'unavailable'
+  const pendingBaseline = comparableBaseline == null && currentPrice != null && result.status === 'unavailable'
   const snapshotVersion = row.baseline_snapshot_json?.snapshotVersion
   const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
   return {
     ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
     current_market_cap_usd: displayableCurrentMarketCap({ ...row, current_price_usd: currentPrice }, now),
-    price_change_pct: percentChange(baselinePrice, currentPrice),
+    price_change_pct: percentChange(comparableBaseline, currentPrice),
     outcome_status: result.status, outcome_confidence: result.confidence,
-    outcome_reasons_json: pending ? pendingUnavailableReasons() : row.outcome_reasons_json,
+    outcome_reasons_json: pendingCurrent ? pendingUnavailableReasons() : pendingBaseline ? incomparableBaselineReasons() : row.outcome_reasons_json,
     baseline_risk_semantics: legacySolana ? 'legacy_unverified' : 'canonical',
   }
 }
@@ -271,11 +273,7 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
   const previousPrice = retainPreviousObservation(row, now)
   const price = observedPrice ?? previousPrice
   const liquidity = observedPrice != null ? numberOrNull(quote?.liquidityUsd) : numberOrNull(row.current_liquidity_usd)
-  const result = classifyOutcome({ price: validPriceOrNull(row.baseline_price_usd), liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
-    price, liquidity, verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
-  })
   const refreshFailed = observedPrice == null
-  const pending = price == null && result.status === 'unavailable'
   const marketObservation: MarketObservationProof | null = observedPrice != null && quote?.marketIdentity ? {
     version: 1, chain: row.chain, tokenAddress: row.chain === 'solana' ? row.token_address : row.token_address.toLowerCase(),
     provider: quote.provider, fetchedAt: checkedAt, priceUsd: observedPrice, identityMatched: true,
@@ -284,11 +282,22 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
     selectedQuoteTokenAddress: quote.marketIdentity.quoteTokenAddress,
     marketCapUsd: verifiedMarketCapOrNull(quote.marketCapUsd, quote.fdvUsd),
   } : row.market_observation_json ?? null
+  const comparableBaseline = comparableOutcomeBaselinePrice({
+    ...row, current_price_usd: price, last_checked_at: observedPrice != null ? checkedAt : row.last_checked_at,
+    market_source: observedPrice != null ? quote?.provider ?? null : (price != null ? row.market_source : null),
+    market_observation_json: marketObservation,
+  }, now)
+  const result = classifyOutcome({ price: comparableBaseline, liquidity: numberOrNull(row.baseline_liquidity_usd) }, {
+    price, liquidity, verifiedTradingBlocked: proof?.verifiedTradingBlocked === true,
+  })
+  const pendingCurrent = price == null && result.status === 'unavailable'
+  const pendingBaseline = comparableBaseline == null && price != null && result.status === 'unavailable'
   return {
     current_price_usd: price, current_liquidity_usd: liquidity,
-    price_change_pct: percentChange(validPriceOrNull(row.baseline_price_usd), price), liquidity_change_pct: null,
+    price_change_pct: percentChange(comparableBaseline, price), liquidity_change_pct: null,
     outcome_status: result.status, outcome_confidence: result.confidence,
-    outcome_reasons_json: pending ? (proof ? [proof.reason, ...pendingUnavailableReasons()] : pendingUnavailableReasons())
+    outcome_reasons_json: pendingCurrent ? (proof ? [proof.reason, ...pendingUnavailableReasons()] : pendingUnavailableReasons())
+      : pendingBaseline ? incomparableBaselineReasons()
       : refreshFailed && previousPrice != null
         ? ['Latest refresh returned no usable chain-and-contract-matched price. Retaining the previous verified observation.']
         : proof ? [proof.reason, ...result.reasons] : result.reasons,

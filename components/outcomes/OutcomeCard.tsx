@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import {
-  frozenBaselineMarketCapUsd, hypothetical, observationCheckedAtMs, observationIsFresh, OUTCOME_POLICY,
+  comparableOutcomeBaselinePrice, frozenBaselineMarketCapUsd, hypothetical, observationCheckedAtMs, observationIsFresh, OUTCOME_POLICY,
   percentChange, shareOutcome, validPriceOrNull, type TrackedOutcome,
 } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
@@ -101,10 +101,13 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
   }, [row.id])
   const snapshot = row.baseline_snapshot_json
   const currentPrice = validPriceOrNull(row.current_price_usd)
-  const h = hypothetical(row.baseline_price_usd, currentPrice)
+  const h = hypothetical(comparableOutcomeBaselinePrice(row), currentPrice)
   const originalCap = frozenBaselineMarketCapUsd(row)
   const currentCap = validPriceOrNull(row.current_market_cap_usd)
   const capChange = percentChange(originalCap, currentCap)
+  const sinceScan = row.price_change_pct == null
+    ? (currentPrice == null ? PENDING_PRICE : 'Price comparison unavailable')
+    : pct(row.price_change_pct)
   const groups = [
     ['LP / liquidity', snapshot.baselineLpSignals], ['Ownership / contract control', snapshot.baselineOwnershipSignals],
     ['Holder concentration', snapshot.baselineHolderSignals], ['Dev / deployer', snapshot.baselineDevSignals],
@@ -126,7 +129,7 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
         </div>
         <p className={styles.muted}>Original market cap {compactUsd(originalCap, 'unavailable')}{capChange == null ? '' : ` · ${pct(capChange)} since scan`}</p>
       </section>
-      <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
+      <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{sinceScan}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
       <div className={styles.math}><p>If you had bought $1,000 at the scan price…</p><strong>{h ? `${money(h.value)} remaining` : 'Hypothetical value unavailable'}</strong><div className={styles.spread}><span>Hypothetical PnL</span><b>{h ? money(h.pnl) : 'Unavailable'}</b></div><div className={styles.spread}><span>Potential loss avoided</span><b>{h ? money(h.potentialLossAvoided) : 'Unavailable'}</b></div><small>Illustration only. Not an actual purchase or saving. Excludes fees, slippage and ability to sell.</small></div>
       {loadingEvidence ? <p role="status">Loading frozen evidence…</p> : evidenceError ? <p role="alert">{evidenceError} Close and reopen this receipt to retry.</p> : <details className={styles.why}><summary>Why? See the frozen scan evidence</summary><h3>What ChainLens saw at scan time</h3>
         <details><summary>Original risk reasons</summary><Evidence value={snapshot.baselineRiskReasons} /></details>
