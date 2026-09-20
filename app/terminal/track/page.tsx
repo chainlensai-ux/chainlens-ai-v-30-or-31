@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { OUTCOME_POLICY, type TrackedOutcome } from '@/lib/tokenOutcomes'
+import { OUTCOME_POLICY, mergeListedOutcomeObservation, type TrackedOutcome } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import { OutcomeCard, OutcomeReceipt } from '@/components/outcomes/OutcomeCard'
 import styles from '@/components/outcomes/outcomes.module.css'
@@ -21,10 +21,14 @@ export default function TrackPage() {
   const [signedIn, setSignedIn] = useState(false)
   const refreshAction = useRef<((force?: boolean) => Promise<void>) | null>(null)
   const visibleIds = useRef<string[]>([])
+  const rowsRef = useRef<TrackedOutcome[]>([])
+  useEffect(() => { rowsRef.current = rows }, [rows])
   useEffect(() => {
     if (!selected) return
     let cancelled = false
-    void outcomeRequest('GET', undefined, selected).then(data => { if (!cancelled) setReceipt(data.outcome) }).catch(e => { if (!cancelled) setReceiptError(e instanceof Error ? e.message : 'Receipt unavailable.') })
+    void outcomeRequest('GET', undefined, selected).then(data => {
+      if (!cancelled && data.outcome) setReceipt(mergeListedOutcomeObservation(data.outcome as TrackedOutcome, rowsRef.current.find(row => row.id === selected)))
+    }).catch(e => { if (!cancelled) setReceiptError(e instanceof Error ? e.message : 'Receipt unavailable.') })
     return () => { cancelled = true }
   }, [selected])
   function openReceipt(id: string) { setReceipt(null); setReceiptError(''); setSelected(id) }
@@ -38,16 +42,13 @@ export default function TrackPage() {
       try {
         if (refresh) {
           try {
-            const result = await outcomeRequest('POST', { action: 'refresh', force, ...(force ? { ids: visibleIds.current } : {}) })
+            const result = await outcomeRequest('POST', { action: 'refresh', force, ...(visibleIds.current.length ? { ids: visibleIds.current } : {}) })
             if (valid() && Array.isArray(result.outcomes)) {
               const outcomes = result.outcomes as TrackedOutcome[]
               visibleIds.current = outcomes.map(row => row.id)
               setRows(outcomes)
               if (typeof result.limit === 'number') setLimit(result.limit)
-              setReceipt(prev => {
-                if (!prev) return prev
-                return outcomes.find(row => row.id === prev.id) ?? prev
-              })
+              setReceipt(prev => prev ? mergeListedOutcomeObservation(prev, outcomes.find(row => row.id === prev.id)) : prev)
               return true
             }
           } catch {

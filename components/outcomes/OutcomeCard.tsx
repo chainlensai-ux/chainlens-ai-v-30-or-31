@@ -4,6 +4,7 @@ import { hypothetical, shareOutcome, type TrackedOutcome } from '@/lib/tokenOutc
 import styles from './outcomes.module.css'
 
 const PENDING_PRICE = 'Current price unavailable — Outcome pending'
+const CARD_PENDING_PRICE = 'Price unavailable'
 const pct = (n: number | null) => n == null ? 'Unavailable' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
 const date = (value: string | null) => value ? new Date(value).toLocaleString() : 'Not checked yet'
@@ -25,8 +26,8 @@ export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; on
     <h2>{snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'}</h2>
     <p className={styles.muted}>{snapshot.tokenName}</p>
     <p className={styles.address} title={row.token_address}>{row.token_address}</p>
-    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
-    <footer><span>Tracked {date(row.tracked_at)}</span><span><button className={styles.close} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button> <span className={styles.accent}>View receipt ↗</span></span></footer>
+    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? CARD_PENDING_PRICE : pct(row.price_change_pct)}</strong><p>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_confidence} confidence`}</p></div></div>
+    <footer className={styles.cardFooter}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
   </article>
 }
 export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidenceError = '' }: { row: TrackedOutcome; onClose: () => void; loadingEvidence?: boolean; evidenceError?: string }) {

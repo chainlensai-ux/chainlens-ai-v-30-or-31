@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import {
-  OUTCOME_POLICY, classifyOutcome, displayableCurrentPrice, numberOrNull, pendingUnavailableReasons,
+  OUTCOME_POLICY, classifyOutcome, displayableCurrentPrice, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
   percentChange, validPriceOrNull, type TrackedOutcome,
   type MarketObservationProof,
 } from '../tokenOutcomes'
@@ -324,28 +324,67 @@ export async function persistOutcomeRefreshUpdate(
   return written
 }
 
+/** Unproven or stale observations must refresh even if last_checked was just bumped without identity proof. */
+export function outcomeNeedsRefresh(row: TrackedOutcome, now = Date.now(), force = false): boolean {
+  if (force) return true
+  if (displayableCurrentPrice(row, now) == null) return true
+  if (row.price_change_pct != null && row.price_change_pct <= -99.95) return true
+  const checked = observationCheckedAtMs(row)
+  if (checked == null) return true
+  return now - checked > OUTCOME_POLICY.priceStaleMs
+}
+
+/** Same-request identity proof. Used when production cannot persist `market_observation_json`. */
+export function applyRefreshObservationOverlay(
+  listed: TrackedOutcome[],
+  overlays: Map<string, ReturnType<typeof buildOutcomeRefreshUpdate>>,
+  now = Date.now(),
+): TrackedOutcome[] {
+  if (!overlays.size) return listed
+  return listed.map(row => {
+    const update = overlays.get(row.id)
+    if (!update) return row
+    return sanitizeTrackedOutcome({
+      ...row,
+      current_price_usd: update.current_price_usd,
+      current_liquidity_usd: update.current_liquidity_usd,
+      market_source: update.market_source,
+      market_observation_json: update.market_observation_json ?? row.market_observation_json,
+      last_checked_at: update.last_checked_at ?? row.last_checked_at,
+      after_evidence_json: update.after_evidence_json ?? row.after_evidence_json,
+    }, now)
+  })
+}
+
 export type RefreshOutcomesOptions = { force?: boolean; ids?: string[]; now?: number }
-export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptions = {}): Promise<TrackedOutcome[]> {
-  const db = outcomeDb()
+export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptions = {}, db: ReturnType<typeof outcomeDb> = outcomeDb()): Promise<TrackedOutcome[]> {
   const now = opts.now ?? Date.now()
   const stale = new Date(now - OUTCOME_POLICY.priceStaleMs).toISOString()
   const lease = new Date(now - 60_000).toISOString()
   const ids = (opts.ids ?? []).filter(id => OUTCOME_ID_RE.test(id)).slice(0, OUTCOME_POLICY.refreshBatch)
-  let query = db.from('tracked_token_outcomes').select('*').eq('user_id', userId)
-  if (ids.length) query = query.in('id', ids)
-  if (!opts.force) {
-    query = query.or(`last_checked_at.is.null,last_checked_at.lt.${stale},price_change_pct.lte.-99.95`)
+  const freshnessOr = `last_checked_at.is.null,last_checked_at.lt.${stale},price_change_pct.lte.-99.95,market_observation_json.is.null`
+  const leaseOr = `refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`
+  const runSelect = (includeFreshness: boolean) => {
+    let query = db.from('tracked_token_outcomes').select('*').eq('user_id', userId)
+    if (ids.length) query = query.in('id', ids)
+    if (includeFreshness) query = query.or(freshnessOr)
+    return query.or(leaseOr).order('last_checked_at', { ascending: true, nullsFirst: true }).limit(OUTCOME_POLICY.refreshBatch)
   }
-  const { data, error } = await query
-    .or(`refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`)
-    .order('last_checked_at', { ascending: true, nullsFirst: true }).limit(OUTCOME_POLICY.refreshBatch)
+  let includeFreshness = opts.force !== true
+  let { data, error } = await runSelect(includeFreshness)
+  if (error && includeFreshness && isMissingOutcomeColumnError(error, 'market_observation_json')) {
+    logOutcomeStorageError('refresh_optional_column', error)
+    includeFreshness = false
+    ;({ data, error } = await runSelect(false))
+  }
   if (error) throw new Error('Outcome storage unavailable. Check the tracked-token-outcomes migration.')
+  const overlays = new Map<string, ReturnType<typeof buildOutcomeRefreshUpdate>>()
   const resolutions = new Map<string, Promise<Awaited<ReturnType<typeof resolveOutcomeQuoteDetailed>>>>()
-  await Promise.all(((data ?? []) as TrackedOutcome[]).map(async row => {
+  await Promise.all(((data ?? []) as TrackedOutcome[]).filter(row => outcomeNeedsRefresh(row, now, opts.force === true)).map(async row => {
     const claimedAt = new Date(now).toISOString()
     let claimQuery = db.from('tracked_token_outcomes').update({ refresh_claimed_at: claimedAt }).eq('id', row.id).eq('user_id', userId)
-    if (!opts.force) claimQuery = claimQuery.or(`last_checked_at.is.null,last_checked_at.lt.${stale},price_change_pct.lte.-99.95`)
-    const claim = await claimQuery.or(`refresh_claimed_at.is.null,refresh_claimed_at.lt.${lease}`).select('id')
+    if (includeFreshness) claimQuery = claimQuery.or(freshnessOr)
+    const claim = await claimQuery.or(leaseOr).select('id')
     if (claim.error || !claim.data?.length) return
     const identityKey = `${row.chain}:${row.chain === 'solana' ? row.token_address : row.token_address.toLowerCase()}`
     let resolution = resolutions.get(identityKey)
@@ -359,6 +398,15 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     const update = buildOutcomeRefreshUpdate(row, quote, proof, checkedAt, now)
     const written = await persistOutcomeRefreshUpdate(db, row.id, userId, claimedAt, update)
     const persisted = written.data?.[0] as { current_price_usd?: number | null; last_checked_at?: string | null; price_change_pct?: number | null } | undefined
+    overlays.set(row.id, update)
+    const reread = sanitizeTrackedOutcome({
+      ...row,
+      current_price_usd: persisted?.current_price_usd ?? update.current_price_usd,
+      current_liquidity_usd: update.current_liquidity_usd,
+      market_source: update.market_source,
+      market_observation_json: update.market_observation_json ?? row.market_observation_json,
+      last_checked_at: persisted?.last_checked_at ?? update.last_checked_at,
+    }, now)
     logOutcomeRefreshForensic({
       trackedOutcomeId: row.id,
       chain: row.chain,
@@ -378,11 +426,11 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
       fetchedAt: resolved?.fetchedAt ?? quote?.fetchedAt ?? null,
       persistedCurrentPrice: persisted?.current_price_usd ?? null,
       persistedLastCheckedAt: persisted?.last_checked_at ?? null,
-      rereadCurrentPrice: persisted?.current_price_usd ?? null,
-      computedPercentChange: persisted?.price_change_pct ?? update.price_change_pct,
+      rereadCurrentPrice: reread.current_price_usd,
+      computedPercentChange: reread.price_change_pct,
       rejectionReason: written.error ? 'db_write_failed' : (resolved?.rejectionReason ?? (quote && update.current_price_usd == null ? 'accepted_quote_not_persisted' : null)),
     })
     if (written.error) throw new Error('Unable to save the latest outcome observation.')
   }))
-  return listTrackedOutcomes(userId, now)
+  return applyRefreshObservationOverlay(await listTrackedOutcomes(userId, now, db), overlays, now)
 }

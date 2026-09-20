@@ -140,6 +140,28 @@ export function classifyOutcome(baseline: { price: number | null; liquidity: num
   if (price <= OUTCOME_POLICY.dumpedPct) return { status: 'dumped', confidence: 'medium', reasons: ['Price fell at least 50% since the scan. No verified rug evidence.'] }
   return { status: 'watching', confidence: 'medium', reasons: ['Price remains within the ±50% outcome window. No verified rug evidence.'] }
 }
+/**
+ * Keep frozen GET evidence, but prefer a same-request identity-proven list observation when
+ * storage could not persist `market_observation_json`. Never copies an unproven listed price.
+ */
+export function mergeListedOutcomeObservation(full: TrackedOutcome, listed?: TrackedOutcome | null): TrackedOutcome {
+  if (!listed || listed.id !== full.id) return full
+  if (displayableCurrentPrice(full) != null) return full
+  if (displayableCurrentPrice(listed) == null) return full
+  return {
+    ...full,
+    current_price_usd: listed.current_price_usd,
+    current_liquidity_usd: listed.current_liquidity_usd ?? full.current_liquidity_usd,
+    price_change_pct: listed.price_change_pct,
+    liquidity_change_pct: listed.liquidity_change_pct,
+    market_source: listed.market_source,
+    market_observation_json: listed.market_observation_json ?? full.market_observation_json,
+    last_checked_at: listed.last_checked_at ?? full.last_checked_at,
+    outcome_status: listed.outcome_status,
+    outcome_confidence: listed.outcome_confidence,
+    outcome_reasons_json: listed.outcome_reasons_json,
+  }
+}
 export function shareOutcome(row: TrackedOutcome): string {
   const s = row.baseline_snapshot_json
   const current = displayableCurrentPrice(row)

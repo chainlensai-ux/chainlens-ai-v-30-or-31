@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
+import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshOutcomes, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -201,11 +201,24 @@ test('share text uses frozen score and current math without exposing receipt, ac
   assert.match(text, /78\/100/); assert.match(text, /-90\.0%/); assert.match(text, /\$100\.00/)
   assert.doesNotMatch(text, /saved|11111111|\/terminal\/track|user_id/)
 })
-test('outcome UI renders pending copy and never coerces missing price into loss copy', () => {
+test('outcome UI renders compact card pending copy and keeps the full modal sentence', () => {
   const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
-  assert.match(source, /Current price unavailable — Outcome pending/)
+  const css = readFileSync(new URL('../components/outcomes/outcomes.module.css', import.meta.url), 'utf8')
+  assert.match(source, /const CARD_PENDING_PRICE = 'Price unavailable'/)
+  assert.match(source, /const PENDING_PRICE = 'Current price unavailable — Outcome pending'/)
+  assert.match(source, /price_change_pct == null \? CARD_PENDING_PRICE/)
+  assert.match(source, /receiptHero[\s\S]*PENDING_PRICE/)
   assert.match(source, /Outcome pending/)
   assert.match(source, /h \? money\(h\.pnl\) : 'Unavailable'/)
+  assert.match(source, /styles\.delete/)
+  assert.match(source, /styles\.viewReceipt/)
+  assert.match(source, /styles\.cardActions/)
+  assert.doesNotMatch(source, /className=\{styles\.close\}[\s\S]*Delete/)
+  assert.match(css, /\.pendingPrice/)
+  assert.match(css, /\.delete \{/)
+  assert.match(css, /\.cardActions/)
+  assert.match(css, /flex-shrink:0/)
+  assert.match(css, /@media \(max-width: 420px\)/)
 })
 test('outcome storage remains separate from Watchlist; UI wiring preserves existing action', () => {
   const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
@@ -353,7 +366,7 @@ test('9. manual refresh wiring force-updates visible receipts', () => {
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
-  assert.match(page, /force \? \{ ids: visibleIds.current \} : \{\}/)
+  assert.match(page, /visibleIds\.current\.length \? \{ ids: visibleIds\.current \} : \{\}/)
   assert.match(page, /refreshAction.current\?\.\(true\)/)
   assert.match(route, /force: body.force === true/)
   assert.match(service, /force: opts.force === true/)
@@ -555,12 +568,13 @@ test('solana 6. Track UI renders POST-returned outcomes immediately without anot
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
-  assert.match(page, /force \? \{ ids: visibleIds.current \} : \{\}/)
+  assert.match(page, /visibleIds\.current\.length \? \{ ids: visibleIds\.current \} : \{\}/)
   assert.match(page, /Array\.isArray\(result\.outcomes\)/)
   assert.match(page, /setRows\(outcomes\)/)
+  assert.match(page, /mergeListedOutcomeObservation/)
   assert.match(page, /return true/)
   assert.match(route, /outcomes, limit: OUTCOME_POLICY\.limits\[user\.plan\]/)
-  assert.match(service, /return listTrackedOutcomes\(userId, now\)/)
+  assert.match(service, /applyRefreshObservationOverlay\(await listTrackedOutcomes/)
   for (const field of [
     'trackedOutcomeId', 'chain', 'mint', 'baselinePrice', 'previousCurrentPrice', 'refreshForced',
     'cacheHit', 'fetchAttempted', 'provider', 'candidatePrices', 'selectedPairOrPool', 'selectedBaseMint',
@@ -748,4 +762,171 @@ test('storage: GET 401 expired session is not a storage failure; retry falls bac
   assert.match(page, /A refresh write failure must not hide saved receipts/)
   assert.match(page, /const data = await outcomeRequest\('GET'\)/)
   assert.match(page, /!error && <section className=\{styles.empty\}>/)
+})
+
+const GOLD_FISH = '0x54eb1d415CD1fB8DdDFeC708C55aE700C944e20D'
+const KAI_BASE = '0xca18A528Ea897040f715edC92e6e4572780c5ca1'
+function identityQuote(chain: 'base' | 'solana' | 'robinhood', tokenAddress: string, priceUsd: number, now = Date.now()): ClarkMarketQuote {
+  return {
+    provider: 'dexscreener', name: 'Fixture', symbol: 'FX', chain, chainId: chain === 'base' ? 8453 : chain === 'robinhood' ? 4663 : null,
+    address: tokenAddress, priceUsd, liquidityUsd: 20_000, marketCapUsd: null, fdvUsd: null, volume24hUsd: null, change24hPct: null, fetchedAt: now,
+    marketIdentity: { selectedPoolAddress: 'pool', baseTokenAddress: tokenAddress, quoteTokenAddress: chain === 'solana' ? WSOL_MINT : `0x${'e'.repeat(40)}` },
+  }
+}
+
+test('pending across chains: identity-matched live quotes are accepted and percent uses the new price', () => {
+  const now = 1_800_000_000_000
+  const cases = [
+    { chain: 'solana' as const, token: PAID_DOGE_MINT, baseline: 0.0005, current: 0.00075, pct: 50 },
+    { chain: 'base' as const, token: KAI_BASE, baseline: 0.001, current: 0.00075, pct: -25 },
+    { chain: 'robinhood' as const, token: GOLD_FISH.toLowerCase(), baseline: 0.000002, current: 0.000003, pct: 50 },
+  ]
+  for (const c of cases) {
+    const quote = identityQuote(c.chain, c.token, c.current, now + 20)
+    assert.equal(quoteMatches(quote, c.chain, c.token), true)
+    const row = { ...outcomeRow(), chain: c.chain, token_address: c.token, baseline_price_usd: c.baseline, current_price_usd: null, last_checked_at: new Date(now).toISOString() }
+    const update = buildOutcomeRefreshUpdate(row, quote, null, new Date(now).toISOString(), now)
+    assert.equal(update.current_price_usd, c.current)
+    assert.ok(Math.abs((update.price_change_pct ?? NaN) - c.pct) < 1e-8)
+    const listed = sanitizeTrackedOutcome({ ...row, current_price_usd: c.current, market_source: 'dexscreener', last_checked_at: new Date(now).toISOString() }, now)
+    assert.equal(listed.price_change_pct, null)
+    const [shown] = applyRefreshObservationOverlay([listed], new Map([[row.id, update]]), now)
+    assert.equal(shown?.current_price_usd, c.current)
+    assert.ok(Math.abs((shown?.price_change_pct ?? NaN) - c.pct) < 1e-8)
+    assert.equal(shown?.outcome_status, c.pct <= -50 ? 'dumped' : c.pct >= 50 ? 'pumped' : 'watching')
+  }
+})
+
+test('pending: wrong-side pair, wrong mint, provider outage and missing market stay pending', async () => {
+  const now = 1_800_000_000_000
+  const requested = PAID_DOGE_MINT
+  const quoteSide: ClarkMarketQuote = {
+    ...identityQuote('solana', WSOL_MINT, 9.99, now),
+    marketIdentity: { selectedPoolAddress: 'quote-pool', baseTokenAddress: WSOL_MINT, quoteTokenAddress: requested },
+  }
+  assert.equal(quoteMatches(quoteSide, 'solana', requested), false)
+  const wrongMint = { ...identityQuote('solana', '51qkNpgTHcjuDYhKVcg6rJS4uYYtJHpDRcJoSdKqpump', 0.00075, now) }
+  assert.equal(quoteMatches(wrongMint, 'solana', requested), false)
+  const outage = { dex: async () => { throw new Error('429') }, gecko: async () => null }
+  assert.equal(await resolveOutcomeQuote('solana', requested, outage, { force: true, now }), null)
+  const missing = { dex: async () => null, gecko: async () => null }
+  assert.equal(await resolveOutcomeQuote('base', KAI_BASE, missing, { force: true, now }), null)
+  const row = { ...outcomeRow(), chain: 'solana' as const, token_address: requested, baseline_price_usd: 0.0005, last_checked_at: new Date(now).toISOString() }
+  const update = buildOutcomeRefreshUpdate(row, quoteSide, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, null)
+  assert.equal(update.price_change_pct, null)
+  const [shown] = applyRefreshObservationOverlay([sanitizeTrackedOutcome(row, now)], new Map([[row.id, update]]), now)
+  assert.equal(shown?.price_change_pct, null)
+  assert.equal(shown?.outcome_status, 'unavailable')
+})
+
+test('pending: unproven last_checked does not freeze a receipt; force still bypasses cache', async () => {
+  const now = Date.now()
+  const unproven = { ...outcomeRow(), current_price_usd: 0.75, last_checked_at: new Date(now).toISOString(), market_source: 'dexscreener' }
+  assert.equal(outcomeNeedsRefresh(unproven, now, false), true)
+  const proven = withObservation({ ...unproven, current_price_usd: 0.75 }, 0.75)
+  assert.equal(outcomeNeedsRefresh(proven, now, false), false)
+  assert.equal(outcomeNeedsRefresh(proven, now, true), true)
+  assert.equal(outcomeNeedsRefresh(proven, now + OUTCOME_POLICY.priceStaleMs + 1, false), true)
+  __resetMemoryFallbackForTest()
+  const token = `0x${'a'.repeat(40)}`
+  let calls = 0
+  const first = identityQuote('base', token, 0.8, now)
+  const second = identityQuote('base', token, 0.9, now + 10)
+  const providers = { dex: async () => { calls += 1; const q = calls === 1 ? first : second; return { quote: q, matches: [q] } }, gecko: async () => null }
+  assert.equal((await resolveOutcomeQuote('base', token, providers, { now }))?.priceUsd, 0.8)
+  assert.equal((await resolveOutcomeQuote('base', token, providers, { now: now + 1_000 }))?.priceUsd, 0.8)
+  assert.equal(calls, 1)
+  assert.equal((await resolveOutcomeQuote('base', token, providers, { force: true, now: now + 1_000 }))?.priceUsd, 0.9)
+  assert.equal(calls, 2)
+})
+
+test('pending: failed refresh preserves a proven observation and GET without proof stays pending', () => {
+  const now = 1_800_000_000_000
+  const proven = withObservation({ ...outcomeRow(), current_price_usd: 0.75, last_checked_at: new Date(now - 60_000).toISOString(), market_source: 'dexscreener' }, 0.75)
+  const kept = buildOutcomeRefreshUpdate(proven, null, null, new Date(now).toISOString(), now)
+  assert.equal(kept.current_price_usd, 0.75)
+  assert.equal(kept.last_checked_at, proven.last_checked_at)
+  const listedUnproven = sanitizeTrackedOutcome({ ...proven, market_observation_json: null }, now)
+  assert.equal(listedUnproven.price_change_pct, null)
+  const full = sanitizeTrackedOutcome({ ...proven, current_price_usd: 0.75, market_observation_json: null }, now)
+  const mergedPending = mergeListedOutcomeObservation(full, listedUnproven)
+  assert.equal(mergedPending.price_change_pct, null)
+  const overlay = applyRefreshObservationOverlay([listedUnproven], new Map([[proven.id, kept]]), now)[0]
+  const merged = mergeListedOutcomeObservation(full, overlay)
+  assert.equal(merged.price_change_pct, -92.5)
+  assert.equal(merged.baseline_snapshot_json.scanId, proven.baseline_snapshot_json.scanId)
+})
+
+function mockRefreshDb(row: Record<string, unknown>) {
+  const missing = { code: 'PGRST204', message: "Could not find the 'market_observation_json' column of 'tracked_token_outcomes' in the schema cache" }
+  const persistPayloads: Record<string, unknown>[] = []
+  const db = {
+    from() {
+      let op: 'select' | 'update' = 'select'
+      let payload: Record<string, unknown> = {}
+      let columns = ''
+      const ors: string[] = []
+      const self = {
+        select(c: string) {
+          columns = c
+          if (op === 'update') {
+            if ('refresh_claimed_at' in payload && !('current_price_usd' in payload)) return Promise.resolve({ data: [{ id: row.id }], error: null })
+            persistPayloads.push(payload)
+            if ('market_observation_json' in payload) return Promise.resolve({ data: null, error: missing })
+            return Promise.resolve({
+              data: [{ current_price_usd: payload.current_price_usd, last_checked_at: payload.last_checked_at, price_change_pct: payload.price_change_pct }],
+              error: null,
+            })
+          }
+          return self
+        },
+        update(p: Record<string, unknown>) { op = 'update'; payload = p; return self },
+        eq() { return self },
+        in() { return self },
+        or(filter: string) { ors.push(filter); return self },
+        order() { return self },
+        limit() {
+          if (columns === '*' && ors.some(f => f.includes('market_observation_json'))) return { data: null, error: missing }
+          if (String(columns).includes('market_observation_json')) return { data: null, error: missing }
+          if (columns === '*') return { data: [row], error: null }
+          return { data: [{ ...row, tokenSymbol: 'TEST', tokenName: 'Test token', scannedAt: row.tracked_at }], error: null }
+        },
+      }
+      return self
+    },
+  }
+  return { db, persistPayloads }
+}
+
+test('pending: same-request refresh overlays identity proof when the observation column is missing', async () => {
+  __resetMemoryFallbackForTest()
+  const now = Date.now()
+  const row = {
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: null, last_checked_at: new Date(now).toISOString(),
+    refresh_claimed_at: null, after_evidence_json: null,
+  }
+  const { db, persistPayloads } = mockRefreshDb(row)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.includes('dexscreener')) {
+      return new Response(JSON.stringify({
+        pairs: [{
+          chainId: 'base', dexId: 'uniswap', pairAddress: '0xpool', priceUsd: '0.75', liquidity: { usd: 50_000 },
+          baseToken: { address, symbol: 'TEST', name: 'Test token' },
+          quoteToken: { address: `0x${'e'.repeat(40)}`, symbol: 'USDC' },
+        }],
+      }), { status: 200 })
+    }
+    return new Response('{}', { status: 404 })
+  }
+  try {
+    const outcomes = await refreshOutcomes(user, { force: false, now, ids: [row.id] }, db as never)
+    assert.equal(outcomes.length, 1)
+    assert.equal(outcomes[0]?.current_price_usd, 0.75)
+    assert.equal(outcomes[0]?.price_change_pct, -25)
+    assert.equal(outcomes[0]?.outcome_status, 'watching')
+    assert.ok(persistPayloads.some(payload => !('market_observation_json' in payload) && payload.current_price_usd === 0.75))
+  } finally { globalThis.fetch = originalFetch }
 })
