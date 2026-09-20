@@ -10,7 +10,11 @@ export async function outcomeRequest(method: 'GET' | 'POST' | 'DELETE', body?: u
   if (!token) throw new Error('Sign in to track outcomes.')
   const res = await fetch(`/api/token-outcomes${outcomeId ? `?id=${encodeURIComponent(outcomeId)}` : ''}`, { method, cache: 'no-store', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(55_000) })
   const json = await res.json().catch(() => null)
-  if (!res.ok || !json) throw new Error(json?.error || 'Outcome request failed. Please retry.')
+  if (!res.ok || !json) {
+    const error = new Error(json?.error || 'Outcome request failed. Please retry.') as Error & { status: number }
+    error.status = res.status
+    throw error
+  }
   return json
 }
 

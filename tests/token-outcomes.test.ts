@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentPrice, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, canTrackOutcome, displayableCurrentMarketCap, displayableCurrentPrice, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, percentChange, parsePositiveUsd, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshOutcomes, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
@@ -928,5 +928,140 @@ test('pending: same-request refresh overlays identity proof when the observation
     assert.equal(outcomes[0]?.price_change_pct, -25)
     assert.equal(outcomes[0]?.outcome_status, 'watching')
     assert.ok(persistPayloads.some(payload => !('market_observation_json' in payload) && payload.current_price_usd === 0.75))
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('live receipt: opening forces a single-id lookup, polls on the modal, and unmount clears the interval', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  const modal = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
+  const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  const button = readFileSync(new URL('../components/outcomes/TrackOutcomeButton.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(page, /setInterval/)
+  assert.match(page, /onLiveUpdate=\{applyLiveObservation\}/)
+  assert.match(page, /mergeListedOutcomeObservation\(row, updated\)/)
+  assert.match(modal, /action: 'refresh', force: true, ids: \[row\.id\]/)
+  assert.match(modal, /OUTCOME_POLICY\.receiptLiveRefreshMs/)
+  assert.match(modal, /inFlight\.current/)
+  assert.match(modal, /status === 429/)
+  assert.match(modal, /cancelled = true; window\.clearInterval\(poll\); window\.clearInterval\(clock\)/)
+  assert.match(modal, /Current market cap/)
+  assert.match(modal, /Original market cap/)
+  assert.match(modal, /Market cap unavailable/)
+  assert.match(modal, /Updating…/)
+  assert.match(modal, /Latest refresh failed/)
+  assert.match(service, /if \(opts\.force !== true\) query = query\.or\(leaseOr\)/)
+  assert.match(service, /if \(opts\.force !== true\) claimQuery = claimQuery\.or\(leaseOr\)/)
+  assert.match(button, /error\.status = res\.status/)
+  assert.equal(OUTCOME_POLICY.receiptLiveRefreshMs, 45_000)
+  assert.ok(OUTCOME_POLICY.receiptLiveRefreshMs >= 30_000 && OUTCOME_POLICY.receiptLiveRefreshMs <= 60_000)
+})
+
+test('live receipt: market cap uses the provider market-cap field and never FDV', () => {
+  const now = Date.now()
+  const quote = { ...marketQuote(address, 0.75), marketCapUsd: 50_000, fdvUsd: 9_999_999 }
+  assert.equal(verifiedMarketCapOrNull(quote.marketCapUsd, quote.fdvUsd), 50_000)
+  assert.equal(verifiedMarketCapOrNull(null, 9_999_999), null)
+  assert.equal(verifiedMarketCapOrNull(0, 9_999_999), null)
+  const row = { ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 40_000 }
+  const update = buildOutcomeRefreshUpdate(row, quote, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.75)
+  assert.equal(update.market_observation_json?.marketCapUsd, 50_000)
+  assert.notEqual(update.market_observation_json?.marketCapUsd, quote.fdvUsd)
+  const shown = sanitizeTrackedOutcome({
+    ...row, current_price_usd: 0.75, market_source: 'dexscreener', last_checked_at: new Date(now).toISOString(),
+    market_observation_json: update.market_observation_json,
+  }, now)
+  assert.equal(shown.current_price_usd, 0.75)
+  assert.equal(shown.current_market_cap_usd, 50_000)
+  assert.equal(shown.price_change_pct, -25)
+  assert.equal(percentChange(40_000, 50_000), 25)
+  assert.equal(frozenBaselineMarketCapUsd(shown), 40_000)
+})
+
+test('live receipt: missing market cap does not hide a valid price or pending the whole outcome', () => {
+  const now = Date.now()
+  const quote = { ...marketQuote(address, 0.75), marketCapUsd: null, fdvUsd: 1_000_000 }
+  const update = buildOutcomeRefreshUpdate({ ...outcomeRow(), baseline_price_usd: 1 }, quote, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 0.75)
+  assert.equal(update.price_change_pct, -25)
+  assert.equal(update.outcome_status, 'watching')
+  assert.equal(update.market_observation_json?.marketCapUsd ?? null, null)
+  const shown = sanitizeTrackedOutcome({
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0.75, market_source: 'dexscreener',
+    last_checked_at: new Date(now).toISOString(), market_observation_json: update.market_observation_json,
+  }, now)
+  assert.equal(shown.current_price_usd, 0.75)
+  assert.equal(shown.current_market_cap_usd ?? null, null)
+  assert.equal(shown.price_change_pct, -25)
+  assert.equal(displayableCurrentMarketCap(shown, now), null)
+  assert.deepEqual(hypothetical(1, shown.current_price_usd), { value: 750, pnl: -250, potentialLossAvoided: 250 })
+})
+
+test('live receipt: newer identity-matched observation updates price, percent, class and hypothetical together', () => {
+  const now = Date.now()
+  const first = withObservation({
+    ...outcomeRow(), baseline_price_usd: 1, current_price_usd: 0.75, last_checked_at: new Date(now - 45_000).toISOString(),
+    market_source: 'dexscreener',
+  }, 0.75)
+  const firstShown = sanitizeTrackedOutcome(first, now)
+  assert.equal(firstShown.price_change_pct, -25)
+  assert.equal(firstShown.outcome_status, 'watching')
+  const quote = { ...marketQuote(address, 1.5), marketCapUsd: 80_000 }
+  const update = buildOutcomeRefreshUpdate(firstShown, quote, null, new Date(now).toISOString(), now)
+  assert.equal(update.current_price_usd, 1.5)
+  assert.equal(update.price_change_pct, 50)
+  assert.equal(update.outcome_status, 'pumped')
+  const incoming = sanitizeTrackedOutcome({
+    ...firstShown, current_price_usd: 1.5, market_source: 'dexscreener', last_checked_at: new Date(now).toISOString(),
+    market_observation_json: update.market_observation_json, price_change_pct: 50, outcome_status: 'pumped',
+    outcome_confidence: 'medium', outcome_reasons_json: update.outcome_reasons_json, current_market_cap_usd: 80_000,
+  }, now)
+  const merged = mergeListedOutcomeObservation(firstShown, incoming)
+  assert.equal(merged.current_price_usd, 1.5)
+  assert.equal(merged.price_change_pct, 50)
+  assert.equal(merged.outcome_status, 'pumped')
+  assert.equal(merged.current_market_cap_usd, 80_000)
+  assert.equal(merged.baseline_risk_score, 78)
+  assert.equal(merged.baseline_snapshot_json.scanId, firstShown.baseline_snapshot_json.scanId)
+  assert.deepEqual(hypothetical(1, merged.current_price_usd), { value: 1500, pnl: 500, potentialLossAvoided: 0 })
+  const older = mergeListedOutcomeObservation(incoming, firstShown)
+  assert.equal(older.current_price_usd, 1.5)
+})
+
+test('live receipt: Robinhood and Solana identity still required; wrong-side KAI stays rejected', async () => {
+  const now = Date.now()
+  const gold = '0x54eb1d415CD1fB8DdDFeC708C55aE700C944e20D'
+  const rh = identityQuote('robinhood', gold.toLowerCase(), 0.00000341, now)
+  assert.equal(quoteMatches(rh, 'robinhood', gold), true)
+  const paid = paidDogeQuote(0.000002846, now)
+  assert.equal(quoteMatches(paid, 'solana', PAID_DOGE_MINT), true)
+  const kai = `0x${'c'.repeat(40)}`
+  const kdiem = `0x${'d'.repeat(40)}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    pairs: [
+      { chainId: 'base', priceUsd: 2820.76, liquidity: { usd: 342_254 }, marketCap: 9_000_000, fdv: 9_000_000,
+        baseToken: { address: kdiem, symbol: 'kDIEM' }, quoteToken: { address: kai, symbol: 'KAI' } },
+    ],
+  }), { status: 200 })
+  try {
+    assert.equal(await dexScreenerOutcomeMarketProvider(kai, 'base'), null)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('live receipt: DexScreener marketCap is kept distinct from fdv on the identity-matched pair', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    pairs: [{
+      chainId: 'base', priceUsd: '0.75', liquidity: { usd: 55_000 }, marketCap: 50_000, fdv: 900_000,
+      baseToken: { address, symbol: 'TEST', name: 'Test' }, quoteToken: { address: `0x${'e'.repeat(40)}`, symbol: 'USDC' },
+    }],
+  }), { status: 200 })
+  try {
+    const result = await dexScreenerOutcomeMarketProvider(address, 'base')
+    assert.equal(result?.quote.priceUsd, 0.75)
+    assert.equal(result?.quote.marketCapUsd, 50_000)
+    assert.equal(result?.quote.fdvUsd, 900_000)
+    assert.equal(verifiedMarketCapOrNull(result?.quote.marketCapUsd, result?.quote.fdvUsd), 50_000)
   } finally { globalThis.fetch = originalFetch }
 })

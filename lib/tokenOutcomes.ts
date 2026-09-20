@@ -7,6 +7,8 @@ export const OUTCOME_POLICY = {
   // Live outcome prices: short enough that a bad first tick cannot sit on the Track page.
   priceStaleMs: 3 * 60_000,
   refreshBatch: 4,
+  /** Open-receipt live lookup interval. Bounded; never used for the Track list. */
+  receiptLiveRefreshMs: 45_000,
   limits: { free: 5, pro: 50, elite: 200 },
 } as const
 export const OUTCOME_LOCK_COPY = 'Outcome tracking unlocks for higher-risk scans so ChainLens can measure whether the warning was justified.'
@@ -26,6 +28,7 @@ export type TrackedOutcome = {
   baseline_price_usd: number | null; baseline_liquidity_usd: number | null; baseline_market_cap_usd: number | null;
   baseline_risk_score: number; baseline_verdict: string; baseline_snapshot_json: ScanSnapshot;
   current_price_usd: number | null; current_liquidity_usd: number | null;
+  current_market_cap_usd?: number | null;
   price_change_pct: number | null; liquidity_change_pct: number | null;
   outcome_status: OutcomeStatus; outcome_confidence: Outcome['confidence']; outcome_reasons_json: string[];
   last_checked_at: string | null; market_source: string | null;
@@ -36,6 +39,8 @@ export type TrackedOutcome = {
 export type MarketObservationProof = {
   version: 1; chain: string; tokenAddress: string; provider: string; fetchedAt: string; priceUsd: number;
   identityMatched: true; selectedPoolAddress: string | null; selectedBaseTokenAddress: string; selectedQuoteTokenAddress: string | null;
+  /** Provider market-cap field from the same identity-matched quote. Never FDV. */
+  marketCapUsd?: number | null;
 }
 export function numberOrNull(value: unknown): number | null {
   if (value == null || value === '' || typeof value === 'boolean') return null
@@ -52,6 +57,11 @@ export function parsePositiveUsd(value: unknown): number | null {
   if (typeof value === 'number') return validPriceOrNull(value)
   if (typeof value === 'string' && value.trim() !== '') return validPriceOrNull(Number(value.trim()))
   return null
+}
+/** Market cap must come from a provider market-cap field. FDV/liquidity/volume/TVL are not substitutes. */
+export function verifiedMarketCapOrNull(marketCapUsd: unknown, fdvUsd?: unknown): number | null {
+  void fdvUsd
+  return validPriceOrNull(marketCapUsd)
 }
 export function canTrackOutcome(score: unknown): score is number {
   return typeof score === 'number' && Number.isFinite(score) && score >= OUTCOME_POLICY.minRisk && score <= 100
@@ -103,6 +113,24 @@ export function displayableCurrentPrice(row: {
   const same = row.chain === 'solana' ? proof.tokenAddress === row.token_address : proof.tokenAddress.toLowerCase() === row.token_address.toLowerCase()
   return same && observationIsSourced(row) ? current : null
 }
+/** Identity-proven price may display even when market cap is missing. Never derived from FDV. */
+export function displayableCurrentMarketCap(row: {
+  chain?: string
+  token_address?: string
+  current_price_usd?: number | null
+  last_checked_at?: string | null
+  market_source?: string | null
+  market_observation_json?: MarketObservationProof | null
+}, now = Date.now()): number | null {
+  if (displayableCurrentPrice(row, now) == null) return null
+  return verifiedMarketCapOrNull(row.market_observation_json?.marketCapUsd)
+}
+export function frozenBaselineMarketCapUsd(row: {
+  baseline_market_cap_usd?: number | null
+  baseline_snapshot_json?: { baselineMarketCapUsd?: number | null }
+}): number | null {
+  return validPriceOrNull(row.baseline_market_cap_usd) ?? validPriceOrNull(row.baseline_snapshot_json?.baselineMarketCapUsd)
+}
 export function pendingUnavailableReasons(): string[] {
   return ['Current price unavailable — Outcome pending']
 }
@@ -146,12 +174,15 @@ export function classifyOutcome(baseline: { price: number | null; liquidity: num
  */
 export function mergeListedOutcomeObservation(full: TrackedOutcome, listed?: TrackedOutcome | null): TrackedOutcome {
   if (!listed || listed.id !== full.id) return full
-  if (displayableCurrentPrice(full) != null) return full
   if (displayableCurrentPrice(listed) == null) return full
+  const fullChecked = observationCheckedAtMs(full)
+  const listedChecked = observationCheckedAtMs(listed)
+  if (displayableCurrentPrice(full) != null && fullChecked != null && listedChecked != null && listedChecked < fullChecked) return full
   return {
     ...full,
     current_price_usd: listed.current_price_usd,
     current_liquidity_usd: listed.current_liquidity_usd ?? full.current_liquidity_usd,
+    current_market_cap_usd: listed.current_market_cap_usd ?? full.current_market_cap_usd,
     price_change_pct: listed.price_change_pct,
     liquidity_change_pct: listed.liquidity_change_pct,
     market_source: listed.market_source,

@@ -58,8 +58,16 @@
 .evidenceList { padding-left:17px; font-size:12px; }
 .after { border-top:1px solid #293545; margin-top:20px; padding-bottom:16px; }
 .after ul { padding-left:18px; color:#bac6d4; font-size:13px; line-height:1.7; }
+.liveMarket { margin:18px 0 8px; padding:16px; border:1px solid #293f4b; border-radius:14px; background:#111e2a; min-width:0; }
+.liveHead { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+.liveStamp { color:#8fa0b4; font-size:12px; }
+.liveGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.liveGrid span { display:block; color:#8fa0b4; font-size:11px; margin-bottom:6px; }
+.liveGrid strong { display:block; font-size:18px; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; line-height:1.25; min-width:0; }
+.pendingMetric { font-size:13px !important; font-weight:650; color:#a8b4c5; }
 @media (max-width: 420px) {
   .metrics { grid-template-columns:1fr; }
   .cardFooter { flex-direction:column; align-items:stretch; }
   .cardActions { width:100%; justify-content:space-between; }
+  .liveGrid { grid-template-columns:1fr; }
 }

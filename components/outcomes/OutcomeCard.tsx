@@ -1,15 +1,34 @@
 'use client'
-import { useEffect, useRef } from 'react'
-import { hypothetical, shareOutcome, type TrackedOutcome } from '@/lib/tokenOutcomes'
+import { useEffect, useRef, useState } from 'react'
+import {
+  frozenBaselineMarketCapUsd, hypothetical, observationCheckedAtMs, observationIsFresh, OUTCOME_POLICY,
+  percentChange, shareOutcome, validPriceOrNull, type TrackedOutcome,
+} from '@/lib/tokenOutcomes'
+import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import styles from './outcomes.module.css'
 
 const PENDING_PRICE = 'Current price unavailable — Outcome pending'
 const CARD_PENDING_PRICE = 'Price unavailable'
 const pct = (n: number | null) => n == null ? 'Unavailable' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+const compactUsd = (n: number | null, unavailable = 'Unavailable') => {
+  if (n == null) return unavailable
+  if (n >= 1) return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
+  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 6 })
+}
 const date = (value: string | null) => value ? new Date(value).toLocaleString() : 'Not checked yet'
 const label = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
 const statusLabel = (row: TrackedOutcome) => row.price_change_pct == null && row.outcome_status === 'unavailable' ? 'outcome pending' : row.outcome_status
+function liveStatusLabel(checkedAt: string | null, now: number, failed: boolean, updating: boolean): string {
+  if (updating) return 'Updating…'
+  const ms = observationCheckedAtMs({ last_checked_at: checkedAt })
+  if (ms == null) return failed ? 'Latest refresh failed' : 'Not checked yet'
+  const seconds = Math.max(0, Math.floor((now - ms) / 1000))
+  const age = seconds < 60 ? `${seconds}s ago` : `${Math.max(1, Math.floor(seconds / 60))}m ago`
+  if (failed) return `Latest refresh failed · last verified ${age}`
+  if (!observationIsFresh({ last_checked_at: checkedAt }, now)) return `Last verified ${age}`
+  return `Updated ${age}`
+}
 
 /** Structured nested evidence, not new AI prose. No evidence value is recomputed. */
 function Evidence({ value }: { value: unknown }) {
@@ -30,11 +49,62 @@ export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; on
     <footer className={styles.cardFooter}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
   </article>
 }
-export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidenceError = '' }: { row: TrackedOutcome; onClose: () => void; loadingEvidence?: boolean; evidenceError?: string }) {
+export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = false, evidenceError = '' }: {
+  row: TrackedOutcome; onClose: () => void; onLiveUpdate?: (row: TrackedOutcome) => void
+  loadingEvidence?: boolean; evidenceError?: string
+}) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const rowRef = useRef(row)
+  const liveUpdateRef = useRef(onLiveUpdate)
+  const inFlight = useRef(false)
+  const backoffUntil = useRef(0)
+  const [updating, setUpdating] = useState(false)
+  const [refreshFailed, setRefreshFailed] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => { rowRef.current = row }, [row])
+  useEffect(() => { liveUpdateRef.current = onLiveUpdate }, [onLiveUpdate])
   useEffect(() => { const el = dialog.current; el?.showModal(); return () => { el?.close() } }, [])
+  useEffect(() => {
+    let cancelled = false
+    async function refreshLive() {
+      if (cancelled || inFlight.current || Date.now() < backoffUntil.current) return
+      inFlight.current = true
+      setUpdating(true)
+      const previousChecked = rowRef.current.last_checked_at
+      try {
+        const result = await outcomeRequest('POST', { action: 'refresh', force: true, ids: [row.id] })
+        if (cancelled) return
+        const updated = Array.isArray(result.outcomes)
+          ? (result.outcomes as TrackedOutcome[]).find(item => item.id === row.id)
+          : undefined
+        if (updated) {
+          liveUpdateRef.current?.(updated)
+          setRefreshFailed(updated.last_checked_at === previousChecked)
+        } else {
+          setRefreshFailed(true)
+        }
+      } catch (error) {
+        if (cancelled) return
+        setRefreshFailed(true)
+        if (error && typeof error === 'object' && 'status' in error && (error as { status?: number }).status === 429) {
+          backoffUntil.current = Date.now() + 60_000
+        }
+      } finally {
+        inFlight.current = false
+        if (!cancelled) setUpdating(false)
+      }
+    }
+    void refreshLive()
+    const poll = window.setInterval(() => { void refreshLive() }, OUTCOME_POLICY.receiptLiveRefreshMs)
+    const clock = window.setInterval(() => setNowMs(Date.now()), 1_000)
+    return () => { cancelled = true; window.clearInterval(poll); window.clearInterval(clock) }
+  }, [row.id])
   const snapshot = row.baseline_snapshot_json
-  const h = hypothetical(row.baseline_price_usd, row.current_price_usd)
+  const currentPrice = validPriceOrNull(row.current_price_usd)
+  const h = hypothetical(row.baseline_price_usd, currentPrice)
+  const originalCap = frozenBaselineMarketCapUsd(row)
+  const currentCap = validPriceOrNull(row.current_market_cap_usd)
+  const capChange = percentChange(originalCap, currentCap)
   const groups = [
     ['LP / liquidity', snapshot.baselineLpSignals], ['Ownership / contract control', snapshot.baselineOwnershipSignals],
     ['Holder concentration', snapshot.baselineHolderSignals], ['Dev / deployer', snapshot.baselineDevSignals],
@@ -47,6 +117,15 @@ export function OutcomeReceipt({ row, onClose, loadingEvidence = false, evidence
       <p className={styles.address}>{row.token_address}</p>
       <p>ChainLens scanned this token at <strong>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score direction unavailable · Rescan required' : `${snapshot.baselineRiskScore}/100 · ${snapshot.baselineVerdict}`}</strong></p>
       <p className={styles.muted}>Scanned {date(snapshot.scannedAt)} · Tracked {date(row.tracked_at)}</p>
+      <section className={styles.liveMarket} aria-live="polite">
+        <div className={styles.liveHead}><span className={styles.eyebrow}>Live market</span><span className={styles.liveStamp}>{liveStatusLabel(row.last_checked_at, nowMs, refreshFailed, updating)}</span></div>
+        <div className={styles.liveGrid}>
+          <div><span>Current market cap</span><strong className={currentCap == null ? styles.pendingMetric : undefined}>{currentCap == null ? 'Market cap unavailable' : compactUsd(currentCap)}</strong></div>
+          <div><span>Current price</span><strong className={currentPrice == null ? styles.pendingMetric : undefined}>{currentPrice == null ? 'Price unavailable' : compactUsd(currentPrice)}</strong></div>
+          <div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingMetric : ''}`} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? 'Outcome pending' : pct(row.price_change_pct)}</strong></div>
+        </div>
+        <p className={styles.muted}>Original market cap {compactUsd(originalCap, 'unavailable')}{capChange == null ? '' : ` · ${pct(capChange)} since scan`}</p>
+      </section>
       <div className={styles.receiptHero}><span>Since scan</span><strong className={styles.change} data-negative={(row.price_change_pct ?? 0) < 0}>{row.price_change_pct == null ? PENDING_PRICE : pct(row.price_change_pct)}</strong><span className={styles.status} data-status={row.outcome_status}>{row.price_change_pct == null ? 'Outcome pending' : `${row.outcome_status} · ${row.outcome_confidence} confidence`}</span></div>
       <div className={styles.math}><p>If you had bought $1,000 at the scan price…</p><strong>{h ? `${money(h.value)} remaining` : 'Hypothetical value unavailable'}</strong><div className={styles.spread}><span>Hypothetical PnL</span><b>{h ? money(h.pnl) : 'Unavailable'}</b></div><div className={styles.spread}><span>Potential loss avoided</span><b>{h ? money(h.potentialLossAvoided) : 'Unavailable'}</b></div><small>Illustration only. Not an actual purchase or saving. Excludes fees, slippage and ability to sell.</small></div>
       {loadingEvidence ? <p role="status">Loading frozen evidence…</p> : evidenceError ? <p role="alert">{evidenceError} Close and reopen this receipt to retry.</p> : <details className={styles.why}><summary>Why? See the frozen scan evidence</summary><h3>What ChainLens saw at scan time</h3>

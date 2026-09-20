@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import {
-  OUTCOME_POLICY, classifyOutcome, displayableCurrentPrice, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
-  percentChange, validPriceOrNull, type TrackedOutcome,
+  OUTCOME_POLICY, classifyOutcome, displayableCurrentMarketCap, displayableCurrentPrice, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
+  percentChange, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome,
   type MarketObservationProof,
 } from '../tokenOutcomes'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider, outcomeTokenAddressEquals } from './clarkMarketDataProviders'
@@ -254,6 +254,7 @@ export function sanitizeTrackedOutcome(row: TrackedOutcome, now = Date.now()): T
   const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
   return {
     ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
+    current_market_cap_usd: displayableCurrentMarketCap({ ...row, current_price_usd: currentPrice }, now),
     price_change_pct: percentChange(baselinePrice, currentPrice),
     outcome_status: result.status, outcome_confidence: result.confidence,
     outcome_reasons_json: pending ? pendingUnavailableReasons() : row.outcome_reasons_json,
@@ -281,6 +282,7 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
     selectedPoolAddress: quote.marketIdentity.selectedPoolAddress,
     selectedBaseTokenAddress: quote.marketIdentity.baseTokenAddress,
     selectedQuoteTokenAddress: quote.marketIdentity.quoteTokenAddress,
+    marketCapUsd: verifiedMarketCapOrNull(quote.marketCapUsd, quote.fdvUsd),
   } : row.market_observation_json ?? null
   return {
     current_price_usd: price, current_liquidity_usd: liquidity,
@@ -368,7 +370,8 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     let query = db.from('tracked_token_outcomes').select('*').eq('user_id', userId)
     if (ids.length) query = query.in('id', ids)
     if (includeFreshness) query = query.or(freshnessOr)
-    return query.or(leaseOr).order('last_checked_at', { ascending: true, nullsFirst: true }).limit(OUTCOME_POLICY.refreshBatch)
+    if (opts.force !== true) query = query.or(leaseOr)
+    return query.order('last_checked_at', { ascending: true, nullsFirst: true }).limit(OUTCOME_POLICY.refreshBatch)
   }
   let includeFreshness = opts.force !== true
   let { data, error } = await runSelect(includeFreshness)
@@ -384,7 +387,8 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     const claimedAt = new Date(now).toISOString()
     let claimQuery = db.from('tracked_token_outcomes').update({ refresh_claimed_at: claimedAt }).eq('id', row.id).eq('user_id', userId)
     if (includeFreshness) claimQuery = claimQuery.or(freshnessOr)
-    const claim = await claimQuery.or(leaseOr).select('id')
+    if (opts.force !== true) claimQuery = claimQuery.or(leaseOr)
+    const claim = await claimQuery.select('id')
     if (claim.error || !claim.data?.length) return
     const identityKey = `${row.chain}:${row.chain === 'solana' ? row.token_address : row.token_address.toLowerCase()}`
     let resolution = resolutions.get(identityKey)

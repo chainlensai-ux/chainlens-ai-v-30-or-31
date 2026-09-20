@@ -27,11 +27,20 @@ export default function TrackPage() {
     if (!selected) return
     let cancelled = false
     void outcomeRequest('GET', undefined, selected).then(data => {
-      if (!cancelled && data.outcome) setReceipt(mergeListedOutcomeObservation(data.outcome as TrackedOutcome, rowsRef.current.find(row => row.id === selected)))
+      if (!cancelled && data.outcome) {
+        setReceipt(prev => mergeListedOutcomeObservation(
+          data.outcome as TrackedOutcome,
+          prev?.id === selected ? prev : rowsRef.current.find(row => row.id === selected),
+        ))
+      }
     }).catch(e => { if (!cancelled) setReceiptError(e instanceof Error ? e.message : 'Receipt unavailable.') })
     return () => { cancelled = true }
   }, [selected])
   function openReceipt(id: string) { setReceipt(null); setReceiptError(''); setSelected(id) }
+  function applyLiveObservation(updated: TrackedOutcome) {
+    setRows(current => current.map(row => row.id === updated.id ? mergeListedOutcomeObservation(row, updated) : row))
+    setReceipt(prev => prev && prev.id === updated.id ? mergeListedOutcomeObservation(prev, updated) : prev)
+  }
   useEffect(() => {
     let disposed = false
     let generation = 0
@@ -88,9 +97,9 @@ export default function TrackPage() {
   }
   return <main className={styles.page}>
     <header className={styles.header}><div><span className={styles.eyebrow}>Evidence, measured over time</span><h1>Track</h1><p>The original risk call. What happened next. Private to your account.</p><p>{limit == null ? 'Outcome receipts' : `${rows.length} / ${limit} outcomes tracked`}</p></div><button className={styles.button} disabled={loading || refreshing || !signedIn} onClick={() => void refreshAction.current?.(true)}>{refreshing ? 'Checking stale outcomes…' : 'Refresh outcomes'}</button></header>
-    <p className={styles.muted}>Watchlist follows tokens. Track preserves a scan and measures its outcome. Page load refreshes stale receipts. Manual refresh re-checks up to {OUTCOME_POLICY.refreshBatch} visible receipts even if they were cached. Live prices are reused for {PRICE_CACHE_MINUTES} minutes.</p>
+    <p className={styles.muted}>Watchlist follows tokens. Track preserves a scan and measures its outcome. Page load refreshes stale receipts. Manual refresh re-checks up to {OUTCOME_POLICY.refreshBatch} visible receipts even if they were cached. Opening a receipt looks up that token live about every {Math.round(OUTCOME_POLICY.receiptLiveRefreshMs / 1000)} seconds and stops when you close it. List prices are reused for {PRICE_CACHE_MINUTES} minutes.</p>
     {error && <div role="alert" className={styles.notice}>{error} <button className={styles.button} onClick={() => void refreshAction.current?.(true)} disabled={refreshing}>Retry</button></div>}
     {loading ? <div className={styles.grid} aria-busy="true" aria-label="Loading outcomes">{[1,2,3].map(i => <div key={i} className={styles.skeleton}>Loading outcome receipt…</div>)}</div> : rows.length > 0 ? <div className={styles.grid}>{rows.map(row => <OutcomeCard key={row.id} row={row} onOpen={() => openReceipt(row.id)} onDelete={() => void deleteOutcome(row.id)} />)}</div> : !error && <section className={styles.empty}><h2>No outcome receipts yet</h2><p className={styles.muted}>Scan a token with a Risk Score of 50 or higher, then select Track Outcome to freeze its evidence.</p><Link href="/terminal/token-scanner" className={styles.button}>Open Token Scanner →</Link></section>}
-    {active && <OutcomeReceipt row={receipt?.id === active.id ? receipt : active} loadingEvidence={!receipt && !receiptError} evidenceError={receiptError} onClose={() => setSelected(null)} />}
+    {active && <OutcomeReceipt row={receipt?.id === active.id ? receipt : active} loadingEvidence={!receipt && !receiptError} evidenceError={receiptError} onClose={() => setSelected(null)} onLiveUpdate={applyLiveObservation} />}
   </main>
 }
