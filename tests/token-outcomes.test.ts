@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { OUTCOME_POLICY, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshOutcomes, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome } from '../lib/server/tokenOutcomeService'
+import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -207,11 +207,11 @@ test('outcome UI renders compact card pending copy and keeps the full modal sent
   assert.match(source, /const CARD_PENDING_PRICE = 'Price unavailable'/)
   assert.match(source, /const PENDING_PRICE = 'Current price unavailable — Outcome pending'/)
   assert.match(source, /price_change_pct == null \? CARD_PENDING_PRICE/)
-  assert.match(source, /receiptHero[\s\S]*sinceScan/)
-  assert.match(source, /Price comparison unavailable/)
+  assert.match(source, /Original scan price could not be verified/)
   assert.match(source, /comparableOutcomeBaselinePrice/)
+  assert.match(source, /Hypothetical performance unavailable/)
   assert.match(source, /Outcome pending/)
-  assert.match(source, /h \? money\(h\.pnl\) : 'Unavailable'/)
+  assert.match(source, /h\.pnl < 0/)
   assert.match(source, /styles\.delete/)
   assert.match(source, /styles\.viewReceipt/)
   assert.match(source, /styles\.cardActions/)
@@ -221,6 +221,10 @@ test('outcome UI renders compact card pending copy and keeps the full modal sent
   assert.match(css, /\.cardActions/)
   assert.match(css, /flex-shrink:0/)
   assert.match(css, /@media \(max-width: 420px\)/)
+  assert.match(css, /\.receiptBody/)
+  assert.match(css, /\.receiptHead/)
+  assert.match(css, /data-neutral/)
+
 })
 test('outcome storage remains separate from Watchlist; UI wiring preserves existing action', () => {
   const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
@@ -889,6 +893,7 @@ function mockRefreshDb(row: Record<string, unknown>) {
         in() { return self },
         or(filter: string) { ors.push(filter); return self },
         order() { return self },
+        maybeSingle() { return Promise.resolve({ data: row, error: null }) },
         limit() {
           if (columns === '*' && ors.some(f => f.includes('market_observation_json'))) return { data: null, error: missing }
           if (String(columns).includes('market_observation_json')) return { data: null, error: missing }
@@ -938,26 +943,34 @@ test('live receipt: opening forces a single-id lookup, polls on the modal, and u
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   const modal = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const button = readFileSync(new URL('../components/outcomes/TrackOutcomeButton.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(page, /setInterval/)
   assert.match(page, /onLiveUpdate=\{applyLiveObservation\}/)
   assert.match(page, /mergeListedOutcomeObservation\(row, updated\)/)
-  assert.match(modal, /action: 'refresh', force: true, ids: \[row\.id\]/)
+  assert.match(modal, /action: 'live', ids: \[row\.id\]/)
+  assert.doesNotMatch(modal, /action: 'refresh', force: true, ids: \[row\.id\]/)
   assert.match(modal, /OUTCOME_POLICY\.receiptLiveRefreshMs/)
   assert.match(modal, /inFlight\.current/)
   assert.match(modal, /status === 429/)
-  assert.match(modal, /cancelled = true; window\.clearInterval\(poll\); window\.clearInterval\(clock\)/)
+  assert.match(modal, /visibilitychange/)
+  assert.match(modal, /visibilityState === 'hidden'/)
+  assert.match(modal, /cancelled = true[\s\S]*window\.clearInterval\(poll\)[\s\S]*window\.clearInterval\(clock\)[\s\S]*removeEventListener\('visibilitychange'/)
   assert.match(modal, /Current market cap/)
   assert.match(modal, /Original market cap/)
   assert.match(modal, /Market cap unavailable/)
   assert.match(modal, /Updating…/)
   assert.match(modal, /Latest refresh failed/)
+  assert.match(route, /body\.action === 'live'/)
+  assert.match(route, /refreshLiveOutcome/)
   assert.match(service, /if \(opts\.force !== true\) query = query\.or\(leaseOr\)/)
   assert.match(service, /if \(opts\.force !== true\) claimQuery = claimQuery\.or\(leaseOr\)/)
   assert.match(button, /error\.status = res\.status/)
-  assert.equal(OUTCOME_POLICY.receiptLiveRefreshMs, 45_000)
-  assert.ok(OUTCOME_POLICY.receiptLiveRefreshMs >= 30_000 && OUTCOME_POLICY.receiptLiveRefreshMs <= 60_000)
+  assert.equal(OUTCOME_POLICY.receiptLiveRefreshMs, 20_000)
+  assert.ok(OUTCOME_POLICY.receiptLiveRefreshMs >= 15_000 && OUTCOME_POLICY.receiptLiveRefreshMs <= 20_000)
+  assert.ok(60_000 / OUTCOME_POLICY.receiptLiveRefreshMs + 2 <= 10)
 })
+
 
 test('live receipt: market cap uses the provider market-cap field and never FDV', () => {
   const now = Date.now()
@@ -1194,4 +1207,118 @@ test('contaminated baseline refresh keeps current price and original mcap, never
   assert.equal(shown.current_market_cap_usd, 774_756)
   assert.equal(shown.price_change_pct, null)
   assert.ok(percentChange(frozenBaselineMarketCapUsd(shown), shown.current_market_cap_usd)! < 0)
+})
+
+test('live price tick does not rerun scanner or rug analysis and skips the full list read', () => {
+  const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
+  const start = service.indexOf('export async function refreshLiveOutcome')
+  const end = service.indexOf('\nexport async function', start + 10)
+  const body = service.slice(start, end === -1 ? undefined : end)
+  assert.match(body, /resolveLiveOutcomeQuoteDetailed/)
+  assert.match(body, /persistLiveOutcomeUpdate/)
+  assert.doesNotMatch(body, /afterScanProof/)
+  assert.doesNotMatch(body, /listTrackedOutcomes/)
+  assert.doesNotMatch(body, /buildTokenScanCacheKey/)
+  assert.doesNotMatch(body, /getTokenCache/)
+})
+
+test('live quote lookups coalesce duplicates and reuse a fresh tick', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  let calls = 0
+  let release: () => void = () => undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const quote = identityQuote('base', address, 0.75, now)
+  const providers = {
+    dex: async () => { calls += 1; await gate; return { quote, matches: [quote] } },
+    gecko: async () => null,
+  }
+  const first = resolveLiveOutcomeQuoteDetailed('base', address, providers, { now })
+  const second = resolveLiveOutcomeQuoteDetailed('base', address, providers, { now })
+  release()
+  const [a, b] = await Promise.all([first, second])
+  assert.equal(calls, 1)
+  assert.equal(a.quote?.priceUsd, 0.75)
+  assert.equal(b.quote?.priceUsd, 0.75)
+  const reused = await resolveLiveOutcomeQuoteDetailed('base', address, providers, { now: now + 1_000 })
+  assert.equal(calls, 1)
+  assert.equal(reused.cacheHit, true)
+  assert.equal(reused.fetchAttempted, false)
+  assert.equal(reused.quote?.priceUsd, 0.75)
+})
+
+test('live receipt refresh updates one identity-matched row without rewriting frozen evidence', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const snapshot = snapshotFromScan(scan(), user)!
+  const row = withObservation({
+    ...outcomeRow(), baseline_snapshot_json: snapshot, baseline_price_usd: 1, baseline_market_cap_usd: 40_000,
+    current_price_usd: 0.8, last_checked_at: new Date(now - 20_000).toISOString(), market_source: 'dexscreener',
+    after_evidence_json: { verifiedTradingBlocked: true, observedAt: '2026-01-01T00:00:00.000Z', source: 'token_scanner', scanId: 'later', reason: 'blocked' },
+  }, 0.8, 32_000)
+  const { db, persistPayloads } = mockRefreshDb(row)
+  const liveQuote = { ...marketQuote(address, 0.75), marketCapUsd: 50_000, fetchedAt: now }
+  const providers = { dex: async () => ({ quote: liveQuote, matches: [liveQuote] }), gecko: async () => { throw new Error('gecko must not run when Dex matches') } }
+  const shown = await refreshLiveOutcome(user, row.id, { now, providers }, db as never)
+  assert.equal(shown?.current_price_usd, 0.75)
+  assert.equal(shown?.current_market_cap_usd, 50_000)
+  assert.equal(shown?.price_change_pct, -25)
+  assert.equal(shown?.baseline_price_usd, 1)
+  assert.equal(shown?.baseline_market_cap_usd, 40_000)
+  assert.deepEqual(shown?.baseline_snapshot_json, snapshot)
+  assert.equal(shown?.after_evidence_json?.scanId, 'later')
+  assert.ok(persistPayloads.some(payload => payload.current_price_usd === 0.75 && !('baseline_price_usd' in payload)))
+  const capChange = percentChange(40_000, 50_000)
+  assert.equal(capChange, 25)
+  assert.notEqual(shown?.price_change_pct, capChange)
+})
+
+test('live receipt: provider failure keeps the last verified tick and frozen snapshot', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const snapshot = snapshotFromScan(scan(), user)!
+  const checked = new Date(now - 8_000).toISOString()
+  const row = withObservation({
+    ...outcomeRow(), baseline_snapshot_json: snapshot, baseline_price_usd: 1,
+    current_price_usd: 0.75, last_checked_at: checked, market_source: 'dexscreener',
+  }, 0.75, 50_000)
+  const { db } = mockRefreshDb(row)
+  const providers = { dex: async () => null, gecko: async () => null }
+  const shown = await refreshLiveOutcome(user, row.id, { now, providers }, db as never)
+  assert.equal(shown?.current_price_usd, 0.75)
+  assert.equal(shown?.last_checked_at, checked)
+  assert.equal(shown?.price_change_pct, -25)
+  assert.deepEqual(shown?.baseline_snapshot_json, snapshot)
+})
+
+test('live receipt: legacy KAI baseline stays unavailable while live market still updates', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const frozen = kaiContaminatedRow(now)
+  const { db } = mockRefreshDb(frozen)
+  const liveQuote = { ...marketQuote(KAI_BASE, 0.0008214), marketCapUsd: 774_756, address: KAI_BASE, fetchedAt: now,
+    marketIdentity: { selectedPoolAddress: '0x84bb5de3', baseTokenAddress: KAI_BASE, quoteTokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' } }
+  const shown = await refreshLiveOutcome(user, frozen.id, { now, providers: { dex: async () => ({ quote: liveQuote, matches: [liveQuote] }), gecko: async () => null } }, db as never)
+  assert.equal(shown?.current_price_usd, 0.0008214)
+  assert.equal(shown?.current_market_cap_usd, 774_756)
+  assert.equal(shown?.price_change_pct, null)
+  assert.equal(shown?.outcome_status, 'unavailable')
+  assert.equal(outcomeHypothetical(shown!, now), null)
+  assert.equal(shown?.baseline_price_usd, 2579.35)
+})
+
+test('live receipt: valid baseline produces percent and hypothetical together', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const row = withObservation({
+    ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 40_000,
+    current_price_usd: 1, last_checked_at: new Date(now - 20_000).toISOString(), market_source: 'dexscreener',
+  }, 1, 40_000)
+  const { db } = mockRefreshDb(row)
+  const liveQuote = { ...marketQuote(address, 1.5), marketCapUsd: 60_000, fetchedAt: now }
+  const shown = await refreshLiveOutcome(user, row.id, { now, providers: { dex: async () => ({ quote: liveQuote, matches: [liveQuote] }), gecko: async () => null } }, db as never)
+  assert.equal(shown?.price_change_pct, 50)
+  assert.equal(shown?.outcome_status, 'pumped')
+  assert.deepEqual(outcomeHypothetical(shown!, now), { value: 1500, pnl: 500, potentialLossAvoided: 0 })
+  assert.equal(percentChange(40_000, 60_000), 50)
 })

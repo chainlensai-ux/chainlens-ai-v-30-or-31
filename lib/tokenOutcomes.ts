@@ -7,8 +7,15 @@ export const OUTCOME_POLICY = {
   // Live outcome prices: short enough that a bad first tick cannot sit on the Track page.
   priceStaleMs: 3 * 60_000,
   refreshBatch: 4,
-  /** Open-receipt live lookup interval. Bounded; never used for the Track list. */
-  receiptLiveRefreshMs: 45_000,
+  /**
+   * Open-receipt live lookup interval. 20s stays inside the 10 POSTs/min outcome limiter
+   * (3 live ticks + open GET + occasional list refresh) and DexScreener/Gecko 7s budgets.
+   * Never used for the Track list.
+   */
+  receiptLiveRefreshMs: 20_000,
+  /** Coalesce overlapping live ticks for the same chain+contract. */
+  receiptLiveQuoteReuseMs: 15_000,
+
   limits: { free: 5, pro: 50, elite: 200 },
 } as const
 export const OUTCOME_LOCK_COPY = 'Outcome tracking unlocks for higher-risk scans so ChainLens can measure whether the warning was justified.'

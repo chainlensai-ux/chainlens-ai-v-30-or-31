@@ -213,6 +213,46 @@ export async function resolveOutcomeQuote(
   return (await resolveOutcomeQuoteDetailed(chain, address, providers, opts)).quote
 }
 
+const liveQuoteFlights = new Map<string, Promise<ResolveOutcomeQuoteResult>>()
+const liveQuoteRecent = new Map<string, { at: number; result: ResolveOutcomeQuoteResult }>()
+function liveQuoteKey(chain: string, address: string) {
+  const normalizedChain = chainAlias(chain) ?? chain
+  return `${normalizedChain}:${normalizedChain === 'solana' ? address : address.toLowerCase()}`
+}
+export function __resetLiveOutcomeQuoteForTest() {
+  liveQuoteFlights.clear()
+  liveQuoteRecent.clear()
+}
+
+/**
+ * Live-receipt quote: identity-matched Dex/Gecko only. Coalesces in-flight lookups and reuses a
+ * quote younger than receiptLiveQuoteReuseMs so overlapping ticks do not triple provider calls.
+ */
+export async function resolveLiveOutcomeQuoteDetailed(
+  chain: string,
+  address: string,
+  providers: ResolveOutcomeQuoteProviders = { dex: dexScreenerOutcomeMarketProvider, gecko: geckoTerminalMarketProvider },
+  opts?: { now?: number },
+): Promise<ResolveOutcomeQuoteResult> {
+  const now = opts?.now ?? Date.now()
+  const key = liveQuoteKey(chain, address)
+  const recent = liveQuoteRecent.get(key)
+  if (recent && now - recent.at >= 0 && now - recent.at <= OUTCOME_POLICY.receiptLiveQuoteReuseMs && recent.result.quote) {
+    return { ...recent.result, cacheHit: true, fetchAttempted: false }
+  }
+  const existing = liveQuoteFlights.get(key)
+  if (existing) return existing
+  const pending = resolveOutcomeQuoteDetailed(chain, address, providers, { force: true, now })
+    .then(result => {
+      liveQuoteRecent.set(key, { at: now, result })
+      return result
+    })
+    .finally(() => { if (liveQuoteFlights.get(key) === pending) liveQuoteFlights.delete(key) })
+  liveQuoteFlights.set(key, pending)
+  return pending
+}
+
+
 export function hydrateTrackedOutcomeListRow(row: Record<string, unknown>, now = Date.now()): TrackedOutcome {
   return sanitizeTrackedOutcome({
     ...row,
@@ -446,4 +486,64 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     if (written.error) throw new Error('Unable to save the latest outcome observation.')
   }))
   return applyRefreshObservationOverlay(await listTrackedOutcomes(userId, now, db), overlays, now)
+}
+
+export async function persistLiveOutcomeUpdate(
+  db: ReturnType<typeof outcomeDb>,
+  rowId: string,
+  userId: string,
+  update: Record<string, unknown>,
+) {
+  const write = (payload: Record<string, unknown>) => db.from('tracked_token_outcomes').update(payload)
+    .eq('id', rowId).eq('user_id', userId).select('current_price_usd,last_checked_at,price_change_pct')
+  let written = await write(update)
+  if (written.error && isMissingOutcomeColumnError(written.error, 'market_observation_json')) {
+    logOutcomeStorageError('live_optional_column', written.error)
+    written = await write(omitOptionalObservationColumn(update))
+  }
+  return written
+}
+
+/**
+ * Open-receipt price tick. One identity-matched quote, no Token Scanner, no rug proof, no full list.
+ * Frozen baseline columns are never written. Previous verified observation is retained on provider miss.
+ */
+export async function refreshLiveOutcome(
+  userId: string,
+  id: string,
+  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders } = {},
+  db: ReturnType<typeof outcomeDb> = outcomeDb(),
+): Promise<TrackedOutcome | null> {
+  if (!OUTCOME_ID_RE.test(id)) return null
+  const now = opts.now ?? Date.now()
+  const { data, error } = await db.from('tracked_token_outcomes').select('*').eq('user_id', userId).eq('id', id).maybeSingle()
+  if (error) {
+    logOutcomeStorageError('live', error)
+    throw new Error(isMissingOutcomeTableError(error)
+      ? 'Outcome storage unavailable. The tracked-token-outcomes migration must be applied.'
+      : 'Outcome storage unavailable. Check the tracked-token-outcomes migration.')
+  }
+  if (!data) return null
+  const row = data as TrackedOutcome
+  const resolved = await resolveLiveOutcomeQuoteDetailed(row.chain, row.token_address, opts.providers, { now }).catch(() => null)
+  const quote = resolved?.quote ?? null
+  const quoteTime = quote?.fetchedAt
+  const checkedAt = new Date(quoteTime != null && Number.isFinite(quoteTime) ? quoteTime : now).toISOString()
+  const update = buildOutcomeRefreshUpdate(row, quote, row.after_evidence_json ?? null, checkedAt, now)
+  const written = await persistLiveOutcomeUpdate(db, row.id, userId, update)
+  if (written.error) throw new Error('Unable to save the latest outcome observation.')
+  const persisted = written.data?.[0] as { current_price_usd?: number | null; last_checked_at?: string | null } | undefined
+  return sanitizeTrackedOutcome({
+    ...row,
+    current_price_usd: persisted?.current_price_usd ?? update.current_price_usd,
+    current_liquidity_usd: update.current_liquidity_usd,
+    price_change_pct: update.price_change_pct,
+    outcome_status: update.outcome_status,
+    outcome_confidence: update.outcome_confidence,
+    outcome_reasons_json: update.outcome_reasons_json,
+    market_source: update.market_source,
+    market_observation_json: update.market_observation_json ?? row.market_observation_json,
+    last_checked_at: persisted?.last_checked_at ?? update.last_checked_at,
+    after_evidence_json: row.after_evidence_json ?? null,
+  }, now)
 }
