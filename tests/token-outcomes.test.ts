@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, adoptNewerOutcomeObservation, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, liveOutcomeRequestIds, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, outcomeFreshnessLabel, pageLiveBudget, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, adoptNewerOutcomeObservation, advanceTrackedOutcomeLiveCursor, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, liveOutcomeRequestIds, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, outcomeFreshnessLabel, pageLiveBudget, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
 import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshLiveOutcomes, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
@@ -1640,9 +1640,11 @@ test('page live: cards refresh automatically without a click, using the live pat
   assert.match(page, /OUTCOME_POLICY\.pageLiveRefreshMs/)
   assert.match(page, /OUTCOME_POLICY\.pageLiveFirstDelayMs/)
   assert.match(page, /nextTrackedOutcomeLiveBatch/)
+  assert.match(page, /advanceTrackedOutcomeLiveCursor/)
   assert.match(page, /action: 'live', ids: batch\.ids/)
-  assert.match(page, /setTimeout\(\(\) => \{ void tick\(true\) \}, OUTCOME_POLICY\.pageLiveFirstDelayMs\)/)
+  assert.match(page, /setTimeout\(kick, OUTCOME_POLICY\.pageLiveFirstDelayMs\)/)
   assert.match(page, /setInterval\(\(\) => \{ void tick\(\) \}, OUTCOME_POLICY\.pageLiveRefreshMs\)/)
+  assert.match(page, /refreshingRef\.current/)
   assert.doesNotMatch(page, /setInterval\(\(\) => \{ void load/)
   assert.match(page, /onClick=\{\(\) => void refreshAction\.current\?\.\(true\)\}/)
   assert.match(route, /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/)
@@ -1656,11 +1658,29 @@ test('page live: five tokens are all refreshed despite the four-receipt batch li
   const ids = [1, 2, 3, 4, 5].map(outcomeId)
   const first = nextTrackedOutcomeLiveBatch(ids, 0)
   assert.deepEqual(first.ids, ids.slice(0, 4))
-  const second = nextTrackedOutcomeLiveBatch(ids, first.cursor)
+  const cursor = advanceTrackedOutcomeLiveCursor(ids, first.ids, 4)
+  const second = nextTrackedOutcomeLiveBatch(ids, cursor)
   assert.equal(second.ids[0], ids[4])
   const seen = new Set([...first.ids, ...second.ids])
   assert.equal(seen.size, 5)
   assert.ok(ids.every(id => seen.has(id)))
+})
+
+test('page live: a partial or failed batch does not skip unattempted receipts', () => {
+  const ids = [1, 2, 3, 4, 5].map(outcomeId)
+  const first = nextTrackedOutcomeLiveBatch(ids, 0)
+  assert.equal(advanceTrackedOutcomeLiveCursor(ids, first.ids, 0), 0)
+  const partial = advanceTrackedOutcomeLiveCursor(ids, first.ids, 2)
+  const retry = nextTrackedOutcomeLiveBatch(ids, partial)
+  assert.equal(retry.ids[0], ids[2])
+  assert.equal(retry.ids.includes(ids[3]), true)
+  const skip = ids[0]
+  const skipped = nextTrackedOutcomeLiveBatch(ids, 0, skip)
+  assert.equal(skipped.ids.includes(skip), false)
+  const afterSkip = advanceTrackedOutcomeLiveCursor(ids, skipped.ids, 2, skip)
+  const next = nextTrackedOutcomeLiveBatch(ids, afterSkip, skip)
+  assert.equal(next.ids.includes(skip), false)
+  assert.equal(next.ids[0], skipped.ids[2])
 })
 
 test('page live: 200-token lists rotate fairly inside a fixed provider budget', () => {
@@ -1704,8 +1724,9 @@ test('page live: hidden tabs, unmount and in-flight batches skip overlapping wor
   assert.match(page, /if \(cancelled \|\| inFlight\) return/)
   assert.match(page, /visibilityState === 'hidden'/)
   assert.match(page, /visibilitychange/)
-  assert.match(page, /cancelled = true[\s\S]*clearTimeout\(start\)[\s\S]*clearInterval\(poll\)[\s\S]*clearInterval\(clock\)[\s\S]*removeEventListener\('visibilitychange'/)
+  assert.match(page, /cancelled = true[\s\S]*clearTimeout\(startTimer\)[\s\S]*clearInterval\(poll\)[\s\S]*clearInterval\(clock\)[\s\S]*removeEventListener\('visibilitychange'/)
   assert.match(page, /status === 429 \? 60_000/)
+  assert.match(page, /if \(refreshingRef\.current\) return/)
 })
 
 test('page live: liveOutcomeRequestIds caps at four unique valid ids', () => {

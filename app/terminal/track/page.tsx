@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { OUTCOME_POLICY, adoptNewerOutcomeObservation, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, snapshotHasFrozenEvidence, type TrackedOutcome } from '@/lib/tokenOutcomes'
+import { OUTCOME_POLICY, adoptNewerOutcomeObservation, advanceTrackedOutcomeLiveCursor, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, snapshotHasFrozenEvidence, type TrackedOutcome } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import { OutcomeCard, OutcomeReceipt } from '@/components/outcomes/OutcomeCard'
 import styles from '@/components/outcomes/outcomes.module.css'
@@ -25,6 +25,7 @@ export default function TrackPage() {
   const rowsRef = useRef<TrackedOutcome[]>([])
   const receiptRef = useRef<TrackedOutcome | null>(null)
   const selectedRef = useRef<string | null>(null)
+  const refreshingRef = useRef(false)
   function writeRows(updater: (current: TrackedOutcome[]) => TrackedOutcome[]) {
     setRows(current => {
       const next = updater(current)
@@ -40,6 +41,7 @@ export default function TrackPage() {
     })
   }
   useEffect(() => { selectedRef.current = selected }, [selected])
+  useEffect(() => { refreshingRef.current = refreshing }, [refreshing])
   function applyLiveObservations(updated: TrackedOutcome[]) {
     if (!updated.length) return
     const byId = new Map(updated.map(row => [row.id, row]))
@@ -89,11 +91,11 @@ export default function TrackPage() {
       if (cancelled || inFlight) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       if (!force && Date.now() < backoffUntil) return
+      if (refreshingRef.current) return
       const ids = rowsRef.current.map(row => row.id)
       const batch = nextTrackedOutcomeLiveBatch(ids, cursor, selectedRef.current)
       if (!batch.ids.length) return
       inFlight = true
-      cursor = batch.cursor
       setUpdatingIds(batch.ids)
       try {
         const result = await outcomeRequest('POST', { action: 'live', ids: batch.ids })
@@ -107,6 +109,7 @@ export default function TrackPage() {
           const missed = attempted.filter(id => !received.has(id))
           return [...kept, ...missed]
         })
+        cursor = advanceTrackedOutcomeLiveCursor(ids, batch.ids, attempted.length || batch.ids.length, selectedRef.current)
         backoffMs = OUTCOME_POLICY.pageLiveRefreshMs
       } catch (error) {
         if (cancelled) return
@@ -120,7 +123,16 @@ export default function TrackPage() {
         if (!cancelled) setUpdatingIds(current => current.filter(id => !batch.ids.includes(id)))
       }
     }
-    const start = window.setTimeout(() => { void tick(true) }, OUTCOME_POLICY.pageLiveFirstDelayMs)
+    let startTimer = 0
+    function kick() {
+      if (cancelled) return
+      if (refreshingRef.current) {
+        startTimer = window.setTimeout(kick, 750)
+        return
+      }
+      void tick(true)
+    }
+    startTimer = window.setTimeout(kick, OUTCOME_POLICY.pageLiveFirstDelayMs)
     const poll = window.setInterval(() => { void tick() }, OUTCOME_POLICY.pageLiveRefreshMs)
     const clock = window.setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
@@ -134,7 +146,7 @@ export default function TrackPage() {
     document.addEventListener('visibilitychange', onVis)
     return () => {
       cancelled = true
-      window.clearTimeout(start)
+      window.clearTimeout(startTimer)
       window.clearInterval(poll)
       window.clearInterval(clock)
       document.removeEventListener('visibilitychange', onVis)

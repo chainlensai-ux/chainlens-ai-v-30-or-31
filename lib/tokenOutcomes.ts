@@ -148,6 +148,15 @@ export function nextTrackedOutcomeLiveBatch(ids: string[], cursor = 0, skipId?: 
   for (let i = 0; i < size; i++) batch.push(ring[(start + i) % ring.length]!)
   return { ids: batch, cursor: (start + size) % ring.length }
 }
+/** Advance the rotating cursor by ids actually attempted. A 429 or empty attempt retries the same batch. */
+export function advanceTrackedOutcomeLiveCursor(ids: string[], batchIds: string[], consumed: number, skipId?: string | null): number {
+  const ring = ids.filter(id => typeof id === 'string' && id.length > 0 && id !== skipId)
+  if (!ring.length) return 0
+  const start = batchIds[0] ? ring.indexOf(batchIds[0]) : 0
+  const from = start >= 0 ? start : 0
+  const n = Math.max(0, Math.min(Number.isFinite(consumed) ? Math.floor(consumed) : 0, batchIds.length || ring.length))
+  return n <= 0 ? from : (from + n) % ring.length
+}
 export function pageLiveBudget(visibleCount: number, receiptOpen = false) {
   const interval = OUTCOME_POLICY.pageLiveRefreshMs
   const pagePostsPerMinute = OUTCOME_POLICY.postLimiterWindowMs / interval
