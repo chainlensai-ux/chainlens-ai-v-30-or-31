@@ -23,6 +23,11 @@ export const OUTCOME_POLICY = {
   pageLiveRefreshMs: 20_000,
   /** First card-live batch after the saved list is on screen, before the repeating interval. */
   pageLiveFirstDelayMs: 1_500,
+  /**
+   * Wall-clock budget for one live POST of up to four ids. Sequential Dex+Gecko timeouts are 14s
+   * each; finishing by 40s stays inside the 55s client abort and the 60s route maxDuration.
+   */
+  pageLiveBatchBudgetMs: 40_000,
   postLimiterMax: 10,
   postLimiterWindowMs: 60_000,
 
@@ -158,6 +163,7 @@ export function pageLiveBudget(visibleCount: number, receiptOpen = false) {
     tokensPerMinute,
     worstCaseProviderCallsPerMinute: (tokensPerMinute + receiptPostsPerMinute) * 2,
     cycleMs,
+    batchBudgetMs: OUTCOME_POLICY.pageLiveBatchBudgetMs,
   }
 }
 /**

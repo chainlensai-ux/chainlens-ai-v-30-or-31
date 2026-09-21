@@ -47,9 +47,9 @@ export async function POST(req: Request) {
     if (body.action === 'live') {
       const ids = liveOutcomeRequestIds(body.ids, body.id)
       if (!ids.length) return json({ error: 'Invalid outcome ID.' }, 400)
-      const outcomes = await refreshLiveOutcomes(user.userId, ids)
-      if (!outcomes.length) return json({ error: 'Outcome not found.' }, 404)
-      return json({ live: true, outcome: outcomes[0], outcomes })
+      const { outcomes, attempted } = await refreshLiveOutcomes(user.userId, ids)
+      if (!outcomes.length && attempted.length <= 1) return json({ error: 'Outcome not found.' }, 404)
+      return json({ live: true, outcome: outcomes[0] ?? null, outcomes, attempted })
     }
     if (body.action === 'refresh') {
       const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined

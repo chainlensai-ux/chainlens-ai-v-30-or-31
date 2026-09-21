@@ -537,9 +537,9 @@ export async function refreshLiveOutcome(
 export async function refreshLiveOutcomes(
   userId: string,
   ids: string[],
-  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders } = {},
+  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders; budgetMs?: number; clock?: () => number } = {},
   db: ReturnType<typeof outcomeDb> = outcomeDb(),
-): Promise<TrackedOutcome[]> {
+): Promise<{ outcomes: TrackedOutcome[]; attempted: string[] }> {
   const unique: string[] = []
   const seen = new Set<string>()
   for (const id of ids) {
@@ -548,14 +548,20 @@ export async function refreshLiveOutcomes(
     unique.push(id)
     if (unique.length >= OUTCOME_POLICY.refreshBatch) break
   }
-  const rows: TrackedOutcome[] = []
+  const clock = opts.clock ?? Date.now
+  const startedAt = clock()
+  const budgetMs = opts.budgetMs ?? OUTCOME_POLICY.pageLiveBatchBudgetMs
+  const outcomes: TrackedOutcome[] = []
+  const attempted: string[] = []
   for (const id of unique) {
+    if (attempted.length > 0 && clock() - startedAt >= budgetMs) break
+    attempted.push(id)
     try {
       const row = await refreshLiveOutcome(userId, id, opts, db)
-      if (row) rows.push(row)
+      if (row) outcomes.push(row)
     } catch {
       // Keep the batch moving. The card retains its last verified observation.
     }
   }
-  return rows
+  return { outcomes, attempted }
 }

@@ -1648,6 +1648,7 @@ test('page live: cards refresh automatically without a click, using the live pat
   assert.match(route, /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/)
   assert.equal(OUTCOME_POLICY.pageLiveRefreshMs, 20_000)
   assert.equal(OUTCOME_POLICY.pageLiveFirstDelayMs, 1_500)
+  assert.equal(OUTCOME_POLICY.pageLiveBatchBudgetMs, 40_000)
   assert.equal(OUTCOME_POLICY.postLimiterMax, 10)
 })
 
@@ -1766,15 +1767,16 @@ test('page live: refreshLiveOutcomes caps at four ids, keeps ownership, and does
     gecko: async () => { throw new Error('gecko must not run when Dex matches') },
   }
   const shown = await refreshLiveOutcomes(user, rows.map(row => row.id), { now, providers }, db as never)
-  assert.equal(shown.length, 4)
+  assert.equal(shown.outcomes.length, 4)
+  assert.deepEqual(shown.attempted, rows.slice(0, 4).map(row => row.id))
   assert.deepEqual([...new Set(reads)], rows.slice(0, 4).map(row => row.id))
   assert.equal(dexCalls, 4)
   assert.ok(persistPayloads.length >= 4)
-  assert.ok(shown.every(row => row.price_change_pct === 50 && row.outcome_status === 'pumped'))
-  assert.ok(shown.every(row => row.baseline_price_usd === 1 && row.baseline_market_cap_usd === 40_000))
-  assert.ok(shown.every(row => row.baseline_snapshot_json.scanId === snapshot.scanId))
+  assert.ok(shown.outcomes.every(row => row.price_change_pct === 50 && row.outcome_status === 'pumped'))
+  assert.ok(shown.outcomes.every(row => row.baseline_price_usd === 1 && row.baseline_market_cap_usd === 40_000))
+  assert.ok(shown.outcomes.every(row => row.baseline_snapshot_json.scanId === snapshot.scanId))
   assert.ok(persistPayloads.every(payload => payload.current_price_usd === 1.5 && !('baseline_price_usd' in payload)))
-  assert.equal(shown.some(row => row.id === rows[4]?.id), false)
+  assert.equal(shown.outcomes.some(row => row.id === rows[4]?.id), false)
 })
 
 test('page live: KAI-like invalid baseline stays unavailable while auto-refresh updates live market', async () => {
@@ -1787,11 +1789,49 @@ test('page live: KAI-like invalid baseline stays unavailable while auto-refresh 
   const shown = await refreshLiveOutcomes(user, [frozen.id, outcomeId(1), outcomeId(2), outcomeId(3), outcomeId(4)], {
     now, providers: { dex: async () => ({ quote: liveQuote, matches: [liveQuote] }), gecko: async () => null },
   }, db as never)
-  assert.equal(shown.length, 1)
-  assert.equal(shown[0]?.current_price_usd, 0.0009)
-  assert.equal(shown[0]?.current_market_cap_usd, 850_000)
-  assert.equal(shown[0]?.price_change_pct, null)
-  assert.equal(shown[0]?.outcome_status, 'unavailable')
-  assert.equal(outcomeHypothetical(shown[0]!, now), null)
-  assert.equal(shown[0]?.baseline_price_usd, 2579.35)
+  assert.equal(shown.outcomes.length, 1)
+  assert.equal(shown.outcomes[0]?.current_price_usd, 0.0009)
+  assert.equal(shown.outcomes[0]?.current_market_cap_usd, 850_000)
+  assert.equal(shown.outcomes[0]?.price_change_pct, null)
+  assert.equal(shown.outcomes[0]?.outcome_status, 'unavailable')
+  assert.equal(outcomeHypothetical(shown.outcomes[0]!, now), null)
+  assert.equal(shown.outcomes[0]?.baseline_price_usd, 2579.35)
+})
+
+test('page live: a slow provider batch returns partial results before the client abort budget', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = 1_800_000_000_000
+  let t = now
+  const snapshot = snapshotFromScan(scan(), user)!
+  const rows = [1, 2, 3, 4].map(n => {
+    const token = `0x${n.toString(16).padStart(40, '0')}`
+    return withObservation({
+      ...outcomeRow(), id: outcomeId(n), token_address: token, baseline_snapshot_json: snapshot,
+      baseline_price_usd: 1, current_price_usd: 1, last_checked_at: new Date(now - 20_000).toISOString(),
+      market_source: 'dexscreener',
+    }, 1)
+  })
+  const { db, reads } = mockLiveRowsDb(rows)
+  const providers = {
+    dex: async (tokenAddress: string, chain: string) => {
+      t += 20_000
+      const quote = identityQuote(chain === 'solana' ? 'solana' : 'base', tokenAddress, 1.5, now)
+      return { quote, matches: [quote] }
+    },
+    gecko: async () => null,
+  }
+  const shown = await refreshLiveOutcomes(user, rows.map(row => row.id), {
+    now, providers, budgetMs: 40_000, clock: () => t,
+  }, db as never)
+  assert.equal(shown.attempted.length, 2)
+  assert.equal(shown.outcomes.length, 2)
+  assert.deepEqual(shown.attempted, rows.slice(0, 2).map(row => row.id))
+  assert.equal(reads.length, 2)
+  assert.ok(shown.outcomes.every(row => row.price_change_pct === 50))
+  assert.equal(OUTCOME_POLICY.pageLiveBatchBudgetMs, 40_000)
+  assert.ok(OUTCOME_POLICY.pageLiveBatchBudgetMs < 55_000)
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  assert.match(page, /result\.attempted/)
+  assert.match(route, /attempted/)
 })

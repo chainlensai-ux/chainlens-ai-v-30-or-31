@@ -101,7 +101,12 @@ export default function TrackPage() {
         const outcomes = (Array.isArray(result.outcomes) ? result.outcomes : result.outcome ? [result.outcome] : []) as TrackedOutcome[]
         applyLiveRef.current(outcomes)
         const received = new Set(outcomes.map(row => row.id))
-        setFailedIds(current => current.filter(id => !received.has(id)))
+        const attempted = (Array.isArray(result.attempted) ? result.attempted as string[] : batch.ids).filter(id => batch.ids.includes(id))
+        setFailedIds(current => {
+          const kept = current.filter(id => !received.has(id) && !attempted.includes(id))
+          const missed = attempted.filter(id => !received.has(id))
+          return [...kept, ...missed]
+        })
         backoffMs = OUTCOME_POLICY.pageLiveRefreshMs
       } catch (error) {
         if (cancelled) return
