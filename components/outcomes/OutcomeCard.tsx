@@ -1,8 +1,8 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import {
-  comparableOutcomeBaselinePrice, frozenBaselineMarketCapUsd, hypothetical, observationCheckedAtMs, observationIsFresh, OUTCOME_POLICY,
-  percentChange, shareOutcome, validPriceOrNull, type TrackedOutcome,
+  comparableOutcomeBaselinePrice, frozenBaselineMarketCapUsd, hypothetical, OUTCOME_POLICY,
+  outcomeFreshnessLabel, percentChange, shareOutcome, validPriceOrNull, type TrackedOutcome,
 } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import styles from './outcomes.module.css'
@@ -37,14 +37,7 @@ const cardSinceScanHint = (row: TrackedOutcome) => {
   return validPriceOrNull(row.current_price_usd) != null ? 'Comparison unavailable' : 'Outcome pending'
 }
 function liveStatusLabel(checkedAt: string | null, now: number, failed: boolean, updating: boolean): string {
-  if (updating) return 'Updating…'
-  const ms = observationCheckedAtMs({ last_checked_at: checkedAt })
-  if (ms == null) return failed ? 'Latest refresh failed' : 'Not checked yet'
-  const seconds = Math.max(0, Math.floor((now - ms) / 1000))
-  const age = seconds < 60 ? `${seconds}s ago` : `${Math.max(1, Math.floor(seconds / 60))}m ago`
-  if (failed) return `Latest refresh failed · last verified ${age}`
-  if (!observationIsFresh({ last_checked_at: checkedAt }, now)) return `Last verified ${age}`
-  return `Updated ${age}`
+  return outcomeFreshnessLabel(checkedAt, now, failed, updating)
 }
 
 /** Structured nested evidence, not new AI prose. No evidence value is recomputed. */
@@ -54,7 +47,10 @@ function Evidence({ value }: { value: unknown }) {
   if (Array.isArray(value)) return value.length ? <ul className={styles.evidenceList}>{value.map((v, i) => <li key={i}><Evidence value={v} /></li>)}</ul> : <p className={styles.muted}>No entries recorded.</p>
   return <dl className={styles.evidenceFields}>{Object.entries(value).map(([key, v]) => <div key={key}><dt>{label(key)}</dt><dd><Evidence value={v} /></dd></div>)}</dl>
 }
-export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; onOpen: () => void; onDelete: () => void }) {
+export function OutcomeCard({ row, onOpen, onDelete, nowMs, updating = false, refreshFailed = false }: {
+  row: TrackedOutcome; onOpen: () => void; onDelete: () => void
+  nowMs: number; updating?: boolean; refreshFailed?: boolean
+}) {
   const snapshot = row.baseline_snapshot_json
   const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score unavailable' : `${row.baseline_risk_score}/100`
   return <article className={styles.card} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
@@ -63,7 +59,7 @@ export function OutcomeCard({ row, onOpen, onDelete }: { row: TrackedOutcome; on
     <p className={styles.muted}>{snapshot.tokenName}</p>
     <p className={styles.address} title={row.token_address}>{row.token_address}</p>
     <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0} data-neutral={row.price_change_pct == null}>{cardSinceScan(row)}</strong><p>{cardSinceScanHint(row)}</p></div></div>
-    <footer className={styles.cardFooter}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
+    <footer className={styles.cardFooter}><div className={styles.cardMeta}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><span className={styles.cardFreshness}><span className={`${styles.liveDot} ${updating ? styles.liveDotUpdating : ''}`} aria-hidden="true" />{outcomeFreshnessLabel(row.last_checked_at, nowMs, refreshFailed, updating)}</span></div><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
   </article>
 }
 export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = false, evidenceError = '' }: {

@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
-import { OUTCOME_POLICY } from '@/lib/tokenOutcomes'
+import { OUTCOME_POLICY, liveOutcomeRequestIds } from '@/lib/tokenOutcomes'
 import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
-import { outcomeDb, refreshOutcomes, refreshLiveOutcome, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError } from '@/lib/server/tokenOutcomeService'
+import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
@@ -45,11 +45,11 @@ export async function POST(req: Request) {
     try { body = JSON.parse(bodyText) } catch { return json({ error: 'Invalid request.' }, 400) }
     if (!body || typeof body !== 'object') return json({ error: 'Invalid request.' }, 400)
     if (body.action === 'live') {
-      const id = typeof body.id === 'string' ? body.id : Array.isArray(body.ids) ? body.ids.find((value): value is string => typeof value === 'string') : undefined
-      if (!id || !OUTCOME_ID_RE.test(id)) return json({ error: 'Invalid outcome ID.' }, 400)
-      const outcome = await refreshLiveOutcome(user.userId, id)
-      if (!outcome) return json({ error: 'Outcome not found.' }, 404)
-      return json({ live: true, outcome, outcomes: [outcome] })
+      const ids = liveOutcomeRequestIds(body.ids, body.id)
+      if (!ids.length) return json({ error: 'Invalid outcome ID.' }, 400)
+      const outcomes = await refreshLiveOutcomes(user.userId, ids)
+      if (!outcomes.length) return json({ error: 'Outcome not found.' }, 404)
+      return json({ live: true, outcome: outcomes[0], outcomes })
     }
     if (body.action === 'refresh') {
       const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined

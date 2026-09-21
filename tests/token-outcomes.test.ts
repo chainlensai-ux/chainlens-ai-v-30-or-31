@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
-import { OUTCOME_POLICY, adoptNewerOutcomeObservation, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
+import { OUTCOME_POLICY, adoptNewerOutcomeObservation, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, liveOutcomeRequestIds, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, outcomeFreshnessLabel, pageLiveBudget, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
+import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshLiveOutcomes, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -217,10 +217,14 @@ test('outcome UI renders compact card pending copy and keeps the full modal sent
   assert.match(source, /styles\.delete/)
   assert.match(source, /styles\.viewReceipt/)
   assert.match(source, /styles\.cardActions/)
+  assert.match(source, /styles\.cardFreshness/)
+  assert.match(source, /outcomeFreshnessLabel/)
   assert.doesNotMatch(source, /className=\{styles\.close\}[\s\S]*Delete/)
   assert.match(css, /\.pendingPrice/)
   assert.match(css, /\.delete \{/)
   assert.match(css, /\.cardActions/)
+  assert.match(css, /\.cardFreshness/)
+  assert.match(css, /\.cardMeta/)
   assert.match(css, /flex-shrink:0/)
   assert.match(css, /@media \(max-width: 420px\)/)
   assert.match(css, /\.receiptBody/)
@@ -384,7 +388,8 @@ test('9. manual refresh wiring force-updates visible receipts', () => {
 test('10. page-load refresh updates stale tracked receipts without polling', () => {
   const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
   assert.match(page, /load\(false, version\)\.then\(loaded => \{ if \(loaded && !disposed && version === generation\) return load\(true, version, false\) \}\)/)
-  assert.doesNotMatch(page, /setInterval/)
+  assert.doesNotMatch(page, /setInterval\(\(\) => \{ void load/)
+  assert.match(page, /action: 'live', ids: batch\.ids/)
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
   assert.match(service, /priceStaleMs/)
   assert.match(service, /last_checked_at\.lt\.\$\{stale\}/)
@@ -948,10 +953,9 @@ test('live receipt: opening forces a single-id lookup, polls on the modal, and u
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   const button = readFileSync(new URL('../components/outcomes/TrackOutcomeButton.tsx', import.meta.url), 'utf8')
-  assert.doesNotMatch(page, /setInterval/)
   assert.match(page, /onLiveUpdate=\{applyLiveObservation\}/)
-  assert.match(page, /adoptNewerOutcomeObservation\(row, updated\)/)
-  assert.match(page, /adoptNewerOutcomeObservation\(prev, updated\)/)
+  assert.match(page, /adoptNewerOutcomeObservation\(row, incoming\)/)
+  assert.match(page, /adoptNewerOutcomeObservation\(prev, incoming\)/)
   assert.match(page, /snapshotHasFrozenEvidence/)
   assert.match(page, /setSelected\(null\)/)
   assert.doesNotMatch(page, /onClose=\{\(\) => \{ setSelected\(null\); setRows/)
@@ -966,16 +970,18 @@ test('live receipt: opening forces a single-id lookup, polls on the modal, and u
   assert.match(modal, /Current market cap/)
   assert.match(modal, /Original market cap/)
   assert.match(modal, /Market cap unavailable/)
-  assert.match(modal, /Updating…/)
-  assert.match(modal, /Latest refresh failed/)
+  assert.match(modal, /liveStatusLabel/)
+  const outcomesLib = readFileSync(new URL('../lib/tokenOutcomes.ts', import.meta.url), 'utf8')
+  assert.match(outcomesLib, /Updating…/)
+  assert.match(outcomesLib, /Latest refresh failed/)
   assert.match(route, /body\.action === 'live'/)
-  assert.match(route, /refreshLiveOutcome/)
+  assert.match(route, /refreshLiveOutcomes/)
   assert.match(service, /if \(opts\.force !== true\) query = query\.or\(leaseOr\)/)
   assert.match(service, /if \(opts\.force !== true\) claimQuery = claimQuery\.or\(leaseOr\)/)
   assert.match(button, /error\.status = res\.status/)
   assert.equal(OUTCOME_POLICY.receiptLiveRefreshMs, 20_000)
   assert.ok(OUTCOME_POLICY.receiptLiveRefreshMs >= 15_000 && OUTCOME_POLICY.receiptLiveRefreshMs <= 20_000)
-  assert.ok(60_000 / OUTCOME_POLICY.receiptLiveRefreshMs + 2 <= 10)
+  assert.ok(60_000 / OUTCOME_POLICY.receiptLiveRefreshMs + 60_000 / OUTCOME_POLICY.pageLiveRefreshMs <= 10)
 })
 
 
@@ -1219,14 +1225,20 @@ test('contaminated baseline refresh keeps current price and original mcap, never
 test('live price tick does not rerun scanner or rug analysis and skips the full list read', () => {
   const service = readFileSync(new URL('../lib/server/tokenOutcomeService.ts', import.meta.url), 'utf8')
   const start = service.indexOf('export async function refreshLiveOutcome')
+  const batchStart = service.indexOf('export async function refreshLiveOutcomes')
   const end = service.indexOf('\nexport async function', start + 10)
   const body = service.slice(start, end === -1 ? undefined : end)
+  const batch = service.slice(batchStart)
   assert.match(body, /resolveLiveOutcomeQuoteDetailed/)
   assert.match(body, /persistLiveOutcomeUpdate/)
   assert.doesNotMatch(body, /afterScanProof/)
   assert.doesNotMatch(body, /listTrackedOutcomes/)
   assert.doesNotMatch(body, /buildTokenScanCacheKey/)
   assert.doesNotMatch(body, /getTokenCache/)
+  assert.match(batch, /refreshLiveOutcome/)
+  assert.doesNotMatch(batch, /afterScanProof/)
+  assert.doesNotMatch(batch, /listTrackedOutcomes/)
+  assert.doesNotMatch(batch, /buildTokenScanCacheKey/)
 })
 
 test('live quote lookups coalesce duplicates and reuse a fresh tick', async () => {
@@ -1582,4 +1594,204 @@ test('frozen snapshot and original scan evidence are never modified by live merg
   }, null, new Date(now + 5_000).toISOString(), now + 5_000)
   assert.equal((update as { baseline_price_usd?: number }).baseline_price_usd, undefined)
   assert.equal((update as { baseline_snapshot_json?: unknown }).baseline_snapshot_json, undefined)
+})
+
+function outcomeId(n: number) {
+  return `aaaaaaaa-aaaa-4aaa-8aaa-${n.toString(16).padStart(12, '0')}`
+}
+function mockLiveRowsDb(rows: TrackedOutcome[]) {
+  const byId = new Map(rows.map(row => [row.id, row]))
+  const persistPayloads: Record<string, unknown>[] = []
+  const reads: string[] = []
+  const missing = { code: 'PGRST204', message: "Could not find the 'market_observation_json' column of 'tracked_token_outcomes' in the schema cache" }
+  const db = {
+    from() {
+      let op: 'select' | 'update' = 'select'
+      let payload: Record<string, unknown> = {}
+      let id: string | null = null
+      const self = {
+        select() {
+          if (op === 'update') {
+            persistPayloads.push(payload)
+            if ('market_observation_json' in payload) return Promise.resolve({ data: null, error: missing })
+            return Promise.resolve({
+              data: [{ current_price_usd: payload.current_price_usd, last_checked_at: payload.last_checked_at, price_change_pct: payload.price_change_pct }],
+              error: null,
+            })
+          }
+          return self
+        },
+        update(p: Record<string, unknown>) { op = 'update'; payload = p; return self },
+        eq(column: string, value: string) { if (column === 'id') id = value; return self },
+        maybeSingle() {
+          if (op === 'select' && id) reads.push(id)
+          return Promise.resolve({ data: (id ? byId.get(id) : null) ?? null, error: null })
+        },
+      }
+      return self
+    },
+  }
+  return { db, persistPayloads, reads }
+}
+
+test('page live: cards refresh automatically without a click, using the live path', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  assert.match(page, /OUTCOME_POLICY\.pageLiveRefreshMs/)
+  assert.match(page, /OUTCOME_POLICY\.pageLiveFirstDelayMs/)
+  assert.match(page, /nextTrackedOutcomeLiveBatch/)
+  assert.match(page, /action: 'live', ids: batch\.ids/)
+  assert.match(page, /setTimeout\(\(\) => \{ void tick\(true\) \}, OUTCOME_POLICY\.pageLiveFirstDelayMs\)/)
+  assert.match(page, /setInterval\(\(\) => \{ void tick\(\) \}, OUTCOME_POLICY\.pageLiveRefreshMs\)/)
+  assert.doesNotMatch(page, /setInterval\(\(\) => \{ void load/)
+  assert.match(page, /onClick=\{\(\) => void refreshAction\.current\?\.\(true\)\}/)
+  assert.match(route, /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/)
+  assert.equal(OUTCOME_POLICY.pageLiveRefreshMs, 20_000)
+  assert.equal(OUTCOME_POLICY.pageLiveFirstDelayMs, 1_500)
+  assert.equal(OUTCOME_POLICY.postLimiterMax, 10)
+})
+
+test('page live: five tokens are all refreshed despite the four-receipt batch limit', () => {
+  const ids = [1, 2, 3, 4, 5].map(outcomeId)
+  const first = nextTrackedOutcomeLiveBatch(ids, 0)
+  assert.deepEqual(first.ids, ids.slice(0, 4))
+  const second = nextTrackedOutcomeLiveBatch(ids, first.cursor)
+  assert.equal(second.ids[0], ids[4])
+  const seen = new Set([...first.ids, ...second.ids])
+  assert.equal(seen.size, 5)
+  assert.ok(ids.every(id => seen.has(id)))
+})
+
+test('page live: 200-token lists rotate fairly inside a fixed provider budget', () => {
+  const ids = Array.from({ length: 200 }, (_, i) => outcomeId(i + 1))
+  const counts = new Map(ids.map(id => [id, 0]))
+  let cursor = 0
+  let posts = 0
+  for (let i = 0; i < 50; i++) {
+    const batch = nextTrackedOutcomeLiveBatch(ids, cursor)
+    assert.ok(batch.ids.length <= OUTCOME_POLICY.refreshBatch)
+    assert.equal(batch.ids.length, 4)
+    for (const id of batch.ids) counts.set(id, (counts.get(id) ?? 0) + 1)
+    cursor = batch.cursor
+    posts += 1
+  }
+  assert.equal(posts, 50)
+  assert.ok(ids.every(id => counts.get(id) === 1))
+  const open = pageLiveBudget(5, true)
+  const closed = pageLiveBudget(200, false)
+  assert.ok(open.totalPostsPerMinute <= OUTCOME_POLICY.postLimiterMax)
+  assert.ok(closed.totalPostsPerMinute <= OUTCOME_POLICY.postLimiterMax)
+  assert.equal(open.pagePostsPerMinute, 3)
+  assert.equal(open.receiptPostsPerMinute, 3)
+  assert.equal(closed.tokensPerMinute, 12)
+  assert.equal(closed.cycleMs, 50 * OUTCOME_POLICY.pageLiveRefreshMs)
+  assert.ok(closed.worstCaseProviderCallsPerMinute <= 24)
+})
+
+test('page live: the open receipt is not double-fetched by the card ticker', () => {
+  const ids = [1, 2, 3, 4, 5].map(outcomeId)
+  const skip = ids[2]
+  const batch = nextTrackedOutcomeLiveBatch(ids, 0, skip)
+  assert.equal(batch.ids.includes(skip), false)
+  assert.equal(batch.ids.length, 4)
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /nextTrackedOutcomeLiveBatch\(ids, cursor, selectedRef\.current\)/)
+})
+
+test('page live: hidden tabs, unmount and in-flight batches skip overlapping work', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /if \(cancelled \|\| inFlight\) return/)
+  assert.match(page, /visibilityState === 'hidden'/)
+  assert.match(page, /visibilitychange/)
+  assert.match(page, /cancelled = true[\s\S]*clearTimeout\(start\)[\s\S]*clearInterval\(poll\)[\s\S]*clearInterval\(clock\)[\s\S]*removeEventListener\('visibilitychange'/)
+  assert.match(page, /status === 429 \? 60_000/)
+})
+
+test('page live: liveOutcomeRequestIds caps at four unique valid ids', () => {
+  const ids = [1, 2, 3, 4, 5, 2].map(outcomeId)
+  assert.deepEqual(liveOutcomeRequestIds(ids), ids.slice(0, 4))
+  assert.deepEqual(liveOutcomeRequestIds(undefined, ids[0]), [ids[0]])
+  assert.deepEqual(liveOutcomeRequestIds(['nope', ids[1]]), [ids[1]])
+  assert.deepEqual(liveOutcomeRequestIds([]), [])
+})
+
+test('page live: batch live updates card percent and class together and newer ticks win', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), baseline_price_usd: 1, baseline_market_cap_usd: 100_000 }
+  const older = sanitizeTrackedOutcome(observationAt(frozen, 1.2, now - 40_000, 120_000), now)
+  const live = sanitizeTrackedOutcome(observationAt(frozen, 1.5, now, 150_000), now)
+  assert.equal(older.outcome_status, 'watching')
+  const card = adoptNewerOutcomeObservation(older, live, now)
+  const receipt = adoptNewerOutcomeObservation(older, live, now)
+  assert.equal(card.price_change_pct, 50)
+  assert.equal(card.outcome_status, 'pumped')
+  assert.equal(card.price_change_pct, receipt.price_change_pct)
+  assert.equal(card.outcome_status, receipt.outcome_status)
+  const stale = sanitizeTrackedOutcome(observationAt(frozen, 1.1, now - 80_000, 110_000), now)
+  const kept = adoptNewerOutcomeObservation(card, stale, now)
+  assert.equal(kept.current_price_usd, 1.5)
+  assert.equal(kept.price_change_pct, 50)
+})
+
+test('page live: freshness copy never claims a stale observation is live', () => {
+  const now = 1_800_000_000_000
+  const checked = new Date(now).toISOString()
+  assert.equal(outcomeFreshnessLabel(checked, now + 12_000), 'Updated 12s ago')
+  assert.equal(outcomeFreshnessLabel(checked, now, false, true), 'Updating…')
+  assert.equal(outcomeFreshnessLabel(checked, now + 4 * 60_000), 'Last verified 4m ago')
+  assert.match(outcomeFreshnessLabel(checked, now + 12_000, true), /Latest refresh failed/)
+  assert.doesNotMatch(outcomeFreshnessLabel(checked, now + 4 * 60_000), /^Updated /)
+})
+
+test('page live: refreshLiveOutcomes caps at four ids, keeps ownership, and does not rewrite frozen evidence', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const snapshot = snapshotFromScan(scan(), user)!
+  const rows = [1, 2, 3, 4, 5].map(n => {
+    const token = `0x${n.toString(16).padStart(40, '0')}`
+    return withObservation({
+      ...outcomeRow(), id: outcomeId(n), token_address: token, baseline_snapshot_json: snapshot,
+      baseline_price_usd: 1, baseline_market_cap_usd: 40_000, current_price_usd: 1,
+      last_checked_at: new Date(now - 20_000).toISOString(), market_source: 'dexscreener',
+    }, 1, 40_000)
+  })
+  const { db, persistPayloads, reads } = mockLiveRowsDb(rows)
+  let dexCalls = 0
+  const providers = {
+    dex: async (tokenAddress: string, chain: string) => {
+      dexCalls += 1
+      const quote = { ...identityQuote(chain === 'solana' ? 'solana' : 'base', tokenAddress, 1.5, now), marketCapUsd: 60_000 }
+      return { quote, matches: [quote] }
+    },
+    gecko: async () => { throw new Error('gecko must not run when Dex matches') },
+  }
+  const shown = await refreshLiveOutcomes(user, rows.map(row => row.id), { now, providers }, db as never)
+  assert.equal(shown.length, 4)
+  assert.deepEqual([...new Set(reads)], rows.slice(0, 4).map(row => row.id))
+  assert.equal(dexCalls, 4)
+  assert.ok(persistPayloads.length >= 4)
+  assert.ok(shown.every(row => row.price_change_pct === 50 && row.outcome_status === 'pumped'))
+  assert.ok(shown.every(row => row.baseline_price_usd === 1 && row.baseline_market_cap_usd === 40_000))
+  assert.ok(shown.every(row => row.baseline_snapshot_json.scanId === snapshot.scanId))
+  assert.ok(persistPayloads.every(payload => payload.current_price_usd === 1.5 && !('baseline_price_usd' in payload)))
+  assert.equal(shown.some(row => row.id === rows[4]?.id), false)
+})
+
+test('page live: KAI-like invalid baseline stays unavailable while auto-refresh updates live market', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const frozen = { ...kaiContaminatedRow(now), id: outcomeId(9) }
+  const { db } = mockLiveRowsDb([frozen])
+  const liveQuote = { ...marketQuote(KAI_BASE, 0.0009), marketCapUsd: 850_000, address: KAI_BASE, fetchedAt: now,
+    marketIdentity: { selectedPoolAddress: '0x84bb5de3', baseTokenAddress: KAI_BASE, quoteTokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' } }
+  const shown = await refreshLiveOutcomes(user, [frozen.id, outcomeId(1), outcomeId(2), outcomeId(3), outcomeId(4)], {
+    now, providers: { dex: async () => ({ quote: liveQuote, matches: [liveQuote] }), gecko: async () => null },
+  }, db as never)
+  assert.equal(shown.length, 1)
+  assert.equal(shown[0]?.current_price_usd, 0.0009)
+  assert.equal(shown[0]?.current_market_cap_usd, 850_000)
+  assert.equal(shown[0]?.price_change_pct, null)
+  assert.equal(shown[0]?.outcome_status, 'unavailable')
+  assert.equal(outcomeHypothetical(shown[0]!, now), null)
+  assert.equal(shown[0]?.baseline_price_usd, 2579.35)
 })

@@ -15,6 +15,16 @@ export const OUTCOME_POLICY = {
   receiptLiveRefreshMs: 20_000,
   /** Coalesce overlapping live ticks for the same chain+contract. */
   receiptLiveQuoteReuseMs: 15_000,
+  /**
+   * Track-page live batch cadence. One POST carries at most refreshBatch ids, so 20s is 3 POSTs/min
+   * for the list. An open receipt adds 3 more. That is 6/10 of the outcome limiter, leaving headroom
+   * for a manual refresh. Larger lists share this fixed budget by rotating; they are not fetched faster.
+   */
+  pageLiveRefreshMs: 20_000,
+  /** First card-live batch after the saved list is on screen, before the repeating interval. */
+  pageLiveFirstDelayMs: 1_500,
+  postLimiterMax: 10,
+  postLimiterWindowMs: 60_000,
 
   limits: { free: 5, pro: 50, elite: 200 },
 } as const
@@ -96,6 +106,59 @@ export function observationIsFresh(row: { last_checked_at?: string | null }, now
 }
 export function observationIsSourced(row: { market_source?: string | null }): boolean {
   return typeof row.market_source === 'string' && row.market_source.trim() !== ''
+}
+export function outcomeFreshnessLabel(checkedAt: string | null | undefined, now: number, failed = false, updating = false): string {
+  if (updating) return 'Updating…'
+  const ms = observationCheckedAtMs({ last_checked_at: checkedAt })
+  if (ms == null) return failed ? 'Latest refresh failed' : 'Not checked yet'
+  const seconds = Math.max(0, Math.floor((now - ms) / 1000))
+  const age = seconds < 60 ? `${seconds}s ago` : `${Math.max(1, Math.floor(seconds / 60))}m ago`
+  if (failed) return `Latest refresh failed · last verified ${age}`
+  if (!observationIsFresh({ last_checked_at: checkedAt }, now)) return `Last verified ${age}`
+  return `Updated ${age}`
+}
+const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
+export function liveOutcomeRequestIds(ids: unknown, fallbackId?: unknown): string[] {
+  const raw = Array.isArray(ids) ? ids : typeof fallbackId === 'string' ? [fallbackId] : []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const value of raw) {
+    if (typeof value !== 'string' || !OUTCOME_ID_RE.test(value) || seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+    if (out.length >= OUTCOME_POLICY.refreshBatch) break
+  }
+  return out
+}
+/**
+ * Rotate through displayed receipts in batches of at most four. The open receipt is owned by the
+ * 20s modal loop and is skipped here so it is not live-fetched twice.
+ */
+export function nextTrackedOutcomeLiveBatch(ids: string[], cursor = 0, skipId?: string | null, batchSize = OUTCOME_POLICY.refreshBatch): { ids: string[]; cursor: number } {
+  const ring = ids.filter(id => typeof id === 'string' && id.length > 0 && id !== skipId)
+  if (!ring.length || batchSize <= 0) return { ids: [], cursor: 0 }
+  const size = Math.min(batchSize, ring.length)
+  const start = ((cursor % ring.length) + ring.length) % ring.length
+  const batch: string[] = []
+  for (let i = 0; i < size; i++) batch.push(ring[(start + i) % ring.length]!)
+  return { ids: batch, cursor: (start + size) % ring.length }
+}
+export function pageLiveBudget(visibleCount: number, receiptOpen = false) {
+  const interval = OUTCOME_POLICY.pageLiveRefreshMs
+  const pagePostsPerMinute = OUTCOME_POLICY.postLimiterWindowMs / interval
+  const receiptPostsPerMinute = receiptOpen ? OUTCOME_POLICY.postLimiterWindowMs / OUTCOME_POLICY.receiptLiveRefreshMs : 0
+  const tokensPerMinute = pagePostsPerMinute * OUTCOME_POLICY.refreshBatch
+  const cycleMs = visibleCount <= 0 ? 0 : Math.ceil(visibleCount / OUTCOME_POLICY.refreshBatch) * interval
+  return {
+    intervalMs: interval,
+    batchSize: OUTCOME_POLICY.refreshBatch,
+    pagePostsPerMinute,
+    receiptPostsPerMinute,
+    totalPostsPerMinute: pagePostsPerMinute + receiptPostsPerMinute,
+    tokensPerMinute,
+    worstCaseProviderCallsPerMinute: (tokensPerMinute + receiptPostsPerMinute) * 2,
+    cycleMs,
+  }
 }
 /**
  * A persisted current price may be shown only when it is a real positive number.

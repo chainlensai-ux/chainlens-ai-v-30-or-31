@@ -529,3 +529,33 @@ export async function refreshLiveOutcome(
     after_evidence_json: row.after_evidence_json ?? null,
   }, now)
 }
+
+/**
+ * Track-page live batch. Same identity-matched quote path as an open receipt. At most four ids,
+ * no Token Scanner, no rug proof, no full list. One failing id does not drop the rest.
+ */
+export async function refreshLiveOutcomes(
+  userId: string,
+  ids: string[],
+  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders } = {},
+  db: ReturnType<typeof outcomeDb> = outcomeDb(),
+): Promise<TrackedOutcome[]> {
+  const unique: string[] = []
+  const seen = new Set<string>()
+  for (const id of ids) {
+    if (!OUTCOME_ID_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    unique.push(id)
+    if (unique.length >= OUTCOME_POLICY.refreshBatch) break
+  }
+  const rows: TrackedOutcome[] = []
+  for (const id of unique) {
+    try {
+      const row = await refreshLiveOutcome(userId, id, opts, db)
+      if (row) rows.push(row)
+    } catch {
+      // Keep the batch moving. The card retains its last verified observation.
+    }
+  }
+  return rows
+}

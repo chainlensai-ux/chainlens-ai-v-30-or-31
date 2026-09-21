@@ -30,6 +30,8 @@
 .change[data-neutral=true] { color:#a8b4c5; }
 .card footer,.cardFooter { display:flex; gap:12px; justify-content:space-between; align-items:center; flex-wrap:wrap; font-size:11px; color:#8fa0b4; min-width:0; width:100%; }
 .trackedAt { min-width:0; overflow-wrap:anywhere; }
+.cardMeta { display:flex; flex-direction:column; gap:4px; min-width:0; min-height:34px; justify-content:center; }
+.cardFreshness { display:inline-flex; align-items:center; gap:6px; min-height:16px; color:#8fa0b4; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .cardActions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; min-width:0; }
 .accent,.viewReceipt { color:#53f3c3; flex-shrink:0; white-space:nowrap; }
 .delete { border:1px solid #354354; background:#121c29; color:#c6d1df; border-radius:8px; height:34px; padding:0 12px; width:auto; min-width:4.5rem; flex-shrink:0; cursor:pointer; font-size:12px; line-height:1; }
