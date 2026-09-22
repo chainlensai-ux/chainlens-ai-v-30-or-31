@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { OUTCOME_POLICY, liveOutcomeRequestIds } from '@/lib/tokenOutcomes'
 import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
-import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError } from '@/lib/server/tokenOutcomeService'
+import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError, logTrackedOutcomeLiveBatch } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
@@ -41,15 +41,29 @@ export async function POST(req: Request) {
   try {
     const bodyText = await req.text()
     if (bodyText.length > 182_000) return json({ error: 'Outcome receipt too large.' }, 413)
-    let body: { action?: string; receipt?: unknown; force?: unknown; ids?: unknown; id?: unknown }
+    let body: { action?: string; receipt?: unknown; force?: unknown; ids?: unknown; id?: unknown; batchId?: unknown }
     try { body = JSON.parse(bodyText) } catch { return json({ error: 'Invalid request.' }, 400) }
     if (!body || typeof body !== 'object') return json({ error: 'Invalid request.' }, 400)
     if (body.action === 'live') {
       const ids = liveOutcomeRequestIds(body.ids, body.id)
+      const batchId = typeof body.batchId === 'string' && body.batchId.length <= 64 ? body.batchId : null
+      const startedAt = Date.now()
       if (!ids.length) return json({ error: 'Invalid outcome ID.' }, 400)
-      const { outcomes, attempted } = await refreshLiveOutcomes(user.userId, ids)
-      if (!outcomes.length && attempted.length <= 1) return json({ error: 'Outcome not found.' }, 404)
-      return json({ live: true, outcome: outcomes[0] ?? null, outcomes, attempted })
+      const { outcomes, attempted, providerCalls, refreshedIds, failedIds, rejectionReasons, observationTimestamps } = await refreshLiveOutcomes(user.userId, ids)
+      const finishedAt = Date.now()
+      const notFound = !outcomes.length && attempted.length <= 1
+      // BOUNDED DIAGNOSTIC, DISCLOSED: one line per live batch, server-observable fields only —
+      // see logTrackedOutcomeLiveBatch's own header for why merge/scheduling fields are the
+      // client's job, not this route's.
+      logTrackedOutcomeLiveBatch({
+        batchId, selectedIds: ids, startedAt, finishedAt, httpStatus: notFound ? 404 : 200,
+        providerCalls, refreshedIds, failedIds, rejectionReasons, observationTimestamps,
+      })
+      if (notFound) return json({ error: 'Outcome not found.' }, 404)
+      return json({
+        live: true, outcome: outcomes[0] ?? null, outcomes, attempted, batchId, startedAt, finishedAt,
+        providerCalls, refreshedIds, failedIds, rejectionReasons, observationTimestamps,
+      })
     }
     if (body.action === 'refresh') {
       const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined

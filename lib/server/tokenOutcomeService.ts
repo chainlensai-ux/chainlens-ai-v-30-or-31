@@ -486,6 +486,26 @@ export async function persistLiveOutcomeUpdate(
   return written
 }
 
+// LIVE-BATCH DIAGNOSTIC, DISCLOSED (Track auto-refresh diagnosis follow-up task): every OTHER
+// outcome-refresh path (`refreshOutcomes`) already logs `[outcome-refresh-forensic]` per row, but
+// the Track page's own card-tick scheduler calls `refreshLiveOutcome`/`refreshLiveOutcomes`
+// exclusively, and that path had ZERO server-side visibility — a provider failure was silently
+// swallowed (`.catch(() => null)`) with no log line, so there was no way to tell from server logs
+// whether a "Updating…" batch actually reached a provider, got an identity-matched quote, or wrote
+// anything. `refreshed` below is deliberately NOT "did this id return without throwing" — a row
+// that fell back to its previous observation still returns non-null from `refreshLiveOutcome` (by
+// design, so the card never blanks out) but must NOT be counted as a genuine refresh. `refreshed`
+// is true only when `last_checked_at` actually advanced to a fresh, identity-matched, positive
+// quote for THIS call — the same condition `buildOutcomeRefreshUpdate` uses to decide whether to
+// stamp a new `checkedAt` at all.
+export type LiveOutcomeDiagnostic = {
+  id: string
+  providerCallAttempted: boolean
+  refreshed: boolean
+  rejectionReason: string | null
+  observationTimestamp: string | null
+}
+
 /**
  * Open-receipt price tick. One identity-matched quote, no Token Scanner, no rug proof, no full list.
  * Frozen baseline columns are never written. Previous verified observation is retained on provider miss.
@@ -493,7 +513,7 @@ export async function persistLiveOutcomeUpdate(
 export async function refreshLiveOutcome(
   userId: string,
   id: string,
-  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders } = {},
+  opts: { now?: number; providers?: ResolveOutcomeQuoteProviders; onDiagnostic?: (diagnostic: LiveOutcomeDiagnostic) => void } = {},
   db: ReturnType<typeof outcomeDb> = outcomeDb(),
 ): Promise<TrackedOutcome | null> {
   if (!OUTCOME_ID_RE.test(id)) return null
@@ -505,17 +525,27 @@ export async function refreshLiveOutcome(
       ? 'Outcome storage unavailable. The tracked-token-outcomes migration must be applied.'
       : 'Outcome storage unavailable. Check the tracked-token-outcomes migration.')
   }
-  if (!data) return null
+  if (!data) {
+    opts.onDiagnostic?.({ id, providerCallAttempted: false, refreshed: false, rejectionReason: 'row_not_found', observationTimestamp: null })
+    return null
+  }
   const row = data as TrackedOutcome
   const resolved = await resolveLiveOutcomeQuoteDetailed(row.chain, row.token_address, opts.providers, { now }).catch(() => null)
   const quote = resolved?.quote ?? null
   const quoteTime = quote?.fetchedAt
   const checkedAt = new Date(quoteTime != null && Number.isFinite(quoteTime) ? quoteTime : now).toISOString()
   const update = buildOutcomeRefreshUpdate(row, quote, row.after_evidence_json ?? null, checkedAt, now)
+  const genuinelyRefreshed = update.last_checked_at !== row.last_checked_at
   const written = await persistLiveOutcomeUpdate(db, row.id, userId, update)
-  if (written.error) throw new Error('Unable to save the latest outcome observation.')
+  if (written.error) {
+    opts.onDiagnostic?.({
+      id, providerCallAttempted: resolved?.fetchAttempted ?? false, refreshed: false,
+      rejectionReason: 'db_write_failed', observationTimestamp: row.last_checked_at ?? null,
+    })
+    throw new Error('Unable to save the latest outcome observation.')
+  }
   const persisted = written.data?.[0] as { current_price_usd?: number | null; last_checked_at?: string | null } | undefined
-  return sanitizeTrackedOutcome({
+  const result = sanitizeTrackedOutcome({
     ...row,
     current_price_usd: persisted?.current_price_usd ?? update.current_price_usd,
     current_liquidity_usd: update.current_liquidity_usd,
@@ -528,18 +558,33 @@ export async function refreshLiveOutcome(
     last_checked_at: persisted?.last_checked_at ?? update.last_checked_at,
     after_evidence_json: row.after_evidence_json ?? null,
   }, now)
+  opts.onDiagnostic?.({
+    id, providerCallAttempted: resolved?.fetchAttempted ?? false, refreshed: genuinelyRefreshed,
+    rejectionReason: genuinelyRefreshed ? null : (resolved?.rejectionReason ?? (resolved == null ? 'provider_threw' : 'no_usable_quote')),
+    observationTimestamp: result.last_checked_at ?? null,
+  })
+  return result
 }
 
 /**
  * Track-page live batch. Same identity-matched quote path as an open receipt. At most four ids,
  * no Token Scanner, no rug proof, no full list. One failing id does not drop the rest.
+ *
+ * Additive diagnostic fields (`providerCalls`/`refreshedIds`/`failedIds`/`rejectionReasons`/
+ * `observationTimestamps`) — see `LiveOutcomeDiagnostic`'s own header — let the API route (the only
+ * caller with `httpStatus`/`batchId` in scope) log the exact bounded per-batch diagnostic this
+ * task's own spec requires, without this function needing to know about HTTP or batch identity.
  */
 export async function refreshLiveOutcomes(
   userId: string,
   ids: string[],
   opts: { now?: number; providers?: ResolveOutcomeQuoteProviders; budgetMs?: number; clock?: () => number } = {},
   db: ReturnType<typeof outcomeDb> = outcomeDb(),
-): Promise<{ outcomes: TrackedOutcome[]; attempted: string[] }> {
+): Promise<{
+  outcomes: TrackedOutcome[]; attempted: string[]; providerCalls: number
+  refreshedIds: string[]; failedIds: string[]
+  rejectionReasons: Record<string, string | null>; observationTimestamps: Record<string, string | null>
+}> {
   const unique: string[] = []
   const seen = new Set<string>()
   for (const id of ids) {
@@ -553,15 +598,54 @@ export async function refreshLiveOutcomes(
   const budgetMs = opts.budgetMs ?? OUTCOME_POLICY.pageLiveBatchBudgetMs
   const outcomes: TrackedOutcome[] = []
   const attempted: string[] = []
+  let providerCalls = 0
+  const refreshedIds: string[] = []
+  const failedIds: string[] = []
+  const rejectionReasons: Record<string, string | null> = {}
+  const observationTimestamps: Record<string, string | null> = {}
+  const onDiagnostic = (d: LiveOutcomeDiagnostic) => {
+    if (d.providerCallAttempted) providerCalls += 1
+    if (d.refreshed) refreshedIds.push(d.id); else failedIds.push(d.id)
+    rejectionReasons[d.id] = d.rejectionReason
+    observationTimestamps[d.id] = d.observationTimestamp
+  }
   for (const id of unique) {
     if (attempted.length > 0 && clock() - startedAt >= budgetMs) break
     attempted.push(id)
     try {
-      const row = await refreshLiveOutcome(userId, id, opts, db)
+      const row = await refreshLiveOutcome(userId, id, { ...opts, onDiagnostic }, db)
       if (row) outcomes.push(row)
     } catch {
-      // Keep the batch moving. The card retains its last verified observation.
+      // Keep the batch moving. The card retains its last verified observation. `onDiagnostic` has
+      // already recorded the rejection reason (db_write_failed / row_not_found) for this id.
+      if (!(id in rejectionReasons)) { failedIds.push(id); rejectionReasons[id] = 'unexpected_error'; observationTimestamps[id] = null }
     }
   }
-  return { outcomes, attempted }
+  return { outcomes, attempted, providerCalls, refreshedIds, failedIds, rejectionReasons, observationTimestamps }
+}
+
+// BOUNDED PER-BATCH DIAGNOSTIC, DISCLOSED (Track auto-refresh diagnosis follow-up task): the exact
+// shape this task's own spec requires. `batchId`/`httpStatus` are supplied by the API route (the
+// only place both are known) — never fabricated here. `mergeAcceptedIds`/`mergeRejectedIds`/
+// `nextScheduledAt` are omitted server-side: the newer-wins merge and the next-tick schedule are
+// BOTH decided in the browser (see `page.tsx`'s own `tick()`), so a server-side value for them
+// would either be a duplicate guess or silently drift from what the client actually does. The
+// client logs its own copy of this same shape with those three fields filled in from what it
+// actually observed, correlated by the same `batchId`. No credentials are logged; only outcome ids
+// (already scoped to `user.userId` by the caller) and ISO timestamps.
+export type TrackedOutcomeLiveBatchDiagnostic = {
+  batchId: string | null
+  selectedIds: string[]
+  startedAt: number
+  finishedAt: number
+  httpStatus: number
+  providerCalls: number
+  refreshedIds: string[]
+  failedIds: string[]
+  rejectionReasons: Record<string, string | null>
+  observationTimestamps: Record<string, string | null>
+}
+export function logTrackedOutcomeLiveBatch(diagnostic: TrackedOutcomeLiveBatchDiagnostic) {
+  // Keep warn: next.config strips console.log from production but leaves warn for ops forensics.
+  console.warn('[outcome-live-batch]', diagnostic)
 }

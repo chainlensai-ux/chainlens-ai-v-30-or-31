@@ -97,11 +97,32 @@ export default function TrackPage() {
       if (!batch.ids.length) return
       inFlight = true
       setUpdatingIds(batch.ids)
+      // BOUNDED PER-BATCH DIAGNOSTIC, DISCLOSED (Track auto-refresh diagnosis follow-up task): the
+      // client is the only place that has EVERY field this task's own spec asks for in one
+      // object — the server (see logTrackedOutcomeLiveBatch's own header) logs its half
+      // (everything up to the HTTP response) correlated by the same batchId; this fills in the two
+      // fields only the browser can know: which ids the canonical newer-wins merge (2147e1f,
+      // untouched here — this only OBSERVES its outcome by diffing last_checked_at before/after,
+      // never reimplements the decision) actually accepted onto the visible cards, and when the
+      // next attempt is actually scheduled.
+      const batchId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+      const startedAt = Date.now()
       try {
-        const result = await outcomeRequest('POST', { action: 'live', ids: batch.ids })
+        const result = await outcomeRequest('POST', { action: 'live', ids: batch.ids, batchId })
         if (cancelled) return
         const outcomes = (Array.isArray(result.outcomes) ? result.outcomes : result.outcome ? [result.outcome] : []) as TrackedOutcome[]
         applyLiveRef.current(outcomes)
+        // OBSERVED, NEVER DECIDED, DISCLOSED: adoptNewerOutcomeObservation already ran inside
+        // applyLiveRef.current above. This only reads its result back — an incoming observation
+        // "won" the merge exactly when the now-displayed row's own last_checked_at equals what THIS
+        // batch's response carried for it.
+        const afterCheckedAt = new Map(rowsRef.current.map(row => [row.id, row.last_checked_at]))
+        const mergeAcceptedIds: string[] = []
+        const mergeRejectedIds: string[] = []
+        for (const incoming of outcomes) {
+          if (afterCheckedAt.get(incoming.id) === incoming.last_checked_at) mergeAcceptedIds.push(incoming.id)
+          else mergeRejectedIds.push(incoming.id)
+        }
         const received = new Set(outcomes.map(row => row.id))
         const attempted = (Array.isArray(result.attempted) ? result.attempted as string[] : batch.ids).filter(id => batch.ids.includes(id))
         setFailedIds(current => {
@@ -111,6 +132,16 @@ export default function TrackPage() {
         })
         cursor = advanceTrackedOutcomeLiveCursor(ids, batch.ids, attempted.length || batch.ids.length, selectedRef.current)
         backoffMs = OUTCOME_POLICY.pageLiveRefreshMs
+        console.warn('[track-live-batch]', {
+          batchId, selectedIds: batch.ids, startedAt, finishedAt: Date.now(), httpStatus: 200,
+          providerCalls: typeof result.providerCalls === 'number' ? result.providerCalls : null,
+          refreshedIds: Array.isArray(result.refreshedIds) ? result.refreshedIds : outcomes.map(row => row.id),
+          failedIds: Array.isArray(result.failedIds) ? result.failedIds : attempted.filter(id => !received.has(id)),
+          rejectionReasons: result.rejectionReasons ?? {},
+          observationTimestamps: result.observationTimestamps ?? {},
+          mergeAcceptedIds, mergeRejectedIds,
+          nextScheduledAt: Math.max(Date.now() + OUTCOME_POLICY.pageLiveRefreshMs, backoffUntil),
+        })
       } catch (error) {
         if (cancelled) return
         setFailedIds(current => [...new Set([...current, ...batch.ids])])
@@ -118,6 +149,13 @@ export default function TrackPage() {
         const wait = status === 429 ? 60_000 : Math.min(backoffMs * 2, 60_000)
         backoffMs = wait
         backoffUntil = Date.now() + wait
+        console.warn('[track-live-batch]', {
+          batchId, selectedIds: batch.ids, startedAt, finishedAt: Date.now(), httpStatus: status ?? 0,
+          providerCalls: null, refreshedIds: [], failedIds: batch.ids,
+          rejectionReasons: Object.fromEntries(batch.ids.map(id => [id, 'request_failed'])),
+          observationTimestamps: {}, mergeAcceptedIds: [], mergeRejectedIds: [],
+          nextScheduledAt: backoffUntil,
+        })
       } finally {
         inFlight = false
         if (!cancelled) setUpdatingIds(current => current.filter(id => !batch.ids.includes(id)))

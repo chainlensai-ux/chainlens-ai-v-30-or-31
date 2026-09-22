@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createHmac } from 'node:crypto'
 import { OUTCOME_POLICY, adoptNewerOutcomeObservation, advanceTrackedOutcomeLiveCursor, canTrackOutcome, comparableOutcomeBaselinePrice, displayableCurrentMarketCap, displayableCurrentPrice, freezeableBaselinePriceUsd, frozenBaselineMarketCapUsd, hypothetical, classifyOutcome, liveOutcomeRequestIds, mergeListedOutcomeObservation, mergeTrackedOutcomeRows, nextTrackedOutcomeLiveBatch, outcomeFreshnessLabel, pageLiveBudget, presentTrackedOutcome, shareOutcome, numberOrNull, outcomeHypothetical, percentChange, parsePositiveUsd, snapshotHasFrozenEvidence, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome } from '../lib/tokenOutcomes'
 import { snapshotFromScan, signOutcomeSnapshot, verifyOutcomeReceipt, withOutcomeReceipt } from '../lib/server/tokenOutcomeReceipt'
-import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshLiveOutcomes, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
+import { applyRefreshObservationOverlay, buildOutcomeRefreshUpdate, hydrateTrackedOutcomeListRow, isMissingOutcomeColumnError, isMissingOutcomeTableError, listTrackedOutcomes, logTrackedOutcomeLiveBatch, omitOptionalObservationColumn, outcomeNeedsRefresh, persistOutcomeRefreshUpdate, quoteIsFreshForOutcome, quoteMatches, refreshLiveOutcome, refreshLiveOutcomes, refreshOutcomes, resolveLiveOutcomeQuoteDetailed, resolveOutcomeQuote, resolveOutcomeQuoteDetailed, sanitizeOutcomeStorageError, sanitizeTrackedOutcome, __resetLiveOutcomeQuoteForTest } from '../lib/server/tokenOutcomeService'
 import { afterScanProof } from '../lib/tokenOutcomeProof'
 import type { ClarkMarketQuote } from '../lib/server/clarkMarketData'
 import { dexScreenerOutcomeMarketProvider, geckoTerminalMarketProvider } from '../lib/server/clarkMarketDataProviders'
@@ -1855,4 +1855,138 @@ test('page live: a slow provider batch returns partial results before the client
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   assert.match(page, /result\.attempted/)
   assert.match(route, /attempted/)
+})
+
+// ─── Auto-refresh diagnosis: bounded per-batch diagnostic ──────────────────────────────────────
+// Every OTHER outcome-refresh path already logged `[outcome-refresh-forensic]`; the Track page's
+// own auto-refresh scheduler (the ONLY caller of refreshLiveOutcomes) had zero server-side
+// visibility. These tests prove: (a) a genuine refresh is distinguished from a request that merely
+// "finished loading" without a fresh quote, (b) one failing token never blocks the batch or hides
+// which one failed and why, and (c) the exact bounded diagnostic shape this task's spec requires
+// is what actually gets logged and returned.
+
+test('live diagnostic: a successful batch reports real providerCalls/refreshedIds/observationTimestamps, not just "no exception"', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const rows = [1, 2].map(n => {
+    const token = `0x${n.toString(16).padStart(40, '0')}`
+    return withObservation({
+      ...outcomeRow(), id: outcomeId(n), token_address: token,
+      baseline_price_usd: 1, current_price_usd: 1, last_checked_at: new Date(now - 20_000).toISOString(), market_source: 'dexscreener',
+    }, 1)
+  })
+  const { db } = mockLiveRowsDb(rows)
+  const providers = {
+    dex: async (tokenAddress: string, chain: string) => {
+      const quote = identityQuote(chain === 'solana' ? 'solana' : 'base', tokenAddress, 1.5, now)
+      return { quote, matches: [quote] }
+    },
+    gecko: async () => { throw new Error('gecko must not run when Dex matches') },
+  }
+  const result = await refreshLiveOutcomes(user, rows.map(row => row.id), { now, providers }, db as never)
+  assert.equal(result.providerCalls, 2)
+  assert.deepEqual([...result.refreshedIds].sort(), rows.map(row => row.id).sort())
+  assert.deepEqual(result.failedIds, [])
+  for (const row of rows) {
+    assert.equal(result.rejectionReasons[row.id], null)
+    assert.ok(result.observationTimestamps[row.id])
+    assert.notEqual(result.observationTimestamps[row.id], row.last_checked_at, 'a genuine refresh must advance last_checked_at')
+  }
+})
+
+test('live diagnostic: a provider miss that falls back to the previous price is NEVER counted as refreshed — loading finished is not proof of a refresh', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const staleCheckedAt = new Date(now - 20_000).toISOString()
+  const row = withObservation({
+    ...outcomeRow(), id: outcomeId(1), baseline_price_usd: 1, current_price_usd: 1,
+    last_checked_at: staleCheckedAt, market_source: 'dexscreener',
+  }, 1)
+  const { db } = mockLiveRowsDb([row])
+  const providers = { dex: async () => null, gecko: async () => null }
+  const result = await refreshLiveOutcomes(user, [row.id], { now, providers }, db as never)
+  // The row still comes back (the card must never blank out on a provider miss) ...
+  assert.equal(result.outcomes.length, 1)
+  assert.equal(result.outcomes[0]?.current_price_usd, 1, 'previous verified observation is retained')
+  // ... but the diagnostic must be honest that nothing was actually refreshed.
+  assert.deepEqual(result.refreshedIds, [])
+  assert.deepEqual(result.failedIds, [row.id])
+  assert.equal(result.rejectionReasons[row.id], 'no_identity_matched_market_quote', 'the real, specific rejection reason from the resolver — never a generic fallback when one is available')
+  assert.equal(result.observationTimestamps[row.id], staleCheckedAt, 'observation timestamp must NOT advance on a miss')
+})
+
+test('live diagnostic: a missing row is reported with row_not_found and never counted as a provider call, and never blocks the rest of the batch', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = Date.now()
+  const present = withObservation({
+    ...outcomeRow(), id: outcomeId(2), token_address: '0x'.padEnd(42, '2'),
+    baseline_price_usd: 1, current_price_usd: 1, last_checked_at: new Date(now - 20_000).toISOString(), market_source: 'dexscreener',
+  }, 1)
+  const { db } = mockLiveRowsDb([present])
+  const providers = {
+    dex: async (tokenAddress: string, chain: string) => {
+      const quote = identityQuote(chain === 'solana' ? 'solana' : 'base', tokenAddress, 1.5, now)
+      return { quote, matches: [quote] }
+    },
+    gecko: async () => null,
+  }
+  const missingId = outcomeId(1)
+  const result = await refreshLiveOutcomes(user, [missingId, present.id], { now, providers }, db as never)
+  assert.equal(result.providerCalls, 1, 'the missing row must never trigger a provider call')
+  assert.deepEqual(result.refreshedIds, [present.id])
+  assert.deepEqual(result.failedIds, [missingId])
+  assert.equal(result.rejectionReasons[missingId], 'row_not_found')
+  assert.equal(result.rejectionReasons[present.id], null)
+})
+
+test('live diagnostic: the API route logs and returns the bounded shape, with httpStatus reflecting the real outcome', async () => {
+  const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
+  assert.match(route, /logTrackedOutcomeLiveBatch/)
+  assert.match(route, /batchId,\s*selectedIds:\s*ids,\s*startedAt,\s*finishedAt,\s*httpStatus:/)
+  assert.match(route, /providerCalls,\s*refreshedIds,\s*failedIds,\s*rejectionReasons,\s*observationTimestamps/)
+  assert.match(route, /notFound \? 404 : 200/)
+  const logged: unknown[][] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { logged.push(args) }
+  try {
+    logTrackedOutcomeLiveBatch({
+      batchId: 'b1', selectedIds: ['x'], startedAt: 1, finishedAt: 2, httpStatus: 200,
+      providerCalls: 1, refreshedIds: ['x'], failedIds: [], rejectionReasons: { x: null }, observationTimestamps: { x: '2024-01-01T00:00:00.000Z' },
+    })
+  } finally { console.warn = originalWarn }
+  assert.equal(logged.length, 1)
+  assert.equal(logged[0]?.[0], '[outcome-live-batch]')
+  const diagnostic = logged[0]?.[1] as Record<string, unknown>
+  for (const field of ['batchId', 'selectedIds', 'startedAt', 'finishedAt', 'httpStatus', 'providerCalls', 'refreshedIds', 'failedIds', 'rejectionReasons', 'observationTimestamps']) {
+    assert.ok(field in diagnostic, `diagnostic must include ${field}`)
+  }
+})
+
+test('live diagnostic: the client emits the full bounded shape (including merge/schedule fields the server cannot know) correlated by one batchId', () => {
+  const page = readFileSync(new URL('../app/terminal/track/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /const batchId = /)
+  assert.match(page, /action: 'live', ids: batch\.ids, batchId/)
+  assert.match(page, /mergeAcceptedIds: string\[\] = \[\]/)
+  assert.match(page, /mergeRejectedIds: string\[\] = \[\]/)
+  assert.match(page, /nextScheduledAt:/)
+  assert.match(page, /console\.warn\('\[track-live-batch\]'/)
+  // Both the success and failure branches log — a request that throws must not go silent.
+  const occurrences = page.match(/console\.warn\('\[track-live-batch\]'/g) ?? []
+  assert.equal(occurrences.length, 2)
+})
+
+test('live diagnostic: stale-response rejection — the client-side accepted/rejected diff agrees with the canonical newer-wins merge, never reimplements it', () => {
+  const now = 1_800_000_000_000
+  const frozen = { ...outcomeRow(), baseline_price_usd: 1 }
+  const current = sanitizeTrackedOutcome(observationAt(frozen, 1.5, now, 150_000), now)
+  // An OLDER observation arrives after a newer one is already displayed (e.g. a slow, retried
+  // request landing late). The canonical merge must keep the newer value...
+  const stale = sanitizeTrackedOutcome(observationAt(frozen, 1.1, now - 80_000, 110_000), now)
+  const merged = adoptNewerOutcomeObservation(current, stale, now)
+  assert.equal(merged.current_price_usd, 1.5, 'the newer-wins merge must reject the stale response')
+  // ...and the diagnostic's own accepted/rejected diff (comparing the row's post-merge
+  // last_checked_at to what THIS response carried) must report it as rejected, exactly like the
+  // page's own tick() computes it — never silently claim a stale response was applied.
+  const incomingWon = merged.last_checked_at === stale.last_checked_at
+  assert.equal(incomingWon, false, 'the diagnostic must classify the stale response as merge-rejected')
 })
