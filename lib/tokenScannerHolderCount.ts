@@ -2,6 +2,12 @@
 // 0, unavailable, capped, and not-attempted must never look the same.
 // A provider total is exact only when the reason says so. Partial indexed rows
 // are never displayed as a complete holder universe, and never as 0%.
+//
+// Holder COUNT and supply CONCENTRATION are different measurements:
+// - Count = provider total / indexed account count for this exact chain+contract.
+// - Concentration = % of token supply held by top indexed wallets (identity-matched).
+// DexScreener pair pages may show another holder figure from their own indexer —
+// that is not this count, not this concentration series, and never proof either is wrong.
 
 export type TokenScannerHolderCountReason =
   | 'holder_count_from_provider_total'
@@ -18,6 +24,10 @@ export type TokenScannerHolderCountReason =
   | 'chain_unsupported'
   | 'not_attempted'
   | string
+
+/** Shown next to holder count / concentration so external DexScreener figures are not treated as the same series. */
+export const HOLDER_VS_CONCENTRATION_DISCLAIMER =
+  'Holder count and top-holder concentration are different measurements. Count is a provider total (or token-account count) for this exact chain and contract. Concentration is percent of supply held by the top indexed wallets. DexScreener may show a different holder figure — do not treat that as the same metric or as proof ChainLens concentration is wrong.'
 
 export type HolderCountDisplay = {
   display: string
@@ -119,14 +129,16 @@ export function formatHolderCountDisplay(input: {
   }
 
   if (exact) {
+    // Exact count is real count evidence only. Concentration requires identity-matched
+    // top-holder balance percentages — never inferred from a bare total (Base Radar rule).
     return {
       display: count!.toLocaleString(),
       exact: true,
-      usableForConcentration: true,
+      usableForConcentration: false,
       holderCount: count,
       holderCountReason: reason,
       holderRowsStatus: rowsStatus,
-      concentrationStatus: 'verified',
+      concentrationStatus: 'not_checked',
     }
   }
 
@@ -135,10 +147,12 @@ export function formatHolderCountDisplay(input: {
   return {
     display: capped ? `${shown.toLocaleString()}+` : shown.toLocaleString(),
     exact: false,
-    usableForConcentration: rows > 0,
+    // Indexed rows can feed concentration only when percentages exist; the caller gates that.
+    usableForConcentration: false,
     holderCount: shown,
     holderCountReason: reason,
     holderRowsStatus: 'partial',
-    concentrationStatus: 'partial',
+    // Row presence without verified percents is not concentration evidence.
+    concentrationStatus: 'not_checked',
   }
 }

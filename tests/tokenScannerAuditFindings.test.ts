@@ -7,7 +7,7 @@ import {
   hasForbiddenTokenScannerStatusVocab,
   rewriteForbiddenStatusVocab,
 } from '../lib/tokenScannerPublicStatus.ts'
-import { formatHolderCountDisplay } from '../lib/tokenScannerHolderCount.ts'
+import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER } from '../lib/tokenScannerHolderCount.ts'
 import {
   buildTokenScannerPipelineAudit,
   cortexIdentityMatchesScanner,
@@ -285,18 +285,33 @@ test('holderCountReason distinguishes exact, capped, zero, and unavailable', () 
   const exact = formatHolderCountDisplay({ holderCount: 1842, holderCountReason: 'holder_count_from_provider_total' })
   assert.equal(exact.display, '1,842')
   assert.equal(exact.exact, true)
-  assert.equal(exact.usableForConcentration, true)
+  assert.equal(exact.usableForConcentration, false)
+  assert.equal(exact.concentrationStatus, 'not_checked')
   const capped = formatHolderCountDisplay({ holderCount: 100, holderCountReason: 'ok', isCapped: true })
   assert.equal(capped.display, '100+')
   assert.equal(capped.exact, false)
   const rows = formatHolderCountDisplay({ holderCount: 12, holderCountReason: 'holder_count_from_normalized_rows', holderRowsReturned: 12 })
   assert.equal(rows.display, '12+')
-  assert.equal(rows.concentrationStatus, 'partial')
+  assert.equal(rows.concentrationStatus, 'not_checked')
+  assert.equal(rows.usableForConcentration, false)
   const none = formatHolderCountDisplay({ holderCount: 0, holderCountReason: 'holder_count_unavailable_with_reason', holderRowsReturned: 0 })
   assert.match(none.display, /^Unavailable:/)
   assert.equal(none.holderCount, null)
   const skipped = formatHolderCountDisplay({ holderCountReason: 'not_attempted' })
   assert.match(skipped.display, /^Not Checked:/)
+})
+
+test('holder count never verifies concentration; DexScreener disclaimer stays separate', () => {
+  const exact = formatHolderCountDisplay({ holderCount: 5000, holderCountReason: 'holder_count_from_provider_total' })
+  assert.equal(exact.exact, true)
+  assert.notEqual(exact.concentrationStatus, 'verified')
+  assert.match(HOLDER_VS_CONCENTRATION_DISCLAIMER, /DexScreener/)
+  assert.match(HOLDER_VS_CONCENTRATION_DISCLAIMER, /different measurements/)
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  assert.match(page, /HOLDER_VS_CONCENTRATION_DISCLAIMER/)
+  assert.match(page, /not a DexScreener holder figure/)
+  assert.match(page, /share of token supply, not share of holders/)
+  assert.doesNotMatch(page, /\['Holders', formatHolderCountDisplay/)
 })
 
 test('deployer and cluster unresolved reasons stay honest', () => {

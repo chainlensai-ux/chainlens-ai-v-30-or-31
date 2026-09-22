@@ -31,7 +31,7 @@ import {
 import {
   formatTokenScannerPublicStatus,
 } from '@/lib/tokenScannerPublicStatus'
-import { formatHolderCountDisplay } from '@/lib/tokenScannerHolderCount'
+import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER } from '@/lib/tokenScannerHolderCount'
 import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
@@ -4420,15 +4420,24 @@ function getHolderRead(result: ScanResult): string {
     if (robinhood) return robinhood.holderLabel
     return 'Holder distribution was not returned this scan. Supply spread is Unavailable: holder rows were not returned.'
   }
-  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is Partial: indexed rows lack percentages.'
+  if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is Partial: indexed rows lack percentages. Holder count alone is not concentration.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
+  const countLabel = formatHolderCountDisplay({
+    holderCount: count,
+    holderCountReason: result.holderDistribution?.holderCountReason,
+    isCapped: result.holderDistribution?.holderCountCapped,
+    holderRowsReturned: result.holderDistribution?.topHolders?.length ?? 0,
+    reasonText: result.holderDistributionStatus?.reason,
+  }).display
   const parts = [
-    count != null ? `${count.toLocaleString()} holders on record` : null,
-    top10 != null ? `top 10 hold ${top10.toFixed(1)}%` : null,
-    result.holderDistribution?.top20 != null ? `top 20 hold ${result.holderDistribution.top20.toFixed(1)}%` : null,
+    count != null ? `holder count ${countLabel} (provider total for this chain+contract — not a DexScreener holder figure)` : null,
+    top10 != null ? `top-10 supply concentration ${top10.toFixed(1)}% (share of token supply, not share of holders)` : null,
+    result.holderDistribution?.top20 != null ? `top-20 supply concentration ${result.holderDistribution.top20.toFixed(1)}%` : null,
   ].filter(Boolean)
-  return parts.length ? `Holder distribution confirmed. ${parts.join(', ')}.` : 'Holder distribution available but details sparse.'
+  return parts.length
+    ? `Holder evidence confirmed. ${parts.join('; ')}. These are separate measurements.`
+    : 'Holder distribution available but details sparse.'
 }
 
 function getLiquidityRead(result: ScanResult): string {
@@ -8115,7 +8124,7 @@ export default function TerminalTokenScanner() {
                   <>
                     <div style={{ marginBottom: '18px' }}>
                       <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top holder distribution and supply concentration analysis.</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top-holder supply concentration and separate holder-count evidence for this exact chain and contract.</p>
                     </div>
                     {!planLoading && !isFullAccess && (
                       <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
@@ -8190,10 +8199,10 @@ export default function TerminalTokenScanner() {
                               </div>
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px' }}>
                                 {[
-                                  ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-1 percent was not returned')],
-                                  ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-10 percent was not returned')],
-                                  ['Top 20', top20h != null ? `${top20h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-20 percent was not returned')],
-                                  ['Holders', formatHolderCountDisplay({
+                                  ['Top 1 supply', top1h != null ? `${top1h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-1 percent was not returned')],
+                                  ['Top 10 supply', top10h != null ? `${top10h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-10 percent was not returned')],
+                                  ['Top 20 supply', top20h != null ? `${top20h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-20 percent was not returned')],
+                                  ['Holder count', formatHolderCountDisplay({
                                     holderCount,
                                     holderCountReason: result.holderDistribution?.holderCountReason,
                                     isCapped: result.holderDistribution?.holderCountCapped,
@@ -8207,6 +8216,7 @@ export default function TerminalTokenScanner() {
                                   </div>
                                 ))}
                               </div>
+                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#64748b', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{HOLDER_VS_CONCENTRATION_DISCLAIMER}</p>
                             </div>
                             <div className="glass-card" style={{ padding: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>

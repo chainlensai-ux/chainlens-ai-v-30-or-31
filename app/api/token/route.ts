@@ -3677,18 +3677,19 @@ function _buildDeterministicSummary(
     risks.push(`bytecode contains suspicious selectors: ${analysis.suspiciousFunctions.slice(0, 3).join(', ')}`)
   }
   if (holderDataComplete && top10Pct != null) {
-    const countNote = holderCount != null ? ` across ${holderCount.toLocaleString()} holders` : ''
+    // Count note is contextual only — never implies concentration is "of those holders" or matches DexScreener.
+    const countNote = holderCount != null ? ` of supply; indexed holder count ${holderCount.toLocaleString()} is a separate metric` : ' of supply'
     if (top10Pct > 70) risks.push(`top-10 holder concentration is very high (${top10Pct.toFixed(1)}%${countNote}) — strong centralization risk`)
     else if (top10Pct > 50) risks.push(`top-10 holder concentration is elevated (${top10Pct.toFixed(1)}%${countNote}) — monitor for large dump risk`)
-    else confirmed.push(`Holder distribution verified: top-10 at ${top10Pct.toFixed(1)}%${countNote}.`)
+    else confirmed.push(`Holder distribution verified: top-10 supply concentration at ${top10Pct.toFixed(1)}%${countNote}.`)
   } else if (holderDistributionPartial && holderCount != null && holderCount > 0) {
     if (top10Pct != null) {
       const riskNote = top10Pct > 70 ? ', which is a major concentration risk'
         : top10Pct > 50 ? ', which is an elevated concentration risk'
         : ''
-      confirmed.push(`Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned, with top-10 concentration around ${top10Pct.toFixed(1)}%${riskNote}.`)
+      confirmed.push(`Holder distribution is partially indexed: holder count/rows ${holderCount.toLocaleString()} (not a DexScreener holder figure), with top-10 supply concentration around ${top10Pct.toFixed(1)}%${riskNote}.`)
     } else {
-      confirmed.push(`Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned, with reconstructed concentration percentages.`)
+      confirmed.push(`Holder distribution is partially indexed: ${holderCount.toLocaleString()} holder rows were returned; supply concentration percentages are reconstructed or incomplete.`)
     }
   } else {
     inferred.push('holder concentration inferred as moderate-to-high — cross-check top wallets before sizing a position')
