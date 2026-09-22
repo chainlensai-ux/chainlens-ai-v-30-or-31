@@ -7,7 +7,7 @@ import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
-const limiter = createRateLimiter({ windowMs: 60_000, max: 10 })
+const limiter = createRateLimiter({ windowMs: OUTCOME_POLICY.postLimiterWindowMs, max: OUTCOME_POLICY.postLimiterMax })
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'private, no-store' } })
 const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
 export async function GET(req: Request) {

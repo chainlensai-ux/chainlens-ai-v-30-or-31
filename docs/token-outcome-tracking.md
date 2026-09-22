@@ -69,9 +69,9 @@ Hypothetical value = `$1,000 × currentPrice / baselinePrice`; PnL = value − $
 
 ## Refresh bounds
 
-Saved cards load first. One page-load POST refreshes at most four stale rows concurrently, followed by a compact list reload. Manual refresh uses the same bounds and freshness rules. No intervals, cron, or automatic drain-through batches. Users with more than four stale rows can refresh subsequent batches manually.
+Saved cards load first. One page-load POST refreshes at most four stale rows (lease-guarded). While the Track page is visible, a separate live scheduler POSTs `action: "live"` about every 20 seconds for the next four receipts in rotation (open receipt excluded; its own 20s loop owns it). Live ids resolve in parallel inside a 40s server budget so sequential Dex+Gecko timeouts cannot stall the whole batch past the 55s client abort. Manual refresh uses the stale/force path. Polling stops when the tab is hidden.
 
-Freshness is 15 minutes. Database conditional leases prevent overlapping tabs/instances from refreshing the same row concurrently. Rate limit: 10 write/refresh requests per user per minute. Reuses existing DexScreener then GeckoTerminal provider adapters (7-second upstream timeouts), plus existing chain/address cache. Wrong-chain/address quotes are rejected; failed provider results do not enter the successful-quote cache. Storage errors are distinct from confirmed empty lists.
+Observation freshness for display/proof is 3 minutes (`priceStaleMs`). Live ticks stamp server `now` on `last_checked_at` (never a reused provider `fetchedAt`) so quote reuse cannot roll cards backwards. Rate limit: 10 write/live/refresh POSTs per user per minute (`OUTCOME_POLICY.postLimiterMax`). Providers: DexScreener then GeckoTerminal (7s timeouts), plus short live-quote coalescing. Wrong-chain/address quotes are rejected. Storage errors are distinct from confirmed empty lists.
 
 ## Verification
 

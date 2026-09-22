@@ -1644,10 +1644,10 @@ test('page live: cards refresh automatically without a click, using the live pat
   assert.match(page, /action: 'live', ids: batch\.ids/)
   assert.match(page, /setTimeout\(kick, OUTCOME_POLICY\.pageLiveFirstDelayMs\)/)
   assert.match(page, /setInterval\(\(\) => \{ void tick\(\) \}, OUTCOME_POLICY\.pageLiveRefreshMs\)/)
-  assert.match(page, /refreshingRef\.current/)
+  assert.doesNotMatch(page, /refreshingRef/)
   assert.doesNotMatch(page, /setInterval\(\(\) => \{ void load/)
   assert.match(page, /onClick=\{\(\) => void refreshAction\.current\?\.\(true\)\}/)
-  assert.match(route, /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/)
+  assert.match(route, /createRateLimiter\(\{ windowMs: OUTCOME_POLICY\.postLimiterWindowMs, max: OUTCOME_POLICY\.postLimiterMax \}\)/)
   assert.equal(OUTCOME_POLICY.pageLiveRefreshMs, 20_000)
   assert.equal(OUTCOME_POLICY.pageLiveFirstDelayMs, 1_500)
   assert.equal(OUTCOME_POLICY.pageLiveBatchBudgetMs, 40_000)
@@ -1726,7 +1726,7 @@ test('page live: hidden tabs, unmount and in-flight batches skip overlapping wor
   assert.match(page, /visibilitychange/)
   assert.match(page, /cancelled = true[\s\S]*clearTimeout\(startTimer\)[\s\S]*clearInterval\(poll\)[\s\S]*clearInterval\(clock\)[\s\S]*removeEventListener\('visibilitychange'/)
   assert.match(page, /status === 429 \? 60_000/)
-  assert.match(page, /if \(refreshingRef\.current\) return/)
+  assert.doesNotMatch(page, /if \(refreshingRef\.current\) return/)
 })
 
 test('page live: liveOutcomeRequestIds caps at four unique valid ids', () => {
@@ -1835,7 +1835,9 @@ test('page live: a slow provider batch returns partial results before the client
   const { db, reads } = mockLiveRowsDb(rows)
   const providers = {
     dex: async (tokenAddress: string, chain: string) => {
-      t += 20_000
+      // Parallel workers all start under budget; wall-clock cost no longer stacks to 80s.
+      await new Promise(resolve => setTimeout(resolve, 5))
+      t += 5_000
       const quote = identityQuote(chain === 'solana' ? 'solana' : 'base', tokenAddress, 1.5, now)
       return { quote, matches: [quote] }
     },
@@ -1844,10 +1846,9 @@ test('page live: a slow provider batch returns partial results before the client
   const shown = await refreshLiveOutcomes(user, rows.map(row => row.id), {
     now, providers, budgetMs: 40_000, clock: () => t,
   }, db as never)
-  assert.equal(shown.attempted.length, 2)
-  assert.equal(shown.outcomes.length, 2)
-  assert.deepEqual(shown.attempted, rows.slice(0, 2).map(row => row.id))
-  assert.equal(reads.length, 2)
+  assert.equal(shown.attempted.length, 4)
+  assert.equal(shown.outcomes.length, 4)
+  assert.equal(reads.length, 4)
   assert.ok(shown.outcomes.every(row => row.price_change_pct === 50))
   assert.equal(OUTCOME_POLICY.pageLiveBatchBudgetMs, 40_000)
   assert.ok(OUTCOME_POLICY.pageLiveBatchBudgetMs < 55_000)
@@ -1855,6 +1856,32 @@ test('page live: a slow provider batch returns partial results before the client
   const route = readFileSync(new URL('../app/api/token-outcomes/route.ts', import.meta.url), 'utf8')
   assert.match(page, /result\.attempted/)
   assert.match(route, /attempted/)
+})
+
+test('page live: live observation stamps server now and never rolls last_checked_at backwards on quote reuse', async () => {
+  __resetLiveOutcomeQuoteForTest()
+  const now = 1_800_000_000_000
+  const token = `0x${'ab'.padEnd(40, '0')}`
+  const row = withObservation({
+    ...outcomeRow(), id: outcomeId(42), token_address: token,
+    baseline_price_usd: 1, current_price_usd: 1.1,
+    last_checked_at: new Date(now - 5_000).toISOString(), market_source: 'dexscreener',
+  }, 1.1)
+  const { db, persistPayloads } = mockLiveRowsDb([row])
+  const staleFetchedAt = now - 12_000
+  const quote = identityQuote('base', token, 1.25, staleFetchedAt)
+  const providers = {
+    dex: async () => ({ quote, matches: [quote] }),
+    gecko: async () => null,
+  }
+  const first = await refreshLiveOutcome(user, row.id, { now, providers }, db as never)
+  assert.equal(first?.current_price_usd, 1.25)
+  assert.equal(first?.last_checked_at, new Date(now).toISOString())
+  assert.ok(persistPayloads.some(payload => payload.last_checked_at === new Date(now).toISOString()))
+  // Second tick reuses the in-memory live quote (fetchedAt still stale) but must not write backwards.
+  const second = await refreshLiveOutcome(user, row.id, { now: now + 1_000, providers }, db as never)
+  assert.ok(second?.last_checked_at)
+  assert.ok(Date.parse(second!.last_checked_at!) >= now)
 })
 
 // ─── Auto-refresh diagnosis: bounded per-batch diagnostic ──────────────────────────────────────

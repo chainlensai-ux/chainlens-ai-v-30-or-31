@@ -532,10 +532,13 @@ export async function refreshLiveOutcome(
   const row = data as TrackedOutcome
   const resolved = await resolveLiveOutcomeQuoteDetailed(row.chain, row.token_address, opts.providers, { now }).catch(() => null)
   const quote = resolved?.quote ?? null
-  const quoteTime = quote?.fetchedAt
-  const checkedAt = new Date(quoteTime != null && Number.isFinite(quoteTime) ? quoteTime : now).toISOString()
+  // Stamp the server observation time, never a reused provider fetchedAt. Reused live quotes and
+  // page-load refresh (which already stamps `now`) would otherwise roll last_checked_at backwards
+  // and make newer-wins / card freshness look frozen until a receipt force-path ran.
+  const previousChecked = observationCheckedAtMs(row)
+  const checkedAt = new Date(previousChecked != null ? Math.max(now, previousChecked) : now).toISOString()
   const update = buildOutcomeRefreshUpdate(row, quote, row.after_evidence_json ?? null, checkedAt, now)
-  const genuinelyRefreshed = update.last_checked_at !== row.last_checked_at
+  const genuinelyRefreshed = Boolean(update.last_checked_at && update.last_checked_at !== row.last_checked_at && usableQuote(quote, row.chain, row.token_address, now))
   const written = await persistLiveOutcomeUpdate(db, row.id, userId, update)
   if (written.error) {
     opts.onDiagnostic?.({
@@ -609,18 +612,29 @@ export async function refreshLiveOutcomes(
     rejectionReasons[d.id] = d.rejectionReason
     observationTimestamps[d.id] = d.observationTimestamp
   }
-  for (const id of unique) {
-    if (attempted.length > 0 && clock() - startedAt >= budgetMs) break
-    attempted.push(id)
-    try {
-      const row = await refreshLiveOutcome(userId, id, { ...opts, onDiagnostic }, db)
-      if (row) outcomes.push(row)
-    } catch {
-      // Keep the batch moving. The card retains its last verified observation. `onDiagnostic` has
-      // already recorded the rejection reason (db_write_failed / row_not_found) for this id.
-      if (!(id in rejectionReasons)) { failedIds.push(id); rejectionReasons[id] = 'unexpected_error'; observationTimestamps[id] = null }
+  // Parallel within the batch: sequential Dex+Gecko timeouts are ~14s each, so four ids in series
+  // can exceed the 40s budget and the 55s client abort — cards then look frozen until a one-id
+  // receipt tick succeeds. Start every selected id concurrently; do not start more after budget.
+  let nextIndex = 0
+  const workers = Math.min(OUTCOME_POLICY.refreshBatch, unique.length)
+  async function worker() {
+    while (true) {
+      if (clock() - startedAt >= budgetMs) return
+      const index = nextIndex++
+      if (index >= unique.length) return
+      const id = unique[index]!
+      attempted.push(id)
+      try {
+        const row = await refreshLiveOutcome(userId, id, { ...opts, onDiagnostic }, db)
+        if (row) outcomes.push(row)
+      } catch {
+        // Keep the batch moving. The card retains its last verified observation. `onDiagnostic` has
+        // already recorded the rejection reason (db_write_failed / row_not_found) for this id.
+        if (!(id in rejectionReasons)) { failedIds.push(id); rejectionReasons[id] = 'unexpected_error'; observationTimestamps[id] = null }
+      }
     }
   }
+  await Promise.all(Array.from({ length: workers }, () => worker()))
   return { outcomes, attempted, providerCalls, refreshedIds, failedIds, rejectionReasons, observationTimestamps }
 }
 

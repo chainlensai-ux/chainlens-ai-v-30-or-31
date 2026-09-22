@@ -227,7 +227,9 @@ export async function dexScreenerOutcomeMarketProvider(address: string, chain: s
 /** Real GeckoTerminal provider — address-keyed only, used when DexScreener has nothing for a
  * specific chain+address pair. */
 export async function geckoTerminalMarketProvider(address: string, chain: string | null): Promise<ClarkMarketQuote | null> {
-  const network = chain === "bnb" ? "bsc" : (chain ?? "eth");
+  // Track Outcome chains only. Unknown slugs fail closed via a 404/null rather than guessing.
+  const networkByChain: Record<string, string> = { eth: 'eth', ethereum: 'eth', bnb: 'bsc', bsc: 'bsc', base: 'base', solana: 'solana', robinhood: 'robinhood' }
+  const network = (chain && networkByChain[chain]) || (chain ?? 'eth')
   try {
     const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}`, {
       headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(7000),

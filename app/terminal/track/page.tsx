@@ -25,7 +25,6 @@ export default function TrackPage() {
   const rowsRef = useRef<TrackedOutcome[]>([])
   const receiptRef = useRef<TrackedOutcome | null>(null)
   const selectedRef = useRef<string | null>(null)
-  const refreshingRef = useRef(false)
   function writeRows(updater: (current: TrackedOutcome[]) => TrackedOutcome[]) {
     setRows(current => {
       const next = updater(current)
@@ -41,7 +40,6 @@ export default function TrackPage() {
     })
   }
   useEffect(() => { selectedRef.current = selected }, [selected])
-  useEffect(() => { refreshingRef.current = refreshing }, [refreshing])
   function applyLiveObservations(updated: TrackedOutcome[]) {
     if (!updated.length) return
     const byId = new Map(updated.map(row => [row.id, row]))
@@ -91,7 +89,8 @@ export default function TrackPage() {
       if (cancelled || inFlight) return
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       if (!force && Date.now() < backoffUntil) return
-      if (refreshingRef.current) return
+      // Do not wait for page-load/manual stale refresh. That path can take a full provider batch and
+      // previously blocked card ticks until a receipt was opened. inFlight + the POST limiter remain.
       const ids = rowsRef.current.map(row => row.id)
       const batch = nextTrackedOutcomeLiveBatch(ids, cursor, selectedRef.current)
       if (!batch.ids.length) return
@@ -164,10 +163,6 @@ export default function TrackPage() {
     let startTimer = 0
     function kick() {
       if (cancelled) return
-      if (refreshingRef.current) {
-        startTimer = window.setTimeout(kick, 750)
-        return
-      }
       void tick(true)
     }
     startTimer = window.setTimeout(kick, OUTCOME_POLICY.pageLiveFirstDelayMs)

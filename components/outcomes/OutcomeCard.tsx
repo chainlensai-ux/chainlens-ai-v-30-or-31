@@ -86,7 +86,6 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       inFlight.current = true
       setUpdating(true)
-      const previousChecked = rowRef.current.last_checked_at
       try {
         const result = await outcomeRequest('POST', { action: 'live', ids: [row.id] })
         if (cancelled) return
@@ -94,7 +93,9 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
           ?? (Array.isArray(result.outcomes) ? (result.outcomes as TrackedOutcome[]).find(item => item.id === row.id) : undefined)
         if (updated) {
           liveUpdateRef.current?.(updated)
-          setRefreshFailed(updated.last_checked_at === previousChecked)
+          // A retained prior observation is success for the card/receipt. Only treat the tick as
+          // failed when this id is absent from the response or the request throws.
+          setRefreshFailed(false)
           backoffMs.current = OUTCOME_POLICY.receiptLiveRefreshMs
         } else {
           setRefreshFailed(true)
