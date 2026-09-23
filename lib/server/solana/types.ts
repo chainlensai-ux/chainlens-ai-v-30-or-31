@@ -49,6 +49,13 @@ export type SolanaTopAccountShare = {
   amountRaw: string
   /** Share of total supply, 0-100, rounded to 2dp. Null when supply is unknown. */
   percentOfSupply: number | null
+  /** Stage-1 optional: verified AMM vault custody annotation. Absent unless vault was verified. */
+  classification?: {
+    kind: 'ordinary' | 'liquidity_custody' | 'unclassified'
+    role?: 'amm_pool_reserves' | 'protocol_vault' | 'v4_pool_manager' | 'solana_amm_vault'
+    label?: string
+    evidence: string[]
+  }
 }
 
 export type SolanaMarketData = {
@@ -268,6 +275,11 @@ export type SolanaBetaScanResult = {
   patternAnalysis: SolanaPatternAnalysis
   /** Explainable composite score built from every signal above — see developerScoreAnalyzer.ts. */
   developerScore: SolanaDeveloperScore
+  /**
+   * Stage-1 liquidity-custody summary (verified AMM vault matches only). Additive —
+   * Top-N percents and risk are unchanged. Absent vault verification → status none/unavailable.
+   */
+  liquidityCustody?: import('../../liquidityCustody.ts').LiquidityCustodySummary
 }
 
 export type SolanaBetaScanFailure = {

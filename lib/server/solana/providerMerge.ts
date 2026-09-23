@@ -28,6 +28,12 @@ import { scoreSolanaBeta } from './riskEngine.ts'
 import { buildSolanaSupplyControl } from './supplyControlAnalyzer.ts'
 import { buildSolanaWatchPlan } from './watchPlanAnalyzer.ts'
 import { buildSolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
+import {
+  annotateLiquidityCustody,
+  buildSolanaCustodyCandidates,
+  verifiedVaultsFromSolanaClusterMap,
+  type LiquidityCustodySummary,
+} from '../../liquidityCustody.ts'
 import { analyzeSolanaCluster, type SolanaClusterMap } from './clusterAnalyzer.ts'
 import { analyzeSolanaCreatorConfidence } from './creatorConfidenceAnalyzer.ts'
 import { analyzeSolanaPatterns } from './patternAnalyzer.ts'
@@ -263,6 +269,49 @@ export async function runSolanaProviderMerge(
     confidenceLimits: betaRisk.reasons,
   }
 
+  // STAGE-1 LIQUIDITY CUSTODY: annotate top accounts that match already-verified AMM vault
+  // addresses (clusterMap lp_vault nodes only). Owner field alone is never vault proof.
+  // Top-N percents and betaRisk are unchanged. No new RPC.
+  let liquidityCustody: LiquidityCustodySummary | undefined
+  let topAccountConcentration = holders.topAccountConcentration
+  if (topAccountConcentration?.accounts?.length) {
+    const vaults = verifiedVaultsFromSolanaClusterMap(clusterMap)
+    const candidates = buildSolanaCustodyCandidates({
+      mintAddress,
+      verifiedVaultAccounts: vaults,
+    })
+    const annot = annotateLiquidityCustody({
+      chain: 'solana',
+      holders: topAccountConcentration.accounts.map((a) => ({
+        address: a.address,
+        percent: a.percentOfSupply,
+        rank: a.rank,
+        amountRaw: a.amountRaw,
+      })),
+      candidates,
+    })
+    topAccountConcentration = {
+      ...topAccountConcentration,
+      accounts: annot.holders.map((h) => ({
+        rank: h.rank,
+        address: h.address,
+        amountRaw: h.amountRaw,
+        percentOfSupply: h.percent,
+        ...(h.classification ? { classification: h.classification } : {}),
+      })),
+    }
+    liquidityCustody = annot.liquidityCustody
+  } else {
+    // Still emit a summary so clients can show partial/unavailable semantics.
+    const vaults = verifiedVaultsFromSolanaClusterMap(clusterMap)
+    const candidates = buildSolanaCustodyCandidates({ mintAddress, verifiedVaultAccounts: vaults })
+    liquidityCustody = annotateLiquidityCustody({
+      chain: 'solana',
+      holders: [],
+      candidates,
+    }).liquidityCustody
+  }
+
   return {
     solanaBeta: true,
     chain: 'solana',
@@ -284,7 +333,8 @@ export async function runSolanaProviderMerge(
     freezeAuthority: mint.freezeAuthority,
     authorityReadSucceeded: mint.authorityReadSucceeded,
     holderConcentrationAvailable: holders.topAccountConcentration != null,
-    topAccountConcentration: holders.topAccountConcentration,
+    topAccountConcentration,
+    ...(liquidityCustody ? { liquidityCustody } : {}),
     // RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability task): the resolver's own
     // richer status/source/confidence/public-reason view, plus its full audit trail — additive,
     // never replacing topAccountConcentration above.

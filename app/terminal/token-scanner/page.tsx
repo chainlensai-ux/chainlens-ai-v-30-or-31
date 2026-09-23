@@ -369,7 +369,16 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
-  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null}> } | null
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}> } | null
+  /** Stage-1 verified pool/reserve custody summary. Optional / backward compatible. */
+  liquidityCustody?: {
+    status: 'verified' | 'partial' | 'none' | 'unavailable'
+    rows: Array<{ address: string; role: string; percentOfSupply: number | null; label: string; evidence: string[]; poolRef: string | null }>
+    custodyPercentOfSupply: number | null
+    custodyCoverageComplete: boolean
+    reason: string | null
+    evidenceGaps: string[]
+  } | null
   holderDistributionStatus?: { source?: string; status?: 'ok'|'partial'|'unavailable_with_reason'|'error'; reason?: string; itemCount?: number; normalizedCount?: number } | null
   debugHolderStatus?: {
     providerCalled?: boolean; chain?: string; endpointPath?: string; authMode?: string;
@@ -4440,6 +4449,18 @@ function getHolderRead(result: ScanResult): string {
     : 'Holder distribution available but details sparse.'
 }
 
+
+function custodyBadge(classification: { kind?: string; role?: string; label?: string } | null | undefined): { text: string; color: string; border: string; bg: string } | null {
+  if (!classification || classification.kind !== 'liquidity_custody') return null
+  const isProtocol = classification.role === 'v4_pool_manager' || classification.role === 'protocol_vault'
+  return {
+    text: isProtocol ? 'PROTOCOL CUSTODY' : 'LIQUIDITY CUSTODY',
+    color: isProtocol ? '#c4b5fd' : '#67e8f9',
+    border: isProtocol ? 'rgba(196,181,253,0.55)' : 'rgba(103,232,249,0.5)',
+    bg: isProtocol ? 'rgba(167,139,250,0.14)' : 'rgba(45,212,191,0.12)',
+  }
+}
+
 function getLiquidityRead(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const poolCount = result.pools?.length ?? 0
@@ -6358,6 +6379,19 @@ export default function TerminalTokenScanner() {
                             already returns. Header says "TOP ACCOUNTS" (not "TOP HOLDERS") since
                             these are token accounts, not resolved unique holders — see the note
                             below the table. */}
+                        {sr.liquidityCustody && (sr.liquidityCustody.status === 'partial' || sr.liquidityCustody.status === 'verified') && (
+                          <div style={{ marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(103,232,249,0.28)' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                              <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
+                              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.45)', background: 'rgba(45,212,191,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(sr.liquidityCustody.status).toUpperCase()}</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#9fb4c7', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                              {sr.liquidityCustody.rows.length} verified AMM vault account{sr.liquidityCustody.rows.length === 1 ? '' : 's'} in this sample
+                              {sr.liquidityCustody.custodyPercentOfSupply != null ? ` · ${sr.liquidityCustody.custodyPercentOfSupply.toFixed(1)}% of supply in labeled custody rows` : ''}
+                              {sr.liquidityCustody.custodyCoverageComplete ? '' : ' · coverage incomplete (sample only)'}. Owner field alone is never treated as vault proof.
+                            </p>
+                          </div>
+                        )}
                         <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden', marginBottom: '16px' }}>
                           <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP ACCOUNTS</p>
                           <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top {conc.accounts.length} token accounts by balance</p>
@@ -6376,7 +6410,10 @@ export default function TerminalTokenScanner() {
                               return (
                                 <div className="top-holder-row" key={rowKey} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
                                   <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: acc.rank <= 3 ? 'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))' : 'transparent', border: acc.rank <= 3 ? '1px solid rgba(167,139,250,.45)' : 'none' }}>{acc.rank}</span>
-                                  <span style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Account #{acc.rank}</span>
+                                  <span style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{acc.address ? shorten(acc.address) : `Account #${acc.rank}`}</span>
+                                    {(() => { const b = custodyBadge(acc.classification); return b ? <span title={acc.classification?.label ?? b.text} style={{ alignSelf: 'flex-start', padding: '1px 7px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', color: b.color, border: `1px solid ${b.border}`, background: b.bg }}>{b.text}</span> : null })()}
+                                  </span>
                                   <span style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(acc.amountRaw, sr.decimals ?? 0)}</span>
                                   <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: pctColor }}>{pct == null ? '—' : `${pct.toFixed(2)}%`}</span>
                                   <button type="button" onClick={() => { void copySolanaAddress(sr.mintAddress) }}
@@ -8245,15 +8282,32 @@ export default function TerminalTokenScanner() {
                               ) : null}
                               <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                             </div>
+                            {result.liquidityCustody && (result.liquidityCustody.status === 'partial' || result.liquidityCustody.status === 'verified') && (
+                              <div style={{ gridColumn: '1 / -1', marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(103,232,249,0.28)' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                                  <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
+                                  <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.45)', background: 'rgba(45,212,191,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(result.liquidityCustody.status).toUpperCase()}</span>
+                                </div>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#9fb4c7', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                                  {result.liquidityCustody.rows.length} verified pool/protocol custody address{result.liquidityCustody.rows.length === 1 ? '' : 'es'} in this holder sample
+                                  {result.liquidityCustody.custodyPercentOfSupply != null ? ` · ${result.liquidityCustody.custodyPercentOfSupply.toFixed(1)}% of supply in labeled custody rows` : ''}
+                                  {result.liquidityCustody.custodyCoverageComplete ? '' : ' · coverage incomplete (sample only — not a complete custody %)'}.
+                                  Protocol custody (e.g. shared V4 PoolManager) is labeled separately from ordinary wallets and is not LP ownership.
+                                </p>
+                              </div>
+                            )}
                             <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
                               <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
                               <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top 10 holders</p>
                               <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
                                 {holderState.rows.slice(0,20).map((h)=>(
-                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
+                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? '1px solid rgba(103,232,249,.42)' : '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? 'rgba(45,212,191,.08)' : 'rgba(15,23,42,.45)' }}>
                                     <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent', border: h.rank<=3?'1px solid rgba(167,139,250,.45)':'none' }}>{h.rank}</span>
-                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
+                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
+                                      {(() => { const b = custodyBadge((h as { classification?: { kind?: string; role?: string; label?: string } }).classification); return b ? <span title={(h as { classification?: { label?: string } }).classification?.label ?? b.text} style={{ alignSelf: 'flex-start', padding: '1px 7px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', color: b.color, border: `1px solid ${b.border}`, background: b.bg }}>{b.text}</span> : null })()}
+                                    </span>
                                     <span className="top-holder-mobile-amt" style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(h.amount,result.decimals??18)}</span>
                                     <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
                                     {isValidHolderAddress(h.address) && (

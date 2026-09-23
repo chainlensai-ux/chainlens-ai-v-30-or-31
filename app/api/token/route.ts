@@ -76,6 +76,11 @@ import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 import { resolveLpSafetyFinalState, detectKnownLpProtocol, isUnversionedDexLabel, shouldProbePoolModelByRpc } from '@/lib/lpSafetyResolution'
 import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
+import {
+  annotateLiquidityCustody,
+  buildEvmCustodyCandidates,
+  type LiquidityCustodySummary,
+} from '@/lib/liquidityCustody'
 
 // MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
 // error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
@@ -581,8 +586,21 @@ type HolderDistribution = {
   holderCountCapped?: boolean
   /** Source and as-of time of an exact provider total. Null when the count is not a provider total. */
   holderCountProvenance?: HolderCountProvenance | null
-  topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
+  topHolders: Array<{
+    rank: number
+    address: string
+    amount: string | number | null
+    percent: number | null
+    /** Stage-1 optional: verified pool/reserve custody annotation. Absent on older clients. */
+    classification?: {
+      kind: 'ordinary' | 'liquidity_custody' | 'unclassified'
+      role?: 'amm_pool_reserves' | 'protocol_vault' | 'v4_pool_manager' | 'solana_amm_vault'
+      label?: string
+      evidence: string[]
+    }
+  }>
 }
+
 type HolderDistributionStatus = {
   status: "ok" | "partial" | "unavailable_with_reason" | "inferred" | "error"
   reason: string
@@ -8046,6 +8064,50 @@ export async function POST(req: Request) {
         }
       }
     }
+    // STAGE-1 LIQUIDITY CUSTODY, DISCLOSED: annotate holder rows that match already-resolved
+    // verified pool/reserve custody addresses for this token. Additive classification fields only —
+    // Top-N percents, holder counts, LP proof, Dev Control, CORTEX, and risk are unchanged.
+    // No new unbounded provider reads. Polygon is not a full-scan chain and is never enabled here.
+    let liquidityCustody: LiquidityCustodySummary | null = null
+    if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
+      const custodyPools = (typeof normalizedPools !== 'undefined' && Array.isArray(normalizedPools) ? normalizedPools : []).map((p: {
+        address?: string | null
+        poolId?: string | null
+        poolAddressType?: string | null
+        poolType?: string | null
+        dexId?: string | null
+        dexName?: string | null
+      }) => ({
+        address: p.address ?? null,
+        poolId: p.poolId ?? null,
+        poolAddressType: p.poolAddressType ?? null,
+        poolType: p.poolType ?? null,
+        dexId: p.dexId ?? null,
+        dexName: p.dexName ?? null,
+      }))
+      const custodyCandidates = buildEvmCustodyCandidates({
+        chain,
+        tokenAddress: String(contract),
+        pools: custodyPools,
+      })
+      const custodyAnnot = annotateLiquidityCustody({
+        chain,
+        holders: (holderDistribution.topHolders ?? []).map((h) => ({
+          rank: h.rank,
+          address: h.address,
+          amount: h.amount,
+          percent: h.percent,
+        })),
+        candidates: custodyCandidates,
+      })
+      holderDistribution = {
+        ...holderDistribution,
+        topHolders: custodyAnnot.holders,
+      }
+      holderRows = custodyAnnot.holders
+      liquidityCustody = custodyAnnot.liquidityCustody
+    }
+
     // Reconcile deployerProfile with the resolved deployer/origin wallet (devIntel.deployerAddress).
     // The zero address only ever represents a renounced *owner* — it must never appear as
     // `deployer`. When no deployer/origin wallet is resolved, report null/inferred (open check).
@@ -8424,6 +8486,7 @@ export async function POST(req: Request) {
       // Public response caps the holder list to a small UI-safe count — full 100+ holder
       // arrays are debug-only.
       holderDistribution: debugMode ? holderDistribution : { ...holderDistribution, topHolders: (holderDistribution.topHolders ?? []).slice(0, 10) },
+      ...(liquidityCustody ? { liquidityCustody } : {}),
       holderDistributionStatus,
       holderStatus: holdersStatus,
       holderResolver: {
