@@ -74,7 +74,8 @@ import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveAerodromeSlipstreamPoolRpc } from '@/lib/server/aerodromeSlipstreamPoolRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
-import { resolveLpSafetyFinalState, detectKnownLpProtocol } from '@/lib/lpSafetyResolution'
+import { resolveLpSafetyFinalState, detectKnownLpProtocol, isUnversionedDexLabel, shouldProbePoolModelByRpc } from '@/lib/lpSafetyResolution'
+import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
 
 // MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
 // error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
@@ -578,6 +579,8 @@ type HolderDistribution = {
   holderCountReason: "holder_count_from_provider_total" | "holder_count_from_normalized_rows" | "holder_count_from_resolver" | "holder_count_unavailable_with_reason"
   holderCountExact?: boolean
   holderCountCapped?: boolean
+  /** Source and as-of time of an exact provider total. Null when the count is not a provider total. */
+  holderCountProvenance?: HolderCountProvenance | null
   topHolders: Array<{ rank: number; address: string; amount: string | number | null; percent: number | null }>
 }
 type HolderDistributionStatus = {
@@ -4396,7 +4399,9 @@ export async function POST(req: Request) {
     let _fallbackRpcEvidence: Awaited<ReturnType<typeof classifyPoolByRpc>> | null = null
     if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
       const _rpcProbePool = normalizedPools[0]
-      if (_rpcProbePool && _rpcProbePool.poolType === 'unknown' && _rpcProbePool.address && /^0x[a-f0-9]{40}$/.test(_rpcProbePool.address)) {
+      // Robinhood: a bare "uniswap" dex id is defaulted to v2 by detectPoolType() without any
+      // model evidence. Probe it on-chain so a concentrated pool is not sent to ERC-20 LP-holder proof.
+      if (_rpcProbePool && shouldProbePoolModelByRpc({ chain, poolType: _rpcProbePool.poolType, address: _rpcProbePool.address, dexId: _rpcProbePool.dexId, dexName: _rpcProbePool.dexName })) {
         _lpAuditAlchemyRpcAttempted = true
         const _rpcCls = await classifyPoolByRpc(chain, _rpcProbePool.address)
         _fallbackRpcEvidence = _rpcCls
@@ -4582,7 +4587,13 @@ export async function POST(req: Request) {
     const lpDexName = canonicalPoolIdentity?.protocolVariant ?? lpPool?.dexName ?? null
     // Computed early so the "Normalize split-pool and proof-status fields" block below can use
     // standardLockApplies to keep displayLpModel/proofApplicability consistent with lpModelProof.
-    const lpModelProof = _deriveLpModelProof(lpDexId)
+    // An unversioned label ("uniswap") reads as constant-product in classifyPoolModel. When the
+    // on-chain probe confirmed concentrated for that pool, the model must follow the probe, while
+    // the displayed DEX name stays the provider's label.
+    const _lpModelRpcConcentrated = lpPoolType === "concentrated" && _fallbackRpcModel === "concentrated" && isUnversionedDexLabel(lpDexId, lpDexName)
+    const lpModelProof = _lpModelRpcConcentrated
+      ? { ..._deriveLpModelProof(`${lpDexId}-concentrated`), dexName: lpDexId }
+      : _deriveLpModelProof(lpDexId)
     const lpPoolAddressPresent = Boolean(lpPoolAddress && /^0x[a-f0-9]{40}$/.test(lpPoolAddress))
     // For LP proof logic, use lpVerifyPool (V2/unknown) if available, else fall back to lpPool
     const _lpProofAddress = lpVerifyPoolPresent ? lpVerifyPoolAddress : lpPoolAddress
@@ -5899,9 +5910,10 @@ export async function POST(req: Request) {
       : null
     const holderCountExact = holderCountReason === "holder_count_from_provider_total"
     const holderCountCapped = holderCountReason === "holder_count_from_normalized_rows" || holderCountReason === "holder_count_from_resolver"
+    const holderCountProvenanceValue = holderCountExact ? holderCountProvenance(holdersRaw, moralisHoldersRaw) : null
     let holderDistribution: HolderDistribution = normalizedTop.length
-      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, topHolders: normalizedTop }
-      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, topHolders: [] }
+      ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, holderCountProvenance: holderCountProvenanceValue, topHolders: normalizedTop }
+      : { top1: null, top5: null, top10: null, top20: null, others: null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, holderCountProvenance: holderCountProvenanceValue, topHolders: [] }
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
@@ -7830,6 +7842,7 @@ export async function POST(req: Request) {
             holderCountReason,
             holderCountExact,
             holderCountCapped,
+            holderCountProvenance: holderCountProvenanceValue,
             topHolders: normalizedTop,
           }
           holderDistributionStatus = {

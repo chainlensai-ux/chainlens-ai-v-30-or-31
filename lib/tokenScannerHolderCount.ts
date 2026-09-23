@@ -156,3 +156,48 @@ export function formatHolderCountDisplay(input: {
     concentrationStatus: 'not_checked',
   }
 }
+
+/**
+ * Where an exact provider holder total came from and as of when. A total with no as-of time
+ * cannot be compared against another indexer's figure (e.g. DexScreener): a gap could be index
+ * lag, a different counting definition, or neither. This never changes the count itself.
+ */
+export type HolderCountProvenance = {
+  provider: 'goldrush' | 'moralis' | null
+  /** GoldRush chain identifier that answered (Robinhood tries 'robinhood-mainnet' then '4663'). */
+  chainIdentifier: string | null
+  /** Provider's own index timestamp for this response, when it returns one. */
+  providerUpdatedAt: string | null
+  providerTotal: number | null
+}
+
+const numericTotal = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null
+
+/** Mirrors the route's selection order exactly: GoldRush data.pagination, GoldRush pagination, then Moralis total. */
+type HolderTotalResponse = {
+  data?: { pagination?: { total_count?: unknown } | null; updated_at?: unknown } | null
+  pagination?: { total_count?: unknown } | null
+  updated_at?: unknown
+  total?: unknown
+  __chainUsed?: unknown
+} | null
+
+export function holderCountProvenance(goldrushRaw: unknown, moralisRaw: unknown): HolderCountProvenance {
+  const gr = (goldrushRaw ?? null) as HolderTotalResponse
+  const grTotal = gr?.data?.pagination?.total_count ?? gr?.pagination?.total_count ?? null
+  if (grTotal != null) {
+    const updatedAt = gr?.data?.updated_at ?? gr?.updated_at ?? null
+    return {
+      provider: 'goldrush',
+      chainIdentifier: typeof gr?.__chainUsed === 'string' ? gr.__chainUsed : null,
+      providerUpdatedAt: typeof updatedAt === 'string' && updatedAt.trim() ? updatedAt : null,
+      providerTotal: numericTotal(grTotal),
+    }
+  }
+  const moralisTotal = (moralisRaw as HolderTotalResponse)?.total ?? null
+  if (moralisTotal != null) {
+    return { provider: 'moralis', chainIdentifier: null, providerUpdatedAt: null, providerTotal: numericTotal(moralisTotal) }
+  }
+  return { provider: null, chainIdentifier: null, providerUpdatedAt: null, providerTotal: null }
+}

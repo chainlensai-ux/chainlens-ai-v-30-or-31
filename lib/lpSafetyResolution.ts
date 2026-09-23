@@ -237,6 +237,37 @@ export function detectKnownLpProtocol(input: {
   return { protocol: 'unknown', poolType: 'unknown', detector: null, detectorsTried }
 }
 
+/**
+ * True when the DEX label names only a protocol family ("uniswap", "pancakeswap") with no
+ * V2/V3/V4 marker. Such a label is not pool-model evidence: Uniswap/Pancake ship both ERC-20 LP
+ * pools and concentrated pools under the same name.
+ */
+export function isUnversionedDexLabel(dex: string | null | undefined, dexName?: string | null): boolean {
+  const text = blob([dex, dexName])
+  if (!text) return false
+  return classifyFromText(text) === 'unknown' && classifyUnversionedDex(text) !== 'unknown'
+}
+
+/**
+ * Whether the on-chain V2-vs-concentrated interface probe must run for the primary pool.
+ * Always for an unknown model. On Robinhood Chain, also when the only V2 evidence is an
+ * unversioned DEX label: detectPoolType() defaults a bare "uniswap" to v2, which otherwise
+ * skips the probe and routes a possibly-concentrated pool into ERC-20 LP-holder proof. A probe
+ * that cannot resolve leaves the existing v2 default untouched, so other chains and unresolved
+ * probes keep their current behavior and provider-call budget.
+ */
+export function shouldProbePoolModelByRpc(input: {
+  chain: string
+  poolType: string | null | undefined
+  address: string | null | undefined
+  dexId?: string | null
+  dexName?: string | null
+}): boolean {
+  if (!input.address || !/^0x[a-f0-9]{40}$/i.test(input.address)) return false
+  if (input.poolType === 'unknown') return true
+  return input.chain === 'robinhood' && input.poolType === 'v2' && isUnversionedDexLabel(input.dexId, input.dexName)
+}
+
 export function resolveLpSafetyFinalState(input: LpSafetyResolutionInput): LpSafetyResolution {
   const dex = input.selectedPoolDex ?? input.primaryDexName ?? ''
   const hasPool = Boolean(input.selectedPoolAddress || input.poolId)
