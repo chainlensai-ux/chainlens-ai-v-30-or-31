@@ -37,3 +37,14 @@ export function formatSolanaTokenAccountLine(c: SolanaHolderCountsView | null | 
   const n = `${fmt(c.tokenAccountCount)}${c.tokenAccountCountIsLowerBound ? '+' : ''}`
   return `${n} token ${c.tokenAccountCount === 1 && !c.tokenAccountCountIsLowerBound ? 'account' : 'accounts'} with balance`
 }
+
+// Stat-card values for the Holder Map summary: just the number (or "Unavailable"), with the label
+// rendered separately. Same verification rules as the line formatters above.
+export function formatSolanaUniqueOwnerStat(c: SolanaHolderCountsView | null | undefined): string {
+  return c && c.uniqueOwnerStatus === 'verified' && c.uniqueOwnerCount != null ? fmt(c.uniqueOwnerCount) : 'Unavailable'
+}
+
+export function formatSolanaTokenAccountStat(c: SolanaHolderCountsView | null | undefined): string {
+  if (!c || c.tokenAccountCount == null) return 'Unavailable'
+  return `${fmt(c.tokenAccountCount)}${c.tokenAccountCountIsLowerBound ? '+' : ''}`
+}

@@ -219,7 +219,7 @@ describe('Solana token-account semantics', () => {
     assert.match(resolver, /function computeConcentration\([\s\S]*?rawSupplyExact[\s\S]*?rawSupplyBig != null && rawSupplyBig > ZERO/)
     assert.ok(!/transfer_derived|transferDerived/.test(resolver), 'no EVM transfer-derived path in Solana resolver')
     const page = read('app/terminal/token-scanner/page.tsx')
-    assert.ok(page.includes('Token accounts: {formatSolanaTokenAccountLine('))
+    assert.ok(page.includes('>TOKEN ACCOUNTS</p>') && page.includes('formatSolanaTokenAccountStat(hc)'))
     assert.ok(read('lib/solanaHolderCountsDisplay.ts').includes('token ${c.tokenAccountCount === 1'))
     assert.ok(page.includes('these are token accounts, not resolved unique holders'))
   })

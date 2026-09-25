@@ -32,7 +32,7 @@ import {
   formatTokenScannerPublicStatus,
 } from '@/lib/tokenScannerPublicStatus'
 import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
-import { formatSolanaTokenAccountLine, formatSolanaUniqueHolderLine } from '@/lib/solanaHolderCountsDisplay'
+import { formatSolanaTokenAccountStat, formatSolanaUniqueOwnerStat, type SolanaHolderCountsView } from '@/lib/solanaHolderCountsDisplay'
 import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
@@ -5669,6 +5669,8 @@ export default function TerminalTokenScanner() {
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
+        .sol-holder-stats{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:10px;max-width:460px;}
+        @media (max-width:480px){.sol-holder-stats{grid-template-columns:1fr;max-width:none;}}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1180px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1120px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;} .result-tabs-wrap{position:static !important;background:none !important;backdrop-filter:none !important;}}
@@ -6315,22 +6317,32 @@ export default function TerminalTokenScanner() {
                           <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 800, color: concColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>
                             {concRisk === 'HIGH' ? `High concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'MEDIUM' ? `Moderate concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'LOW' ? `Spread looks reasonable — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : 'Concentration verdict is an open check for this scan.'}
                           </p>
+                          {/* Solana semantics: a token account is not a wallet. Unique owners show a number only
+                              when every account page was read and every owner is known; token accounts come from
+                              Helius's paginated getTokenAccounts ("+" means capped, the real count may be higher). */}
+                          {(() => {
+                            const hc: SolanaHolderCountsView | null = sr.solanaHolderCounts ?? (sr.heliusHolders?.success ? { tokenAccountCount: sr.heliusHolders.holderCount, tokenAccountCountIsLowerBound: sr.heliusHolders.isLowerBound, uniqueOwnerCount: null, uniqueOwnerStatus: 'unavailable', uniqueOwnerReason: null, verifiedCustodyOwnerCount: null } : null)
+                            const ownersValue = formatSolanaUniqueOwnerStat(sr.solanaHolderCounts)
+                            const accountsValue = formatSolanaTokenAccountStat(hc)
+                            const custody = sr.solanaHolderCounts?.uniqueOwnerStatus === 'verified' ? (sr.solanaHolderCounts.verifiedCustodyOwnerCount ?? 0) : 0
+                            return (
+                              <div style={{ margin: '10px 0 10px' }}>
+                                <div className="sol-holder-stats">
+                                  <div data-stat="unique-owners" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.38)', minWidth: 0 }}>
+                                    <p style={{ margin: 0, fontSize: '9.5px', fontWeight: 700, letterSpacing: '.14em', color: '#b9a6fb', fontFamily: 'var(--font-plex-mono)' }}>UNIQUE OWNERS</p>
+                                    <p style={{ margin: '3px 0 0', fontSize: ownersValue === 'Unavailable' ? '15px' : '22px', fontWeight: 800, lineHeight: 1.15, color: ownersValue === 'Unavailable' ? '#94a3b8' : '#f1f5f9', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{ownersValue}</p>
+                                    {custody > 0 && <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#8aa3b8', fontFamily: 'var(--font-plex-mono)' }}>Includes {custody.toLocaleString('en-US')} verified pool vault {custody === 1 ? 'authority' : 'authorities'}</p>}
+                                  </div>
+                                  <div data-stat="token-accounts" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.22)', minWidth: 0 }}>
+                                    <p style={{ margin: 0, fontSize: '9.5px', fontWeight: 700, letterSpacing: '.14em', color: '#8aa3b8', fontFamily: 'var(--font-plex-mono)' }}>TOKEN ACCOUNTS</p>
+                                    <p style={{ margin: '3px 0 0', fontSize: accountsValue === 'Unavailable' ? '14px' : '18px', fontWeight: 700, lineHeight: 1.15, color: accountsValue === 'Unavailable' ? '#94a3b8' : '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{accountsValue}</p>
+                                  </div>
+                                </div>
+                                <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>Some owners may control multiple token accounts.</p>
+                              </div>
+                            )
+                          })()}
                           <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
-                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>
-                            {/* HOLDER-COUNT, DISCLOSED (Solana provider-wiring follow-up: "make
-                                holders work"): sourced from Helius's paginated getTokenAccounts —
-                                a real count of SPL token accounts with a positive balance, not a
-                                top-20 sample and not a fabricated 0. Labelled "accounts" (not
-                                "holders") because AMM pool vaults/exchange custody accounts are
-                                counted too — same honesty caveat as the top-account sample above.
-                                "+" means capped for cost control; the real count may be higher. */}
-                            {/* Solana semantics: a token account is not a wallet. Unique holders show a
-                                number only when every account page was read and every owner is known. */}
-                            Holder count: {formatSolanaUniqueHolderLine(sr.solanaHolderCounts)}
-                          </p>
-                          <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>
-                            Token accounts: {formatSolanaTokenAccountLine(sr.solanaHolderCounts ?? (sr.heliusHolders?.success ? { tokenAccountCount: sr.heliusHolders.holderCount, tokenAccountCountIsLowerBound: sr.heliusHolders.isLowerBound, uniqueOwnerCount: null, uniqueOwnerStatus: 'unavailable', uniqueOwnerReason: null, verifiedCustodyOwnerCount: null } : null))}. Distinct from the top-account sample above.
-                          </p>
                         </div>
                         <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>

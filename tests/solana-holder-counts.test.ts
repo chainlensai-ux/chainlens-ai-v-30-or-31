@@ -18,7 +18,7 @@ import {
 } from '../lib/server/solanaProviders'
 import { __resetMemoryFallbackForTest } from '../lib/server/cache/tokenCache'
 import { buildSolanaHolderCounts } from '../lib/server/solana/holderCounts'
-import { formatSolanaTokenAccountLine, formatSolanaUniqueHolderLine } from '../lib/solanaHolderCountsDisplay'
+import { formatSolanaTokenAccountLine, formatSolanaTokenAccountStat, formatSolanaUniqueHolderLine, formatSolanaUniqueOwnerStat } from '../lib/solanaHolderCountsDisplay'
 import { annotateLiquidityCustody, buildSolanaCustodyCandidates } from '../lib/liquidityCustody'
 
 const MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm'
@@ -125,11 +125,29 @@ describe('Solana holder counts: token accounts vs unique owners', () => {
     assert.equal(formatSolanaTokenAccountLine(null), 'Token accounts with balance unavailable')
   })
 
-  it('UI renders separate holder and token-account lines and no Solana "holders" label for accounts', () => {
+  it('UI renders separate Unique Owners and Token Accounts stat cards and no Solana "holders" label for accounts', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'app/terminal/token-scanner/page.tsx'), 'utf8')
-    assert.ok(src.includes('Holder count: {formatSolanaUniqueHolderLine(sr.solanaHolderCounts)}'))
-    assert.ok(src.includes('Token accounts: {formatSolanaTokenAccountLine('))
+    assert.ok(src.includes('const ownersValue = formatSolanaUniqueOwnerStat(sr.solanaHolderCounts)'))
+    assert.ok(src.includes('const accountsValue = formatSolanaTokenAccountStat(hc)'))
+    assert.ok(src.includes('>UNIQUE OWNERS</p>') && src.includes('>TOKEN ACCOUNTS</p>'))
+    assert.ok(src.includes('Some owners may control multiple token accounts.'))
+    assert.ok(!src.includes('Holder count: {') && !src.includes('Token accounts: {'), 'old buried lines removed')
+    assert.ok(!/UNIQUE OWNERS[^<]*WALLET|>WALLETS</i.test(src.slice(src.indexOf('sol-holder-stats'))))
     assert.ok(!/heliusHolders\.isLowerBound \? '\+' : ''\} holders/.test(src))
+  })
+
+  it('stat-card values: verified count, unavailable owners with token-account value or lower bound', () => {
+    const base = { tokenAccountCount: 3097, tokenAccountCountIsLowerBound: false, uniqueOwnerCount: 3083, uniqueOwnerStatus: 'verified' as const, uniqueOwnerReason: null, verifiedCustodyOwnerCount: 0 }
+    assert.equal(formatSolanaUniqueOwnerStat(base), '3,083')
+    assert.equal(formatSolanaTokenAccountStat(base), '3,097')
+    const capped = { ...base, tokenAccountCount: 10000, tokenAccountCountIsLowerBound: true, uniqueOwnerCount: null, uniqueOwnerStatus: 'unavailable' as const, uniqueOwnerReason: 'token_account_pagination_cap_reached' }
+    assert.equal(formatSolanaUniqueOwnerStat(capped), 'Unavailable')
+    assert.equal(formatSolanaTokenAccountStat(capped), '10,000+')
+    const partial = { ...base, uniqueOwnerStatus: 'partial' as const }
+    assert.equal(formatSolanaUniqueOwnerStat(partial), 'Unavailable', 'a count is shown only when verified')
+    assert.equal(formatSolanaTokenAccountStat(partial), '3,097')
+    assert.equal(formatSolanaUniqueOwnerStat(null), 'Unavailable')
+    assert.equal(formatSolanaTokenAccountStat(null), 'Unavailable')
   })
 })
 
