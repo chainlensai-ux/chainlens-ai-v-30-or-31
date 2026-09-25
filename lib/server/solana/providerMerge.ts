@@ -15,7 +15,7 @@ import {
   isDexScreenerAvailable,
   isGoldrushKeyPresent,
 } from '../solanaChainConfig.ts'
-import { solanaGoldrushEnrichment, heliusCountedAccountOwner } from '../solanaProviders.ts'
+import { solanaGoldrushEnrichment, heliusCountedAccountOwner, heliusOwnerLookupCoversAllAccounts } from '../solanaProviders.ts'
 import { buildSolanaHolderCounts } from './holderCounts.ts'
 import type { RpcFetch } from './rpcClient.ts'
 import { analyzeSolanaMint } from './mintAnalyzer.ts'
@@ -338,6 +338,7 @@ export async function runSolanaProviderMerge(
     heliusHolders: holders.heliusHolders,
     verifiedVaultAccounts: verifiedVaultsFromSolanaClusterMap(clusterMap),
     ownerOf: (account) => heliusCountedAccountOwner(holders.heliusHolders, account),
+    ownerLookupComplete: heliusOwnerLookupCoversAllAccounts(holders.heliusHolders),
   })
 
   return {

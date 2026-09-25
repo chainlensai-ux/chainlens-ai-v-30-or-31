@@ -13,6 +13,7 @@
 // not exist here.
 
 import { isHeliusConfigured, isJupiterConfigured, getHeliusApiKey } from './solanaChainConfig.ts'
+import { getTokenCache, setTokenCache } from './cache/tokenCache.ts'
 
 type FetchImpl = typeof fetch
 
@@ -255,17 +256,23 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
 // paginated count from live on-chain data, unlike the top-20 sample — call sites must still label
 // it as an account count, never claim it as verified unique holders.
 //
-// COST CONTROL, DISCLOSED: capped at 3 pages of 1000 accounts (3 Helius DAS calls, NOT Enhanced
-// Transactions) — cheap and bounded. A token with more accounts than the cap gets an honest
-// lower-bound count (isLowerBound: true) rather than either paying for unbounded pagination or
-// silently under-reporting as if it were the true total.
+// COST CONTROL, DISCLOSED: hard cap of 10 pages of 1000 accounts (at most 10 Helius DAS calls, NOT
+// Enhanced Transactions) plus a 10s wall-clock budget for the whole loop. The loop is awaited on the
+// /api/token response path (concurrent with the concentration, market and creator reads, whose own
+// timeouts are 8-9s), so the budget keeps a slow provider from stretching the scan; running out of
+// budget returns an honest incomplete result (never cached). It stops on the first short page, so a token pays one call per 1,000 accounts. A completed count is cached per exact mint for a
+// few minutes so repeat scans cost zero calls. A token with more accounts than the cap gets an honest
+// lower-bound account count (isLowerBound: true) and no unique-owner number.
 
-const HELIUS_HOLDER_MAX_PAGES = 3
-const HELIUS_HOLDER_PAGE_LIMIT = 1000
+export const HELIUS_HOLDER_MAX_PAGES = 10
+export const HELIUS_HOLDER_PAGE_LIMIT = 1000
+export const HELIUS_HOLDER_TOTAL_BUDGET_MS = 10_000
+const HELIUS_HOLDER_PAGE_TIMEOUT_MS = 8_000
 
 export type SolanaUniqueOwnerStatus = 'verified' | 'partial' | 'unavailable'
 
 export const SOLANA_UNIQUE_OWNERS_PAGINATION_INCOMPLETE_REASON = 'token_account_pagination_incomplete'
+export const SOLANA_UNIQUE_OWNERS_CAP_REACHED_REASON = 'token_account_pagination_cap_reached'
 export const SOLANA_UNIQUE_OWNERS_OWNER_MISSING_REASON = 'token_account_owner_missing'
 export const SOLANA_UNIQUE_OWNERS_NOT_RESOLVED_REASON = 'helius_token_accounts_unavailable'
 
@@ -283,15 +290,31 @@ export type SolanaHeliusHolderResult = {
   uniqueOwnerCount?: number | null
   uniqueOwnerStatus?: SolanaUniqueOwnerStatus
   uniqueOwnerReason?: string | null
+  /** 'live' when this scan paginated Helius, 'cache' when a completed per-mint count was reused. */
+  ownerCountSource?: 'live' | 'cache'
+  /** When the completed count was computed (ISO). Present on live complete results and on cache hits. */
+  ownerCountComputedAt?: string | null
+  /** Helius last_indexed_slot from the final page of a completed read, when reported. */
+  ownerCountIndexedSlot?: number | null
 }
 
 type HeliusTokenAccountTally = {
   accountOwner: Map<string, string | null>
+  /** Raw positive amounts, kept only to pick the largest accounts for the cached owner lookup. */
+  accountAmount: Map<string, bigint>
   pagesFetched: number
+  lastIndexedSlot: number | null
 }
 
 function newTally(): HeliusTokenAccountTally {
-  return { accountOwner: new Map(), pagesFetched: 0 }
+  return { accountOwner: new Map(), accountAmount: new Map(), pagesFetched: 0, lastIndexedSlot: null }
+}
+
+function rawAmountBig(amt: unknown): bigint {
+  if (typeof amt === 'bigint') return amt
+  if (typeof amt === 'string' && /^\d+$/.test(amt)) return BigInt(amt)
+  if (typeof amt === 'number' && Number.isFinite(amt) && amt > 0) return BigInt(Math.floor(amt))
+  return BigInt(0)
 }
 
 function rawAmountIsPositive(amt: unknown): boolean {
@@ -318,26 +341,49 @@ export function tallyHeliusTokenAccountPage(tally: HeliusTokenAccountTally, mint
     if (typeof a.mint === 'string' && a.mint !== mintAddress) continue
     if (!rawAmountIsPositive(a.amount)) continue
     const owner = typeof a.owner === 'string' && a.owner.length > 0 ? a.owner : null
-    if (!tally.accountOwner.has(address)) tally.accountOwner.set(address, owner)
+    if (!tally.accountOwner.has(address)) {
+      tally.accountOwner.set(address, owner)
+      tally.accountAmount.set(address, rawAmountBig(a.amount))
+    }
   }
 }
 
-const heliusAccountOwnerLookup = new WeakMap<SolanaHeliusHolderResult, ReadonlyMap<string, string | null>>()
+type OwnerLookup = { owners: ReadonlyMap<string, string | null>; coversAllCountedAccounts: boolean }
+const heliusAccountOwnerLookup = new WeakMap<SolanaHeliusHolderResult, OwnerLookup>()
 
 /** Owner of a counted token account, from the same Helius pages (no extra call). Null if not counted or unknown. */
 export function heliusCountedAccountOwner(result: SolanaHeliusHolderResult | null | undefined, account: string): string | null {
   if (!result) return null
-  return heliusAccountOwnerLookup.get(result)?.get(account) ?? null
+  return heliusAccountOwnerLookup.get(result)?.owners.get(account) ?? null
 }
 
-/** Pure: turn a tally into the public result. complete=true only when the last page was short (no more accounts exist). */
-export function finalizeHeliusHolderTally(tally: HeliusTokenAccountTally, complete: boolean): SolanaHeliusHolderResult {
+/** True when the owner lookup covers every counted account (a live read). A cache hit only keeps the largest accounts. */
+export function heliusOwnerLookupCoversAllAccounts(result: SolanaHeliusHolderResult | null | undefined): boolean {
+  if (!result) return false
+  return heliusAccountOwnerLookup.get(result)?.coversAllCountedAccounts ?? false
+}
+
+/**
+ * Pure: turn a tally into the public result.
+ * pagination: 'complete' when a short page proved there are no more accounts, 'cap_reached' when the
+ * last allowed page was full, 'incomplete' when a page failed or the time budget ran out.
+ */
+export function finalizeHeliusHolderTally(
+  tally: HeliusTokenAccountTally,
+  pagination: 'complete' | 'cap_reached' | 'incomplete' | boolean,
+  now: Date = new Date(),
+): SolanaHeliusHolderResult {
+  const state = pagination === true ? 'complete' : pagination === false ? 'incomplete' : pagination
+  const complete = state === 'complete'
   const tokenAccountCount = tally.accountOwner.size
   let uniqueOwnerCount: number | null = null
   let uniqueOwnerStatus: SolanaUniqueOwnerStatus
   let uniqueOwnerReason: string | null
   const ownerMissing = Array.from(tally.accountOwner.values()).some((o) => o == null)
-  if (!complete) {
+  if (state === 'cap_reached') {
+    uniqueOwnerStatus = 'partial'
+    uniqueOwnerReason = SOLANA_UNIQUE_OWNERS_CAP_REACHED_REASON
+  } else if (!complete) {
     uniqueOwnerStatus = 'partial'
     uniqueOwnerReason = SOLANA_UNIQUE_OWNERS_PAGINATION_INCOMPLETE_REASON
   } else if (ownerMissing) {
@@ -359,9 +405,109 @@ export function finalizeHeliusHolderTally(tally: HeliusTokenAccountTally, comple
     uniqueOwnerCount,
     uniqueOwnerStatus,
     uniqueOwnerReason,
+    ownerCountSource: 'live',
+    ownerCountComputedAt: uniqueOwnerStatus === 'verified' ? now.toISOString() : null,
+    ownerCountIndexedSlot: uniqueOwnerStatus === 'verified' ? tally.lastIndexedSlot : null,
   }
-  heliusAccountOwnerLookup.set(result, tally.accountOwner)
+  heliusAccountOwnerLookup.set(result, { owners: tally.accountOwner, coversAllCountedAccounts: true })
   return result
+}
+
+// ── Per-mint cache for a COMPLETED owner count ──────────────────────────────────────────────────
+// Only verified (complete pagination, every owner present) results are cached, keyed by the exact,
+// case-sensitive mint. A write never replaces an entry backed by newer evidence (higher Helius
+// indexed slot, or later computedAt when slots are missing). The cache keeps owners for the largest
+// accounts only, so pool vault owners can still be matched on a hit without storing every account.
+
+export const SOLANA_OWNER_COUNT_CACHE_TTL_SECONDS = 300
+const SOLANA_OWNER_COUNT_CACHE_VERSION = 'v1'
+const SOLANA_OWNER_COUNT_CACHE_TOP_OWNERS = 100
+
+export type SolanaOwnerCountCacheEntry = {
+  version: typeof SOLANA_OWNER_COUNT_CACHE_VERSION
+  chainSlug: 'solana'
+  mintAddress: string
+  tokenAccountCount: number
+  uniqueOwnerCount: number
+  pagesFetched: number
+  computedAt: string
+  indexedSlot: number | null
+  topAccountOwners: Array<[string, string]>
+}
+
+export function solanaOwnerCountCacheKey(mintAddress: string): string {
+  // Exact mint, no lowercasing: Solana base58 addresses are case-sensitive.
+  return `solana:holderOwnerCount:${SOLANA_OWNER_COUNT_CACHE_VERSION}:${mintAddress}`
+}
+
+function isUsableOwnerCountEntry(e: unknown, mintAddress: string): e is SolanaOwnerCountCacheEntry {
+  if (!e || typeof e !== 'object') return false
+  const x = e as Partial<SolanaOwnerCountCacheEntry>
+  return x.version === SOLANA_OWNER_COUNT_CACHE_VERSION
+    && x.chainSlug === 'solana'
+    && x.mintAddress === mintAddress
+    && typeof x.tokenAccountCount === 'number'
+    && typeof x.uniqueOwnerCount === 'number'
+    && typeof x.computedAt === 'string'
+    && Array.isArray(x.topAccountOwners)
+}
+
+/** Pure: true when `candidate` is backed by evidence at least as new as `existing`. */
+export function ownerCountEvidenceIsNewer(candidate: Pick<SolanaOwnerCountCacheEntry, 'computedAt' | 'indexedSlot'>, existing: Pick<SolanaOwnerCountCacheEntry, 'computedAt' | 'indexedSlot'> | null): boolean {
+  if (!existing) return true
+  if (candidate.indexedSlot != null && existing.indexedSlot != null && candidate.indexedSlot !== existing.indexedSlot) {
+    return candidate.indexedSlot > existing.indexedSlot
+  }
+  return Date.parse(candidate.computedAt) >= Date.parse(existing.computedAt)
+}
+
+function cacheEntryFromTally(mintAddress: string, tally: HeliusTokenAccountTally, result: SolanaHeliusHolderResult): SolanaOwnerCountCacheEntry | null {
+  if (result.uniqueOwnerStatus !== 'verified' || result.uniqueOwnerCount == null || result.tokenAccountCount == null || !result.ownerCountComputedAt) return null
+  const top = Array.from(tally.accountAmount.entries())
+    .sort((a, b) => (a[1] === b[1] ? 0 : a[1] > b[1] ? -1 : 1))
+    .slice(0, SOLANA_OWNER_COUNT_CACHE_TOP_OWNERS)
+    .map(([addr]) => [addr, tally.accountOwner.get(addr) as string] as [string, string])
+  return {
+    version: SOLANA_OWNER_COUNT_CACHE_VERSION,
+    chainSlug: 'solana',
+    mintAddress,
+    tokenAccountCount: result.tokenAccountCount,
+    uniqueOwnerCount: result.uniqueOwnerCount,
+    pagesFetched: result.pagesFetched,
+    computedAt: result.ownerCountComputedAt,
+    indexedSlot: result.ownerCountIndexedSlot ?? null,
+    topAccountOwners: top,
+  }
+}
+
+function resultFromCacheEntry(e: SolanaOwnerCountCacheEntry): SolanaHeliusHolderResult {
+  const result: SolanaHeliusHolderResult = {
+    called: false,
+    success: true,
+    holderCount: e.tokenAccountCount,
+    isLowerBound: false,
+    pagesFetched: 0,
+    errorReason: null,
+    tokenAccountCount: e.tokenAccountCount,
+    uniqueOwnerCount: e.uniqueOwnerCount,
+    uniqueOwnerStatus: 'verified',
+    uniqueOwnerReason: null,
+    ownerCountSource: 'cache',
+    ownerCountComputedAt: e.computedAt,
+    ownerCountIndexedSlot: e.indexedSlot,
+  }
+  heliusAccountOwnerLookup.set(result, { owners: new Map(e.topAccountOwners), coversAllCountedAccounts: false })
+  return result
+}
+
+export type HeliusOwnerCountCacheIO = {
+  get: (key: string) => Promise<unknown>
+  set: (key: string, value: SolanaOwnerCountCacheEntry, ttlSeconds: number) => Promise<void>
+}
+
+const defaultOwnerCountCache: HeliusOwnerCountCacheIO = {
+  get: (key) => getTokenCache<unknown>(key),
+  set: (key, value, ttl) => setTokenCache(key, value, ttl),
 }
 
 function emptyHolderResult(called: boolean, errorReason: string | null): SolanaHeliusHolderResult {
@@ -371,42 +517,72 @@ function emptyHolderResult(called: boolean, errorReason: string | null): SolanaH
   }
 }
 
-export async function fetchHeliusHolderCount(mintAddress: string, fetchImpl: FetchImpl): Promise<SolanaHeliusHolderResult> {
+export async function fetchHeliusHolderCount(
+  mintAddress: string,
+  fetchImpl: FetchImpl,
+  opts: { cache?: HeliusOwnerCountCacheIO | null; now?: () => Date; budgetMs?: number } = {},
+): Promise<SolanaHeliusHolderResult> {
   if (!isHeliusConfigured()) return emptyHolderResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
   const apiKey = getHeliusApiKey()
   if (!apiKey) return emptyHolderResult(false, 'HELIUS_API_KEY missing.')
 
+  const cache = opts.cache === undefined ? defaultOwnerCountCache : opts.cache
+  const now = opts.now ?? (() => new Date())
+  const cacheKey = solanaOwnerCountCacheKey(mintAddress)
+  if (cache) {
+    const raw = await cache.get(cacheKey).catch(() => null)
+    if (isUsableOwnerCountEntry(raw, mintAddress)) return resultFromCacheEntry(raw)
+  }
+
   const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
   const tally = newTally()
+  const deadline = Date.now() + Math.min(opts.budgetMs ?? HELIUS_HOLDER_TOTAL_BUDGET_MS, HELIUS_HOLDER_TOTAL_BUDGET_MS)
   // Owner, mint and amount already arrive on every row of these same pages, so the unique-owner
-  // count adds no provider calls. It is only published when pagination is complete.
+  // count costs no extra endpoint. It is only published when pagination is complete.
+  const finish = async (pagination: 'complete' | 'cap_reached' | 'incomplete'): Promise<SolanaHeliusHolderResult> => {
+    const result = finalizeHeliusHolderTally(tally, pagination, now())
+    const entry = cache ? cacheEntryFromTally(mintAddress, tally, result) : null
+    if (cache && entry) {
+      // Re-read just before writing: a concurrent scan may have stored newer evidence meanwhile.
+      const current = await cache.get(cacheKey).catch(() => null)
+      const currentEntry = isUsableOwnerCountEntry(current, mintAddress) ? current : null
+      if (ownerCountEvidenceIsNewer(entry, currentEntry)) {
+        await cache.set(cacheKey, entry, SOLANA_OWNER_COUNT_CACHE_TTL_SECONDS).catch(() => undefined)
+      }
+    }
+    return result
+  }
   try {
     for (let page = 1; page <= HELIUS_HOLDER_MAX_PAGES; page++) {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) return tally.pagesFetched > 0 ? finish('incomplete') : emptyHolderResult(true, 'helius_holders_time_budget_exhausted')
       const res = await fetchImpl(rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenAccounts', params: { mint: mintAddress, page, limit: HELIUS_HOLDER_PAGE_LIMIT } }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(Math.min(HELIUS_HOLDER_PAGE_TIMEOUT_MS, remaining)),
       })
       if (!res.ok) return tally.pagesFetched > 0
-        ? finalizeHeliusHolderTally(tally, false)
+        ? finish('incomplete')
         : emptyHolderResult(true, `helius_holders_http_${res.status}`)
-      const json = await res.json().catch(() => null) as { result?: { token_accounts?: unknown[] }; error?: { message?: string } } | null
+      const json = await res.json().catch(() => null) as { result?: { token_accounts?: unknown[]; last_indexed_slot?: unknown }; error?: { message?: string } } | null
       if (!json) return tally.pagesFetched > 0
-        ? finalizeHeliusHolderTally(tally, false)
+        ? finish('incomplete')
         : emptyHolderResult(true, 'helius_holders_bad_json')
       if (json.error) return tally.pagesFetched > 0
-        ? finalizeHeliusHolderTally(tally, false)
+        ? finish('incomplete')
         : emptyHolderResult(true, `helius_holders_rpc_error:${json.error.message ?? 'unknown'}`)
       const accounts = Array.isArray(json.result?.token_accounts) ? json.result!.token_accounts! : []
       tallyHeliusTokenAccountPage(tally, mintAddress, accounts)
-      if (accounts.length < HELIUS_HOLDER_PAGE_LIMIT) return finalizeHeliusHolderTally(tally, true)
+      const slot = json.result?.last_indexed_slot
+      if (typeof slot === 'number' && Number.isFinite(slot)) tally.lastIndexedSlot = slot
+      if (accounts.length < HELIUS_HOLDER_PAGE_LIMIT) return finish('complete')
     }
-    // Hit the page cap with a full last page — more accounts likely exist beyond it.
-    return finalizeHeliusHolderTally(tally, false)
+    // Page cap reached with a full last page: more accounts may exist beyond it.
+    return finish('cap_reached')
   } catch {
     return tally.pagesFetched > 0
-      ? finalizeHeliusHolderTally(tally, false)
+      ? finish('incomplete')
       : emptyHolderResult(true, 'helius_holders_unreachable')
   }
 }

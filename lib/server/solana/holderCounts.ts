@@ -21,12 +21,17 @@ export type SolanaHolderCounts = {
   /** Distinct owners of verified AMM vault token accounts among the counted accounts. Null unless uniqueOwnerCount is verified. */
   verifiedCustodyOwnerCount: number | null
   pagesFetched: number
+  /** 'live' = paginated this scan, 'cache' = reused a completed per-mint count (no provider calls). */
+  ownerCountSource: 'live' | 'cache' | null
+  ownerCountComputedAt: string | null
 }
 
 export function buildSolanaHolderCounts(params: {
   heliusHolders: SolanaHeliusHolderResult | null | undefined
   verifiedVaultAccounts: ReadonlyArray<{ address: string }>
   ownerOf: (account: string) => string | null
+  /** False when the owner lookup holds only some accounts (cache hit). An unresolved vault then makes the custody count unknown. */
+  ownerLookupComplete?: boolean
 }): SolanaHolderCounts {
   const h = params.heliusHolders
   if (!h || !h.success) {
@@ -39,6 +44,8 @@ export function buildSolanaHolderCounts(params: {
       uniqueOwnerReason: h?.uniqueOwnerReason ?? 'helius_token_accounts_unavailable',
       verifiedCustodyOwnerCount: null,
       pagesFetched: h?.pagesFetched ?? 0,
+      ownerCountSource: null,
+      ownerCountComputedAt: null,
     }
   }
   const tokenAccountCount = h.tokenAccountCount ?? h.holderCount
@@ -46,11 +53,13 @@ export function buildSolanaHolderCounts(params: {
   let verifiedCustodyOwnerCount: number | null = null
   if (verified) {
     const owners = new Set<string>()
+    let unresolved = false
     for (const v of params.verifiedVaultAccounts) {
       const o = params.ownerOf(v.address)
       if (o) owners.add(o)
+      else if (params.ownerLookupComplete === false) unresolved = true
     }
-    verifiedCustodyOwnerCount = owners.size
+    verifiedCustodyOwnerCount = unresolved ? null : owners.size
   }
   return {
     basis: 'helius_das_token_accounts',
@@ -61,5 +70,7 @@ export function buildSolanaHolderCounts(params: {
     uniqueOwnerReason: verified ? null : (h.uniqueOwnerReason ?? 'token_account_pagination_incomplete'),
     verifiedCustodyOwnerCount,
     pagesFetched: h.pagesFetched,
+    ownerCountSource: h.ownerCountSource ?? 'live',
+    ownerCountComputedAt: h.ownerCountComputedAt ?? null,
   }
 }

@@ -1,5 +1,7 @@
 // Holder Map wording for Solana counts. Token accounts are never called holders; the unique-owner
 // line only shows a number when the API marked it verified (complete pagination, every owner known).
+// An owner is the token account's owner address: a person's wallet, an exchange, or a program PDA
+// (pool vault authority, multisig), so it is never called a wallet.
 
 export type SolanaHolderCountsView = {
   tokenAccountCount: number | null
@@ -15,11 +17,12 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 export function formatSolanaUniqueHolderLine(c: SolanaHolderCountsView | null | undefined): string {
   if (c && c.uniqueOwnerStatus === 'verified' && c.uniqueOwnerCount != null) {
     const custody = c.verifiedCustodyOwnerCount ?? 0
-    const base = `${fmt(c.uniqueOwnerCount)} ${c.uniqueOwnerCount === 1 ? 'wallet' : 'wallets'}`
+    const base = `${fmt(c.uniqueOwnerCount)} ${c.uniqueOwnerCount === 1 ? 'unique owner' : 'unique owners'}`
     return custody > 0
       ? `${base} (includes ${fmt(custody)} verified pool vault ${custody === 1 ? 'authority' : 'authorities'})`
       : base
   }
+  if (c?.uniqueOwnerReason === 'token_account_pagination_cap_reached') return 'Unique holders unavailable'
   if (c?.uniqueOwnerReason === 'token_account_pagination_incomplete') {
     return 'Unique holders unavailable (not every token account was read, so owners cannot be fully counted)'
   }

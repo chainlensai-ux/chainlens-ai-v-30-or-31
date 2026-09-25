@@ -64,7 +64,7 @@ export async function analyzeSolanaHolders(params: {
   // ── Top-account concentration + Helius holder count run CONCURRENTLY, DISCLOSED: these are two
   // fully independent reads (different providers, neither depends on the other's result) that
   // previously ran sequentially — worst case (3 retried attempts on getTokenLargestAccounts, THEN
-  // up to 3 paginated Helius calls) could take ~50s end to end. Running them together roughly
+  // up to 3 paginated Helius calls, now up to 10 within a 10s budget) could take ~50s end to end. Running them together roughly
   // halves worst-case latency, which matters directly: app/api/token/route.ts has no maxDuration
   // override, so a scan that runs long risks the PLATFORM killing the whole request before this
   // module's own retries even get to finish — which reads to a user as "holders randomly doesn't
@@ -104,8 +104,12 @@ export async function analyzeSolanaHolders(params: {
   // ── Real, paginated holder-account count (Helius) — fetched above, alongside the largest-
   // accounts read (see this function's own header for why they now run concurrently). ──────────
   if (heliusHolders.called && !heliusHolders.success) evidenceGaps.push('Helius token-account count did not resolve — token-account count and unique holders unavailable.')
-  if (heliusHolders.success) evidenceGaps.push('Token-account count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included). One wallet can own several accounts, so this is not a unique-holder count.')
-  if (heliusHolders.isLowerBound) evidenceGaps.push(`Token-account count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher, and unique holders cannot be counted.`)
+  if (heliusHolders.success) evidenceGaps.push('Token-account count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included). One owner address can hold several accounts, so this is not a unique-owner count.')
+  if (heliusHolders.isLowerBound) {
+    evidenceGaps.push(heliusHolders.uniqueOwnerReason === 'token_account_pagination_cap_reached'
+      ? `Token-account count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher, and unique holders cannot be counted.`
+      : `Token-account count is a lower bound — only ${heliusHolders.pagesFetched} page(s) of accounts could be read this scan, so unique holders cannot be counted.`)
+  }
 
   return { topAccountConcentration, heliusHolders, evidenceGaps, concentrationResult, concentrationAudit }
 }
