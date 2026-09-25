@@ -79,6 +79,7 @@ import { holderCountProvenance, type HolderCountProvenance } from '@/lib/tokenSc
 import {
   annotateLiquidityCustody,
   buildEvmCustodyCandidates,
+  computeOrdinaryConcentration,
   type LiquidityCustodySummary,
 } from '@/lib/liquidityCustody'
 
@@ -599,6 +600,23 @@ type HolderDistribution = {
       evidence: string[]
     }
   }>
+  /** Stage-2 optional: ordinary Top-N excluding verified liquidity_custody only. Denominator = total supply. */
+  ordinaryTop1?: number | null
+  ordinaryTop5?: number | null
+  ordinaryTop10?: number | null
+  ordinaryTop20?: number | null
+  ordinaryCoverage?: {
+    /** Verified for the requested ordinary Top-N window only; never a complete custody census. */
+    status: 'verified' | 'partial' | 'insufficient' | 'not_computed'
+    verifiedScope?: 'requested_ordinary_top_n_window'
+    impliesCompleteCustodyCoverage?: false
+    excludedCustodyCount: number
+    excludedCustodyPercent: number | null
+    sourceRowCount: number
+    requestedDepth: number
+    reason: string
+    evidence: string[]
+  }
 }
 
 type HolderDistributionStatus = {
@@ -8106,6 +8124,30 @@ export async function POST(req: Request) {
       }
       holderRows = custodyAnnot.holders
       liquidityCustody = custodyAnnot.liquidityCustody
+      // STAGE-2 ORDINARY CONCENTRATION: parallel Top-N excluding verified liquidity_custody
+      // only. Legacy top1/top5/top10/top20 stay total-supply (bit-identical). Risk / Dev Control
+      // / CORTEX continue to use the legacy series — do not rewire them here.
+      const ordinarySeries = computeOrdinaryConcentration({
+        holders: custodyAnnot.holders,
+        requestedDepth: 10,
+      })
+      if (
+        ordinarySeries.totalTop1 !== holderDistribution.top1
+        || ordinarySeries.totalTop5 !== holderDistribution.top5
+        || ordinarySeries.totalTop10 !== holderDistribution.top10
+        || ordinarySeries.totalTop20 !== holderDistribution.top20
+      ) {
+        // Defensive: Stage 2 must never drift the legacy series. Prefer legacy values.
+        console.warn('[token] Stage-2 ordinary series total Top-N drift detected; keeping legacy tops')
+      }
+      holderDistribution = {
+        ...holderDistribution,
+        ordinaryTop1: ordinarySeries.ordinaryTop1,
+        ordinaryTop5: ordinarySeries.ordinaryTop5,
+        ordinaryTop10: ordinarySeries.ordinaryTop10,
+        ordinaryTop20: ordinarySeries.ordinaryTop20,
+        ordinaryCoverage: ordinarySeries.ordinaryCoverage,
+      }
     }
 
     // Reconcile deployerProfile with the resolved deployer/origin wallet (devIntel.deployerAddress).

@@ -31,6 +31,7 @@ import { buildSolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
 import {
   annotateLiquidityCustody,
   buildSolanaCustodyCandidates,
+  computeOrdinaryConcentration,
   verifiedVaultsFromSolanaClusterMap,
   type LiquidityCustodySummary,
 } from '../../liquidityCustody.ts'
@@ -273,7 +274,7 @@ export async function runSolanaProviderMerge(
   // addresses (clusterMap lp_vault nodes only). Owner field alone is never vault proof.
   // Top-N percents and betaRisk are unchanged. No new RPC.
   let liquidityCustody: LiquidityCustodySummary | undefined
-  let topAccountConcentration = holders.topAccountConcentration
+  let topAccountConcentration: SolanaBetaScanResult['topAccountConcentration'] = holders.topAccountConcentration
   if (topAccountConcentration?.accounts?.length) {
     const vaults = verifiedVaultsFromSolanaClusterMap(clusterMap)
     const candidates = buildSolanaCustodyCandidates({
@@ -301,6 +302,25 @@ export async function runSolanaProviderMerge(
       })),
     }
     liquidityCustody = annot.liquidityCustody
+    // STAGE-2 ORDINARY CONCENTRATION: only when verified vault evidence exists.
+    // Legacy top1/top10/top20 stay bit-identical. betaRisk unchanged.
+    const ordinarySeries = computeOrdinaryConcentration({
+      holders: annot.holders.map((h) => ({
+        address: h.address,
+        percent: h.percent,
+        classification: h.classification,
+      })),
+      requestedDepth: 10,
+      custodyEvidenceAvailable: vaults.length > 0,
+    })
+    topAccountConcentration = {
+      ...topAccountConcentration,
+      ordinaryTop1Percent: ordinarySeries.ordinaryTop1,
+      ordinaryTop5Percent: ordinarySeries.ordinaryTop5,
+      ordinaryTop10Percent: ordinarySeries.ordinaryTop10,
+      ordinaryTop20Percent: ordinarySeries.ordinaryTop20,
+      ordinaryCoverage: ordinarySeries.ordinaryCoverage,
+    }
   } else {
     // Still emit a summary so clients can show partial/unavailable semantics.
     const vaults = verifiedVaultsFromSolanaClusterMap(clusterMap)

@@ -57,4 +57,35 @@ describe('Stage-1 liquidity-custody wiring', () => {
   })
 })
 
+
+describe('Stage-2 ordinary concentration wiring', () => {
+  it('EVM route computes ordinary series after Stage-1 without rewriting legacy tops/risk', () => {
+    assert.match(route, /computeOrdinaryConcentration/)
+    assert.match(route, /STAGE-2 ORDINARY CONCENTRATION/)
+    assert.match(route, /ordinaryTop10: ordinarySeries\.ordinaryTop10/)
+    assert.match(route, /ordinaryCoverage: ordinarySeries\.ordinaryCoverage/)
+    const start = route.indexOf('STAGE-2 ORDINARY CONCENTRATION')
+    assert.ok(start > 0)
+    const block = route.slice(start, start + 2200)
+    assert.doesNotMatch(block, /top1:\s*ordinarySeries/)
+    assert.doesNotMatch(block, /riskScore\s*=/)
+    assert.doesNotMatch(block, /calculateTokenRiskScore/)
+    assert.doesNotMatch(block, /devControl/)
+  })
+
+  it('Solana providerMerge gates ordinary series on verified vault evidence', () => {
+    assert.match(merge, /computeOrdinaryConcentration/)
+    assert.match(merge, /custodyEvidenceAvailable:\s*vaults\.length > 0/)
+    assert.match(merge, /ordinaryTop10Percent: ordinarySeries\.ordinaryTop10/)
+  })
+
+  it('Holder Map shows Total supply Top 10 and Ordinary Top 10 coverage messaging', () => {
+    assert.match(page, /Total supply Top 10/)
+    assert.match(page, /Ordinary Top 10/)
+    assert.match(page, /Ordinary concentration unavailable/)
+    assert.match(page, /Partial coverage/)
+    assert.match(page, /Liquidity custody/)
+  })
+})
+
 console.log('liquidityCustody.wiring.staticCheck.test.ts: registered')

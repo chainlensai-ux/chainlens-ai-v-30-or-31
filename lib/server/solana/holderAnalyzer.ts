@@ -27,6 +27,12 @@ export type SolanaTopAccountConcentration = {
   top10Percent: number | null
   top20Percent: number | null
   accounts: SolanaTopAccountShare[]
+  /** Stage-2 optional ordinary series — filled in providerMerge, not here. */
+  ordinaryTop1Percent?: number | null
+  ordinaryTop5Percent?: number | null
+  ordinaryTop10Percent?: number | null
+  ordinaryTop20Percent?: number | null
+  ordinaryCoverage?: import('../../liquidityCustody.ts').OrdinaryCoverage
 } | null
 
 export type SolanaHolderAnalysis = {

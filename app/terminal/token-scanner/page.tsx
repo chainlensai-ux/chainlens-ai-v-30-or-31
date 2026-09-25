@@ -369,7 +369,7 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
-  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}> } | null
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}>; ordinaryTop1?: number | null; ordinaryTop5?: number | null; ordinaryTop10?: number | null; ordinaryTop20?: number | null; ordinaryCoverage?: { status: 'verified' | 'partial' | 'insufficient' | 'not_computed'; verifiedScope?: 'requested_ordinary_top_n_window'; impliesCompleteCustodyCoverage?: false; excludedCustodyCount: number; excludedCustodyPercent: number | null; sourceRowCount: number; requestedDepth: number; reason: string; evidence: string[] } } | null
   /** Stage-1 verified pool/reserve custody summary. Optional / backward compatible. */
   liquidityCustody?: {
     status: 'verified' | 'partial' | 'none' | 'unavailable'
@@ -6345,9 +6345,21 @@ export default function TerminalTokenScanner() {
                           )}
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '10px' }}>
                             {[
-                              ['Top 1', conc.top1Percent != null ? `${conc.top1Percent.toFixed(1)}%` : 'N/A'],
-                              ['Top 10', conc.top10Percent != null ? `${conc.top10Percent.toFixed(1)}%` : 'N/A'],
-                              ['Top 20', conc.top20Percent != null ? `${conc.top20Percent.toFixed(1)}%` : 'N/A'],
+                              ['Total supply Top 1', conc.top1Percent != null ? `${conc.top1Percent.toFixed(1)}%` : 'N/A'],
+                              ['Total supply Top 10', conc.top10Percent != null ? `${conc.top10Percent.toFixed(1)}%` : 'N/A'],
+                              ['Total supply Top 20', conc.top20Percent != null ? `${conc.top20Percent.toFixed(1)}%` : 'N/A'],
+                              ...(
+                                conc.ordinaryCoverage?.status === 'verified' && conc.ordinaryTop10Percent != null
+                                  ? [['Ordinary Top 10', `${Number(conc.ordinaryTop10Percent).toFixed(1)}%`] as [string, string]]
+                                  : conc.ordinaryCoverage && conc.ordinaryCoverage.status !== 'not_computed'
+                                    ? [['Ordinary Top 10', conc.ordinaryCoverage.status === 'partial' ? 'Partial coverage' : 'Unavailable']] as Array<[string, string]>
+                                    : []
+                              ),
+                              ...(
+                                sr.liquidityCustody && (sr.liquidityCustody.status === 'partial' || sr.liquidityCustody.status === 'verified') && sr.liquidityCustody.custodyPercentOfSupply != null
+                                  ? [['Liquidity custody', `${sr.liquidityCustody.custodyPercentOfSupply.toFixed(1)}%`]] as Array<[string, string]>
+                                  : []
+                              ),
                               ['Accounts sampled', String(conc.accountsSampled)],
                             ].map(([label, val]) => (
                               <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(167,139,250,0.16)' }}>
@@ -6357,9 +6369,9 @@ export default function TerminalTokenScanner() {
                             ))}
                           </div>
                           {[
-                            ['Top 1', conc.top1Percent],
-                            ['Top 10', conc.top10Percent],
-                            ['Top 20', conc.top20Percent],
+                            ['Total Top 1', conc.top1Percent],
+                            ['Total Top 10', conc.top10Percent],
+                            ['Total Top 20', conc.top20Percent],
                           ].map(([label, pct]) => (
                             <div key={label as string} style={{ marginBottom: '6px' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
@@ -6370,6 +6382,23 @@ export default function TerminalTokenScanner() {
                               </div>
                             </div>
                           ))}
+                          {conc.ordinaryCoverage?.status === 'verified' && conc.ordinaryTop10Percent != null ? (
+                            <div style={{ marginBottom: '6px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
+                                <span>Ordinary Top 10</span><span>{`${Number(conc.ordinaryTop10Percent).toFixed(1)}%`}</span>
+                              </div>
+                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${Math.min(100, Number(conc.ordinaryTop10Percent))}%`, background: '#22d3ee', borderRadius: '999px' }} />
+                              </div>
+                              <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</p>
+                            </div>
+                          ) : conc.ordinaryCoverage && conc.ordinaryCoverage.status !== 'not_computed' ? (
+                            <p style={{ margin: '6px 0 0', fontSize: '10.5px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                              Ordinary concentration unavailable
+                              {conc.ordinaryCoverage.status === 'partial' ? ' · Partial coverage' : ''}
+                              {conc.ordinaryCoverage.reason ? ` — ${String(conc.ordinaryCoverage.reason).replace(/_/g, ' ')}` : ''}
+                            </p>
+                          ) : null}
                         </div>
 
                         {/* TOP ACCOUNTS TABLE, DISCLOSED (Token Scanner Solana premium-parity task):
@@ -8236,9 +8265,21 @@ export default function TerminalTokenScanner() {
                               </div>
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px' }}>
                                 {[
-                                  ['Top 1 supply', top1h != null ? `${top1h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-1 percent was not returned')],
-                                  ['Top 10 supply', top10h != null ? `${top10h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-10 percent was not returned')],
-                                  ['Top 20 supply', top20h != null ? `${top20h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-20 percent was not returned')],
+                                  ['Total supply Top 1', top1h != null ? `${top1h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-1 percent was not returned')],
+                                  ['Total supply Top 10', top10h != null ? `${top10h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-10 percent was not returned')],
+                                  ['Total supply Top 20', top20h != null ? `${top20h.toFixed(1)}%` : formatTokenScannerPublicStatus('unavailable', 'top-20 percent was not returned')],
+                                  ...(
+                                    result.holderDistribution?.ordinaryCoverage?.status === 'verified' && result.holderDistribution?.ordinaryTop10 != null
+                                      ? [['Ordinary Top 10', `${Number(result.holderDistribution.ordinaryTop10).toFixed(1)}%`] as [string, string]]
+                                      : result.holderDistribution?.ordinaryCoverage && result.holderDistribution.ordinaryCoverage.status !== 'not_computed'
+                                        ? [['Ordinary Top 10', result.holderDistribution.ordinaryCoverage.status === 'partial' ? 'Partial coverage' : 'Unavailable']] as Array<[string, string]>
+                                        : []
+                                  ),
+                                  ...(
+                                    result.liquidityCustody && (result.liquidityCustody.status === 'partial' || result.liquidityCustody.status === 'verified') && result.liquidityCustody.custodyPercentOfSupply != null
+                                      ? [['Liquidity custody', `${result.liquidityCustody.custodyPercentOfSupply.toFixed(1)}%`]] as Array<[string, string]>
+                                      : []
+                                  ),
                                   ['Holder count', formatHolderCountDisplay({
                                     holderCount,
                                     holderCountReason: result.holderDistribution?.holderCountReason,
@@ -8262,13 +8303,27 @@ export default function TerminalTokenScanner() {
                               </div>
                               {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
-                                {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
-                                  <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 64px', alignItems: 'center', gap: '10px' }}>
+                                {([['Total Top 1',result.holderDistribution?.top1],['Total Top 5',result.holderDistribution?.top5],['Total Top 10',result.holderDistribution?.top10],['Total Top 20',result.holderDistribution?.top20]] as Array<[string, number | null | undefined]>).map(([l,v])=>(
+                                  <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 64px', alignItems: 'center', gap: '10px' }}>
                                     <span style={{ fontSize: '12px', color: '#d6e6f3', fontWeight: 700 }}>{l}</span>
                                     <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(148,163,184,.25)' }}><div style={{ height: '100%', width: `${v==null?0:Math.max(0,Math.min(100,Number(v)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#2dd4bf,#a855f7)', boxShadow: '0 0 14px rgba(45,212,191,.28)' }} /></div>
                                     <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{v==null?'N/A':`${Number(v).toFixed(1)}%`}</span>
                                   </div>
                                 ))}
+                                {result.holderDistribution?.ordinaryCoverage?.status === 'verified' && result.holderDistribution?.ordinaryTop10 != null ? (
+                                  <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 64px', alignItems: 'center', gap: '10px' }}>
+                                    <span style={{ fontSize: '12px', color: '#a5f3fc', fontWeight: 700 }}>Ordinary Top 10</span>
+                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(103,232,249,.35)' }}><div style={{ height: '100%', width: `${Math.max(0,Math.min(100,Number(result.holderDistribution.ordinaryTop10)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#22d3ee,#67e8f9)', boxShadow: '0 0 14px rgba(34,211,238,.28)' }} /></div>
+                                    <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{`${Number(result.holderDistribution.ordinaryTop10).toFixed(1)}%`}</span>
+                                    <span style={{ gridColumn: '1 / -1', fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</span>
+                                  </div>
+                                ) : result.holderDistribution?.ordinaryCoverage && result.holderDistribution.ordinaryCoverage.status !== 'not_computed' ? (
+                                  <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                                    Ordinary concentration unavailable
+                                    {result.holderDistribution.ordinaryCoverage.status === 'partial' ? ' · Partial coverage' : ''}
+                                    {result.holderDistribution.ordinaryCoverage.reason ? ` — ${String(result.holderDistribution.ordinaryCoverage.reason).replace(/_/g, ' ')}` : ''}
+                                  </p>
+                                ) : null}
                               </div>}
                               {/* One consolidated note instead of the previous 3 stacked warnings. */}
                               {(top10h != null && top10h > 50) ? (

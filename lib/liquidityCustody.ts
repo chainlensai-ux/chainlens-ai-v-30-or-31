@@ -419,3 +419,290 @@ export function verifiedVaultsFromSolanaClusterMap(clusterMap: {
   }
   return out
 }
+
+// ── Stage 2: ordinary holder concentration (excludes verified liquidity custody only) ─────────
+
+export type OrdinaryCoverageStatus = 'verified' | 'partial' | 'insufficient' | 'not_computed'
+
+export type OrdinaryCoverage = {
+  /**
+   * `verified` means verified for the requested ordinary Top-N window ONLY
+   * (see `verifiedScope`). It never implies `custodyCoverageComplete === true`
+   * or complete knowledge of every liquidity-custody address for the token.
+   */
+  status: OrdinaryCoverageStatus
+  /** Scope of `status`. Always the requested ordinary Top-N window from the holder sample. */
+  verifiedScope: 'requested_ordinary_top_n_window'
+  /** Always false: ordinary coverage never asserts a complete liquidity-custody census. */
+  impliesCompleteCustodyCoverage: false
+  excludedCustodyCount: number
+  excludedCustodyPercent: number | null
+  sourceRowCount: number
+  requestedDepth: number
+  reason: string
+  evidence: string[]
+}
+
+export type OrdinaryConcentrationSeries = {
+  ordinaryTop1: number | null
+  ordinaryTop5: number | null
+  ordinaryTop10: number | null
+  ordinaryTop20: number | null
+  ordinaryCoverage: OrdinaryCoverage
+  /** Total-supply Top-N from the same rows — must stay bit-identical to legacy series. */
+  totalTop1: number | null
+  totalTop5: number | null
+  totalTop10: number | null
+  totalTop20: number | null
+}
+
+function sumTopN(rows: Array<{ percent?: number | null }>, n: number): number | null {
+  if (rows.length === 0) return null
+  let sum = 0
+  const limit = Math.min(n, rows.length)
+  for (let i = 0; i < limit; i++) {
+    const p = rows[i]?.percent
+    if (typeof p === 'number' && Number.isFinite(p)) sum += p
+  }
+  return sum
+}
+
+function isVerifiedLiquidityCustodyRow(row: {
+  classification?: HolderClassification | null
+}): boolean {
+  const c = row.classification
+  return (
+    c?.kind === 'liquidity_custody'
+    && Array.isArray(c.evidence)
+    && c.evidence.length > 0
+  )
+}
+
+/**
+ * Stage-2 ordinary concentration: parallel Top-N that excludes ONLY verified
+ * liquidity_custody rows. Denominator remains total token supply (row percents
+ * unchanged). Does not invent rows. Does not imply LP lock/ownership.
+ *
+ * Coverage status is `verified` only when ranking depth and exclusion evidence
+ * are sufficient for `requestedDepth` (default 10 — Ordinary Top 10). Otherwise partial /
+ * insufficient / not_computed — never present as verified in UI.
+ */
+export function computeOrdinaryConcentration<
+  T extends { address: string; percent?: number | null; classification?: HolderClassification | null },
+>(input: {
+  holders: T[]
+  requestedDepth?: number
+  /**
+   * Solana Stage 2: pass false when no verified vault evidence exists — series
+   * is not_computed (do not publish ordinary tops as if they were custody-aware).
+   * EVM: omit / true after Stage-1 annotation has run.
+   */
+  custodyEvidenceAvailable?: boolean
+}): OrdinaryConcentrationSeries {
+  const requestedDepth = Math.max(1, Math.min(20, input.requestedDepth ?? 10))
+  const holders = input.holders ?? []
+  const emptyCoverage = (status: OrdinaryCoverageStatus, reason: string, evidence: string[] = []): OrdinaryCoverage => ({
+    status,
+    verifiedScope: 'requested_ordinary_top_n_window',
+    impliesCompleteCustodyCoverage: false,
+    excludedCustodyCount: 0,
+    excludedCustodyPercent: null,
+    sourceRowCount: holders.length,
+    requestedDepth,
+    reason,
+    evidence,
+  })
+
+  const totalTop1 = sumTopN(holders, 1)
+  const totalTop5 = sumTopN(holders, 5)
+  const totalTop10 = sumTopN(holders, 10)
+  const totalTop20 = sumTopN(holders, 20)
+
+  if (input.custodyEvidenceAvailable === false) {
+    return {
+      ordinaryTop1: null,
+      ordinaryTop5: null,
+      ordinaryTop10: null,
+      ordinaryTop20: null,
+      ordinaryCoverage: emptyCoverage(
+        'not_computed',
+        'ordinary_series_requires_verified_custody_evidence',
+        ['solana_or_gated_path_without_verified_vault_or_pool_evidence'],
+      ),
+      totalTop1,
+      totalTop5,
+      totalTop10,
+      totalTop20,
+    }
+  }
+
+  if (holders.length === 0) {
+    return {
+      ordinaryTop1: null,
+      ordinaryTop5: null,
+      ordinaryTop10: null,
+      ordinaryTop20: null,
+      ordinaryCoverage: emptyCoverage('not_computed', 'holder_rows_unavailable', ['no_holder_rows']),
+      totalTop1,
+      totalTop5,
+      totalTop10,
+      totalTop20,
+    }
+  }
+
+  const ordinary: T[] = []
+  const excluded: T[] = []
+  const evidence: string[] = [
+    'denominator_is_total_token_supply',
+    'exclude_only_classification_kind_liquidity_custody_with_evidence',
+    'unknown_unclassified_and_ordinary_rows_remain_included',
+    'pool_custody_exclusion_does_not_imply_lp_lock_or_ownership',
+    'coverage_scope_is_requested_ordinary_top_n_window_only',
+    'does_not_imply_custody_coverage_complete',
+  ]
+
+  let unclassifiedInWindow = false
+  let weakCustodyLabel = false
+  const excludedAddresses = new Set<string>()
+  let duplicateCustodyRows = 0
+
+  for (let i = 0; i < holders.length; i++) {
+    const row = holders[i]
+    const kind = row.classification?.kind
+
+    if (isVerifiedLiquidityCustodyRow(row)) {
+      // Duplicate address rows are removed from ranking but counted once, so
+      // excludedCustodyCount / excludedCustodyPercent never double-count supply.
+      const key = String(row.address ?? '').toLowerCase()
+      if (key && excludedAddresses.has(key)) {
+        duplicateCustodyRows += 1
+        continue
+      }
+      if (key) excludedAddresses.add(key)
+      excluded.push(row)
+      continue
+    }
+
+    if (kind === 'liquidity_custody') {
+      // Labeled custody without evidence — must NOT exclude; coverage cannot be verified.
+      weakCustodyLabel = true
+      ordinary.push(row)
+    } else if (kind === 'unclassified') {
+      if (ordinary.length < requestedDepth) unclassifiedInWindow = true
+      ordinary.push(row)
+    } else {
+      // ordinary or missing classification — include
+      ordinary.push(row)
+    }
+  }
+
+  const excludedCustodyCount = excluded.length
+  const excludedPercents = excluded
+    .map((r) => r.percent)
+    .filter((p): p is number => typeof p === 'number' && Number.isFinite(p))
+  const excludedCustodyPercent = excludedPercents.length > 0
+    ? excludedPercents.reduce((a, b) => a + b, 0)
+    : null
+
+  if (duplicateCustodyRows > 0) {
+    evidence.push(`duplicate_custody_address_rows_excluded_once=${duplicateCustodyRows}`)
+  }
+  if (excludedCustodyCount > 0) {
+    evidence.push(`excluded_verified_custody_rows=${excludedCustodyCount}`)
+    if (excludedCustodyPercent != null) {
+      evidence.push(`excluded_custody_percent_of_supply=${excludedCustodyPercent}`)
+    }
+  }
+
+  // Exact Top-N only when ≥ N ordinary rows exist. Never invent rows or soft-fill a short list
+  // as if it were Top-N (partial status carries the reason; UI must not present as verified).
+  const ordinaryTop1 = ordinary.length >= 1 ? sumTopN(ordinary, 1) : null
+  const ordinaryTop5 = ordinary.length >= 5 ? sumTopN(ordinary, 5) : null
+  const ordinaryTop10 = ordinary.length >= 10 ? sumTopN(ordinary, 10) : null
+  const ordinaryTop20 = ordinary.length >= 20 ? sumTopN(ordinary, 20) : null
+
+  const hasEnoughForDepth = ordinary.length >= requestedDepth
+
+  // Completeness: count exclusions before collecting `requestedDepth` ordinary rows.
+  let ordinaryCollected = 0
+  let exclusionsBeforeDepth = 0
+  let headEndIndex = 0
+  for (let i = 0; i < holders.length; i++) {
+    headEndIndex = i + 1
+    if (isVerifiedLiquidityCustodyRow(holders[i])) {
+      if (ordinaryCollected < requestedDepth) exclusionsBeforeDepth += 1
+      continue
+    }
+    ordinaryCollected += 1
+    if (ordinaryCollected >= requestedDepth) break
+  }
+  const headComplete = ordinaryCollected >= requestedDepth && holders.length >= headEndIndex
+
+  let status: OrdinaryCoverageStatus
+  let reason: string
+
+  if (ordinary.length === 0) {
+    status = 'insufficient'
+    reason = excludedCustodyCount > 0
+      ? 'all_sample_rows_were_verified_liquidity_custody'
+      : 'no_ordinary_rows_with_usable_ranking'
+    evidence.push(reason)
+  } else if (
+    headComplete
+    && hasEnoughForDepth
+    && !unclassifiedInWindow
+    && !weakCustodyLabel
+    && excluded.every((r) => isVerifiedLiquidityCustodyRow(r))
+  ) {
+    status = 'verified'
+    reason = 'ordinary_top_n_window_verified_from_holder_sample_not_full_custody_census'
+    evidence.push(
+      `ordinary_rows_available=${ordinary.length}`,
+      `exclusions_before_depth_${requestedDepth}=${exclusionsBeforeDepth}`,
+      'holder_sample_head_complete_for_requested_depth',
+      'no_unclassified_rows_in_ordinary_top_n_window',
+    )
+  } else if (!hasEnoughForDepth) {
+    status = 'partial'
+    reason = 'insufficient_ordinary_holder_depth_for_requested_n'
+    evidence.push(
+      `ordinary_rows_available=${ordinary.length}`,
+      `requested_depth=${requestedDepth}`,
+      'do_not_invent_missing_holder_rows',
+    )
+    if (unclassifiedInWindow) evidence.push('unclassified_rows_present_in_ranking_window')
+    if (weakCustodyLabel) evidence.push('custody_label_without_evidence_kept_in_ordinary_series')
+  } else {
+    status = 'partial'
+    reason = unclassifiedInWindow
+      ? 'unclassified_rows_in_ranking_window_block_verified_ordinary_top_n'
+      : weakCustodyLabel
+        ? 'unverified_custody_label_in_sample_blocks_verified_ordinary_top_n'
+        : 'ordinary_ranking_coverage_incomplete'
+    if (unclassifiedInWindow) evidence.push('unclassified_rows_present_in_ranking_window')
+    if (weakCustodyLabel) evidence.push('custody_label_without_evidence_kept_in_ordinary_series')
+    if (!headComplete) evidence.push('holder_sample_head_incomplete_for_requested_depth')
+  }
+
+  return {
+    ordinaryTop1,
+    ordinaryTop5,
+    ordinaryTop10,
+    ordinaryTop20,
+    ordinaryCoverage: {
+      status,
+      verifiedScope: 'requested_ordinary_top_n_window',
+      impliesCompleteCustodyCoverage: false,
+      excludedCustodyCount,
+      excludedCustodyPercent,
+      sourceRowCount: holders.length,
+      requestedDepth,
+      reason,
+      evidence,
+    },
+    totalTop1,
+    totalTop5,
+    totalTop10,
+    totalTop20,
+  }
+}
