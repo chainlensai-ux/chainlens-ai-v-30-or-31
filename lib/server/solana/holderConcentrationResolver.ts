@@ -6,7 +6,7 @@
 // resolveSolanaHolderConcentration() is the single, real fallback chain this task specifies, tried
 // in order until one produces usable evidence:
 //   1. a cached fresh holder snapshot for the SAME (chainSlug, mintAddress) pair — never another
-//      chain's or another mint's data (see isCacheEntryValid below).
+//      chain's or another mint's data (see isSolanaConcentrationCacheEntryForMint below; exact, case-sensitive mint).
 //   2. Helius's token-accounts endpoint (fetchHeliusTopAccounts, solanaProviders.ts), when
 //      ENABLE_HELIUS_SOLANA/HELIUS_API_KEY are configured.
 //   3. Solana RPC getTokenLargestAccounts (the existing, already-retried primary source).
@@ -69,11 +69,14 @@ export interface SolanaHolderConcentrationAudit {
   confidenceImpact: 'none' | 'reduced' | 'severely_reduced'
 }
 
-const CACHE_VERSION = 'v1'
+// v2: Solana mints are case-sensitive base58, so the key and the payload check use the exact mint.
+// v1 keys were lowercased and could be shared by two mints that differ only by case; bumping the
+// version means those ambiguous entries are never read again and simply expire.
+const CACHE_VERSION = 'v2'
 const CACHE_TTL_SECONDS = 90
 
 export function solanaHolderConcentrationCacheKey(chainSlug: 'solana', mintAddress: string): string {
-  return `solana:holderConcentration:${CACHE_VERSION}:${chainSlug}:${mintAddress.toLowerCase()}`
+  return `solana:holderConcentration:${CACHE_VERSION}:${chainSlug}:${mintAddress}`
 }
 
 const PUBLIC_NOT_RETURNED_REASON = 'Top token accounts were not returned by the Solana provider this scan.'
@@ -127,13 +130,13 @@ function computeConcentration(
 // defense-in-depth pattern already used for Token Scanner's chain-strictness cache
 // (lib/tokenScannerChainStrictness.ts's isCacheHitValid) — so a hypothetical key collision or a
 // stale/mismatched cached shape can never leak another mint's concentration numbers into this scan.
-function isCacheEntryValid(
+export function isSolanaConcentrationCacheEntryForMint(
   cached: { mintAddress?: string; chainSlug?: string } | null,
   mintAddress: string,
   chainSlug: 'solana',
 ): boolean {
   if (!cached) return false
-  return cached.mintAddress?.toLowerCase() === mintAddress.toLowerCase() && cached.chainSlug === chainSlug
+  return cached.mintAddress === mintAddress && cached.chainSlug === chainSlug
 }
 
 export async function resolveSolanaHolderConcentration(params: {
@@ -157,13 +160,13 @@ export async function resolveSolanaHolderConcentration(params: {
   let rpcLargestAccountsStatus = 'not_attempted'
 
   // ── Step 1: cached fresh holder snapshot for the SAME mint ─────────────────────────────────
-  const providedSnapshot = params.cachedSnapshot && isCacheEntryValid(params.cachedSnapshot, mintAddress, chainSlug)
+  const providedSnapshot = params.cachedSnapshot && isSolanaConcentrationCacheEntryForMint(params.cachedSnapshot, mintAddress, chainSlug)
     ? params.cachedSnapshot
     : null
   const storedSnapshot = providedSnapshot
     ? null
     : await getTokenCache<SolanaHolderConcentrationResult & { mintAddress: string; chainSlug: 'solana' }>(cacheKey).catch(() => null)
-  const cached = providedSnapshot ?? (isCacheEntryValid(storedSnapshot, mintAddress, chainSlug) ? storedSnapshot : null)
+  const cached = providedSnapshot ?? (isSolanaConcentrationCacheEntryForMint(storedSnapshot, mintAddress, chainSlug) ? storedSnapshot : null)
   if (cached && (cached.status === 'verified' || cached.status === 'partial') && cached.topAccounts.length > 0) {
     const result: SolanaHolderConcentrationResult = {
       status: cached.status,
