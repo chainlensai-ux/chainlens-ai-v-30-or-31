@@ -10,7 +10,7 @@ import test from 'node:test'
 import { isUnversionedDexLabel, shouldProbePoolModelByRpc, detectKnownLpProtocol } from '../lib/lpSafetyResolution.ts'
 import { classifyPoolModel } from '../lib/server/lpProof.ts'
 import { resolveRobinhoodLpProof } from '../lib/server/robinhoodLpProof.ts'
-import { formatHolderCountDisplay, holderCountProvenance } from '../lib/tokenScannerHolderCount.ts'
+import { formatHolderCountDisplay, holderCountBasisFor, holderCountProvenance, PROVIDER_TOTAL_NOTE } from '../lib/tokenScannerHolderCount.ts'
 
 const POOL = '0x' + 'ab'.repeat(20)
 const TOKEN = '0x' + '29'.repeat(20)
@@ -125,20 +125,72 @@ test('missing LP evidence stays unavailable/partial with a concrete reason, neve
 
 // ── Holders: count provenance and count-vs-concentration independence ──────────────────
 
-test('holder count provenance mirrors the route selection order and records provider freshness', () => {
+test('holder count provenance mirrors the route selection order and records provider response time + basis', () => {
   const goldrush = { data: { updated_at: '2026-09-22T10:15:00Z', pagination: { total_count: 2061 } }, __chainUsed: '4663' }
   assert.deepEqual(holderCountProvenance(goldrush, { total: 9999 }), {
-    provider: 'goldrush', chainIdentifier: '4663', providerUpdatedAt: '2026-09-22T10:15:00Z', providerTotal: 2061,
+    provider: 'goldrush', chainIdentifier: '4663', exactMeaning: 'exact_provider_reported_total',
+    holderCountBasis: 'provider_total_unsupported_chain',
+    providerResponseAt: '2026-09-22T10:15:00Z', providerUpdatedAt: '2026-09-22T10:15:00Z', providerTotal: 2061,
   })
   assert.deepEqual(holderCountProvenance({ pagination: { total_count: 12 }, __chainUsed: 'robinhood-mainnet' }, null), {
-    provider: 'goldrush', chainIdentifier: 'robinhood-mainnet', providerUpdatedAt: null, providerTotal: 12,
+    provider: 'goldrush', chainIdentifier: 'robinhood-mainnet', exactMeaning: 'exact_provider_reported_total',
+    holderCountBasis: 'provider_total_unsupported_chain',
+    providerResponseAt: null, providerUpdatedAt: null, providerTotal: 12,
   })
   assert.deepEqual(holderCountProvenance({ data: { items: [] } }, { total: 40 }), {
-    provider: 'moralis', chainIdentifier: null, providerUpdatedAt: null, providerTotal: 40,
+    provider: 'moralis', chainIdentifier: null, exactMeaning: 'exact_provider_reported_total',
+    holderCountBasis: 'provider_total_support_unverified',
+    providerResponseAt: null, providerUpdatedAt: null, providerTotal: 40,
   })
-  assert.deepEqual(holderCountProvenance(null, null), { provider: null, chainIdentifier: null, providerUpdatedAt: null, providerTotal: null })
+  assert.deepEqual(holderCountProvenance(null, null), {
+    provider: null, chainIdentifier: null, exactMeaning: null, holderCountBasis: null,
+    providerResponseAt: null, providerUpdatedAt: null, providerTotal: null,
+  })
   // Same selection expression the route uses for holderCount itself.
   assert.match(route, /holdersRaw\?\.data\?\.pagination\?\.total_count \?\? holdersRaw\?\.pagination\?\.total_count \?\? moralisHoldersRaw\?\.total \?\? null/)
+})
+
+test('ICE TEA Robinhood fixture: provider total basis is unsupported-chain; count unchanged; UI says Provider total', () => {
+  const raw = { data: { updated_at: '2026-09-25T03:29:22.994293461Z', pagination: { total_count: 374 }, items: [] }, __chainUsed: 'robinhood-mainnet' }
+  const prov = holderCountProvenance(raw, null)
+  assert.equal(prov.holderCountBasis, 'provider_total_unsupported_chain')
+  assert.equal(prov.providerTotal, 374)
+  assert.equal(prov.providerResponseAt, '2026-09-25T03:29:22.994293461Z')
+  assert.equal(prov.providerUpdatedAt, prov.providerResponseAt, 'deprecated alias kept for API compatibility')
+  const shown = formatHolderCountDisplay({ holderCount: 374, holderCountReason: 'holder_count_from_provider_total', holderRowsReturned: 99, holderCountBasis: prov.holderCountBasis })
+  assert.equal(shown.holderCount, 374)
+  assert.equal(shown.exact, true, 'exact = exact provider-reported total')
+  assert.equal(shown.display, '374 · Provider total')
+  assert.equal(shown.note, PROVIDER_TOTAL_NOTE)
+  assert.equal(shown.usableForConcentration, false)
+  assert.equal(shown.concentrationStatus, 'not_checked')
+  assert.doesNotMatch(shown.display, /exact/i)
+})
+
+test('ETH ASTEROID fixture: documented snapshot chain keeps strong wording and the same count', () => {
+  const raw = { data: { updated_at: '2026-09-25T03:13:15Z', pagination: { total_count: 3545 } }, __chainUsed: 'eth-mainnet' }
+  const prov = holderCountProvenance(raw, null)
+  assert.equal(prov.holderCountBasis, 'provider_total_supported_chain')
+  for (const id of ['base-mainnet', 'bsc-mainnet']) assert.equal(holderCountBasisFor('goldrush', id), 'provider_total_supported_chain')
+  const shown = formatHolderCountDisplay({ holderCount: 3545, holderCountReason: 'holder_count_from_provider_total', holderRowsReturned: 99, holderCountBasis: prov.holderCountBasis })
+  assert.equal(shown.display, '3,545')
+  assert.equal(shown.note, null)
+  assert.equal(shown.holderCount, 3545)
+})
+
+test('wording-only change: basis never alters counts, routing expressions, or legacy (no-basis) display', () => {
+  for (const basis of [undefined, null, 'provider_total_supported_chain', 'provider_total_unsupported_chain', 'provider_total_support_unverified'] as const) {
+    const d = formatHolderCountDisplay({ holderCount: 2061, holderCountReason: 'holder_count_from_provider_total', holderRowsReturned: 100, holderCountBasis: basis })
+    assert.equal(d.holderCount, 2061)
+    assert.equal(d.exact, true)
+    assert.equal(d.usableForConcentration, false)
+    const rows = formatHolderCountDisplay({ holderCount: 50, holderCountReason: 'holder_count_from_normalized_rows', holderRowsReturned: 50, holderCountBasis: basis })
+    assert.equal(rows.display, '50+')
+  }
+  assert.equal(formatHolderCountDisplay({ holderCount: 2061, holderCountReason: 'holder_count_from_provider_total' }).display, '2,061')
+  assert.match(route, /const holderCountExact = holderCountReason === "holder_count_from_provider_total"/)
+  assert.match(route, /robinhood: \['robinhood-mainnet', '4663'\]/)
+  assert.match(route, /eth: \['eth-mainnet'\]/)
 })
 
 test('provenance is attached only to an exact provider total and survives the reconstruction reassignment', () => {

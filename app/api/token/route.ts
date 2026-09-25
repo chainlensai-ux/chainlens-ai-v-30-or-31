@@ -583,9 +583,12 @@ type HolderDistribution = {
   /** How holderCount was derived — exact provider total, a fallback row count, or unavailable.
    * Never lets real holder rows be reported alongside a false holderCount: 0. */
   holderCountReason: "holder_count_from_provider_total" | "holder_count_from_normalized_rows" | "holder_count_from_resolver" | "holder_count_unavailable_with_reason"
+  /** True when holderCount is the exact PROVIDER-REPORTED total (not a row count). Not a verified
+   * current-chain census; see holderCountProvenance.holderCountBasis for chain support. */
   holderCountExact?: boolean
   holderCountCapped?: boolean
-  /** Source and as-of time of an exact provider total. Null when the count is not a provider total. */
+  /** Source, evidence basis and provider response time of an exact provider total. Null when the count
+   * is not a provider total. providerResponseAt is response-generation time, not snapshot freshness. */
   holderCountProvenance?: HolderCountProvenance | null
   topHolders: Array<{
     rank: number

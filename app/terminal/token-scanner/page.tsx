@@ -31,7 +31,7 @@ import {
 import {
   formatTokenScannerPublicStatus,
 } from '@/lib/tokenScannerPublicStatus'
-import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER } from '@/lib/tokenScannerHolderCount'
+import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
 import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
@@ -369,7 +369,7 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
-  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}>; ordinaryTop1?: number | null; ordinaryTop5?: number | null; ordinaryTop10?: number | null; ordinaryTop20?: number | null; ordinaryCoverage?: { status: 'verified' | 'partial' | 'insufficient' | 'not_computed'; verifiedScope?: 'requested_ordinary_top_n_window'; impliesCompleteCustodyCoverage?: false; excludedCustodyCount: number; excludedCustodyPercent: number | null; sourceRowCount: number; requestedDepth: number; reason: string; evidence: string[] } } | null
+  holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; holderCountProvenance?: HolderCountProvenance | null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}>; ordinaryTop1?: number | null; ordinaryTop5?: number | null; ordinaryTop10?: number | null; ordinaryTop20?: number | null; ordinaryCoverage?: { status: 'verified' | 'partial' | 'insufficient' | 'not_computed'; verifiedScope?: 'requested_ordinary_top_n_window'; impliesCompleteCustodyCoverage?: false; excludedCustodyCount: number; excludedCustodyPercent: number | null; sourceRowCount: number; requestedDepth: number; reason: string; evidence: string[] } } | null
   /** Stage-1 verified pool/reserve custody summary. Optional / backward compatible. */
   liquidityCustody?: {
     status: 'verified' | 'partial' | 'none' | 'unavailable'
@@ -4432,15 +4432,17 @@ function getHolderRead(result: ScanResult): string {
   if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is Partial: indexed rows lack percentages. Holder count alone is not concentration.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
-  const countLabel = formatHolderCountDisplay({
+  const countDisplay = formatHolderCountDisplay({
     holderCount: count,
     holderCountReason: result.holderDistribution?.holderCountReason,
     isCapped: result.holderDistribution?.holderCountCapped,
     holderRowsReturned: result.holderDistribution?.topHolders?.length ?? 0,
     reasonText: result.holderDistributionStatus?.reason,
-  }).display
+    holderCountBasis: result.holderDistribution?.holderCountProvenance?.holderCountBasis,
+  })
+  const countLabel = countDisplay.display
   const parts = [
-    count != null ? `holder count ${countLabel} (provider total for this chain+contract — not a DexScreener holder figure)` : null,
+    count != null ? `holder count ${countLabel} (${countDisplay.note ? countDisplay.note.replace(/\.$/, '') : 'exact total reported by provider for this chain+contract'} — not a DexScreener holder figure)` : null,
     top10 != null ? `top-10 supply concentration ${top10.toFixed(1)}% (share of token supply, not share of holders)` : null,
     result.holderDistribution?.top20 != null ? `top-20 supply concentration ${result.holderDistribution.top20.toFixed(1)}%` : null,
   ].filter(Boolean)
@@ -8286,6 +8288,7 @@ export default function TerminalTokenScanner() {
                                     isCapped: result.holderDistribution?.holderCountCapped,
                                     holderRowsReturned: result.holderDistribution?.topHolders?.length ?? 0,
                                     reasonText: result.holderDistributionStatus?.reason,
+                                    holderCountBasis: result.holderDistribution?.holderCountProvenance?.holderCountBasis,
                                   }).display],
                                 ].map(([label, val]) => (
                                   <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>

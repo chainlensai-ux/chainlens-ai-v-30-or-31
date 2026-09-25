@@ -1,6 +1,7 @@
 // TOKEN SCANNER HOLDER COUNT HONESTY — DISCLOSED.
 // 0, unavailable, capped, and not-attempted must never look the same.
-// A provider total is exact only when the reason says so. Partial indexed rows
+// A provider total is exact only when the reason says so, and "exact" means exact
+// PROVIDER-REPORTED total, not a verified chain census (see HolderCountBasis). Partial indexed rows
 // are never displayed as a complete holder universe, and never as 0%.
 //
 // Holder COUNT and supply CONCENTRATION are different measurements:
@@ -31,7 +32,12 @@ export const HOLDER_VS_CONCENTRATION_DISCLAIMER =
 
 export type HolderCountDisplay = {
   display: string
+  /** Exact PROVIDER-REPORTED total (not a row count). Not an independently verified chain census. */
   exact: boolean
+  /** Evidence basis of an exact provider total, when known. */
+  holderCountBasis?: HolderCountBasis | null
+  /** Tooltip / footnote qualifying the count, when the basis is weaker than a documented snapshot chain. */
+  note?: string | null
   usableForConcentration: boolean
   holderCount: number | null
   holderCountReason: string
@@ -75,6 +81,8 @@ export function formatHolderCountDisplay(input: {
   isCapped?: boolean | null
   holderRowsReturned?: number | null
   reasonText?: string | null
+  /** From holderCountProvenance.holderCountBasis. Only changes wording, never the count. */
+  holderCountBasis?: HolderCountBasis | null
 }): HolderCountDisplay {
   const reason = input.holderCountReason || (input.holderCount == null ? 'holder_count_unavailable_with_reason' : 'holder_count_from_provider_total')
   const rows = input.holderRowsReturned ?? 0
@@ -131,9 +139,15 @@ export function formatHolderCountDisplay(input: {
   if (exact) {
     // Exact count is real count evidence only. Concentration requires identity-matched
     // top-holder balance percentages — never inferred from a bare total (Base Radar rule).
+    // Wording only: a total from an undocumented/unverified provider chain is labelled
+    // "Provider total" so it never reads as a verified chain census. The number is unchanged.
+    const basis = input.holderCountBasis ?? null
+    const weakBasis = basis === 'provider_total_unsupported_chain' || basis === 'provider_total_support_unverified'
     return {
-      display: count!.toLocaleString(),
+      display: weakBasis ? `${count!.toLocaleString()} · Provider total` : count!.toLocaleString(),
       exact: true,
+      holderCountBasis: basis,
+      note: weakBasis ? PROVIDER_TOTAL_NOTE : null,
       usableForConcentration: false,
       holderCount: count,
       holderCountReason: reason,
@@ -158,15 +172,63 @@ export function formatHolderCountDisplay(input: {
 }
 
 /**
- * Where an exact provider holder total came from and as of when. A total with no as-of time
- * cannot be compared against another indexer's figure (e.g. DexScreener): a gap could be index
- * lag, a different counting definition, or neither. This never changes the count itself.
+ * Where an exact provider holder total came from, and what "exact" is allowed to mean.
+ * holderCountExact / HolderCountDisplay.exact mean EXACT PROVIDER-REPORTED TOTAL — the provider's
+ * own pagination total for this chain+contract, not a truncated row count. They do NOT mean an
+ * independently verified current-chain holder census. How far that provider total can be trusted
+ * depends on whether the provider documents holder snapshots for the chain (holderCountBasis).
+ * A total with no as-of time cannot be compared against another indexer's figure (e.g. DexScreener):
+ * a gap could be index lag, a different counting definition, or neither. This never changes the count.
  */
+export type HolderCountBasis =
+  /** GoldRush total on a chain GoldRush documents for latest token-holder snapshots (token_holders_v2). */
+  | 'provider_total_supported_chain'
+  /** GoldRush total on a chain where token_holders_v2 answers but is NOT documented/supported (Robinhood: "frontier" tier). */
+  | 'provider_total_unsupported_chain'
+  /** Provider total whose chain support/snapshot semantics ChainLens has not verified (e.g. Moralis owners total). */
+  | 'provider_total_support_unverified'
+
+/**
+ * GoldRush chain identifiers that ChainLens sends to token_holders_v2 AND that GoldRush's
+ * token_holders_v2 docs list for the latest token-holders snapshot (Ethereum, Base, BSC).
+ * Evidence: ETH ASTEROID GoldRush total matched Ethplorer exactly (2026-09-25).
+ */
+const GOLDRUSH_SNAPSHOT_DOCUMENTED_CHAIN_IDS = new Set(['eth-mainnet', 'base-mainnet', 'bsc-mainnet'])
+/**
+ * GoldRush identifiers that answer token_holders_v2 but are not documented for it. Robinhood
+ * ('robinhood-mainnet' / '4663') is a GoldRush "frontier" chain whose supported-endpoint list
+ * omits token holders. Its total matched Robinhood Blockscout for ICE TEA (374 = 374, 2026-09-25),
+ * but GoldRush sources Robinhood explorer data from that same Blockscout, so the match is not
+ * independent verification.
+ */
+const GOLDRUSH_HOLDERS_UNDOCUMENTED_CHAIN_IDS = new Set(['robinhood-mainnet', '4663'])
+
+export function holderCountBasisFor(provider: HolderCountProvenance['provider'], chainIdentifier: string | null): HolderCountBasis | null {
+  if (provider == null) return null
+  if (provider === 'goldrush' && chainIdentifier) {
+    if (GOLDRUSH_SNAPSHOT_DOCUMENTED_CHAIN_IDS.has(chainIdentifier)) return 'provider_total_supported_chain'
+    if (GOLDRUSH_HOLDERS_UNDOCUMENTED_CHAIN_IDS.has(chainIdentifier)) return 'provider_total_unsupported_chain'
+  }
+  return 'provider_total_support_unverified'
+}
+
+/** Tooltip / footnote for any provider total that is not on a documented snapshot chain. */
+export const PROVIDER_TOTAL_NOTE = 'Exact count reported by provider; provider support/freshness may vary by chain.'
+
 export type HolderCountProvenance = {
   provider: 'goldrush' | 'moralis' | null
   /** GoldRush chain identifier that answered (Robinhood tries 'robinhood-mainnet' then '4663'). */
   chainIdentifier: string | null
-  /** Provider's own index timestamp for this response, when it returns one. */
+  /** What the exact flag means for this count. Always the provider-reported total, never a verified census. */
+  exactMeaning: 'exact_provider_reported_total' | null
+  /** How much the provider total can be trusted on this chain. See HolderCountBasis. */
+  holderCountBasis: HolderCountBasis | null
+  /**
+   * When the provider generated this response (GoldRush `updated_at`). NOT the age of the
+   * provider's holder snapshot or index — that is not proven by this field.
+   */
+  providerResponseAt: string | null
+  /** @deprecated Backward-compatible alias of providerResponseAt (response-generation time, not snapshot freshness). */
   providerUpdatedAt: string | null
   providerTotal: number | null
 }
@@ -183,21 +245,37 @@ type HolderTotalResponse = {
   __chainUsed?: unknown
 } | null
 
+const EMPTY_PROVENANCE: HolderCountProvenance = {
+  provider: null, chainIdentifier: null, exactMeaning: null, holderCountBasis: null,
+  providerResponseAt: null, providerUpdatedAt: null, providerTotal: null,
+}
+
 export function holderCountProvenance(goldrushRaw: unknown, moralisRaw: unknown): HolderCountProvenance {
   const gr = (goldrushRaw ?? null) as HolderTotalResponse
   const grTotal = gr?.data?.pagination?.total_count ?? gr?.pagination?.total_count ?? null
   if (grTotal != null) {
     const updatedAt = gr?.data?.updated_at ?? gr?.updated_at ?? null
+    const responseAt = typeof updatedAt === 'string' && updatedAt.trim() ? updatedAt : null
+    const chainIdentifier = typeof gr?.__chainUsed === 'string' ? gr.__chainUsed : null
     return {
       provider: 'goldrush',
-      chainIdentifier: typeof gr?.__chainUsed === 'string' ? gr.__chainUsed : null,
-      providerUpdatedAt: typeof updatedAt === 'string' && updatedAt.trim() ? updatedAt : null,
+      chainIdentifier,
+      exactMeaning: 'exact_provider_reported_total',
+      holderCountBasis: holderCountBasisFor('goldrush', chainIdentifier),
+      providerResponseAt: responseAt,
+      providerUpdatedAt: responseAt,
       providerTotal: numericTotal(grTotal),
     }
   }
   const moralisTotal = (moralisRaw as HolderTotalResponse)?.total ?? null
   if (moralisTotal != null) {
-    return { provider: 'moralis', chainIdentifier: null, providerUpdatedAt: null, providerTotal: numericTotal(moralisTotal) }
+    return {
+      ...EMPTY_PROVENANCE,
+      provider: 'moralis',
+      exactMeaning: 'exact_provider_reported_total',
+      holderCountBasis: holderCountBasisFor('moralis', null),
+      providerTotal: numericTotal(moralisTotal),
+    }
   }
-  return { provider: null, chainIdentifier: null, providerUpdatedAt: null, providerTotal: null }
+  return { ...EMPTY_PROVENANCE }
 }
