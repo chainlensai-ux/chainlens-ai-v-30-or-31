@@ -755,6 +755,11 @@ type ScanResult = {
     reason?: string
     fallbackUsed?: boolean
   } | null
+  /** Full real indexed candle series behind priceChart (15m x 7d when available); null for swap-rebuilt/synthetic charts. */
+  chartCandles?: {
+    intervalSec: number
+    points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }>
+  } | null
   chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
   chartSource?: string | null
   chartReason?: string | null
@@ -7864,9 +7869,11 @@ export default function TerminalTokenScanner() {
                           : undefined
                       return (
                         <PriceChartPanel
-                          candles={result.priceChart!.points}
-                          // trade_reconstructed buckets have a data-dependent width — let the panel infer it.
-                          declaredIntervalSec={result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
+                          // Real indexed OHLCV: the full series (chartCandles) so 1H/4H/1D can be rolled
+                          // up from real 15m candles. Swap-rebuilt candles have no chartCandles and keep
+                          // their data-dependent bucket width — the panel infers it (declared null).
+                          candles={result.chartCandles?.points ?? result.priceChart!.points}
+                          declaredIntervalSec={result.chartCandles ? result.chartCandles.intervalSec : result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
                           badge={_chartBadge}
                           footnote={result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
                         />

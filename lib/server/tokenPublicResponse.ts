@@ -278,6 +278,12 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
   if ((sanitized as any).priceChart?.points?.length > 150) {
     ;(sanitized as any).priceChart = { ...(sanitized as any).priceChart, points: (sanitized as any).priceChart.points.slice(-150) }
   }
+  // chartCandles is the Token Scanner chart's full real series (at most 672 rows from one request —
+  // see lib/evmChartCandles.ts). Cap defensively at the provider's own 1000-row maximum.
+  const chartCandles = (sanitized as Record<string, unknown>).chartCandles as { points?: unknown[] } | null | undefined
+  if (Array.isArray(chartCandles?.points) && chartCandles.points.length > 1000) {
+    ;(sanitized as Record<string, unknown>).chartCandles = { ...chartCandles, points: chartCandles.points.slice(-1000) }
+  }
   if ((sanitized as any).projectSocials) {
     delete (sanitized as any).projectSocials.sourceTrail
   }
