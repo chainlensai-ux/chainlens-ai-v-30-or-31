@@ -23,6 +23,7 @@ import { confirmedRobinhoodLpControlStatus } from "@/lib/robinhoodLpProofShared"
 import { fetchRobinhoodBlockscoutHolders, resolveRobinhoodLpProof, blockscoutHoldersToProviderShape, type RobinhoodLpProofResult } from "@/lib/server/robinhoodLpProof";
 import { resolveDevClusterDiagnosis } from "@/lib/server/devClusterDiagnosis";
 import { partitionLinkedWalletsForDevSupply, reconcileDevClusterAuditWithCustody, type CustodyExcludedLinkedWallet } from "@/lib/devControlCustodyPolicy";
+import { mergeDevClusterOverlayHolders, resolveHolderCountSemantics, rpcSupplyToDecimal } from "@/lib/holderFallbackPolicy";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -5940,18 +5941,17 @@ export async function POST(req: Request) {
     // count 3) raw resolver holder count 4) null. Real holder rows must never be reported
     // alongside a false holderCount: 0 — a provider total_count of 0/null with rows present just
     // means the exact total wasn't returned, not that there are no holders.
-    const holderCountReason: HolderDistribution["holderCountReason"] =
-      holderCount != null && holderCount > 0 ? "holder_count_from_provider_total"
-      : normalizedTop.length > 0 ? "holder_count_from_normalized_rows"
-      : holderResolverResult.holders.length > 0 ? "holder_count_from_resolver"
-      : "holder_count_unavailable_with_reason"
-    const resolvedHolderCount: number | null =
-      holderCount != null && holderCount > 0 ? holderCount
-      : normalizedTop.length > 0 ? normalizedTop.length
-      : holderResolverResult.holders.length > 0 ? holderResolverResult.holders.length
-      : null
-    const holderCountExact = holderCountReason === "holder_count_from_provider_total"
-    const holderCountCapped = holderCountReason === "holder_count_from_normalized_rows" || holderCountReason === "holder_count_from_resolver"
+    // A returned-row length is a sample size, never a holder count: without a provider total,
+    // holderCount is null and the reason/capped flags describe the partial row sample.
+    const _holderCountSemantics = resolveHolderCountSemantics({
+      providerTotal: holderCount,
+      normalizedRows: normalizedTop.length,
+      resolverRows: holderResolverResult.holders.length,
+    })
+    const holderCountReason: HolderDistribution["holderCountReason"] = _holderCountSemantics.holderCountReason
+    const resolvedHolderCount: number | null = _holderCountSemantics.holderCount
+    const holderCountExact = _holderCountSemantics.holderCountExact
+    const holderCountCapped = _holderCountSemantics.holderCountCapped
     const holderCountProvenanceValue = holderCountExact ? holderCountProvenance(holdersRaw, moralisHoldersRaw) : null
     let holderDistribution: HolderDistribution = normalizedTop.length
       ? { top1, top5, top10, top20, others: hasPct && top20 != null ? Math.max(0, 100 - top20) : null, holderCount: resolvedHolderCount, holderCountReason, holderCountExact, holderCountCapped, holderCountProvenance: holderCountProvenanceValue, topHolders: normalizedTop }
@@ -8015,9 +8015,8 @@ export async function POST(req: Request) {
             timestamp: t.timestamp ?? null,
             category: 'erc20' as const,
           })),
-          totalSupplyRaw: typeof (holderDistribution as { totalSupply?: unknown }).totalSupply === 'string'
-            ? String((holderDistribution as { totalSupply?: unknown }).totalSupply)
-            : null,
+          // Diagnostic-only replay denominator: real RPC totalSupply() when available.
+          totalSupplyRaw: rpcSupplyToDecimal(rpcSupply),
         },
       })
       devClusterDiagnosisAudit = overlay.audit
@@ -8050,43 +8049,17 @@ export async function POST(req: Request) {
           reason: w.reason,
         }))
       }
-      if (overlay.holders.length > 0) {
-        const havePct = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
-        if (!havePct) {
-          holderRows = overlay.holders.map((h, i) => ({
-            rank: h.rank ?? i + 1,
-            address: h.address,
-            amount: h.balanceRaw ?? null,
-            percent: h.percent,
-          }))
-          holderDistribution = {
-            ...holderDistribution,
-            top1: overlay.top1Pct ?? holderDistribution.top1,
-            top10: overlay.top10Pct ?? holderDistribution.top10,
-            top20: overlay.top20Pct ?? holderDistribution.top20,
-            others: overlay.top20Pct != null ? Math.max(0, 100 - overlay.top20Pct) : holderDistribution.others,
-            topHolders: holderRows,
-          }
-          holderDistributionStatus = {
-            ...holderDistributionStatus,
-            status: 'partial',
-            reason: overlay.holdersSource === 'transfer_derived'
-              ? 'holder_percentages_derived_from_transfers'
-              : 'holder_percentages_from_dev_cluster_overlay',
-            percentSource: overlay.holdersSource === 'transfer_derived' ? 'reconstructed' : holderDistributionStatus.percentSource,
-            itemCount: Math.max(holderDistributionStatus.itemCount, overlay.holders.length),
-            normalizedCount: holderRows.length,
-          }
-        } else if ((holderDistribution.top1 == null || holderDistribution.top10 == null) && overlay.top1Pct != null) {
-          holderDistribution = {
-            ...holderDistribution,
-            top1: overlay.top1Pct,
-            top10: overlay.top10Pct,
-            top20: overlay.top20Pct,
-            others: overlay.top20Pct != null ? Math.max(0, 100 - overlay.top20Pct) : holderDistribution.others,
-          }
-        }
-      }
+      // Transfer-derived launch rows never replace public holder rows / Top-N (ASTEROID regression).
+      const _overlayHolderMerge = mergeDevClusterOverlayHolders({
+        holderRows,
+        holderDistribution,
+        holderDistributionStatus,
+        overlay,
+        transferDerivedAvailable: overlay.transferDerivedDiagnostic != null,
+      })
+      holderRows = _overlayHolderMerge.holderRows
+      holderDistribution = _overlayHolderMerge.holderDistribution
+      holderDistributionStatus = _overlayHolderMerge.holderDistributionStatus
     }
     // STAGE-1 LIQUIDITY CUSTODY, DISCLOSED: annotate holder rows that match already-resolved
     // verified pool/reserve custody addresses for this token. Additive classification fields only —

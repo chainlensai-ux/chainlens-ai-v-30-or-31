@@ -188,7 +188,8 @@ test('wording-only change: basis never alters counts, routing expressions, or le
     assert.equal(rows.display, '50+')
   }
   assert.equal(formatHolderCountDisplay({ holderCount: 2061, holderCountReason: 'holder_count_from_provider_total' }).display, '2,061')
-  assert.match(route, /const holderCountExact = holderCountReason === "holder_count_from_provider_total"/)
+  // Exactness now comes from resolveHolderCountSemantics (exact only for a provider total).
+  assert.match(route, /const holderCountExact = _holderCountSemantics\.holderCountExact/)
   assert.match(route, /robinhood: \['robinhood-mainnet', '4663'\]/)
   assert.match(route, /eth: \['eth-mainnet'\]/)
 })

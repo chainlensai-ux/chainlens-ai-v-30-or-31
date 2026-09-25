@@ -4442,7 +4442,7 @@ function getHolderRead(result: ScanResult): string {
   })
   const countLabel = countDisplay.display
   const parts = [
-    count != null ? `holder count ${countLabel} (${countDisplay.note ? countDisplay.note.replace(/\.$/, '') : 'exact total reported by provider for this chain+contract'} — not a DexScreener holder figure)` : null,
+    count != null ? `holder count ${countLabel} (${countDisplay.note ? countDisplay.note.replace(/\.$/, '') : countDisplay.exact ? 'exact total reported by provider for this chain+contract' : 'partial row sample, not a holder total'} — not a DexScreener holder figure)` : null,
     top10 != null ? `top-10 supply concentration ${top10.toFixed(1)}% (share of token supply, not share of holders)` : null,
     result.holderDistribution?.top20 != null ? `top-20 supply concentration ${result.holderDistribution.top20.toFixed(1)}%` : null,
   ].filter(Boolean)
@@ -10414,7 +10414,13 @@ export default function TerminalTokenScanner() {
                   )}
                   {result.holderDistribution?.holderCount != null && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 9px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
-                      {result.holderDistribution.holderCount.toLocaleString()} holders
+                      {formatHolderCountDisplay({
+                        holderCount: result.holderDistribution.holderCount,
+                        holderCountReason: result.holderDistribution.holderCountReason,
+                        isCapped: result.holderDistribution.holderCountCapped,
+                        holderRowsReturned: result.holderDistribution.topHolders?.length ?? 0,
+                        holderCountBasis: result.holderDistribution.holderCountProvenance?.holderCountBasis,
+                      }).display} holders
                     </div>
                   )}
                   {(top10 != null || top20 != null) && (

@@ -86,6 +86,17 @@ export interface HolderResolutionAudit {
   creatorInTopHolders: boolean | null
   holdersSource: 'goldrush' | 'alchemy' | 'blockscout' | 'transfer_derived' | 'existing' | 'none'
   failureReason: string | null
+  /** Diagnostic-only launch-transfer replay. Never public holder rows, Top-N, custody, Dev Control or risk. */
+  transferDerived?: TransferDerivedDiagnostic | null
+}
+
+export interface TransferDerivedDiagnostic {
+  window: 'earliest_token_transfers'
+  observedWallets: number
+  top1Pct: number | null
+  top10Pct: number | null
+  denominator: 'total_supply' | 'observed_balance_sum'
+  usedForPublicHolders: false
 }
 
 export interface LinkedWalletGraphAudit {
@@ -417,6 +428,7 @@ export interface TransferDerivedConcentration {
   partial: true
   source: 'transfer_derived'
   observedWallets: number
+  denominator: 'total_supply' | 'observed_balance_sum'
 }
 
 // Reconstruct concentration from transfers. Partial by definition. Never fake 0% from missing rows.
@@ -472,6 +484,7 @@ export function deriveHolderConcentrationFromTransfers(
     partial: true,
     source: 'transfer_derived',
     observedWallets: positive.length,
+    denominator: supply && supply > BigInt(0) ? 'total_supply' : 'observed_balance_sum',
   }
 }
 

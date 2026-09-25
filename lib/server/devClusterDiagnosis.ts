@@ -31,6 +31,7 @@ import {
   type DevMapStatus,
   type LinkedWalletGraphStatus,
   type ProviderRowsHealth,
+  type TransferDerivedDiagnostic,
 } from '@/lib/devClusterDiagnosis'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
@@ -72,8 +73,11 @@ export interface DevClusterDiagnosisResult {
   deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed'
   linkedWallets: DevClusterLinkedWallet[]
   graphRan: boolean
+  /** Current-holder rows only (never transfer_derived). */
   holders: DevClusterHolderRow[]
   holdersSource: DevClusterDiagnosisAudit['holderResolution']['holdersSource']
+  /** Launch-transfer replay kept for audit only; never public holder evidence or cluster supply. */
+  transferDerivedDiagnostic?: TransferDerivedDiagnostic | null
   top1Pct: number | null
   top10Pct: number | null
   top20Pct: number | null
@@ -316,7 +320,8 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
           if (!originAddress && cached.result.originAddress) originAddress = cached.result.originAddress
           if (!factoryAddress && cached.result.factoryAddress) factoryAddress = cached.result.factoryAddress
           if (!creationTxHash && cached.result.creationTxHash) creationTxHash = cached.result.creationTxHash
-          if (holders.length === 0 && cached.result.holders.length > 0) {
+          // Launch-transfer replays (older cache entries) are never reused as holder rows.
+          if (holders.length === 0 && cached.result.holders.length > 0 && cached.result.holdersSource !== 'transfer_derived') {
             holders = cached.result.holders
             holdersSource = cached.result.holdersSource
           }
@@ -596,13 +601,22 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
     }
   }
 
-  // If holders still missing, reconstruct concentration from transfers (partial, never fake 0).
+  // If holders still missing, replay the transfer window for DIAGNOSTICS ONLY. These transfers are
+  // the earliest token transfers (launch-era), not current balances, so the replay never becomes
+  // holder rows, top-N, creator-in-top, or cluster supply (ASTEROID fixture: public Top1 61.82%).
+  let transferDerivedDiagnostic: TransferDerivedDiagnostic | null = null
   if ((holders.length === 0 || holders.every((h) => h.percent == null)) && transfers.length > 0) {
     holderSourcesTried.push('transfer_derived')
     const derived = deriveHolderConcentrationFromTransfers(transfers, tokenAddress, input.existing?.totalSupplyRaw ?? null)
     if (derived) {
-      holders = derived.rows
-      holdersSource = 'transfer_derived'
+      transferDerivedDiagnostic = {
+        window: 'earliest_token_transfers',
+        observedWallets: derived.observedWallets,
+        top1Pct: derived.top1Pct,
+        top10Pct: derived.top10Pct,
+        denominator: derived.denominator,
+        usedForPublicHolders: false,
+      }
     }
   }
 
@@ -691,6 +705,7 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
     creatorInTopHolders: creatorInTop,
     holdersSource,
     failureReason: holders.length > 0 ? null : 'Needs holder evidence',
+    transferDerived: transferDerivedDiagnostic,
   }
 
   let graphFailure: string | null = null
@@ -736,6 +751,7 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
     graphRan: graphStatus === 'ran_found' || graphStatus === 'ran_none',
     holders,
     holdersSource,
+    transferDerivedDiagnostic,
     top1Pct,
     top10Pct,
     top20Pct,
