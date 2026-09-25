@@ -2,12 +2,22 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Fraunces } from 'next/font/google'
+import localFont from 'next/font/local'
 import Navbar from '@/components/Navbar'
 import AffiliateHubNav from '@/components/AffiliateHubNav'
 import { supabase } from '@/lib/supabaseClient'
 
-const fraunces = Fraunces({ subsets: ['latin'], weight: ['500', '600'], variable: '--font-fraunces', display: 'swap' })
+// SELF-HOSTED FRAUNCES, DISCLOSED (fix: Vercel build failing with "Module not found" on the
+// next/font/google-generated Fraunces CSS module — a next/font/google build-time fetch to Google
+// Fonts, which intermittently fails on Vercel's build infra. Self-hosting the exact same Fraunces
+// v38 latin-subset weight 500/600 woff2 files (via next/font/local) removes that network dependency
+// entirely, so the build no longer depends on Google Fonts being reachable. Same font, same
+// --font-fraunces CSS variable, same display: 'swap' — no visual change.
+const fraunces = localFont({
+  src: [{ path: '../../public/fonts/fraunces/fraunces-500-normal.woff2', weight: '500', style: 'normal' }],
+  variable: '--font-fraunces',
+  display: 'swap',
+})
 
 export default function AffiliatePage() {
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
