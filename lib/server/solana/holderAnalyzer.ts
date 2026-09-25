@@ -103,9 +103,9 @@ export async function analyzeSolanaHolders(params: {
 
   // ── Real, paginated holder-account count (Helius) — fetched above, alongside the largest-
   // accounts read (see this function's own header for why they now run concurrently). ──────────
-  if (heliusHolders.called && !heliusHolders.success) evidenceGaps.push('Helius holder-account count did not resolve — holder count unavailable.')
-  if (heliusHolders.success) evidenceGaps.push('Holder count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included), not a KYC-verified unique-holder count.')
-  if (heliusHolders.isLowerBound) evidenceGaps.push(`Holder count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher.`)
+  if (heliusHolders.called && !heliusHolders.success) evidenceGaps.push('Helius token-account count did not resolve — token-account count and unique holders unavailable.')
+  if (heliusHolders.success) evidenceGaps.push('Token-account count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included). One wallet can own several accounts, so this is not a unique-holder count.')
+  if (heliusHolders.isLowerBound) evidenceGaps.push(`Token-account count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher, and unique holders cannot be counted.`)
 
   return { topAccountConcentration, heliusHolders, evidenceGaps, concentrationResult, concentrationAudit }
 }

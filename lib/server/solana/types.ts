@@ -214,6 +214,8 @@ export type SolanaBetaScanResult = {
   goldrushOrCovalent: SolanaGoldrushResult
   ohlcv: SolanaOhlcvResult
   heliusHolders: SolanaHeliusHolderResult
+  /** Token accounts vs unique owners, kept separate. Unique owners only when Helius pagination was complete. */
+  solanaHolderCounts?: import('./holderCounts.ts').SolanaHolderCounts
   /**
    * DEEP MODE, DISCLOSED: null unless the caller explicitly requested `deep: true` — never run by
    * default. See deepCreatorAnalyzer.ts's own header for the full cost/honesty disclosure. This is

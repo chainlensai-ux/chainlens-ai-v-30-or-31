@@ -15,7 +15,8 @@ import {
   isDexScreenerAvailable,
   isGoldrushKeyPresent,
 } from '../solanaChainConfig.ts'
-import { solanaGoldrushEnrichment } from '../solanaProviders.ts'
+import { solanaGoldrushEnrichment, heliusCountedAccountOwner } from '../solanaProviders.ts'
+import { buildSolanaHolderCounts } from './holderCounts.ts'
 import type { RpcFetch } from './rpcClient.ts'
 import { analyzeSolanaMint } from './mintAnalyzer.ts'
 import { analyzeSolanaHolders } from './holderAnalyzer.ts'
@@ -332,6 +333,13 @@ export async function runSolanaProviderMerge(
     }).liquidityCustody
   }
 
+  // Solana holder counts: token accounts and unique owners stay separate metrics. No new calls.
+  const solanaHolderCounts = buildSolanaHolderCounts({
+    heliusHolders: holders.heliusHolders,
+    verifiedVaultAccounts: verifiedVaultsFromSolanaClusterMap(clusterMap),
+    ownerOf: (account) => heliusCountedAccountOwner(holders.heliusHolders, account),
+  })
+
   return {
     solanaBeta: true,
     chain: 'solana',
@@ -344,6 +352,7 @@ export async function runSolanaProviderMerge(
     goldrushOrCovalent,
     ohlcv,
     heliusHolders: holders.heliusHolders,
+    solanaHolderCounts,
     deepCreator,
     solanaProviderWiringAudit: wiringAudit,
     tokenProgram: mint.tokenProgram,

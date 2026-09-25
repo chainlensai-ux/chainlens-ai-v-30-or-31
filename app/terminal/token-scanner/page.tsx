@@ -32,6 +32,7 @@ import {
   formatTokenScannerPublicStatus,
 } from '@/lib/tokenScannerPublicStatus'
 import { formatHolderCountDisplay, HOLDER_VS_CONCENTRATION_DISCLAIMER, type HolderCountProvenance } from '@/lib/tokenScannerHolderCount'
+import { formatSolanaTokenAccountLine, formatSolanaUniqueHolderLine } from '@/lib/solanaHolderCountsDisplay'
 import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
@@ -6323,7 +6324,12 @@ export default function TerminalTokenScanner() {
                                 "holders") because AMM pool vaults/exchange custody accounts are
                                 counted too — same honesty caveat as the top-account sample above.
                                 "+" means capped for cost control; the real count may be higher. */}
-                            Token accounts with balance: {sr.heliusHolders.holderCount != null ? `${sr.heliusHolders.holderCount}${sr.heliusHolders.isLowerBound ? '+' : ''}` : 'not available (Helius holder read did not resolve or is not enabled)'} — distinct from the top-account sample above.
+                            {/* Solana semantics: a token account is not a wallet. Unique holders show a
+                                number only when every account page was read and every owner is known. */}
+                            Holder count: {formatSolanaUniqueHolderLine(sr.solanaHolderCounts)}
+                          </p>
+                          <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>
+                            Token accounts: {formatSolanaTokenAccountLine(sr.solanaHolderCounts ?? (sr.heliusHolders?.success ? { tokenAccountCount: sr.heliusHolders.holderCount, tokenAccountCountIsLowerBound: sr.heliusHolders.isLowerBound, uniqueOwnerCount: null, uniqueOwnerStatus: 'unavailable', uniqueOwnerReason: null, verifiedCustodyOwnerCount: null } : null))}. Distinct from the top-account sample above.
                           </p>
                         </div>
                         <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
@@ -10222,7 +10228,7 @@ export default function TerminalTokenScanner() {
 
             const holderLine = conc?.top10Percent == null
               ? 'Holder data did not load this scan, so concentration is unknown — not confirmed healthy.'
-              : `${conc.top10Percent < 30 ? 'Well spread' : conc.top10Percent < 50 ? 'Somewhat concentrated' : 'Heavily concentrated'} — the top 10 accounts hold ${conc.top10Percent.toFixed(1)}% of supply${sr.heliusHolders?.success && sr.heliusHolders.holderCount != null ? `, across ${sr.heliusHolders.holderCount}${sr.heliusHolders.isLowerBound ? '+' : ''} holders` : ''}. Some of that can be the pool's own vault.`
+              : `${conc.top10Percent < 30 ? 'Well spread' : conc.top10Percent < 50 ? 'Somewhat concentrated' : 'Heavily concentrated'} — the top 10 accounts hold ${conc.top10Percent.toFixed(1)}% of supply${sr.heliusHolders?.success && sr.heliusHolders.holderCount != null ? `, across ${sr.heliusHolders.holderCount.toLocaleString('en-US')}${sr.heliusHolders.isLowerBound ? '+' : ''} token accounts with balance` : ''}. Some of that can be the pool's own vault.`
 
             const poolLine = sr.poolProgram.resolved && sr.poolProgram.label
               ? `Liquidity sits in a verified ${sr.poolProgram.label} pool${liq ? ` holding ${liq}` : ''}.`
