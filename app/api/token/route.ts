@@ -22,6 +22,7 @@ import { resolveRobinhoodTokenEvidence } from "@/lib/robinhoodTokenEvidence";
 import { confirmedRobinhoodLpControlStatus } from "@/lib/robinhoodLpProofShared";
 import { fetchRobinhoodBlockscoutHolders, resolveRobinhoodLpProof, blockscoutHoldersToProviderShape, type RobinhoodLpProofResult } from "@/lib/server/robinhoodLpProof";
 import { resolveDevClusterDiagnosis } from "@/lib/server/devClusterDiagnosis";
+import { partitionLinkedWalletsForDevSupply, reconcileDevClusterAuditWithCustody, type CustodyExcludedLinkedWallet } from "@/lib/devControlCustodyPolicy";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -706,6 +707,8 @@ type SupplyControl = {
     confidence: string
   }>
   clusterInfluence: ClusterInfluence
+  /** Verified liquidity-custody addresses linked only by a token-seeding transfer; not counted as dev supply. */
+  liquidityCustodyExcludedLinkedWallets?: CustodyExcludedLinkedWallet[]
   insufficientEvidence?: boolean
   reason?: string
   fallbackUsed?: string
@@ -8185,6 +8188,12 @@ export async function POST(req: Request) {
       deploy_patterns: deployerAddress ? [`deployer_wallet=${deployerAddress}`] : [`inferred: no deployer wallet resolved — factory or anonymous deployment assumed`],
       source_status: deployerAddress ? "ok" : "partial",
     }
+    // DEV CONTROL × LIQUIDITY CUSTODY: a verified pool/PoolManager linked ONLY by the deployer's
+    // liquidity-seeding token transfer is not an ordinary dev wallet. Canonical partition — every
+    // downstream consumer (supplyControl, cluster map, devIntel, CORTEX) reads the same list.
+    const devSupplyPartition = partitionLinkedWalletsForDevSupply({ linkedWallets, holderRows })
+    const custodyExcludedLinkedWallets = devSupplyPartition.custodyExcluded
+    if (custodyExcludedLinkedWallets.length > 0) linkedWallets = devSupplyPartition.countable
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
     const holderRowsConfirmed = holderRowsHaveUsablePercents
@@ -8270,6 +8279,7 @@ export async function POST(req: Request) {
       devClusterSupplyReason,
       matchedLinkedWallets,
       clusterInfluence,
+      ...(custodyExcludedLinkedWallets.length > 0 ? { liquidityCustodyExcludedLinkedWallets: custodyExcludedLinkedWallets } : {}),
       ...(holderResolverResult.insufficientEvidence || (!deployerAddress && linkedWallets.length === 0) ? {
         insufficientEvidence: true,
         reason: !deployerAddress && linkedWallets.length === 0
@@ -8278,6 +8288,13 @@ export async function POST(req: Request) {
         fallbackUsed: holderResolverResult.fallbackUsed ?? 'none',
         confidence: 'low' as const,
       } : {}),
+    }
+    if (devClusterDiagnosisAudit) {
+      devClusterDiagnosisAudit = reconcileDevClusterAuditWithCustody(devClusterDiagnosisAudit, {
+        custodyExcludedCount: custodyExcludedLinkedWallets.length,
+        countableLinkedCount: linkedWallets.length,
+        devClusterSupplyPercent,
+      })
     }
     const clusterMap = buildClusterMap({
       deployerAddress,

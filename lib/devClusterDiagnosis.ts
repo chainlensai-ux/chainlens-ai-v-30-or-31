@@ -101,6 +101,8 @@ export interface LinkedWalletGraphAudit {
   graphStatus: LinkedWalletGraphStatus
   failureReason: string | null
   linkedWalletsSource: 'goldrush' | 'alchemy' | 'blockscout' | 'existing' | 'none'
+  /** Linked addresses excluded from dev supply because they are verified liquidity custody linked only by a token-seeding transfer. */
+  liquidityCustodyExcluded?: number
 }
 
 export interface DevClusterDiagnosisAudit {
