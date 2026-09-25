@@ -23,7 +23,7 @@ import { confirmedRobinhoodLpControlStatus } from "@/lib/robinhoodLpProofShared"
 import { fetchRobinhoodBlockscoutHolders, resolveRobinhoodLpProof, blockscoutHoldersToProviderShape, type RobinhoodLpProofResult } from "@/lib/server/robinhoodLpProof";
 import { resolveDevClusterDiagnosis } from "@/lib/server/devClusterDiagnosis";
 import { partitionLinkedWalletsForDevSupply, reconcileDevClusterAuditWithCustody, type CustodyExcludedLinkedWallet } from "@/lib/devControlCustodyPolicy";
-import { mergeDevClusterOverlayHolders, resolveHolderCountSemantics, rpcSupplyToDecimal } from "@/lib/holderFallbackPolicy";
+import { HOLDER_PERCENT_NO_TOTAL_SUPPLY_REASON, mergeDevClusterOverlayHolders, resolveHolderCountSemantics, rpcSupplyToDecimal, selectHolderPercentDenominator } from "@/lib/holderFallbackPolicy";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -5883,34 +5883,24 @@ export async function POST(req: Request) {
     // Fallback percent derivation: provider returned holder rows with raw balances but no percentage
     // field, or provider percentages failed sanity validation. Try real totalSupply() first.
     let _holderPctDerived = false
-    let _holderPctDerivedFromSummedRows = false
     let _holderPctTotalSupplySource: string | null = null
+    let _holderPctNoTotalSupply = false
     if (!hasPct && topHolders.length > 0 && rawBalanceByAddress.size > 0) {
       const _onchainVal = _onchainSettled.status === 'fulfilled'
         ? (_onchainSettled.value as Awaited<ReturnType<typeof fetchOnchainSupply>> | null)
         : null
-      let totalSupplyBig: bigint | null = _onchainVal?.totalSupply ?? null
+      // Real total supply only (RPC, then the provider's contract total_supply). A sum of the
+      // returned, bounded holder page is never a denominator — see selectHolderPercentDenominator.
+      const _denominator = selectHolderPercentDenominator({
+        rpcOnchainTotalSupply: _onchainVal?.totalSupply ?? null,
+        rpcPhase1TotalSupplyHex: alchemyMandatoryReads[5] ?? null,
+        providerTotalSupplyRaw: holderItems.find((h: any) => h?.total_supply != null)?.total_supply ?? null,
+      })
+      const totalSupplyBig: bigint | null = _denominator?.totalSupply ?? null
+      _holderPctTotalSupplySource = _denominator?.source ?? null
+      _holderPctNoTotalSupply = _denominator == null
       if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
-        _holderPctTotalSupplySource = 'rpc_onchain'
-      } else {
-        const tsHex = alchemyMandatoryReads[5]
-        if (tsHex && tsHex !== '0x' && tsHex !== '0x0') {
-          try { totalSupplyBig = BigInt(tsHex); _holderPctTotalSupplySource = 'rpc_phase1' } catch {}
-        }
-      }
-      if (!holderProviderPercentFailedSanity && (totalSupplyBig == null || totalSupplyBig <= BigInt(0)) && rawBalanceByAddress.size > 0) {
-        let sumBig = BigInt(0)
-        for (const rawBal of rawBalanceByAddress.values()) {
-          try { sumBig += BigInt(String(rawBal)) } catch {}
-        }
-        if (sumBig > BigInt(0)) {
-          totalSupplyBig = sumBig
-          _holderPctDerivedFromSummedRows = true
-          _holderPctTotalSupplySource = 'summed_returned_rows'
-        }
-      }
-      if (totalSupplyBig != null && totalSupplyBig > BigInt(0)) {
-        holderSanityDebug.reconstructionAttempted = holderProviderPercentFailedSanity || _holderPctTotalSupplySource !== 'summed_returned_rows'
+        holderSanityDebug.reconstructionAttempted = true
         const derivedCount = deriveHolderPercentagesFromSupply(topHolders as Array<{ address: string; percent: number | null }>, rawBalanceByAddress, totalSupplyBig)
         if (derivedCount > 0) {
           const reconstructedSanity = validateHolderPercentSanity(topHolders)
@@ -5959,17 +5949,17 @@ export async function POST(req: Request) {
     let holderDistributionStatus: HolderDistributionStatus = normalizedTop.length > 0
       ? (hasPct
           ? {
-              status: percentSource === 'reconstructed' || _holderPctDerivedFromSummedRows ? 'partial' : 'ok',
+              status: percentSource === 'reconstructed' ? 'partial' : 'ok',
               reason: percentSource === 'reconstructed'
                 ? 'holder_percentages_reconstructed_from_total_supply'
                 : _holderPctDerived
-                ? (_holderPctDerivedFromSummedRows ? 'percentages_estimated_from_returned_rows' : 'percentages_derived_from_rpc_supply')
+                ? (_holderPctTotalSupplySource === 'provider_total_supply' ? 'holder_percentages_derived_from_provider_supply' : 'percentages_derived_from_rpc_supply')
                 : 'holder_percentages_verified',
               itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
             }
           : {
               status: 'partial',
-              reason: holderProviderPercentFailedSanity ? 'holder_percentages_failed_sanity_check' : 'no_percentages',
+              reason: holderProviderPercentFailedSanity ? 'holder_percentages_failed_sanity_check' : _holderPctNoTotalSupply ? HOLDER_PERCENT_NO_TOTAL_SUPPLY_REASON : 'no_percentages',
               itemCount: holderItems.length, normalizedCount: normalizedTop.length, percentSource,
             })
       : {
@@ -7845,23 +7835,13 @@ export async function POST(req: Request) {
     // Guard: both values must be raw integer strings (no decimal point, no scientific notation).
     // Prefer RPC totalSupply; fall back to provider-supplied total_supply when RPC is unavailable (e.g. ETH without Alchemy key).
     const _holderProviderSupply = holderItems.find((h: any) => h?.total_supply != null)?.total_supply
-    // Compute sum of raw balances as last-resort supply estimate when both RPC and provider supply are unavailable
-    let _summedBalanceSupply: string | null = null
-    if (!rpcSupply && _holderProviderSupply == null && rawBalanceByAddress.size > 0) {
-      try {
-        let sum = BigInt(0)
-        for (const bal of rawBalanceByAddress.values()) {
-          const s = String(bal)
-          if (s && !s.includes('.') && !/[eE]/.test(s)) sum += BigInt(s)
-        }
-        if (sum > BigInt(0)) _summedBalanceSupply = '0x' + sum.toString(16)
-      } catch { /* ignore */ }
-    }
+    // No summed-balance fallback: a bounded holder page is a sample, not supply (see
+    // selectHolderPercentDenominator). Without RPC or provider total supply, percentages stay null.
     const _derivationSupply: string | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0')
       ? rpcSupply
-      : (_holderProviderSupply != null ? String(_holderProviderSupply) : _summedBalanceSupply)
-    const _derivationSupplySource: 'rpc' | 'provider' | 'summed' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_holderProviderSupply != null ? 'provider' : (_summedBalanceSupply ? 'summed' : null))
-    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null && (!holderProviderPercentFailedSanity || _derivationSupplySource !== 'summed')) {
+      : (_holderProviderSupply != null ? String(_holderProviderSupply) : null)
+    const _derivationSupplySource: 'rpc' | 'provider' | null = (rpcSupply && rpcSupply !== '0x' && rpcSupply !== '0x0') ? 'rpc' : (_holderProviderSupply != null ? 'provider' : null)
+    if (!hasPct && normalizedTop.length > 0 && _derivationSupply != null) {
       holderDerivationAttempted = true
       holderSanityDebug.reconstructionAttempted = holderSanityDebug.reconstructionAttempted || holderProviderPercentFailedSanity
       let totalSupplyBig: bigint | null = null
@@ -7893,8 +7873,6 @@ export async function POST(req: Request) {
               ? 'holder_percentages_reconstructed_from_total_supply'
               : _derivationSupplySource === 'provider'
               ? 'holder_percentages_derived_from_provider_supply'
-              : _derivationSupplySource === 'summed'
-              ? 'holder_percentages_derived_from_summed_balances'
               : 'holder_percentages_derived_from_rpc_supply',
             itemCount: holderItems.length,
             normalizedCount: normalizedTop.length,

@@ -422,6 +422,8 @@ export function verifiedVaultsFromSolanaClusterMap(clusterMap: {
 
 // ── Stage 2: ordinary holder concentration (excludes verified liquidity custody only) ─────────
 
+export const ORDINARY_PERCENTAGES_UNAVAILABLE_REASON = 'holder_percentages_unavailable'
+
 export type OrdinaryCoverageStatus = 'verified' | 'partial' | 'insufficient' | 'not_computed'
 
 export type OrdinaryCoverage = {
@@ -543,6 +545,23 @@ export function computeOrdinaryConcentration<
       ordinaryTop10: null,
       ordinaryTop20: null,
       ordinaryCoverage: emptyCoverage('not_computed', 'holder_rows_unavailable', ['no_holder_rows']),
+      totalTop1,
+      totalTop5,
+      totalTop10,
+      totalTop20,
+    }
+  }
+
+  // Ordinary Top-N is a sum of real total-supply percentages. Rows without a usable percent
+  // (no real total supply, transfer-evidence-not-current, unknown Solana mint supply) must not
+  // be summed as 0 and published as a verified 0% — the series is unavailable instead.
+  if (holders.some((h) => typeof h.percent !== 'number' || !Number.isFinite(h.percent))) {
+    return {
+      ordinaryTop1: null,
+      ordinaryTop5: null,
+      ordinaryTop10: null,
+      ordinaryTop20: null,
+      ordinaryCoverage: emptyCoverage('not_computed', ORDINARY_PERCENTAGES_UNAVAILABLE_REASON, ['holder_rows_missing_total_supply_percentages']),
       totalTop1,
       totalTop5,
       totalTop10,

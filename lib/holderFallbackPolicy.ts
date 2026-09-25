@@ -175,3 +175,42 @@ export function rpcSupplyToDecimal(rpcSupply: string | null | undefined): string
     return null
   }
 }
+
+// HOLDER PERCENT DENOMINATOR — DISCLOSED (cross-chain holder integrity audit).
+// Percentages must divide by the token's REAL total supply. A returned holder page (GoldRush caps
+// at 100 rows, the resolver at 200) is a bounded sample; summing it as the denominator inflates
+// every holder's share (a pool holding 10% of supply becomes much more when the page covers only
+// part of supply) and fed public Top-N, Stage 1/2 and risk. The summed-sample denominator is
+// therefore never selected: without a real supply, percentages stay unavailable with a reason.
+export type HolderPercentDenominatorSource = 'rpc_onchain' | 'rpc_phase1' | 'provider_total_supply'
+
+export const HOLDER_PERCENT_NO_TOTAL_SUPPLY_REASON = 'holder_percentages_unavailable_no_total_supply'
+
+const toPositiveBigInt = (v: unknown): bigint | null => {
+  if (typeof v === 'bigint') return v > BigInt(0) ? v : null
+  if (typeof v !== 'string' && typeof v !== 'number') return null
+  const s = String(v).trim()
+  if (!s || s === '0x' || s === '0x0') return null
+  if (!/^0x[0-9a-fA-F]+$/.test(s) && !/^\d+$/.test(s)) return null
+  try {
+    const b = BigInt(s)
+    return b > BigInt(0) ? b : null
+  } catch {
+    return null
+  }
+}
+
+/** Real-supply denominator for holder percentages, strongest first. Never a sum of sample rows. */
+export function selectHolderPercentDenominator(input: {
+  rpcOnchainTotalSupply?: bigint | string | null
+  rpcPhase1TotalSupplyHex?: string | null
+  providerTotalSupplyRaw?: string | number | null
+}): { totalSupply: bigint; source: HolderPercentDenominatorSource } | null {
+  const onchain = toPositiveBigInt(input.rpcOnchainTotalSupply ?? null)
+  if (onchain != null) return { totalSupply: onchain, source: 'rpc_onchain' }
+  const phase1 = toPositiveBigInt(input.rpcPhase1TotalSupplyHex ?? null)
+  if (phase1 != null) return { totalSupply: phase1, source: 'rpc_phase1' }
+  const provider = toPositiveBigInt(input.providerTotalSupplyRaw ?? null)
+  if (provider != null) return { totalSupply: provider, source: 'provider_total_supply' }
+  return null
+}
