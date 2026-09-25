@@ -696,7 +696,7 @@ function providerStub({
     rpcUrl: 'https://stub',
     fetchImpl: providerStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
-      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium', baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' }, quoteToken: { address: 'So11111111111111111111111111111111111111112', name: 'Wrapped SOL', symbol: 'SOL' } }],
       jupiterMeta: { name: 'USD Coin', symbol: 'USDC', logoURI: 'https://x/logo.png', tags: ['verified'] },
       jupiterPrice: { [USDC_MINT]: { price: '1.001' } },
     }),
@@ -1039,7 +1039,7 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
     fetchImpl: rpcStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
       dexPairs: [{
-        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium', baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' }, quoteToken: { address: 'So11111111111111111111111111111111111111112', name: 'Wrapped SOL', symbol: 'SOL' },
         info: {
           websites: [{ url: 'https://dexscreener.com/solana/p' }, { url: 'https://realtoken.io' }],
           socials: [
@@ -1065,7 +1065,7 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
     fetchImpl: rpcStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
       dexPairs: [{
-        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium', baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' }, quoteToken: { address: 'So11111111111111111111111111111111111111112', name: 'Wrapped SOL', symbol: 'SOL' },
         info: { socials: [{ type: 'x', url: 'https://x.com/realtoken2' }] },
       }],
     }),
@@ -1123,7 +1123,7 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
     fetchImpl: rpcStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
       dexPairs: [{
-        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium', baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' }, quoteToken: { address: 'So11111111111111111111111111111111111111112', name: 'Wrapped SOL', symbol: 'SOL' },
         txns: { h24: { buys: 120, sells: 80 } },
       }],
     }),
@@ -1175,7 +1175,7 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   const { analyzeSolanaMarket } = await import('../lib/server/solana/marketAnalyzer.ts')
   const m = await analyzeSolanaMarket(USDC_MINT, async (url) => {
     if (String(url).includes('dexscreener')) {
-      return { ok: true, json: async () => ({ pairs: [{ chainId: 'solana', priceUsd: '2.5', liquidity: { usd: 5000 }, volume: { h24: 100 }, pairAddress: 'P', dexId: 'orca' }] }) }
+      return { ok: true, json: async () => ({ pairs: [{ chainId: 'solana', priceUsd: '2.5', liquidity: { usd: 5000 }, volume: { h24: 100 }, pairAddress: 'P', dexId: 'orca', baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' }, quoteToken: { address: 'So11111111111111111111111111111111111111112', name: 'Wrapped SOL', symbol: 'SOL' } }] }) }
     }
     throw new Error('unexpected fetch')
   })

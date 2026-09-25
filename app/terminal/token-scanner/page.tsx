@@ -6051,7 +6051,12 @@ export default function TerminalTokenScanner() {
                       // provider-wiring task. priceSource labels which provider the number is
                       // actually from, so the fallback is never silently indistinguishable.
                       const price = sr.marketData?.priceUsd ?? sr.jupiter.resolved.price
-                      const priceSource = sr.marketData?.priceUsd != null ? 'DexScreener' : sr.jupiter.resolved.price != null ? 'Jupiter (fallback)' : undefined
+                      // Quote-side mints: marketData.priceUsd is deliberately null (the pool's price
+                      // belongs to the paired token — see SolanaMarketPriceEvidence), so say why
+                      // rather than leaving a bare "Unavailable".
+                      const priceSource = sr.marketData?.priceUsd != null ? 'DexScreener' : sr.jupiter.resolved.price != null ? 'Jupiter (fallback)'
+                        : sr.marketData?.priceEvidence?.status === 'unavailable_quote_side' ? 'Pool price belongs to the paired token'
+                          : sr.marketData?.priceEvidence?.status === 'unavailable_side_unknown' ? 'Pool side unverified' : undefined
                       return sr.marketData || price != null ? (
                         <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '10px' }}>
                           <StatCard label="Price" value={price != null ? `$${price}` : 'Unavailable'} accent="#2DD4BF" helper={priceSource} />

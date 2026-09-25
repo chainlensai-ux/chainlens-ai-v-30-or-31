@@ -101,6 +101,7 @@ export async function runSolanaProviderMerge(
   audit.marketProviderUsed = market.provider
   audit.marketDataResolved = market.data != null
   if (!market.data) evidenceGaps.push('No Solana market/pool data found via DexScreener — price, liquidity and volume unavailable.')
+  else if (market.data.priceUsd == null && market.data.priceEvidence?.reason) evidenceGaps.push(market.data.priceEvidence.reason)
 
   evidenceGaps.push(...creator.evidenceGaps)
 

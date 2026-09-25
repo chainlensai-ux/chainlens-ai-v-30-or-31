@@ -58,8 +58,25 @@ export type SolanaTopAccountShare = {
   }
 }
 
+/**
+ * Provenance of SolanaMarketData.priceUsd / fdvUsd / marketCapUsd / socials. DexScreener reports
+ * those fields for a pair's BASE token only, so they are read solely from a pair where the scanned
+ * mint is the base token (see marketAnalyzer.ts). The "unavailable_*" statuses mean no such pair was
+ * returned — the fields are null, never the paired token's values.
+ */
+export type SolanaMarketPriceEvidence = {
+  status: 'selected_pool_base_side' | 'alternate_pool_base_side' | 'not_returned' | 'unavailable_quote_side' | 'unavailable_side_unknown'
+  /** The pair the price/FDV/market cap were read from; null when unavailable. */
+  pairAddress: string | null
+  /** Plain-language reason when the price is unavailable; null when resolved. */
+  reason: string | null
+}
+
 export type SolanaMarketData = {
+  /** USD price of the scanned mint itself — null when it cannot be proven (see priceEvidence). */
   priceUsd: number | null
+  /** Optional so hand-built fixtures stay valid; always set by analyzeSolanaMarket. */
+  priceEvidence?: SolanaMarketPriceEvidence
   liquidityUsd: number | null
   volume24hUsd: number | null
   fdvUsd: number | null
@@ -75,9 +92,9 @@ export type SolanaMarketData = {
   pairAgeLabel: string | null
   /** Same real pairCreatedAt evidence as pairAgeLabel, kept as a whole-day integer for scoring (Token Maturity category in solanaCortexRisk.ts) — never re-derived from the label string. Null if absent. */
   pairAgeDays: number | null
-  /** Real transaction counts from the same DexScreener pair response's txns.h24 field. */
+  /** Real transaction counts from the selected pair's txns.h24, oriented to the scanned mint (buys/sells swap when it is the quote side; null when its side is unknown). */
   txns24h: { buys: number | null; sells: number | null }
-  /** Real social links from the same DexScreener pair response's info.websites/info.socials. */
+  /** Real social links from info.websites/info.socials of the pair where the scanned mint is the BASE token (DexScreener's pair info describes its base token); all null when no such pair exists. */
   socials: { website: string | null; twitter: string | null; telegram: string | null; discord: string | null; reddit: string | null }
 }
 
