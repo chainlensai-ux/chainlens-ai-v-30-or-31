@@ -212,14 +212,26 @@ export type SolanaOhlcvResult = {
   errorReason: string | null
 }
 
+// CANDLE DEPTH + TOKEN SIDE, DISCLOSED (Price Chart terminal upgrade — reported "too few candles").
+// Root cause: this was hour?aggregate=1&limit=48, i.e. at most 48 hourly candles, and GeckoTerminal
+// omits buckets with no trades, so a young or thin pool returned only ~10 real candles. The SAME
+// single request now asks for 15-minute candles, 7 days deep (672 rows): 4x the resolution for
+// young pools, and enough real history for the chart to roll exact 1H/4H/1D candles up client-side
+// (lib/priceChartCandles.ts) — provider-call delta is zero. It also passes token=<side> (the mint's
+// side of the pool, from the same DexScreener pair): without it GeckoTerminal defaults to the pool's
+// BASE token, so a mint on the quote side was charted at its pair token's price.
+const SOLANA_OHLCV_TIMEFRAME = '15m'
+const SOLANA_OHLCV_LIMIT = 672
+
 function emptyOhlcvResult(called: boolean, errorReason: string | null): SolanaOhlcvResult {
-  return { called, success: false, candles: [], timeframe: '1h', errorReason }
+  return { called, success: false, candles: [], timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason }
 }
 
-export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl): Promise<SolanaOhlcvResult> {
+export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl, tokenSide: 'base' | 'quote' | null = null): Promise<SolanaOhlcvResult> {
   if (!poolAddress) return emptyOhlcvResult(false, 'No indexed pool address to fetch candle history for.')
   try {
-    const res = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/hour?aggregate=1&limit=48`, {
+    const qs = `aggregate=15&limit=${SOLANA_OHLCV_LIMIT}&currency=usd&token=${tokenSide === 'quote' ? 'quote' : 'base'}`
+    const res = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute?${qs}`, {
       signal: AbortSignal.timeout(8000),
     })
     if (!res.ok) return emptyOhlcvResult(true, `geckoterminal_http_${res.status}`)
@@ -239,7 +251,7 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
       .filter((c): c is SolanaOhlcvCandle => c != null)
       .reverse() // chronological ascending, for the chart
     if (candles.length < 2) return emptyOhlcvResult(true, 'geckoterminal_insufficient_candles')
-    return { called: true, success: true, candles, timeframe: '1h', errorReason: null }
+    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null }
   } catch {
     return emptyOhlcvResult(true, 'geckoterminal_unreachable')
   }

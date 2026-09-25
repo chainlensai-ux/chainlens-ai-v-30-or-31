@@ -65,6 +65,8 @@ export type SolanaMarketData = {
   fdvUsd: number | null
   marketCapUsd: number | null
   primaryPoolAddress: string | null
+  /** Which side of the primary pool the scanned mint is on, from the same DexScreener pair — lets the candle request price the mint itself, not its pair token. Null/absent when neither side matched. */
+  primaryPoolTokenSide?: 'base' | 'quote' | null
   primaryDexLabel: string | null
   /** SPL mints carry no name/symbol on-chain — read from the matched side of the DexScreener pair. */
   tokenName: string | null

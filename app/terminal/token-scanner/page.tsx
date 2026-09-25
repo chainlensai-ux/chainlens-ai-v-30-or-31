@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } fr
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
+import PriceChartPanel from './PriceChartPanel'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -1409,221 +1410,18 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
   )
 }
 
-type OhlcCandle = { timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }
-
-function CandlestickChart({ candles, timeframe, isFlatSeries = false }: { candles: OhlcCandle[]; timeframe: string; isFlatSeries?: boolean }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
-
-  const MAX_CANDLES = 80
-  const raw = candles.filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0 && c.high >= c.low)
-  const data = raw.slice(-MAX_CANDLES)
-  if (data.length < 2) return null
-
-  const W = 960
-  const padX = 8
-  const padTop = 26
-  const priceAreaH = 254
-  const volAreaH = 44
-  const volGap = 6
-  const priceTop = padTop
-  const priceBot = padTop + priceAreaH
-  const volTop = priceBot + volGap
-  const volBot = volTop + volAreaH
-  const H = volBot + 4   // 334
-
-  const allHighs = data.map(c => c.high)
-  const allLows  = data.map(c => c.low)
-  const priceMax = Math.max(...allHighs)
-  const priceMin = Math.min(...allLows)
-  const spread   = Math.max(priceMax - priceMin, priceMin * 0.001, 1e-12)
-  const pricePad  = spread * 0.06
-  const dispMax  = priceMax + pricePad
-  const dispMin  = priceMin - pricePad
-  const dispSpread = dispMax - dispMin
-  const yP = (v: number) => priceTop + ((dispMax - v) / dispSpread) * priceAreaH
-
-  const n      = data.length
-  const slotW  = (W - padX * 2) / n
-  const bodyW  = Math.max(2, slotW * 0.68)
-  const wickW  = Math.max(1, Math.min(1.5, slotW * 0.14))
-  const xC     = (i: number) => padX + (i + 0.5) * slotW
-
-  const hasVolume = data.some(c => (c.volume ?? 0) > 0)
-  const maxVol    = hasVolume ? Math.max(...data.map(c => c.volume ?? 0)) : 0
-
-  const first = data[0]
-  const last  = data[n - 1]
-  const deltaPct = first.close > 0 ? ((last.close - first.close) / first.close) * 100 : null
-
-  const hoverCandle = hoverIdx != null ? data[hoverIdx] : null
-
-  const guideYs = [0, 0.25, 0.5, 0.75, 1].map(r => priceTop + r * priceAreaH)
-
-  const onMove = (clientX: number, rect: DOMRect) => {
-    const svgX = (clientX - rect.left) * (W / rect.width)
-    setHoverIdx(Math.max(0, Math.min(n - 1, Math.floor((svgX - padX) / slotW))))
+// Candle width each server chart key was requested at (see the priceChart timeframe ladder in
+// app/api/token/route.ts and SOLANA_OHLCV_TIMEFRAME in lib/server/solanaProviders.ts). Null means
+// "unknown" — PriceChartPanel then infers the width from the real candle timestamps.
+function chartIntervalSec(key: string | null | undefined): number | null {
+  switch (key) {
+    case '24h': case '15m': return 900
+    case '48h': case '1h': return 3600
+    case '7d': case '30d': case '1d': return 86_400
+    case '5m': return 300
+    case '4h': return 14_400
+    default: return null
   }
-
-  const flatLinePath = isFlatSeries ? data.map((c, i) => `${i === 0 ? 'M' : 'L'}${xC(i).toFixed(1)},${yP(c.close).toFixed(1)}`).join(' ') : ''
-  const flatAreaPath = isFlatSeries ? `${flatLinePath} L${xC(n - 1).toFixed(1)},${priceBot} L${xC(0).toFixed(1)},${priceBot} Z` : ''
-
-  const fmtTs = (ts: string) => {
-    const d = new Date(ts)
-    if (timeframe === '24h') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    if (timeframe === '30d') return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-    const diffDays = (Date.now() - d.getTime()) / 86400000
-    return diffDays < 2
-      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  }
-
-  return (
-    <div style={{ position: 'relative' }}
-      onMouseLeave={() => setHoverIdx(null)}
-      onMouseMove={e => onMove(e.clientX, e.currentTarget.getBoundingClientRect())}
-      onTouchMove={e => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
-      onTouchStart={e => onMove(e.touches[0].clientX, e.currentTarget.getBoundingClientRect())}
-    >
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'clamp(240px, 32vw, 340px)', display: 'block' }}>
-        <defs>
-          <clipPath id="ccPriceClip"><rect x={padX} y={priceTop} width={W - padX * 2} height={priceAreaH} /></clipPath>
-          <clipPath id="ccVolClip"><rect x={padX} y={volTop} width={W - padX * 2} height={volAreaH} /></clipPath>
-          {isFlatSeries && (
-            <linearGradient id="fsGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(0,255,255,0.18)" />
-              <stop offset="60%" stopColor="rgba(0,255,255,0.06)" />
-              <stop offset="100%" stopColor="rgba(0,255,255,0.00)" />
-            </linearGradient>
-          )}
-          {isFlatSeries && (
-            <filter id="fsGlow" x="-8%" y="-200%" width="116%" height="500%">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          )}
-        </defs>
-        {isFlatSeries && (
-          <style>{`@keyframes fsBreath{0%,100%{opacity:.45}50%{opacity:.78}}`}</style>
-        )}
-
-        {/* Horizontal grid */}
-        {isFlatSeries
-          ? [0.12, 0.5, 0.88].map((r, i) => (
-              <line key={i} x1={padX} y1={priceTop + r * priceAreaH} x2={W - padX} y2={priceTop + r * priceAreaH} stroke="rgba(45,212,191,0.08)" strokeWidth="1" />
-            ))
-          : guideYs.map((y, i) => (
-              <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.12)" strokeWidth="1" />
-            ))
-        }
-        {isFlatSeries && [1 / 3, 2 / 3].map((r, i) => (
-          <line key={i} x1={padX + r * (W - padX * 2)} y1={priceTop} x2={padX + r * (W - padX * 2)} y2={priceBot} stroke="rgba(45,212,191,0.06)" strokeWidth="1" />
-        ))}
-
-        {/* Candles (normal) or flat-series area+line */}
-        {isFlatSeries ? (
-          <g clipPath="url(#ccPriceClip)">
-            <path d={flatAreaPath} fill="url(#fsGrad)" style={{ animation: 'fsBreath 1.5s ease-in-out infinite' }} />
-            <path d={flatLinePath} fill="none" stroke="rgba(0,255,255,0.72)" strokeWidth="2" filter="url(#fsGlow)" style={{ animation: 'fsBreath 1.5s ease-in-out infinite' }} />
-            {/* Watermark */}
-            <text x={padX + 8} y={priceBot - 12} fill="rgba(45,212,191,0.20)" style={{ fontSize: 11, letterSpacing: '0.04em', fontFamily: 'sans-serif' }}>
-              No verified price history — showing live price only
-            </text>
-            {/* Hover highlight dot */}
-            {hoverIdx != null && (
-              <circle cx={xC(hoverIdx)} cy={yP(data[hoverIdx].close)} r="4" fill="rgba(0,255,255,0.8)" filter="url(#fsGlow)" />
-            )}
-          </g>
-        ) : (
-          <g clipPath="url(#ccPriceClip)">
-            {data.map((c, i) => {
-              const x     = xC(i)
-              const bull  = c.close >= c.open
-              const clr   = bull ? '#2dd4bf' : '#f87171'
-              const yH    = yP(c.high)
-              const yL    = yP(c.low)
-              const yO    = yP(c.open)
-              const yCl   = yP(c.close)
-              const bTop  = Math.min(yO, yCl)
-              const bBot  = Math.max(yO, yCl)
-              const bH    = Math.max(2, bBot - bTop)
-              return (
-                <g key={i} opacity={hoverIdx != null && i !== hoverIdx ? 0.55 : 1}>
-                  <line x1={x} y1={yH} x2={x} y2={yL} stroke={clr} strokeWidth={wickW} />
-                  <rect x={x - bodyW / 2} y={bTop} width={bodyW} height={bH} fill={clr} opacity={bull ? 0.88 : 0.82} rx={slotW > 10 ? 1 : 0} />
-                </g>
-              )
-            })}
-          </g>
-        )}
-
-        {/* Hover crosshairs */}
-        {hoverIdx != null && (() => {
-          const hx = xC(hoverIdx)
-          return <>
-            <line x1={hx} y1={priceTop} x2={hx} y2={priceBot} stroke="rgba(148,163,184,0.38)" strokeDasharray="3 3" strokeWidth="1" />
-            {hoverCandle && <line x1={padX} y1={yP(hoverCandle.close)} x2={W - padX} y2={yP(hoverCandle.close)} stroke="rgba(148,163,184,0.22)" strokeDasharray="3 3" strokeWidth="1" />}
-          </>
-        })()}
-
-        {/* Volume bars (hidden for flat-series) */}
-        {!isFlatSeries && hasVolume && (
-          <g clipPath="url(#ccVolClip)">
-            {data.map((c, i) => {
-              const vol = c.volume ?? 0
-              if (!vol || !maxVol) return null
-              const bH = (vol / maxVol) * volAreaH
-              return (
-                <rect key={i} x={xC(i) - bodyW / 2} y={volBot - bH} width={bodyW} height={bH}
-                  fill={c.close >= c.open ? 'rgba(45,212,191,0.32)' : 'rgba(248,113,113,0.32)'} />
-              )
-            })}
-          </g>
-        )}
-
-        {/* Price labels */}
-        <text x={padX + 2} y={priceTop - 6} fill="#475569" style={{ fontSize: 11 }}>H {fmtPrice(priceMax)}</text>
-        <text x={W - padX - 2} y={priceTop - 6} textAnchor="end" fill="#475569" style={{ fontSize: 11 }}>L {fmtPrice(priceMin)}</text>
-        {hasVolume && <text x={padX + 2} y={volTop + 12} fill="#334155" style={{ fontSize: 9.5, letterSpacing: '0.08em' }}>VOL</text>}
-      </svg>
-
-      {/* Latest price badge */}
-      <div style={{ position: 'absolute', top: '8px', right: '10px', border: '1px solid rgba(167,139,250,0.46)', background: 'rgba(15,23,42,0.84)', borderRadius: '999px', padding: '4px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700, pointerEvents: 'none' }}>
-        {fmtPrice(last.close)}
-      </div>
-
-      {/* Hover tooltip */}
-      {hoverCandle && (
-        <div style={{ position: 'absolute', left: '10px', bottom: '28px', border: `1px solid ${isFlatSeries ? 'rgba(0,255,255,0.28)' : 'rgba(45,212,191,0.32)'}`, background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '130px' }}>
-          <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '5px' }}>{fmtTs(hoverCandle.timestamp)}</div>
-          {isFlatSeries ? (
-            <>
-              <div style={{ fontSize: '11px', color: 'rgba(0,255,255,0.8)', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</div>
-              <div style={{ fontSize: '9px', color: '#475569', marginTop: '4px', letterSpacing: '0.06em' }}>Live price only (synthetic flat series)</div>
-            </>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px', fontSize: '11px', color: '#cbd5e1' }}>
-              <span style={{ color: '#475569' }}>O</span><span>{fmtPrice(hoverCandle.open)}</span>
-              <span style={{ color: '#475569' }}>H</span><span style={{ color: '#2dd4bf' }}>{fmtPrice(hoverCandle.high)}</span>
-              <span style={{ color: '#475569' }}>L</span><span style={{ color: '#f87171' }}>{fmtPrice(hoverCandle.low)}</span>
-              <span style={{ color: '#475569' }}>C</span><span style={{ color: hoverCandle.close >= hoverCandle.open ? '#2dd4bf' : '#f87171', fontWeight: 700 }}>{fmtPrice(hoverCandle.close)}</span>
-              {(hoverCandle.volume ?? 0) > 0 && (
-                <><span style={{ color: '#475569' }}>V</span><span style={{ color: '#94a3b8' }}>{fmtLarge(hoverCandle.volume!)}</span></>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Bottom row: start time / delta / end time */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '5px' }}>
-        <span>{fmtTs(first.timestamp)}</span>
-        <span style={{ color: deltaPct == null ? '#94a3b8' : deltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
-          Δ {deltaPct == null ? 'N/A' : fmtPct(deltaPct)}
-        </span>
-        <span>{fmtTs(last.timestamp)}</span>
-      </div>
-    </div>
-  )
 }
 
 type _TrendSnap = { price: number | null; changes: Array<{ label: string; value: number | null }> }
@@ -6234,22 +6032,12 @@ export default function TerminalTokenScanner() {
                     {/* CHART, DISCLOSED (Solana provider-wiring follow-up: "make the price chart
                         work"): real OHLCV candles from GeckoTerminal's free, keyless public API,
                         keyed off the same pool address DexScreener already resolved — no new key,
-                        no fabricated series. Reuses CandlestickChart, the exact same component EVM
+                        no fabricated series. Reuses PriceChartPanel, the exact same component EVM
                         renders through, so a real Solana chart looks identical to an EVM one. Falls
                         back to the prior honest label — never a broken/empty chart card — when
                         GeckoTerminal has no indexed candles for this pool yet. */}
                     {sr.ohlcv.success && sr.ohlcv.candles.length >= 2 ? (
-                      <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-                          <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#34d399', background: 'rgba(52,211,153,0.07)', border: '1px solid rgba(52,211,153,0.20)', textTransform: 'uppercase' }}>Live Candles · GeckoTerminal</span>
-                        </div>
-                        <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>1H</div>
-                        <CandlestickChart
-                          candles={sr.ohlcv.candles.map((c) => ({ timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, priceUsd: c.close }))}
-                          timeframe="1H"
-                        />
-                      </div>
+                      <PriceChartPanel candles={sr.ohlcv.candles} declaredIntervalSec={chartIntervalSec(sr.ohlcv.timeframe)} />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
                         <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
@@ -8051,7 +7839,7 @@ export default function TerminalTokenScanner() {
                   {(() => {
                     // Priority:
                     //   A) Real/reconstructed candles (pool_ohlcv, token_level_ohlcv, dexscreener_ohlcv, trade_reconstructed)
-                    //      → CandlestickChart
+                    //      → PriceChartPanel
                     //   B) Synthetic sources (synthetic_price_estimate, synthetic_flat_series) fall through
                     //      to TrendChart — we never render fake candlestick bars for estimated data
                     //   C) marketTrendSnapshot.status === 'ok' → premium TrendChart (smooth line/area)
@@ -8063,36 +7851,20 @@ export default function TerminalTokenScanner() {
                     const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
 
                     if (_hasValidCandles) {
+                      const _badgeStyle = { fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', padding: '2px 8px', borderRadius: '99px', textTransform: 'uppercase' as const, fontFamily: 'var(--font-plex-mono)' }
+                      const _chartBadge = result.chartSource === 'trade_reconstructed'
+                        ? <span style={{ ..._badgeStyle, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)' }}>Reconstructed from recent swaps</span>
+                        : result.chartSource === 'dexscreener_ohlcv'
+                          ? <span style={{ ..._badgeStyle, color: '#818cf8', background: 'rgba(129,140,248,0.08)', border: '1px solid rgba(129,140,248,0.22)' }}>Fallback market candles</span>
+                          : undefined
                       return (
-                        <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                              {result.chartSource === 'trade_reconstructed' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)', textTransform: 'uppercase' }}>
-                                  Reconstructed from recent swaps
-                                </span>
-                              )}
-                              {result.chartSource === 'dexscreener_ohlcv' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#818cf8', background: 'rgba(129,140,248,0.08)', border: '1px solid rgba(129,140,248,0.22)', textTransform: 'uppercase' }}>
-                                  Indexed from fallback market candles
-                                </span>
-                              )}
-                              {(result.chartSource === 'pool_ohlcv' || result.chartSource === 'token_level_ohlcv') && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#34d399', background: 'rgba(52,211,153,0.07)', border: '1px solid rgba(52,211,153,0.20)', textTransform: 'uppercase' }}>
-                                  Live Candles
-                                </span>
-                              )}
-                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
-                                {result.priceChart!.fallbackUsed ? 'Live pool price action (fallback pool)' : 'Primary pool price action'}
-                              </p>
-                            </div>
-                          </div>
-                          <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>
-                            {result.priceChart!.timeframe === '24h' ? '24H' : result.priceChart!.timeframe === '48h' ? '48H' : result.priceChart!.timeframe === '7d' ? '7D' : '30D'}
-                          </div>
-                          <CandlestickChart candles={result.priceChart!.points} timeframe={result.priceChart!.timeframe} isFlatSeries={result.chartSource === 'synthetic_flat_series'} />
-                        </div>
+                        <PriceChartPanel
+                          candles={result.priceChart!.points}
+                          // trade_reconstructed buckets have a data-dependent width — let the panel infer it.
+                          declaredIntervalSec={result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
+                          badge={_chartBadge}
+                          footnote={result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
+                        />
                       )
                     }
 

@@ -126,7 +126,7 @@ export async function runSolanaProviderMerge(
   // address already resolved by market data, not on each other, so they run concurrently. ──────
   const poolAddress = market.data?.primaryPoolAddress ?? null
   const [ohlcv, pool] = await Promise.all([
-    analyzeSolanaCandles(poolAddress, fetchImpl),
+    analyzeSolanaCandles(poolAddress, fetchImpl, market.data?.primaryPoolTokenSide ?? null),
     analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl }),
   ])
   if (poolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')

@@ -819,7 +819,8 @@ function providerStub({
   check('page reads sr.jupiter for the Market tab price fallback', page.includes('sr.jupiter.resolved.price'))
   check('page reads sr.helius for the Dev tab activity signal', page.includes('sr.helius.'))
   check('page reads sr.heliusHolders for the Holders tab holder-count distinction', page.includes('sr.heliusHolders.holderCount'))
-  check('page reads sr.ohlcv for the Market tab Price Chart', page.includes('sr.ohlcv.success') && page.includes('CandlestickChart'))
+  check('page reads sr.ohlcv for the Market tab Price Chart', page.includes('sr.ohlcv.success') && page.includes('<PriceChartPanel candles={sr.ohlcv.candles}'))
+  check('Price Chart badge does not expose the candle provider name', !/Live Candles · GeckoTerminal/i.test(page))
   // Same result-tabs-wrap / result-header shell classes used by the Solana branch as by EVM chains.
   check('solana branch still uses the shared result-header shell class', page.includes("className=\"result-header\""))
   check('solana branch still uses the shared result-tabs-wrap shell class', page.includes("className=\"result-tabs-wrap\""))

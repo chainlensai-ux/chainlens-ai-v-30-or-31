@@ -95,6 +95,7 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
         fdvUsd: num(top.fdv),
         marketCapUsd: num(top.marketCap),
         primaryPoolAddress: typeof top.pairAddress === 'string' ? top.pairAddress : null,
+        primaryPoolTokenSide: matchedToken == null ? null : matchedToken === baseToken ? 'base' : 'quote',
         primaryDexLabel: typeof top.dexId === 'string' ? top.dexId : null,
         tokenName,
         tokenSymbol,
@@ -110,6 +111,6 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
 }
 
 /** Real OHLCV candles for the Price Chart — see solanaProviders.ts's fetchSolanaOhlcv for the full disclosure. */
-export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch): Promise<SolanaOhlcvResult> {
-  return fetchSolanaOhlcv(poolAddress, fetchImpl)
+export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch, tokenSide: 'base' | 'quote' | null = null): Promise<SolanaOhlcvResult> {
+  return fetchSolanaOhlcv(poolAddress, fetchImpl, tokenSide)
 }
