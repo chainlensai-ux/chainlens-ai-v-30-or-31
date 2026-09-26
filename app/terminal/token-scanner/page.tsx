@@ -774,6 +774,7 @@ type ScanResult = {
   chartDebug?: {
     chain: string
     network: string | null
+    coingeckoNetwork: string | null
     scannedToken: string
     selectedPool: string | null
     tokenSide: 'base' | 'quote' | null
@@ -781,7 +782,8 @@ type ScanResult = {
     requestedLimit: number | null
     source: string | null
     attempts: Array<{
-      stage: 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
+      stage: 'coingecko_15m' | 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
+      provider: 'coingecko_onchain' | 'geckoterminal' | null
       pool: string | null
       interval: string | null
       status: string
@@ -790,7 +792,9 @@ type ScanResult = {
       reason: string | null
     }>
     rateLimited: boolean
-    finalSource: string
+    rateLimitedProvider: 'coingecko_onchain' | 'geckoterminal' | 'both' | null
+    finalSource: 'coingecko_onchain' | 'geckoterminal' | 'swap_rebuilt' | 'estimated_trend' | 'none'
+    finalStage: string
     finalCandleCount: number
     fallbackReason: string | null
   } | null
@@ -1485,11 +1489,12 @@ function chartIntervalSec(key: string | null | undefined): number | null {
 // — no secrets, keys, headers or raw provider bodies ever pass through this component because none
 // are present in chartDebug to begin with.
 const CHART_DEBUG_STAGE_LABEL: Record<string, string> = {
-  primary_pool_15m: '15M primary',
-  primary_pool_1h: '1H primary',
-  primary_pool_1d: '1D primary',
-  alternate_pool: 'Alternate pool',
-  swap_rebuild: 'Swap fallback',
+  coingecko_15m: 'CoinGecko 15M',
+  primary_pool_15m: 'GeckoTerminal 15M',
+  primary_pool_1h: 'GeckoTerminal 1H',
+  primary_pool_1d: 'GeckoTerminal 1D',
+  alternate_pool: 'GeckoTerminal alt pool 15M',
+  swap_rebuild: 'Swap rebuild',
   estimated_trend: 'Estimated trend',
 }
 function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug']> }) {
@@ -1505,7 +1510,7 @@ function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug'
       </button>
       {open && (
         <div style={{ marginTop: '8px', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
-          Chain: {debug.chain} ({debug.network ?? 'unknown network'}){'\n'}
+          Network: {debug.network ?? 'unknown'} (chain {debug.chain}; CoinGecko: {debug.coingeckoNetwork ?? 'not used'}){'\n'}
           Scanned token: {debug.scannedToken}{'\n'}
           Pool: {debug.selectedPool ?? 'none'}{'\n'}
           Token side: {debug.tokenSide ?? 'unresolved'}{'\n'}
@@ -1513,13 +1518,13 @@ function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug'
           Source: {debug.source ?? 'none'}{'\n'}
           Final source: {debug.finalSource}{'\n'}
           Final candle count: {debug.finalCandleCount}{'\n'}
-          Rate limited: {debug.rateLimited ? 'yes' : 'no'}{'\n'}
+          Rate limited: {debug.rateLimited ? `yes (${debug.rateLimitedProvider ?? 'unknown'})` : 'no'}{'\n'}
           Fallback reason: {debug.fallbackReason ?? 'n/a'}
           {'\n\n'}Attempts:{'\n'}
           {debug.attempts.map((a) => {
             const label = CHART_DEBUG_STAGE_LABEL[a.stage] ?? a.stage
             if (a.status === 'skipped') return `${label} — skipped\n`
-            const parts = [a.interval ? `${a.interval}` : null, a.httpStatus != null ? `${a.httpStatus}` : a.status, `${a.rowsReturned} rows`].filter(Boolean)
+            const parts = [a.httpStatus != null ? `${a.httpStatus}` : a.status, `${a.rowsReturned} rows`]
             return `${label} — ${parts.join(' — ')}${a.reason ? ` (${a.reason})` : ''}\n`
           })}
         </div>

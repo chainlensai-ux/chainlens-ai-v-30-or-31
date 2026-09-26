@@ -5,6 +5,7 @@ import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { loadOnDemandCandles } from '@/lib/server/chartCandlesOnDemand'
+import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 
 export const dynamic = 'force-dynamic'
 
@@ -35,7 +36,11 @@ export async function GET(req: Request) {
       timeframe: url.searchParams.get('timeframe'),
     },
     fetchJson,
-    { baseUrl: process.env.GECKO_BASE_URL },
+    {
+      baseUrl: process.env.GECKO_BASE_URL,
+      // CoinGecko on-chain first (server-side key, never returned); GeckoTerminal only on its failure.
+      fetchCoingecko: isCoingeckoOnchainConfigured() ? (chain, pool, req, side) => fetchCoingeckoOnchainPoolOhlcv(chain, pool, req, side) : undefined,
+    },
   )
   return NextResponse.json(result, { status: result.ok || result.code !== 'invalid_request' ? 200 : 400 })
 }

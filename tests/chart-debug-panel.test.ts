@@ -16,6 +16,7 @@ function base(overrides: Partial<Parameters<typeof buildEvmChartDebugInfo>[0]> =
   return buildEvmChartDebugInfo({
     chain: 'base',
     network: 'base',
+    coingeckoNetwork: 'base',
     scannedToken: TOKEN,
     candleFailure: null,
     selectedPoolAddress: null,
@@ -25,6 +26,7 @@ function base(overrides: Partial<Parameters<typeof buildEvmChartDebugInfo>[0]> =
     source: null,
     finalCandleCount: 0,
     ...overrides,
+    attempts: overrides.attempts ?? overrides.candleFailure?.attempts ?? [],
   })
 }
 
@@ -32,8 +34,10 @@ test('primary pool success: real source + row count, every later stage marked sk
   const attempts: CandleAttempt[] = [
     { route: 'pool', poolAddress: POOL, side: 'base', timeframe: '24h', httpStatus: 200, rows: 672, validRows: 672, code: 'ok' },
   ]
+  // Success: the ladder sets no candleFailure — the trail comes from its attempts alone.
   const d = base({
-    candleFailure: { code: 'provider_empty', message: 'unused when ok', attempts }, // ladder only sets candleFailure on a genuine failure path; still fine to feed attempts through here
+    attempts,
+    candleFailure: null,
     selectedPoolAddress: POOL,
     tokenSide: 'base',
     source: 'pool_ohlcv',
@@ -50,7 +54,9 @@ test('primary pool success: real source + row count, every later stage marked sk
     const a = d.attempts.find((x) => x.stage === stage)!
     assert.equal(a.status, 'skipped', stage)
   }
-  assert.equal(d.finalSource, 'primary_pool_15m')
+  assert.equal(primary.provider, 'geckoterminal')
+  assert.equal(d.finalSource, 'geckoterminal')
+  assert.equal(d.finalStage, 'primary_pool_15m')
   assert.equal(d.finalCandleCount, 672)
   assert.equal(d.selectedPool, POOL)
   assert.equal(d.tokenSide, 'base')
@@ -74,6 +80,7 @@ test('429 on the first request: provider_rate_limited reported, everything after
     assert.equal(d.attempts.find((a) => a.stage === stage)!.status, 'skipped', stage)
   }
   assert.equal(d.rateLimited, true)
+  assert.equal(d.rateLimitedProvider, 'geckoterminal')
   assert.equal(d.finalSource, 'none')
   assert.equal(d.fallbackReason, 'provider_rate_limited')
 })
@@ -107,7 +114,8 @@ test('alternate pool fallback reports the correct stage', () => {
   assert.equal(alt.status, 'ok')
   assert.equal(alt.pool, ALT_POOL)
   assert.equal(alt.rowsReturned, 50)
-  assert.equal(d.finalSource, 'alternate_pool')
+  assert.equal(d.finalSource, 'geckoterminal')
+  assert.equal(d.finalStage, 'alternate_pool')
   const primary = d.attempts.find((a) => a.stage === 'primary_pool_15m')!
   assert.equal(primary.status, 'provider_empty')
   assert.equal(primary.pool, POOL)
@@ -122,7 +130,7 @@ test('swap rebuild fallback reports its stage and row count', () => {
   const swap = d.attempts.find((a) => a.stage === 'swap_rebuild')!
   assert.equal(swap.status, 'ok')
   assert.equal(swap.rowsReturned, 12)
-  assert.equal(d.finalSource, 'swap_rebuild')
+  assert.equal(d.finalSource, 'swap_rebuilt')
 })
 
 test('estimated trend: exact fallback reason surfaced, marked ok with the live candle count', () => {
@@ -136,13 +144,14 @@ test('estimated trend: exact fallback reason surfaced, marked ok with the live c
   assert.equal(est.rowsReturned, 2)
   assert.match(est.reason ?? '', /rate-limiting/i)
   assert.equal(d.finalSource, 'estimated_trend')
+  assert.equal(d.finalStage, 'estimated_trend')
   assert.equal(d.fallbackReason, 'provider_rate_limited')
 })
 
 test('no pools at all: pool_not_indexed, every stage skipped except estimated_trend if used', () => {
   const summary = summarizeCandleFailure([], true)
   const d = base({ candleFailure: summary })
-  for (const stage of ['primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']) {
+  for (const stage of ['coingecko_15m', 'primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']) {
     assert.equal(d.attempts.find((a) => a.stage === stage)!.status, 'skipped')
   }
   assert.equal(d.fallbackReason, 'pool_not_indexed')
@@ -158,7 +167,8 @@ test('never carries anything resembling a secret, key, header, or raw provider b
     assert.doesNotMatch(json, new RegExp(forbidden), forbidden)
   }
   // Only genuinely public/structural fields appear.
-  assert.deepEqual(Object.keys(d).sort(), ['attempts', 'chain', 'fallbackReason', 'finalCandleCount', 'finalSource', 'network', 'rateLimited', 'requestedInterval', 'requestedLimit', 'scannedToken', 'selectedPool', 'source', 'tokenSide'].sort())
+  assert.deepEqual(Object.keys(d).sort(), ['attempts', 'chain', 'coingeckoNetwork', 'fallbackReason', 'finalCandleCount', 'finalSource', 'finalStage', 'network', 'rateLimited', 'rateLimitedProvider', 'requestedInterval', 'requestedLimit', 'scannedToken', 'selectedPool', 'source', 'tokenSide'].sort())
+  for (const a of d.attempts) assert.deepEqual(Object.keys(a).sort(), ['httpStatus', 'interval', 'pool', 'provider', 'reason', 'rowsReturned', 'stage', 'status'])
 })
 
 // ── Gating + wiring (static): server enforcement, zero provider-call delta, panel visibility ────
@@ -184,6 +194,7 @@ test('server: chartDebug is built from the ladder\'s own already-computed result
   const fn = route.slice(route.indexOf('const chartDebug: ChartDebugInfo'), route.indexOf('const pairCreatedAt = String(mainPoolAttr.pool_created_at'))
   assert.doesNotMatch(fn, /await fetch|fetchGeckoTerminal|fetchImpl/i)
   assert.match(fn, /candleFailure: chartCandleFailure/)
+  assert.match(fn, /attempts: chartCandleAttempts/)
 })
 
 test('client: reuses the existing debugHolder-style ?param -> body-flag convention; no new route', () => {

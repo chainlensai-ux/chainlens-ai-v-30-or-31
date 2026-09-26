@@ -59,6 +59,15 @@ export const EVM_CHART_LADDER: ReadonlyArray<EvmChartRung> = [
 /** GeckoTerminal network id per EVM chain key. */
 export const EVM_CHART_NETWORK: Readonly<Record<string, string>> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
 
+/**
+ * CoinGecko on-chain (/api/v3/onchain/networks/{network}/...) network id per EVM chain key. The
+ * on-chain API serves GeckoTerminal's index, and eth / base / bsc are CoinGecko's documented ids.
+ * Robinhood is deliberately absent: GeckoTerminal's 'robinhood' slug is confirmed live, but nothing
+ * verifies it on CoinGecko's on-chain API, so Robinhood keeps GeckoTerminal as its primary until
+ * /api/debug/coingecko-onchain-probe?network=robinhood proves otherwise.
+ */
+export const COINGECKO_ONCHAIN_NETWORK: Readonly<Record<string, string>> = { eth: 'eth', base: 'base', bnb: 'bsc' }
+
 export function incrementReason(map: Record<string, number>, key: string) {
   map[key] = (map[key] ?? 0) + 1
 }
@@ -253,6 +262,7 @@ export type CandleFailureCode =
   | 'network_not_supported'
   | 'pool_not_indexed'
   | 'token_side_unresolved'
+  | 'token_identity_unverified'
   | 'provider_rate_limited'
   | 'provider_http_error'
   | 'provider_empty'
@@ -261,7 +271,9 @@ export type CandleFailureCode =
   | 'swap_fallback_insufficient'
   | 'call_budget_exhausted'
 
-export type CandleAttemptRoute = 'pool' | 'alternate_pool' | 'swaps'
+/** 'coingecko_pool' is the CoinGecko on-chain read; every other route is GeckoTerminal. */
+export type CandleAttemptRoute = 'coingecko_pool' | 'pool' | 'alternate_pool' | 'swaps'
+export type CandleProvider = 'coingecko_onchain' | 'geckoterminal'
 
 export type CandleAttempt = {
   route: CandleAttemptRoute
@@ -280,6 +292,7 @@ const FAILURE_MESSAGES: Record<CandleFailureCode, string> = {
   network_not_supported: 'The candle provider does not index this network.',
   pool_not_indexed: 'No indexed trading pool with price history was found for this token.',
   token_side_unresolved: "The pool did not identify which side is this token, so its candles could not be attributed to it.",
+  token_identity_unverified: "The returned price history could not be proven to belong to this token, so it was not used.",
   provider_rate_limited: 'The candle provider is rate-limiting requests right now. Try the scan again shortly.',
   provider_http_error: 'The candle provider did not respond successfully.',
   provider_empty: 'The pool returned no trading history yet.',
@@ -311,6 +324,7 @@ const FAILURE_PRIORITY: CandleFailureCode[] = [
   'network_not_supported',
   'provider_rate_limited',
   'token_side_unresolved',
+  'token_identity_unverified',
   'pool_not_indexed',
   'provider_http_error',
   'provider_schema_invalid',
@@ -336,6 +350,29 @@ export type LadderFetchResult = { json: unknown; httpStatus: number | null }
 export type LadderDeps = {
   fetchPoolOhlcv: (poolAddress: string, rung: EvmChartRung, side: 'base' | 'quote') => Promise<LadderFetchResult>
   fetchTrades: (poolAddress: string) => Promise<LadderFetchResult>
+  /** CoinGecko on-chain pool OHLCV; `token` is 'base' | 'quote' | the scanned token's address. */
+  fetchCoingeckoPoolOhlcv?: (poolAddress: string, rung: EvmChartRung, token: string) => Promise<LadderFetchResult>
+}
+
+/**
+ * Which side of the pool a CoinGecko on-chain OHLCV response's `meta` names the scanned token as
+ * (meta.base.address / meta.quote.address). Null when meta is absent or names neither side.
+ */
+export function coingeckoMetaTokenSide(json: unknown, tokenAddress: string): 'base' | 'quote' | null {
+  const meta = (json as { meta?: { base?: { address?: unknown }; quote?: { address?: unknown } } } | null)?.meta
+  const token = tokenAddress.toLowerCase()
+  if (!token || !meta) return null
+  if (typeof meta.base?.address === 'string' && meta.base.address.toLowerCase() === token) return 'base'
+  if (typeof meta.quote?.address === 'string' && meta.quote.address.toLowerCase() === token) return 'quote'
+  return null
+}
+
+/** Latest real close within 3x either way of the scan's live price — rules out the pair token's series. */
+export function closeMatchesLivePrice(points: ReadonlyArray<EvmChartPoint>, livePriceUsd: number | null): boolean {
+  const last = points[points.length - 1]?.close
+  if (last == null || !(last > 0) || livePriceUsd == null || !(livePriceUsd > 0)) return false
+  const ratio = last / livePriceUsd
+  return ratio >= 1 / 3 && ratio <= 3
 }
 export type LadderPriceChart = { timeframe: EvmChartRung['key']; points: EvmChartPoint[]; sourceStatus: 'ok' }
 
@@ -360,8 +397,14 @@ export type LadderResult = {
   rawTradeCount: number
   validTradePriceCount: number
   totalHttpCalls: number
+  /** GeckoTerminal returned 429 (ends every further GeckoTerminal call for the scan). */
   rateLimited: boolean
   rateLimitedAt: string | null
+  /** CoinGecko returned 429 (the ladder then fell back to GeckoTerminal). */
+  coingeckoRateLimited: boolean
+  coingeckoAttempted: boolean
+  /** Which provider's pool OHLCV is on screen; null for swap-rebuilt or no candles. */
+  candleProvider: CandleProvider | null
   skippedDueToRateLimit: number
   /** Legacy free-text reason (route diagnostics). */
   failureReason: string | null
@@ -371,22 +414,37 @@ export type LadderResult = {
 }
 
 /**
- * Hard cap on ALL GeckoTerminal candle-path calls per scan — pool OHLCV and swap (trades) reads
- * together. The ladder's own worst case is 7 (3 primary rungs + 2 alternate pools + 2 trades reads),
- * so the cap is never the binding limit; it guards future changes.
+ * Hard cap on ALL candle-path provider calls per scan — CoinGecko, GeckoTerminal pool OHLCV and swap
+ * (trades) reads together. The ladder's own worst case is 8 (1 CoinGecko + 3 primary rungs + 2
+ * alternate pools + 2 trades reads), so the cap is never the binding limit; it guards future changes.
  */
 export const EVM_MAX_OHLCV_CALLS = 10
 
 /**
- * The EVM chart ladder: primary pool (15m -> 1h -> 1d), up to two alternate pools (15m), then
- * swap-rebuilt candles from up to two pools. Each step runs only if the previous ones found
- * nothing; pool candles are requested only for a side proven by the pool's own base/quote ids; a
- * 429 ends every further GeckoTerminal call for the scan (swap reads included).
+ * The EVM chart ladder:
+ *   0. CoinGecko on-chain pool OHLCV, primary pool, 15m x 672 — ONE call. Real rows for a proven
+ *      token => done; GeckoTerminal is never called.
+ *   1. GeckoTerminal primary pool (15m -> 1h -> 1d)
+ *   2. up to two alternate pools (GeckoTerminal 15m)
+ *   3. swap-rebuilt candles from up to two pools
+ * (The route's estimated trend follows only when this returns no chart.) Each step runs only if the
+ * previous ones found nothing. A CoinGecko failure of any kind, 429 included, falls through once to
+ * GeckoTerminal and CoinGecko is not retried; a GeckoTerminal 429 ends every further GeckoTerminal
+ * call for the scan (swap reads included).
+ *
+ * TOKEN IDENTITY. GeckoTerminal pool candles are requested only for a side proven by the pool's own
+ * base/quote ids. CoinGecko is asked for that same proven side (token=base|quote — the semantics
+ * already verified for this index). When the pool doesn't prove a side, CoinGecko is asked by the
+ * scanned token's own address instead, and the series is used only when the response's meta names
+ * the token on one side AND the latest close sits within 3x of the scan's live price; otherwise it
+ * is rejected as token_identity_unverified, so a WETH/WBNB/USDC series can never pass as the token.
  */
 export async function runEvmCandleLadder(input: {
   pools: ReadonlyArray<LadderPool>
   contract: string
   networkId: string | null
+  /** CoinGecko on-chain network id; null skips CoinGecko (unsupported chain or no key). */
+  coingeckoNetworkId?: string | null
   currentPriceUsd: number | null
   maxOhlcvCalls?: number
 }, deps: LadderDeps): Promise<LadderResult> {
@@ -396,6 +454,7 @@ export async function runEvmCandleLadder(input: {
     reconstructedCandleCount: 0, tokenLevelAttempted: false, tradeReconstructionAttempted: false, poolOhlcvAttempts: [],
     tokenOhlcvAttempts: [], attemptedTimeframes: [], attemptedPools: [], tradePoolsAttempted: [], rejectedTradeReasons: {},
     rawTradeCount: 0, validTradePriceCount: 0, totalHttpCalls: 0, rateLimited: false, rateLimitedAt: null,
+    coingeckoRateLimited: false, coingeckoAttempted: false, candleProvider: null,
     skippedDueToRateLimit: 0, failureReason: null, candleFailure: null, attempts: [],
   }
   if (!input.networkId) {
@@ -442,12 +501,43 @@ export async function runEvmCandleLadder(input: {
         accept(rung, normalized.points)
         r.chartCandles = { ...r.chartCandles!, poolAddress: pool.address, tokenSide: side }
         r.selectedPool = { address: pool.address, name: pool.name }
+        r.candleProvider = 'geckoterminal'
         r.failureReason = null
         return true
       }
       r.failureReason = normalized.rejectedReason ?? 'insufficient_points'
     }
     return false
+  }
+
+  // Phase 0: CoinGecko on-chain, primary pool, 15m rung — one call.
+  const cgPool = input.pools[0]
+  if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && canCall()) {
+    const rung = EVM_CHART_LADDER[0]
+    const provenSide = resolveEvmPoolTokenSide(cgPool.pool, input.contract, networkId)
+    const tokenParam = provenSide ?? input.contract.toLowerCase()
+    r.coingeckoAttempted = true
+    r.attemptedTimeframes.push(`coingecko:${rung.key}:${rung.resolution}/${rung.aggregate}x${rung.requestLimit}:${provenSide ?? 'address'}`)
+    r.totalHttpCalls++
+    const raw = await deps.fetchCoingeckoPoolOhlcv(cgPool.address, rung, tokenParam)
+    const classified = classifyOhlcvResponse('pool', raw.httpStatus, raw.json)
+    let code: CandleFailureCode | 'ok' = classified.code
+    let side: 'base' | 'quote' | null = provenSide
+    if (code === 'ok' && !provenSide) {
+      const metaSide = coingeckoMetaTokenSide(raw.json, input.contract)
+      if (metaSide && closeMatchesLivePrice(classified.normalized.points, input.currentPriceUsd)) side = metaSide
+      else code = 'token_identity_unverified'
+    }
+    r.attempts.push({ route: 'coingecko_pool', poolAddress: cgPool.address, side, timeframe: rung.key, httpStatus: raw.httpStatus, rows: classified.normalized.rawPointCount, validRows: classified.normalized.validPointCount, code })
+    if (code === 'provider_rate_limited') r.coingeckoRateLimited = true
+    if (code === 'ok' && side) {
+      accept(rung, classified.normalized.points)
+      r.chartCandles = { ...r.chartCandles!, poolAddress: cgPool.address, tokenSide: side }
+      r.selectedPool = { address: cgPool.address, name: cgPool.name }
+      r.candleProvider = 'coingecko_onchain'
+      r.failureReason = null
+      return r
+    }
   }
 
   // Phase 1: primary pool, full ladder.
@@ -509,16 +599,27 @@ export async function runEvmCandleLadder(input: {
 //
 // CHART DEBUG PANEL, DISCLOSED (requested: see why an EVM scan fell back to the estimated trend,
 // directly from a normal Token Scanner scan, without a standalone debug route). This is a pure,
-// presentational re-shaping of data the ladder already produced (CandleFailureSummary.attempts) —
-// it makes ZERO provider calls and changes no candle-routing/selection behaviour. The caller
-// (app/api/token/route.ts) builds this ONLY when the request is both admin-authorized and asked
-// for it, and never includes API keys, secrets, auth headers, or raw provider response bodies —
-// the inputs below don't carry any of those, so there is nothing to redact.
+// presentational re-shaping of data the ladder already produced (LadderResult.attempts) — it makes
+// ZERO provider calls and changes no candle-routing/selection behaviour. The caller
+// (app/api/token/route.ts) builds this ONLY when the request is both authorized and asked for it,
+// and never includes API keys, secrets, auth headers, or raw provider response bodies — the inputs
+// below don't carry any of those, so there is nothing to redact.
 
-export type ChartDebugStage = 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
+export type ChartDebugStage =
+  | 'coingecko_15m'
+  | 'primary_pool_15m'
+  | 'primary_pool_1h'
+  | 'primary_pool_1d'
+  | 'alternate_pool'
+  | 'swap_rebuild'
+  | 'estimated_trend'
+
+export type ChartDebugProvider = CandleProvider | null
 
 export type ChartDebugAttempt = {
   stage: ChartDebugStage
+  /** Which provider this stage calls; null for the no-call estimated trend. */
+  provider: ChartDebugProvider
   pool: string | null
   /** Human interval label ('15m' | '1h' | '1d'), or null for stages with no single interval. */
   interval: string | null
@@ -529,9 +630,13 @@ export type ChartDebugAttempt = {
   reason: string | null
 }
 
+export type ChartDebugFinalSource = 'coingecko_onchain' | 'geckoterminal' | 'swap_rebuilt' | 'estimated_trend' | 'none'
+
 export type ChartDebugInfo = {
   chain: string
   network: string | null
+  /** CoinGecko on-chain network id, or null when this chain isn't routed to CoinGecko. */
+  coingeckoNetwork: string | null
   scannedToken: string
   selectedPool: string | null
   tokenSide: 'base' | 'quote' | null
@@ -542,14 +647,18 @@ export type ChartDebugInfo = {
   source: string | null
   attempts: ChartDebugAttempt[]
   rateLimited: boolean
-  /** Which of the six stages above actually produced what's on screen. */
-  finalSource: ChartDebugStage | 'none'
+  rateLimitedProvider: 'coingecko_onchain' | 'geckoterminal' | 'both' | null
+  /** Which provider/route produced what's on screen. */
+  finalSource: ChartDebugFinalSource
+  /** Which stage produced it. */
+  finalStage: ChartDebugStage | 'none'
   finalCandleCount: number
   /** The structured CandleFailureCode behind the fallback; null when real pool OHLCV was used. */
   fallbackReason: CandleFailureCode | null
 }
 
 const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {
+  coingecko_15m: '15m',
   primary_pool_15m: '15m',
   primary_pool_1h: '1h',
   primary_pool_1d: '1d',
@@ -558,7 +667,20 @@ const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {
   estimated_trend: null,
 }
 
+const STAGE_PROVIDER: Record<ChartDebugStage, ChartDebugProvider> = {
+  coingecko_15m: 'coingecko_onchain',
+  primary_pool_15m: 'geckoterminal',
+  primary_pool_1h: 'geckoterminal',
+  primary_pool_1d: 'geckoterminal',
+  alternate_pool: 'geckoterminal',
+  swap_rebuild: 'geckoterminal',
+  estimated_trend: null,
+}
+
+const ALL_STAGES: ChartDebugStage[] = ['coingecko_15m', 'primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']
+
 function stageForAttempt(a: CandleAttempt): ChartDebugStage | null {
+  if (a.route === 'coingecko_pool') return 'coingecko_15m'
   if (a.route === 'alternate_pool') return 'alternate_pool'
   if (a.route === 'swaps') return 'swap_rebuild'
   if (a.route === 'pool') {
@@ -569,31 +691,47 @@ function stageForAttempt(a: CandleAttempt): ChartDebugStage | null {
   return null
 }
 
+function finalSourceForStage(stage: ChartDebugStage | 'none'): ChartDebugFinalSource {
+  if (stage === 'none') return 'none'
+  if (stage === 'estimated_trend') return 'estimated_trend'
+  if (stage === 'swap_rebuild') return 'swap_rebuilt'
+  return STAGE_PROVIDER[stage] ?? 'none'
+}
+
 /**
- * Builds the (admin/debug-only) candle-resolution trail from data the ladder already produced.
- * Every one of the six stages always appears exactly once, in order, marked 'skipped' if the
- * ladder never reached it (e.g. everything after a 429, or after the primary pool already
- * succeeded) — matching a real trading-chart-style attempt log, never inventing rows or reasons.
+ * Builds the (debug-only) candle-resolution trail from data the ladder already produced. Every
+ * stage always appears exactly once, in order, marked 'skipped' if the ladder never reached it
+ * (e.g. everything after CoinGecko succeeded, or every GeckoTerminal call after its 429) — never
+ * inventing rows or reasons. Where a stage ran more than once (two alternate pools, two swap
+ * reads), the successful run is shown, else the last one.
  */
 export function buildEvmChartDebugInfo(input: {
   chain: string
   network: string | null
+  coingeckoNetwork?: string | null
   scannedToken: string
+  /** Every attempt the ladder made (LadderResult.attempts), success or failure. */
+  attempts: ReadonlyArray<CandleAttempt>
   candleFailure: CandleFailureSummary | null
   selectedPoolAddress: string | null
   tokenSide: 'base' | 'quote' | null
   rateLimited: boolean
+  coingeckoRateLimited?: boolean
   usedEstimatedTrend: boolean
   /** The existing chartSource / chartReason / final rendered candle count. */
   source: string | null
   finalCandleCount: number
 }): ChartDebugInfo {
   const byStage = new Map<ChartDebugStage, ChartDebugAttempt>()
-  for (const a of input.candleFailure?.attempts ?? []) {
+  for (const a of input.attempts) {
     const stage = stageForAttempt(a)
-    if (!stage || byStage.has(stage)) continue // the ladder's own summary marker rows (route-level, no timeframe) carry no new info here
+    if (!stage) continue
+    if (a.poolAddress == null && a.code === 'alternate_pool_failed') continue // the ladder's own summary marker row
+    const prev = byStage.get(stage)
+    if (prev?.status === 'ok') continue
     byStage.set(stage, {
       stage,
+      provider: STAGE_PROVIDER[stage],
       pool: a.poolAddress,
       interval: STAGE_INTERVAL[stage],
       status: a.code,
@@ -602,27 +740,30 @@ export function buildEvmChartDebugInfo(input: {
       reason: a.code === 'ok' ? null : candleFailureMessage(a.code),
     })
   }
-  const ALL_STAGES: ChartDebugStage[] = ['primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']
-  let finalSource: ChartDebugStage | 'none' = 'none'
+  let finalStage: ChartDebugStage | 'none' = 'none'
   const attempts: ChartDebugAttempt[] = ALL_STAGES.map((stage) => {
     if (stage === 'estimated_trend') {
       if (input.usedEstimatedTrend) {
-        finalSource = stage
-        return { stage, pool: null, interval: null, status: 'ok', httpStatus: null, rowsReturned: input.finalCandleCount, reason: input.candleFailure ? candleFailureMessage(input.candleFailure.code) : null }
+        finalStage = stage
+        return { stage, provider: null, pool: null, interval: null, status: 'ok', httpStatus: null, rowsReturned: input.finalCandleCount, reason: input.candleFailure ? candleFailureMessage(input.candleFailure.code) : null }
       }
-      return { stage, pool: null, interval: null, status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
+      return { stage, provider: null, pool: null, interval: null, status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
     }
     const found = byStage.get(stage)
     if (found) {
-      if (found.status === 'ok') finalSource = stage
+      if (found.status === 'ok' && finalStage === 'none') finalStage = stage
       return found
     }
-    return { stage, pool: null, interval: STAGE_INTERVAL[stage], status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
+    return { stage, provider: STAGE_PROVIDER[stage], pool: null, interval: STAGE_INTERVAL[stage], status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
   })
   const primaryRung = EVM_CHART_LADDER[0]
+  const cgLimited = input.coingeckoRateLimited === true
+  const rateLimitedProvider = cgLimited && input.rateLimited ? 'both' : cgLimited ? 'coingecko_onchain' : input.rateLimited ? 'geckoterminal' : null
+  const finalSource = finalSourceForStage(finalStage)
   return {
     chain: input.chain,
     network: input.network,
+    coingeckoNetwork: input.coingeckoNetwork ?? null,
     scannedToken: input.scannedToken,
     selectedPool: input.selectedPoolAddress,
     tokenSide: input.tokenSide,
@@ -630,9 +771,11 @@ export function buildEvmChartDebugInfo(input: {
     requestedLimit: primaryRung.requestLimit,
     source: input.source,
     attempts,
-    rateLimited: input.rateLimited,
+    rateLimited: input.rateLimited || cgLimited,
+    rateLimitedProvider,
     finalSource,
+    finalStage,
     finalCandleCount: input.finalCandleCount,
-    fallbackReason: finalSource === 'none' || finalSource === 'estimated_trend' ? (input.candleFailure?.code ?? null) : null,
+    fallbackReason: finalSource === 'coingecko_onchain' || finalSource === 'geckoterminal' ? null : (input.candleFailure?.code ?? null),
   }
 }

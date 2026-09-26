@@ -8,18 +8,22 @@
 //      is taken from the scan's own verified result when this server instance still holds it
 //      (rememberVerifiedChartPool); otherwise it is re-proven from the pool's own base/quote ids with
 //      one pool read. The client-supplied pool is never trusted for the side;
-//   3. makes ONE bounded OHLCV read (minute aggregate 5, 288 rows = 24h) — GeckoTerminal's public
-//      pool OHLCV supports minute aggregates 1/5/15 (geckoterminal-api SDK limits);
+//   3. reads minute aggregate 5 x 288 rows (24h) for that proven side from CoinGecko's on-chain pool
+//      OHLCV first (when the chain is routed to CoinGecko and a key is configured); only when that
+//      read fails or returns no usable rows does it make the same read against GeckoTerminal. Both
+//      support minute aggregates 1/5/15. Never derived from 15m;
 //   4. caches by chain + token + pool + timeframe and de-duplicates concurrent identical requests.
-// Hard cap: 2 provider calls per request (verification only on a verification-cache miss), 0 on a
-// cache hit.
+// Hard cap: 3 provider calls per request (GeckoTerminal side verification only on a verification-
+// cache miss, CoinGecko once, GeckoTerminal OHLCV only after a CoinGecko failure), 0 on a cache hit.
 
 import {
+  COINGECKO_ONCHAIN_NETWORK,
   EVM_CHART_NETWORK,
   candleFailureMessage,
   classifyOhlcvResponse,
   resolveEvmPoolTokenSide,
   type CandleFailureCode,
+  type CandleProvider,
   type EvmChartPoint,
 } from '../evmChartCandles.ts'
 
@@ -31,16 +35,23 @@ export const ON_DEMAND_TIMEFRAMES = {
 }
 export type OnDemandTimeframe = keyof typeof ON_DEMAND_TIMEFRAMES
 
-export const ON_DEMAND_MAX_PROVIDER_CALLS = 2
+export const ON_DEMAND_MAX_PROVIDER_CALLS = 3
 const RESULT_TTL_MS = 60_000
 const RATE_LIMITED_TTL_MS = 30_000
 const VERIFIED_POOL_TTL_MS = 30 * 60_000
 
 export type OnDemandResult =
-  | { ok: true; timeframe: OnDemandTimeframe; intervalSec: number; points: EvmChartPoint[] }
+  | { ok: true; timeframe: OnDemandTimeframe; intervalSec: number; points: EvmChartPoint[]; source: CandleProvider }
   | { ok: false; timeframe: OnDemandTimeframe | null; code: CandleFailureCode | 'invalid_request'; message: string }
 
 export type FetchJson = (url: string) => Promise<{ json: unknown; httpStatus: number | null }>
+/** CoinGecko on-chain pool OHLCV reader (lib/server/coingeckoOnchainOhlcv.ts); `side` is proven. */
+export type FetchCoingeckoOhlcv = (
+  chain: string,
+  pool: string,
+  req: { resolution: 'minute' | 'hour' | 'day'; aggregate: number; limit: number },
+  side: 'base' | 'quote',
+) => Promise<{ json: unknown; httpStatus: number | null }>
 
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 
@@ -73,7 +84,7 @@ export function isOnDemandChain(v: string | null): v is OnDemandChain {
 export async function loadOnDemandCandles(
   params: { chain: string | null; token: string | null; pool: string | null; timeframe: string | null },
   fetchJson: FetchJson,
-  opts: { baseUrl?: string; now?: () => number } = {},
+  opts: { baseUrl?: string; now?: () => number; fetchCoingecko?: FetchCoingeckoOhlcv } = {},
 ): Promise<{ result: OnDemandResult; providerCalls: number; cacheHit: boolean }> {
   const now = opts.now ?? Date.now
   const timeframe = params.timeframe && params.timeframe in ON_DEMAND_TIMEFRAMES ? (params.timeframe as OnDemandTimeframe) : null
@@ -114,13 +125,19 @@ export async function loadOnDemandCandles(
       if (!side) return { result: fail(timeframe, 'token_side_unresolved'), providerCalls: calls }
       rememberVerifiedChartPool(chain, token, pool, side, now())
     }
+    if (opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain]) {
+      calls++
+      const cg = await opts.fetchCoingecko(chain, pool.toLowerCase(), { resolution: tf.resolution, aggregate: tf.aggregate, limit: tf.limit }, side)
+      const cgOut = classifyOhlcvResponse('pool', cg.httpStatus, cg.json)
+      if (cgOut.code === 'ok') return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain' }, providerCalls: calls }
+    }
     if (calls >= ON_DEMAND_MAX_PROVIDER_CALLS) return { result: fail(timeframe, 'call_budget_exhausted'), providerCalls: calls }
     calls++
     const url = `${base}/api/v2/networks/${network}/pools/${pool.toLowerCase()}/ohlcv/${tf.resolution}?aggregate=${tf.aggregate}&limit=${tf.limit}&currency=usd&token=${side}`
     const raw = await fetchJson(url)
     const { code, normalized } = classifyOhlcvResponse('pool', raw.httpStatus, raw.json)
     if (code !== 'ok') return { result: fail(timeframe, code), providerCalls: calls }
-    return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: normalized.points }, providerCalls: calls }
+    return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: normalized.points, source: 'geckoterminal' }, providerCalls: calls }
   })()
   inFlight.set(key, work)
   try {
