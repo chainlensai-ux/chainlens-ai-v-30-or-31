@@ -6,6 +6,10 @@ import { createRateLimiter } from '@/lib/server/rateLimit'
 import { parseProbeInput, runCoingeckoOnchainProbe, type ProbeFetch } from '@/lib/server/coingeckoOnchainProbe'
 
 export const dynamic = 'force-dynamic'
+// Explicit, matching the other Node-only debug/admin routes in this app (e.g.
+// app/api/wallet-scan/route.ts, app/api/token/quota/route.ts) — removes any ambiguity in how the
+// build/deploy pipeline infers the function runtime for this brand-new route.
+export const runtime = 'nodejs'
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
 
@@ -22,5 +26,8 @@ export async function GET(req: Request) {
   if ('error' in input) return NextResponse.json({ ok: false, error: input.error }, { status: 400 })
   const fetchImpl: ProbeFetch = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(8000) })
   const result = await runCoingeckoOnchainProbe(input, process.env.COINGECKO_API_KEY ?? null, fetchImpl)
-  return NextResponse.json(result, { status: 200 })
+  // Build marker, DISCLOSED: bumped whenever this file's deployed behavior changes, purely so a
+  // fresh curl can confirm the response body itself comes from THIS build (never a stale cached
+  // deployment) rather than trusting the platform's "Ready" status alone.
+  return NextResponse.json({ probeRouteBuild: 2, ...result }, { status: 200 })
 }

@@ -63,4 +63,8 @@ test('route is admin-gated (Bearer ADMIN_SECRET, 404 otherwise) and rate limited
   assert.match(src, /token === process\.env\.ADMIN_SECRET/)
   assert.match(src, /status: 404/)
   assert.match(src, /limiter\.check\(/)
+  // Explicit runtime pin (parity with the other Node-only debug/admin routes) and a build marker
+  // in the response so a fresh curl can confirm it isn't hitting a stale cached deployment.
+  assert.match(src, /export const runtime = 'nodejs'/)
+  assert.match(src, /probeRouteBuild/)
 })
