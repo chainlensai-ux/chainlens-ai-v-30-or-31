@@ -100,6 +100,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const tfSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
   const defaultKey = useMemo(() => pickDefaultTimeframe(tfSet), [tfSet])
   const [picked, setPicked] = useState<ChartTimeframeKey | null>(null)
+  // Why an unavailable interval is off. Shown on tap/click (not only as a hover title) so the
+  // reason reaches touch users too.
+  const [chipNotice, setChipNotice] = useState<{ key: ChartTimeframeKey; text: string } | null>(null)
   // A pick that is no longer available (new scan data) falls back to the default — never to
   // another timeframe's candles under the picked label.
   const activeTf = tfSet.timeframes.find((tf) => tf.key === picked && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null
@@ -218,10 +221,22 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           <button
             key={tf.key}
             type="button"
-            disabled={!tf.available}
+            // aria-disabled (not disabled): an unavailable chip stays focusable and tappable so its
+            // reason can be read on touch devices and by screen readers — it never selects data.
+            aria-disabled={!tf.available}
             aria-pressed={active}
-            title={tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : tf.unavailableReason ?? 'Unavailable'}
-            onClick={() => { setPicked(tf.key); setHover(null) }}
+            aria-label={tf.available ? `${tf.key} candles` : `${tf.key} unavailable: ${tf.unavailableReason ?? 'Needs more trading history'}`}
+            title={tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : tf.unavailableReason ?? 'Needs more trading history'}
+            onClick={() => {
+              if (!tf.available) {
+                const reason = tf.unavailableReason ?? 'Needs more trading history'
+                setChipNotice({ key: tf.key, text: reason.startsWith(tf.key) ? reason : `${tf.key}: ${reason}` })
+                return
+              }
+              setChipNotice(null)
+              setPicked(tf.key)
+              setHover(null)
+            }}
             style={{
               padding: compact ? '4px 8px' : '4px 10px',
               borderRadius: '6px',
@@ -261,6 +276,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         </div>
         {chips}
       </div>
+      {chipNotice && tfSet.timeframes.some((tf) => tf.key === chipNotice.key && !tf.available) && (
+        <p role="status" style={{ margin: '-2px 0 6px', fontSize: '10.5px', color: '#94a3b8', fontFamily: MONO, textAlign: compact ? 'left' : 'right' }}>
+          {chipNotice.text}
+        </p>
+      )}
 
       {/* OHLCV readout — follows the crosshair, rests on the latest candle */}
       <div aria-live="polite" style={{ display: 'flex', flexWrap: 'wrap', gap: compact ? '2px 10px' : '2px 14px', minHeight: '18px', marginBottom: '6px', fontSize: '10.5px', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.axisText }}>

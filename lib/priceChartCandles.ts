@@ -49,8 +49,18 @@ export const CHART_TIMEFRAMES: ReadonlyArray<{ key: ChartTimeframeKey; sec: numb
   { key: '1D', sec: 86_400 },
 ]
 
-/** An aggregated (derived) timeframe needs at least this many real buckets to be worth enabling. */
-export const MIN_DERIVED_CANDLES = 4
+/**
+ * An aggregated (derived) timeframe is enabled once real candles fill at least this many of its
+ * buckets. TIMEFRAME AVAILABILITY, DISCLOSED (reported: a token with 22 real 15M candles over ~6h
+ * showed 4H disabled). This was 4, so the two genuine 4H buckets that ~6h of trading produces
+ * (e.g. 08:00-12:00 and the live 12:00-16:00) were hidden. Two is the smallest series a candle chart
+ * can show, and it is the SAME rule the native interval has always used — so 1H / 4H / 1D now all
+ * follow one rule, for every chain that renders through PriceChartPanel (Solana and EVM alike).
+ * A bucket counts only if at least one real candle falls in it: the latest bucket may be partial
+ * (the live candle, as on any trading chart), and empty historical buckets are never filled.
+ * A ~6h-old token therefore gets 4H (2 buckets) but not 1D (1 bucket).
+ */
+export const MIN_DERIVED_CANDLES = 2
 /** The native (as-fetched) timeframe keeps the chart's long-standing >= 2 candle threshold. */
 export const MIN_NATIVE_CANDLES = 2
 
@@ -167,22 +177,25 @@ export function buildChartTimeframes(candles: ReadonlyArray<ChartCandle>, declar
   const timeframes: ChartTimeframeState[] = CHART_TIMEFRAMES.map(({ key, sec }) => {
     const base = { key, sec }
     if (nativeSec == null || candles.length < MIN_NATIVE_CANDLES) {
-      return { ...base, available: false, origin: null, candles: [], unavailableReason: 'Not enough real candles returned' }
+      return { ...base, available: false, origin: null, candles: [], unavailableReason: 'Needs more trading history' }
     }
     if (sec === nativeSec) {
       return { ...base, available: true, origin: 'native', candles: [...candles], unavailableReason: null }
     }
     if (sec < nativeSec) {
-      return { ...base, available: false, origin: null, candles: [], unavailableReason: `No real ${key} candles — history is only indexed at a coarser interval` }
+      return { ...base, available: false, origin: null, candles: [], unavailableReason: `${key} not available — price history for this pool is only recorded in ${formatIntervalLabel(nativeSec)} candles` }
     }
     // Exact roll-up needs the target to be a whole multiple of the native width, or buckets would
     // split real candles across two target buckets.
     if (sec % nativeSec !== 0) {
-      return { ...base, available: false, origin: null, candles: [], unavailableReason: `${key} cannot be built exactly from the indexed interval` }
+      return { ...base, available: false, origin: null, candles: [], unavailableReason: `${key} not available — it cannot be built exactly from ${formatIntervalLabel(nativeSec)} candles` }
     }
     const agg = aggregateCandles(candles, sec)
     if (agg.length < MIN_DERIVED_CANDLES) {
-      return { ...base, available: false, origin: null, candles: [], unavailableReason: `Not enough real history for ${key} candles yet` }
+      return {
+        ...base, available: false, origin: null, candles: [],
+        unavailableReason: key === '1D' ? '1D available after more daily history' : 'Needs more trading history',
+      }
     }
     return { ...base, available: true, origin: 'aggregated', candles: agg, unavailableReason: null }
   })

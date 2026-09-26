@@ -109,7 +109,8 @@ test('timeframes: 15m native enables 15M + exact roll-ups, never 5M', () => {
   assert.equal(byKey['15M'].candles.length, 288)
   assert.equal(byKey['1H'].candles.length, 72)
   assert.equal(byKey['4H'].candles.length, 18)
-  assert.equal(byKey['1D'].available, false, '3 days is below the derived-candle minimum')
+  assert.equal(byKey['1D'].available, true, '3 real UTC days -> 3 genuine daily buckets (>= 2)')
+  assert.equal(byKey['1D'].candles.length, 3)
   assert.equal(pickDefaultTimeframe(set), '1H')
 })
 
@@ -125,7 +126,7 @@ test('timeframes: hourly native never produces 5M/15M', () => {
   for (let i = 0; i < 48; i++) rows.push(row(i, 1, 1.1, 0.9, 1, 1, 3_600_000))
   const set = buildChartTimeframes(normalizeChartCandles(rows), 3600)
   const avail = set.timeframes.filter((tf) => tf.available).map((tf) => tf.key)
-  assert.deepEqual(avail, ['1H', '4H'])
+  assert.deepEqual(avail, ['1H', '4H', '1D'], '48 hourly candles from midnight span 2 real UTC days')
 })
 
 test('timeframes: non-standard reconstructed buckets disable every standard chip', () => {
@@ -213,4 +214,95 @@ test('solana ohlcv: exactly one request, 15m x 672, token side forwarded', async
 
   await fetchSolanaOhlcv('Pool111', mockGt(urls), null)
   assert.match(urls[1], /token=base/, 'unknown side keeps the prior base default')
+})
+
+// ── Timeframe availability (shared by Solana and EVM PriceChartPanel) ─────────────────────────────
+function m15Series(startMs: number, n: number, skip: ReadonlySet<number> = new Set()): ChartCandleInput[] {
+  const out: ChartCandleInput[] = []
+  for (let i = 0; i < n; i++) {
+    if (skip.has(i)) continue
+    const o = 1 + i * 0.01
+    out.push({ timestamp: startMs + i * M15, open: o, high: o + 0.05, low: o - 0.03, close: o + 0.01, volume: 10 + i })
+  }
+  return out
+}
+const at = (h: number, m = 0) => Date.UTC(2026, 8, 26, h, m)
+
+test('availability: live example — 22 x 15M over ~6h => 15M, 1H, 4H on; 1D off with a reason', () => {
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(at(9, 30), 22)), 900)
+  const tf = Object.fromEntries(set.timeframes.map((x) => [x.key, x]))
+  assert.equal(tf['15M'].available, true)
+  assert.equal(tf['1H'].available, true)
+  assert.equal(tf['4H'].available, true)
+  assert.deepEqual(tf['4H'].candles.map((c) => new Date(c.t).toISOString()), ['2026-09-26T08:00:00.000Z', '2026-09-26T12:00:00.000Z'])
+  assert.equal(tf['1D'].available, false)
+  assert.equal(tf['1D'].unavailableReason, '1D available after more daily history')
+  assert.equal(tf['5M'].available, false)
+  assert.ok(tf['5M'].unavailableReason && tf['5M'].unavailableReason.length > 0)
+})
+
+test('availability: the user example — 15M from 10:00 through 15:30 => 4H buckets 08-12 and live 12-16', () => {
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(at(10), 23)), 900) // 10:00 .. 15:30
+  const h4 = set.timeframes.find((x) => x.key === '4H')!
+  assert.equal(h4.available, true)
+  const [first, live] = h4.candles
+  const firstMembers = set.nativeCandles.filter((c) => c.t < at(12))
+  const liveMembers = set.nativeCandles.filter((c) => c.t >= at(12))
+  assert.equal(firstMembers.length, 8, '08:00-12:00 bucket holds only the 8 real candles from 10:00 — nothing invented for 08:00-10:00')
+  assert.equal(liveMembers.length, 15, 'live 12:00-16:00 bucket is partial (15 of 16) and still shown')
+  for (const [bucket, members] of [[first, firstMembers], [live, liveMembers]] as const) {
+    assert.equal(bucket.open, members[0].open)
+    assert.equal(bucket.close, members[members.length - 1].close)
+    assert.equal(bucket.high, Math.max(...members.map((m) => m.high)))
+    assert.equal(bucket.low, Math.min(...members.map((m) => m.low)))
+    assert.equal(bucket.volume, members.reduce((sum, m) => sum + (m.volume ?? 0), 0))
+  }
+})
+
+test('availability: under 4h inside one 4H bucket => 4H off (single bucket), 1H on', () => {
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(at(12), 12)), 900) // 12:00 .. 14:45
+  const tf = Object.fromEntries(set.timeframes.map((x) => [x.key, x]))
+  assert.equal(tf['1H'].available, true)
+  assert.equal(tf['4H'].available, false)
+  assert.equal(tf['4H'].unavailableReason, 'Needs more trading history')
+  assert.equal(tf['4H'].candles.length, 0, 'an unavailable interval never carries candles')
+})
+
+test('availability: history crossing midnight => 2 real daily buckets => 1D on, live day partial', () => {
+  const start = Date.UTC(2026, 8, 25, 20, 0) // 20:00 day 1 .. 09:45 day 2
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(start, 56)), 900)
+  const d1 = set.timeframes.find((x) => x.key === '1D')!
+  assert.equal(d1.available, true)
+  assert.equal(d1.candles.length, 2)
+  assert.equal(d1.candles[1].t, Date.UTC(2026, 8, 26), 'second bucket is the live (incomplete) day')
+})
+
+test('availability: internal gaps are never filled — empty periods simply have no candle', () => {
+  // 10:00 .. 21:45 with a hole from 13:00 to 17:59 (no trades).
+  const skip = new Set<number>()
+  for (let i = 12; i < 32; i++) skip.add(i)
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(at(10), 48, skip)), 900)
+  const h1 = set.timeframes.find((x) => x.key === '1H')!
+  const hours = h1.candles.map((c) => new Date(c.t).getUTCHours())
+  assert.deepEqual(hours, [10, 11, 12, 18, 19, 20, 21], 'no 13:00-17:00 candles invented')
+  const h4 = set.timeframes.find((x) => x.key === '4H')!
+  assert.deepEqual(h4.candles.map((c) => new Date(c.t).getUTCHours()), [8, 12, 16, 20], 'only buckets that contain real candles')
+  const total = set.nativeCandles.reduce((s, c) => s + (c.volume ?? 0), 0)
+  assert.equal(h4.candles.reduce((s, c) => s + (c.volume ?? 0), 0), total, 'volume conserved exactly')
+})
+
+test('availability: one shared rule — identical availability for the same candles regardless of chain', () => {
+  // Solana (declared 15m) and EVM (declared 900s from chartCandles) both call buildChartTimeframes.
+  const rows = m15Series(at(9, 30), 22)
+  const solana = buildChartTimeframes(normalizeChartCandles(rows), 900).timeframes.map((x) => [x.key, x.available, x.unavailableReason])
+  const evm = buildChartTimeframes(normalizeChartCandles(rows.map((r) => ({ ...r, timestamp: new Date(r.timestamp as number).toISOString() }))), 900).timeframes.map((x) => [x.key, x.available, x.unavailableReason])
+  assert.deepEqual(solana, evm)
+})
+
+test('availability: fewer than 2 real candles => every chip off with "Needs more trading history"', () => {
+  const set = buildChartTimeframes(normalizeChartCandles(m15Series(at(10), 1)), 900)
+  for (const tf of set.timeframes) {
+    assert.equal(tf.available, false)
+    assert.equal(tf.unavailableReason, 'Needs more trading history')
+  }
 })

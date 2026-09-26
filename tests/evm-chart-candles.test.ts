@@ -120,7 +120,7 @@ for (const chain of CHAINS) {
     const set = buildChartTimeframes(normalizeChartCandles(points), EVM_CHART_LADDER[1].intervalSec)
     assert.deepEqual(set.timeframes.filter((x) => x.available).map((x) => x.key), ['1H', '4H', '1D'])
     const fifteen = set.timeframes.find((x) => x.key === '15M')!
-    assert.match(fifteen.unavailableReason ?? '', /coarser interval/)
+    assert.match(fifteen.unavailableReason ?? '', /only recorded in 1H candles/)
   })
 
   test(`${chain}: daily-only history shows only 1D`, () => {
