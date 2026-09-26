@@ -769,6 +769,31 @@ type ScanResult = {
   chartSource?: string | null
   chartReason?: string | null
   chartDataSource?: 'primary' | 'fallback' | 'none' | null
+  /** TEMPORARY, admin/debug-only: candle-resolution attempt trail. Absent for every other caller —
+   * its mere presence is what gates the debug panel below the chart. Never carries secrets. */
+  chartDebug?: {
+    chain: string
+    network: string | null
+    scannedToken: string
+    selectedPool: string | null
+    tokenSide: 'base' | 'quote' | null
+    requestedInterval: string | null
+    requestedLimit: number | null
+    source: string | null
+    attempts: Array<{
+      stage: 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
+      pool: string | null
+      interval: string | null
+      status: string
+      httpStatus: number | null
+      rowsReturned: number
+      reason: string | null
+    }>
+    rateLimited: boolean
+    finalSource: string
+    finalCandleCount: number
+    fallbackReason: string | null
+  } | null
   marketTrendSnapshot?: {
     status: 'ok' | 'unavailable'
     source: string
@@ -1449,6 +1474,58 @@ function chartIntervalSec(key: string | null | undefined): number | null {
     case '4h': return 14_400
     default: return null
   }
+}
+
+// CHART DEBUG PANEL, DISCLOSED (TEMPORARY — candle-resolution diagnostics, requested to see why
+// EVM scans fall back to the estimated trend). Renders only when `result.chartDebug` is present —
+// the server (app/api/token/route.ts chartDebugAuthorized) omits that field entirely for every
+// caller except an admin who both has a real admin session AND asked for it via `?debug=1`, so a
+// normal user's response never carries this key at all. Plain and collapsed by design: this is a
+// throwaway diagnostic, not a permanent UI surface, and it renders only the fields the server sent
+// — no secrets, keys, headers or raw provider bodies ever pass through this component because none
+// are present in chartDebug to begin with.
+const CHART_DEBUG_STAGE_LABEL: Record<string, string> = {
+  primary_pool_15m: '15M primary',
+  primary_pool_1h: '1H primary',
+  primary_pool_1d: '1D primary',
+  alternate_pool: 'Alternate pool',
+  swap_rebuild: 'Swap fallback',
+  estimated_trend: 'Estimated trend',
+}
+function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug']> }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ marginBottom: '16px', border: '1px dashed #64748b', borderRadius: '8px', padding: '8px 10px', background: '#0b0f1a', fontFamily: 'monospace', fontSize: '11px', color: '#94a3b8' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{ background: 'none', border: 'none', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer', padding: 0 }}
+      >
+        {open ? '▾' : '▸'} CANDLE DEBUG
+      </button>
+      {open && (
+        <div style={{ marginTop: '8px', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
+          Chain: {debug.chain} ({debug.network ?? 'unknown network'}){'\n'}
+          Scanned token: {debug.scannedToken}{'\n'}
+          Pool: {debug.selectedPool ?? 'none'}{'\n'}
+          Token side: {debug.tokenSide ?? 'unresolved'}{'\n'}
+          Requested: {debug.requestedInterval ?? '?'} x {debug.requestedLimit ?? '?'} rows{'\n'}
+          Source: {debug.source ?? 'none'}{'\n'}
+          Final source: {debug.finalSource}{'\n'}
+          Final candle count: {debug.finalCandleCount}{'\n'}
+          Rate limited: {debug.rateLimited ? 'yes' : 'no'}{'\n'}
+          Fallback reason: {debug.fallbackReason ?? 'n/a'}
+          {'\n\n'}Attempts:{'\n'}
+          {debug.attempts.map((a) => {
+            const label = CHART_DEBUG_STAGE_LABEL[a.stage] ?? a.stage
+            if (a.status === 'skipped') return `${label} — skipped\n`
+            const parts = [a.interval ? `${a.interval}` : null, a.httpStatus != null ? `${a.httpStatus}` : a.status, `${a.rowsReturned} rows`].filter(Boolean)
+            return `${label} — ${parts.join(' — ')}${a.reason ? ` (${a.reason})` : ''}\n`
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 type _TrendSnap = { price: number | null; changes: Array<{ label: string; value: number | null }> }
@@ -5096,13 +5173,19 @@ export default function TerminalTokenScanner() {
     try {
       const debugHolder = typeof window !== 'undefined'
         && new URLSearchParams(window.location.search).get('debugHolder') === 'true'
+      // CHART DEBUG PANEL, DISCLOSED (temporary): same `?debug=1` -> body flag convention as
+      // debugHolder above. The server (app/api/token/route.ts chartDebugAuthorized) is the sole
+      // enforcement point — it only returns chartDebug when this account's own session email is on
+      // ADMIN_EMAILS, so requesting it here does nothing for a non-admin caller.
+      const wantsChartDebug = typeof window !== 'undefined'
+        && new URLSearchParams(window.location.search).get('debug') === '1'
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
       const forceRescan = Boolean(result && String(result.contract ?? '').toLowerCase() === scanContract.toLowerCase() && (result.chain === evmScanChain))
       const res  = await fetch('/api/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
-        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, requestId: scanRequestId, skipCache: forceRescan, forceRescan, ...(debugHolder ? { debugHolder: true } : {}) }),
+        body: JSON.stringify({ contract: scanContract, chain: evmScanChain, requestId: scanRequestId, skipCache: forceRescan, forceRescan, ...(debugHolder ? { debugHolder: true } : {}), ...(wantsChartDebug ? { debug: true } : {}) }),
       })
       // NON-JSON-RESPONSE FIX, DISCLOSED (audit: a gateway/proxy error page for a server-side
       // failure produced the misleading generic "Network error — check your connection" message,
@@ -8006,6 +8089,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )
                   })()}
+                  {result.chartDebug && <ChartDebugPanel debug={result.chartDebug} />}
                   {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                     <div style={{ marginBottom: '28px' }}>
                       <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>

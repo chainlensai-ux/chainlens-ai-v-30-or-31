@@ -41,7 +41,7 @@ import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
-import { candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleFailureSummary, type EvmChartPoint } from '@/lib/evmChartCandles'
+import { buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleFailureSummary, type ChartDebugInfo, type EvmChartPoint } from '@/lib/evmChartCandles'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
@@ -575,6 +575,21 @@ function isAdminOverride(req: Request): boolean {
   if (!adminKey) return false
   const header = req.headers.get('x-chainlens-admin')
   return header === adminKey
+}
+
+// CHART DEBUG GATING, DISCLOSED (temporary candle-resolution diagnostics panel): isAdminOverride
+// above is a static server-to-server secret that must never reach the browser, so it can't gate a
+// browser-triggered `?debug=1`. Reuses this codebase's OTHER existing admin mechanism instead — the
+// same ADMIN_EMAILS allowlist + verified Supabase session already used by app/api/admin/data/route.ts
+// and app/api/admin/actions/route.ts — checked here against `outcomeUser`, the SAME session this
+// handler already verified via requireAuthenticatedUser above, so this costs no extra Supabase call.
+function getAdminEmails(): Set<string> {
+  const raw = process.env.ADMIN_EMAILS
+  return raw ? new Set(raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)) : new Set()
+}
+const ADMIN_EMAILS = getAdminEmails()
+function isAdminEmail(email: string | null | undefined): boolean {
+  return Boolean(email) && ADMIN_EMAILS.has(String(email).toLowerCase())
 }
 
 type HolderDistribution = {
@@ -3685,6 +3700,17 @@ export async function POST(req: Request) {
     // body AND the admin override header — see isAdminOverride's own comment. Every one of the 40+
     // existing `debugMode` usages below is unchanged; only how this value gets set is different.
     const debugMode = debugRequested === true && isAdminOverride(req);
+    // TEMPORARY, DISCLOSED: same `debug: true` trigger as debugMode, but authorized by EITHER the
+    // static admin-override header (curl/internal tooling), the caller's own already-verified
+    // admin session email, OR — Vercel Preview deployments only — any authenticated caller. The
+    // preview relaxation exists solely so the team can see live candle diagnostics on a Preview URL
+    // without needing an ADMIN_EMAILS entry; `outcomeUser` above already proves authentication, and
+    // `process.env.VERCEL_ENV === 'preview'` is Vercel's own runtime-set flag (never true in
+    // Production), so this never widens access on prod. Much narrower blast radius than debugMode:
+    // it only ever unlocks chartDebug (candle-resolution diagnostics), never holders, security
+    // internals, or anything else debugMode/debugHolder expose.
+    const chartDebugPreviewRelaxed = process.env.VERCEL_ENV === 'preview' && Boolean(outcomeUser?.userId);
+    const chartDebugAuthorized = debugRequested === true && (isAdminOverride(req) || isAdminEmail(outcomeUser.email) || chartDebugPreviewRelaxed);
     const isClarkFastMode = scanMode === 'clark_fast';
     const rawChain = String(body.chain ?? 'base').toLowerCase()
 
@@ -6390,6 +6416,22 @@ export async function POST(req: Request) {
       priceChart.sourceStatus === 'ok' ? (chartFallbackUsed ? 'fallback' : 'primary') :
       marketDataSource === 'fallback' ? 'fallback' :
       'none'
+    // TEMPORARY candle-resolution diagnostics (admin/debug only), DISCLOSED. Pure re-shaping of the
+    // ladder's own already-computed result (lib/evmChartCandles.ts buildEvmChartDebugInfo) — zero
+    // new provider calls, no change to candle routing/selection. Never includes API keys, secrets,
+    // auth headers, or raw provider bodies: none of those exist in these inputs.
+    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? buildEvmChartDebugInfo({
+      chain,
+      network: _chartNetworkIdMap[chain] ?? null,
+      scannedToken: contract,
+      candleFailure: chartCandleFailure,
+      selectedPoolAddress: chartSelectedPoolForChart?.address ?? null,
+      tokenSide: chartCandles?.tokenSide ?? null,
+      rateLimited: _ohlcvRateLimited,
+      usedEstimatedTrend: chartUsedSyntheticCandles,
+      source: chartSource,
+      finalCandleCount: priceChart.points.length,
+    }) : undefined
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
@@ -8420,6 +8462,9 @@ export async function POST(req: Request) {
       chartSource,
       chartReason,
       chartDataSource,
+      // TEMPORARY, admin/debug-only (see buildEvmChartDebugInfo) — absent entirely for every other
+      // caller, so `result.chartDebug` alone is what the frontend's debug panel keys off.
+      ...(chartDebug ? { chartDebug } : {}),
       marketTrendSnapshot,
 
       // Public/default response carries only a trimmed view of the selected/main pool —

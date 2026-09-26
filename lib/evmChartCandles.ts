@@ -504,3 +504,135 @@ export async function runEvmCandleLadder(input: {
   r.candleFailure = summarizeCandleFailure(r.attempts, input.pools.length === 0, budgetExhausted)
   return r
 }
+
+// ── TEMPORARY candle-resolution diagnostics (admin/debug only) ──────────────────────────────────
+//
+// CHART DEBUG PANEL, DISCLOSED (requested: see why an EVM scan fell back to the estimated trend,
+// directly from a normal Token Scanner scan, without a standalone debug route). This is a pure,
+// presentational re-shaping of data the ladder already produced (CandleFailureSummary.attempts) —
+// it makes ZERO provider calls and changes no candle-routing/selection behaviour. The caller
+// (app/api/token/route.ts) builds this ONLY when the request is both admin-authorized and asked
+// for it, and never includes API keys, secrets, auth headers, or raw provider response bodies —
+// the inputs below don't carry any of those, so there is nothing to redact.
+
+export type ChartDebugStage = 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
+
+export type ChartDebugAttempt = {
+  stage: ChartDebugStage
+  pool: string | null
+  /** Human interval label ('15m' | '1h' | '1d'), or null for stages with no single interval. */
+  interval: string | null
+  status: 'ok' | CandleFailureCode | 'skipped'
+  httpStatus: number | null
+  rowsReturned: number
+  /** Plain-language reason; null for 'ok' and 'skipped'. */
+  reason: string | null
+}
+
+export type ChartDebugInfo = {
+  chain: string
+  network: string | null
+  scannedToken: string
+  selectedPool: string | null
+  tokenSide: 'base' | 'quote' | null
+  requestedInterval: string | null
+  requestedLimit: number | null
+  /** The existing internal chartSource label (pool_ohlcv / trade_reconstructed / synthetic_*), for
+   * cross-referencing with the rest of the scan response. */
+  source: string | null
+  attempts: ChartDebugAttempt[]
+  rateLimited: boolean
+  /** Which of the six stages above actually produced what's on screen. */
+  finalSource: ChartDebugStage | 'none'
+  finalCandleCount: number
+  /** The structured CandleFailureCode behind the fallback; null when real pool OHLCV was used. */
+  fallbackReason: CandleFailureCode | null
+}
+
+const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {
+  primary_pool_15m: '15m',
+  primary_pool_1h: '1h',
+  primary_pool_1d: '1d',
+  alternate_pool: '15m',
+  swap_rebuild: null,
+  estimated_trend: null,
+}
+
+function stageForAttempt(a: CandleAttempt): ChartDebugStage | null {
+  if (a.route === 'alternate_pool') return 'alternate_pool'
+  if (a.route === 'swaps') return 'swap_rebuild'
+  if (a.route === 'pool') {
+    if (a.timeframe === '24h') return 'primary_pool_15m'
+    if (a.timeframe === '48h') return 'primary_pool_1h'
+    if (a.timeframe === '7d') return 'primary_pool_1d'
+  }
+  return null
+}
+
+/**
+ * Builds the (admin/debug-only) candle-resolution trail from data the ladder already produced.
+ * Every one of the six stages always appears exactly once, in order, marked 'skipped' if the
+ * ladder never reached it (e.g. everything after a 429, or after the primary pool already
+ * succeeded) — matching a real trading-chart-style attempt log, never inventing rows or reasons.
+ */
+export function buildEvmChartDebugInfo(input: {
+  chain: string
+  network: string | null
+  scannedToken: string
+  candleFailure: CandleFailureSummary | null
+  selectedPoolAddress: string | null
+  tokenSide: 'base' | 'quote' | null
+  rateLimited: boolean
+  usedEstimatedTrend: boolean
+  /** The existing chartSource / chartReason / final rendered candle count. */
+  source: string | null
+  finalCandleCount: number
+}): ChartDebugInfo {
+  const byStage = new Map<ChartDebugStage, ChartDebugAttempt>()
+  for (const a of input.candleFailure?.attempts ?? []) {
+    const stage = stageForAttempt(a)
+    if (!stage || byStage.has(stage)) continue // the ladder's own summary marker rows (route-level, no timeframe) carry no new info here
+    byStage.set(stage, {
+      stage,
+      pool: a.poolAddress,
+      interval: STAGE_INTERVAL[stage],
+      status: a.code,
+      httpStatus: a.httpStatus,
+      rowsReturned: a.validRows,
+      reason: a.code === 'ok' ? null : candleFailureMessage(a.code),
+    })
+  }
+  const ALL_STAGES: ChartDebugStage[] = ['primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']
+  let finalSource: ChartDebugStage | 'none' = 'none'
+  const attempts: ChartDebugAttempt[] = ALL_STAGES.map((stage) => {
+    if (stage === 'estimated_trend') {
+      if (input.usedEstimatedTrend) {
+        finalSource = stage
+        return { stage, pool: null, interval: null, status: 'ok', httpStatus: null, rowsReturned: input.finalCandleCount, reason: input.candleFailure ? candleFailureMessage(input.candleFailure.code) : null }
+      }
+      return { stage, pool: null, interval: null, status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
+    }
+    const found = byStage.get(stage)
+    if (found) {
+      if (found.status === 'ok') finalSource = stage
+      return found
+    }
+    return { stage, pool: null, interval: STAGE_INTERVAL[stage], status: 'skipped', httpStatus: null, rowsReturned: 0, reason: null }
+  })
+  const primaryRung = EVM_CHART_LADDER[0]
+  return {
+    chain: input.chain,
+    network: input.network,
+    scannedToken: input.scannedToken,
+    selectedPool: input.selectedPoolAddress,
+    tokenSide: input.tokenSide,
+    requestedInterval: STAGE_INTERVAL.primary_pool_15m,
+    requestedLimit: primaryRung.requestLimit,
+    source: input.source,
+    attempts,
+    rateLimited: input.rateLimited,
+    finalSource,
+    finalCandleCount: input.finalCandleCount,
+    fallbackReason: finalSource === 'none' || finalSource === 'estimated_trend' ? (input.candleFailure?.code ?? null) : null,
+  }
+}
