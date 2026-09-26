@@ -181,20 +181,23 @@ test('tiny EVM prices format without NaN/Infinity', () => {
 // ── Route wiring (static): the route must use the shared ladder/side rules, not local copies ──
 const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
 
-test('route: ladder comes from EVM_CHART_LADDER, one call per rung, priceChart keeps its window', () => {
-  assert.match(route, /const _primaryTimeframes = EVM_CHART_LADDER\.map/)
+const lib = readFileSync(new URL('../lib/evmChartCandles.ts', import.meta.url), 'utf8')
+
+test('route: candles come from the shared ladder (lib) with the unchanged call cap', () => {
+  assert.match(route, /await runEvmCandleLadder\(/)
   assert.doesNotMatch(route, /limit: 96 \}/)
-  assert.match(route, /splitChartWindow\(points, tf\.windowLimit\)/)
-  assert.match(route, /const _MAX_OHLCV_CALLS = 10\b/, 'worst-case OHLCV call cap unchanged')
+  assert.match(lib, /const \{ window, deep \} = splitChartWindow\(points, rung\.windowLimit\)/)
+  assert.match(lib, /export const EVM_MAX_OHLCV_CALLS = 10\b/, 'worst-case OHLCV call cap unchanged')
 })
 
-test('route: an unresolved pool side is never guessed', () => {
+test('route/lib: an unresolved pool side is never guessed', () => {
   assert.doesNotMatch(route, /\['base', 'quote'\]/)
-  assert.match(route, /rejectedReason: 'token_side_unresolved'/)
+  assert.doesNotMatch(lib, /\['base', 'quote'\]/)
+  assert.match(lib, /rejectedReason: 'token_side_unresolved'/)
 })
 
 test('route: swap reconstruction is told which token was scanned; chartCandles only for real OHLCV', () => {
-  assert.match(route, /reconstructCandlesFromTrades\(tradesArr, priceUsd, contract\)/)
+  assert.match(lib, /reconstructCandlesFromTrades\(trades, input\.currentPriceUsd, input\.contract\)/)
   assert.match(route, /chartCandles: chartStatus === 'ok' && chartCandles && chartCandles\.points\.length >= 2 \? chartCandles : null/)
   assert.doesNotMatch(route, /function reconstructCandlesFromTrades\(/, 'single implementation lives in lib/evmChartCandles.ts')
 })

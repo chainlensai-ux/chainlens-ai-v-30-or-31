@@ -17,6 +17,7 @@ import {
   timeTickIndices,
   type ChartCandleInput,
 } from '../lib/priceChartCandles.ts'
+import { MIN_VIEW_CANDLES, clampViewport, defaultViewport, panViewport, sameViewport, zoomViewport } from '../lib/priceChartCandles.ts'
 import { fetchSolanaOhlcv } from '../lib/server/solanaProviders.ts'
 
 const T0 = Date.UTC(2026, 8, 20, 0, 0, 0) // aligned to a UTC day boundary
@@ -305,4 +306,61 @@ test('availability: fewer than 2 real candles => every chip off with "Needs more
     assert.equal(tf.available, false)
     assert.equal(tf.unavailableReason, 'Needs more trading history')
   }
+})
+
+// ── Viewport: zoom / pan over loaded candles only ─────────────────────────────────────────────────
+test('viewport: resting view shows the newest candles that fit, or all when fewer', () => {
+  assert.deepEqual(defaultViewport(672, 180), { start: 492, end: 672 })
+  assert.deepEqual(defaultViewport(40, 180), { start: 0, end: 40 })
+})
+
+test('viewport: zoom in keeps the candle under the cursor fixed and clamps at MIN_VIEW_CANDLES', () => {
+  const v = { start: 492, end: 672 }
+  const zin = zoomViewport(v, 672, 2, 0.5)
+  assert.equal(zin.end - zin.start, 90)
+  assert.equal((zin.start + zin.end) / 2, (v.start + v.end) / 2, 'centre anchor stays centred')
+  let deep = v
+  for (let i = 0; i < 20; i++) deep = zoomViewport(deep, 672, 3, 1)
+  assert.equal(deep.end - deep.start, MIN_VIEW_CANDLES)
+  assert.equal(deep.end, 672, 'right-anchored zoom keeps the newest candle')
+})
+
+test('viewport: zoom out grows to every loaded candle, never beyond (no fetching)', () => {
+  let v = { start: 600, end: 672 }
+  for (let i = 0; i < 20; i++) v = zoomViewport(v, 672, 0.5, 0.3)
+  assert.deepEqual(v, { start: 0, end: 672 })
+})
+
+test('viewport: pan left/right is clamped to the loaded range and never empties', () => {
+  const v = { start: 492, end: 672 }
+  assert.deepEqual(panViewport(v, 672, -100), { start: 392, end: 572 })
+  assert.deepEqual(panViewport(v, 672, -10_000), { start: 0, end: 180 })
+  assert.deepEqual(panViewport(v, 672, +10_000), { start: 492, end: 672 })
+  assert.deepEqual(panViewport(v, 672, Number.NaN), v)
+})
+
+test('viewport: clamp repairs any invalid view; short series cannot go below its own length', () => {
+  assert.deepEqual(clampViewport({ start: -50, end: 3 }, 672), { start: 0, end: 53 }, 'width kept, shifted into range')
+  assert.deepEqual(clampViewport({ start: 100, end: 102 }, 672), { start: 100, end: 100 + MIN_VIEW_CANDLES }, 'too narrow widens to the minimum')
+  assert.deepEqual(clampViewport({ start: 10, end: 5000 }, 672), { start: 0, end: 672 })
+  assert.deepEqual(clampViewport({ start: Number.NaN, end: Number.NaN }, 672), { start: 0, end: 672 })
+  assert.deepEqual(clampViewport({ start: 0, end: 2 }, 5), { start: 0, end: 5 }, 'a 5-candle series shows all 5')
+  assert.deepEqual(clampViewport({ start: 0, end: 10 }, 0), { start: 0, end: 0 })
+})
+
+test('viewport: reset = back to the resting view', () => {
+  const rest = defaultViewport(672, 180)
+  const moved = panViewport(zoomViewport(rest, 672, 2, 0.5), 672, -40)
+  assert.equal(sameViewport(moved, rest), false)
+  assert.equal(sameViewport(defaultViewport(672, 180), rest), true)
+})
+
+test('panel: touch gestures never block vertical page scrolling', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../app/terminal/token-scanner/PriceChartPanel.tsx', import.meta.url), 'utf8')
+  assert.match(src, /touchAction: 'pan-y'/, 'browser keeps vertical panning')
+  // Only the (mouse/trackpad) wheel listener cancels default scrolling; pointer handlers never do.
+  assert.equal((src.match(/preventDefault\(\)/g) ?? []).length, 1)
+  assert.match(src, /const onWheel = \(e: WheelEvent\) => \{[\s\S]*?e\.preventDefault\(\)/)
+  assert.match(src, /addEventListener\('wheel', onWheel, \{ passive: false \}\)/)
 })

@@ -7,9 +7,11 @@
 // spaced by index (buckets with no trades are collapsed, never filled), and a timeframe the data
 // cannot genuinely produce is shown disabled rather than falling back to another timeframe's candles.
 
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   buildChartTimeframes,
+  clampViewport,
+  defaultViewport,
   formatChartPct,
   formatChartPrice,
   formatChartVolume,
@@ -17,11 +19,15 @@ import {
   niceTicks,
   normalizeChartCandles,
   pctChange,
+  panViewport,
   pickDefaultTimeframe,
+  sameViewport,
   timeTickIndices,
+  zoomViewport,
   type ChartCandle,
   type ChartCandleInput,
   type ChartTimeframeKey,
+  type ChartViewport,
 } from '@/lib/priceChartCandles'
 
 const C = {
@@ -49,6 +55,11 @@ export type PriceChartPanelProps = {
   badge?: ReactNode
   /** Small caption under the chart (e.g. which pool the candles come from). */
   footnote?: ReactNode
+  /**
+   * Loads REAL 5M candles on demand (only when the user selects 5M). Omit when the source has no
+   * proven pool to read 5M from — 5M then stays disabled with its reason.
+   */
+  loadFiveMinute?: () => Promise<FiveMinuteLoadResult>
 }
 
 // Callback-ref width tracker: re-attaches when the measured element changes (empty state -> chart).
@@ -95,7 +106,22 @@ function fmtSpan(ms: number): string {
   return `${Math.round(h / 24)}D`
 }
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote }: PriceChartPanelProps) {
+export type FiveMinuteLoadResult =
+  | { ok: true; intervalSec: number; points: ReadonlyArray<ChartCandleInput> }
+  | { ok: false; message: string }
+
+type FiveMinuteState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'ready'; candles: ChartCandle[] }
+  | { status: 'failed'; message: string }
+
+type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean; reason: string | null; title: string }
+
+const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
+const FIVE_MIN_SEC = 300
+
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   const tfSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
   const defaultKey = useMemo(() => pickDefaultTimeframe(tfSet), [tfSet])
@@ -103,38 +129,64 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // Why an unavailable interval is off. Shown on tap/click (not only as a hover title) so the
   // reason reaches touch users too.
   const [chipNotice, setChipNotice] = useState<{ key: ChartTimeframeKey; text: string } | null>(null)
+
+  // On-demand real 5M candles (never derived from 15M). Tied to the `candles` array it was loaded
+  // for, so a new scan starts from idle without an effect.
+  const [fiveRaw, setFiveRaw] = useState<{ source: ReadonlyArray<ChartCandleInput>; state: FiveMinuteState } | null>(null)
+  const five: FiveMinuteState = fiveRaw && fiveRaw.source === candles ? fiveRaw.state : IDLE_FIVE
+  const nativeFive = tfSet.timeframes.find((tf) => tf.key === '5M')!
+  const fiveLoadable = !nativeFive.available && loadFiveMinute != null && (tfSet.nativeSec ?? 0) > FIVE_MIN_SEC
+
+  const chipStates: ChipState[] = tfSet.timeframes.map((tf) => {
+    if (tf.key === '5M' && fiveLoadable) {
+      if (five.status === 'failed') return { key: tf.key, available: false, loadable: false, reason: `5M unavailable — ${five.message}`, title: five.message }
+      if (five.status === 'ready' && five.candles.length < 2) return { key: tf.key, available: false, loadable: false, reason: '5M unavailable — the pool returned no 5-minute trading history yet', title: 'No 5M history yet' }
+      return { key: tf.key, available: true, loadable: five.status !== 'ready', reason: null, title: five.status === 'loading' ? 'Loading real 5M candles…' : five.status === 'ready' ? `${five.candles.length} real 5M candles` : 'Load real 5M candles for this pool' }
+    }
+    return {
+      key: tf.key,
+      available: tf.available,
+      loadable: false,
+      reason: tf.available ? null : (tf.unavailableReason ?? 'Needs more trading history'),
+      title: tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : (tf.unavailableReason ?? 'Needs more trading history'),
+    }
+  })
+
   // A pick that is no longer available (new scan data) falls back to the default — never to
   // another timeframe's candles under the picked label.
-  const activeTf = tfSet.timeframes.find((tf) => tf.key === picked && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null
-  const series: ChartCandle[] = activeTf ? activeTf.candles : tfSet.nativeCandles
-  const intervalSec = activeTf ? activeTf.sec : tfSet.nativeSec
+  const fiveActive = picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
+  const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === picked && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
+  const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)
+  const series: ChartCandle[] = fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
+  const intervalSec = fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
+
+  const requestFive = async () => {
+    if (!loadFiveMinute || five.status === 'loading') return
+    const source = candles
+    setFiveRaw({ source, state: { status: 'loading' } })
+    setChipNotice({ key: '5M', text: 'Loading real 5M candles…' })
+    let next: FiveMinuteState
+    try {
+      const res = await loadFiveMinute()
+      next = res.ok ? { status: 'ready', candles: normalizeChartCandles(res.points) } : { status: 'failed', message: res.message }
+    } catch {
+      next = { status: 'failed', message: 'The 5M candle request did not complete.' }
+    }
+    setFiveRaw((cur) => (cur && cur.source === source ? { source, state: next } : cur))
+    if (next.status === 'ready' && next.candles.length >= 2) {
+      setChipNotice(null)
+      setPicked('5M')
+    } else {
+      setChipNotice({ key: '5M', text: next.status === 'failed' ? `5M unavailable — ${next.message}` : '5M unavailable — the pool returned no 5-minute trading history yet' })
+    }
+  }
 
   const [wrapRef, width] = useElementWidth<HTMLDivElement>()
   const [hover, setHover] = useState<{ idx: number; y: number } | null>(null)
+  const [svgEl, setSvgEl] = useState<SVGSVGElement | null>(null)
 
   const compact = width > 0 && width < 560
-  const header = (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
-      <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: MONO }}>PRICE CHART</span>
-      {badge ?? (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#5eead4', fontFamily: MONO }}>
-          <span aria-hidden style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.bull }} />
-          LIVE CANDLES
-        </span>
-      )}
-    </div>
-  )
-
-  if (series.length < 2) {
-    return (
-      <div ref={wrapRef} style={{ marginBottom: '16px', borderRadius: '14px', padding: '14px 16px', background: C.panel, border: `1px solid ${C.border}` }}>
-        {header}
-        <p style={{ margin: 0, fontSize: '12px', color: C.axisText, fontFamily: MONO, lineHeight: 1.6 }}>
-          {normalized.length === 0 ? 'Candle history returned no valid OHLC rows for this pool.' : 'Not enough real candles returned to draw a chart yet.'}
-        </p>
-      </div>
-    )
-  }
+  const enough = series.length >= 2
 
   // ── Layout ────────────────────────────────────────────────────────────────────────────────────
   const hasVolume = series.some((c) => c.volume != null && c.volume > 0)
@@ -157,14 +209,71 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const volBot = volTop + volH
   const H = volBot + timeAxisH
 
-  // Visible window: as many of the most recent real candles as fit at a minimum slot width.
+  // ── Viewport (zoom / pan over loaded candles only) ───────────────────────────────────────────
+  // Resting view: the newest candles that fit at a readable minimum width. The user can zoom out to
+  // every loaded candle, or in to MIN_VIEW_CANDLES. The view is tied to the series it was set on,
+  // so a timeframe switch or new scan returns to the resting view.
   const minSlot = compact ? 4 : 5
-  const maxVisible = Math.max(2, Math.floor(plotW / minSlot))
-  const data = series.length > maxVisible ? series.slice(-maxVisible) : series
+  const fit = Math.max(2, Math.floor(plotW / minSlot))
+  const total = series.length
+  const seriesKey = `${activeKey ?? 'native'}:${total}:${series[0]?.t ?? 0}`
+  const restView = defaultViewport(total, fit)
+  const [viewRaw, setViewRaw] = useState<{ key: string; view: ChartViewport } | null>(null)
+  const view = viewRaw && viewRaw.key === seriesKey ? clampViewport(viewRaw.view, total) : restView
+  const isRest = sameViewport(view, restView)
+  const setView = (v: ChartViewport) => setViewRaw({ key: seriesKey, view: clampViewport(v, total) })
+  const resetView = () => { setViewRaw(null); setHover(null) }
+
+  const data = enough ? series.slice(view.start, view.end) : []
   const n = data.length
-  const slot = plotW / n
+  const slot = n > 0 ? plotW / n : plotW
   const bodyW = Math.max(1, Math.min(slot * 0.66, 16))
   const xC = (i: number) => (i + 0.5) * slot
+
+  // Wheel / trackpad: vertical wheel zooms around the cursor, horizontal swipe pans. Needs a
+  // non-passive native listener so the page does not scroll while the cursor is on the chart.
+  useEffect(() => {
+    if (!svgEl || !enough) return
+    const onWheel = (e: WheelEvent) => {
+      const rect = svgEl.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      if (x < 0 || x > plotW) return
+      e.preventDefault()
+      const width0 = view.end - view.start
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        setViewRaw({ key: seriesKey, view: panViewport(view, total, (e.deltaX / plotW) * width0) })
+      } else {
+        const factor = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.0022))
+        setViewRaw({ key: seriesKey, view: zoomViewport(view, total, factor, x / plotW) })
+      }
+      setHover(null)
+    }
+    svgEl.addEventListener('wheel', onWheel, { passive: false })
+    return () => svgEl.removeEventListener('wheel', onWheel)
+  }, [svgEl, enough, plotW, view, total, seriesKey])
+
+  // Pointer gestures. Mouse: move = crosshair, press-drag = pan. Touch: tap = crosshair, horizontal
+  // drag = pan, two fingers = pinch zoom. touch-action: pan-y leaves vertical page scrolling to the
+  // browser, so a vertical swipe over the chart still scrolls the page.
+  const gesture = useRef<{
+    pointers: Map<number, { x: number; y: number }>
+    dragStartX: number | null
+    dragStartView: ChartViewport | null
+    panning: boolean
+    pinchStartDist: number | null
+    pinchStartView: ChartViewport | null
+  }>({ pointers: new Map(), dragStartX: null, dragStartView: null, panning: false, pinchStartDist: null, pinchStartView: null })
+
+  if (!enough) {
+    return (
+      <div ref={wrapRef} style={{ marginBottom: '16px', borderRadius: '14px', padding: '14px 16px', background: C.panel, border: `1px solid ${C.border}` }}>
+        <PanelHeader badge={badge} />
+        <p style={{ margin: 0, fontSize: '12px', color: C.axisText, fontFamily: MONO, lineHeight: 1.6 }}>
+          {normalized.length === 0 ? 'Candle history returned no valid OHLC rows for this pool.' : 'Not enough real candles returned to draw a chart yet.'}
+        </p>
+      </div>
+    )
+  }
 
   let lo = Infinity
   let hi = -Infinity
@@ -182,22 +291,74 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
   const first = data[0]
   const last = data[n - 1]
+  const latest = series[series.length - 1]
   const windowChange = pctChange(first.open, last.close)
   const windowSpan = fmtSpan(last.t - first.t + (intervalSec ?? 0) * 1000)
-  const lastBull = last.close >= last.open
-  const lastY = yP(last.close)
+  const lastBull = latest.close >= latest.open
+  const lastY = yP(latest.close)
+  const lastInView = latest.close >= yMin && latest.close <= yMax
 
-  const hoverC = hover != null ? data[hover.idx] : null
+  const hoverC = hover != null && hover.idx < n ? data[hover.idx] : null
   const readout = hoverC ?? last
   const readoutChange = pctChange(readout.open, readout.close)
   const readoutColor = readout.close >= readout.open ? C.bull : C.bear
 
-  const onPointer = (e: ReactPointerEvent<SVGSVGElement>) => {
+  const localPoint = (e: ReactPointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
+  const setCrosshair = (x: number, y: number) => {
     if (x < 0 || x > plotW || y < 0 || y > volBot) { setHover(null); return }
     setHover({ idx: Math.max(0, Math.min(n - 1, Math.floor(x / slot))), y })
+  }
+  const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const g = gesture.current
+    const p = localPoint(e)
+    g.pointers.set(e.pointerId, p)
+    if (g.pointers.size === 2) {
+      const [a, b] = [...g.pointers.values()]
+      g.pinchStartDist = Math.max(1, Math.abs(a.x - b.x))
+      g.pinchStartView = view
+      g.dragStartX = null
+      g.panning = false
+      setHover(null)
+      return
+    }
+    g.dragStartX = p.x
+    g.dragStartView = view
+    g.panning = false
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* not all pointers can be captured */ }
+    setCrosshair(p.x, p.y)
+  }
+  const onPointerMove = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const g = gesture.current
+    const p = localPoint(e)
+    if (g.pointers.has(e.pointerId)) g.pointers.set(e.pointerId, p)
+    if (g.pointers.size >= 2 && g.pinchStartDist != null && g.pinchStartView) {
+      const [a, b] = [...g.pointers.values()]
+      const dist = Math.max(1, Math.abs(a.x - b.x))
+      const mid = (a.x + b.x) / 2
+      setView(zoomViewport(g.pinchStartView, total, dist / g.pinchStartDist, Math.max(0, Math.min(1, mid / plotW))))
+      return
+    }
+    const pressed = e.pointerType === 'mouse' ? (e.buttons & 1) === 1 : g.pointers.has(e.pointerId)
+    if (pressed && g.dragStartX != null && g.dragStartView) {
+      const dx = p.x - g.dragStartX
+      if (g.panning || Math.abs(dx) > 6) {
+        g.panning = true
+        const startWidth = g.dragStartView.end - g.dragStartView.start
+        setView(panViewport(g.dragStartView, total, (-dx / plotW) * startWidth))
+        setHover(null)
+        return
+      }
+    }
+    if (e.pointerType === 'mouse' || !g.panning) setCrosshair(p.x, p.y)
+  }
+  const endPointer = (e: ReactPointerEvent<SVGSVGElement>) => {
+    const g = gesture.current
+    g.pointers.delete(e.pointerId)
+    if (g.pointers.size < 2) { g.pinchStartDist = null; g.pinchStartView = null }
+    if (g.pointers.size === 0) { g.dragStartX = null; g.dragStartView = null; g.panning = false }
   }
 
   const tagH = 17
@@ -208,6 +369,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     </g>
   )
 
+  const noticeVisible = chipNotice != null && (chipNotice.key === '5M' && five.status === 'loading'
+    ? true
+    : chipStates.some((c) => c.key === chipNotice.key && !c.available))
+
   const chips = (
     <div role="group" aria-label="Candle interval" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '8px', background: 'rgba(15,23,42,0.9)', border: `1px solid ${C.border}` }}>
       {!tfSet.nativeIsStandard && tfSet.nativeSec != null && (
@@ -215,26 +380,29 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           {formatIntervalLabel(tfSet.nativeSec)}
         </span>
       )}
-      {tfSet.timeframes.map((tf) => {
-        const active = activeTf?.key === tf.key
+      {chipStates.map((chip) => {
+        const active = activeKey === chip.key
+        const loading = chip.key === '5M' && five.status === 'loading'
         return (
           <button
-            key={tf.key}
+            key={chip.key}
             type="button"
             // aria-disabled (not disabled): an unavailable chip stays focusable and tappable so its
             // reason can be read on touch devices and by screen readers — it never selects data.
-            aria-disabled={!tf.available}
+            aria-disabled={!chip.available}
             aria-pressed={active}
-            aria-label={tf.available ? `${tf.key} candles` : `${tf.key} unavailable: ${tf.unavailableReason ?? 'Needs more trading history'}`}
-            title={tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : tf.unavailableReason ?? 'Needs more trading history'}
+            aria-busy={loading || undefined}
+            aria-label={chip.available ? `${chip.key} candles${chip.loadable ? ' (loads on demand)' : ''}` : `${chip.key} unavailable: ${chip.reason ?? 'Needs more trading history'}`}
+            title={chip.title}
             onClick={() => {
-              if (!tf.available) {
-                const reason = tf.unavailableReason ?? 'Needs more trading history'
-                setChipNotice({ key: tf.key, text: reason.startsWith(tf.key) ? reason : `${tf.key}: ${reason}` })
+              if (!chip.available) {
+                const reason = chip.reason ?? 'Needs more trading history'
+                setChipNotice({ key: chip.key, text: reason.startsWith(chip.key) ? reason : `${chip.key}: ${reason}` })
                 return
               }
+              if (chip.key === '5M' && chip.loadable) { void requestFive(); return }
               setChipNotice(null)
-              setPicked(tf.key)
+              setPicked(chip.key)
               setHover(null)
             }}
             style={{
@@ -245,14 +413,15 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               fontWeight: 700,
               fontFamily: MONO,
               letterSpacing: '0.04em',
-              cursor: tf.available ? 'pointer' : 'not-allowed',
-              color: active ? C.textStrong : tf.available ? '#94a3b8' : '#334155',
+              cursor: chip.available ? (loading ? 'progress' : 'pointer') : 'not-allowed',
+              color: active ? C.textStrong : chip.available ? '#94a3b8' : '#334155',
               background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
-              textDecoration: tf.available ? 'none' : 'line-through',
+              textDecoration: chip.available ? 'none' : 'line-through',
               textDecorationColor: 'rgba(51,65,85,0.8)',
+              opacity: loading ? 0.6 : 1,
             }}
           >
-            {tf.key}
+            {chip.key}
           </button>
         )
       })}
@@ -261,13 +430,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
   return (
     <div style={{ marginBottom: '16px', borderRadius: '14px', padding: compact ? '12px 10px 10px' : '14px 16px 12px', background: C.panel, border: `1px solid ${C.border}` }}>
-      {header}
+      <PanelHeader badge={badge} />
 
-      {/* Price + window change, and interval selector */}
+      {/* Price + visible-window change, and interval selector */}
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: compact ? '22px' : '26px', fontWeight: 700, color: C.textStrong, fontFamily: MONO, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
-            {formatChartPrice(last.close)}
+            {formatChartPrice(latest.close)}
           </span>
           <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: MONO, color: windowChange == null ? C.axisText : windowChange >= 0 ? C.bull : C.bear }}>
             {formatChartPct(windowChange)}
@@ -276,13 +445,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         </div>
         {chips}
       </div>
-      {chipNotice && tfSet.timeframes.some((tf) => tf.key === chipNotice.key && !tf.available) && (
+      {noticeVisible && chipNotice && (
         <p role="status" style={{ margin: '-2px 0 6px', fontSize: '10.5px', color: '#94a3b8', fontFamily: MONO, textAlign: compact ? 'left' : 'right' }}>
           {chipNotice.text}
         </p>
       )}
 
-      {/* OHLCV readout — follows the crosshair, rests on the latest candle */}
+      {/* OHLCV readout — follows the crosshair, rests on the newest visible candle */}
       <div aria-live="polite" style={{ display: 'flex', flexWrap: 'wrap', gap: compact ? '2px 10px' : '2px 14px', minHeight: '18px', marginBottom: '6px', fontSize: '10.5px', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.axisText }}>
         <span style={{ color: '#94a3b8' }}>{fmtTime(readout.t, intervalSec, 'readout')}</span>
         <span>O <span style={{ color: readoutColor }}>{formatChartPrice(readout.open)}</span></span>
@@ -296,14 +465,18 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       <div ref={wrapRef} style={{ position: 'relative', width: '100%' }}>
         {width > 0 && (
           <svg
+            ref={setSvgEl}
             width={W}
             height={H}
             role="img"
-            aria-label={`${n} ${formatIntervalLabel(intervalSec)} candles, last ${formatChartPrice(last.close)}, ${formatChartPct(windowChange)} over ${windowSpan}`}
+            aria-label={`${n} ${formatIntervalLabel(intervalSec)} candles shown of ${total}, last ${formatChartPrice(latest.close)}, ${formatChartPct(windowChange)} over ${windowSpan}`}
             style={{ display: 'block', touchAction: 'pan-y', userSelect: 'none', cursor: 'crosshair' }}
-            onPointerMove={onPointer}
-            onPointerDown={onPointer}
-            onPointerLeave={() => setHover(null)}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={endPointer}
+            onPointerCancel={(e) => { endPointer(e); setHover(null) }}
+            onPointerLeave={(e) => { if (e.pointerType === 'mouse') setHover(null) }}
+            onDoubleClick={resetView}
           >
             {/* Grid */}
             {yTicks.map((v) => (
@@ -350,7 +523,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               const y = yP(v)
               if (y < priceTop + 6 || y > priceBot - 4) return null
               // Never draw an axis label underneath the current-price tag or the crosshair tag.
-              if (Math.abs(y - lastY) < tagH) return null
+              if (lastInView && Math.abs(y - lastY) < tagH) return null
               if (hover && hover.y >= priceTop && hover.y <= priceBot && Math.abs(y - hover.y) < tagH) return null
               return <text key={`ty${v}`} x={plotW + 6} y={y + 3.5} fill={C.axisText} style={{ fontSize: 10, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}>{formatChartPrice(v, 3)}</text>
             })}
@@ -365,9 +538,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               return <text key={`tx${i}`} x={xC(i)} y={volBot + 15} textAnchor="middle" fill={C.axisText} style={{ fontSize: 10, fontFamily: MONO }}>{label}</text>
             })}
 
-            {/* Current price line + tag */}
-            <line x1={0} x2={plotW} y1={lastY} y2={lastY} stroke={lastBull ? C.bull : C.bear} strokeOpacity={0.7} strokeWidth={1} strokeDasharray="2 3" />
-            {priceTag(lastY, formatChartPrice(last.close, 4), lastBull ? C.bull : C.bear, '#04121a')}
+            {/* Current (latest real) price line + tag — shown when it lies inside the visible range */}
+            {lastInView && <line x1={0} x2={plotW} y1={lastY} y2={lastY} stroke={lastBull ? C.bull : C.bear} strokeOpacity={0.7} strokeWidth={1} strokeDasharray="2 3" />}
+            {lastInView && priceTag(lastY, formatChartPrice(latest.close, 4), lastBull ? C.bull : C.bear, '#04121a')}
 
             {/* Crosshair */}
             {hover && hoverC && (() => {
@@ -389,12 +562,41 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           </svg>
         )}
         {width === 0 && <div style={{ height: `${H}px` }} />}
+        {!isRest && width > 0 && (
+          <button
+            type="button"
+            onClick={resetView}
+            aria-label="Reset chart view"
+            title="Reset view (or double-click the chart)"
+            style={{ position: 'absolute', top: 6, left: 6, padding: '3px 8px', borderRadius: '6px', border: `1px solid ${C.border}`, background: 'rgba(15,23,42,0.92)', color: '#94a3b8', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.06em', cursor: 'pointer' }}
+          >
+            RESET VIEW
+          </button>
+        )}
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '6px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
-        <span>{n} × {formatIntervalLabel(intervalSec)} real candles{activeTf?.origin === 'aggregated' ? ` · rolled up from ${formatIntervalLabel(tfSet.nativeSec)}` : ''}</span>
+        <span>
+          {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} real candles
+          {activeTf?.origin === 'aggregated' ? ` · rolled up from ${formatIntervalLabel(tfSet.nativeSec)}` : ''}
+          {fiveActive ? ' · loaded on demand' : ''}
+        </span>
         {footnote && <span>{footnote}</span>}
       </div>
+    </div>
+  )
+}
+
+function PanelHeader({ badge }: { badge?: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
+      <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: MONO }}>PRICE CHART</span>
+      {badge ?? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#5eead4', fontFamily: MONO }}>
+          <span aria-hidden style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.bull }} />
+          LIVE CANDLES
+        </span>
+      )}
     </div>
   )
 }

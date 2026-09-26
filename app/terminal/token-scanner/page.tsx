@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } fr
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
-import PriceChartPanel from './PriceChartPanel'
+import PriceChartPanel, { type FiveMinuteLoadResult } from './PriceChartPanel'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -759,7 +759,12 @@ type ScanResult = {
   chartCandles?: {
     intervalSec: number
     points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume?: number | null; priceUsd: number }>
+    /** The proven pool/side the candles came from — only for pool OHLCV; enables on-demand 5M. */
+    poolAddress?: string
+    tokenSide?: 'base' | 'quote'
   } | null
+  /** Why indexed OHLCV candles are unavailable, in plain language (available=true when they loaded). */
+  chartCandleStatus?: { available: boolean; code: string | null; message: string | null } | null
   chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
   chartSource?: string | null
   chartReason?: string | null
@@ -1418,6 +1423,23 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
 // Candle width each server chart key was requested at (see the priceChart timeframe ladder in
 // app/api/token/route.ts and SOLANA_OHLCV_TIMEFRAME in lib/server/solanaProviders.ts). Null means
 // "unknown" — PriceChartPanel then infers the width from the real candle timestamps.
+// On-demand real 5M candles for an EVM chart (GET /api/token/chart-candles). Only called when the
+// user selects 5M; the server re-proves the pool side and caps provider calls.
+const ON_DEMAND_5M_CHAINS = new Set(['eth', 'base', 'bnb', 'robinhood'])
+function makeFiveMinuteLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined): (() => Promise<FiveMinuteLoadResult>) | undefined {
+  if (!chain || !ON_DEMAND_5M_CHAINS.has(chain) || !token || !pool) return undefined
+  return async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const authToken = session?.access_token
+    const qs = new URLSearchParams({ chain, token, pool, timeframe: '5m' })
+    const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
+    const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; message?: string } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, intervalSec: json.intervalSec ?? 300, points: json.points }
+    return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load 5M candles.' : 'The 5M candle request did not complete.') }
+  }
+}
+type FiveMinuteLoadPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null }
+
 function chartIntervalSec(key: string | null | undefined): number | null {
   switch (key) {
     case '24h': case '15m': return 900
@@ -7859,6 +7881,22 @@ export default function TerminalTokenScanner() {
                     const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
                     const mts = result.marketTrendSnapshot
                     const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
+                    // CANDLES-UNAVAILABLE FALLBACK, DISCLOSED (requested: "Do not hide all failures behind
+                    // 'Historical candles are not indexed yet'"): the server's structured candle-failure
+                    // reason (lib/evmChartCandles.ts summarizeCandleFailure) is shown first; an estimated
+                    // trend, when one exists, is a visibly secondary section and is never called candles.
+                    const _candleReason = result.chartCandleStatus?.message
+                      ?? (result.noActivePools ? 'No active indexed trading pool was found for this token.' : 'The candle provider returned no price history for this pool.')
+                    const _candlesUnavailableHead = (
+                      <div>
+                        <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>PRICE CHART</p>
+                        <p style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Historical candles unavailable</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
+                          <span style={{ color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: '10.5px', letterSpacing: '0.08em', marginRight: '6px' }}>REASON</span>
+                          {_candleReason}
+                        </p>
+                      </div>
+                    )
 
                     if (_hasValidCandles) {
                       const _badgeStyle = { fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', padding: '2px 8px', borderRadius: '99px', textTransform: 'uppercase' as const, fontFamily: 'var(--font-plex-mono)' }
@@ -7875,7 +7913,8 @@ export default function TerminalTokenScanner() {
                           candles={result.chartCandles?.points ?? result.priceChart!.points}
                           declaredIntervalSec={result.chartCandles ? result.chartCandles.intervalSec : result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
                           badge={_chartBadge}
-                          footnote={result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
+                          footnote={result.chartSource === 'trade_reconstructed' ? `Indexed candles unavailable: ${_candleReason}` : result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
+                          loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress)}
                         />
                       )
                     }
@@ -7885,24 +7924,24 @@ export default function TerminalTokenScanner() {
                       const _trendChart = <TrendChart snapshot={mts!} currentPrice={result.price ?? null} />
                       return (
                         <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                          {/* Header row */}
+                          {_candlesUnavailableHead}
+
+                          {/* Secondary: estimated trend — dashed, dimmed, never labelled as candles */}
+                          <div style={{ marginTop: '16px', padding: '12px 12px 4px', border: '1px dashed rgba(148,163,184,0.20)', borderRadius: '12px', background: 'rgba(15,23,42,0.35)' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
-                            <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.07)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>
-                                Estimated Trend
-                              </span>
-                              {result.marketDataSource === 'fallback' && (
-                                <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
-                              )}
-                              <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
-                                {visibleChanges.length > 0 ? 'Inferred from indexed % changes' : 'Live price only'}
+                            <div>
+                              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>ESTIMATED TREND</p>
+                              <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#64748b' }}>
+                                {visibleChanges.length > 0 ? 'Inferred from indexed market changes — not OHLC candles.' : 'Live price only — not OHLC candles.'}
                               </p>
                             </div>
+                            {result.marketDataSource === 'fallback' && (
+                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
+                            )}
                           </div>
 
-                          {/* Trend chart (null-safe: renders nothing if < 2 anchors) */}
-                          {_trendChart}
+                          {/* Trend line (null-safe: renders nothing if < 2 anchors) — dimmed so it never reads as a candle chart */}
+                          <div style={{ opacity: 0.7, filter: 'saturate(0.6)' }}>{_trendChart}</div>
 
                           {/* Price + change chips */}
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-end', marginTop: '14px', marginBottom: '14px' }}>
@@ -7955,9 +7994,7 @@ export default function TerminalTokenScanner() {
                             )}
                           </div>
 
-                          <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                            Historical candles are not indexed yet. Trend is inferred from live indexed price changes.
-                          </p>
+                          </div>
                         </div>
                       )
                     }
@@ -7965,10 +8002,7 @@ export default function TerminalTokenScanner() {
                     // Minimal snapshot — no candles, no market trend data
                     return (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
-                        <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
-                          {result.noActivePools ? 'Chart data unavailable — no active indexed pools found for this token.' : 'Historical candles are not indexed for this pool yet.'}
-                        </p>
+                        {_candlesUnavailableHead}
                       </div>
                     )
                   })()}

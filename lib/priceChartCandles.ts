@@ -329,3 +329,55 @@ export function timeTickIndices(candles: ReadonlyArray<ChartCandle>, minSpacingC
   }
   return [0]
 }
+
+// ── Viewport (zoom / pan) ───────────────────────────────────────────────────────────────────────
+//
+// ZOOM + PAN, DISCLOSED: PriceChartPanel zooms and pans purely client-side over candles already
+// loaded — never fetching more history. A viewport is a half-open index range [start, end) into the
+// active series. These helpers keep it valid: at least MIN_VIEW_CANDLES wide (or every candle when
+// the series is shorter), never wider than the series, never outside it, never empty.
+
+export const MIN_VIEW_CANDLES = 8
+
+export type ChartViewport = { start: number; end: number }
+
+export function clampViewport(view: ChartViewport, total: number): ChartViewport {
+  if (total <= 0) return { start: 0, end: 0 }
+  const minW = Math.min(MIN_VIEW_CANDLES, total)
+  let width = Math.round(view.end - view.start)
+  if (!Number.isFinite(width)) width = total
+  width = Math.max(minW, Math.min(total, width))
+  let start = Math.round(Number.isFinite(view.start) ? view.start : total - width)
+  start = Math.max(0, Math.min(total - width, start))
+  return { start, end: start + width }
+}
+
+/** The resting view: the newest `fit` candles (what fits the plot at a readable width), or all. */
+export function defaultViewport(total: number, fit: number): ChartViewport {
+  const width = Math.max(1, Math.min(total, Math.floor(fit)))
+  return clampViewport({ start: total - width, end: total }, total)
+}
+
+/**
+ * Zoom by `factor` (> 1 zooms in, < 1 zooms out) keeping the candle under `anchorFrac` (0 = left
+ * edge of the plot, 1 = right edge) fixed on screen, like a trading chart zooming around the cursor.
+ */
+export function zoomViewport(view: ChartViewport, total: number, factor: number, anchorFrac: number): ChartViewport {
+  if (!(factor > 0) || !Number.isFinite(factor)) return clampViewport(view, total)
+  const width = view.end - view.start
+  const minW = Math.min(MIN_VIEW_CANDLES, total)
+  const newWidth = Math.max(minW, Math.min(total, Math.round(width / factor)))
+  const a = Math.max(0, Math.min(1, Number.isFinite(anchorFrac) ? anchorFrac : 1))
+  const anchorIdx = view.start + a * width
+  return clampViewport({ start: anchorIdx - a * newWidth, end: anchorIdx - a * newWidth + newWidth }, total)
+}
+
+/** Pan by `deltaCandles` (positive = toward newer candles), clamped to the loaded range. */
+export function panViewport(view: ChartViewport, total: number, deltaCandles: number): ChartViewport {
+  const d = Number.isFinite(deltaCandles) ? deltaCandles : 0
+  return clampViewport({ start: view.start + d, end: view.end + d }, total)
+}
+
+export function sameViewport(a: ChartViewport, b: ChartViewport): boolean {
+  return a.start === b.start && a.end === b.end
+}

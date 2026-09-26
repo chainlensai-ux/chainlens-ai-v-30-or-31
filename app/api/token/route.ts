@@ -40,7 +40,8 @@ import { dexScreenerPairIsRequestedPricedToken, outcomeTokenAddressEquals } from
 import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
-import { EVM_CHART_LADDER, normalizeGtOhlcvRows, reconstructCandlesFromTrades, resolveEvmPoolTokenSide, splitChartWindow, type EvmChartPoint } from '@/lib/evmChartCandles'
+import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
+import { candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleFailureSummary, type EvmChartPoint } from '@/lib/evmChartCandles'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
@@ -1946,24 +1947,8 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
   } catch { return { json: null, httpStatus: null } }
 }
 
-// Token-level OHLCV — aggregates across all pools for the token.
-// More reliable than pool-level for CL/V3 pools where individual pool OHLCV is not indexed.
-async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<{ json: any | null; httpStatus: number | null }> {
-  try {
-    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
-    const network = networkMap[chain] ?? 'base'
-    const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
-    const res = await fetch(
-      `${_gtBase}/api/v2/networks/${network}/tokens/${tokenAddress}/ohlcv/${timeframe.resolution}?aggregate=${timeframe.aggregate}&limit=${timeframe.limit}&currency=usd`,
-      {
-        headers: { Accept: 'application/json;version=20230302' },
-        cache: 'no-store',
-        signal: withTimeout(5000),
-      }
-    )
-    return { json: res.ok ? await res.json() : null, httpStatus: res.status }
-  } catch { return { json: null, httpStatus: null } }
-}
+// Token-level OHLCV (/tokens/{addr}/ohlcv) is not requested: the public GeckoTerminal API has no
+// such endpoint — see the TOKEN-LEVEL OHLCV REMOVED note in lib/evmChartCandles.ts.
 
 // Which side ('base' | 'quote') of a GeckoTerminal pool the scanned token is on — see
 // lib/evmChartCandles.ts. Null means the pool did not identify it; callers must not guess a side.
@@ -2010,9 +1995,9 @@ async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey
   } catch { return { json: null, httpStatus: null } }
 }
 
-// Chart candle helpers (row normalisation, swap-trade reconstruction) live in lib/evmChartCandles.ts.
+// Chart candle helpers (row normalisation, the candle ladder, swap-trade reconstruction) live in
+// lib/evmChartCandles.ts.
 type ChartPoint = EvmChartPoint
-const normalizeOhlcvRows = normalizeGtOhlcvRows
 
 type ProjectSocialsResult = {
   website: string | null
@@ -2295,7 +2280,8 @@ const _dexFbCache = new Map<string, { data: DexFallbackResult | null; ts: number
 
 interface _ChartCacheSlot {
   priceChart: { timeframe: '24h'|'48h'|'7d'|'30d'; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; sourceStatus: 'ok'|'partial'|'error'; reason?: string; fallbackUsed?: boolean }
-  chartCandles?: { intervalSec: number; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }> } | null
+  chartCandles?: { intervalSec: number; points: Array<{ timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }>; poolAddress?: string; tokenSide?: 'base' | 'quote' } | null
+  chartCandleFailure?: CandleFailureSummary | null
   chartUsedTradeReconstruction: boolean
   chartUsedTokenLevelOhlcv: boolean
   chartUsedDexScreener: boolean
@@ -6187,7 +6173,9 @@ export async function POST(req: Request) {
     }
     // Full real candle series behind priceChart (see lib/evmChartCandles.ts) — only for real
     // indexed OHLCV; null for swap-rebuilt, synthetic or failed charts.
-    let chartCandles: { intervalSec: number; points: ChartPoint[] } | null = null
+    let chartCandles: { intervalSec: number; points: ChartPoint[]; poolAddress?: string; tokenSide?: 'base' | 'quote' } | null = null
+    // Why indexed OHLCV failed (null when real candles were found) — survives the synthetic fallback.
+    let chartCandleFailure: CandleFailureSummary | null = null
     let chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
     let poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
     let tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
@@ -6217,6 +6205,7 @@ export async function POST(req: Request) {
       const cv = _chartCachedEntryRaw.v
       priceChart = { ...cv.priceChart }
       chartCandles = cv.chartCandles ?? null
+      chartCandleFailure = cv.chartCandleFailure ?? null
       chartAttemptedPools = [...cv.chartAttemptedPools]
       poolOhlcvAttempts = [...cv.poolOhlcvAttempts]
       tokenOhlcvAttempts = [...cv.tokenOhlcvAttempts]
@@ -6242,155 +6231,45 @@ export async function POST(req: Request) {
       _ohlcvRateLimitedAt = cv.rateLimitedAt
       _skippedDueToRateLimit = cv.skippedDueToRateLimit
     } else {
-      const _MAX_OHLCV_CALLS = 10
-      // Same three-rung ladder, same order, same one call per rung — each rung now asks for more
-      // rows (lib/evmChartCandles.ts EVM_CHART_LADDER: 15m x 672, 1h x 168, 1d x 30). priceChart
-      // keeps the rung's original newest-N window; chartCandles carries the full real series.
-      const _primaryTimeframes = EVM_CHART_LADDER.map((r) => ({ key: r.key, resolution: r.resolution, aggregate: r.aggregate, limit: r.requestLimit, windowLimit: r.windowLimit, intervalSec: r.intervalSec }))
-      const _ladderSeries = (tf: (typeof _primaryTimeframes)[number], points: ChartPoint[]) => {
-        const { window, deep } = splitChartWindow(points, tf.windowLimit)
-        return { priceChart: { timeframe: tf.key, points: window, sourceStatus: 'ok' as const }, chartCandles: { intervalSec: tf.intervalSec, points: deep } }
-      }
+      // Phases 1-5 (primary pool, token-level, alternate pools, swap rebuild) live in
+      // lib/evmChartCandles.ts runEvmCandleLadder so each chain's behaviour is testable; same order
+      // and call cap as before. candleFailure keeps the genuine-route failure reason even after the
+      // synthetic fallback below replaces priceChart.
+      const _ladder = await runEvmCandleLadder({
+        pools: uniqueChartPools.map((c) => ({ poolId: c.poolId, address: c.address, name: c.name, liquidityUsd: c.liquidityUsd, pool: c.pool as Record<string, unknown> })),
+        contract: contract.toLowerCase(),
+        networkId: _chartNetworkIdMap[chain] ?? null,
+        currentPriceUsd: priceUsd,
+      }, {
+        fetchPoolOhlcv: (poolAddress, rung, side) => fetchGeckoTerminalPoolOhlcv(poolAddress, chain, { resolution: rung.resolution, aggregate: rung.aggregate, limit: rung.requestLimit }, side),
+        fetchTrades: (poolAddress) => fetchGeckoTerminalPoolTrades(poolAddress, chain),
+      })
+      if (_ladder.priceChart) priceChart = _ladder.priceChart
+      chartCandles = _ladder.chartCandles
+      chartCandleFailure = _ladder.candleFailure
+      chartSelectedPoolForChart = _ladder.selectedPool
+      chartUsedTokenLevelOhlcv = _ladder.usedTokenLevel
+      chartUsedTradeReconstruction = _ladder.usedTradeReconstruction
+      chartReconstructedCandleCount = _ladder.reconstructedCandleCount
+      chartTokenLevelAttempted = _ladder.tokenLevelAttempted
+      chartTradeReconstructionAttempted = _ladder.tradeReconstructionAttempted
+      poolOhlcvAttempts = _ladder.poolOhlcvAttempts
+      tokenOhlcvAttempts = _ladder.tokenOhlcvAttempts
+      chartAttemptedTimeframes = _ladder.attemptedTimeframes
+      chartAttemptedPools = _ladder.attemptedPools
+      tradePoolsAttempted = _ladder.tradePoolsAttempted
+      rejectedTradeReasons = _ladder.rejectedTradeReasons
+      rawTradeCount = _ladder.rawTradeCount
+      validTradePriceCount = _ladder.validTradePriceCount
+      _totalChartHttpCalls = _ladder.totalHttpCalls
+      _ohlcvRateLimited = _ladder.rateLimited
+      _ohlcvRateLimitedAt = _ladder.rateLimitedAt
+      _skippedDueToRateLimit = _ladder.skippedDueToRateLimit
+      chartFailureReason = _ladder.failureReason
 
-      // Phase 1: primary pool, up to 3 timeframes (stop on first success or 429)
-      if (uniqueChartPools.length > 0) {
-        const candidate = uniqueChartPools[0]
-        const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
-        // An unproven side is never guessed: trying 'base' first used to accept the PAIR token's
-        // candles whenever the scanned token was the quote side. Skip (no call) and let token-level
-        // OHLCV — keyed by the token itself — answer instead.
-        const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : []
-        chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-        if (!resolvedTokenPos) {
-          poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: 'base', timeframe: 'none', rawPointCount: 0, validPointCount: 0, rejectedReason: 'token_side_unresolved' })
-          chartFailureReason = 'token_side_unresolved'
-        }
-        phase1: for (const tokenPos of tokenPositions) {
-          for (const tf of _primaryTimeframes) {
-            if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break phase1 }
-            chartAttemptedTimeframes.push(`${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}:${tokenPos}`)
-            _totalChartHttpCalls++
-            const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, tf, tokenPos)
-            if (chartRaw.httpStatus === 429) {
-              _ohlcvRateLimited = true
-              _ohlcvRateLimitedAt = tf.key
-              poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: tf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
-              break phase1
-            }
-            const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
-            poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: tf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
-            if (normalized.points.length >= 2) {
-              ({ priceChart, chartCandles } = _ladderSeries(tf, normalized.points))
-              chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
-              chartFailureReason = null
-              break phase1
-            }
-            chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
-          }
-          if (priceChart.sourceStatus === 'ok') break
-        }
-      } else {
-        chartFailureReason = 'primary_pool_missing'
-      }
-
-      // Phase 2: token-level OHLCV, up to 3 timeframes (stop on first success or 429)
-      if (priceChart.sourceStatus !== 'ok' && !_ohlcvRateLimited) {
-        chartTokenLevelAttempted = true
-        for (const tf of _primaryTimeframes) {
-          if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break }
-          chartAttemptedTimeframes.push(`token_level:${tf.key}:${tf.resolution}/${tf.aggregate}x${tf.limit}`)
-          _totalChartHttpCalls++
-          const chartRaw = await fetchGeckoTerminalTokenOhlcv(contract, chain, tf)
-          if (chartRaw.httpStatus === 429) {
-            _ohlcvRateLimited = true
-            _ohlcvRateLimitedAt = tf.key
-            tokenOhlcvAttempts.push({ timeframe: tf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
-            break
-          }
-          const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
-          tokenOhlcvAttempts.push({ timeframe: tf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
-          if (normalized.points.length >= 2) {
-            ({ priceChart, chartCandles } = _ladderSeries(tf, normalized.points))
-            chartFailureReason = null
-            chartUsedTokenLevelOhlcv = true
-            break
-          }
-          chartFailureReason = normalized.rejectedReason ? `token_${normalized.rejectedReason}` : 'token_ohlcv_insufficient_points'
-        }
-      }
-
-      // Phase 3: up to 2 alternate pools, 24h only (stop on first success or 429)
-      if (priceChart.sourceStatus !== 'ok' && !_ohlcvRateLimited && uniqueChartPools.length > 1) {
-        const _altTf = _primaryTimeframes[0]
-        for (const candidate of uniqueChartPools.slice(1, 3)) {
-          if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break }
-          const resolvedTokenPos = resolveTokenPositionInPool(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId)
-          // Same rule as phase 1: never guess a side.
-          const tokenPositions: Array<'base' | 'quote'> = resolvedTokenPos ? [resolvedTokenPos] : []
-          chartAttemptedPools.push({ address: candidate.address, name: candidate.name, liquidityUsd: candidate.liquidityUsd })
-          if (!resolvedTokenPos) {
-            poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: 'base', timeframe: 'none', rawPointCount: 0, validPointCount: 0, rejectedReason: 'token_side_unresolved' })
-            continue
-          }
-          let _altPoolSuccess = false
-          phase3: for (const tokenPos of tokenPositions) {
-            if (_totalChartHttpCalls >= _MAX_OHLCV_CALLS || _ohlcvRateLimited) { _skippedDueToRateLimit++; break phase3 }
-            chartAttemptedTimeframes.push(`${_altTf.key}:${_altTf.resolution}/${_altTf.aggregate}x${_altTf.limit}:${tokenPos}`)
-            _totalChartHttpCalls++
-            const chartRaw = await fetchGeckoTerminalPoolOhlcv(candidate.address, chain, _altTf, tokenPos)
-            if (chartRaw.httpStatus === 429) {
-              _ohlcvRateLimited = true
-              _ohlcvRateLimitedAt = _altTf.key
-              poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: _altTf.key, httpStatus: 429, rawPointCount: 0, validPointCount: 0, rejectedReason: 'rate_limited' })
-              break phase3
-            }
-            const normalized = normalizeOhlcvRows(chartRaw.json?.data?.attributes?.ohlcv_list)
-            poolOhlcvAttempts.push({ poolId: candidate.poolId, poolAddress: candidate.address, tokenPosition: tokenPos, timeframe: _altTf.key, ...(chartRaw.httpStatus != null ? { httpStatus: chartRaw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
-            if (normalized.points.length >= 2) {
-              ({ priceChart, chartCandles } = _ladderSeries(_altTf, normalized.points))
-              chartSelectedPoolForChart = { address: candidate.address, name: candidate.name }
-              chartFailureReason = null
-              _altPoolSuccess = true
-              break phase3
-            }
-            chartFailureReason = normalized.rejectedReason ?? 'insufficient_points'
-          }
-          if (_altPoolSuccess || priceChart.sourceStatus === 'ok') break
-        }
-      }
-
-      // Phase 4: DexScreener OHLCV — gated off. The DexScreener pairs endpoint does not
-      // currently return chart/candle data, so this phase would only waste a request.
-      // Diagnostics are preserved as a placeholder for forward-compatibility.
+      // Phase 4 (DexScreener OHLCV) stays gated off — its pairs endpoint returns no candles.
       if (priceChart.sourceStatus !== 'ok' && _dexFb?.pairAddress) {
         dexScreenerChartAttempted = false
-      }
-
-      // Phase 5: trade reconstruction, max 2 pools
-      if (priceChart.sourceStatus !== 'ok') {
-        chartTradeReconstructionAttempted = true
-        for (const poolCandidate of uniqueChartPools.slice(0, 2)) {
-          chartAttemptedTimeframes.push(`trade_recon:${poolCandidate.address.slice(0, 10)}`)
-          tradePoolsAttempted.push(poolCandidate.address)
-          const tradesRaw = await fetchGeckoTerminalPoolTrades(poolCandidate.address, chain)
-          const tradesArr: unknown[] = Array.isArray(tradesRaw.json?.data) ? tradesRaw.json.data : []
-          const reconstructed = reconstructCandlesFromTrades(tradesArr, priceUsd, contract)
-          rawTradeCount = Math.max(rawTradeCount, reconstructed.rawTradeCount)
-          validTradePriceCount = Math.max(validTradePriceCount, reconstructed.validTradePriceCount)
-          for (const [reason, count] of Object.entries(reconstructed.rejectedTradeReasons)) {
-            rejectedTradeReasons[reason] = (rejectedTradeReasons[reason] ?? 0) + count
-          }
-          if (reconstructed.candles.length >= 2) {
-            chartReconstructedCandleCount = reconstructed.candles.length
-            priceChart = { timeframe: '24h', points: reconstructed.candles, sourceStatus: 'ok' }
-            chartFailureReason = null
-            chartUsedTradeReconstruction = true
-            break
-          }
-        }
-        if (!chartUsedTradeReconstruction) {
-          chartFailureReason = chartFailureReason ?? 'trade_reconstruction_insufficient'
-        }
       }
 
       // Phase 6: Synthetic micro-candles — final fallback that always fires when a live price exists.
@@ -6449,6 +6328,7 @@ export async function POST(req: Request) {
         v: {
           priceChart: { ...priceChart },
           chartCandles,
+          chartCandleFailure,
           chartUsedTradeReconstruction,
           chartUsedTokenLevelOhlcv,
           chartUsedDexScreener,
@@ -6479,6 +6359,9 @@ export async function POST(req: Request) {
       })
     }
 
+    // Lets an on-demand 5M read (GET /api/token/chart-candles) reuse this scan's proven pool side
+    // without re-verifying it when it lands on the same server instance.
+    if (chartCandles?.poolAddress && chartCandles.tokenSide) rememberVerifiedChartPool(chain, contract.toLowerCase(), chartCandles.poolAddress, chartCandles.tokenSide)
     const chartAttempted = chartAttemptedPools.length > 0 || chartUsedTokenLevelOhlcv || dexScreenerChartAttempted || chartTradeReconstructionAttempted
     const chartFallbackUsed = (chartSelectedPoolForChart != null && chartSelectedPoolForChart.address.toLowerCase() !== primaryAddr) || chartUsedTokenLevelOhlcv || chartUsedDexScreener || chartUsedTradeReconstruction
     if (priceChart.sourceStatus === 'ok') priceChart.fallbackUsed = chartFallbackUsed
@@ -8529,6 +8412,10 @@ export async function POST(req: Request) {
       },
       priceChart,
       chartCandles: chartStatus === 'ok' && chartCandles && chartCandles.points.length >= 2 ? chartCandles : null,
+      // Plain-language reason indexed candles are unavailable (no attempt log in the public payload).
+      chartCandleStatus: chartCandles && chartCandles.points.length >= 2
+        ? { available: true, code: null, message: null }
+        : { available: false, code: chartCandleFailure?.code ?? (noActivePools ? 'pool_not_indexed' : 'provider_empty'), message: chartCandleFailure?.message ?? candleFailureMessage(noActivePools ? 'pool_not_indexed' : 'provider_empty') },
       chartStatus,
       chartSource,
       chartReason,
