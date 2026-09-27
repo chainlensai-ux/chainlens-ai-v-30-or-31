@@ -5335,6 +5335,12 @@ export default function TerminalTokenScanner() {
           chartSource: json.chartSource ?? null,
           chartReason: json.chartReason ?? null,
           chartDataSource: json.chartDataSource ?? null,
+          // Full real candle series, the structured candle-failure reason, and the (debug-only)
+          // candle trail. Without these three the chart only ever saw the short priceChart window,
+          // every failure showed the same generic reason, and the debug panel never rendered.
+          chartCandles: json.chartCandles ?? null,
+          chartCandleStatus: json.chartCandleStatus ?? null,
+          chartDebug: json.chartDebug ?? null,
           marketTrendSnapshot: json.marketTrendSnapshot ?? null,
           resolvedInput: json.resolvedInput ?? null,
           riskEngine: json.riskEngine ?? null,

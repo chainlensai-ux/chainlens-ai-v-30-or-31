@@ -26,7 +26,8 @@ export type ProbeFetch = (url: string, init: { headers: Record<string, string> }
 }>
 
 const NETWORK_RE = /^[a-z0-9_-]{1,40}$/
-const POOL_RE = /^(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/
+// 20-byte pool contract, bytes32 V4/Infinity pool id (so the probe can verify pool-id support live), or a Solana pool.
+const POOL_RE = /^(0x[a-fA-F0-9]{40}|0x[a-fA-F0-9]{64}|[1-9A-HJ-NP-Za-km-z]{32,44})$/
 
 export function parseProbeInput(sp: URLSearchParams): ProbeInput | { error: string } {
   const network = (sp.get('network') ?? 'base').toLowerCase()

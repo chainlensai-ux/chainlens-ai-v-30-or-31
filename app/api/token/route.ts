@@ -3065,6 +3065,18 @@ function extractPoolAddressOrId(rawId: unknown, attrAddress: unknown): { address
   return { address: null, poolId: null, poolAddressType: "unknown" }
 }
 
+// Price-chart pool identifier. A bytes32 pool id in the GeckoTerminal resource id (Uniswap V4 /
+// PancakeSwap Infinity) wins, because attributes.address can then be the shared PoolManager, which
+// is not this pool; the id is kept whole (64 hex), never cut to 40. Every other pool resolves to its
+// 20-byte pool contract exactly as before.
+function chartPoolIdentifier(pool: Record<string, unknown> | null | undefined): string | null {
+  const fromId = extractPoolAddressOrId(pool?.id, null)
+  if (fromId.poolId) return fromId.poolId
+  const attrAddress = (pool?.attributes as Record<string, unknown> | undefined)?.address
+  const identity = extractPoolAddressOrId(pool?.id, attrAddress)
+  return identity.address ?? identity.poolId ?? extractPoolAddressOrId(attrAddress, null).poolId
+}
+
 function normalizePool(pool: Record<string, unknown> | null, includedTokenById: Map<string, Record<string, unknown>>, includedAll: unknown[] = []): NormalizedPool {
   const attrs = (pool?.attributes ?? {}) as Record<string, unknown>;
   const rel = (pool?.relationships ?? {}) as Record<string, unknown>;
@@ -6165,7 +6177,7 @@ export async function POST(req: Request) {
     const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
       .map((p) => {
         if (!p) return null
-        const address = extractGeckoTerminalPoolAddress(p as Record<string, unknown>)
+        const address = chartPoolIdentifier(p as Record<string, unknown>)
         if (!address) return null
         return {
           pool: p,
@@ -6180,7 +6192,7 @@ export async function POST(req: Request) {
       })
       .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
       .sort((a, b) => ((b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1)) || ((b.volume24hUsd ?? -1) - (a.volume24hUsd ?? -1)))
-    const primaryAddr = extractGeckoTerminalPoolAddress(mainPool as Record<string, unknown> | null)?.toLowerCase() ?? ''
+    const primaryAddr = chartPoolIdentifier(mainPool as Record<string, unknown> | null)?.toLowerCase() ?? ''
     chartPoolCandidates.sort((a, b) => {
       if (a.address.toLowerCase() === primaryAddr) return -1
       if (b.address.toLowerCase() === primaryAddr) return 1

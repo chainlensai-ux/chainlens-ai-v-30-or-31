@@ -10,13 +10,12 @@
 // that reads COINGECKO_API_KEY: it goes into a request header and nowhere else — never into a URL,
 // a log line, a return value, or an error message. Callers only ever see { json, httpStatus }.
 
-import { COINGECKO_ONCHAIN_NETWORK } from '../evmChartCandles.ts'
+import { COINGECKO_ONCHAIN_NETWORK, isEvmPoolIdentifier } from '../evmChartCandles.ts'
 import { resolveCoingeckoRuntimeConfig } from '../../src/modules/pricingAtTimeEngine/sources/coingecko.ts'
 
 export type CoingeckoOhlcvRequest = { resolution: 'minute' | 'hour' | 'day'; aggregate: number; limit: number }
 export type CoingeckoFetchImpl = (url: string, init: { headers: Record<string, string> }) => Promise<{ status: number; ok: boolean; json: () => Promise<unknown> }>
 
-const POOL_RE = /^0x[a-fA-F0-9]{40}$/
 const TOKEN_RE = /^(base|quote|0x[a-fA-F0-9]{40})$/
 
 /** True only when a key is set and COINGECKO_API_TIER (if set) is valid — otherwise no request is made. */
@@ -59,7 +58,7 @@ export async function fetchCoingeckoOnchainPoolOhlcv(
   const network = coingeckoOnchainNetwork(chain)
   const cfg = resolveCoingeckoRuntimeConfig()
   const key = process.env.COINGECKO_API_KEY
-  if (!network || !key || !cfg.configurationValid || !POOL_RE.test(pool) || !TOKEN_RE.test(token)) return { json: null, httpStatus: null }
+  if (!network || !key || !cfg.configurationValid || !isEvmPoolIdentifier(pool) || !TOKEN_RE.test(token)) return { json: null, httpStatus: null }
   try {
     const res = await fetchImpl(`${cfg.selectedBaseUrl}${coingeckoOnchainOhlcvPath(network, pool, req, token)}`, {
       headers: { Accept: 'application/json', [cfg.selectedHeaderName]: key },

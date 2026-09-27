@@ -19,6 +19,9 @@
 import {
   COINGECKO_ONCHAIN_NETWORK,
   EVM_CHART_NETWORK,
+  EVM_POOL_ID_RE,
+  POOL_ID_OHLCV_CONFIRMED,
+  isEvmPoolIdentifier,
   candleFailureMessage,
   classifyOhlcvResponse,
   resolveEvmPoolTokenSide,
@@ -84,7 +87,7 @@ export function isOnDemandChain(v: string | null): v is OnDemandChain {
 export async function loadOnDemandCandles(
   params: { chain: string | null; token: string | null; pool: string | null; timeframe: string | null },
   fetchJson: FetchJson,
-  opts: { baseUrl?: string; now?: () => number; fetchCoingecko?: FetchCoingeckoOhlcv } = {},
+  opts: { baseUrl?: string; now?: () => number; fetchCoingecko?: FetchCoingeckoOhlcv; poolIdOhlcvConfirmed?: boolean } = {},
 ): Promise<{ result: OnDemandResult; providerCalls: number; cacheHit: boolean }> {
   const now = opts.now ?? Date.now
   const timeframe = params.timeframe && params.timeframe in ON_DEMAND_TIMEFRAMES ? (params.timeframe as OnDemandTimeframe) : null
@@ -92,7 +95,10 @@ export async function loadOnDemandCandles(
   if (!isOnDemandChain(params.chain)) return { result: fail(timeframe, 'network_not_supported'), providerCalls: 0, cacheHit: false }
   const token = params.token ?? ''
   const pool = params.pool ?? ''
-  if (!ADDRESS_RE.test(token) || !ADDRESS_RE.test(pool)) return { result: fail(timeframe, 'invalid_request'), providerCalls: 0, cacheHit: false }
+  // Token: strict 20-byte address. Pool: a 20-byte pool contract OR a bytes32 V4/Infinity pool id.
+  if (!ADDRESS_RE.test(token) || !isEvmPoolIdentifier(pool)) return { result: fail(timeframe, 'invalid_request'), providerCalls: 0, cacheHit: false }
+  // A pool id is never sent to a provider whose support for it is unproven (see POOL_ID_OHLCV_CONFIRMED).
+  if (EVM_POOL_ID_RE.test(pool) && !(opts.poolIdOhlcvConfirmed ?? POOL_ID_OHLCV_CONFIRMED)) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: 0, cacheHit: false }
   const chain = params.chain
   const network = EVM_CHART_NETWORK[chain]
   if (!network) return { result: fail(timeframe, 'network_not_supported'), providerCalls: 0, cacheHit: false }

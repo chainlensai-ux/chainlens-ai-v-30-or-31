@@ -68,6 +68,27 @@ export const EVM_CHART_NETWORK: Readonly<Record<string, string>> = { eth: 'eth',
  */
 export const COINGECKO_ONCHAIN_NETWORK: Readonly<Record<string, string>> = { eth: 'eth', base: 'base', bnb: 'bsc' }
 
+/** A 20-byte pool contract address (V2 / V3 / Aerodrome / Slipstream pools). */
+export const EVM_POOL_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
+/** A bytes32 pool id (Uniswap V4 / PancakeSwap Infinity) — NOT a contract address. */
+export const EVM_POOL_ID_RE = /^0x[a-fA-F0-9]{64}$/
+
+/** True for either well-formed EVM pool identifier. Token addresses must still use EVM_POOL_ADDRESS_RE-strict checks. */
+export function isEvmPoolIdentifier(value: string): boolean {
+  return EVM_POOL_ADDRESS_RE.test(value) || EVM_POOL_ID_RE.test(value)
+}
+
+/**
+ * Whether CoinGecko / GeckoTerminal pool OHLCV (and GeckoTerminal pool trades) have been PROVEN,
+ * by a live request, to accept a bytes32 V4 pool id in the {pool} path segment. Not yet proven —
+ * the sandbox this was built in cannot reach either provider, and the official CoinGecko SDK only
+ * documents the parameter as "pool contract address". Until a live probe
+ * (/api/debug/coingecko-onchain-probe?pool=<64-hex id>) returns real rows, V4 pools keep their true
+ * id end to end but are never requested: the ladder records provider_unsupported_pool_id instead
+ * of sending a truncated id or the shared PoolManager. Flip to true only with that evidence.
+ */
+export const POOL_ID_OHLCV_CONFIRMED = false
+
 export function incrementReason(map: Record<string, number>, key: string) {
   map[key] = (map[key] ?? 0) + 1
 }
@@ -270,6 +291,7 @@ export type CandleFailureCode =
   | 'alternate_pool_failed'
   | 'swap_fallback_insufficient'
   | 'call_budget_exhausted'
+  | 'provider_unsupported_pool_id'
 
 /** 'coingecko_pool' is the CoinGecko on-chain read; every other route is GeckoTerminal. */
 export type CandleAttemptRoute = 'coingecko_pool' | 'pool' | 'alternate_pool' | 'swaps'
@@ -300,6 +322,7 @@ const FAILURE_MESSAGES: Record<CandleFailureCode, string> = {
   alternate_pool_failed: 'Neither the main pool nor the alternate pools returned price history.',
   swap_fallback_insufficient: 'Too few recent swaps to rebuild candles.',
   call_budget_exhausted: 'The candle request budget for this scan was used up before history was found.',
+  provider_unsupported_pool_id: "This token trades in a pool-id based pool (Uniswap V4 / PancakeSwap Infinity) that the candle provider has not been confirmed to support, so its price history was not requested.",
 }
 
 export function candleFailureMessage(code: CandleFailureCode): string {
@@ -323,6 +346,7 @@ export function classifyOhlcvResponse(route: 'pool', httpStatus: number | null, 
 const FAILURE_PRIORITY: CandleFailureCode[] = [
   'network_not_supported',
   'provider_rate_limited',
+  'provider_unsupported_pool_id',
   'token_side_unresolved',
   'token_identity_unverified',
   'pool_not_indexed',
@@ -447,6 +471,8 @@ export async function runEvmCandleLadder(input: {
   coingeckoNetworkId?: string | null
   currentPriceUsd: number | null
   maxOhlcvCalls?: number
+  /** Overrides POOL_ID_OHLCV_CONFIRMED (tests only). */
+  poolIdOhlcvConfirmed?: boolean
 }, deps: LadderDeps): Promise<LadderResult> {
   const maxCalls = input.maxOhlcvCalls ?? EVM_MAX_OHLCV_CALLS
   const r: LadderResult = {
@@ -474,8 +500,17 @@ export async function runEvmCandleLadder(input: {
     if (r.totalHttpCalls >= maxCalls) { r.skippedDueToRateLimit++; budgetExhausted = true; return false }
     return true
   }
+  // A bytes32 pool id (V4 / Infinity) is kept as-is end to end, but never sent to a provider whose
+  // support for it is unproven — recorded instead, with zero calls. Never truncated, never swapped
+  // for the shared PoolManager.
+  const poolIdUnsupported = (pool: LadderPool) => EVM_POOL_ID_RE.test(pool.address) && !(input.poolIdOhlcvConfirmed ?? POOL_ID_OHLCV_CONFIRMED)
+  const recordUnsupported = (pool: LadderPool, route: CandleAttemptRoute, timeframe: string | null) => {
+    r.attempts.push({ route, poolAddress: pool.address, side: resolveEvmPoolTokenSide(pool.pool, input.contract, networkId), timeframe, httpStatus: null, rows: 0, validRows: 0, code: 'provider_unsupported_pool_id' })
+    r.failureReason = 'provider_unsupported_pool_id'
+  }
   const tryPool = async (pool: LadderPool, rungs: ReadonlyArray<EvmChartRung>, route: 'pool' | 'alternate_pool'): Promise<boolean> => {
     r.attemptedPools.push({ address: pool.address, name: pool.name, liquidityUsd: pool.liquidityUsd })
+    if (poolIdUnsupported(pool)) { recordUnsupported(pool, route, rungs[0]?.key ?? null); return false }
     const side = resolveEvmPoolTokenSide(pool.pool, input.contract, networkId)
     if (!side) {
       r.poolOhlcvAttempts.push({ poolId: pool.poolId, poolAddress: pool.address, tokenPosition: 'base', timeframe: 'none', rawPointCount: 0, validPointCount: 0, rejectedReason: 'token_side_unresolved' })
@@ -512,7 +547,9 @@ export async function runEvmCandleLadder(input: {
 
   // Phase 0: CoinGecko on-chain, primary pool, 15m rung — one call.
   const cgPool = input.pools[0]
-  if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && canCall()) {
+  if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && poolIdUnsupported(cgPool)) {
+    recordUnsupported(cgPool, 'coingecko_pool', EVM_CHART_LADDER[0].key)
+  } else if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && canCall()) {
     const rung = EVM_CHART_LADDER[0]
     const provenSide = resolveEvmPoolTokenSide(cgPool.pool, input.contract, networkId)
     const tokenParam = provenSide ?? input.contract.toLowerCase()
@@ -561,6 +598,7 @@ export async function runEvmCandleLadder(input: {
   // counts against the same hard cap.
   if (!r.rateLimited) r.tradeReconstructionAttempted = true
   for (const pool of input.pools.slice(0, 2)) {
+    if (poolIdUnsupported(pool)) { recordUnsupported(pool, 'swaps', null); continue }
     if (!canCall()) break
     r.attemptedTimeframes.push(`trade_recon:${pool.address.slice(0, 10)}`)
     r.tradePoolsAttempted.push(pool.address)
