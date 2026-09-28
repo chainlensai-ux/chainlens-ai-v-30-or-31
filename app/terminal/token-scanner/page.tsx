@@ -5,6 +5,7 @@ import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import PriceChartPanel, { type FiveMinuteLoadResult } from './PriceChartPanel'
+import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -8046,6 +8047,14 @@ export default function TerminalTokenScanner() {
                     )
 
                     if (_hasValidCandles) {
+                      // MCAP mode: only with the Market Cap card's own VERIFIED circulating market cap and a
+                      // circulating_supply that agrees with it at the scan price. Never FDV, never total supply.
+                      const _mcapSupply = resolveChartMarketCapSupply({
+                        valuationStatus: result.valuationContext?.primaryValuationStatus,
+                        verifiedMarketCapUsd: result.valuationContext?.primaryValuationUsd,
+                        circulatingSupply: result.circulatingSupply,
+                        priceUsd: result.price,
+                      })
                       const _badgeStyle = { fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', padding: '2px 8px', borderRadius: '99px', textTransform: 'uppercase' as const, fontFamily: 'var(--font-plex-mono)' }
                       const _chartBadge = result.chartSource === 'trade_reconstructed'
                         ? <span style={{ ..._badgeStyle, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.22)' }}>Reconstructed from recent swaps</span>
@@ -8062,6 +8071,8 @@ export default function TerminalTokenScanner() {
                           badge={_chartBadge}
                           footnote={result.chartSource === 'trade_reconstructed' ? `Indexed candles unavailable: ${_candleReason}` : result.chartSource === 'v4_swap_events' ? 'Built from this Uniswap V4 pool\'s on-chain swaps' : result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
                           loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress)}
+                          marketCapSupply={_mcapSupply.enabled ? _mcapSupply.supply : null}
+                          marketCapUnavailableReason={_mcapSupply.enabled ? null : _mcapSupply.reason}
                         />
                       )
                     }

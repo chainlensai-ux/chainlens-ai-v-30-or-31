@@ -29,6 +29,7 @@ import {
   type ChartTimeframeKey,
   type ChartViewport,
 } from '@/lib/priceChartCandles'
+import { formatCompactUsd, scaleCandlesToMarketCap } from '@/lib/chartMarketCap'
 
 const C = {
   panel: '#070d19',
@@ -60,7 +61,15 @@ export type PriceChartPanelProps = {
    * proven pool to read 5M from — 5M then stays disabled with its reason.
    */
   loadFiveMinute?: () => Promise<FiveMinuteLoadResult>
+  /**
+   * Trusted circulating supply for MCAP mode (lib/chartMarketCap.ts resolveChartMarketCapSupply).
+   * Null keeps the chart in PRICE with MCAP disabled for `marketCapUnavailableReason`.
+   */
+  marketCapSupply?: number | null
+  marketCapUnavailableReason?: string | null
 }
+
+export type ChartValueMode = 'MCAP' | 'PRICE'
 
 // Callback-ref width tracker: re-attaches when the measured element changes (empty state -> chart).
 function useElementWidth<T extends HTMLElement>() {
@@ -121,7 +130,7 @@ type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean
 const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const FIVE_MIN_SEC = 300
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   const tfSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
   const defaultKey = useMemo(() => pickDefaultTimeframe(tfSet), [tfSet])
@@ -157,7 +166,15 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const fiveActive = picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
   const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === picked && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
   const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)
-  const series: ChartCandle[] = fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
+  const priceSeries: ChartCandle[] = fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
+  // MCAP / PRICE: a view over the SAME candles (O/H/L/C × trusted circulating supply; volume
+  // unchanged). The choice is tied to this scan's candle set, so a new scan starts from its default
+  // and toggling never refetches or rescans.
+  const mcapAvailable = marketCapSupply != null && Number.isFinite(marketCapSupply) && marketCapSupply > 0
+  const [modeRaw, setModeRaw] = useState<{ source: ReadonlyArray<ChartCandleInput>; mode: ChartValueMode } | null>(null)
+  const valueMode: ChartValueMode = !mcapAvailable ? 'PRICE' : modeRaw && modeRaw.source === candles ? modeRaw.mode : 'MCAP'
+  const series: ChartCandle[] = valueMode === 'MCAP' ? scaleCandlesToMarketCap(priceSeries, marketCapSupply!) : priceSeries
+  const fmtValue = (v: number, digits?: number) => (valueMode === 'MCAP' ? formatCompactUsd(v, 2) : formatChartPrice(v, digits))
   const intervalSec = fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
 
   const requestFive = async () => {
@@ -195,7 +212,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const axisCharW = 6.6
   let widestLabel = 0
   for (const c of series.slice(-200)) {
-    widestLabel = Math.max(widestLabel, formatChartPrice(c.high, 4).length, formatChartPrice(c.low, 4).length)
+    widestLabel = Math.max(widestLabel, fmtValue(c.high, 4).length, fmtValue(c.low, 4).length)
   }
   const axisW = Math.min(110, Math.max(56, Math.ceil(widestLabel * axisCharW + 14)))
   const plotW = W - axisW
@@ -436,12 +453,36 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap', marginBottom: '8px' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
           <span style={{ fontSize: compact ? '22px' : '26px', fontWeight: 700, color: C.textStrong, fontFamily: MONO, fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>
-            {formatChartPrice(latest.close)}
+            {fmtValue(latest.close)}
           </span>
           <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: MONO, color: windowChange == null ? C.axisText : windowChange >= 0 ? C.bull : C.bear }}>
             {formatChartPct(windowChange)}
           </span>
           {windowSpan && <span style={{ fontSize: '10px', color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{windowSpan}</span>}
+          <div role="group" aria-label="Chart value" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '7px', background: 'rgba(15,23,42,0.7)', border: `1px solid ${C.border}`, alignSelf: 'center' }}>
+            {(['MCAP', 'PRICE'] as const).map((m) => {
+              const disabled = m === 'MCAP' && !mcapAvailable
+              const active = valueMode === m
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={disabled}
+                  title={disabled ? (marketCapUnavailableReason ?? 'Circulating supply unavailable') : m === 'MCAP' ? 'Market cap = price × circulating supply' : 'Token price (USD)'}
+                  onClick={() => { if (!disabled) { setModeRaw({ source: candles, mode: m }); setHover(null) } }}
+                  style={{
+                    padding: '3px 8px', borderRadius: '5px', border: 'none', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.05em',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    color: active ? C.textStrong : disabled ? '#334155' : '#94a3b8',
+                    background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
+                  }}
+                >
+                  {m}
+                </button>
+              )
+            })}
+          </div>
         </div>
         {chips}
       </div>
@@ -454,10 +495,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       {/* OHLCV readout — follows the crosshair, rests on the newest visible candle */}
       <div aria-live="polite" style={{ display: 'flex', flexWrap: 'wrap', gap: compact ? '2px 10px' : '2px 14px', minHeight: '18px', marginBottom: '6px', fontSize: '10.5px', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.axisText }}>
         <span style={{ color: '#94a3b8' }}>{fmtTime(readout.t, intervalSec, 'readout')}</span>
-        <span>O <span style={{ color: readoutColor }}>{formatChartPrice(readout.open)}</span></span>
-        <span>H <span style={{ color: readoutColor }}>{formatChartPrice(readout.high)}</span></span>
-        <span>L <span style={{ color: readoutColor }}>{formatChartPrice(readout.low)}</span></span>
-        <span>C <span style={{ color: readoutColor }}>{formatChartPrice(readout.close)}</span></span>
+        <span>O <span style={{ color: readoutColor }}>{fmtValue(readout.open)}</span></span>
+        <span>H <span style={{ color: readoutColor }}>{fmtValue(readout.high)}</span></span>
+        <span>L <span style={{ color: readoutColor }}>{fmtValue(readout.low)}</span></span>
+        <span>C <span style={{ color: readoutColor }}>{fmtValue(readout.close)}</span></span>
         <span>V <span style={{ color: C.text }}>{formatChartVolume(readout.volume)}</span></span>
         <span>Chg <span style={{ color: readoutChange == null ? C.axisText : readoutChange >= 0 ? C.bull : C.bear }}>{formatChartPct(readoutChange)}</span></span>
       </div>
@@ -469,7 +510,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             width={W}
             height={H}
             role="img"
-            aria-label={`${n} ${formatIntervalLabel(intervalSec)} candles shown of ${total}, last ${formatChartPrice(latest.close)}, ${formatChartPct(windowChange)} over ${windowSpan}`}
+            aria-label={`${n} ${formatIntervalLabel(intervalSec)} candles shown of ${total}, last ${valueMode === 'MCAP' ? 'market cap ' : ''}${fmtValue(latest.close)}, ${formatChartPct(windowChange)} over ${windowSpan}`}
             style={{ display: 'block', touchAction: 'pan-y', userSelect: 'none', cursor: 'crosshair' }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
@@ -525,7 +566,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               // Never draw an axis label underneath the current-price tag or the crosshair tag.
               if (lastInView && Math.abs(y - lastY) < tagH) return null
               if (hover && hover.y >= priceTop && hover.y <= priceBot && Math.abs(y - hover.y) < tagH) return null
-              return <text key={`ty${v}`} x={plotW + 6} y={y + 3.5} fill={C.axisText} style={{ fontSize: 10, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}>{formatChartPrice(v, 3)}</text>
+              return <text key={`ty${v}`} x={plotW + 6} y={y + 3.5} fill={C.axisText} style={{ fontSize: 10, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }}>{fmtValue(v, 3)}</text>
             })}
 
             {/* X axis labels */}
@@ -540,7 +581,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
             {/* Current (latest real) price line + tag — shown when it lies inside the visible range */}
             {lastInView && <line x1={0} x2={plotW} y1={lastY} y2={lastY} stroke={lastBull ? C.bull : C.bear} strokeOpacity={0.7} strokeWidth={1} strokeDasharray="2 3" />}
-            {lastInView && priceTag(lastY, formatChartPrice(latest.close, 4), lastBull ? C.bull : C.bear, '#04121a')}
+            {lastInView && priceTag(lastY, fmtValue(latest.close, 4), lastBull ? C.bull : C.bear, '#04121a')}
 
             {/* Crosshair */}
             {hover && hoverC && (() => {
@@ -553,7 +594,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 <g pointerEvents="none">
                   <line x1={x} x2={x} y1={priceTop} y2={volBot} stroke={C.crosshair} strokeWidth={1} strokeDasharray="3 3" />
                   {inPrice && <line x1={0} x2={plotW} y1={hover.y} y2={hover.y} stroke={C.crosshair} strokeWidth={1} strokeDasharray="3 3" />}
-                  {inPrice && priceTag(hover.y, formatChartPrice(vFromY(hover.y), 4), C.tagBg, C.textStrong)}
+                  {inPrice && priceTag(hover.y, fmtValue(vFromY(hover.y), 4), C.tagBg, C.textStrong)}
                   <rect x={tx} y={volBot + 2} width={tw} height={tagH} rx={2} fill={C.tagBg} />
                   <text x={tx + tw / 2} y={volBot + 14} textAnchor="middle" fill={C.textStrong} style={{ fontSize: 10, fontFamily: MONO }}>{timeLabel}</text>
                 </g>
