@@ -219,7 +219,7 @@ test('PriceChartPanel is fed chartCandles, the reason comes from chartCandleStat
   assert.match(page, /loadFiveMinute=\{makeFiveMinuteLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress\)\}/)
   assert.match(page, /const _candleReason = result\.chartCandleStatus\?\.message/)
   assert.match(page, /new URLSearchParams\(window\.location\.search\)\.get\('debug'\) === '1'/)
-  assert.match(page, /\{result\.chartDebug && <ChartDebugPanel debug=\{result\.chartDebug\} \/>\}/)
+  assert.match(page, /\{result\.chartDebug && <ChartDebugPanel debug=\{result\.chartDebug\} chain=\{result\.chain\} token=\{result\.contract\} livePriceUsd=\{result\.price \?\? null\} \/>\}/)
 })
 
 test('Solana result handling is untouched (whole JSON, no whitelist)', () => {

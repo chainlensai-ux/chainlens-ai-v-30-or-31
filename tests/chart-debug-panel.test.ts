@@ -197,12 +197,13 @@ test('server: chartDebug is built from the ladder\'s own already-computed result
   assert.match(fn, /attempts: chartCandleAttempts/)
 })
 
-test('client: reuses the existing debugHolder-style ?param -> body-flag convention; no new route', () => {
+test('client: reuses the existing debugHolder-style ?param -> body-flag convention; only the Preview-gated V4 probe route is called', () => {
   assert.match(page, /new URLSearchParams\(window\.location\.search\)\.get\('debug'\) === '1'/)
   assert.match(page, /\.\.\.\(wantsChartDebug \? \{ debug: true \} : \{\}\)/)
-  assert.doesNotMatch(page, /fetch\(['"`]\/api\/debug/i, 'no new standalone debug route added for this')
+  const debugFetches = page.match(/fetch\(['"`]\/api\/debug\/[^?'"`$]+/gi) ?? []
+  assert.deepEqual(debugFetches, ['fetch(`/api/debug/v4-candle-probe'], 'the TEST V4 CANDLES diagnostic is the only debug route the page calls')
 })
 
 test('client: panel renders only when result.chartDebug is present, never unwraps it unsafely', () => {
-  assert.match(page, /\{result\.chartDebug && <ChartDebugPanel debug=\{result\.chartDebug\} \/>\}/)
+  assert.match(page, /\{result\.chartDebug && <ChartDebugPanel debug=\{result\.chartDebug\} chain=\{result\.chain\} token=\{result\.contract\} livePriceUsd=\{result\.price \?\? null\} \/>\}/)
 })

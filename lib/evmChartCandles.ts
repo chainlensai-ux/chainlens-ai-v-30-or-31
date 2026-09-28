@@ -693,6 +693,9 @@ export type ChartDebugInfo = {
   finalCandleCount: number
   /** The structured CandleFailureCode behind the fallback; null when real pool OHLCV was used. */
   fallbackReason: CandleFailureCode | null
+  /** TEMPORARY, Preview-only: set by the route when the primary pool is a 64-hex PoolId with a proven
+   * side, enabling the panel's "TEST V4 CANDLES" diagnostic. Absent otherwise. */
+  v4Probe?: { pool: string; side: 'base' | 'quote' } | null
 }
 
 const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {

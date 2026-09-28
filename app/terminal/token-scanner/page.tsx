@@ -797,6 +797,8 @@ type ScanResult = {
     finalStage: string
     finalCandleCount: number
     fallbackReason: string | null
+    /** TEMPORARY, Preview-only: present only for a 64-hex V4 PoolId with a proven side. */
+    v4Probe?: { pool: string; side: 'base' | 'quote' } | null
   } | null
   marketTrendSnapshot?: {
     status: 'ok' | 'unavailable'
@@ -1497,8 +1499,32 @@ const CHART_DEBUG_STAGE_LABEL: Record<string, string> = {
   swap_rebuild: 'Swap rebuild',
   estimated_trend: 'Estimated trend',
 }
-function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug']> }) {
+// TEMPORARY, Preview-only "TEST V4 CANDLES" diagnostic. The server decides visibility (it sets
+// chartDebug.v4Probe only on Vercel Preview, for a signed-in ?debug=1 scan whose pool is a 64-hex
+// PoolId); the endpoint itself also 404s outside Preview. Shows each provider's result separately.
+type V4ProbeProviderView = { provider: string; attempted: boolean; skippedReason: string | null; httpStatus: number | null; outcome: string | null; rows: number; firstClose: number | null; latestClose: number | null; tokenSide: string; identityMatched: boolean | null; priceMatch: boolean | null }
+type V4ProbeView = { ok: true; providerCalls: number; livePriceUsd: number | null; coingecko: V4ProbeProviderView; geckoterminal: V4ProbeProviderView } | { ok: false; error: string }
+const yesNo = (v: boolean | null) => (v == null ? 'n/a' : v ? 'yes' : 'no')
+function v4ProviderBlock(label: string, r: V4ProbeProviderView): string {
+  if (!r.attempted) return `${label}\n  not requested (${r.skippedReason ?? 'skipped'})\n`
+  return `${label}\n  HTTP: ${r.httpStatus ?? 'no response'} (${r.outcome ?? 'n/a'})\n  Rows: ${r.rows}\n  First close: ${r.firstClose ?? 'n/a'}\n  Latest close: ${r.latestClose ?? 'n/a'}\n  Token side: ${r.tokenSide}\n  Identity matched: ${yesNo(r.identityMatched)}\n  Price match: ${yesNo(r.priceMatch)}\n`
+}
+async function runV4CandleTest(chain: string, token: string, probe: { pool: string; side: string }, livePriceUsd: number | null): Promise<V4ProbeView> {
+  const { data: { session } } = await supabase.auth.getSession()
+  const qs = new URLSearchParams({ debug: '1', chain, token, pool: probe.pool, side: probe.side, ...(livePriceUsd != null && livePriceUsd > 0 ? { livePriceUsd: String(livePriceUsd) } : {}) })
+  try {
+    const res = await fetch(`/api/debug/v4-candle-probe?${qs.toString()}`, { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}, cache: 'no-store' })
+    const json = await res.json().catch(() => null)
+    if (!res.ok || !json?.ok) return { ok: false, error: json?.error ?? `HTTP ${res.status}` }
+    return json as V4ProbeView
+  } catch {
+    return { ok: false, error: 'request failed' }
+  }
+}
+function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNullable<ScanResult['chartDebug']>; chain: string | null | undefined; token: string | null | undefined; livePriceUsd: number | null }) {
   const [open, setOpen] = useState(false)
+  const [v4Test, setV4Test] = useState<{ status: 'idle' | 'loading' | 'done'; view: V4ProbeView | null }>({ status: 'idle', view: null })
+  const v4Probe = debug.v4Probe && chain && token ? debug.v4Probe : null
   return (
     <div style={{ marginBottom: '16px', border: '1px dashed #64748b', borderRadius: '8px', padding: '8px 10px', background: '#0b0f1a', fontFamily: 'monospace', fontSize: '11px', color: '#94a3b8' }}>
       <button
@@ -1527,6 +1553,26 @@ function ChartDebugPanel({ debug }: { debug: NonNullable<ScanResult['chartDebug'
             const parts = [a.httpStatus != null ? `${a.httpStatus}` : a.status, `${a.rowsReturned} rows`]
             return `${label} — ${parts.join(' — ')}${a.reason ? ` (${a.reason})` : ''}\n`
           })}
+          {v4Probe && (
+            <>
+              {'\n'}
+              <button
+                type="button"
+                disabled={v4Test.status === 'loading'}
+                onClick={async () => {
+                  setV4Test({ status: 'loading', view: null })
+                  setV4Test({ status: 'done', view: await runV4CandleTest(chain!, token!, v4Probe, livePriceUsd) })
+                }}
+                style={{ background: '#1e293b', border: '1px solid #64748b', borderRadius: '6px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, padding: '4px 10px', cursor: v4Test.status === 'loading' ? 'wait' : 'pointer' }}
+              >
+                {v4Test.status === 'loading' ? 'TESTING…' : 'TEST V4 CANDLES'}
+              </button>
+              {'\n'}PoolId: {v4Probe.pool} (side {v4Probe.side}){'\n'}
+              {v4Test.view && (v4Test.view.ok
+                ? `Live token price: ${v4Test.view.livePriceUsd ?? 'n/a'}  ·  provider calls: ${v4Test.view.providerCalls}\n\n${v4ProviderBlock('CoinGecko', v4Test.view.coingecko)}\n${v4ProviderBlock('GeckoTerminal', v4Test.view.geckoterminal)}`
+                : `V4 test failed: ${v4Test.view.error}\n`)}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -8100,7 +8146,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )
                   })()}
-                  {result.chartDebug && <ChartDebugPanel debug={result.chartDebug} />}
+                  {result.chartDebug && <ChartDebugPanel debug={result.chartDebug} chain={result.chain} token={result.contract} livePriceUsd={result.price ?? null} />}
                   {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                     <div style={{ marginBottom: '28px' }}>
                       <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>

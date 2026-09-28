@@ -41,7 +41,7 @@ import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
-import { buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint } from '@/lib/evmChartCandles'
+import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint } from '@/lib/evmChartCandles'
 import { coingeckoOnchainNetwork, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
@@ -6457,7 +6457,12 @@ export async function POST(req: Request) {
     // ladder's own already-computed result (lib/evmChartCandles.ts buildEvmChartDebugInfo) — zero
     // new provider calls, no change to candle routing/selection. Never includes API keys, secrets,
     // auth headers, or raw provider bodies: none of those exist in these inputs.
-    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? buildEvmChartDebugInfo({
+    // TEMPORARY, Preview-only "TEST V4 CANDLES" gate: only for a primary pool that is a real 64-hex
+    // PoolId with a proven token side. Diagnostic only — normal chart behavior is unaffected.
+    const _v4Probe = process.env.VERCEL_ENV === 'preview' && _chartPrimaryPool && EVM_POOL_ID_RE.test(_chartPrimaryPool.address) && _chartPrimarySide
+      ? { pool: _chartPrimaryPool.address.toLowerCase(), side: _chartPrimarySide }
+      : null
+    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? { v4Probe: _v4Probe, ...buildEvmChartDebugInfo({
       chain,
       network: _chartNetworkIdMap[chain] ?? null,
       coingeckoNetwork: _chartCoingeckoNetwork,
@@ -6471,7 +6476,7 @@ export async function POST(req: Request) {
       usedEstimatedTrend: chartUsedSyntheticCandles,
       source: chartSource,
       finalCandleCount: priceChart.points.length,
-    }) : undefined
+    }) } : undefined
     const pairCreatedAt = String(mainPoolAttr.pool_created_at ?? '').trim() || null
     const pairAgeLabel = pairCreatedAt ? computePairAge(pairCreatedAt) : null
     const poolCount = matchingPools.length
