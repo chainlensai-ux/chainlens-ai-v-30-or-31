@@ -4,8 +4,11 @@
 // Scope — only what can be proven:
 //  - Base only (PoolManager verified in lib/server/uniswapV4BaseRpc.ts). ETH / BNB have no verified
 //    PoolManager here and Robinhood has no fixed block time: explicit v4_chain_not_supported, 0 calls.
-//  - Counter asset must be native ETH / WETH (CoinGecko's real historical ETH/USD, one shared cached
-//    series) or a USD stablecoin (USDC / USDbC at $1). Anything else: quote_usd_price_unproven.
+//  - Counter asset: native ETH / WETH (CoinGecko's real historical ETH/USD, one shared cached series),
+//    a USD stablecoin (USDC / USDbC at $1), or — one hop only — any other token whose own USD history
+//    is proven by an INDEPENDENT pool pairing it directly with WETH or a verified stable
+//    (lib/server/v4QuoteUsd.ts). Otherwise quote_usd_price_unproven. Every trade needs a quote USD
+//    point within 15 minutes of it, or that trade is dropped.
 //  - The latest candle must sit within 3x of the scan's live token price, or the series is rejected.
 //
 // TIMESTAMPS. A log's own `blockTimestamp` (returned by newer RPC nodes) is exact; when EVERY swap
@@ -29,12 +32,13 @@ import {
   buildV4SwapCandles,
   decodeV4Initialize,
   decodeV4Swap,
-  nearestPriceAt,
+  nearestPriceWithGap,
   type RawEvmLog,
   type V4PoolKey,
   type V4Swap,
 } from '../v4SwapCandles.ts'
 import { closeMatchesLivePrice, type EvmChartPoint } from '../evmChartCandles.ts'
+import type { QuoteUsdResult } from './v4QuoteUsd.ts'
 
 const NATIVE = '0x0000000000000000000000000000000000000000'
 
@@ -62,10 +66,11 @@ export const V4_SWAP_MAX_LOGS = 3_000
 export const V4_SWAP_ENOUGH_BUCKETS = 36
 export const V4_SWAP_DEADLINE_MS = 8_000
 export const V4_SWAP_MAX_CALLS = 6
+/** Max distance between a trade and the quote-asset USD point used for it. */
+export const QUOTE_USD_MAX_GAP_MS = 15 * 60_000
 export const V4_EXACT_INTERVAL_SEC = 300
 export const V4_INFERRED_INTERVAL_SEC = 900
 const RPC_TIMEOUT_MS = 4_000
-const ETH_USD_MAX_GAP_MS = 15 * 60_000
 const OK_TTL_MS = 3 * 60_000
 const FAIL_TTL_MS = 60_000
 const INIT_TTL_MS = 24 * 3_600_000
@@ -88,7 +93,19 @@ export type V4SwapCandleResult = {
   poolManager: string | null
   poolId: string
   tokenCurrencyIndex: 0 | 1 | null
-  counterAsset: 'eth' | 'usd_stable' | 'other' | null
+  counterAsset: 'eth' | 'usd_stable' | 'independent_quote' | 'other' | null
+  /** How the pool's other asset was priced in USD (null until the pool key is known). */
+  quote: {
+    asset: string
+    symbol: string | null
+    source: 'usd_stable' | 'eth_usd_series' | 'independent_pool' | null
+    pool: string | null
+    pairedWith: string | null
+    evidence: 'verified' | 'unavailable'
+    points: number
+    maxGapMs: number | null
+    reason: string | null
+  } | null
   logsFound: number
   tradesUsed: number
   candles: EvmChartPoint[]
@@ -108,6 +125,8 @@ export type V4SwapDeps = {
   rpc: (method: string, params: unknown[], timeoutMs: number) => Promise<{ result: unknown; error: boolean }>
   /** Shared, cached real ETH/USD series covering the swap window ([ms, usd] ascending). */
   ethUsdSeries: (timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
+  /** One-hop independent USD history for any other quote token (lib/server/v4QuoteUsd.ts). Absent => unproven. */
+  quoteUsd?: (input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string>; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
   now?: () => number
 }
 
@@ -149,7 +168,7 @@ export async function loadV4SwapCandles(
   const token = input.token.toLowerCase()
   const cfg = V4_SWAP_CHAIN_CONFIG[input.chain]
   const r: V4SwapCandleResult = {
-    ok: false, code: null, poolManager: cfg?.poolManager ?? null, poolId, tokenCurrencyIndex: null, counterAsset: null, logsFound: 0, tradesUsed: 0,
+    ok: false, code: null, poolManager: cfg?.poolManager ?? null, poolId, tokenCurrencyIndex: null, counterAsset: null, quote: null, logsFound: 0, tradesUsed: 0,
     candles: [], intervalSec: V4_EXACT_INTERVAL_SEC, timeResolution: null, callsUsed: 0, rpcCalls: 0, providerCalls: 0, pagesFetched: 0,
     budgetStopReason: null, cache: { result: false, initialize: false, ethUsd: false },
   }
@@ -208,8 +227,33 @@ export async function loadV4SwapCandles(
   const counterEthDec = cfg.ethLike[counter]
   const counterUsdDec = cfg.usdStable[counter]
   r.counterAsset = counterEthDec != null ? 'eth' : counterUsdDec != null ? 'usd_stable' : 'other'
-  if (r.counterAsset === 'other') return done(gap('quote_usd_price_unproven'))
-  const counterDecimals = (counterEthDec ?? counterUsdDec)!
+  r.quote = { asset: counter, symbol: counterEthDec != null ? 'ETH' : null, source: counterEthDec != null ? 'eth_usd_series' : counterUsdDec != null ? 'usd_stable' : null, pool: null, pairedWith: null, evidence: counterUsdDec != null ? 'verified' : 'unavailable', points: 0, maxGapMs: null, reason: null }
+
+  // 2b. Any other quote token: resolve its independent USD history FIRST (fail fast, before paging),
+  // always leaving at least one call for a swap-log page.
+  let quotePoints: Array<[number, number]> | null = null
+  let counterDecimals = (counterEthDec ?? counterUsdDec) ?? null
+  if (r.counterAsset === 'other') {
+    const unproven = (reason: string) => { r.quote = { ...r.quote!, evidence: 'unavailable', reason }; return done(gap('quote_usd_price_unproven')) }
+    if (!deps.quoteUsd) return unproven('no_independent_quote_source')
+    const q = await deps.quoteUsd({
+      quoteToken: counter,
+      scannedToken: token,
+      excludePool: poolId,
+      anchors: new Set([...Object.keys(cfg.ethLike), ...Object.keys(cfg.usdStable)]),
+      budget: Math.max(0, cap - r.callsUsed - 1),
+      deadlineMs: deadline,
+    })
+    r.callsUsed += q.callsUsed
+    r.providerCalls += q.callsUsed
+    r.quote = { ...r.quote!, symbol: q.quoteSymbol, source: 'independent_pool', pool: q.pool, pairedWith: q.pairedWith, points: q.points.length, reason: q.detail }
+    if (q.reason === 'call_budget_exhausted') { r.budgetStopReason = 'call_budget'; return gap('call_budget_exhausted') }
+    if (!q.ok || q.quoteDecimals == null) return unproven(q.detail ?? 'quote_usd_price_unproven')
+    r.counterAsset = 'independent_quote'
+    counterDecimals = q.quoteDecimals
+    quotePoints = q.points
+  }
+  if (counterDecimals == null) return done(gap('quote_usd_price_unproven'))
   const decimals0 = tokenIsCurrency0 ? input.tokenDecimals : counterDecimals
   const decimals1 = tokenIsCurrency0 ? counterDecimals : input.tokenDecimals
 
@@ -251,21 +295,34 @@ export async function loadV4SwapCandles(
   r.intervalSec = exact ? V4_EXACT_INTERVAL_SEC : V4_INFERRED_INTERVAL_SEC
   const timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.logTimestamp! : latestTs - (latestBlock - s.blockNumber) * cfg.blockTimeSec }))
 
-  // 4. Counter-asset USD: $1 stablecoin, or the shared cached real ETH/USD series.
+  // 4. Counter-asset USD: $1 stablecoin, the shared cached ETH/USD series, or the independent quote
+  // pool's own history. Each trade uses the closest real point within 15 minutes, or is dropped.
+  let maxGapMs = 0
+  const fromSeries = (series: ReadonlyArray<readonly [number, number]>) => (tsMs: number) => {
+    const hit = nearestPriceWithGap(series, tsMs, QUOTE_USD_MAX_GAP_MS)
+    if (!hit) return null
+    maxGapMs = Math.max(maxGapMs, hit.gapMs)
+    return hit.price
+  }
   let counterUsdAt: (tsMs: number) => number | null = () => 1
   if (r.counterAsset === 'eth') {
     if (now() >= deadline) { r.budgetStopReason = 'deadline'; return done(gap('quote_usd_price_unproven')) }
     const eth = await deps.ethUsdSeries(Math.max(1, deadline - now()))
     r.cache.ethUsd = eth.cacheHit
     if (!eth.cacheHit) { r.callsUsed++; r.providerCalls++ }
-    if (!eth.points || eth.points.length === 0) return done(gap('quote_usd_price_unproven'))
-    const series = eth.points
-    counterUsdAt = (tsMs) => nearestPriceAt(series, tsMs, ETH_USD_MAX_GAP_MS)
+    if (!eth.points || eth.points.length === 0) { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'eth_usd_series_unavailable' }; return done(gap('quote_usd_price_unproven')) }
+    r.quote = { ...r.quote!, evidence: 'verified', points: eth.points.length }
+    counterUsdAt = fromSeries(eth.points)
+  } else if (quotePoints) {
+    r.quote = { ...r.quote!, evidence: 'verified' }
+    counterUsdAt = fromSeries(quotePoints)
   }
 
   // 5. Real-trade OHLCV; at least 2 real buckets; identity checked against the live price.
   const built = buildV4SwapCandles({ swaps: timed, tokenIsCurrency0, decimals0, decimals1, counterUsdAt, intervalSec: r.intervalSec })
   r.tradesUsed = built.tradesUsed
+  r.quote = { ...r.quote!, maxGapMs: r.counterAsset === 'usd_stable' ? null : maxGapMs }
+  if (built.tradesUsed === 0 && r.counterAsset !== 'usd_stable') { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_15m_of_any_trade' }; return done(gap('quote_usd_price_unproven')) }
   if (built.candles.length < 2) return done(gap('v4_swap_history_empty'))
   if (!closeMatchesLivePrice(built.candles, input.livePriceUsd)) return done(gap('token_identity_unverified'))
   return done({ ...r, ok: true, code: null, candles: built.candles })

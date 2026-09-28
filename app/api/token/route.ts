@@ -44,6 +44,7 @@ import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
 import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
 import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { V4_SWAP_CHAIN_CONFIG, loadV4SwapCandles, makeV4Rpc } from '@/lib/server/v4SwapCandlesRpc'
+import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd } from '@/lib/server/v4QuoteUsd'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
@@ -6313,9 +6314,26 @@ export async function POST(req: Request) {
         fetchV4SwapCandles: async (pool, budget) => {
           const rpc = makeV4Rpc(chain)
           if (!rpc) return { ok: false, code: V4_SWAP_CHAIN_CONFIG[chain] ? 'v4_swap_logs_unavailable' : 'v4_chain_not_supported', poolManager: V4_SWAP_CHAIN_CONFIG[chain]?.poolManager ?? null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: null }
+          const _gtBaseV4 = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
           return loadV4SwapCandles(
             { chain, poolId: pool.address, token: contract, tokenDecimals: Number(resolvedDecimals), livePriceUsd: priceUsd },
-            { rpc, ethUsdSeries: (timeoutMs) => fetchCoingeckoEthUsdRecent(timeoutMs) },
+            {
+              rpc,
+              ethUsdSeries: (timeoutMs) => fetchCoingeckoEthUsdRecent(timeoutMs),
+              // Other quote token (e.g. BNKR): one hop to its own independent WETH/stable pool's real
+              // USD history — 1 discovery read (cached 24h) + 1 candle read (cached per 10 min).
+              quoteUsd: (q) => resolveIndependentQuoteUsd({ chain, ...q }, {
+                fetchTokenPools: async (_c, quoteToken, timeoutMs) => {
+                  try {
+                    const res = await fetch(`${_gtBaseV4}/api/v2/networks/${_chartNetworkId}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: withTimeout(Math.min(5000, timeoutMs)) })
+                    return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
+                  } catch { return { json: null, httpStatus: null } }
+                },
+                fetchPoolUsdOhlcv: (_c, quotePool, side) => isCoingeckoOnchainConfigured()
+                  ? fetchCoingeckoOnchainPoolOhlcv(chain, quotePool, QUOTE_SERIES_REQUEST, side)
+                  : fetchGeckoTerminalPoolOhlcv(quotePool, chain, QUOTE_SERIES_REQUEST, side),
+              }),
+            },
             budget,
           )
         },

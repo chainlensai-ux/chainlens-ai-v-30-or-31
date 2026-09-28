@@ -407,6 +407,20 @@ export type LadderV4SwapResult = {
   callsUsed: number
   pagesFetched: number
   budgetStopReason: string | null
+  /** How the V4 pool's other asset was priced in USD (see lib/server/v4SwapCandlesRpc.ts). */
+  quote?: V4QuoteUsdInfo | null
+}
+
+export type V4QuoteUsdInfo = {
+  asset: string
+  symbol: string | null
+  source: 'usd_stable' | 'eth_usd_series' | 'independent_pool' | null
+  pool: string | null
+  pairedWith: string | null
+  evidence: 'verified' | 'unavailable'
+  points: number
+  maxGapMs: number | null
+  reason: string | null
 }
 
 /**
@@ -461,7 +475,7 @@ export type LadderResult = {
   /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
   /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
-  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null } | null
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
   skippedDueToRateLimit: number
@@ -646,7 +660,7 @@ export async function runEvmCandleLadder(input: {
     r.totalHttpCalls += v4.callsUsed
     if (v4.code === 'call_budget_exhausted') budgetExhausted = true
     if (v4.budgetStopReason && v4.budgetStopReason !== 'enough_buckets') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
-    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason }
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null }
     const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
     if (v4.ok && v4.candles.length >= 2) {
@@ -768,6 +782,7 @@ export type ChartDebugInfo = {
   v4: {
     poolModel: 'uniswap_v4'; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null
     timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null
+    quote: V4QuoteUsdInfo | null
   } | null
   /** The whole candle path's call budget. */
   callBudget: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
@@ -903,6 +918,7 @@ export function buildEvmChartDebugInfo(input: {
     v4: input.v4Swap ? {
       poolModel: 'uniswap_v4', poolId: input.v4Swap.poolId, poolManager: input.v4Swap.poolManager, logsFound: input.v4Swap.logsFound, candlesBuilt: input.v4Swap.candlesBuilt, code: input.v4Swap.code,
       timeResolution: input.v4Swap.timeResolution, intervalSec: input.v4Swap.intervalSec, callsUsed: input.v4Swap.callsUsed, pagesFetched: input.v4Swap.pagesFetched, budgetStopReason: input.v4Swap.budgetStopReason,
+      quote: input.v4Swap.quote ?? null,
     } : null,
     callBudget: input.callBudget ? { callsUsed: input.callBudget.used, callsRemaining: input.callBudget.remaining, budgetStopReason: input.callBudget.stopReason } : null,
   }

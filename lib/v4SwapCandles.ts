@@ -136,8 +136,8 @@ export function buildV4SwapCandles(input: {
   return { candles, tradesUsed: used, tradesDropped: dropped }
 }
 
-/** Nearest-point lookup in a real price series ([ms, usd], ascending), within `maxGapMs`; null otherwise. */
-export function nearestPriceAt(series: ReadonlyArray<readonly [number, number]>, tsMs: number, maxGapMs: number): number | null {
+/** The real point nearest `tsMs` within `maxGapMs` ([ms, usd], ascending series), and its exact distance. */
+export function nearestPriceWithGap(series: ReadonlyArray<readonly [number, number]>, tsMs: number, maxGapMs: number): { price: number; gapMs: number } | null {
   if (series.length === 0) return null
   let lo = 0
   let hi = series.length - 1
@@ -148,5 +148,11 @@ export function nearestPriceAt(series: ReadonlyArray<readonly [number, number]>,
   }
   let best = series[lo]
   if (lo > 0 && Math.abs(series[lo - 1][0] - tsMs) < Math.abs(best[0] - tsMs)) best = series[lo - 1]
-  return Math.abs(best[0] - tsMs) <= maxGapMs && best[1] > 0 ? best[1] : null
+  const gapMs = Math.abs(best[0] - tsMs)
+  return gapMs <= maxGapMs && best[1] > 0 ? { price: best[1], gapMs } : null
+}
+
+/** Nearest-point lookup in a real price series ([ms, usd], ascending), within `maxGapMs`; null otherwise. */
+export function nearestPriceAt(series: ReadonlyArray<readonly [number, number]>, tsMs: number, maxGapMs: number): number | null {
+  return nearestPriceWithGap(series, tsMs, maxGapMs)?.price ?? null
 }

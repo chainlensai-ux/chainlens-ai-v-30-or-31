@@ -441,7 +441,8 @@ test('ladder: V4 fallback failure keeps the honest reason; V3 pools never touch 
 test('route + page wiring: budget handed to the V4 loader, shared ETH series, v4_swap_events is a real chart source', () => {
   const route = read('app/api/token/route.ts')
   assert.match(route, /fetchV4SwapCandles: async \(pool, budget\) =>/)
-  assert.match(route, /\{ rpc, ethUsdSeries: \(timeoutMs\) => fetchCoingeckoEthUsdRecent\(timeoutMs\) \},\s*budget,/)
+  assert.match(route, /ethUsdSeries: \(timeoutMs\) => fetchCoingeckoEthUsdRecent\(timeoutMs\),/)
+  assert.match(route, /\}\),\s*\},\s*budget,\s*\)/, 'the remaining candle budget is handed to the V4 loader')
   assert.match(route, /chartCandleProvider === 'v4_swap_events' \? 'v4_swap_events' :/)
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /const _REAL_SOURCES = new Set\(\['pool_ohlcv', 'token_level_ohlcv', 'dexscreener_ohlcv', 'trade_reconstructed', 'v4_swap_events'\]\)/)

@@ -799,7 +799,7 @@ type ScanResult = {
     fallbackReason: string | null
     /** TEMPORARY, Preview-only: present only for a 64-hex V4 PoolId with a proven side. */
     v4Probe?: { pool: string; side: 'base' | 'quote' } | null
-    v4?: { poolModel: string; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: string | null; timeResolution: string | null; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null } | null
+    v4?: { poolModel: string; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: string | null; timeResolution: string | null; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote?: { asset: string; symbol: string | null; source: string | null; pool: string | null; pairedWith: string | null; evidence: string; points: number; maxGapMs: number | null; reason: string | null } | null } | null
     callBudget?: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
   } | null
   marketTrendSnapshot?: {
@@ -1542,6 +1542,7 @@ function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNull
           Network: {debug.network ?? 'unknown'} (chain {debug.chain}; CoinGecko: {debug.coingeckoNetwork ?? 'not used'}){'\n'}
           Scanned token: {debug.scannedToken}{'\n'}
           {debug.v4 ? `Pool model: Uniswap V4\nPoolId: ${debug.v4.poolId}\nPoolManager: ${debug.v4.poolManager ?? 'not configured for this chain'}\nV4 swap events — logs found ${debug.v4.logsFound} (${debug.v4.pagesFetched} log pages, ${debug.v4.callsUsed} calls${debug.v4.budgetStopReason ? `, stopped: ${debug.v4.budgetStopReason}` : ''})\nV4 candles built — ${debug.v4.candlesBuilt} × ${debug.v4.intervalSec / 60}m${debug.v4.timeResolution ? ` · time: ${debug.v4.timeResolution === 'exact_log_timestamps' ? 'exact (log timestamps)' : 'inferred from block number — not exact 5M'}` : ''}${debug.v4.code ? ` (${debug.v4.code})` : ''}\n` : ''}
+          {debug.v4?.quote ? `Quote asset: ${debug.v4.quote.symbol ?? 'unknown symbol'} (${debug.v4.quote.asset})\nQuote USD source: ${debug.v4.quote.source === 'independent_pool' ? `independent pool ${debug.v4.quote.pool ?? 'not found'}${debug.v4.quote.pairedWith ? ` (paired with ${debug.v4.quote.pairedWith})` : ''}` : debug.v4.quote.source === 'eth_usd_series' ? 'shared historical ETH/USD series' : debug.v4.quote.source === 'usd_stable' ? 'verified USD stablecoin ($1)' : 'none'}\nQuote USD evidence: ${debug.v4.quote.evidence}\nQuote historical points: ${debug.v4.quote.points}\n${debug.v4.quote.maxGapMs != null ? `Max time gap used: ${Math.round(debug.v4.quote.maxGapMs / 60_000)}m\n` : ''}${debug.v4.quote.evidence === 'unavailable' ? `Quote USD reason: quote_usd_price_unproven${debug.v4.quote.reason ? ` (${debug.v4.quote.reason})` : ''}\n` : ''}` : ''}
           {debug.callBudget ? `Candle calls: ${debug.callBudget.callsUsed} used · ${debug.callBudget.callsRemaining} remaining${debug.callBudget.budgetStopReason ? ` · stopped: ${debug.callBudget.budgetStopReason}` : ''}\n` : ''}
           Pool: {debug.selectedPool ?? 'none'}{'\n'}
           Token side: {debug.tokenSide ?? 'unresolved'}{'\n'}
