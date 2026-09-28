@@ -167,7 +167,7 @@ test('never carries anything resembling a secret, key, header, or raw provider b
     assert.doesNotMatch(json, new RegExp(forbidden), forbidden)
   }
   // Only genuinely public/structural fields appear.
-  assert.deepEqual(Object.keys(d).sort(), ['attempts', 'chain', 'coingeckoNetwork', 'fallbackReason', 'finalCandleCount', 'finalSource', 'finalStage', 'network', 'rateLimited', 'rateLimitedProvider', 'requestedInterval', 'requestedLimit', 'scannedToken', 'selectedPool', 'source', 'tokenSide'].sort())
+  assert.deepEqual(Object.keys(d).sort(), ['attempts', 'callBudget', 'chain', 'coingeckoNetwork', 'fallbackReason', 'finalCandleCount', 'finalSource', 'finalStage', 'network', 'rateLimited', 'rateLimitedProvider', 'requestedInterval', 'requestedLimit', 'scannedToken', 'selectedPool', 'source', 'tokenSide', 'v4'].sort())
   for (const a of d.attempts) assert.deepEqual(Object.keys(a).sort(), ['httpStatus', 'interval', 'pool', 'provider', 'reason', 'rowsReturned', 'stage', 'status'])
 })
 

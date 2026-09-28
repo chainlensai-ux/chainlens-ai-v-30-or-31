@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { POOL_ID_OHLCV_CONFIRMED } from '../lib/evmChartCandles.ts'
+import { COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED, GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED } from '../lib/evmChartCandles.ts'
 import { V4_PROBE_MAX_PROVIDER_CALLS, geckoTerminalProbePath, parseV4ProbeInput, runV4CandleProbe, type V4ProbeInput } from '../lib/server/v4CandleProbe.ts'
 
 const POOL = '0x' + '9f3c'.repeat(16)
@@ -18,8 +18,9 @@ const metaFor = (baseAddr: string, quoteAddr: string) => ({ base: { address: bas
 const input = (over: Partial<V4ProbeInput> = {}): V4ProbeInput => ({ chain: 'base', pool: POOL, token: TOKEN, side: 'base', livePriceUsd: 1.05, ...over })
 const qs = (o: Record<string, string>) => new URLSearchParams({ chain: 'base', pool: POOL, token: TOKEN, side: 'base', livePriceUsd: '1.05', ...o })
 
-test('normal chart behavior untouched: V4 support flag still false', () => {
-  assert.equal(POOL_ID_OHLCV_CONFIRMED, false)
+test('normal chart behavior untouched: both V4 PoolId support flags still false', () => {
+  assert.equal(COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED, false)
+  assert.equal(GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED, false)
 })
 
 test('input: only a 64-hex PoolId is accepted; malformed and 40-hex pools are rejected', () => {

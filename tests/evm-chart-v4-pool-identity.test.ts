@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { POOL_ID_OHLCV_CONFIRMED, runEvmCandleLadder, type LadderDeps, type LadderFetchResult, type LadderPool } from '../lib/evmChartCandles.ts'
+import { COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED, GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED, runEvmCandleLadder, type LadderDeps, type LadderFetchResult, type LadderPool } from '../lib/evmChartCandles.ts'
 import { fetchCoingeckoOnchainPoolOhlcv } from '../lib/server/coingeckoOnchainOhlcv.ts'
 import { loadOnDemandCandles, resetOnDemandCandleState, rememberVerifiedChartPool } from '../lib/server/chartCandlesOnDemand.ts'
 import { parseProbeInput } from '../lib/server/coingeckoOnchainProbe.ts'
@@ -84,8 +84,9 @@ function deps(serve: (a: string) => LadderFetchResult, calls: string[]): LadderD
   }
 }
 
-test('provider support for 64-hex pool ids is NOT marked confirmed', () => {
-  assert.equal(POOL_ID_OHLCV_CONFIRMED, false)
+test('provider support for 64-hex pool ids is NOT marked confirmed (per provider)', () => {
+  assert.equal(COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED, false)
+  assert.equal(GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED, false)
 })
 
 test('V4-only token: zero provider calls (was 5 wasted), honest provider_unsupported_pool_id, true id in the trail', async () => {
@@ -114,7 +115,7 @@ test('V4 primary + V3 alternate: the V3 pool still charts, V4 costs zero calls',
 
 test('once support is confirmed, the FULL 64-hex id is what gets requested', async () => {
   const calls: string[] = []
-  const r = await runEvmCandleLadder({ pools: [ladderPool(V4_A, 'uniswap-v4-base')], contract: TOKEN, networkId: 'base', coingeckoNetworkId: 'base', currentPriceUsd: 1.05, poolIdOhlcvConfirmed: true }, deps(serveOnly(V4_A), calls))
+  const r = await runEvmCandleLadder({ pools: [ladderPool(V4_A, 'uniswap-v4-base')], contract: TOKEN, networkId: 'base', coingeckoNetworkId: 'base', currentPriceUsd: 1.05, poolIdSupport: { coingecko: true, geckoterminal: true } }, deps(serveOnly(V4_A), calls))
   assert.deepEqual(calls, [`CG ${V4_A}`])
   assert.equal(r.chartCandles?.poolAddress, V4_A)
   assert.equal(r.candleProvider, 'coingecko_onchain')
@@ -169,7 +170,7 @@ test('5M endpoint: accepts a 64-hex pool id (honest unsupported reason, zero cal
   // With support confirmed, the full id is requested.
   rememberVerifiedChartPool('base', TOKEN, V4_A, 'base')
   const seen: string[] = []
-  const ok = await loadOnDemandCandles({ chain: 'base', token: TOKEN, pool: V4_A, timeframe: '5m' }, fetchJson, { fetchCoingecko: async (_c, pool) => { seen.push(pool); return cg() }, poolIdOhlcvConfirmed: true })
+  const ok = await loadOnDemandCandles({ chain: 'base', token: TOKEN, pool: V4_A, timeframe: '5m' }, fetchJson, { fetchCoingecko: async (_c, pool) => { seen.push(pool); return cg() }, poolIdSupport: { coingecko: true, geckoterminal: true } })
   assert.equal(ok.result.ok, true)
   assert.deepEqual(seen, [V4_A])
 })

@@ -203,14 +203,16 @@ export function buildChartTimeframes(candles: ReadonlyArray<ChartCandle>, declar
 }
 
 /**
- * Default selection: 1H when it has a useful amount of real history, otherwise the densest
- * available timeframe (smallest interval), otherwise null (native non-standard series only).
+ * Default selection: 15M when it has real candles, else 5M, else 1H, 4H, 1D — the first genuinely
+ * available timeframe in that order — otherwise null (native non-standard series only). A young
+ * token therefore opens on whatever short timeframe its real trades already fill.
  */
+export const DEFAULT_TIMEFRAME_PREFERENCE: ReadonlyArray<ChartTimeframeKey> = ['15M', '5M', '1H', '4H', '1D']
 export function pickDefaultTimeframe(set: ChartTimeframeSet): ChartTimeframeKey | null {
-  const oneHour = set.timeframes.find((tf) => tf.key === '1H')
-  if (oneHour?.available && oneHour.candles.length >= 24) return '1H'
-  const first = set.timeframes.find((tf) => tf.available)
-  return first ? first.key : null
+  for (const key of DEFAULT_TIMEFRAME_PREFERENCE) {
+    if (set.timeframes.find((tf) => tf.key === key)?.available) return key
+  }
+  return null
 }
 
 export function formatIntervalLabel(sec: number | null): string {

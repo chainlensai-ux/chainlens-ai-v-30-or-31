@@ -19,8 +19,9 @@
 import {
   COINGECKO_ONCHAIN_NETWORK,
   EVM_CHART_NETWORK,
+  COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED,
   EVM_POOL_ID_RE,
-  POOL_ID_OHLCV_CONFIRMED,
+  GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED,
   isEvmPoolIdentifier,
   candleFailureMessage,
   classifyOhlcvResponse,
@@ -87,7 +88,7 @@ export function isOnDemandChain(v: string | null): v is OnDemandChain {
 export async function loadOnDemandCandles(
   params: { chain: string | null; token: string | null; pool: string | null; timeframe: string | null },
   fetchJson: FetchJson,
-  opts: { baseUrl?: string; now?: () => number; fetchCoingecko?: FetchCoingeckoOhlcv; poolIdOhlcvConfirmed?: boolean } = {},
+  opts: { baseUrl?: string; now?: () => number; fetchCoingecko?: FetchCoingeckoOhlcv; poolIdSupport?: { coingecko?: boolean; geckoterminal?: boolean } } = {},
 ): Promise<{ result: OnDemandResult; providerCalls: number; cacheHit: boolean }> {
   const now = opts.now ?? Date.now
   const timeframe = params.timeframe && params.timeframe in ON_DEMAND_TIMEFRAMES ? (params.timeframe as OnDemandTimeframe) : null
@@ -97,8 +98,13 @@ export async function loadOnDemandCandles(
   const pool = params.pool ?? ''
   // Token: strict 20-byte address. Pool: a 20-byte pool contract OR a bytes32 V4/Infinity pool id.
   if (!ADDRESS_RE.test(token) || !isEvmPoolIdentifier(pool)) return { result: fail(timeframe, 'invalid_request'), providerCalls: 0, cacheHit: false }
-  // A pool id is never sent to a provider whose support for it is unproven (see POOL_ID_OHLCV_CONFIRMED).
-  if (EVM_POOL_ID_RE.test(pool) && !(opts.poolIdOhlcvConfirmed ?? POOL_ID_OHLCV_CONFIRMED)) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: 0, cacheHit: false }
+  // A pool id is only ever sent to a provider whose support for it is proven (per-provider flags in
+  // lib/evmChartCandles.ts). GeckoTerminal also proves the side when it isn't remembered, so an
+  // unproven GeckoTerminal needs a remembered side before CoinGecko alone can be asked.
+  const isPoolId = EVM_POOL_ID_RE.test(pool)
+  const cgPoolOk = !isPoolId || (opts.poolIdSupport?.coingecko ?? COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED)
+  const gtPoolOk = !isPoolId || (opts.poolIdSupport?.geckoterminal ?? GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED)
+  if (!cgPoolOk && !gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: 0, cacheHit: false }
   const chain = params.chain
   const network = EVM_CHART_NETWORK[chain]
   if (!network) return { result: fail(timeframe, 'network_not_supported'), providerCalls: 0, cacheHit: false }
@@ -119,6 +125,7 @@ export async function loadOnDemandCandles(
     let side: 'base' | 'quote' | null = null
     const remembered = verifiedPools.get(poolKey(chain, token, pool))
     if (remembered && remembered.expiresAt > now()) side = remembered.side
+    else if (!gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: calls }
     else {
       calls++
       const poolRes = await fetchJson(`${base}/api/v2/networks/${network}/pools/${pool.toLowerCase()}`)
@@ -131,12 +138,13 @@ export async function loadOnDemandCandles(
       if (!side) return { result: fail(timeframe, 'token_side_unresolved'), providerCalls: calls }
       rememberVerifiedChartPool(chain, token, pool, side, now())
     }
-    if (opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain]) {
+    if (cgPoolOk && opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain]) {
       calls++
       const cg = await opts.fetchCoingecko(chain, pool.toLowerCase(), { resolution: tf.resolution, aggregate: tf.aggregate, limit: tf.limit }, side)
       const cgOut = classifyOhlcvResponse('pool', cg.httpStatus, cg.json)
       if (cgOut.code === 'ok') return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain' }, providerCalls: calls }
     }
+    if (!gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: calls }
     if (calls >= ON_DEMAND_MAX_PROVIDER_CALLS) return { result: fail(timeframe, 'call_budget_exhausted'), providerCalls: calls }
     calls++
     const url = `${base}/api/v2/networks/${network}/pools/${pool.toLowerCase()}/ohlcv/${tf.resolution}?aggregate=${tf.aggregate}&limit=${tf.limit}&currency=usd&token=${side}`

@@ -782,8 +782,8 @@ type ScanResult = {
     requestedLimit: number | null
     source: string | null
     attempts: Array<{
-      stage: 'coingecko_15m' | 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'swap_rebuild' | 'estimated_trend'
-      provider: 'coingecko_onchain' | 'geckoterminal' | null
+      stage: 'coingecko_15m' | 'primary_pool_15m' | 'primary_pool_1h' | 'primary_pool_1d' | 'alternate_pool' | 'v4_swap_events' | 'swap_rebuild' | 'estimated_trend'
+      provider: 'coingecko_onchain' | 'geckoterminal' | 'v4_swap_events' | null
       pool: string | null
       interval: string | null
       status: string
@@ -793,12 +793,14 @@ type ScanResult = {
     }>
     rateLimited: boolean
     rateLimitedProvider: 'coingecko_onchain' | 'geckoterminal' | 'both' | null
-    finalSource: 'coingecko_onchain' | 'geckoterminal' | 'swap_rebuilt' | 'estimated_trend' | 'none'
+    finalSource: 'coingecko_onchain' | 'geckoterminal' | 'v4_swap_events' | 'swap_rebuilt' | 'estimated_trend' | 'none'
     finalStage: string
     finalCandleCount: number
     fallbackReason: string | null
     /** TEMPORARY, Preview-only: present only for a 64-hex V4 PoolId with a proven side. */
     v4Probe?: { pool: string; side: 'base' | 'quote' } | null
+    v4?: { poolModel: string; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: string | null; timeResolution: string | null; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null } | null
+    callBudget?: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
   } | null
   marketTrendSnapshot?: {
     status: 'ok' | 'unavailable'
@@ -1496,6 +1498,7 @@ const CHART_DEBUG_STAGE_LABEL: Record<string, string> = {
   primary_pool_1h: 'GeckoTerminal 1H',
   primary_pool_1d: 'GeckoTerminal 1D',
   alternate_pool: 'GeckoTerminal alt pool 15M',
+  v4_swap_events: 'V4 swap events',
   swap_rebuild: 'Swap rebuild',
   estimated_trend: 'Estimated trend',
 }
@@ -1538,6 +1541,8 @@ function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNull
         <div style={{ marginTop: '8px', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>
           Network: {debug.network ?? 'unknown'} (chain {debug.chain}; CoinGecko: {debug.coingeckoNetwork ?? 'not used'}){'\n'}
           Scanned token: {debug.scannedToken}{'\n'}
+          {debug.v4 ? `Pool model: Uniswap V4\nPoolId: ${debug.v4.poolId}\nPoolManager: ${debug.v4.poolManager ?? 'not configured for this chain'}\nV4 swap events — logs found ${debug.v4.logsFound} (${debug.v4.pagesFetched} log pages, ${debug.v4.callsUsed} calls${debug.v4.budgetStopReason ? `, stopped: ${debug.v4.budgetStopReason}` : ''})\nV4 candles built — ${debug.v4.candlesBuilt} × ${debug.v4.intervalSec / 60}m${debug.v4.timeResolution ? ` · time: ${debug.v4.timeResolution === 'exact_log_timestamps' ? 'exact (log timestamps)' : 'inferred from block number — not exact 5M'}` : ''}${debug.v4.code ? ` (${debug.v4.code})` : ''}\n` : ''}
+          {debug.callBudget ? `Candle calls: ${debug.callBudget.callsUsed} used · ${debug.callBudget.callsRemaining} remaining${debug.callBudget.budgetStopReason ? ` · stopped: ${debug.callBudget.budgetStopReason}` : ''}\n` : ''}
           Pool: {debug.selectedPool ?? 'none'}{'\n'}
           Token side: {debug.tokenSide ?? 'unresolved'}{'\n'}
           Requested: {debug.requestedInterval ?? '?'} x {debug.requestedLimit ?? '?'} rows{'\n'}
@@ -1550,6 +1555,7 @@ function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNull
           {debug.attempts.map((a) => {
             const label = CHART_DEBUG_STAGE_LABEL[a.stage] ?? a.stage
             if (a.status === 'skipped') return `${label} — skipped\n`
+            if (a.status === 'provider_unsupported_pool_id') return `${label} — unsupported for V4 PoolId (not requested)\n`
             const parts = [a.httpStatus != null ? `${a.httpStatus}` : a.status, `${a.rowsReturned} rows`]
             return `${label} — ${parts.join(' — ')}${a.reason ? ` (${a.reason})` : ''}\n`
           })}
@@ -8016,7 +8022,7 @@ export default function TerminalTokenScanner() {
                     //      to TrendChart — we never render fake candlestick bars for estimated data
                     //   C) marketTrendSnapshot.status === 'ok' → premium TrendChart (smooth line/area)
                     //   D) Else → minimal snapshot state
-                    const _REAL_SOURCES = new Set(['pool_ohlcv', 'token_level_ohlcv', 'dexscreener_ohlcv', 'trade_reconstructed'])
+                    const _REAL_SOURCES = new Set(['pool_ohlcv', 'token_level_ohlcv', 'dexscreener_ohlcv', 'trade_reconstructed', 'v4_swap_events'])
                     const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2 && _REAL_SOURCES.has(result.chartSource ?? '')
                     const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
                     const mts = result.marketTrendSnapshot
@@ -8053,7 +8059,7 @@ export default function TerminalTokenScanner() {
                           candles={result.chartCandles?.points ?? result.priceChart!.points}
                           declaredIntervalSec={result.chartCandles ? result.chartCandles.intervalSec : result.chartSource === 'trade_reconstructed' ? null : chartIntervalSec(result.priceChart!.timeframe)}
                           badge={_chartBadge}
-                          footnote={result.chartSource === 'trade_reconstructed' ? `Indexed candles unavailable: ${_candleReason}` : result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
+                          footnote={result.chartSource === 'trade_reconstructed' ? `Indexed candles unavailable: ${_candleReason}` : result.chartSource === 'v4_swap_events' ? 'Built from this Uniswap V4 pool\'s on-chain swaps' : result.chartSource === 'token_level_ohlcv' ? 'All pools combined' : result.priceChart!.fallbackUsed ? 'Alternate pool' : 'Primary pool'}
                           loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress)}
                         />
                       )

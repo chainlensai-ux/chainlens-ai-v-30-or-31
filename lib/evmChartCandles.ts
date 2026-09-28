@@ -79,15 +79,17 @@ export function isEvmPoolIdentifier(value: string): boolean {
 }
 
 /**
- * Whether CoinGecko / GeckoTerminal pool OHLCV (and GeckoTerminal pool trades) have been PROVEN,
- * by a live request, to accept a bytes32 V4 pool id in the {pool} path segment. Not yet proven —
- * the sandbox this was built in cannot reach either provider, and the official CoinGecko SDK only
- * documents the parameter as "pool contract address". Until a live probe
- * (/api/debug/coingecko-onchain-probe?pool=<64-hex id>) returns real rows, V4 pools keep their true
- * id end to end but are never requested: the ladder records provider_unsupported_pool_id instead
- * of sending a truncated id or the shared PoolManager. Flip to true only with that evidence.
+ * Whether each provider's pool OHLCV (and GeckoTerminal's pool trades) has been PROVEN, by a live
+ * request, to serve a bytes32 V4 PoolId in the {pool} path segment. Tracked per provider because
+ * support may differ. Neither is proven yet — the build sandbox cannot reach either provider and the
+ * official CoinGecko SDK documents the parameter only as "pool contract address". The Preview-only
+ * "TEST V4 CANDLES" probe (CANDLE DEBUG panel) is how either gets proven. Until then a V4 pool keeps
+ * its true id end to end, is never requested from an unproven provider (provider_unsupported_pool_id,
+ * zero calls), and is charted from its own on-chain Swap events where that can be proven
+ * (lib/server/v4SwapCandlesRpc.ts). Flip one only with that live evidence.
  */
-export const POOL_ID_OHLCV_CONFIRMED = false
+export const COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED = false
+export const GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED = false
 
 export function incrementReason(map: Record<string, number>, key: string) {
   map[key] = (map[key] ?? 0) + 1
@@ -292,10 +294,14 @@ export type CandleFailureCode =
   | 'swap_fallback_insufficient'
   | 'call_budget_exhausted'
   | 'provider_unsupported_pool_id'
+  | 'v4_chain_not_supported'
+  | 'v4_swap_logs_unavailable'
+  | 'v4_swap_history_empty'
+  | 'quote_usd_price_unproven'
 
-/** 'coingecko_pool' is the CoinGecko on-chain read; every other route is GeckoTerminal. */
-export type CandleAttemptRoute = 'coingecko_pool' | 'pool' | 'alternate_pool' | 'swaps'
-export type CandleProvider = 'coingecko_onchain' | 'geckoterminal'
+/** 'coingecko_pool' is the CoinGecko on-chain read, 'v4_swaps' the on-chain Uniswap V4 Swap-event read; the rest are GeckoTerminal. */
+export type CandleAttemptRoute = 'coingecko_pool' | 'pool' | 'alternate_pool' | 'v4_swaps' | 'swaps'
+export type CandleProvider = 'coingecko_onchain' | 'geckoterminal' | 'v4_swap_events'
 
 export type CandleAttempt = {
   route: CandleAttemptRoute
@@ -323,6 +329,10 @@ const FAILURE_MESSAGES: Record<CandleFailureCode, string> = {
   swap_fallback_insufficient: 'Too few recent swaps to rebuild candles.',
   call_budget_exhausted: 'The candle request budget for this scan was used up before history was found.',
   provider_unsupported_pool_id: "This token trades in a pool-id based pool (Uniswap V4 / PancakeSwap Infinity) that the candle provider has not been confirmed to support, so its price history was not requested.",
+  v4_chain_not_supported: "On-chain Uniswap V4 swap history is not available for this network yet, so this pool's price history could not be built.",
+  v4_swap_logs_unavailable: 'The on-chain swap history for this Uniswap V4 pool could not be read right now.',
+  v4_swap_history_empty: 'This Uniswap V4 pool has too few real swaps yet to build candles.',
+  quote_usd_price_unproven: "This pool's other asset has no proven USD price history, so USD candles were not built from its swaps.",
 }
 
 export function candleFailureMessage(code: CandleFailureCode): string {
@@ -346,9 +356,13 @@ export function classifyOhlcvResponse(route: 'pool', httpStatus: number | null, 
 const FAILURE_PRIORITY: CandleFailureCode[] = [
   'network_not_supported',
   'provider_rate_limited',
+  'token_identity_unverified',
+  'quote_usd_price_unproven',
+  'v4_swap_logs_unavailable',
+  'v4_swap_history_empty',
+  'v4_chain_not_supported',
   'provider_unsupported_pool_id',
   'token_side_unresolved',
-  'token_identity_unverified',
   'pool_not_indexed',
   'provider_http_error',
   'provider_schema_invalid',
@@ -376,6 +390,23 @@ export type LadderDeps = {
   fetchTrades: (poolAddress: string) => Promise<LadderFetchResult>
   /** CoinGecko on-chain pool OHLCV; `token` is 'base' | 'quote' | the scanned token's address. */
   fetchCoingeckoPoolOhlcv?: (poolAddress: string, rung: EvmChartRung, token: string) => Promise<LadderFetchResult>
+  /** On-chain Uniswap V4 Swap-event candles for a bytes32 PoolId (lib/server/v4SwapCandlesRpc.ts),
+   * given the calls still allowed on this candle path; every call it makes counts against it. */
+  fetchV4SwapCandles?: (pool: LadderPool, budget: number) => Promise<LadderV4SwapResult>
+}
+
+export type LadderV4SwapResult = {
+  ok: boolean
+  code: CandleFailureCode | null
+  poolManager: string | null
+  logsFound: number
+  candles: EvmChartPoint[]
+  intervalSec: number
+  /** 'exact_log_timestamps' (5m buckets) or 'inferred_block_time' (15m buckets, never shown as exact 5M). */
+  timeResolution: 'exact_log_timestamps' | 'inferred_block_time' | null
+  callsUsed: number
+  pagesFetched: number
+  budgetStopReason: string | null
 }
 
 /**
@@ -427,8 +458,12 @@ export type LadderResult = {
   /** CoinGecko returned 429 (the ladder then fell back to GeckoTerminal). */
   coingeckoRateLimited: boolean
   coingeckoAttempted: boolean
-  /** Which provider's pool OHLCV is on screen; null for swap-rebuilt or no candles. */
+  /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
+  /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null } | null
+  /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
+  callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
   skippedDueToRateLimit: number
   /** Legacy free-text reason (route diagnostics). */
   failureReason: string | null
@@ -471,8 +506,8 @@ export async function runEvmCandleLadder(input: {
   coingeckoNetworkId?: string | null
   currentPriceUsd: number | null
   maxOhlcvCalls?: number
-  /** Overrides POOL_ID_OHLCV_CONFIRMED (tests only). */
-  poolIdOhlcvConfirmed?: boolean
+  /** Overrides the per-provider V4 PoolId support flags (tests only). */
+  poolIdSupport?: { coingecko?: boolean; geckoterminal?: boolean }
 }, deps: LadderDeps): Promise<LadderResult> {
   const maxCalls = input.maxOhlcvCalls ?? EVM_MAX_OHLCV_CALLS
   const r: LadderResult = {
@@ -480,13 +515,18 @@ export async function runEvmCandleLadder(input: {
     reconstructedCandleCount: 0, tokenLevelAttempted: false, tradeReconstructionAttempted: false, poolOhlcvAttempts: [],
     tokenOhlcvAttempts: [], attemptedTimeframes: [], attemptedPools: [], tradePoolsAttempted: [], rejectedTradeReasons: {},
     rawTradeCount: 0, validTradePriceCount: 0, totalHttpCalls: 0, rateLimited: false, rateLimitedAt: null,
-    coingeckoRateLimited: false, coingeckoAttempted: false, candleProvider: null,
+    coingeckoRateLimited: false, coingeckoAttempted: false, candleProvider: null, v4Swap: null, callBudget: { max: maxCalls, used: 0, remaining: maxCalls, stopReason: null },
     skippedDueToRateLimit: 0, failureReason: null, candleFailure: null, attempts: [],
+  }
+  const finish = (): LadderResult => {
+    r.callBudget.used = r.totalHttpCalls
+    r.callBudget.remaining = Math.max(0, maxCalls - r.totalHttpCalls)
+    return r
   }
   if (!input.networkId) {
     r.failureReason = 'network_not_supported'
     r.candleFailure = { code: 'network_not_supported', message: FAILURE_MESSAGES.network_not_supported, attempts: [] }
-    return r
+    return finish()
   }
   const networkId = input.networkId
   let budgetExhausted = false
@@ -497,13 +537,15 @@ export async function runEvmCandleLadder(input: {
   }
   const canCall = () => {
     if (r.rateLimited) { r.skippedDueToRateLimit++; return false }
-    if (r.totalHttpCalls >= maxCalls) { r.skippedDueToRateLimit++; budgetExhausted = true; return false }
+    if (r.totalHttpCalls >= maxCalls) { r.skippedDueToRateLimit++; budgetExhausted = true; r.callBudget.stopReason = r.callBudget.stopReason ?? 'candle_call_budget_exhausted'; return false }
     return true
   }
   // A bytes32 pool id (V4 / Infinity) is kept as-is end to end, but never sent to a provider whose
   // support for it is unproven — recorded instead, with zero calls. Never truncated, never swapped
   // for the shared PoolManager.
-  const poolIdUnsupported = (pool: LadderPool) => EVM_POOL_ID_RE.test(pool.address) && !(input.poolIdOhlcvConfirmed ?? POOL_ID_OHLCV_CONFIRMED)
+  const cgPoolIdOk = input.poolIdSupport?.coingecko ?? COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED
+  const gtPoolIdOk = input.poolIdSupport?.geckoterminal ?? GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED
+  const poolIdUnsupported = (pool: LadderPool, provider: 'coingecko' | 'geckoterminal' = 'geckoterminal') => EVM_POOL_ID_RE.test(pool.address) && !(provider === 'coingecko' ? cgPoolIdOk : gtPoolIdOk)
   const recordUnsupported = (pool: LadderPool, route: CandleAttemptRoute, timeframe: string | null) => {
     r.attempts.push({ route, poolAddress: pool.address, side: resolveEvmPoolTokenSide(pool.pool, input.contract, networkId), timeframe, httpStatus: null, rows: 0, validRows: 0, code: 'provider_unsupported_pool_id' })
     r.failureReason = 'provider_unsupported_pool_id'
@@ -547,7 +589,7 @@ export async function runEvmCandleLadder(input: {
 
   // Phase 0: CoinGecko on-chain, primary pool, 15m rung — one call.
   const cgPool = input.pools[0]
-  if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && poolIdUnsupported(cgPool)) {
+  if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && poolIdUnsupported(cgPool, 'coingecko')) {
     recordUnsupported(cgPool, 'coingecko_pool', EVM_CHART_LADDER[0].key)
   } else if (deps.fetchCoingeckoPoolOhlcv && input.coingeckoNetworkId && cgPool && canCall()) {
     const rung = EVM_CHART_LADDER[0]
@@ -573,13 +615,13 @@ export async function runEvmCandleLadder(input: {
       r.selectedPool = { address: cgPool.address, name: cgPool.name }
       r.candleProvider = 'coingecko_onchain'
       r.failureReason = null
-      return r
+      return finish()
     }
   }
 
   // Phase 1: primary pool, full ladder.
   if (input.pools.length === 0) r.failureReason = 'primary_pool_missing'
-  else if (await tryPool(input.pools[0], EVM_CHART_LADDER, 'pool')) return r
+  else if (await tryPool(input.pools[0], EVM_CHART_LADDER, 'pool')) return finish()
 
   // Phase 3: up to two alternate pools, 15m rung only.
   if (!r.rateLimited && input.pools.length > 1) {
@@ -587,10 +629,35 @@ export async function runEvmCandleLadder(input: {
     for (const pool of input.pools.slice(1, 3)) {
       if (!canCall()) break
       anyAlternateTried = true
-      if (await tryPool(pool, [EVM_CHART_LADDER[0]], 'alternate_pool')) return r
+      if (await tryPool(pool, [EVM_CHART_LADDER[0]], 'alternate_pool')) return finish()
       if (r.rateLimited) break
     }
     if (anyAlternateTried) r.attempts.push({ route: 'alternate_pool', poolAddress: null, side: null, timeframe: null, httpStatus: null, rows: 0, validRows: 0, code: 'alternate_pool_failed' })
+  }
+
+  // Phase 4: a bytes32 V4 pool that no proven provider could chart — build real 5m candles from its
+  // own on-chain Swap events. RPC reads, not candle-provider calls; bounded inside the loader.
+  const v4Pool = input.pools.slice(0, 3).find((p) => EVM_POOL_ID_RE.test(p.address))
+  if (deps.fetchV4SwapCandles && v4Pool) {
+    const remaining = Math.max(0, maxCalls - r.totalHttpCalls)
+    const v4: LadderV4SwapResult = remaining > 0
+      ? await deps.fetchV4SwapCandles(v4Pool, remaining)
+      : { ok: false, code: 'call_budget_exhausted', poolManager: null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: 'call_budget' }
+    r.totalHttpCalls += v4.callsUsed
+    if (v4.code === 'call_budget_exhausted') budgetExhausted = true
+    if (v4.budgetStopReason && v4.budgetStopReason !== 'enough_buckets') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason }
+    const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
+    r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
+    if (v4.ok && v4.candles.length >= 2) {
+      r.priceChart = { timeframe: '24h', points: v4.candles.slice(-96), sourceStatus: 'ok' }
+      r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}) }
+      r.selectedPool = { address: v4Pool.address, name: v4Pool.name }
+      r.candleProvider = 'v4_swap_events'
+      r.failureReason = null
+      return finish()
+    }
+    r.failureReason = v4.code ?? r.failureReason
   }
 
   // Phase 5: swap-rebuilt candles from up to two pools (irregular bucket width). Same provider as
@@ -625,12 +692,12 @@ export async function runEvmCandleLadder(input: {
       r.failureReason = null
       // Real prices, but not indexed OHLCV — the UI still says why indexed candles were missing.
       r.candleFailure = summarizeCandleFailure(r.attempts.filter((a) => a.route !== 'swaps'), input.pools.length === 0, budgetExhausted)
-      return r
+      return finish()
     }
   }
   if (!r.usedTradeReconstruction) r.failureReason = r.failureReason ?? 'trade_reconstruction_insufficient'
   r.candleFailure = summarizeCandleFailure(r.attempts, input.pools.length === 0, budgetExhausted)
-  return r
+  return finish()
 }
 
 // ── TEMPORARY candle-resolution diagnostics (admin/debug only) ──────────────────────────────────
@@ -649,6 +716,7 @@ export type ChartDebugStage =
   | 'primary_pool_1h'
   | 'primary_pool_1d'
   | 'alternate_pool'
+  | 'v4_swap_events'
   | 'swap_rebuild'
   | 'estimated_trend'
 
@@ -668,7 +736,7 @@ export type ChartDebugAttempt = {
   reason: string | null
 }
 
-export type ChartDebugFinalSource = 'coingecko_onchain' | 'geckoterminal' | 'swap_rebuilt' | 'estimated_trend' | 'none'
+export type ChartDebugFinalSource = 'coingecko_onchain' | 'geckoterminal' | 'v4_swap_events' | 'swap_rebuilt' | 'estimated_trend' | 'none'
 
 export type ChartDebugInfo = {
   chain: string
@@ -696,6 +764,13 @@ export type ChartDebugInfo = {
   /** TEMPORARY, Preview-only: set by the route when the primary pool is a 64-hex PoolId with a proven
    * side, enabling the panel's "TEST V4 CANDLES" diagnostic. Absent otherwise. */
   v4Probe?: { pool: string; side: 'base' | 'quote' } | null
+  /** Uniswap V4 pool model details (PoolId, PoolManager, on-chain swap read) — null for other pools. */
+  v4: {
+    poolModel: 'uniswap_v4'; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null
+    timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null
+  } | null
+  /** The whole candle path's call budget. */
+  callBudget: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
 }
 
 const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {
@@ -704,6 +779,7 @@ const STAGE_INTERVAL: Record<ChartDebugStage, string | null> = {
   primary_pool_1h: '1h',
   primary_pool_1d: '1d',
   alternate_pool: '15m',
+  v4_swap_events: '5m',
   swap_rebuild: null,
   estimated_trend: null,
 }
@@ -714,15 +790,17 @@ const STAGE_PROVIDER: Record<ChartDebugStage, ChartDebugProvider> = {
   primary_pool_1h: 'geckoterminal',
   primary_pool_1d: 'geckoterminal',
   alternate_pool: 'geckoterminal',
+  v4_swap_events: 'v4_swap_events',
   swap_rebuild: 'geckoterminal',
   estimated_trend: null,
 }
 
-const ALL_STAGES: ChartDebugStage[] = ['coingecko_15m', 'primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'swap_rebuild', 'estimated_trend']
+const ALL_STAGES: ChartDebugStage[] = ['coingecko_15m', 'primary_pool_15m', 'primary_pool_1h', 'primary_pool_1d', 'alternate_pool', 'v4_swap_events', 'swap_rebuild', 'estimated_trend']
 
 function stageForAttempt(a: CandleAttempt): ChartDebugStage | null {
   if (a.route === 'coingecko_pool') return 'coingecko_15m'
   if (a.route === 'alternate_pool') return 'alternate_pool'
+  if (a.route === 'v4_swaps') return 'v4_swap_events'
   if (a.route === 'swaps') return 'swap_rebuild'
   if (a.route === 'pool') {
     if (a.timeframe === '24h') return 'primary_pool_15m'
@@ -762,6 +840,10 @@ export function buildEvmChartDebugInfo(input: {
   /** The existing chartSource / chartReason / final rendered candle count. */
   source: string | null
   finalCandleCount: number
+  /** LadderResult.v4Swap, when the V4 on-chain read ran. */
+  v4Swap?: LadderResult['v4Swap']
+  /** LadderResult.callBudget. */
+  callBudget?: LadderResult['callBudget'] | null
 }): ChartDebugInfo {
   const byStage = new Map<ChartDebugStage, ChartDebugAttempt>()
   for (const a of input.attempts) {
@@ -774,7 +856,7 @@ export function buildEvmChartDebugInfo(input: {
       stage,
       provider: STAGE_PROVIDER[stage],
       pool: a.poolAddress,
-      interval: STAGE_INTERVAL[stage],
+      interval: stage === 'v4_swap_events' && input.v4Swap ? `${input.v4Swap.intervalSec / 60}m` : STAGE_INTERVAL[stage],
       status: a.code,
       httpStatus: a.httpStatus,
       rowsReturned: a.validRows,
@@ -817,6 +899,11 @@ export function buildEvmChartDebugInfo(input: {
     finalSource,
     finalStage,
     finalCandleCount: input.finalCandleCount,
-    fallbackReason: finalSource === 'coingecko_onchain' || finalSource === 'geckoterminal' ? null : (input.candleFailure?.code ?? null),
+    fallbackReason: finalSource === 'coingecko_onchain' || finalSource === 'geckoterminal' || finalSource === 'v4_swap_events' ? null : (input.candleFailure?.code ?? null),
+    v4: input.v4Swap ? {
+      poolModel: 'uniswap_v4', poolId: input.v4Swap.poolId, poolManager: input.v4Swap.poolManager, logsFound: input.v4Swap.logsFound, candlesBuilt: input.v4Swap.candlesBuilt, code: input.v4Swap.code,
+      timeResolution: input.v4Swap.timeResolution, intervalSec: input.v4Swap.intervalSec, callsUsed: input.v4Swap.callsUsed, pagesFetched: input.v4Swap.pagesFetched, budgetStopReason: input.v4Swap.budgetStopReason,
+    } : null,
+    callBudget: input.callBudget ? { callsUsed: input.callBudget.used, callsRemaining: input.callBudget.remaining, budgetStopReason: input.callBudget.stopReason } : null,
   }
 }

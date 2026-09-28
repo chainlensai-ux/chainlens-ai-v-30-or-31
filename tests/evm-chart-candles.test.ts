@@ -112,7 +112,7 @@ for (const chain of CHAINS) {
     assert.equal(h0.high, Math.max(...members.map((m) => m.high)))
     assert.equal(h0.low, Math.min(...members.map((m) => m.low)))
     assert.equal(h0.volume, members.reduce((s, m) => s + (m.volume ?? 0), 0))
-    assert.equal(pickDefaultTimeframe(set), '1H')
+    assert.equal(pickDefaultTimeframe(set), '15M', 'default is 15M when real 15M candles exist')
   })
 
   test(`${chain}: hourly-only history shows 1H/4H/1D, never 5M/15M`, () => {

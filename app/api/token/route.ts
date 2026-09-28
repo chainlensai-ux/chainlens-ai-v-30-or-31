@@ -41,8 +41,9 @@ import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
-import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint } from '@/lib/evmChartCandles'
-import { coingeckoOnchainNetwork, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
+import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
+import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
+import { V4_SWAP_CHAIN_CONFIG, loadV4SwapCandles, makeV4Rpc } from '@/lib/server/v4SwapCandlesRpc'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
@@ -2301,6 +2302,8 @@ interface _ChartCacheSlot {
   chartCandleAttempts?: CandleAttempt[]
   chartCandleProvider?: CandleProvider | null
   coingeckoRateLimited?: boolean
+  chartV4Swap?: LadderResult['v4Swap']
+  chartCallBudget?: LadderResult['callBudget'] | null
   chartUsedTradeReconstruction: boolean
   chartUsedTokenLevelOhlcv: boolean
   chartUsedDexScreener: boolean
@@ -6226,6 +6229,8 @@ export async function POST(req: Request) {
     let chartCandleAttempts: CandleAttempt[] = []
     let chartCandleProvider: CandleProvider | null = null
     let _coingeckoRateLimited = false
+    let chartV4Swap: LadderResult['v4Swap'] = null
+    let chartCallBudget: LadderResult['callBudget'] | null = null
     let chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
     let poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
     let tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
@@ -6259,6 +6264,8 @@ export async function POST(req: Request) {
       chartCandleAttempts = [...(cv.chartCandleAttempts ?? [])]
       chartCandleProvider = cv.chartCandleProvider ?? null
       _coingeckoRateLimited = cv.coingeckoRateLimited ?? false
+      chartV4Swap = cv.chartV4Swap ?? null
+      chartCallBudget = cv.chartCallBudget ?? null
       chartAttemptedPools = [...cv.chartAttemptedPools]
       poolOhlcvAttempts = [...cv.poolOhlcvAttempts]
       tokenOhlcvAttempts = [...cv.tokenOhlcvAttempts]
@@ -6300,6 +6307,18 @@ export async function POST(req: Request) {
         fetchCoingeckoPoolOhlcv: (poolAddress, rung, token) => fetchCoingeckoOnchainPoolOhlcv(chain, poolAddress, { resolution: rung.resolution, aggregate: rung.aggregate, limit: rung.requestLimit }, token),
         fetchPoolOhlcv: (poolAddress, rung, side) => fetchGeckoTerminalPoolOhlcv(poolAddress, chain, { resolution: rung.resolution, aggregate: rung.aggregate, limit: rung.requestLimit }, side),
         fetchTrades: (poolAddress) => fetchGeckoTerminalPoolTrades(poolAddress, chain),
+        // Uniswap V4 pool no proven provider can chart: real candles from its own on-chain Swap events
+        // (Base only; 5m with exact log timestamps, else 15m inferred; bounded by the remaining call
+        // budget, cached — see lib/server/v4SwapCandlesRpc.ts).
+        fetchV4SwapCandles: async (pool, budget) => {
+          const rpc = makeV4Rpc(chain)
+          if (!rpc) return { ok: false, code: V4_SWAP_CHAIN_CONFIG[chain] ? 'v4_swap_logs_unavailable' : 'v4_chain_not_supported', poolManager: V4_SWAP_CHAIN_CONFIG[chain]?.poolManager ?? null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: null }
+          return loadV4SwapCandles(
+            { chain, poolId: pool.address, token: contract, tokenDecimals: Number(resolvedDecimals), livePriceUsd: priceUsd },
+            { rpc, ethUsdSeries: (timeoutMs) => fetchCoingeckoEthUsdRecent(timeoutMs) },
+            budget,
+          )
+        },
       })
       if (_ladder.priceChart) priceChart = _ladder.priceChart
       chartCandles = _ladder.chartCandles
@@ -6307,6 +6326,8 @@ export async function POST(req: Request) {
       chartCandleAttempts = _ladder.attempts
       chartCandleProvider = _ladder.candleProvider
       _coingeckoRateLimited = _ladder.coingeckoRateLimited
+      chartV4Swap = _ladder.v4Swap
+      chartCallBudget = _ladder.callBudget
       chartSelectedPoolForChart = _ladder.selectedPool
       chartUsedTokenLevelOhlcv = _ladder.usedTokenLevel
       chartUsedTradeReconstruction = _ladder.usedTradeReconstruction
@@ -6392,6 +6413,8 @@ export async function POST(req: Request) {
           chartCandleAttempts: [...chartCandleAttempts],
           chartCandleProvider,
           coingeckoRateLimited: _coingeckoRateLimited,
+          chartV4Swap,
+          chartCallBudget,
           chartUsedTradeReconstruction,
           chartUsedTokenLevelOhlcv,
           chartUsedDexScreener,
@@ -6438,6 +6461,7 @@ export async function POST(req: Request) {
       chartUsedDexScreener ? 'dexscreener_ohlcv' :
       chartUsedTokenLevelOhlcv ? 'token_level_ohlcv' :
       chartUsedSyntheticCandles ? (chartUsedFlatSynthetic ? 'synthetic_flat_series' : 'synthetic_price_estimate') :
+      chartCandleProvider === 'v4_swap_events' ? 'v4_swap_events' :
       'pool_ohlcv'
     const chartReason: string | null =
       chartStatus === 'ok'
@@ -6446,6 +6470,7 @@ export async function POST(req: Request) {
            : chartUsedTokenLevelOhlcv ? 'token_level_ohlcv_used'
            : chartUsedFlatSynthetic ? 'synthetic_flat_series_no_history'
            : chartUsedSyntheticCandles ? 'synthetic_from_indexed_changes'
+           : chartCandleProvider === 'v4_swap_events' ? 'v4_swap_events_used'
            : chartFallbackUsed ? 'alternate_pool_used'
            : null)
         : (_ohlcvRateLimited ? 'chart_provider_rate_limited' : (chartFailureReason ?? 'all_chart_sources_empty'))
@@ -6473,6 +6498,8 @@ export async function POST(req: Request) {
       tokenSide: chartCandles?.tokenSide ?? null,
       rateLimited: _ohlcvRateLimited,
       coingeckoRateLimited: _coingeckoRateLimited,
+      v4Swap: chartV4Swap,
+      callBudget: chartCallBudget,
       usedEstimatedTrend: chartUsedSyntheticCandles,
       source: chartSource,
       finalCandleCount: priceChart.points.length,

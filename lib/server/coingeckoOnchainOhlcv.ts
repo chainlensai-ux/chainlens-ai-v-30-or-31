@@ -68,3 +68,47 @@ export async function fetchCoingeckoOnchainPoolOhlcv(
     return { json: null, httpStatus: null }
   }
 }
+
+// ── Historical ETH/USD (quote pricing for ETH/WETH-paired Uniswap V4 swap candles) ────────────────
+// ONE shared rolling series for every V4 scan: /coins/ethereum/market_chart/range over the last 13h
+// (covers the V4 reader's 12h maximum swap window) at CoinGecko's 5-minute granularity, anchored to
+// a 10-minute slot and cached for that slot, so at most one request per 10 minutes per server
+// instance regardless of how many V4 tokens are scanned. Returns [ms, usd] points only — never the
+// key, headers or the raw body.
+export const ETH_USD_SERIES_WINDOW_SEC = 13 * 3600
+export const ETH_USD_SERIES_SLOT_SEC = 600
+let ethUsdSeries: { slot: number; points: Array<[number, number]> | null; httpStatus: number | null } | null = null
+
+export async function fetchCoingeckoEthUsdRecent(
+  timeoutMs: number,
+  fetchImpl: CoingeckoFetchImpl = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }),
+  now: () => number = Date.now,
+): Promise<{ points: Array<[number, number]> | null; httpStatus: number | null; cacheHit: boolean }> {
+  const slot = Math.floor(now() / 1000 / ETH_USD_SERIES_SLOT_SEC) * ETH_USD_SERIES_SLOT_SEC
+  if (ethUsdSeries && ethUsdSeries.slot === slot) return { points: ethUsdSeries.points, httpStatus: ethUsdSeries.httpStatus, cacheHit: true }
+  const cfg = resolveCoingeckoRuntimeConfig()
+  const key = process.env.COINGECKO_API_KEY
+  if (!key || !cfg.configurationValid) return { points: null, httpStatus: null, cacheHit: false }
+  let value: { points: Array<[number, number]> | null; httpStatus: number | null }
+  try {
+    const qs = new URLSearchParams({ vs_currency: 'usd', from: String(slot + ETH_USD_SERIES_SLOT_SEC - ETH_USD_SERIES_WINDOW_SEC), to: String(slot + ETH_USD_SERIES_SLOT_SEC) })
+    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/ethereum/market_chart/range?${qs.toString()}`, {
+      headers: { Accept: 'application/json', [cfg.selectedHeaderName]: key },
+    })
+    const json = res.ok ? await res.json().catch(() => null) : null
+    const raw = (json as { prices?: unknown } | null)?.prices
+    const points = Array.isArray(raw)
+      ? raw.filter((p): p is [number, number] => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0).sort((a, b) => a[0] - b[0])
+      : null
+    value = { points: points && points.length > 0 ? points : null, httpStatus: res.status }
+  } catch {
+    value = { points: null, httpStatus: null }
+  }
+  ethUsdSeries = { slot, ...value }
+  return { ...value, cacheHit: false }
+}
+
+/** Test hook. */
+export function resetEthUsdSeriesCache() {
+  ethUsdSeries = null
+}

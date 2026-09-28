@@ -2,7 +2,7 @@
 // "TEST V4 CANDLES" button. It answers one question with a live request: does each provider serve
 // pool OHLCV for a bytes32 (64-hex) Uniswap V4 / PancakeSwap Infinity PoolId?
 //
-// Diagnostic only: nothing here feeds the chart, flips POOL_ID_OHLCV_CONFIRMED, or touches the
+// Diagnostic only: nothing here feeds the chart, flips the per-provider V4 PoolId flags, or touches the
 // candle ladder. Exactly one request per provider (max 2 per click), each isolated so one
 // provider's failure can't color the other's result. Only safe summary numbers are returned —
 // never keys, headers, URLs, raw bodies or auth data.

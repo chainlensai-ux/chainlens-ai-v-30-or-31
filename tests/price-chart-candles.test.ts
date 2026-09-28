@@ -112,7 +112,7 @@ test('timeframes: 15m native enables 15M + exact roll-ups, never 5M', () => {
   assert.equal(byKey['4H'].candles.length, 18)
   assert.equal(byKey['1D'].available, true, '3 real UTC days -> 3 genuine daily buckets (>= 2)')
   assert.equal(byKey['1D'].candles.length, 3)
-  assert.equal(pickDefaultTimeframe(set), '1H')
+  assert.equal(pickDefaultTimeframe(set), '15M', 'default is 15M when real 15M candles exist')
 })
 
 test('timeframes: young pool with ~10 hourly-worth of 15m candles defaults to the dense native view', () => {
