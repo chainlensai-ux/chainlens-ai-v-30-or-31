@@ -84,6 +84,14 @@ export type SolanaMarketData = {
   primaryPoolAddress: string | null
   /** Which side of the primary pool the scanned mint is on, from the same DexScreener pair — lets the candle request price the mint itself, not its pair token. Null/absent when neither side matched. */
   primaryPoolTokenSide?: 'base' | 'quote' | null
+  /**
+   * The Price Chart's pair: the ACTIVE market pair (24h volume > 0 and 24h txns > 0, ranked by volume,
+   * txns, liquidity, then pair address) among pairs where this exact mint's side is proven; inactive
+   * pairs by liquidity only as a fallback. Chart-only — every other consumer keeps primaryPoolAddress.
+   */
+  chartPoolAddress?: string | null
+  chartPoolTokenSide?: 'base' | 'quote' | null
+  chartPoolRule?: 'active_market' | 'liquidity_fallback' | 'none'
   primaryDexLabel: string | null
   /** SPL mints carry no name/symbol on-chain — read from the matched side of the DexScreener pair. */
   tokenName: string | null

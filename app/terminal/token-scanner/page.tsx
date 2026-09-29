@@ -1495,6 +1495,30 @@ function makeHistoryLoader(chain: string | null | undefined, token: string | nul
   }
 }
 
+// Solana older history: the scan's exact-case chart pool + the mint's proven side (the server re-proves
+// the side from the pool's own ids and rejects a mismatch). Nothing is lowercased.
+function makeSolanaHistoryLoader(mint: string | null | undefined, pool: string | null | undefined, tokenSide: 'base' | 'quote' | null | undefined): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
+  if (!mint || !pool || (tokenSide !== 'base' && tokenSide !== 'quote')) return undefined
+  return async (beforeSec) => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const authToken = session?.access_token
+    const qs = new URLSearchParams({ chain: 'solana', token: mint, pool, side: tokenSide, timeframe: 'history', before: String(Math.floor(beforeSec)) })
+    const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
+    const json = await res.json().catch(() => null) as { ok?: boolean; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; endReason?: string | null; message?: string } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null, endReason: typeof json.endReason === 'string' ? json.endReason : null }
+    return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load older candles.' : 'The history request did not complete.'), hasMore: typeof json?.hasMore === 'boolean' ? json.hasMore : undefined }
+  }
+}
+
+// Why the Solana chart has no candles, from the scan's own reason (never a generic guess).
+function solanaChartUnavailableText(sr: { marketData?: unknown; ohlcv?: { errorReason?: string | null } | null }): string {
+  if (!sr.marketData) return 'Chart data unavailable — no indexed Solana pool found for this mint.'
+  const reason = sr.ohlcv?.errorReason ?? null
+  if (reason === 'token_side_unresolved') return "Chart unavailable — the indexed pool did not prove which side is this mint, so its candles were not charted (they could be the paired token's price)."
+  if (reason === 'price_sanity_mismatch') return "Chart unavailable — the pool's latest candle price is far from this mint's live price, so the series was not shown rather than risk charting the wrong asset."
+  return 'Historical candles are not indexed for this pool yet — current price is live.'
+}
+
 function chartIntervalSec(key: string | null | undefined): number | null {
   switch (key) {
     case '24h': case '15m': return 900
@@ -6233,12 +6257,16 @@ export default function TerminalTokenScanner() {
                         back to the prior honest label — never a broken/empty chart card — when
                         GeckoTerminal has no indexed candles for this pool yet. */}
                     {sr.ohlcv.success && sr.ohlcv.candles.length >= 2 ? (
-                      <PriceChartPanel candles={sr.ohlcv.candles} declaredIntervalSec={chartIntervalSec(sr.ohlcv.timeframe)} />
+                      <PriceChartPanel candles={sr.ohlcv.candles}
+                        declaredIntervalSec={chartIntervalSec(sr.ohlcv.timeframe)}
+                        loadHistory={makeSolanaHistoryLoader(sr.mintAddress, sr.ohlcv.poolAddress, sr.ohlcv.tokenSide)}
+                        historySourceLabel="real pool candles"
+                      />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
                         <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
                         <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
-                          {!sr.marketData ? 'Chart data unavailable — no indexed Solana pool found for this mint.' : 'Historical candles are not indexed for this pool yet — current price is live.'}
+                          {solanaChartUnavailableText(sr)}
                         </p>
                       </div>
                     )}

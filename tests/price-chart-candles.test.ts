@@ -213,8 +213,10 @@ test('solana ohlcv: exactly one request, 15m x 672, token side forwarded', async
   assert.deepEqual(quote.candles.map((c) => [c.open, c.high, c.low, c.close, c.volume]), [[1, 2, 0.5, 1.5, 10], [2, 3, 1.5, 2.5, 20]])
   assert.ok(Date.parse(quote.candles[0].timestamp) < Date.parse(quote.candles[1].timestamp))
 
-  await fetchSolanaOhlcv('Pool111', mockGt(urls), null)
-  assert.match(urls[1], /token=base/, 'unknown side keeps the prior base default')
+  // An unresolved side is never charted as the base token (that could be the paired asset's price).
+  const unknown = await fetchSolanaOhlcv('Pool111', mockGt(urls), null)
+  assert.equal(urls.length, 1, 'no request without a proven side')
+  assert.deepEqual([unknown.success, unknown.called, unknown.errorReason], [false, false, 'token_side_unresolved'])
 })
 
 // ── Timeframe availability (shared by Solana and EVM PriceChartPanel) ─────────────────────────────

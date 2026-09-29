@@ -165,5 +165,7 @@ test('page: supply comes only from the verified valuation + circulating_supply t
   assert.match(page, /marketCapSupply=\{_mcapSupply\.enabled \? _mcapSupply\.supply : null\}/)
   assert.match(page, /marketCapBasis=\{_mcapSupply\.enabled \? _mcapSupply\.basis : null\}/)
   assert.doesNotMatch(page, /marketCapSupply=\{[^}]*fdv/i, 'FDV is never passed as a market-cap basis')
-  assert.match(page, /<PriceChartPanel candles=\{sr\.ohlcv\.candles\} declaredIntervalSec=\{chartIntervalSec\(sr\.ohlcv\.timeframe\)\} \/>/, 'Solana chart unchanged: no verified circulating supply in its result, so MCAP stays disabled')
+  const solanaPanel = page.slice(page.indexOf('candles={sr.ohlcv.candles}'), page.indexOf('/>', page.indexOf('candles={sr.ohlcv.candles}')))
+  assert.ok(solanaPanel.length > 0)
+  assert.doesNotMatch(solanaPanel, /marketCapSupply|marketCapBasis/, 'Solana chart: no verified circulating supply in its result, so MCAP stays disabled')
 })

@@ -210,6 +210,9 @@ export type SolanaOhlcvResult = {
   candles: SolanaOhlcvCandle[]
   timeframe: string
   errorReason: string | null
+  /** The exact pool (case preserved) and the mint's proven side the candles belong to — reused by the on-demand history loader. */
+  poolAddress?: string | null
+  tokenSide?: 'base' | 'quote' | null
 }
 
 // CANDLE DEPTH + TOKEN SIDE, DISCLOSED (Price Chart terminal upgrade — reported "too few candles").
@@ -227,10 +230,18 @@ function emptyOhlcvResult(called: boolean, errorReason: string | null): SolanaOh
   return { called, success: false, candles: [], timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason }
 }
 
-export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl, tokenSide: 'base' | 'quote' | null = null): Promise<SolanaOhlcvResult> {
+// TOKEN SIDE + PRICE SANITY, DISCLOSED (chart audit): an UNRESOLVED side is no longer charted as the
+// pool's base token (that could be the paired asset's price) — no request is made and the chart stays
+// honestly unavailable ('token_side_unresolved'). A resolved series whose latest close sits outside 3x
+// of the scan's live mint price (when one is known) is rejected ('price_sanity_mismatch') rather than
+// shown — the same band the EVM chart uses.
+export const SOLANA_CHART_PRICE_SANITY_RATIO = 3
+
+export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null): Promise<SolanaOhlcvResult> {
   if (!poolAddress) return emptyOhlcvResult(false, 'No indexed pool address to fetch candle history for.')
+  if (tokenSide !== 'base' && tokenSide !== 'quote') return emptyOhlcvResult(false, 'token_side_unresolved')
   try {
-    const qs = `aggregate=15&limit=${SOLANA_OHLCV_LIMIT}&currency=usd&token=${tokenSide === 'quote' ? 'quote' : 'base'}`
+    const qs = `aggregate=15&limit=${SOLANA_OHLCV_LIMIT}&currency=usd&token=${tokenSide}`
     const res = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/minute?${qs}`, {
       signal: AbortSignal.timeout(8000),
     })
@@ -251,7 +262,12 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
       .filter((c): c is SolanaOhlcvCandle => c != null)
       .reverse() // chronological ascending, for the chart
     if (candles.length < 2) return emptyOhlcvResult(true, 'geckoterminal_insufficient_candles')
-    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null }
+    const lastClose = candles[candles.length - 1].close
+    if (livePriceUsd != null && livePriceUsd > 0) {
+      const ratio = lastClose / livePriceUsd
+      if (!(ratio >= 1 / SOLANA_CHART_PRICE_SANITY_RATIO && ratio <= SOLANA_CHART_PRICE_SANITY_RATIO)) return emptyOhlcvResult(true, 'price_sanity_mismatch')
+    }
+    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null, poolAddress, tokenSide }
   } catch {
     return emptyOhlcvResult(true, 'geckoterminal_unreachable')
   }

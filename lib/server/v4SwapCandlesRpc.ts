@@ -663,6 +663,8 @@ export type V4HistoryResult = {
   callsUsed: number
   pagesFetched: number
   stopReason: string | null
+  /** Why no older window remains (evidence, never a short page): the pool's creation, or the max-age bound. */
+  endReason?: 'reached_pool_creation' | 'max_history_age' | null
   quote: { source: 'usd_stable' | 'eth_usd_series' | 'bnb_usd_series' | 'independent_pool' | null; evidence: 'verified' | 'unavailable'; maxGapMs: number | null; reason: string | null } | null
   cache: { result: boolean; header: boolean; initialize: boolean; decimals: boolean; quote: boolean }
 }
@@ -820,7 +822,7 @@ async function readHistoryWindow(
   // 5. Swap logs for exactly this PoolId on exactly its manager, strictly before the cursor, newest
   // first; adaptive page size. Non-fixed chains keep one call for the oldest-block header.
   const quoteReserve = (counterKind === 'usd_stable' ? 0 : counterKind === 'native' ? 1 : 2) + (fixedTime ? 0 : 1)
-  if (cursorBlock < key.initBlock) return { ...r, ok: true, code: null, hasMore: false, nextBeforeSec: null, stopReason: 'pool_creation' }
+  if (cursorBlock < key.initBlock) return { ...r, ok: true, code: null, hasMore: false, nextBeforeSec: null, stopReason: 'pool_creation', endReason: 'reached_pool_creation' }
   const swaps: V4Swap[] = []
   let toBlock = Math.min(header.block, cursorBlock)
   let size = firstPage
@@ -883,6 +885,7 @@ async function readHistoryWindow(
   }
   if (!reachedCreation) timed = timed.filter((s) => s.timestampSec >= coveredFromSec)
   r.hasMore = !reachedCreation && coveredFromSec > Math.floor(now() / 1000) - V4_HISTORY_MAX_AGE_SEC
+  r.endReason = r.hasMore ? null : reachedCreation ? 'reached_pool_creation' : 'max_history_age'
   r.nextBeforeSec = r.hasMore ? Math.min(coveredFromSec, beforeSec - 3600) : null
   if (timed.length === 0) return { ...r, ok: true, code: null, candles: [] }
 

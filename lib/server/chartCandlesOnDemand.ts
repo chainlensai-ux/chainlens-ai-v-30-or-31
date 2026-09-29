@@ -149,7 +149,9 @@ export async function loadOnDemandCandles(
       calls++
       const cg = await opts.fetchCoingecko(chain, pool.toLowerCase(), { resolution: tf.resolution, aggregate: tf.aggregate, limit: tf.limit }, side)
       const cgOut = classifyOhlcvResponse('pool', cg.httpStatus, cg.json)
-      if (cgOut.code === 'ok') return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain' }, providerCalls: calls }
+      // Its meta, when it names the token, must agree with the proven side (as in the history lane).
+      const cgMetaOk = !(cg.json as { meta?: unknown } | null)?.meta || coingeckoMetaTokenSide(cg.json, token) == null || coingeckoMetaTokenSide(cg.json, token) === side
+      if (cgOut.code === 'ok' && cgMetaOk) return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain' }, providerCalls: calls }
     }
     if (!gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: calls }
     if (calls >= ON_DEMAND_MAX_PROVIDER_CALLS) return { result: fail(timeframe, 'call_budget_exhausted'), providerCalls: calls }

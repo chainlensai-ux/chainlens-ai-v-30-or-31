@@ -843,7 +843,7 @@ const GECKO_ROW = (tsSec, o, h, l, c, v) => [tsSec, o, h, l, c, v]
     rpcUrl: 'https://stub',
     fetchImpl: providerStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
-      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium', baseToken: { address: USDC_MINT } }],
       geckoRows: rows,
     }),
   })
@@ -868,7 +868,7 @@ const GECKO_ROW = (tsSec, o, h, l, c, v) => [tsSec, o, h, l, c, v]
     rpcUrl: 'https://stub',
     fetchImpl: providerStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
-      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium', baseToken: { address: USDC_MINT } }],
       geckoFail: true,
     }),
   })
@@ -878,7 +878,7 @@ const GECKO_ROW = (tsSec, o, h, l, c, v) => [tsSec, o, h, l, c, v]
     rpcUrl: 'https://stub',
     fetchImpl: providerStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
-      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium', baseToken: { address: USDC_MINT } }],
       geckoRows: null, // simulates an unexpected/missing ohlcv_list shape
     }),
   })

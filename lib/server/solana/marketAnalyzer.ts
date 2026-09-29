@@ -29,6 +29,32 @@ export function resolveSolanaPairSide(pair: Record<string, unknown>, mintAddress
   return null
 }
 
+/**
+ * The Price Chart pair (chart-only): among pairs where the exact mint's side is proven, the ACTIVE
+ * market pair — 24h volume > 0 and 24h txns > 0 — ranked by volume, txns, liquidity, then pair
+ * address (deterministic); an inactive pair (by liquidity) only when no active one exists. Uses only
+ * the fields DexScreener already returned: no extra call.
+ */
+export function selectSolanaChartPair(pairs: ReadonlyArray<Record<string, unknown>>, mintAddress: string): { pairAddress: string; side: 'base' | 'quote'; rule: 'active_market' | 'liquidity_fallback' } | null {
+  const n = (v: unknown): number => { const x = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN; return Number.isFinite(x) && x > 0 ? x : 0 }
+  const rows = pairs
+    .map((p) => {
+      const side = resolveSolanaPairSide(p, mintAddress)
+      const address = typeof p.pairAddress === 'string' && p.pairAddress.length > 0 ? p.pairAddress : null
+      const tx = ((p.txns as Record<string, unknown> | undefined)?.h24 ?? {}) as Record<string, unknown>
+      const volume = n((p.volume as Record<string, unknown> | undefined)?.h24)
+      const txns = n(tx.buys) + n(tx.sells)
+      return { side, address, volume, txns, liquidity: n((p.liquidity as Record<string, unknown> | undefined)?.usd), active: volume > 0 && txns > 0 }
+    })
+    .filter((r): r is typeof r & { side: 'base' | 'quote'; address: string } => r.side != null && r.address != null)
+  if (rows.length === 0) return null
+  const byAddr = (a: { address: string }, b: { address: string }) => (a.address < b.address ? -1 : a.address > b.address ? 1 : 0)
+  const active = rows.filter((r) => r.active).sort((a, b) => (b.volume - a.volume) || (b.txns - a.txns) || (b.liquidity - a.liquidity) || byAddr(a, b))
+  if (active.length > 0) return { pairAddress: active[0].address, side: active[0].side, rule: 'active_market' }
+  const fallback = [...rows].sort((a, b) => (b.liquidity - a.liquidity) || byAddr(a, b))[0]
+  return { pairAddress: fallback.address, side: fallback.side, rule: 'liquidity_fallback' }
+}
+
 export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFetch): Promise<SolanaMarketAnalysis> {
   try {
     const res = await fetchImpl(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`, {
@@ -139,6 +165,7 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
         marketCapUsd: pricePair ? pos(pricePair.marketCap) : null,
         primaryPoolAddress: typeof top.pairAddress === 'string' ? top.pairAddress : null,
         primaryPoolTokenSide: topSide,
+        ...(() => { const c = selectSolanaChartPair(solPairs, mintAddress); return { chartPoolAddress: c?.pairAddress ?? null, chartPoolTokenSide: c?.side ?? null, chartPoolRule: c?.rule ?? 'none' } })(),
         primaryDexLabel: typeof top.dexId === 'string' ? top.dexId : null,
         tokenName,
         tokenSymbol,
@@ -154,6 +181,6 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
 }
 
 /** Real OHLCV candles for the Price Chart — see solanaProviders.ts's fetchSolanaOhlcv for the full disclosure. */
-export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch, tokenSide: 'base' | 'quote' | null = null): Promise<SolanaOhlcvResult> {
-  return fetchSolanaOhlcv(poolAddress, fetchImpl, tokenSide)
+export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null): Promise<SolanaOhlcvResult> {
+  return fetchSolanaOhlcv(poolAddress, fetchImpl, tokenSide, livePriceUsd)
 }

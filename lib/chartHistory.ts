@@ -23,6 +23,13 @@ export const HISTORY_TARGET_SPAN_SEC: Readonly<Record<'1H' | '4H' | '1D', number
   '4H': 21 * 86_400,
   '1D': 60 * 86_400,
 }
+/**
+ * 1D first batch: while the first history batch for 1D is loading, a daily series shorter than this
+ * keeps the previously shown timeframe on screen (with the loading notice) instead of flashing a short
+ * daily chart that the batch then replaces. A young pool whose history ends sooner shows exactly its
+ * real days once the batch completes.
+ */
+export const DAILY_FIRST_BATCH_MIN_CANDLES = 30
 /** Requests one user action may chain (selecting a timeframe); a pan to the left edge makes one. */
 export const HISTORY_MAX_REQUESTS_PER_ACTION = 3
 

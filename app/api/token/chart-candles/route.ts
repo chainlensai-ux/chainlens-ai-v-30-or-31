@@ -6,7 +6,8 @@
 //      * an exact Uniswap V4 PoolId (bytes32): swap-derived (lib/server/v4SwapCandlesRpc.ts
 //        loadV4SwapHistoryWindow);
 //      * a normal 20-byte pool: the providers' own pool OHLCV for the proven token side
-//        (lib/server/chartCandlesOnDemand.ts loadPoolOhlcvHistory).
+//        (lib/server/chartCandlesOnDemand.ts loadPoolOhlcvHistory);
+//      * chain=solana: the mint's exact-case pool on GeckoTerminal (lib/server/solanaChartHistory.ts).
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
@@ -14,6 +15,7 @@ import { loadOnDemandCandles, loadPoolOhlcvHistory } from '@/lib/server/chartCan
 import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { loadV4SwapHistoryWindow, V4_SWAP_CHAIN_CONFIG } from '@/lib/server/v4SwapCandlesRpc'
 import { makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
+import { loadSolanaPoolHistory } from '@/lib/server/solanaChartHistory'
 import { candleFailureMessage } from '@/lib/evmChartCandles'
 
 export const dynamic = 'force-dynamic'
@@ -42,6 +44,12 @@ export async function GET(req: Request) {
     const pool = url.searchParams.get('pool') ?? ''
     const token = url.searchParams.get('token') ?? ''
     const before = Number(url.searchParams.get('before'))
+    // Solana: its own exact-case lane (base58 mint + pool, GeckoTerminal hourly, proven side).
+    if (chain === 'solana') {
+      const { result: h } = await loadSolanaPoolHistory({ mint: token, pool, side: url.searchParams.get('side'), before: Number.isInteger(before) ? before : null }, fetchJson, { baseUrl: process.env.GECKO_BASE_URL })
+      if (!h.ok) return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message: h.message, hasMore: h.hasMore }, { status: h.code === 'invalid_request' ? 400 : 200 })
+      return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.points, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason, windowEndSec: Math.floor(before / 3600) * 3600, source: h.source })
+    }
     if (/^0x[a-fA-F0-9]{40}$/.test(pool)) {
       const { result: h } = await loadPoolOhlcvHistory(
         { chain, token, pool, side: url.searchParams.get('side'), before: Number.isInteger(before) ? before : null },
@@ -67,7 +75,7 @@ export async function GET(req: Request) {
       const message = h.code === 'invalid_request' ? 'Older history request is out of range.' : candleFailureMessage(h.code ?? 'v4_swap_logs_unavailable')
       return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec }, { status: h.code === 'invalid_request' ? 400 : 200 })
     }
-    return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.candles, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, windowEndSec: h.windowEndSec, source: 'v4_swap_events' })
+    return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.candles, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason ?? null, windowEndSec: h.windowEndSec, source: 'v4_swap_events' })
   }
   const { result } = await loadOnDemandCandles(
     {

@@ -126,8 +126,13 @@ export async function runSolanaProviderMerge(
   // ── 7/8. GeckoTerminal OHLCV candles + pool program identity — both depend only on the pool
   // address already resolved by market data, not on each other, so they run concurrently. ──────
   const poolAddress = market.data?.primaryPoolAddress ?? null
+  // Candles come from the ACTIVE market pair for this exact mint (chart-only choice, see
+  // selectSolanaChartPair); pool program identity stays on the primary pool.
+  const chartPool = market.data ? (market.data.chartPoolAddress !== undefined ? market.data.chartPoolAddress : poolAddress) : null
+  const chartSide = market.data ? (market.data.chartPoolAddress !== undefined ? market.data.chartPoolTokenSide ?? null : market.data.primaryPoolTokenSide ?? null) : null
+  const chartLivePrice = market.data?.priceUsd ?? metadata.jupiter.resolved.price ?? null
   const [ohlcv, pool] = await Promise.all([
-    analyzeSolanaCandles(poolAddress, fetchImpl, market.data?.primaryPoolTokenSide ?? null),
+    analyzeSolanaCandles(chartPool, fetchImpl, chartSide, chartLivePrice),
     analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl }),
   ])
   if (poolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')

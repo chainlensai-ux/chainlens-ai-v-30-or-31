@@ -313,6 +313,7 @@ export type CandleFailureCode =
   | 'v4_swap_logs_unavailable'
   | 'v4_swap_history_empty'
   | 'quote_usd_price_unproven'
+  | 'price_sanity_mismatch'
 
 /** 'coingecko_pool' is the CoinGecko on-chain read, 'v4_swaps' the on-chain Uniswap V4 Swap-event read; the rest are GeckoTerminal. */
 export type CandleAttemptRoute = 'coingecko_pool' | 'pool' | 'alternate_pool' | 'v4_swaps' | 'swaps'
@@ -353,6 +354,7 @@ const FAILURE_MESSAGES: Record<CandleFailureCode, string> = {
   v4_swap_logs_unavailable: 'The on-chain swap history for this Uniswap V4 pool could not be read right now.',
   v4_swap_history_empty: 'This Uniswap V4 pool has too few real swaps yet to build candles.',
   quote_usd_price_unproven: "This pool's other asset has no proven USD price history, so USD candles were not built from its swaps.",
+  price_sanity_mismatch: "The pool's latest candle price is far from this token's live price, so the series was not shown rather than risk charting the wrong asset.",
 }
 
 export function candleFailureMessage(code: CandleFailureCode): string {
@@ -377,6 +379,7 @@ const FAILURE_PRIORITY: CandleFailureCode[] = [
   'network_not_supported',
   'provider_rate_limited',
   'token_identity_unverified',
+  'price_sanity_mismatch',
   'quote_usd_price_unproven',
   'v4_swap_logs_unavailable',
   'v4_swap_history_empty',
@@ -481,6 +484,16 @@ export function coingeckoMetaTokenSide(json: unknown, tokenAddress: string): 'ba
   if (typeof meta.base?.address === 'string' && meta.base.address.toLowerCase() === token) return 'base'
   if (typeof meta.quote?.address === 'string' && meta.quote.address.toLowerCase() === token) return 'quote'
   return null
+}
+
+/**
+ * Sanity gate for a series whose token side is already PROVEN: rejects it only when a usable live
+ * price exists and the latest close is outside the same 3x band (a paired-asset / inverted / wrong-pool
+ * series). Without a live price the side proof stands on its own (unchanged behavior).
+ */
+export function seriesPassesLivePriceSanity(points: ReadonlyArray<EvmChartPoint>, livePriceUsd: number | null): boolean {
+  if (livePriceUsd == null || !(livePriceUsd > 0)) return true
+  return closeMatchesLivePrice(points, livePriceUsd)
 }
 
 /** Latest real close within 3x either way of the scan's live price — rules out the pair token's series. */
@@ -635,6 +648,18 @@ export async function runEvmCandleLadder(input: {
         return false
       }
       r.poolOhlcvAttempts.push({ poolId: pool.poolId, poolAddress: pool.address, tokenPosition: side, timeframe: rung.key, ...(raw.httpStatus != null ? { httpStatus: raw.httpStatus } : {}), rawPointCount: normalized.rawPointCount, validPointCount: normalized.validPointCount, ...(normalized.rejectedReason ? { rejectedReason: normalized.rejectedReason } : {}) })
+      // Proven side, but the provider's own meta names the token on the OTHER side, or the latest close
+      // is far from the live price: never charted (a paired-asset / inverted series).
+      if (code === 'ok' && ((raw.json as { meta?: unknown } | null)?.meta && coingeckoMetaTokenSide(raw.json, input.contract) != null && coingeckoMetaTokenSide(raw.json, input.contract) !== side)) {
+        r.attempts[r.attempts.length - 1].code = 'token_identity_unverified'
+        r.failureReason = 'token_identity_unverified'
+        return false
+      }
+      if (code === 'ok' && !seriesPassesLivePriceSanity(normalized.points, input.currentPriceUsd)) {
+        r.attempts[r.attempts.length - 1].code = 'price_sanity_mismatch'
+        r.failureReason = 'price_sanity_mismatch'
+        return false
+      }
       if (code === 'ok') {
         accept(rung, normalized.points)
         r.chartCandles = { ...r.chartCandles!, poolAddress: pool.address, tokenSide: side }
@@ -667,6 +692,12 @@ export async function runEvmCandleLadder(input: {
       const metaSide = coingeckoMetaTokenSide(raw.json, input.contract)
       if (metaSide && closeMatchesLivePrice(classified.normalized.points, input.currentPriceUsd)) side = metaSide
       else code = 'token_identity_unverified'
+    } else if (code === 'ok' && provenSide) {
+      // Proven side: the response's meta (when it names the token) must agree, and the latest close
+      // must pass the live-price sanity band.
+      const metaSide = coingeckoMetaTokenSide(raw.json, input.contract)
+      if ((raw.json as { meta?: unknown } | null)?.meta && metaSide != null && metaSide !== provenSide) code = 'token_identity_unverified'
+      else if (!seriesPassesLivePriceSanity(classified.normalized.points, input.currentPriceUsd)) code = 'price_sanity_mismatch'
     }
     r.attempts.push({ route: 'coingecko_pool', poolAddress: cgPool.address, side, timeframe: rung.key, httpStatus: raw.httpStatus, rows: classified.normalized.rawPointCount, validRows: classified.normalized.validPointCount, code })
     if (code === 'provider_rate_limited') r.coingeckoRateLimited = true

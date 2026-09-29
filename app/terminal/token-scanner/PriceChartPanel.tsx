@@ -33,6 +33,7 @@ import {
 } from '@/lib/priceChartCandles'
 import { formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
 import {
+  DAILY_FIRST_BATCH_MIN_CANDLES,
   HISTORY_MAX_REQUESTS_PER_ACTION,
   HISTORY_TARGET_SPAN_SEC,
   historyCutoffMs,
@@ -194,12 +195,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // A pick that is no longer available (new scan data) falls back to the default — never to
   // another timeframe's candles under the picked label.
   const fiveActive = picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
-  // 1D picked while its first history batch loads, with only 1-2 partial daily candles so far: keep
-  // showing the timeframe that was on screen (with "Loading older candles…") instead of presenting
-  // those partial days as the 1D chart. 1D appears once the batch is applied (or fails).
+  // 1D picked while its first history batch loads, with fewer daily candles than a useful daily chart
+  // (e.g. the scan's ~7 days): keep showing the timeframe that was on screen (with "Loading older
+  // candles…") instead of flashing that short 1D chart and then replacing it. 1D appears once the
+  // batch is applied (or fails) — one stable update.
   const [dailyDefer, setDailyDefer] = useState<{ source: ReadonlyArray<ChartCandleInput>; fallback: ChartTimeframeKey | null } | null>(null)
   const dailyCandleCount = tfSet.timeframes.find((tf) => tf.key === '1D')?.candles.length ?? 0
-  const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === candles && dailyCandleCount <= 2
+  const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === candles && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES
   const shownPick = deferDaily ? dailyDefer!.fallback : picked
   const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === shownPick && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
   const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)

@@ -128,9 +128,9 @@ test('panel: exactly two history state writes per batch (loading, then the merge
   assert.doesNotMatch(fn, /for \(/, 'no response loop inside the component')
 })
 
-test('panel: 1D with only partial days while its history batch loads keeps the current chart; viewport logic unchanged', () => {
+test('panel: 1D shorter than a useful daily chart while its first history batch loads keeps the current chart; viewport logic unchanged', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const deferDaily = picked === '1D' && hist\.status === 'loading' && dailyDefer != null && dailyDefer\.source === candles && dailyCandleCount <= 2/)
+  assert.match(panel, /const deferDaily = picked === '1D' && hist\.status === 'loading' && dailyDefer != null && dailyDefer\.source === candles && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES/)
   assert.match(panel, /const shownPick = deferDaily \? dailyDefer!\.fallback : picked/)
   assert.match(panel, /tfSet\.timeframes\.find\(\(tf\) => tf\.key === shownPick && tf\.available\)/)
   assert.match(panel, /setDailyDefer\(chip\.key === '1D' && \(willLoad \|\| hist\.status === 'loading'\) \? \{ source: candles, fallback: activeKey \} : null\)/)
