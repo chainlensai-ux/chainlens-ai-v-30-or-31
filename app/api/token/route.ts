@@ -42,6 +42,7 @@ import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/r
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
 import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
+import { marketPoolMetrics, orderPoolsByLiquidity, orderPoolsForMarket, selectMarketPool } from '@/lib/marketPoolSelection'
 import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { V4_SWAP_CHAIN_CONFIG, loadV4SwapCandles, makeV4Rpc } from '@/lib/server/v4SwapCandlesRpc'
 import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd } from '@/lib/server/v4QuoteUsd'
@@ -4243,16 +4244,20 @@ export async function POST(req: Request) {
       console.info('[token-scan] chain-strict: rejected GeckoTerminal pools from other networks', { requested: _gtExpectedNetwork, rejected: _gtPoolsRejectedWrongChain, contract });
     }
 
-    // Sort by liquidity descending — market primary is deepest pool. Tie-break on pool id so
-    // primary-pool selection is deterministic regardless of the order the provider returns
-    // pools in (avoids score/category drift across identical-evidence scans).
-    const matchingPools = [...gtAllPools].sort((a, b) => {
-      const liqDiff = parseFloat(b.attributes?.reserve_in_usd || "0") - parseFloat(a.attributes?.reserve_in_usd || "0")
-      if (liqDiff !== 0) return liqDiff
-      return String(a.id ?? "").localeCompare(String(b.id ?? ""))
-    });
-
-    const mainPool = matchingPools[0] ?? null;
+    // POOL ROLES (lib/marketPoolSelection.ts), both deterministic and computed from the pool list
+    // already fetched — no extra calls:
+    //  - matchingPools / liquidityPool: reserve_in_usd desc, pool id tie-break (unchanged). Drives
+    //    LP Safety and liquidity custody / LP analysis (normalizedPools -> canonicalPrimaryPool/lpPool).
+    //  - mainPool (= the MARKET pool): the most active pool — 24h volume, then 24h txns, then
+    //    reserve, then id — among pools with real 24h volume AND txns; the deepest pool only when
+    //    no pool is active. Drives price fallback, Market Pulse liquidity / volume / buys / sells /
+    //    pair age / protocol, and the primary Price Chart pool, so all of those describe ONE pool.
+    //    (Reported: a $2.68M-reserve Uniswap V4 pool with $0 volume and 0 txns was chosen over the
+    //    real market, an Aerodrome pool with $198K volume and 1,552 txns.)
+    const matchingPools = orderPoolsByLiquidity(gtAllPools);
+    const liquidityPool = matchingPools[0] ?? null;
+    const marketPoolSelection = selectMarketPool(matchingPools);
+    const mainPool = marketPoolSelection.pool;
     const includedTokenById = new Map<string, Record<string, unknown>>();
     for (const inc of gtIncluded as Array<Record<string, unknown>>) {
       if (inc?.type !== "token") continue;
@@ -4383,7 +4388,14 @@ export async function POST(req: Request) {
     // evidence alone (even without a usable pair address) also clears noActivePools.
     const noActivePools = normalizedPools.length === 0 && !_fallbackLiquidityDetected;
     const mainPoolAttr = (mainPool?.attributes ?? {}) as Record<string, unknown>;
-    const { address: primaryPoolAddress, poolId: primaryMarketPoolId, poolAddressType: primaryMarketPoolAddressType } = extractPoolAddressOrId(mainPool?.id, mainPoolAttr.address)
+    // The scanned token's side in the market pool, from the pool's own base/quote ids. GeckoTerminal
+    // pool price / market cap / FDV fields describe the BASE token, so they are used for the scanned
+    // token only when it is not the quote (null = unproven, the previous behaviour).
+    const marketPoolTokenSide = mainPool ? resolveEvmPoolTokenSide(mainPool as Record<string, unknown>, contract.toLowerCase(), _gtExpectedNetwork) : null;
+    const marketPoolTokenPriceUsd = marketPoolTokenSide === 'quote' ? pickNum(mainPoolAttr.quote_token_price_usd) : pickNum(mainPoolAttr.base_token_price_usd);
+    // LP-side identity (fallbacks inside LP Safety): the liquidity pool, never the market pool.
+    const liquidityPoolAttr = (liquidityPool?.attributes ?? {}) as Record<string, unknown>;
+    const { address: primaryPoolAddress, poolId: primaryMarketPoolId, poolAddressType: primaryMarketPoolAddressType } = extractPoolAddressOrId(liquidityPool?.id, liquidityPoolAttr.address)
     // Canonical primary pool for both Liquidity&Pools and LP Control:
     // use the highest-liquidity normalized pool first (same ordering as matchingPools/mainPool),
     // then fall back to LP verification selector if needed.
@@ -4477,9 +4489,10 @@ export async function POST(req: Request) {
     const secondaryPoolCandidates = normalizedPools.filter((p) =>
       _isV2Verifiable(p) && p.address !== lpVerifyPoolAddress && !_samePairAsPrimary(p))
     const _secondaryPoolAddress = secondaryPoolCandidates[0]?.address ?? null
-    const dexId = String(mainPoolAttr.dex_id ?? mainPoolAttr.dex ?? "").trim() || null;
-    const dexName = String(mainPoolAttr.dex_name ?? "").trim() || null;
-    // Primary pool DEX display name — exhaustive field search across attributes + relationships
+    // LP control's dex fields describe the liquidity pool (LP Safety role).
+    const dexId = String(liquidityPoolAttr.dex_id ?? liquidityPoolAttr.dex ?? "").trim() || null;
+    const dexName = String(liquidityPoolAttr.dex_name ?? "").trim() || null;
+    // Market pool DEX display name — exhaustive field search across attributes + relationships
     const _extractedDexId = (() => {
       if (!mainPool) return null
       const mp = mainPool as Record<string, unknown>
@@ -4506,16 +4519,15 @@ export async function POST(req: Request) {
       if (/aerodrome/i.test(nameHint)) return 'aerodrome'
       if (/baseswap/i.test(nameHint)) return 'baseswap'
       if (/pancakeswap/i.test(nameHint)) return 'pancakeswap'
-      return dexId || dexName || null
+      return String(a.dex_name ?? '').trim() || null
     })()
     const primaryDexName = normalizeDexLabel(_extractedDexId) ?? normalizeDexLabel(dexFbEarly?.dexId ?? null)
     const pairName = String(mainPoolAttr.name ?? mainPoolAttr.pool_name ?? mainPoolAttr.pair_name ?? "").trim() || null;
-    const selectedPrimaryPoolSource = String(mainPoolAttr.address ?? "").trim() ? "attributes.address" : (String(mainPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
+    const selectedPrimaryPoolSource = String(liquidityPoolAttr.address ?? "").trim() ? "attributes.address" : (String(liquidityPool?.id ?? "").trim() ? "pool.id_normalized" : "none");
     const poolAddressPresent = Boolean(primaryPoolAddress && /^0x[a-f0-9]{40}$/.test(primaryPoolAddress));
     // Early signals needed for phase 2 setup (computed before full field resolution)
     const _gtEarly = gtTokenInfo?.data?.attributes ?? null
-    const _poolAttrEarly = (mainPool?.attributes ?? {}) as Record<string, unknown>
-    const _priceEarly = pickNum(_poolAttrEarly.base_token_price_usd, _gtEarly?.price_usd, _gtEarly?.price)
+    const _priceEarly = pickNum(marketPoolTokenPriceUsd, _gtEarly?.price_usd, _gtEarly?.price)
     const _mcEarly = toNum(_gtEarly?.market_cap_usd)
     const _decEarly: number = typeof _gtEarly?.decimals === 'number' ? _gtEarly.decimals : 18
     const _liqEarly = pickNum(mainPool?.attributes?.reserve_in_usd)
@@ -5935,7 +5947,7 @@ export async function POST(req: Request) {
       goldItem?.market_cap,
       metaItem?.market_cap
     )
-    const selectedPoolMarketCapUsd = pickNum(poolAttr.market_cap_usd, poolAttr.market_cap)
+    const selectedPoolMarketCapUsd = marketPoolTokenSide === 'quote' ? null : pickNum(poolAttr.market_cap_usd, poolAttr.market_cap)
     const marketCapDiagnosticsResolved = resolveBaseRadarMarketCap({
       geckoPool: mainPool ? { attributes: poolAttr as Record<string, unknown> } : null,
       geckoIncludedToken: gtTokenInfo?.data?.attributes ?? gtToken ?? null,
@@ -5953,7 +5965,7 @@ export async function POST(req: Request) {
           : (coingeckoMarketCap != null && coingeckoMarketCap > 0 ? coingeckoMarketCap : null)))
     const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
-    const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
+    const tokenPrice = pickNum(marketPoolTokenPriceUsd, gtToken?.price_usd, gtToken?.price)
     const marketCapSource = marketCapFromGt != null
       ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
         ? 'geckoterminal'
@@ -5971,7 +5983,7 @@ export async function POST(req: Request) {
     // invariant, fall through to DexScreener's own fdv (already fetched alongside its marketCap
     // above) or CoinGecko's fully_diluted_valuation, whichever is actually consistent with the
     // verified market cap we're already showing.
-    const gtFdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
+    const gtFdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, marketPoolTokenSide === 'quote' ? null : poolAttr.fdv_usd, marketPoolTokenSide === 'quote' ? null : poolAttr.fdv, marketPoolTokenSide === 'quote' ? null : mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const dexScreenerFdv = pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.fdv)
     const coingeckoFdv = pickNum((_cgMarketDataEarly?.fully_diluted_valuation as Record<string, unknown> | null | undefined)?.usd)
     const gtFdvIsStale = gtFdv != null && marketCapFromGt != null && gtFdv < marketCapFromGt
@@ -6178,7 +6190,9 @@ export async function POST(req: Request) {
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
     const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
     const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
-    const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
+    // Chart order = market order: the market pool, then the remaining ACTIVE pools by the same
+    // ranking, then inactive pools (by liquidity) only as last-resort fallbacks.
+    const chartPoolCandidates = orderPoolsForMarket(matchingPools)
       .map((p) => {
         if (!p) return null
         const address = chartPoolIdentifier(p as Record<string, unknown>)
@@ -6195,13 +6209,7 @@ export async function POST(req: Request) {
         }
       })
       .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
-      .sort((a, b) => ((b.liquidityUsd ?? -1) - (a.liquidityUsd ?? -1)) || ((b.volume24hUsd ?? -1) - (a.volume24hUsd ?? -1)))
     const primaryAddr = chartPoolIdentifier(mainPool as Record<string, unknown> | null)?.toLowerCase() ?? ''
-    chartPoolCandidates.sort((a, b) => {
-      if (a.address.toLowerCase() === primaryAddr) return -1
-      if (b.address.toLowerCase() === primaryAddr) return 1
-      return 0
-    })
     const uniqueChartPools = chartPoolCandidates.filter((c, i, arr) => arr.findIndex((x) => x.address.toLowerCase() === c.address.toLowerCase()) === i)
     const tokenPositionForEachPool = uniqueChartPools.map((candidate) => poolTokenRelationshipDebug(candidate.pool as Record<string, unknown>, contract.toLowerCase(), _chartNetworkId))
 
@@ -7013,7 +7021,10 @@ export async function POST(req: Request) {
 
     // ── Migration proof — derived early so LP Intelligence's migrationRisk can reflect
     // real migration evidence instead of conflating it with LP-control status. ──
-    const lpMigrationProof = _deriveMigrationProof(gtAllPools, liquidityUsd, Boolean(lpPool), lpControl.primaryPoolDex ?? null, pairCreatedAt)
+    // LP analysis role: measured against the LIQUIDITY pool (unchanged when it is also the market pool).
+    const _lpRoleLiquidityUsd = mainPool === liquidityPool ? liquidityUsd : pickNum(liquidityPool?.attributes?.reserve_in_usd)
+    const _lpRolePoolCreatedAt = mainPool === liquidityPool ? pairCreatedAt : (String(liquidityPoolAttr.pool_created_at ?? '').trim() || null)
+    const lpMigrationProof = _deriveMigrationProof(gtAllPools, _lpRoleLiquidityUsd, Boolean(lpPool), lpControl.primaryPoolDex ?? null, _lpRolePoolCreatedAt)
 
     // ── LP Intelligence — lock time, migration risk, mint authority, depth, volatility ──
     const lpIntelligence: RiskEngine["lpIntelligence"] = (() => {
@@ -8756,7 +8767,16 @@ export async function POST(req: Request) {
             whyDexNotConfirmed: primaryDexName ? null
               : _extractedDexId ? `normalizeDexLabel("${_extractedDexId}") returned null — add to map`
               : 'No dex id found in any checked field',
-            // F) First 3 pool summaries
+            // E2) Pool roles: market (Market Pulse + chart) vs liquidity (LP Safety / custody)
+            poolRoles: {
+              marketPoolRule: marketPoolSelection.rule,
+              activePoolCount: marketPoolSelection.activePoolCount,
+              marketPool: mainPool ? { ...marketPoolMetrics(mainPool), tokenSide: marketPoolTokenSide } : null,
+              liquidityPool: liquidityPool ? marketPoolMetrics(liquidityPool) : null,
+              samePool: mainPool === liquidityPool,
+              chartPoolOrder: orderPoolsForMarket(matchingPools).slice(0, 5).map((p) => String(p?.id ?? '')),
+            },
+            // F) First 3 pool summaries (liquidity order)
             first3Pools: matchingPools.slice(0, 3).map((p) => {
               const pa = (p?.attributes ?? {}) as Record<string, unknown>
               const pr = (p?.relationships ?? {}) as Record<string, unknown>
