@@ -460,7 +460,14 @@ export type V4QuoteUsdInfo = {
   poolProtocol?: string | null
   poolSide?: 'base' | 'quote' | null
   failureReason?: string | null
-  wrappedNative?: string | null
+  wrappedNative?: { address: string; proof: string; source: string; status: string } | null
+  anchors?: string[]
+  discovery?: {
+    httpStatus: number | null; poolsReturned: number; anchoredFound: number; anchoredRejected: number; selectedLiquidityUsd: number | null
+    candidates: Array<{ pool: string | null; dex: string | null; side: 'base' | 'quote' | null; pairedWith: string | null; liquidityUsd: number | null; rejected: string | null }>
+  } | null
+  history?: { provider: string | null; httpStatus: number | null; rows: number; validRows: number; oldestSec: number | null; latestSec: number | null } | null
+  decimalsSource?: 'registry' | 'provider' | 'onchain' | null
 }
 
 /**

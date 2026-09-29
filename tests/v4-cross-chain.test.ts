@@ -113,7 +113,7 @@ test('config: every Token Scanner EVM chain has an evidence-backed Uniswap V4 Po
   })
   assert.equal(V4_SWAP_CHAIN_CONFIG.base.blockTimeSec, 2, 'Base keeps its fixed 2s blocks')
   assert.deepEqual([V4_SWAP_CHAIN_CONFIG.eth.native.coinId, V4_SWAP_CHAIN_CONFIG.bnb.native.coinId, V4_SWAP_CHAIN_CONFIG.robinhood.native.coinId], ['ethereum', 'binancecoin', 'ethereum'])
-  assert.deepEqual(V4_SWAP_CHAIN_CONFIG.robinhood.nativeLike, { [NATIVE]: 18 }, 'Robinhood: only native ETH — its WETH has no recorded verification here')
+  assert.deepEqual(V4_SWAP_CHAIN_CONFIG.robinhood.nativeLike, { [NATIVE]: 18, '0x0bd7d308f8e1639fab988df18a8011f41eacad73': 18 }, 'Robinhood: native ETH + WETH verified by Uniswap deployments/4663.md')
   assert.equal(V4_SWAP_CHAIN_CONFIG.bnb.usdStable[USDT_BSC], 18, 'BSC USDT has 18 decimals')
   for (const cfg of Object.values(V4_SWAP_CHAIN_CONFIG)) assert.ok(cfg.managers.every((m) => m.protocol === 'uniswap_v4' && m.source.length > 10))
 })

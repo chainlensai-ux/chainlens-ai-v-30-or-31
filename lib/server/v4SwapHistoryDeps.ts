@@ -33,9 +33,9 @@ export function makeV4HistoryDeps(chain: string): V4HistoryDeps | null {
     quoteUsdWindow: (q) => resolveIndependentQuoteUsdWindow({ chain, ...q }, {
       fetchTokenPools: (_c, quoteToken, timeoutMs) => gtJson(`${gtBase()}/api/v2/networks/${network}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, timeoutMs),
       // CoinGecko only where its on-chain API serves this chain (not Robinhood) — else GeckoTerminal.
-      fetchPoolUsdOhlcvBefore: (_c, pool, side, req, beforeSec, timeoutMs) => isCoingeckoOnchainConfigured() && coingeckoOnchainNetwork(chain)
-        ? fetchCoingeckoOnchainPoolOhlcv(chain, pool, req, side, undefined, beforeSec)
-        : gtJson(`${gtBase()}/api/v2/networks/${network}/pools/${pool}/ohlcv/${req.resolution}?aggregate=${req.aggregate}&limit=${req.limit}&currency=usd&token=${side}&before_timestamp=${beforeSec}`, timeoutMs),
+      fetchPoolUsdOhlcvBefore: async (_c, pool, side, req, beforeSec, timeoutMs) => isCoingeckoOnchainConfigured() && coingeckoOnchainNetwork(chain)
+        ? { ...(await fetchCoingeckoOnchainPoolOhlcv(chain, pool, req, side, undefined, beforeSec)), provider: 'coingecko_onchain' }
+        : { ...(await gtJson(`${gtBase()}/api/v2/networks/${network}/pools/${pool}/ohlcv/${req.resolution}?aggregate=${req.aggregate}&limit=${req.limit}&currency=usd&token=${side}&before_timestamp=${beforeSec}`, timeoutMs)), provider: 'geckoterminal' },
     }),
   }
 }

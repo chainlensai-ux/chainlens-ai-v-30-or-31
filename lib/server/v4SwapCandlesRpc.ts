@@ -42,7 +42,7 @@
 
 import { RPC } from '../rpc.ts'
 import { getRobinhoodRpcUrl } from './robinhoodChainConfig.ts'
-import { classifyQuoteAsset, resolveWrappedNative, staticNativeLike, verifiedUsdStableDecimals, type QuoteClassification, type WrappedNativeStatus } from './chainAssetRegistry.ts'
+import { CHAIN_ASSET_REGISTRY, classifyQuoteAsset, staticNativeLike, verifiedUsdStableDecimals, wrappedNativeDebug, type QuoteClassification } from './chainAssetRegistry.ts'
 import { logRpcCall } from './rpcDebug.ts'
 import { auditGlobalAlchemyCall } from './globalRpcAudit.ts'
 import {
@@ -57,7 +57,7 @@ import {
   type V4Swap,
 } from '../v4SwapCandles.ts'
 import { closeMatchesLivePrice, type EvmChartPoint } from '../evmChartCandles.ts'
-import { quoteUsdFailureReason, type QuoteUsdFailureReason, type QuoteUsdResult } from './v4QuoteUsd.ts'
+import { quoteUsdFailureReason, type QuoteDiscoveryDebug, type QuoteHistoryDebug, type QuoteSelectionInput, type QuoteUsdFailureReason, type QuoteUsdResult } from './v4QuoteUsd.ts'
 
 const NATIVE = '0x0000000000000000000000000000000000000000'
 
@@ -71,11 +71,10 @@ const NATIVE = '0x0000000000000000000000000000000000000000'
 //    source-verified PoolManager.sol matching v4-core (lib/server/uniswapV4RobinhoodRpc.ts).
 //  - Same PoolManager bytecode everywhere (CREATE2, same init code) => identical Initialize/Swap ABI.
 //  - Native / wrapped-native / verified USD stables per chain: lib/server/chainAssetRegistry.ts (exact
-//    addresses + decimals + evidence). nativeLike / usdStable below hold only the statically verified
-//    entries (values unchanged). Robinhood's WETH is on-chain-verified at runtime (WETH9() on the
-//    chain's Uniswap V3 NonfungiblePositionManager must return exactly the registry address; one
-//    eth_call, cached 24h) and only then priced as ETH and used as an independent-pool anchor.
-//    Robinhood has no verified USD stable, so any other quote asset takes the one-hop lane.
+//    addresses + decimals + evidence). Base / ETH / BNB values unchanged. Robinhood's WETH is statically
+//    verified by Uniswap's official deployments/4663.md (the _WETH9 of its V3 NPM, V4 PositionManager,
+//    SwapRouter02, QuoterV2 and UniversalRouter), so it is priced as ETH and is the independent-pool
+//    anchor. Robinhood has no verified USD stable, so any other quote asset takes the one-hop lane.
 //  - PancakeSwap Infinity (BNB): no verified manager address or ABI in this repo => not configured;
 //    a pool whose dex is not Uniswap V4 is reported as v4_protocol_unsupported (zero calls).
 //
@@ -185,11 +184,19 @@ export function v4ProtocolSupported(chain: string, dexHint: string | null | unde
   return !(dexHint && UNVERIFIED_POOL_ID_PROTOCOLS.test(dexHint))
 }
 
-/** Independent-pool anchors: the chain's static native/wrapped/stables plus an on-chain-proven wrapped native. */
-function quoteAnchors(cfg: V4ChainConfig, provenWrapped: string | null): ReadonlySet<string> {
-  const set = new Set([...Object.keys(cfg.nativeLike), ...Object.keys(cfg.usdStable)])
-  if (provenWrapped) set.add(provenWrapped)
-  return set
+/**
+ * Independent-pool lane input for this chain: anchors = the chain's native-like + verified stables (the
+ * wrapped native is what an ordinary pool can actually pair with; native 0x0 never appears as an ERC-20
+ * pool token), plus the chain's anchor-ranking rule.
+ */
+export function quoteLaneSelection(chain: string): Pick<QuoteSelectionInput, 'anchors' | 'anchorPriority' | 'wrappedNative'> {
+  const cfg = V4_SWAP_CHAIN_CONFIG[chain]
+  const reg = CHAIN_ASSET_REGISTRY[chain]
+  return {
+    anchors: new Set(cfg ? [...Object.keys(cfg.nativeLike), ...Object.keys(cfg.usdStable)] : []),
+    anchorPriority: reg?.anchorPriority ?? 'liquidity',
+    wrappedNative: reg?.wrappedNative?.address ?? null,
+  }
 }
 
 const STABLE_LIKE_SYMBOL = /^(usdc|usdt|usdc\.e|usdt0|dai|usds|usde|pyusd|fdusd|busd|tusd|usdbc)$/i
@@ -275,7 +282,13 @@ export type V4SwapCandleResult = {
     poolProtocol?: string | null
     poolSide?: 'base' | 'quote' | null
     failureReason?: QuoteUsdFailureReason | null
-    wrappedNative?: WrappedNativeStatus | null
+    /** The chain's wrapped native (candidate, proof mode, source, status) and the exact anchors the lane accepted. */
+    wrappedNative?: ReturnType<typeof wrappedNativeDebug>
+    anchors?: string[]
+    /** Discovery (pools returned / anchored / rejected with reasons) and quote-history read diagnostics. */
+    discovery?: QuoteDiscoveryDebug | null
+    history?: QuoteHistoryDebug | null
+    decimalsSource?: 'registry' | 'provider' | 'onchain' | null
   } | null
   logsFound: number
   tradesUsed: number
@@ -299,7 +312,7 @@ export type V4SwapDeps = {
   /** Any chain's native/USD series by CoinGecko coin id (e.g. 'binancecoin'); ETH chains may use ethUsdSeries instead. */
   nativeUsdSeries?: (coinId: string, timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
   /** One-hop independent USD history for any other quote token (lib/server/v4QuoteUsd.ts). Absent => unproven. */
-  quoteUsd?: (input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string>; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
+  quoteUsd?: (input: QuoteSelectionInput & { budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
   now?: () => number
 }
 
@@ -413,24 +426,18 @@ export async function loadV4SwapCandles(
   if (!tokenIsCurrency0 && key.currency1 !== token) return done(gap('token_side_unresolved'))
   r.tokenCurrencyIndex = tokenIsCurrency0 ? 0 : 1
   const counter = tokenIsCurrency0 ? key.currency1 : key.currency0
-  let counterEthDec: number | undefined = cfg.nativeLike[counter]
+  const counterEthDec: number | undefined = cfg.nativeLike[counter]
   const counterUsdDec = cfg.usdStable[counter]
-  // A chain whose wrapped native is verified on-chain (Robinhood): one cached eth_call proves it, needed
-  // only when the counter is not already a static native/stable (it is then also an independent-pool anchor).
-  let wrapped: Awaited<ReturnType<typeof resolveWrappedNative>> | null = null
-  if (counterEthDec == null && counterUsdDec == null) {
-    wrapped = await resolveWrappedNative(input.chain, (to, data) => rpc('eth_call', [{ to, data }, 'latest']), canCall, now)
-    if (wrapped.status === 'budget') return gap('call_budget_exhausted')
-    if (wrapped.address != null && wrapped.address === counter && wrapped.decimals != null) counterEthDec = wrapped.decimals
-  }
-  const classification = classifyQuoteAsset(input.chain, counter, wrapped?.address ?? null)
+  const classification = classifyQuoteAsset(input.chain, counter)
+  const lane = quoteLaneSelection(input.chain)
   const nativeKind: 'eth' | 'bnb' = cfg.native.symbol === 'BNB' ? 'bnb' : 'eth'
   const isNative = counterEthDec != null
   r.counterAsset = isNative ? nativeKind : counterUsdDec != null ? 'usd_stable' : 'other'
   const attempt: QuoteUsdAttempt = isNative ? 'native_usd' : counterUsdDec != null ? 'stable_usd' : deps.quoteUsd && classification === 'arbitrary_quote' ? 'independent_quote_pool' : 'none'
   r.quote = {
     asset: counter, symbol: isNative ? cfg.native.symbol : null, source: isNative ? (nativeKind === 'bnb' ? 'bnb_usd_series' : 'eth_usd_series') : counterUsdDec != null ? 'usd_stable' : null, pool: null, pairedWith: null, evidence: counterUsdDec != null ? 'verified' : 'unavailable', points: 0, maxGapMs: null, reason: null,
-    decimals: (counterEthDec ?? counterUsdDec) ?? null, classification, attempt, poolProtocol: null, poolSide: null, failureReason: null, wrappedNative: wrapped?.status ?? null,
+    decimals: (counterEthDec ?? counterUsdDec) ?? null, classification, attempt, poolProtocol: null, poolSide: null, failureReason: null,
+    wrappedNative: wrappedNativeDebug(input.chain), anchors: [...lane.anchors], discovery: null, history: null, decimalsSource: counterEthDec != null || counterUsdDec != null ? 'registry' : null,
   }
 
   // 2a. Chains without a fixed block interval: one REAL block header ~24h back anchors the window
@@ -455,24 +462,30 @@ export async function loadV4SwapCandles(
   let counterDecimals = (counterEthDec ?? counterUsdDec) ?? null
   if (r.counterAsset === 'other') {
     const unproven = (reason: string, failureReason: QuoteUsdFailureReason) => { r.quote = { ...r.quote!, evidence: 'unavailable', reason, failureReason }; return done(gap('quote_usd_price_unproven')) }
-    // The chain's registry wrapped-native address whose on-chain proof failed: never priced, never re-routed.
-    if (classification === 'unverified') return unproven(`wrapped_native_${wrapped?.status ?? 'unverified'}`, 'wrapped_native_unverified')
     if (!deps.quoteUsd) return unproven('no_independent_quote_source', 'quote_usd_price_unproven')
     const q = await deps.quoteUsd({
       quoteToken: counter,
       scannedToken: token,
       excludePool: poolId,
-      anchors: quoteAnchors(cfg, wrapped?.address ?? null),
+      ...lane,
       budget: Math.max(0, cap - r.callsUsed - 1),
       deadlineMs: deadline,
     })
     r.callsUsed += q.callsUsed
     r.providerCalls += q.callsUsed
-    r.quote = { ...r.quote!, symbol: q.quoteSymbol, source: 'independent_pool', pool: q.pool, pairedWith: q.pairedWith, points: q.points.length, reason: q.detail, decimals: q.quoteDecimals, poolProtocol: q.poolDex ?? null, poolSide: q.poolSide ?? null }
+    r.quote = { ...r.quote!, symbol: q.quoteSymbol, source: 'independent_pool', pool: q.pool, pairedWith: q.pairedWith, points: q.points.length, reason: q.detail, decimals: q.quoteDecimals, poolProtocol: q.poolDex ?? null, poolSide: q.poolSide ?? null, discovery: q.discovery ?? null, history: q.history ?? null, decimalsSource: q.quoteDecimals != null ? 'provider' : null }
     if (q.reason === 'call_budget_exhausted') { r.budgetStopReason = 'call_budget'; return gap('call_budget_exhausted') }
-    if (!q.ok || q.quoteDecimals == null) return unproven(q.detail ?? 'quote_usd_price_unproven', explainQuoteFailure(q))
+    if (!q.ok) return unproven(q.detail ?? 'quote_usd_price_unproven', explainQuoteFailure(q))
+    // The provider carried no decimals for the quote token: its own decimals() on-chain (cached 24h), else unproven.
+    let qDec = q.quoteDecimals
+    if (qDec == null) {
+      if (!canCall()) return gap('call_budget_exhausted')
+      qDec = await readTokenDecimals(input.chain, counter, rpc, now)
+      if (qDec == null) return unproven('quote_decimals_unavailable', 'quote_asset_unverified')
+      r.quote = { ...r.quote!, decimals: qDec, decimalsSource: 'onchain' }
+    }
     r.counterAsset = 'independent_quote'
-    counterDecimals = q.quoteDecimals
+    counterDecimals = qDec
     quotePoints = q.points
   }
   if (counterDecimals == null) { r.quote = { ...r.quote!, failureReason: 'quote_asset_unverified' }; return done(gap('quote_usd_price_unproven')) }
@@ -620,6 +633,18 @@ const QUIET_PAGE_LOGS = 1_500
 const BUSY_PAGE_LOGS = 4_000
 const DECIMALS_SELECTOR = '0x313ce567'
 
+/** An ERC-20's own decimals() (one eth_call; cached 24h per chain + token, shared by scan and history). */
+async function readTokenDecimals(chain: string, token: string, rpc: (method: string, params: unknown[]) => Promise<{ result: unknown; error: boolean }>, now: () => number): Promise<number | null> {
+  const hit = decimalsCache.get(`${chain}:${token}`)
+  if (hit && hit.expiresAt > now()) return hit.decimals
+  const res = await rpc('eth_call', [{ to: token, data: DECIMALS_SELECTOR }, 'latest'])
+  const v = typeof res.result === 'string' && /^0x[0-9a-f]+$/i.test(res.result) ? Number(BigInt(res.result)) : null
+  if (res.error || v == null || !Number.isInteger(v) || v < 0 || v > 36) return null
+  bounded(decimalsCache)
+  decimalsCache.set(`${chain}:${token}`, { expiresAt: now() + INIT_TTL_MS, decimals: v })
+  return v
+}
+
 export type V4HistoryResult = {
   ok: boolean
   code: V4SwapGapCode | 'invalid_request' | null
@@ -649,7 +674,7 @@ export type V4HistoryDeps = {
   /** Real <coinId>/USD over [fromSec, toSec] for non-ETH natives (e.g. 'binancecoin'), cached per window. */
   nativeUsdRange?: (coinId: string, fromSec: number, toSec: number, timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
   /** The quote token's independent-pool USD history over [fromSec, toSec] (lib/server/v4QuoteUsd.ts resolveIndependentQuoteUsdWindow). */
-  quoteUsdWindow?: (input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string>; fromSec: number; toSec: number; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
+  quoteUsdWindow?: (input: QuoteSelectionInput & { fromSec: number; toSec: number; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
   now?: () => number
 }
 
@@ -741,19 +766,8 @@ async function readHistoryWindow(
   const tokenIsCurrency0 = key.currency0 === token
   if (!tokenIsCurrency0 && key.currency1 !== token) return { ...fail('token_side_unresolved'), hasMore: false }
   const counter = tokenIsCurrency0 ? key.currency1 : key.currency0
-  let counterEthDec: number | undefined = cfg.nativeLike[counter]
+  const counterEthDec: number | undefined = cfg.nativeLike[counter]
   const counterUsdDec = cfg.usdStable[counter]
-  // Same registry proof as the scan (shared 24h cache, so normally no call here).
-  let provenWrapped: string | null = null
-  if (counterEthDec == null && counterUsdDec == null) {
-    const w = await resolveWrappedNative(input.chain, (to, data) => rpc('eth_call', [{ to, data }, 'latest']), () => canCall(), now)
-    if (w.status === 'budget') return fail('call_budget_exhausted')
-    provenWrapped = w.address
-    if (w.address != null && w.address === counter && w.decimals != null) counterEthDec = w.decimals
-    if (classifyQuoteAsset(input.chain, counter, w.address) === 'unverified') {
-      return { ...fail('quote_usd_price_unproven'), quote: { source: null, evidence: 'unavailable', maxGapMs: null, reason: `wrapped_native_${w.status}` } }
-    }
-  }
   const counterKind: 'native' | 'usd_stable' | 'other' = counterEthDec != null ? 'native' : counterUsdDec != null ? 'usd_stable' : 'other'
   const nativeSource: 'eth_usd_series' | 'bnb_usd_series' = cfg.native.symbol === 'BNB' ? 'bnb_usd_series' : 'eth_usd_series'
   const nativeRange = cfg.native.coinId === 'ethereum'
@@ -887,7 +901,7 @@ async function readHistoryWindow(
   } else if (counterKind === 'other') {
     const q = await deps.quoteUsdWindow!({
       quoteToken: counter, scannedToken: token, excludePool: poolId,
-      anchors: quoteAnchors(cfg, provenWrapped),
+      ...quoteLaneSelection(input.chain),
       fromSec: fromSec - 3600, toSec: toSec + 3600,
       budget: Math.max(0, V4_HISTORY_MAX_CALLS - r.callsUsed), deadlineMs: deadline,
     })
@@ -895,6 +909,8 @@ async function readHistoryWindow(
     r.cache.quote = q.cache.series
     counterDecimals = q.quoteDecimals
     series = q.ok ? q.points : null
+    // Provider carried no decimals for the quote token: its own decimals() (shared 24h cache with the scan).
+    if (series && counterDecimals == null && r.callsUsed < V4_HISTORY_MAX_CALLS && now() < deadline) counterDecimals = await readTokenDecimals(input.chain, counter, rpc, now)
     r.quote = { source: 'independent_pool', evidence: series ? 'verified' : 'unavailable', maxGapMs: null, reason: q.detail }
   } else {
     r.quote = { source: 'usd_stable', evidence: 'verified', maxGapMs: null, reason: null }

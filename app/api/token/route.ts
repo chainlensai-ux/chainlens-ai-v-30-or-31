@@ -6355,9 +6355,9 @@ export async function POST(req: Request) {
                   } catch { return { json: null, httpStatus: null } }
                 },
                 // CoinGecko only where its on-chain API serves this chain (not Robinhood) — else GeckoTerminal.
-                fetchPoolUsdOhlcv: (_c, quotePool, side) => _chartCoingeckoNetwork
-                  ? fetchCoingeckoOnchainPoolOhlcv(chain, quotePool, QUOTE_SERIES_REQUEST, side)
-                  : fetchGeckoTerminalPoolOhlcv(quotePool, chain, QUOTE_SERIES_REQUEST, side),
+                fetchPoolUsdOhlcv: async (_c, quotePool, side) => _chartCoingeckoNetwork
+                  ? { ...(await fetchCoingeckoOnchainPoolOhlcv(chain, quotePool, QUOTE_SERIES_REQUEST, side)), provider: 'coingecko_onchain' }
+                  : { ...(await fetchGeckoTerminalPoolOhlcv(quotePool, chain, QUOTE_SERIES_REQUEST, side)), provider: 'geckoterminal' },
               }),
             },
             budget,
