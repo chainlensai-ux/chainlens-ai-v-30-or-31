@@ -223,6 +223,26 @@ export function formatIntervalLabel(sec: number | null): string {
   return `${sec}S`
 }
 
+// ── Time formatting ─────────────────────────────────────────────────────────────────────────────
+// Candle buckets are epoch-aligned, so a 1D bucket starts at 00:00 UTC. Daily (and longer) labels
+// are therefore formatted in UTC — in a local zone west of UTC the Sep 29 UTC candle would otherwise
+// read "Sep 28". Intraday labels keep the viewer's local clock.
+export const chartTimeIsUtc = (intervalSec: number | null): boolean => intervalSec != null && intervalSec >= 86_400
+
+export function formatChartTime(t: number, intervalSec: number | null, mode: 'axis' | 'readout'): string {
+  const d = new Date(t)
+  if (chartTimeIsUtc(intervalSec)) {
+    return mode === 'readout'
+      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+      : d.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' })
+  }
+  if (mode === 'readout') return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  const midnight = d.getHours() === 0 && d.getMinutes() === 0
+  return midnight
+    ? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
+    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
 // ── Price formatting ────────────────────────────────────────────────────────────────────────────
 
 const SUBSCRIPT_DIGITS = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉']

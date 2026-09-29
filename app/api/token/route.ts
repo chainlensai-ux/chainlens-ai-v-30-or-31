@@ -43,6 +43,7 @@ import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
 import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
 import { marketPoolMetrics, orderPoolsByLiquidity, orderPoolsForMarket, selectMarketPool } from '@/lib/marketPoolSelection'
+import { describeHolderProvider, isTimeoutError } from '@/lib/holderProviderDiagnostics'
 import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { V4_SWAP_CHAIN_CONFIG, loadV4SwapCandles, makeV4Rpc } from '@/lib/server/v4SwapCandlesRpc'
 import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd } from '@/lib/server/v4QuoteUsd'
@@ -693,6 +694,8 @@ type HolderResolverResult = {
   reason?: string
   fallbackUsed?: string
   confidence: EvidenceConfidence
+  /** Debug only: usable normalized rows per provider (null = that provider was not consulted). */
+  providerUsableRows?: { goldrush: number | null; moralis: number | null }
 }
 
 function buildInsufficientEvidenceBlock(reason: string, fallbackUsed?: string) {
@@ -1476,12 +1479,14 @@ async function resolveTokenHolders(params: {
   const sourceTrail: string[] = []
   const limit = params.limit ?? 200
   let fallbackUsed = 'none'
+  const providerUsableRows: { goldrush: number | null; moralis: number | null } = { goldrush: null, moralis: null }
 
   if (params.providerHoldersRaw && params.providerHoldersRaw.__status !== 'not_configured') {
     fallbackUsed = 'goldrush_token_holders'
     sourceTrail.push('goldrush_token_holders:attempted')
     const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.providerHoldersRaw, 'goldrush_token_holders'), limit)
-    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'goldrush_token_holders:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'high' : 'medium' }
+    providerUsableRows.goldrush = holders.length
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'goldrush_token_holders:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'high' : 'medium', providerUsableRows }
     sourceTrail.push('goldrush_token_holders:no_usable_holder_rows')
   } else {
     sourceTrail.push('goldrush_token_holders:not_configured')
@@ -1491,7 +1496,8 @@ async function resolveTokenHolders(params: {
     fallbackUsed = 'moralis_token_owners'
     sourceTrail.push('moralis_token_owners:attempted')
     const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(params.marketProviderHoldersRaw, 'moralis_token_owners'), limit)
-    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_owners:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low' }
+    providerUsableRows.moralis = holders.length
+    if (holders.length > 0) return { holders, insufficientEvidence: false, sourceTrail: [...sourceTrail, 'moralis_token_owners:succeeded'], fallbackUsed, confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low', providerUsableRows }
     sourceTrail.push('moralis_token_owners:no_usable_holder_rows')
   } else {
     sourceTrail.push('moralis_token_owners:not_configured')
@@ -1510,6 +1516,7 @@ async function resolveTokenHolders(params: {
           insufficientEvidence: false,
           sourceTrail: [...sourceTrail, 'blockscout_token_holders:succeeded'],
           fallbackUsed,
+          providerUsableRows,
           confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low',
         }
       }
@@ -1523,6 +1530,7 @@ async function resolveTokenHolders(params: {
     holders: [],
     sourceTrail,
     ...buildInsufficientEvidenceBlock('No usable holder evidence found for this token in this pass.', fallbackUsed),
+    providerUsableRows,
   }
 }
 
@@ -2463,8 +2471,12 @@ async function fetchMoralisHolders(chain: ChainKey, contract: string): Promise<a
       cache: 'no-store',
       signal: AbortSignal.timeout(8000),
     })
-    return res.ok ? await res.json() : { __status: 'error' }
-  } catch { return { __status: 'error' } }
+    // __httpStatus / __timedOut feed holder DEBUG diagnostics only (lib/holderProviderDiagnostics.ts);
+    // no body, header or key is kept from a failed response.
+    if (!res.ok) return { __status: 'error', __httpStatus: res.status }
+    const json = await res.json()
+    return json && typeof json === 'object' ? { ...json, __httpStatus: res.status } : { __status: 'error', __httpStatus: res.status }
+  } catch (err) { return { __status: 'error', __timedOut: isTimeoutError(err) } }
 }
 
 async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise<any> {
@@ -2601,6 +2613,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
     : GOLDRUSH_HOSTS
 
   let lastFailure: any = null
+  let sawTimeout = false
   for (const chainSlug of chainSlugCandidates) {
     const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
     let statusCode: number | undefined
@@ -2653,9 +2666,11 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
       } catch (err) {
         console.error('[holder-debug] exception', 'host', host, err)
         lastReason = 'provider_error'
+        if (isTimeoutError(err)) sawTimeout = true
       }
     }
-    lastFailure = lastFailure ?? { __status: 'error', __reason: lastReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
+    // __timedOut is a DEBUG-only marker (holder provider diagnostics); __reason is unchanged.
+    lastFailure = lastFailure ?? { __status: 'error', __reason: lastReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true, __timedOut: sawTimeout && statusCode == null }
     // Advance to the next chain-identifier candidate on a 404 or an empty-but-successful response
     // (both indicate "this identifier didn't have the data", not a real infra failure) — a genuine
     // network/rate-limit/5xx failure (already retried across every host above) still stops here,
@@ -8486,6 +8501,17 @@ export async function POST(req: Request) {
           responseKeys: holdersRaw?.__responseKeys ?? null,
           dataKeys: holdersRaw?.data ? Object.keys(holdersRaw.data) : null,
           firstItemKeys: holderItems[0] ? Object.keys(holderItems[0]) : null,
+          // Per-provider holder diagnostics (GoldRush primary, Moralis fallback). Safe fields only.
+          providers: {
+            goldrush: describeHolderProvider('goldrush', holdersRaw, {
+              usableRows: holderResolverResult.providerUsableRows?.goldrush ?? null,
+              consulted: holderResolverResult.providerUsableRows?.goldrush != null,
+            }),
+            moralis: describeHolderProvider('moralis', moralisHoldersRaw, {
+              usableRows: holderResolverResult.providerUsableRows?.moralis ?? null,
+              consulted: holderResolverResult.providerUsableRows?.moralis != null,
+            }),
+          },
         }
       } : {}),
       // Normalized top-level market fields

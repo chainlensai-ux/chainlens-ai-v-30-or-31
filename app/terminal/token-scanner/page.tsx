@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
+import { formatHolderProviderDiagnostic, type HolderProviderDiagnostic } from '@/lib/holderProviderDiagnostics'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
@@ -388,6 +389,7 @@ type ScanResult = {
     hasGoldrushKey?: boolean; hasCovalentKey?: boolean; statusCode?: number|null;
     itemCount?: number; normalizedCount?: number; reason?: string|null;
     responseKeys?: string[]|null; dataKeys?: string[]|null; firstItemKeys?: string[]|null;
+    providers?: { goldrush?: HolderProviderDiagnostic; moralis?: HolderProviderDiagnostic } | null;
   } | null
   sections?: {
     market?: { status?: string; reason?: string; source?: string } | null
@@ -8224,7 +8226,7 @@ export default function TerminalTokenScanner() {
                             Holder Debug · HTTP {d.statusCode ?? '?'} · items:{d.itemCount ?? '?'} norm:{d.normalizedCount ?? '?'}
                           </summary>
                           <table style={{ marginTop: '8px', borderCollapse: 'collapse', width: '100%' }}><tbody>
-                            {([['providerCalled',String(d.providerCalled??'?')],['chain',d.chain??'?'],['statusCode',d.statusCode!=null?String(d.statusCode):'—'],['itemCount',d.itemCount!=null?String(d.itemCount):'—'],['normalizedCount',d.normalizedCount!=null?String(d.normalizedCount):'—'],['reason',d.reason??'—']] as [string,string][]).map(([k,v])=>(
+                            {([['providerCalled',String(d.providerCalled??'?')],['chain',d.chain??'?'],['statusCode',d.statusCode!=null?String(d.statusCode):'—'],['itemCount',d.itemCount!=null?String(d.itemCount):'—'],['normalizedCount',d.normalizedCount!=null?String(d.normalizedCount):'—'],['reason',d.reason??'—'],...(['goldrush','moralis'] as const).map((p): [string,string] => [p, formatHolderProviderDiagnostic(d.providers?.[p])])] as [string,string][]).map(([k,v])=>(
                               <tr key={k}><td style={{paddingRight:'12px',color:'#78716c',whiteSpace:'nowrap'}}>{k}</td><td style={{color:'#d97706',wordBreak:'break-all'}}>{v}</td></tr>
                             ))}
                           </tbody></table>

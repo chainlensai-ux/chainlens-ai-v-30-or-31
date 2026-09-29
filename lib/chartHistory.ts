@@ -12,7 +12,7 @@
 //     response), ascending. Hours with no trade stay absent — nothing is filled or interpolated.
 //   - 1H / 4H / 1D are rebuilt from the merged hourly series (exact roll-ups); 5M / 15M are untouched.
 
-import { aggregateCandles, MIN_DERIVED_CANDLES, type ChartCandle, type ChartTimeframeKey, type ChartTimeframeSet } from './priceChartCandles.ts'
+import { aggregateCandles, MIN_DERIVED_CANDLES, normalizeChartCandles, type ChartCandle, type ChartCandleInput, type ChartTimeframeKey, type ChartTimeframeSet } from './priceChartCandles.ts'
 
 export const HISTORY_INTERVAL_SEC = 3600
 const HOUR_MS = HISTORY_INTERVAL_SEC * 1000
@@ -68,4 +68,50 @@ export function loadedSpanLabel(oldestMs: number, newestMs: number, intervalSec:
   if (h < 1) return `${Math.max(1, Math.round(h * 60))}m loaded`
   if (h < 48) return `${Math.round(h)}h loaded`
   return `${Math.round(h / 24)}d loaded`
+}
+
+/** One on-demand history response (the page's loader shape). */
+export type HistoryWindowResult =
+  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null }
+  | { ok: false; message: string; hasMore?: boolean }
+
+export type HistoryBatchOutcome = { candles: ChartCandle[]; nextBeforeSec: number | null; hasMore: boolean; failedMessage: string | null; requests: number }
+
+/**
+ * Runs up to `maxRequests` chained history requests (stopping early at `targetSpanSec` of coverage,
+ * the end of history, or a failure) and merges them internally. The caller applies the outcome as
+ * ONE visible update, so the chart does not re-layout after every intermediate response. The
+ * request sequence and cursors are exactly those of issuing the requests one by one.
+ */
+export async function loadHistoryBatch(input: {
+  start: { candles: ReadonlyArray<ChartCandle>; nextBeforeSec: number | null; hasMore: boolean }
+  cutoffMs: number
+  newestMs: number | null
+  maxRequests: number
+  targetSpanSec: number | null
+  load: (beforeSec: number) => Promise<HistoryWindowResult>
+}): Promise<HistoryBatchOutcome> {
+  let candles: ChartCandle[] = [...input.start.candles]
+  let nextBeforeSec = input.start.nextBeforeSec
+  let hasMore = input.start.hasMore
+  let requests = 0
+  const covered = () => (input.newestMs == null ? 0 : input.newestMs / 1000 - (nextBeforeSec ?? input.cutoffMs / 1000))
+  for (let i = 0; i < input.maxRequests && hasMore; i++) {
+    if (input.targetSpanSec != null && covered() >= input.targetSpanSec) break
+    const before = nextBeforeSec ?? Math.floor(input.cutoffMs / 1000)
+    let res: HistoryWindowResult
+    try {
+      requests++
+      res = await input.load(before)
+    } catch {
+      res = { ok: false, message: 'The history request did not complete.' }
+    }
+    if (!res.ok) return { candles, nextBeforeSec, hasMore: res.hasMore ?? hasMore, failedMessage: res.message, requests }
+    const next = res.nextBeforeSec
+    candles = mergeHistoryCandles(candles, normalizeChartCandles(res.points), input.cutoffMs)
+    // A cursor that does not move back is treated as the end — never a request loop.
+    hasMore = res.hasMore && next != null && next < before
+    nextBeforeSec = next ?? nextBeforeSec
+  }
+  return { candles, nextBeforeSec, hasMore, failedMessage: null, requests }
 }

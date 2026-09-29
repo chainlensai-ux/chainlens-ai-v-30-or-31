@@ -14,6 +14,8 @@ import {
   defaultViewport,
   formatChartPct,
   formatChartPrice,
+  chartTimeIsUtc,
+  formatChartTime,
   formatChartVolume,
   formatIntervalLabel,
   niceTicks,
@@ -35,9 +37,10 @@ import {
   HISTORY_TARGET_SPAN_SEC,
   historyCutoffMs,
   isHistoryTimeframe,
+  loadHistoryBatch,
   loadedSpanLabel,
-  mergeHistoryCandles,
   withHistory,
+  type HistoryWindowResult,
 } from '@/lib/chartHistory'
 
 const C = {
@@ -88,9 +91,7 @@ export type PriceChartPanelProps = {
   historySourceLabel?: string | null
 }
 
-export type HistoryLoadResult =
-  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null }
-  | { ok: false; message: string; hasMore?: boolean }
+export type HistoryLoadResult = HistoryWindowResult
 
 export type ChartValueMode = 'MCAP' | 'PRICE'
 
@@ -116,19 +117,7 @@ function useElementWidth<T extends HTMLElement>() {
   return [setEl, width] as const
 }
 
-function fmtTime(t: number, intervalSec: number | null, mode: 'axis' | 'readout'): string {
-  const d = new Date(t)
-  const daily = intervalSec != null && intervalSec >= 86_400
-  if (mode === 'readout') {
-    return daily
-      ? d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })
-      : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
-  }
-  const midnight = d.getHours() === 0 && d.getMinutes() === 0
-  return daily || midnight
-    ? d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-    : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
-}
+const fmtTime = formatChartTime
 
 function fmtSpan(ms: number): string {
   const h = ms / 3_600_000
@@ -205,7 +194,14 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // A pick that is no longer available (new scan data) falls back to the default — never to
   // another timeframe's candles under the picked label.
   const fiveActive = picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
-  const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === picked && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
+  // 1D picked while its first history batch loads, with only 1-2 partial daily candles so far: keep
+  // showing the timeframe that was on screen (with "Loading older candles…") instead of presenting
+  // those partial days as the 1D chart. 1D appears once the batch is applied (or fails).
+  const [dailyDefer, setDailyDefer] = useState<{ source: ReadonlyArray<ChartCandleInput>; fallback: ChartTimeframeKey | null } | null>(null)
+  const dailyCandleCount = tfSet.timeframes.find((tf) => tf.key === '1D')?.candles.length ?? 0
+  const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === candles && dailyCandleCount <= 2
+  const shownPick = deferDaily ? dailyDefer!.fallback : picked
+  const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === shownPick && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
   const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)
   const priceSeries: ChartCandle[] = fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
   // MCAP / PRICE: a view over the SAME candles (O/H/L/C × trusted circulating supply; volume
@@ -246,36 +242,19 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     if (!loadHistory || cutoffMs == null || historyBusy.current || !hist.hasMore) return
     historyBusy.current = true
     const source = candles
-    let state: HistoryState = { ...hist, status: 'loading', message: null }
-    setHistRaw({ source, state })
+    setHistRaw({ source, state: { ...hist, status: 'loading', message: null } })
+    // The chained responses are merged inside loadHistoryBatch and applied as ONE update below, so
+    // the chart keeps its current view (with "Loading older candles…") instead of re-laying out
+    // after every intermediate response. Same requests, same cursors.
+    let done: HistoryState
     try {
-      for (let i = 0; i < maxRequests && state.hasMore; i++) {
-        if (targetSpanSec != null && historyCoveredSec(state) >= targetSpanSec) break
-        const before = state.nextBeforeSec ?? Math.floor(cutoffMs / 1000)
-        let res: HistoryLoadResult
-        try {
-          res = await loadHistory(before)
-        } catch {
-          res = { ok: false, message: 'The history request did not complete.' }
-        }
-        if (!res.ok) { state = { ...state, status: 'failed', message: res.message, hasMore: res.hasMore ?? state.hasMore }; break }
-        const next = res.nextBeforeSec
-        state = {
-          candles: mergeHistoryCandles(state.candles, normalizeChartCandles(res.points), cutoffMs),
-          nextBeforeSec: next ?? state.nextBeforeSec,
-          // A cursor that does not move back is treated as the end — never a request loop.
-          hasMore: res.hasMore && next != null && next < before,
-          status: 'loading',
-          message: null,
-        }
-        const snapshot = state
-        setHistRaw((cur) => (cur && cur.source === source ? { source, state: snapshot } : cur))
-      }
-    } finally {
-      const done: HistoryState = { ...state, status: state.status === 'failed' ? 'failed' : 'idle' }
-      setHistRaw((cur) => (cur && cur.source === source ? { source, state: done } : cur))
-      historyBusy.current = false
+      const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory })
+      done = { candles: out.candles, nextBeforeSec: out.nextBeforeSec, hasMore: out.hasMore, status: out.failedMessage ? 'failed' : 'idle', message: out.failedMessage }
+    } catch {
+      done = { ...hist, status: 'failed', message: 'The history request did not complete.' }
     }
+    setHistRaw((cur) => (cur && cur.source === source ? { source, state: done } : cur))
+    historyBusy.current = false
   }
   const loadOlderAtLeftEdge = () => {
     if (canLoadOlder && hist.status !== 'failed' && isHistoryTimeframe(activeKey)) void requestHistory(1, null)
@@ -393,7 +372,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const { ticks: yTicks } = niceTicks(yMin, yMax, compact ? 4 : 6)
   const maxVol = hasVolume ? Math.max(...data.map((c) => c.volume ?? 0)) : 0
 
-  const tzOffset = new Date(data[n - 1].t).getTimezoneOffset()
+  // Daily buckets are UTC days, so daily ticks and labels use UTC too (formatChartTime); finer
+  // intervals keep the viewer's local clock.
+  const tzOffset = chartTimeIsUtc(intervalSec) ? 0 : new Date(data[n - 1].t).getTimezoneOffset()
   const xTickIdx = timeTickIndices(data, Math.ceil((compact ? 64 : 84) / slot), tzOffset)
 
   const first = data[0]
@@ -489,7 +470,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       )}
       {chipStates.map((chip) => {
         const active = activeKey === chip.key
-        const loading = (chip.key === '5M' && five.status === 'loading') || (chip.loadable && isHistoryTimeframe(chip.key) && hist.status === 'loading')
+        const loading = (chip.key === '5M' && five.status === 'loading') || (chip.loadable && isHistoryTimeframe(chip.key) && hist.status === 'loading') || (chip.key === '1D' && deferDaily)
         return (
           <button
             key={chip.key}
@@ -511,10 +492,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               setChipNotice(null)
               setPicked(chip.key)
               setHover(null)
+              let willLoad = false
               if (historyEnabled && isHistoryTimeframe(chip.key) && (hist.status !== 'failed' || chip.available)) {
                 const target = HISTORY_TARGET_SPAN_SEC[chip.key]
-                if (hist.hasMore && historyCoveredSec(hist) < target) void requestHistory(HISTORY_MAX_REQUESTS_PER_ACTION, target)
+                willLoad = hist.hasMore && historyCoveredSec(hist) < target && hist.status !== 'loading'
+                if (willLoad) void requestHistory(HISTORY_MAX_REQUESTS_PER_ACTION, target)
               }
+              setDailyDefer(chip.key === '1D' && (willLoad || hist.status === 'loading') ? { source: candles, fallback: activeKey } : null)
             }}
             style={{
               padding: compact ? '4px 8px' : '4px 10px',
