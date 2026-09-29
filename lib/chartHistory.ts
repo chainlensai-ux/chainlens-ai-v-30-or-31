@@ -72,10 +72,18 @@ export function loadedSpanLabel(oldestMs: number, newestMs: number, intervalSec:
 
 /** One on-demand history response (the page's loader shape). */
 export type HistoryWindowResult =
-  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null }
+  | { ok: true; points: ReadonlyArray<ChartCandleInput>; hasMore: boolean; nextBeforeSec: number | null; endReason?: string | null }
   | { ok: false; message: string; hasMore?: boolean }
 
-export type HistoryBatchOutcome = { candles: ChartCandle[]; nextBeforeSec: number | null; hasMore: boolean; failedMessage: string | null; requests: number }
+export type HistoryBatchOutcome = {
+  candles: ChartCandle[]
+  nextBeforeSec: number | null
+  hasMore: boolean
+  failedMessage: string | null
+  requests: number
+  /** Why paging ended in this batch: the server's evidence, or 'history_cursor_not_advancing'. Null while more remains. */
+  endReason: string | null
+}
 
 /**
  * Runs up to `maxRequests` chained history requests (stopping early at `targetSpanSec` of coverage,
@@ -95,10 +103,15 @@ export async function loadHistoryBatch(input: {
   let nextBeforeSec = input.start.nextBeforeSec
   let hasMore = input.start.hasMore
   let requests = 0
+  let endReason: string | null = null
+  const requested = new Set<number>()
   const covered = () => (input.newestMs == null ? 0 : input.newestMs / 1000 - (nextBeforeSec ?? input.cutoffMs / 1000))
   for (let i = 0; i < input.maxRequests && hasMore; i++) {
     if (input.targetSpanSec != null && covered() >= input.targetSpanSec) break
     const before = nextBeforeSec ?? Math.floor(input.cutoffMs / 1000)
+    // Never request the same window twice (belt and braces over the strictly-decreasing cursor).
+    if (requested.has(before)) { hasMore = false; endReason = 'history_cursor_not_advancing'; break }
+    requested.add(before)
     let res: HistoryWindowResult
     try {
       requests++
@@ -106,12 +119,18 @@ export async function loadHistoryBatch(input: {
     } catch {
       res = { ok: false, message: 'The history request did not complete.' }
     }
-    if (!res.ok) return { candles, nextBeforeSec, hasMore: res.hasMore ?? hasMore, failedMessage: res.message, requests }
+    if (!res.ok) return { candles, nextBeforeSec, hasMore: res.hasMore ?? hasMore, failedMessage: res.message, requests, endReason: null }
     const next = res.nextBeforeSec
     candles = mergeHistoryCandles(candles, normalizeChartCandles(res.points), input.cutoffMs)
-    // A cursor that does not move back is treated as the end — never a request loop.
-    hasMore = res.hasMore && next != null && next < before
+    if (res.hasMore && !(next != null && next < before)) {
+      // "More" claimed but the cursor did not move back: stop instead of re-requesting a window.
+      hasMore = false
+      endReason = 'history_cursor_not_advancing'
+    } else {
+      hasMore = res.hasMore
+      if (!hasMore) endReason = res.endReason ?? 'provider_end'
+    }
     nextBeforeSec = next ?? nextBeforeSec
   }
-  return { candles, nextBeforeSec, hasMore, failedMessage: null, requests }
+  return { candles, nextBeforeSec, hasMore, failedMessage: null, requests, endReason }
 }

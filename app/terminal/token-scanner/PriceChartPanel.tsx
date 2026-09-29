@@ -139,7 +139,7 @@ type FiveMinuteState =
 
 type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean; reason: string | null; title: string }
 
-type HistoryState = { candles: ChartCandle[]; nextBeforeSec: number | null; hasMore: boolean; status: 'idle' | 'loading' | 'failed'; message: string | null }
+type HistoryState = { candles: ChartCandle[]; nextBeforeSec: number | null; hasMore: boolean; status: 'idle' | 'loading' | 'failed'; message: string | null; endReason?: string | null }
 
 const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const IDLE_HISTORY: HistoryState = { candles: [], nextBeforeSec: null, hasMore: true, status: 'idle', message: null }
@@ -249,7 +249,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     let done: HistoryState
     try {
       const out = await loadHistoryBatch({ start: hist, cutoffMs, newestMs, maxRequests, targetSpanSec, load: loadHistory })
-      done = { candles: out.candles, nextBeforeSec: out.nextBeforeSec, hasMore: out.hasMore, status: out.failedMessage ? 'failed' : 'idle', message: out.failedMessage }
+      done = { candles: out.candles, nextBeforeSec: out.nextBeforeSec, hasMore: out.hasMore, status: out.failedMessage ? 'failed' : 'idle', message: out.failedMessage, endReason: out.endReason }
     } catch {
       done = { ...hist, status: 'failed', message: 'The history request did not complete.' }
     }
@@ -702,13 +702,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '6px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
         <span>
           {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} real candles
-          {activeTf?.origin === 'aggregated' ? ` · rolled up from ${formatIntervalLabel(tfSet.nativeSec)}` : ''}
+          {activeTf?.origin === 'aggregated' ? ` · rolled up from ${hist.candles.length > 0 && isHistoryTimeframe(activeKey) ? `1H history + ${formatIntervalLabel(tfSet.nativeSec)}` : formatIntervalLabel(tfSet.nativeSec)}` : ''}
           {fiveActive ? ' · loaded on demand' : ''}
         </span>
         {footnote && <span>{footnote}</span>}
       </div>
       {(historySourceLabel || historyEnabled) && (
-        <div role="status" style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '2px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
+        <div role="status" data-history-end={hist.endReason ?? undefined} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '2px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
           {historySourceLabel ? <span>{loadedSpanLabel(series[0].t, latest.t, intervalSec ?? 0)} · {historySourceLabel}</span> : <span />}
           {historyEnabled && (
             <span style={{ color: hist.status === 'failed' ? '#94a3b8' : C.muted }}>

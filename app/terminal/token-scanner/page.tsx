@@ -1476,17 +1476,21 @@ function makeFiveMinuteLoader(chain: string | null | undefined, token: string | 
 }
 type FiveMinuteLoadPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null }
 
-// Older V4 history: only for candles built from an exact Uniswap V4 PoolId's swaps, and only when the
-// user asks (1H / 4H / 1D or panning past the oldest candle) — never part of the scan.
-function makeHistoryLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, source: string | null | undefined): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
-  if (source !== 'v4_swap_events' || !chain || !token || !pool || !/^0x[a-fA-F0-9]{64}$/.test(pool)) return undefined
+// Older history, only when the user asks (1H / 4H / 1D or panning past the oldest candle) — never
+// part of the scan. Two sources: an exact Uniswap V4 PoolId's swaps, or a normal 20-byte pool's own
+// provider OHLCV for the scan's proven token side (the server re-proves the side and rejects a mismatch).
+function makeHistoryLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, source: string | null | undefined, tokenSide?: 'base' | 'quote' | null): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
+  if (!chain || !token || !pool) return undefined
+  const v4 = source === 'v4_swap_events' && /^0x[a-fA-F0-9]{64}$/.test(pool)
+  const normalPool = source === 'pool_ohlcv' && /^0x[a-fA-F0-9]{40}$/.test(pool) && (tokenSide === 'base' || tokenSide === 'quote')
+  if (!v4 && !normalPool) return undefined
   return async (beforeSec) => {
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
-    const qs = new URLSearchParams({ chain, token, pool, timeframe: 'history', before: String(Math.floor(beforeSec)) })
+    const qs = new URLSearchParams({ chain, token, pool, timeframe: 'history', before: String(Math.floor(beforeSec)), ...(normalPool && tokenSide ? { side: tokenSide } : {}) })
     const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
-    const json = await res.json().catch(() => null) as { ok?: boolean; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; message?: string } | null
-    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null }
+    const json = await res.json().catch(() => null) as { ok?: boolean; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; endReason?: string | null; message?: string } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null, endReason: typeof json.endReason === 'string' ? json.endReason : null }
     return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load older candles.' : 'The history request did not complete.'), hasMore: typeof json?.hasMore === 'boolean' ? json.hasMore : undefined }
   }
 }
@@ -8092,8 +8096,8 @@ export default function TerminalTokenScanner() {
                           marketCapSupply={_mcapSupply.enabled ? _mcapSupply.supply : null}
                           marketCapUnavailableReason={_mcapSupply.enabled ? null : _mcapSupply.reason}
                           marketCapBasis={_mcapSupply.enabled ? _mcapSupply.basis : null}
-                          loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource)}
-                          historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : null}
+                          loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartCandles?.tokenSide ?? null)}
+                          historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : result.chartSource === 'pool_ohlcv' && result.chartCandles ? 'real pool candles' : null}
                         />
                       )
                     }

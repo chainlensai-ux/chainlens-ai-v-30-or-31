@@ -1,13 +1,16 @@
 // GET /api/token/chart-candles — on-demand candles for the Token Scanner Price Chart. Same account
 // requirement as token scans; nothing here runs during a scan.
 //  - timeframe=5m: real 5M candles when a user clicks 5M (lib/server/chartCandlesOnDemand.ts).
-//  - timeframe=history: older hourly candles for an exact Uniswap V4 PoolId when a user selects
-//    1H / 4H / 1D or pans past the oldest loaded candle (lib/server/v4SwapCandlesRpc.ts
-//    loadV4SwapHistoryWindow): `before` cursor in, genuine swap candles + `hasMore` + next cursor out.
+//  - timeframe=history: older HOURLY candles when a user selects 1H / 4H / 1D or pans past the
+//    oldest loaded candle — `before` cursor in, genuine candles + `hasMore` + next cursor out:
+//      * an exact Uniswap V4 PoolId (bytes32): swap-derived (lib/server/v4SwapCandlesRpc.ts
+//        loadV4SwapHistoryWindow);
+//      * a normal 20-byte pool: the providers' own pool OHLCV for the proven token side
+//        (lib/server/chartCandlesOnDemand.ts loadPoolOhlcvHistory).
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
-import { loadOnDemandCandles } from '@/lib/server/chartCandlesOnDemand'
+import { loadOnDemandCandles, loadPoolOhlcvHistory } from '@/lib/server/chartCandlesOnDemand'
 import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { loadV4SwapHistoryWindow } from '@/lib/server/v4SwapCandlesRpc'
 import { makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
@@ -39,8 +42,20 @@ export async function GET(req: Request) {
     const pool = url.searchParams.get('pool') ?? ''
     const token = url.searchParams.get('token') ?? ''
     const before = Number(url.searchParams.get('before'))
+    if (/^0x[a-fA-F0-9]{40}$/.test(pool)) {
+      const { result: h } = await loadPoolOhlcvHistory(
+        { chain, token, pool, side: url.searchParams.get('side'), before: Number.isInteger(before) ? before : null },
+        fetchJson,
+        {
+          baseUrl: process.env.GECKO_BASE_URL,
+          fetchCoingecko: isCoingeckoOnchainConfigured() ? (c, p, r, side, beforeSec) => fetchCoingeckoOnchainPoolOhlcv(c, p, r, side, undefined, beforeSec ?? null) : undefined,
+        },
+      )
+      if (!h.ok) return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message: h.message, hasMore: h.hasMore }, { status: h.code === 'invalid_request' ? 400 : 200 })
+      return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.points, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason, windowEndSec: Math.floor(before / 3600) * 3600, source: h.source })
+    }
     if (!/^0x[a-fA-F0-9]{64}$/.test(pool) || !/^0x[a-fA-F0-9]{40}$/.test(token) || !Number.isInteger(before) || before <= 0) {
-      return NextResponse.json({ ok: false, timeframe: 'history', code: 'invalid_request', message: 'Older history needs an exact V4 pool id, token and cursor.' }, { status: 400 })
+      return NextResponse.json({ ok: false, timeframe: 'history', code: 'invalid_request', message: 'Older history needs an exact pool, token and cursor.' }, { status: 400 })
     }
     const deps = makeV4HistoryDeps(chain)
     if (!deps) return NextResponse.json({ ok: false, timeframe: 'history', code: 'v4_chain_not_supported', message: candleFailureMessage('v4_chain_not_supported'), hasMore: false })
