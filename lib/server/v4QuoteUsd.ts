@@ -11,12 +11,16 @@
 //
 // Cost: 1 pool-discovery read (cached 24h per chain + quote token) + 1 historical candle read (cached
 // per 10-minute slot per chain + quote token, shared across scans). Warm: 0 calls.
+// On-demand chart history (resolveIndependentQuoteUsdWindow): the SAME discovery + one hourly candle
+// read of that pool ending at the window's end (before_timestamp), cached per window.
 
 import { EVM_POOL_ADDRESS_RE, classifyOhlcvResponse, coingeckoMetaTokenSide } from '../evmChartCandles.ts'
 
 export const QUOTE_POOL_MIN_LIQUIDITY_USD = 25_000
 export const QUOTE_SERIES_SLOT_SEC = 600
-export const QUOTE_SERIES_REQUEST = { resolution: 'minute' as const, aggregate: 5, limit: 156 } // 13h of 5m candles
+export const QUOTE_SERIES_REQUEST = { resolution: 'minute' as const, aggregate: 5, limit: 290 } // 24h10m of 5m candles (the V4 reader's 24h window)
+/** On-demand history windows: hourly candles of the same independent pool, ending at the window's end. */
+export const QUOTE_HISTORY_MAX_HOURS = 400
 const DISCOVERY_TTL_MS = 24 * 3_600_000
 const DISCOVERY_FAIL_TTL_MS = 10 * 60_000
 const CACHE_MAX = 500
@@ -40,16 +44,27 @@ export type QuoteUsdResult = {
 export type QuoteUsdDeps = {
   /** GeckoTerminal-shaped `/networks/{net}/tokens/{token}/pools?include=base_token,quote_token`. */
   fetchTokenPools: (chain: string, token: string, timeoutMs: number) => Promise<{ json: unknown; httpStatus: number | null }>
-  /** A pool's genuine historical USD candles for `side` (minute / 5 / 156). */
+  /** A pool's genuine historical USD candles for `side` (minute / 5 / 290). */
   fetchPoolUsdOhlcv: (chain: string, pool: string, side: 'base' | 'quote', timeoutMs: number) => Promise<{ json: unknown; httpStatus: number | null }>
+  now?: () => number
+}
+
+export type QuoteUsdWindowDeps = {
+  fetchTokenPools: QuoteUsdDeps['fetchTokenPools']
+  /** A pool's genuine hourly USD candles for `side`, `limit` rows strictly before `beforeSec`. */
+  fetchPoolUsdOhlcvBefore: (chain: string, pool: string, side: 'base' | 'quote', req: { resolution: 'hour'; aggregate: 1; limit: number }, beforeSec: number, timeoutMs: number) => Promise<{ json: unknown; httpStatus: number | null }>
   now?: () => number
 }
 
 const discoveryCache = new Map<string, { expiresAt: number; value: QuotePoolChoice | null; detail: string | null }>()
 const seriesCache = new Map<string, { slot: number; points: Array<[number, number]> | null; detail: string | null }>()
+const windowCache = new Map<string, { expiresAt: number; points: Array<[number, number]> | null; detail: string | null }>()
+const WINDOW_TTL_MS = 6 * 3_600_000
+const WINDOW_FAIL_TTL_MS = 60_000
 export function resetQuoteUsdCache() {
   discoveryCache.clear()
   seriesCache.clear()
+  windowCache.clear()
 }
 const bounded = <K, V>(m: Map<K, V>) => { if (m.size >= CACHE_MAX) m.delete(m.keys().next().value!) }
 
@@ -121,25 +136,9 @@ export async function resolveIndependentQuoteUsd(
   const canCall = () => out.callsUsed < input.budget && now() < input.deadlineMs
 
   // 1. Independent quote pool (cached 24h; a failed discovery is cached 10 min).
-  const dKey = `${input.chain}:${quote}:${input.scannedToken.toLowerCase()}:${input.excludePool.toLowerCase()}`
-  let choice: QuotePoolChoice | null
-  const d = discoveryCache.get(dKey)
-  if (d && d.expiresAt > now()) {
-    out.cache.discovery = true
-    choice = d.value
-    if (!choice) return { ...out, detail: d.detail }
-  } else {
-    if (!canCall()) return { ...out, reason: 'call_budget_exhausted', detail: 'call_budget' }
-    out.callsUsed++
-    const res = await deps.fetchTokenPools(input.chain, quote, timeout())
-    const sel = res.httpStatus != null && res.httpStatus >= 200 && res.httpStatus < 300
-      ? selectIndependentQuotePool(res.json, { quoteToken: quote, scannedToken: input.scannedToken, excludePool: input.excludePool, anchors: input.anchors })
-      : { choice: null, detail: `quote_pool_discovery_http_${res.httpStatus ?? 'error'}` }
-    choice = sel.choice
-    bounded(discoveryCache)
-    discoveryCache.set(dKey, { expiresAt: now() + (choice ? DISCOVERY_TTL_MS : DISCOVERY_FAIL_TTL_MS), value: choice, detail: sel.detail })
-    if (!choice) return { ...out, detail: sel.detail }
-  }
+  const found = await discoverQuotePool(input, deps.fetchTokenPools, out, canCall, timeout, now)
+  if (!found) return out.reason === 'call_budget_exhausted' ? out : { ...out, reason: 'quote_usd_price_unproven' }
+  const choice = found
   Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith })
 
   // 2. That pool's genuine historical USD candles (one read per 10-minute slot, shared).
@@ -160,6 +159,78 @@ export async function resolveIndependentQuoteUsd(
     out.detail = series.detail
     bounded(seriesCache)
     seriesCache.set(sKey, { slot, points, detail: series.detail })
+  }
+  if (!points || points.length < 2) return { ...out, detail: out.detail ?? 'quote_series_too_short' }
+  return { ...out, ok: true, reason: null, detail: null, points }
+}
+
+type DiscoveryInput = { chain: string; quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string> }
+
+/** Cached independent-pool discovery shared by the live and the windowed lanes. Mutates `out` (calls, cache, detail, reason). */
+async function discoverQuotePool(
+  input: DiscoveryInput,
+  fetchTokenPools: QuoteUsdDeps['fetchTokenPools'],
+  out: QuoteUsdResult,
+  canCall: () => boolean,
+  timeout: () => number,
+  now: () => number,
+): Promise<QuotePoolChoice | null> {
+  const quote = input.quoteToken.toLowerCase()
+  const dKey = `${input.chain}:${quote}:${input.scannedToken.toLowerCase()}:${input.excludePool.toLowerCase()}`
+  const d = discoveryCache.get(dKey)
+  if (d && d.expiresAt > now()) {
+    out.cache.discovery = true
+    if (!d.value) out.detail = d.detail
+    return d.value
+  }
+  if (!canCall()) { out.reason = 'call_budget_exhausted'; out.detail = 'call_budget'; return null }
+  out.callsUsed++
+  const res = await fetchTokenPools(input.chain, quote, timeout())
+  const sel = res.httpStatus != null && res.httpStatus >= 200 && res.httpStatus < 300
+    ? selectIndependentQuotePool(res.json, { quoteToken: quote, scannedToken: input.scannedToken, excludePool: input.excludePool, anchors: input.anchors })
+    : { choice: null, detail: `quote_pool_discovery_http_${res.httpStatus ?? 'error'}` }
+  bounded(discoveryCache)
+  discoveryCache.set(dKey, { expiresAt: now() + (sel.choice ? DISCOVERY_TTL_MS : DISCOVERY_FAIL_TTL_MS), value: sel.choice, detail: sel.detail })
+  if (!sel.choice) out.detail = sel.detail
+  return sel.choice
+}
+
+/**
+ * On-demand chart history: the quote token's genuine USD history over [fromSec, toSec] from the SAME
+ * independent pool (hourly candles ending at the window's end). Called only after the user asks for
+ * older candles. Cost: discovery (usually cached) + 1 candle read per window (cached 6h).
+ */
+export async function resolveIndependentQuoteUsdWindow(
+  input: DiscoveryInput & { fromSec: number; toSec: number; budget: number; deadlineMs: number },
+  deps: QuoteUsdWindowDeps,
+): Promise<QuoteUsdResult> {
+  const now = deps.now ?? Date.now
+  const out: QuoteUsdResult = { ok: false, reason: 'quote_usd_price_unproven', detail: null, quoteSymbol: null, quoteDecimals: null, pool: null, pairedWith: null, points: [], callsUsed: 0, cache: { discovery: false, series: false } }
+  const timeout = () => Math.max(1, input.deadlineMs - now())
+  const canCall = () => out.callsUsed < input.budget && now() < input.deadlineMs
+  const choice = await discoverQuotePool(input, deps.fetchTokenPools, out, canCall, timeout, now)
+  if (!choice) return out.reason === 'call_budget_exhausted' ? out : { ...out, reason: 'quote_usd_price_unproven' }
+  Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith })
+
+  const beforeSec = Math.ceil(input.toSec / 3600) * 3600
+  const fromSec = Math.floor(input.fromSec / 3600) * 3600
+  const limit = Math.min(QUOTE_HISTORY_MAX_HOURS, Math.max(2, (beforeSec - fromSec) / 3600 + 1))
+  const wKey = `${input.chain}:${input.quoteToken.toLowerCase()}:${choice.pool}:${beforeSec}:${limit}`
+  const w = windowCache.get(wKey)
+  let points: Array<[number, number]> | null
+  if (w && w.expiresAt > now()) {
+    out.cache.series = true
+    points = w.points
+    out.detail = w.detail
+  } else {
+    if (!canCall()) return { ...out, reason: 'call_budget_exhausted', detail: 'call_budget' }
+    out.callsUsed++
+    const res = await deps.fetchPoolUsdOhlcvBefore(input.chain, choice.pool, choice.side, { resolution: 'hour', aggregate: 1, limit }, beforeSec, timeout())
+    const series = quoteSeriesFromCandles(res.json, res.httpStatus, input.quoteToken.toLowerCase(), choice.side, 3600)
+    points = series.points
+    out.detail = series.detail
+    bounded(windowCache)
+    windowCache.set(wKey, { expiresAt: now() + (points ? WINDOW_TTL_MS : WINDOW_FAIL_TTL_MS), points, detail: series.detail })
   }
   if (!points || points.length < 2) return { ...out, detail: out.detail ?? 'quote_series_too_short' }
   return { ...out, ok: true, reason: null, detail: null, points }

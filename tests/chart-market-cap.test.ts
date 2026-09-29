@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { MCAP_SUPPLY_TOLERANCE, formatCompactUsd, resolveChartMarketCapSupply, scaleCandlesToMarketCap } from '../lib/chartMarketCap.ts'
+import { INFERRED_MCAP_BASIS_TOOLTIP, MCAP_SUPPLY_TOLERANCE, formatCompactUsd, marketCapBasisLabel, resolveChartMarketCapSupply, scaleCandlesToMarketCap } from '../lib/chartMarketCap.ts'
 import { aggregateCandles, normalizeChartCandles, type ChartCandle } from '../lib/priceChartCandles.ts'
 
 const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
@@ -19,19 +19,60 @@ test('verified circulating market cap + agreeing circulating_supply => MCAP enab
   assert.ok(r.enabled && r.deviation < 1e-9)
 })
 
-test('FDV alone, estimated (total-supply) market cap, or partial valuation can never enable MCAP', () => {
+test('FDV alone, estimated (total-supply) market cap, or partial valuation can never enable MCAP — with or without a supply', () => {
   for (const valuationStatus of ['fdv_only', 'estimated_mc', 'partial', null, undefined]) {
-    const r = resolveChartMarketCapSupply({ valuationStatus, verifiedMarketCapUsd: 1_000_000, circulatingSupply: 1e9, priceUsd: 0.001 })
-    assert.equal(r.enabled, false, String(valuationStatus))
-    assert.equal(!r.enabled && r.reason, 'Circulating supply unavailable')
+    for (const circulatingSupply of [1e9, null]) {
+      const r = resolveChartMarketCapSupply({ valuationStatus, verifiedMarketCapUsd: 1_000_000, circulatingSupply, priceUsd: 0.001 })
+      assert.equal(r.enabled, false, `${String(valuationStatus)} / ${circulatingSupply}`)
+      assert.equal(!r.enabled && r.reason, 'Verified market cap unavailable')
+    }
   }
 })
 
-test('verified market cap but no usable circulating supply or price => PRICE, "Circulating supply unavailable"', () => {
-  for (const [circulatingSupply, priceUsd] of [[null, 0.001], [0, 0.001], [Number.NaN, 0.001], [1e9, null], [1e9, 0]] as const) {
-    const r = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd: 1_000_000, circulatingSupply, priceUsd })
-    assert.deepEqual([r.enabled, !r.enabled && r.reason], [false, 'Circulating supply unavailable'])
+test('verified market cap but no usable price (or no MC) => PRICE; never an inferred basis', () => {
+  for (const [verifiedMarketCapUsd, priceUsd] of [[1_000_000, null], [1_000_000, 0], [1_000_000, Number.NaN], [null, 0.001], [0, 0.001], [-5, 0.001]] as const) {
+    for (const circulatingSupply of [null, 1e9]) {
+      const r = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd, circulatingSupply, priceUsd })
+      assert.deepEqual([r.enabled, !r.enabled && r.reason], [false, 'Verified market cap unavailable'], `${verifiedMarketCapUsd} / ${priceUsd} / ${circulatingSupply}`)
+    }
   }
+})
+
+// ── Level B: inferred basis from the VERIFIED current market cap ─────────────────────────────────
+test('verified MC with circulating_supply missing => MCAP enabled on the inferred basis, exactly MC ÷ price', () => {
+  for (const circulatingSupply of [null, undefined, 0, Number.NaN, -1]) {
+    const r = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd: 578_440, circulatingSupply, priceUsd: 0.00057844 })
+    assert.equal(r.enabled, true, String(circulatingSupply))
+    assert.equal(r.enabled && r.basis, 'inferred_current_mc')
+    assert.equal(r.enabled && r.supply, 578_440 / 0.00057844, 'the exact quotient — no rounding, no FDV')
+    assert.equal(r.enabled && r.verifiedMarketCapUsd, 578_440)
+  }
+})
+
+test('inferred basis scales candles exactly and reproduces the Market Cap card at the scan price; volume unchanged', () => {
+  const mc = 2_345_678
+  const price = 0.0023456
+  const gate = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd: mc, circulatingSupply: null, priceUsd: price })
+  assert.ok(gate.enabled && gate.basis === 'inferred_current_mc')
+  const src = [candle(0, 0.002, 0.0025, 0.0019, 0.0021, 1_234), candle(1, 0.0021, 0.0024, 0.002, price, null)]
+  const out = scaleCandlesToMarketCap(src, gate.supply)
+  assert.deepEqual(out.map((c) => [c.open, c.high, c.low, c.close]), src.map((c) => [c.open * gate.supply, c.high * gate.supply, c.low * gate.supply, c.close * gate.supply]))
+  assert.deepEqual(out.map((c) => c.volume), [1_234, null])
+  assert.ok(Math.abs(out[1].close - mc) / mc < 1e-12, `${out[1].close} vs card ${mc}`)
+})
+
+test('priority: a verified, agreeing circulating_supply always wins over the inferred basis; a mismatching one is not papered over', () => {
+  const verified = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd: 1_050_000, circulatingSupply: 1e9, priceUsd: 0.001 })
+  assert.deepEqual([verified.enabled && verified.basis, verified.enabled && verified.supply], ['circulating_supply', 1e9])
+  const mismatch = resolveChartMarketCapSupply({ valuationStatus: 'verified_mc', verifiedMarketCapUsd: 100_000, circulatingSupply: 1e9, priceUsd: 0.001 })
+  assert.equal(mismatch.enabled, false)
+})
+
+test('basis label + tooltip distinguish verified from inferred', () => {
+  assert.deepEqual(marketCapBasisLabel('inferred_current_mc'), { label: 'MCAP · inferred supply basis', tooltip: 'Historical market cap is derived from verified current market cap and price using a constant circulating-supply basis.' })
+  assert.equal(INFERRED_MCAP_BASIS_TOOLTIP, marketCapBasisLabel('inferred_current_mc').tooltip)
+  assert.equal(marketCapBasisLabel('circulating_supply').label, 'MCAP · verified supply basis')
+  assert.notEqual(marketCapBasisLabel('circulating_supply').tooltip, INFERRED_MCAP_BASIS_TOOLTIP)
 })
 
 test('a supply that disagrees with the verified market cap is surfaced as a mismatch, never forced into parity', () => {
@@ -107,12 +148,13 @@ test('scaling commutes with timeframe roll-ups, so V4 5m candles give exact 15M 
 })
 
 // ── Wiring: default, toggle, no provider calls ───────────────────────────────────────────────────
-test('panel: MCAP by default only when a trusted supply is passed; toggle is pure client state (no fetch, no rescan)', () => {
+test('panel: MCAP by default whenever a verified or inferred basis is passed; toggle is pure client state (no fetch, no rescan)', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /const valueMode: ChartValueMode = !mcapAvailable \? 'PRICE' : modeRaw && modeRaw\.source === candles \? modeRaw\.mode : 'MCAP'/)
   assert.match(panel, /const series: ChartCandle\[\] = valueMode === 'MCAP' \? scaleCandlesToMarketCap\(priceSeries, marketCapSupply!\) : priceSeries/)
   assert.match(panel, /onClick=\{\(\) => \{ if \(!disabled\) \{ setModeRaw\(\{ source: candles, mode: m \}\); setHover\(null\) \} \}\}/)
-  assert.match(panel, /title=\{disabled \? \(marketCapUnavailableReason \?\? 'Circulating supply unavailable'\)/)
+  assert.match(panel, /title=\{disabled \? \(marketCapUnavailableReason \?\? 'Verified market cap unavailable'\) : m === 'MCAP' \? mcapBasisInfo\.tooltip : 'Token price \(USD\)'\}/)
+  assert.match(panel, /\{valueMode === 'MCAP' && \(\s*<span title=\{mcapBasisInfo\.tooltip\} data-mcap-basis=/, 'the active basis is always shown next to MCAP')
   assert.doesNotMatch(panel, /\bfetch\(/, 'the chart panel never calls a provider — 5M loads go through the page-supplied loader only')
   assert.doesNotMatch(read('lib/chartMarketCap.ts'), /\bfetch\(|from '\.\/server|process\.env/)
 })
@@ -121,6 +163,7 @@ test('page: supply comes only from the verified valuation + circulating_supply t
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /resolveChartMarketCapSupply\(\{\s*valuationStatus: result\.valuationContext\?\.primaryValuationStatus,\s*verifiedMarketCapUsd: result\.valuationContext\?\.primaryValuationUsd,\s*circulatingSupply: result\.circulatingSupply,\s*priceUsd: result\.price,\s*\}\)/)
   assert.match(page, /marketCapSupply=\{_mcapSupply\.enabled \? _mcapSupply\.supply : null\}/)
+  assert.match(page, /marketCapBasis=\{_mcapSupply\.enabled \? _mcapSupply\.basis : null\}/)
   assert.doesNotMatch(page, /marketCapSupply=\{[^}]*fdv/i, 'FDV is never passed as a market-cap basis')
   assert.match(page, /<PriceChartPanel candles=\{sr\.ohlcv\.candles\} declaredIntervalSec=\{chartIntervalSec\(sr\.ohlcv\.timeframe\)\} \/>/, 'Solana chart unchanged: no verified circulating supply in its result, so MCAP stays disabled')
 })

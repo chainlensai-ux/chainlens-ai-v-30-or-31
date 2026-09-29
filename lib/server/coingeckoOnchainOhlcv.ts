@@ -30,7 +30,7 @@ export function coingeckoOnchainNetwork(chain: string): string | null {
 }
 
 /** Path + query only (no host, no key). `token` is 'base' | 'quote' | a 0x token address. */
-export function coingeckoOnchainOhlcvPath(network: string, pool: string, req: CoingeckoOhlcvRequest, token: string): string {
+export function coingeckoOnchainOhlcvPath(network: string, pool: string, req: CoingeckoOhlcvRequest, token: string, beforeSec?: number | null): string {
   const qs = new URLSearchParams({
     aggregate: String(req.aggregate),
     limit: String(req.limit),
@@ -38,6 +38,8 @@ export function coingeckoOnchainOhlcvPath(network: string, pool: string, req: Co
     token,
     include_empty_intervals: 'false',
   })
+  // Historical window cursor (on-demand chart history only): candles strictly before this time.
+  if (beforeSec != null && Number.isInteger(beforeSec) && beforeSec > 0) qs.set('before_timestamp', String(beforeSec))
   return `/onchain/networks/${network}/pools/${pool.toLowerCase()}/ohlcv/${req.resolution}?${qs.toString()}`
 }
 
@@ -54,13 +56,14 @@ export async function fetchCoingeckoOnchainPoolOhlcv(
   req: CoingeckoOhlcvRequest,
   token: string,
   fetchImpl: CoingeckoFetchImpl = defaultFetch,
+  beforeSec: number | null = null,
 ): Promise<{ json: unknown; httpStatus: number | null }> {
   const network = coingeckoOnchainNetwork(chain)
   const cfg = resolveCoingeckoRuntimeConfig()
   const key = process.env.COINGECKO_API_KEY
   if (!network || !key || !cfg.configurationValid || !isEvmPoolIdentifier(pool) || !TOKEN_RE.test(token)) return { json: null, httpStatus: null }
   try {
-    const res = await fetchImpl(`${cfg.selectedBaseUrl}${coingeckoOnchainOhlcvPath(network, pool, req, token)}`, {
+    const res = await fetchImpl(`${cfg.selectedBaseUrl}${coingeckoOnchainOhlcvPath(network, pool, req, token, beforeSec)}`, {
       headers: { Accept: 'application/json', [cfg.selectedHeaderName]: key },
     })
     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
@@ -70,12 +73,13 @@ export async function fetchCoingeckoOnchainPoolOhlcv(
 }
 
 // ── Historical ETH/USD (quote pricing for ETH/WETH-paired Uniswap V4 swap candles) ────────────────
-// ONE shared rolling series for every V4 scan: /coins/ethereum/market_chart/range over the last 13h
-// (covers the V4 reader's 12h maximum swap window) at CoinGecko's 5-minute granularity, anchored to
-// a 10-minute slot and cached for that slot, so at most one request per 10 minutes per server
-// instance regardless of how many V4 tokens are scanned. Returns [ms, usd] points only — never the
-// key, headers or the raw body.
-export const ETH_USD_SERIES_WINDOW_SEC = 13 * 3600
+// ONE shared rolling series for every V4 scan: /coins/ethereum/market_chart/range over exactly the
+// last 24h (a 1-day range ending now, which CoinGecko serves at 5-minute granularity; with the 15-min
+// quote tolerance it covers the V4 reader's 24h initial swap window), anchored to a 10-minute slot
+// and cached for that slot, so at most one request per 10 minutes per server instance regardless of
+// how many V4 tokens are scanned. Returns [ms, usd] points only — never the key, headers or the raw
+// body. Older on-demand history windows use fetchCoingeckoEthUsdRange below (hourly granularity).
+export const ETH_USD_SERIES_WINDOW_SEC = 24 * 3600
 export const ETH_USD_SERIES_SLOT_SEC = 600
 let ethUsdSeries: { slot: number; points: Array<[number, number]> | null; httpStatus: number | null } | null = null
 
@@ -111,4 +115,54 @@ export async function fetchCoingeckoEthUsdRecent(
 /** Test hook. */
 export function resetEthUsdSeriesCache() {
   ethUsdSeries = null
+}
+
+// ── Windowed historical ETH/USD (on-demand V4 chart history only) ────────────────────────────────
+// One /market_chart/range read per hour-aligned window, fetched only after the user asks for older
+// candles. Ranges longer than a day come back at CoinGecko's hourly granularity. Historical points
+// are immutable, so a window is cached 6h (a failure 60s); bounded map.
+const ETH_RANGE_TTL_MS = 6 * 3_600_000
+const ETH_RANGE_FAIL_TTL_MS = 60_000
+const ETH_RANGE_CACHE_MAX = 200
+const ethUsdRangeCache = new Map<string, { expiresAt: number; points: Array<[number, number]> | null }>()
+
+export async function fetchCoingeckoEthUsdRange(
+  fromSec: number,
+  toSec: number,
+  timeoutMs: number,
+  fetchImpl: CoingeckoFetchImpl = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }),
+  now: () => number = Date.now,
+): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }> {
+  const from = Math.floor(fromSec / 3600) * 3600
+  const to = Math.ceil(toSec / 3600) * 3600
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return { points: null, cacheHit: false }
+  const key = `${from}:${to}`
+  const hit = ethUsdRangeCache.get(key)
+  if (hit && hit.expiresAt > now()) return { points: hit.points, cacheHit: true }
+  const cfg = resolveCoingeckoRuntimeConfig()
+  const apiKey = process.env.COINGECKO_API_KEY
+  if (!apiKey || !cfg.configurationValid) return { points: null, cacheHit: false }
+  let points: Array<[number, number]> | null = null
+  try {
+    const qs = new URLSearchParams({ vs_currency: 'usd', from: String(from), to: String(to) })
+    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/ethereum/market_chart/range?${qs.toString()}`, {
+      headers: { Accept: 'application/json', [cfg.selectedHeaderName]: apiKey },
+    })
+    const json = res.ok ? await res.json().catch(() => null) : null
+    const raw = (json as { prices?: unknown } | null)?.prices
+    const ok = Array.isArray(raw)
+      ? raw.filter((p): p is [number, number] => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0).sort((a, b) => a[0] - b[0])
+      : []
+    points = ok.length > 0 ? ok : null
+  } catch {
+    points = null
+  }
+  if (ethUsdRangeCache.size >= ETH_RANGE_CACHE_MAX) ethUsdRangeCache.delete(ethUsdRangeCache.keys().next().value!)
+  ethUsdRangeCache.set(key, { expiresAt: now() + (points ? ETH_RANGE_TTL_MS : ETH_RANGE_FAIL_TTL_MS), points })
+  return { points, cacheHit: false }
+}
+
+/** Test hook. */
+export function resetEthUsdRangeCache() {
+  ethUsdRangeCache.clear()
 }

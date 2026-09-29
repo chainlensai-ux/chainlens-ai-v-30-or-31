@@ -1,11 +1,17 @@
-// GET /api/token/chart-candles — on-demand real 5M candles for the Token Scanner Price Chart.
-// Called only when a user clicks 5M; see lib/server/chartCandlesOnDemand.ts for the verification,
-// caching and provider-call cap. Same account requirement as token scans.
+// GET /api/token/chart-candles — on-demand candles for the Token Scanner Price Chart. Same account
+// requirement as token scans; nothing here runs during a scan.
+//  - timeframe=5m: real 5M candles when a user clicks 5M (lib/server/chartCandlesOnDemand.ts).
+//  - timeframe=history: older hourly candles for an exact Uniswap V4 PoolId when a user selects
+//    1H / 4H / 1D or pans past the oldest loaded candle (lib/server/v4SwapCandlesRpc.ts
+//    loadV4SwapHistoryWindow): `before` cursor in, genuine swap candles + `hasMore` + next cursor out.
 import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { loadOnDemandCandles } from '@/lib/server/chartCandlesOnDemand'
 import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
+import { loadV4SwapHistoryWindow } from '@/lib/server/v4SwapCandlesRpc'
+import { makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
+import { candleFailureMessage } from '@/lib/evmChartCandles'
 
 export const dynamic = 'force-dynamic'
 
@@ -28,6 +34,23 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, code: 'provider_rate_limited', message: 'Too many chart requests. Try again shortly.' }, { status: 429 })
   }
   const url = new URL(req.url)
+  if (url.searchParams.get('timeframe') === 'history') {
+    const chain = url.searchParams.get('chain') ?? ''
+    const pool = url.searchParams.get('pool') ?? ''
+    const token = url.searchParams.get('token') ?? ''
+    const before = Number(url.searchParams.get('before'))
+    if (!/^0x[a-fA-F0-9]{64}$/.test(pool) || !/^0x[a-fA-F0-9]{40}$/.test(token) || !Number.isInteger(before) || before <= 0) {
+      return NextResponse.json({ ok: false, timeframe: 'history', code: 'invalid_request', message: 'Older history needs an exact V4 pool id, token and cursor.' }, { status: 400 })
+    }
+    const deps = makeV4HistoryDeps(chain)
+    if (!deps) return NextResponse.json({ ok: false, timeframe: 'history', code: 'v4_chain_not_supported', message: candleFailureMessage('v4_chain_not_supported'), hasMore: false })
+    const h = await loadV4SwapHistoryWindow({ chain, poolId: pool, token, beforeSec: before }, deps)
+    if (!h.ok) {
+      const message = h.code === 'invalid_request' ? 'Older history request is out of range.' : candleFailureMessage(h.code ?? 'v4_swap_logs_unavailable')
+      return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec }, { status: h.code === 'invalid_request' ? 400 : 200 })
+    }
+    return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.candles, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, windowEndSec: h.windowEndSec, source: 'v4_swap_events' })
+  }
   const { result } = await loadOnDemandCandles(
     {
       chain: url.searchParams.get('chain'),

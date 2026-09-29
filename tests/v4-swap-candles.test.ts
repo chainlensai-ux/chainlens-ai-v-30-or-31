@@ -17,7 +17,7 @@ import {
   v4TokenPriceInCounter,
   type RawEvmLog,
 } from '../lib/v4SwapCandles.ts'
-import { V4_SWAP_MAX_CALLS, V4_SWAP_MAX_LOGS, V4_SWAP_MAX_PAGES, V4_SWAP_PAGE_BLOCKS, loadV4SwapCandles, resetV4SwapCandleCache, type V4SwapDeps } from '../lib/server/v4SwapCandlesRpc.ts'
+import { V4_SWAP_MAX_CALLS, V4_SWAP_MAX_LOGS, V4_SWAP_MAX_PAGES, V4_SWAP_PAGE_BLOCKS, V4_SWAP_PAGE_PLAN, V4_SWAP_TARGET_WINDOW_SEC, loadV4SwapCandles, resetV4SwapCandleCache, type V4SwapDeps } from '../lib/server/v4SwapCandlesRpc.ts'
 import { buildEvmChartDebugInfo, closeMatchesLivePrice, runEvmCandleLadder, type LadderDeps, type LadderPool, type LadderV4SwapResult } from '../lib/evmChartCandles.ts'
 import { buildChartTimeframes, normalizeChartCandles, pickDefaultTimeframe, type ChartCandleInput } from '../lib/priceChartCandles.ts'
 import { ETH_USD_SERIES_SLOT_SEC, ETH_USD_SERIES_WINDOW_SEC, fetchCoingeckoEthUsdRecent, resetEthUsdSeriesCache } from '../lib/server/coingeckoOnchainOhlcv.ts'
@@ -141,7 +141,7 @@ function fakeChain(opts: {
     },
     ethUsdSeries: async () => {
       ethCalls++
-      const points: Array<[number, number]> | null = opts.ethPoints === undefined ? Array.from({ length: 200 }, (_, i) => [(LATEST_TS - 13 * 3600 + i * 300) * 1000, 3000]) : opts.ethPoints
+      const points: Array<[number, number]> | null = opts.ethPoints === undefined ? Array.from({ length: 300 }, (_, i) => [(LATEST_TS - 24 * 3600 + i * 300) * 1000, 3000]) : opts.ethPoints
       return { points, cacheHit: opts.ethCached === true }
     },
   }
@@ -173,16 +173,23 @@ test('loader: exact PoolManager + [Swap topic, PoolId] filter; USD candles from 
   assert.ok(r.candles.every((k) => Math.abs(k.close - 3) < 1e-6), 'the other pool\'s price (1:1) never leaked in')
 })
 
-test('normal Base V4 scan: 1 header + 1 Initialize + 1 swap page + 1 ETH/USD = 4 calls; stops as soon as enough real buckets exist', async () => {
+test('normal Base V4 scan (46-day-old pool): 24h of real swaps in 1 header + 1 Initialize + 3 pages + 1 ETH/USD = 6 calls', async () => {
   resetV4SwapCandleCache()
-  const c = fakeChain({ swapsPerPage: tokenSwaps })
+  const c = fakeChain({ initBlock: LATEST - 46 * 43_200, swapsPerPage: tokenSwaps })
   const r = await loadV4SwapCandles(base, c.deps)
   assert.equal(r.ok, true)
-  assert.equal(swapPages(c.calls).length, 1, 'a 4h page of an active pool already holds >= 36 real buckets')
-  assert.equal(r.budgetStopReason, 'enough_buckets')
-  assert.equal(r.callsUsed, 4)
-  assert.equal(r.rpcCalls, 3)
-  assert.equal(r.providerCalls, 1)
+  const pages = swapPages(c.calls).map((p) => p.params[0] as { fromBlock: string; toBlock: string }).map((f) => [Number(BigInt(f.fromBlock)), Number(BigInt(f.toBlock))])
+  assert.deepEqual(pages.map(([f, t]) => t - f + 1), [...V4_SWAP_PAGE_PLAN], '4h + 8h + 12h pages, newest first')
+  for (let i = 1; i < pages.length; i++) assert.equal(pages[i][1], pages[i - 1][0] - 1, 'contiguous: no block skipped between pages')
+  assert.equal(LATEST - pages[pages.length - 1][0] + 1, V4_SWAP_TARGET_WINDOW_SEC / 2, 'exactly 24h of Base blocks, never older')
+  assert.equal(r.budgetStopReason, 'target_window')
+  assert.deepEqual([r.callsUsed, r.rpcCalls, r.providerCalls], [6, 5, 1])
+  // One swap per 2 min over 24h, inferred times => 15M candles spanning ~24h (was ~17 x 15M from a single 4h page).
+  const span = (Date.parse(r.candles[r.candles.length - 1].timestamp) - Date.parse(r.candles[0].timestamp)) / 3_600_000
+  assert.ok(r.candles.length >= 95 && span >= 23.5, `${r.candles.length} candles over ${span}h`)
+  const set = buildChartTimeframes(normalizeChartCandles(r.candles.map((k) => ({ ...k }))), r.intervalSec)
+  assert.ok(set.timeframes.find((t) => t.key === '15M')!.candles.length >= 95)
+  assert.ok(set.timeframes.find((t) => t.key === '1H')!.candles.length >= 24)
 })
 
 test('warm scan: Initialize cached per PoolId and ETH/USD shared => 2 calls; result cache hit => 0 calls', async () => {
@@ -199,29 +206,59 @@ test('warm scan: Initialize cached per PoolId and ETH/USD shared => 2 calls; res
   assert.deepEqual([r3.callsUsed, r3.cache.result], [0, true])
 })
 
-test('bounds: <= 3 pages of 7,200 blocks, never before the pool\'s creation block, <= 3,000 logs', async () => {
+test('bounds: <= 3 pages covering <= 24h, never before the pool\'s creation block, <= 6,000 logs (newest kept)', async () => {
   resetV4SwapCandleCache()
-  const sparse = (f: number, t: number) => [swapLog(POOL, t, sqrtX96(1000, 18, 18), BigInt(-1e16), BigInt(1e19))] // 1 swap per page: never "enough"
+  const sparse = (f: number, t: number) => [swapLog(POOL, t, sqrtX96(1000, 18, 18), BigInt(-1e16), BigInt(1e19))]
   const c = fakeChain({ swapsPerPage: sparse })
   const r = await loadV4SwapCandles(base, c.deps)
   const pages = swapPages(c.calls)
-  assert.equal(pages.length, V4_SWAP_MAX_PAGES)
-  assert.equal(r.budgetStopReason, 'page_cap')
+  assert.ok(pages.length <= V4_SWAP_MAX_PAGES)
   for (const p of pages) {
     const f = p.params[0] as { fromBlock: string; toBlock: string }
-    assert.ok(Number(BigInt(f.toBlock)) - Number(BigInt(f.fromBlock)) + 1 <= V4_SWAP_PAGE_BLOCKS)
+    assert.ok(Number(BigInt(f.fromBlock)) >= LATEST - V4_SWAP_TARGET_WINDOW_SEC / 2 + 1, 'no normal scan crawls past 24h')
   }
   assert.ok(r.callsUsed <= V4_SWAP_MAX_CALLS)
+  // Young token (< 6h: 750 blocks = 25 min): one page from its creation block — all of its history.
   resetV4SwapCandleCache()
   const young = fakeChain({ initBlock: LATEST - 750, swapsPerPage: tokenSwaps })
-  await loadV4SwapCandles(base, young.deps)
+  const yr = await loadV4SwapCandles(base, young.deps)
   const yp = swapPages(young.calls)
   assert.equal(yp.length, 1)
   assert.equal(Number(BigInt((yp[0].params[0] as { fromBlock: string }).fromBlock)), LATEST - 750)
+  assert.equal(yr.budgetStopReason, null, 'reached pool creation')
+  // 10h-old token: two pages reach creation — the full available history, no third page.
+  resetV4SwapCandleCache()
+  const tenH = fakeChain({ initBlock: LATEST - 18_000, swapsPerPage: tokenSwaps })
+  const tr = await loadV4SwapCandles(base, tenH.deps)
+  assert.equal(swapPages(tenH.calls).length, 2)
+  assert.equal(Number(BigInt((swapPages(tenH.calls)[1].params[0] as { fromBlock: string }).fromBlock)), LATEST - 18_000)
+  assert.ok(Date.parse(tr.candles[0].timestamp) / 1000 <= LATEST_TS - 9.5 * 3600, 'candles start near creation')
+  // Busy pool: a 5,000-log first page keeps later pages at 4h; the 6,000-log cap stops paging.
   resetV4SwapCandleCache()
   const many = (f: number, t: number) => Array.from({ length: 5_000 }, (_, i) => swapLog(POOL, t - (i % 100), sqrtX96(1000, 18, 18), BigInt(-1e16), BigInt(1e19), i))
-  const capped = await loadV4SwapCandles(base, fakeChain({ swapsPerPage: many }).deps)
+  const busy = fakeChain({ swapsPerPage: many })
+  const capped = await loadV4SwapCandles(base, busy.deps)
   assert.equal(capped.logsFound, V4_SWAP_MAX_LOGS)
+  assert.equal(capped.budgetStopReason, 'log_cap')
+  const bp = swapPages(busy.calls).map((p) => p.params[0] as { fromBlock: string; toBlock: string })
+  assert.equal(Number(BigInt(bp[1].toBlock)) - Number(BigInt(bp[1].fromBlock)) + 1, V4_SWAP_PAGE_BLOCKS)
+})
+
+test('log cap keeps the NEWEST swaps (no gap near now) and drops the partial oldest bucket', async () => {
+  resetV4SwapCandleCache()
+  // One page, returned oldest-first like the RPC does, with more logs than the cap.
+  const dense = (f: number, t: number) => {
+    const out: RawEvmLog[] = []
+    for (let b = Math.max(f, t - 7_199); b <= t; b++) out.push(swapLog(POOL, b, sqrtX96(1000, 18, 18), BigInt(-1e16), BigInt(1e19)))
+    return out
+  }
+  const r = await loadV4SwapCandles(base, fakeChain({ swapsPerPage: dense }).deps)
+  assert.equal(r.ok, true, String(r.code))
+  const newest = Date.parse(r.candles[r.candles.length - 1].timestamp) / 1000
+  assert.equal(newest, Math.floor(LATEST_TS / 900) * 900, 'the latest bucket (now) is present')
+  const oldestKeptBlock = LATEST - V4_SWAP_MAX_LOGS + 1
+  const oldestBucket = Math.floor((LATEST_TS - (LATEST - oldestKeptBlock) * 2) / 900) * 900
+  assert.ok(Date.parse(r.candles[0].timestamp) / 1000 > oldestBucket, 'the possibly-partial oldest bucket is dropped')
 })
 
 test('budget: the read never exceeds the remaining budget, reserves the ETH/USD call, and stops honestly', async () => {
@@ -235,7 +272,7 @@ test('budget: the read never exceeds the remaining budget, reserves the ETH/USD 
   }
   resetV4SwapCandleCache()
   const four = await loadV4SwapCandles(base, fakeChain({ swapsPerPage: tokenSwaps }).deps, 4)
-  assert.equal(four.ok, true, 'exactly enough budget for the normal path')
+  assert.equal(four.ok, true, 'a tight budget still returns the newest 4h page')
   assert.equal(four.callsUsed, 4)
   resetV4SwapCandleCache()
   const stable = await loadV4SwapCandles({ ...base, livePriceUsd: 0.5 }, fakeChain({ currency0: TOKEN, currency1: USDC, swapsPerPage: (f, t) => tokenSwaps(f, t).map((l) => swapLog(POOL, Number(BigInt(l.blockNumber!)), sqrtX96(0.5, 18, 6), BigInt(1e18), BigInt(-5e5))) }).deps, 3)
@@ -378,7 +415,7 @@ test('live-readiness fixture: budget stop + cache hit', async () => {
 // ── Ladder / route / debug wiring ────────────────────────────────────────────────────────────────
 const rel = { base_token: { data: { id: `base_${TOKEN}` } }, quote_token: { data: { id: `base_0x4200000000000000000000000000000000000006` } } }
 const lpool = (id: string): LadderPool => ({ poolId: `base_${id}`, address: id, name: 'TKN / WETH', liquidityUsd: 1e5, pool: { id: `base_${id}`, relationships: rel } })
-const v4ok = (n: number, callsUsed = 4): LadderV4SwapResult => ({ ok: true, code: null, poolManager: POOL_MANAGER, logsFound: n * 3, candles: Array.from({ length: n }, (_, i) => ({ timestamp: new Date((LATEST_TS - (n - i) * 300) * 1000).toISOString(), open: 3, high: 3.1, low: 2.9, close: 3, volume: 10, priceUsd: 3 })), intervalSec: 300, timeResolution: 'exact_log_timestamps', callsUsed, pagesFetched: 1, budgetStopReason: 'enough_buckets' })
+const v4ok = (n: number, callsUsed = 4): LadderV4SwapResult => ({ ok: true, code: null, poolManager: POOL_MANAGER, logsFound: n * 3, candles: Array.from({ length: n }, (_, i) => ({ timestamp: new Date((LATEST_TS - (n - i) * 300) * 1000).toISOString(), open: 3, high: 3.1, low: 2.9, close: 3, volume: 10, priceUsd: 3 })), intervalSec: 300, timeResolution: 'exact_log_timestamps', callsUsed, pagesFetched: 1, budgetStopReason: 'target_window' })
 
 function ladderDeps(v4: LadderV4SwapResult | null, calls: string[], budgets: number[] = []): LadderDeps {
   return {

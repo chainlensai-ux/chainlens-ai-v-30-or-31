@@ -4,7 +4,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } fr
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
-import PriceChartPanel, { type FiveMinuteLoadResult } from './PriceChartPanel'
+import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
@@ -1473,6 +1473,21 @@ function makeFiveMinuteLoader(chain: string | null | undefined, token: string | 
   }
 }
 type FiveMinuteLoadPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null }
+
+// Older V4 history: only for candles built from an exact Uniswap V4 PoolId's swaps, and only when the
+// user asks (1H / 4H / 1D or panning past the oldest candle) — never part of the scan.
+function makeHistoryLoader(chain: string | null | undefined, token: string | null | undefined, pool: string | null | undefined, source: string | null | undefined): ((beforeSec: number) => Promise<HistoryLoadResult>) | undefined {
+  if (source !== 'v4_swap_events' || !chain || !token || !pool || !/^0x[a-fA-F0-9]{64}$/.test(pool)) return undefined
+  return async (beforeSec) => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const authToken = session?.access_token
+    const qs = new URLSearchParams({ chain, token, pool, timeframe: 'history', before: String(Math.floor(beforeSec)) })
+    const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
+    const json = await res.json().catch(() => null) as { ok?: boolean; points?: FiveMinuteLoadPoint[]; hasMore?: boolean; nextBeforeSec?: number | null; message?: string } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, points: json.points, hasMore: json.hasMore === true, nextBeforeSec: typeof json.nextBeforeSec === 'number' ? json.nextBeforeSec : null }
+    return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load older candles.' : 'The history request did not complete.'), hasMore: typeof json?.hasMore === 'boolean' ? json.hasMore : undefined }
+  }
+}
 
 function chartIntervalSec(key: string | null | undefined): number | null {
   switch (key) {
@@ -8047,8 +8062,9 @@ export default function TerminalTokenScanner() {
                     )
 
                     if (_hasValidCandles) {
-                      // MCAP mode: only with the Market Cap card's own VERIFIED circulating market cap and a
-                      // circulating_supply that agrees with it at the scan price. Never FDV, never total supply.
+                      // MCAP mode: only with the Market Cap card's own VERIFIED current market cap — basis is the
+                      // agreeing circulating_supply (verified) or, when that field is absent, verified MC ÷ scan
+                      // price (inferred, labelled as such). Never FDV, never an estimated/total-supply cap.
                       const _mcapSupply = resolveChartMarketCapSupply({
                         valuationStatus: result.valuationContext?.primaryValuationStatus,
                         verifiedMarketCapUsd: result.valuationContext?.primaryValuationUsd,
@@ -8073,6 +8089,9 @@ export default function TerminalTokenScanner() {
                           loadFiveMinute={makeFiveMinuteLoader(result.chain, result.contract, result.chartCandles?.poolAddress)}
                           marketCapSupply={_mcapSupply.enabled ? _mcapSupply.supply : null}
                           marketCapUnavailableReason={_mcapSupply.enabled ? null : _mcapSupply.reason}
+                          marketCapBasis={_mcapSupply.enabled ? _mcapSupply.basis : null}
+                          loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource)}
+                          historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : null}
                         />
                       )
                     }

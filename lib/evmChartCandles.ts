@@ -659,7 +659,7 @@ export async function runEvmCandleLadder(input: {
       : { ok: false, code: 'call_budget_exhausted', poolManager: null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: 'call_budget' }
     r.totalHttpCalls += v4.callsUsed
     if (v4.code === 'call_budget_exhausted') budgetExhausted = true
-    if (v4.budgetStopReason && v4.budgetStopReason !== 'enough_buckets') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
+    if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
     r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null }
     const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
