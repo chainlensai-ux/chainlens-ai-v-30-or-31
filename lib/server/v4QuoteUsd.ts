@@ -25,7 +25,30 @@ const DISCOVERY_TTL_MS = 24 * 3_600_000
 const DISCOVERY_FAIL_TTL_MS = 10 * 60_000
 const CACHE_MAX = 500
 
-export type QuotePoolChoice = { pool: string; side: 'base' | 'quote'; pairedWith: string; quoteSymbol: string | null; quoteDecimals: number; liquidityUsd: number }
+export type QuotePoolChoice = { pool: string; side: 'base' | 'quote'; pairedWith: string; quoteSymbol: string | null; quoteDecimals: number; liquidityUsd: number; dex?: string | null }
+
+/** Exact, debug-facing reason the quote asset's USD history was not proven. */
+export type QuoteUsdFailureReason =
+  | 'quote_asset_unverified'
+  | 'wrapped_native_unverified'
+  | 'stable_asset_unverified'
+  | 'quote_pool_not_found'
+  | 'quote_pool_liquidity_too_low'
+  | 'quote_history_unavailable'
+  | 'quote_history_stale'
+  | 'quote_usd_price_unproven'
+/** Selection outcome when no pool qualified: none anchored, anchored but thin, or anchored but the quote's decimals unproven. */
+export type QuoteSelectionFailure = 'quote_pool_not_found' | 'quote_pool_liquidity_too_low' | 'quote_asset_unverified'
+
+/** Maps a lane detail (unchanged strings) onto the exact debug reason. */
+export function quoteUsdFailureReason(detail: string | null, selection: QuoteSelectionFailure | null = null): QuoteUsdFailureReason {
+  if (selection) return selection
+  if (!detail) return 'quote_usd_price_unproven'
+  if (detail === 'no_quote_token_pool_found' || detail === 'no_independent_quote_pool_with_eth_or_stable_liquidity') return 'quote_pool_not_found'
+  if (detail.startsWith('quote_series_') || detail.endsWith('_usd_series_unavailable') || detail.endsWith('_unavailable')) return 'quote_history_unavailable'
+  if (detail.startsWith('no_quote_usd_point_within_')) return 'quote_history_stale'
+  return 'quote_usd_price_unproven'
+}
 
 export type QuoteUsdResult = {
   ok: boolean
@@ -36,6 +59,11 @@ export type QuoteUsdResult = {
   quoteDecimals: number | null
   pool: string | null
   pairedWith: string | null
+  /** The independent pool's dex id and the quote token's side in it (debug). */
+  poolDex?: string | null
+  poolSide?: 'base' | 'quote' | null
+  /** Why no independent pool qualified (debug; null when one did or discovery never ran). */
+  selectionFailure?: QuoteSelectionFailure | null
   points: Array<[number, number]>
   callsUsed: number
   cache: { discovery: boolean; series: boolean }
@@ -56,7 +84,7 @@ export type QuoteUsdWindowDeps = {
   now?: () => number
 }
 
-const discoveryCache = new Map<string, { expiresAt: number; value: QuotePoolChoice | null; detail: string | null }>()
+const discoveryCache = new Map<string, { expiresAt: number; value: QuotePoolChoice | null; detail: string | null; failure: QuoteSelectionFailure | null; seen: { symbol: string | null; decimals: number | null } | null }>()
 const seriesCache = new Map<string, { slot: number; points: Array<[number, number]> | null; detail: string | null }>()
 const windowCache = new Map<string, { expiresAt: number; points: Array<[number, number]> | null; detail: string | null }>()
 const WINDOW_TTL_MS = 6 * 3_600_000
@@ -79,9 +107,9 @@ const idAddress = (id: unknown): string | null => {
  * verified USD stables), on a verified side, excluding the V4 pool being priced and any pool that
  * contains the scanned token. Pure — exported for tests.
  */
-export function selectIndependentQuotePool(json: unknown, input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string> }): { choice: QuotePoolChoice | null; detail: string | null } {
+export function selectIndependentQuotePool(json: unknown, input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string> }): { choice: QuotePoolChoice | null; detail: string | null; failure?: QuoteSelectionFailure | null; seen?: { symbol: string | null; decimals: number | null } } {
   const data = (json as { data?: unknown } | null)?.data
-  if (!Array.isArray(data)) return { choice: null, detail: 'quote_pool_discovery_schema_invalid' }
+  if (!Array.isArray(data)) return { choice: null, detail: 'quote_pool_discovery_schema_invalid', failure: null }
   const included = (json as { included?: unknown } | null)?.included
   const tokenAttrs = new Map<string, Record<string, unknown>>()
   if (Array.isArray(included)) for (const inc of included as Array<Record<string, unknown>>) if (inc?.type === 'token') tokenAttrs.set(String(inc.id ?? '').toLowerCase(), (inc.attributes ?? {}) as Record<string, unknown>)
@@ -90,6 +118,9 @@ export function selectIndependentQuotePool(json: unknown, input: { quoteToken: s
   const exclude = input.excludePool.toLowerCase()
   let best: QuotePoolChoice | null = null
   let sawAny = false
+  let sawAnchored = false
+  let sawAnchoredLiquid = false
+  let seen: { symbol: string | null; decimals: number | null } = { symbol: null, decimals: null }
   for (const p of data as Array<Record<string, unknown>>) {
     const attrs = (p.attributes ?? {}) as Record<string, unknown>
     const address = typeof attrs.address === 'string' ? attrs.address.toLowerCase() : null
@@ -105,16 +136,22 @@ export function selectIndependentQuotePool(json: unknown, input: { quoteToken: s
     const side: 'base' | 'quote' | null = baseAddr === quote ? 'base' : quoteAddr === quote ? 'quote' : null
     if (!side) continue
     sawAny = true
-    const other = side === 'base' ? quoteAddr : baseAddr
-    if (other === scanned || !input.anchors.has(other)) continue
-    const liq = Number(attrs.reserve_in_usd)
-    if (!Number.isFinite(liq) || liq < QUOTE_POOL_MIN_LIQUIDITY_USD) continue
     const qAttrs = tokenAttrs.get(side === 'base' ? baseId : quoteId) ?? {}
     const dec = Number(qAttrs.decimals)
-    if (!Number.isInteger(dec) || dec < 0 || dec > 36) continue
-    if (!best || liq > best.liquidityUsd) best = { pool: address, side, pairedWith: other, quoteSymbol: typeof qAttrs.symbol === 'string' ? qAttrs.symbol : null, quoteDecimals: dec, liquidityUsd: liq }
+    const decOk = Number.isInteger(dec) && dec >= 0 && dec <= 36
+    if (seen.symbol == null && seen.decimals == null) seen = { symbol: typeof qAttrs.symbol === 'string' ? qAttrs.symbol : null, decimals: decOk ? dec : null }
+    const other = side === 'base' ? quoteAddr : baseAddr
+    if (other === scanned || !input.anchors.has(other)) continue
+    sawAnchored = true
+    const liq = Number(attrs.reserve_in_usd)
+    if (!Number.isFinite(liq) || liq < QUOTE_POOL_MIN_LIQUIDITY_USD) continue
+    sawAnchoredLiquid = true
+    if (!decOk) continue
+    const dexId = String(rel.dex?.data?.id ?? '') || null
+    if (!best || liq > best.liquidityUsd) best = { pool: address, side, pairedWith: other, quoteSymbol: typeof qAttrs.symbol === 'string' ? qAttrs.symbol : null, quoteDecimals: dec, liquidityUsd: liq, ...(dexId ? { dex: dexId } : {}) }
   }
-  return { choice: best, detail: best ? null : sawAny ? 'no_independent_quote_pool_with_eth_or_stable_liquidity' : 'no_quote_token_pool_found' }
+  const failure: QuoteSelectionFailure | null = best ? null : sawAnchoredLiquid ? 'quote_asset_unverified' : sawAnchored ? 'quote_pool_liquidity_too_low' : 'quote_pool_not_found'
+  return { choice: best, detail: best ? null : sawAny ? 'no_independent_quote_pool_with_eth_or_stable_liquidity' : 'no_quote_token_pool_found', failure, seen }
 }
 
 /** Genuine historical USD points ([bucket end ms, close]) from a pool's candles, only if its meta (when present) agrees on the side. */
@@ -139,7 +176,7 @@ export async function resolveIndependentQuoteUsd(
   const found = await discoverQuotePool(input, deps.fetchTokenPools, out, canCall, timeout, now)
   if (!found) return out.reason === 'call_budget_exhausted' ? out : { ...out, reason: 'quote_usd_price_unproven' }
   const choice = found
-  Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith })
+  Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith, poolDex: choice.dex ?? null, poolSide: choice.side })
 
   // 2. That pool's genuine historical USD candles (one read per 10-minute slot, shared).
   const slot = Math.floor(now() / 1000 / QUOTE_SERIES_SLOT_SEC) * QUOTE_SERIES_SLOT_SEC
@@ -180,7 +217,7 @@ async function discoverQuotePool(
   const d = discoveryCache.get(dKey)
   if (d && d.expiresAt > now()) {
     out.cache.discovery = true
-    if (!d.value) out.detail = d.detail
+    if (!d.value) Object.assign(out, { detail: d.detail, selectionFailure: d.failure, quoteSymbol: d.seen?.symbol ?? null, quoteDecimals: d.seen?.decimals ?? null })
     return d.value
   }
   if (!canCall()) { out.reason = 'call_budget_exhausted'; out.detail = 'call_budget'; return null }
@@ -188,10 +225,10 @@ async function discoverQuotePool(
   const res = await fetchTokenPools(input.chain, quote, timeout())
   const sel = res.httpStatus != null && res.httpStatus >= 200 && res.httpStatus < 300
     ? selectIndependentQuotePool(res.json, { quoteToken: quote, scannedToken: input.scannedToken, excludePool: input.excludePool, anchors: input.anchors })
-    : { choice: null, detail: `quote_pool_discovery_http_${res.httpStatus ?? 'error'}` }
+    : { choice: null, detail: `quote_pool_discovery_http_${res.httpStatus ?? 'error'}`, failure: null, seen: undefined }
   bounded(discoveryCache)
-  discoveryCache.set(dKey, { expiresAt: now() + (sel.choice ? DISCOVERY_TTL_MS : DISCOVERY_FAIL_TTL_MS), value: sel.choice, detail: sel.detail })
-  if (!sel.choice) out.detail = sel.detail
+  discoveryCache.set(dKey, { expiresAt: now() + (sel.choice ? DISCOVERY_TTL_MS : DISCOVERY_FAIL_TTL_MS), value: sel.choice, detail: sel.detail, failure: sel.failure ?? null, seen: sel.seen ?? null })
+  if (!sel.choice) Object.assign(out, { detail: sel.detail, selectionFailure: sel.failure ?? null, quoteSymbol: sel.seen?.symbol ?? null, quoteDecimals: sel.seen?.decimals ?? null })
   return sel.choice
 }
 
@@ -210,7 +247,7 @@ export async function resolveIndependentQuoteUsdWindow(
   const canCall = () => out.callsUsed < input.budget && now() < input.deadlineMs
   const choice = await discoverQuotePool(input, deps.fetchTokenPools, out, canCall, timeout, now)
   if (!choice) return out.reason === 'call_budget_exhausted' ? out : { ...out, reason: 'quote_usd_price_unproven' }
-  Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith })
+  Object.assign(out, { quoteSymbol: choice.quoteSymbol, quoteDecimals: choice.quoteDecimals, pool: choice.pool, pairedWith: choice.pairedWith, poolDex: choice.dex ?? null, poolSide: choice.side })
 
   const beforeSec = Math.ceil(input.toSec / 3600) * 3600
   const fromSec = Math.floor(input.fromSec / 3600) * 3600

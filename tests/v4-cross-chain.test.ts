@@ -177,6 +177,8 @@ test('ETH quote-side token (token is currency0 vs USDC currency1, 18 vs 6 decima
   const r = await loadV4SwapCandles({ chain: 'eth', poolId: POOL, token: TOKEN, tokenDecimals: 18, livePriceUsd: 0.5 }, { rpc: f.rpc, ethUsdSeries: series(3000) })
   assert.equal(r.ok, true, String(r.code))
   assert.deepEqual([r.counterAsset, r.tokenCurrencyIndex], ['usd_stable', 0])
+  assert.deepEqual([r.quote?.classification, r.quote?.attempt, r.quote?.decimals, r.quote?.failureReason], ['verified_stable', 'stable_usd', 6, null], 'exact verified stable ($1) on its own chain')
+  assert.equal(f.calls.filter((c) => c.method === 'eth_call').length, 0, 'no registry proof call on a chain with static entries')
   assert.ok(r.candles.every((k) => Math.abs(k.close - 0.5) < 1e-9))
   resetV4SwapCandleCache()
   const OTHER = '0x' + '77'.repeat(20)

@@ -6354,7 +6354,8 @@ export async function POST(req: Request) {
                     return { json: res.ok ? await res.json().catch(() => null) : null, httpStatus: res.status }
                   } catch { return { json: null, httpStatus: null } }
                 },
-                fetchPoolUsdOhlcv: (_c, quotePool, side) => isCoingeckoOnchainConfigured()
+                // CoinGecko only where its on-chain API serves this chain (not Robinhood) — else GeckoTerminal.
+                fetchPoolUsdOhlcv: (_c, quotePool, side) => _chartCoingeckoNetwork
                   ? fetchCoingeckoOnchainPoolOhlcv(chain, quotePool, QUOTE_SERIES_REQUEST, side)
                   : fetchGeckoTerminalPoolOhlcv(quotePool, chain, QUOTE_SERIES_REQUEST, side),
               }),

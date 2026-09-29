@@ -453,6 +453,14 @@ export type V4QuoteUsdInfo = {
   points: number
   maxGapMs: number | null
   reason: string | null
+  /** Exact-address evidence about the quote asset (debug). */
+  decimals?: number | null
+  classification?: 'native' | 'verified_wrapped_native' | 'verified_stable' | 'arbitrary_quote' | 'unverified' | null
+  attempt?: 'native_usd' | 'stable_usd' | 'independent_quote_pool' | 'none'
+  poolProtocol?: string | null
+  poolSide?: 'base' | 'quote' | null
+  failureReason?: string | null
+  wrappedNative?: string | null
 }
 
 /**
