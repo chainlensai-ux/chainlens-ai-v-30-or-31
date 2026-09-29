@@ -239,7 +239,7 @@ test('history: invalid requests (40-hex pool, other chain, cursor too old / in t
   resetV4SwapCandleCache()
   for (const input of [
     { chain: 'base', poolId: '0x' + '7a'.repeat(20), token: TOKEN, beforeSec: scanCutoffSec },
-    { chain: 'eth', poolId: POOL, token: TOKEN, beforeSec: scanCutoffSec },
+    { chain: 'polygon', poolId: POOL, token: TOKEN, beforeSec: scanCutoffSec },
     { chain: 'base', poolId: POOL, token: TOKEN, beforeSec: LATEST_TS - V4_HISTORY_MAX_AGE_SEC - 7200 },
     { chain: 'base', poolId: POOL, token: TOKEN, beforeSec: LATEST_TS + 86_400 },
   ]) {

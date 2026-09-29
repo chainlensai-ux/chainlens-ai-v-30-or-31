@@ -7,7 +7,7 @@
 // configured, else GeckoTerminal). The CoinGecko key stays inside lib/server/coingeckoOnchainOhlcv.ts.
 
 import { EVM_CHART_NETWORK } from '../evmChartCandles.ts'
-import { fetchCoingeckoEthUsdRange, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from './coingeckoOnchainOhlcv.ts'
+import { fetchCoingeckoEthUsdRange, fetchCoingeckoNativeUsdRange, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from './coingeckoOnchainOhlcv.ts'
 import { resolveIndependentQuoteUsdWindow } from './v4QuoteUsd.ts'
 import { makeV4Rpc, V4_SWAP_CHAIN_CONFIG, type V4HistoryDeps } from './v4SwapCandlesRpc.ts'
 
@@ -29,6 +29,7 @@ export function makeV4HistoryDeps(chain: string): V4HistoryDeps | null {
   return {
     rpc,
     ethUsdRange: (fromSec, toSec, timeoutMs) => fetchCoingeckoEthUsdRange(fromSec, toSec, timeoutMs),
+    nativeUsdRange: (coinId, fromSec, toSec, timeoutMs) => fetchCoingeckoNativeUsdRange(coinId, fromSec, toSec, timeoutMs),
     quoteUsdWindow: (q) => resolveIndependentQuoteUsdWindow({ chain, ...q }, {
       fetchTokenPools: (_c, quoteToken, timeoutMs) => gtJson(`${gtBase()}/api/v2/networks/${network}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, timeoutMs),
       fetchPoolUsdOhlcvBefore: (_c, pool, side, req, beforeSec, timeoutMs) => isCoingeckoOnchainConfigured()

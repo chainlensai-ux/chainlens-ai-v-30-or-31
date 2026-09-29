@@ -81,14 +81,29 @@ export async function fetchCoingeckoOnchainPoolOhlcv(
 // body. Older on-demand history windows use fetchCoingeckoEthUsdRange below (hourly granularity).
 export const ETH_USD_SERIES_WINDOW_SEC = 24 * 3600
 export const ETH_USD_SERIES_SLOT_SEC = 600
-let ethUsdSeries: { slot: number; points: Array<[number, number]> | null; httpStatus: number | null } | null = null
+/** Native assets whose CoinGecko coin id may be requested (a fixed allow-list — never user input). */
+export const NATIVE_USD_COIN_IDS = ['ethereum', 'binancecoin'] as const
+export type NativeUsdCoinId = (typeof NATIVE_USD_COIN_IDS)[number]
+const nativeUsdSeries = new Map<string, { slot: number; points: Array<[number, number]> | null; httpStatus: number | null }>()
 
 export async function fetchCoingeckoEthUsdRecent(
+  timeoutMs: number,
+  fetchImpl?: CoingeckoFetchImpl,
+  now: () => number = Date.now,
+): Promise<{ points: Array<[number, number]> | null; httpStatus: number | null; cacheHit: boolean }> {
+  return fetchCoingeckoNativeUsdRecent('ethereum', timeoutMs, fetchImpl, now)
+}
+
+/** The same shared, slot-cached 24h series for any allow-listed native coin (ETH, BNB). */
+export async function fetchCoingeckoNativeUsdRecent(
+  coinId: string,
   timeoutMs: number,
   fetchImpl: CoingeckoFetchImpl = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }),
   now: () => number = Date.now,
 ): Promise<{ points: Array<[number, number]> | null; httpStatus: number | null; cacheHit: boolean }> {
+  if (!(NATIVE_USD_COIN_IDS as readonly string[]).includes(coinId)) return { points: null, httpStatus: null, cacheHit: false }
   const slot = Math.floor(now() / 1000 / ETH_USD_SERIES_SLOT_SEC) * ETH_USD_SERIES_SLOT_SEC
+  const ethUsdSeries = nativeUsdSeries.get(coinId)
   if (ethUsdSeries && ethUsdSeries.slot === slot) return { points: ethUsdSeries.points, httpStatus: ethUsdSeries.httpStatus, cacheHit: true }
   const cfg = resolveCoingeckoRuntimeConfig()
   const key = process.env.COINGECKO_API_KEY
@@ -96,7 +111,7 @@ export async function fetchCoingeckoEthUsdRecent(
   let value: { points: Array<[number, number]> | null; httpStatus: number | null }
   try {
     const qs = new URLSearchParams({ vs_currency: 'usd', from: String(slot + ETH_USD_SERIES_SLOT_SEC - ETH_USD_SERIES_WINDOW_SEC), to: String(slot + ETH_USD_SERIES_SLOT_SEC) })
-    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/ethereum/market_chart/range?${qs.toString()}`, {
+    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/${coinId}/market_chart/range?${qs.toString()}`, {
       headers: { Accept: 'application/json', [cfg.selectedHeaderName]: key },
     })
     const json = res.ok ? await res.json().catch(() => null) : null
@@ -108,13 +123,13 @@ export async function fetchCoingeckoEthUsdRecent(
   } catch {
     value = { points: null, httpStatus: null }
   }
-  ethUsdSeries = { slot, ...value }
+  nativeUsdSeries.set(coinId, { slot, ...value })
   return { ...value, cacheHit: false }
 }
 
 /** Test hook. */
 export function resetEthUsdSeriesCache() {
-  ethUsdSeries = null
+  nativeUsdSeries.clear()
 }
 
 // ── Windowed historical ETH/USD (on-demand V4 chart history only) ────────────────────────────────
@@ -130,13 +145,26 @@ export async function fetchCoingeckoEthUsdRange(
   fromSec: number,
   toSec: number,
   timeoutMs: number,
+  fetchImpl?: CoingeckoFetchImpl,
+  now: () => number = Date.now,
+): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }> {
+  return fetchCoingeckoNativeUsdRange('ethereum', fromSec, toSec, timeoutMs, fetchImpl, now)
+}
+
+/** Windowed hourly <coinId>/USD for an allow-listed native coin (on-demand chart history only). */
+export async function fetchCoingeckoNativeUsdRange(
+  coinId: string,
+  fromSec: number,
+  toSec: number,
+  timeoutMs: number,
   fetchImpl: CoingeckoFetchImpl = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }),
   now: () => number = Date.now,
 ): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }> {
   const from = Math.floor(fromSec / 3600) * 3600
   const to = Math.ceil(toSec / 3600) * 3600
+  if (!(NATIVE_USD_COIN_IDS as readonly string[]).includes(coinId)) return { points: null, cacheHit: false }
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return { points: null, cacheHit: false }
-  const key = `${from}:${to}`
+  const key = `${coinId}:${from}:${to}`
   const hit = ethUsdRangeCache.get(key)
   if (hit && hit.expiresAt > now()) return { points: hit.points, cacheHit: true }
   const cfg = resolveCoingeckoRuntimeConfig()
@@ -145,7 +173,7 @@ export async function fetchCoingeckoEthUsdRange(
   let points: Array<[number, number]> | null = null
   try {
     const qs = new URLSearchParams({ vs_currency: 'usd', from: String(from), to: String(to) })
-    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/ethereum/market_chart/range?${qs.toString()}`, {
+    const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/${coinId}/market_chart/range?${qs.toString()}`, {
       headers: { Accept: 'application/json', [cfg.selectedHeaderName]: apiKey },
     })
     const json = res.ok ? await res.json().catch(() => null) : null

@@ -315,8 +315,8 @@ test('loader gaps: token not in the pool, unproven counter asset, missing ETH/US
   assert.equal((await loadV4SwapCandles({ ...base, livePriceUsd: 300 }, fakeChain({ swapsPerPage: tokenSwaps }).deps)).code, 'token_identity_unverified')
 })
 
-test('loader: ETH / BNB / Robinhood return v4_chain_not_supported with zero calls', async () => {
-  for (const chain of ['eth', 'bnb', 'robinhood']) {
+test('loader: a chain with no V4 configuration returns v4_chain_not_supported with zero calls (ETH / BNB / Robinhood are configured — tests/v4-cross-chain.test.ts)', async () => {
+  for (const chain of ['polygon', 'solana', 'avalanche']) {
     const c = fakeChain({})
     const r = await loadV4SwapCandles({ ...base, chain }, c.deps)
     assert.equal(r.code, 'v4_chain_not_supported', chain)

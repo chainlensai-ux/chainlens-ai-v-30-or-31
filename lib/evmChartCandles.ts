@@ -88,8 +88,18 @@ export function isEvmPoolIdentifier(value: string): boolean {
  * zero calls), and is charted from its own on-chain Swap events where that can be proven
  * (lib/server/v4SwapCandlesRpc.ts). Flip one only with that live evidence.
  */
-export const COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED = false
-export const GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED = false
+export const V4_POOL_ID_OHLCV_SUPPORT: Readonly<Record<'coingecko' | 'geckoterminal', Readonly<Record<string, boolean>>>> = {
+  // Keyed by GeckoTerminal network id. Per provider AND per chain — never one global "V4 works" flag.
+  coingecko: { base: false, eth: false, bsc: false, robinhood: false },
+  geckoterminal: { base: false, eth: false, bsc: false, robinhood: false },
+}
+/** Whether this provider is proven to serve bytes32 PoolIds on this network. */
+export function v4PoolIdOhlcvSupported(provider: 'coingecko' | 'geckoterminal', networkId: string | null | undefined): boolean {
+  return networkId != null && V4_POOL_ID_OHLCV_SUPPORT[provider][networkId] === true
+}
+/** Summary only (true if proven on ANY network) — decisions use v4PoolIdOhlcvSupported(provider, network). */
+export const COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED = Object.values(V4_POOL_ID_OHLCV_SUPPORT.coingecko).some(Boolean)
+export const GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED = Object.values(V4_POOL_ID_OHLCV_SUPPORT.geckoterminal).some(Boolean)
 
 export function incrementReason(map: Record<string, number>, key: string) {
   map[key] = (map[key] ?? 0) + 1
@@ -295,6 +305,11 @@ export type CandleFailureCode =
   | 'call_budget_exhausted'
   | 'provider_unsupported_pool_id'
   | 'v4_chain_not_supported'
+  | 'v4_rpc_unavailable'
+  | 'v4_manager_unresolved'
+  | 'v4_protocol_unsupported'
+  | 'v4_initialize_not_found'
+  | 'v4_timestamps_unproven'
   | 'v4_swap_logs_unavailable'
   | 'v4_swap_history_empty'
   | 'quote_usd_price_unproven'
@@ -330,6 +345,11 @@ const FAILURE_MESSAGES: Record<CandleFailureCode, string> = {
   call_budget_exhausted: 'The candle request budget for this scan was used up before history was found.',
   provider_unsupported_pool_id: "This token trades in a pool-id based pool (Uniswap V4 / PancakeSwap Infinity) that the candle provider has not been confirmed to support, so its price history was not requested.",
   v4_chain_not_supported: "On-chain Uniswap V4 swap history is not available for this network yet, so this pool's price history could not be built.",
+  v4_rpc_unavailable: "On-chain swap history for this network needs an RPC endpoint that is not configured, so this Uniswap V4 pool's price history could not be built.",
+  v4_manager_unresolved: 'No verified Uniswap V4 PoolManager is configured for this network, so this pool-id pool could not be read.',
+  v4_protocol_unsupported: "This pool-id pool belongs to a protocol whose on-chain contracts are not verified here (only Uniswap V4 is), so its swaps were not read.",
+  v4_initialize_not_found: "This pool id was not found on the verified Uniswap V4 PoolManager for this network, so its swaps were not attributed to this token.",
+  v4_timestamps_unproven: "This network's swap logs did not carry their own timestamps and its block timing is not proven, so candles were not built rather than guessing times.",
   v4_swap_logs_unavailable: 'The on-chain swap history for this Uniswap V4 pool could not be read right now.',
   v4_swap_history_empty: 'This Uniswap V4 pool has too few real swaps yet to build candles.',
   quote_usd_price_unproven: "This pool's other asset has no proven USD price history, so USD candles were not built from its swaps.",
@@ -360,6 +380,11 @@ const FAILURE_PRIORITY: CandleFailureCode[] = [
   'quote_usd_price_unproven',
   'v4_swap_logs_unavailable',
   'v4_swap_history_empty',
+  'v4_timestamps_unproven',
+  'v4_initialize_not_found',
+  'v4_protocol_unsupported',
+  'v4_manager_unresolved',
+  'v4_rpc_unavailable',
   'v4_chain_not_supported',
   'provider_unsupported_pool_id',
   'token_side_unresolved',
@@ -402,19 +427,26 @@ export type LadderV4SwapResult = {
   logsFound: number
   candles: EvmChartPoint[]
   intervalSec: number
-  /** 'exact_log_timestamps' (5m buckets) or 'inferred_block_time' (15m buckets, never shown as exact 5M). */
-  timeResolution: 'exact_log_timestamps' | 'inferred_block_time' | null
+  /** 'exact_log_timestamps' (5m buckets); 'inferred_block_time' (Base's fixed 2s blocks) or
+   * 'block_timestamp_lookup' (interpolated between real block headers) — both 15m, never shown as exact 5M. */
+  timeResolution: 'exact_log_timestamps' | 'inferred_block_time' | 'block_timestamp_lookup' | null
   callsUsed: number
   pagesFetched: number
   budgetStopReason: string | null
   /** How the V4 pool's other asset was priced in USD (see lib/server/v4SwapCandlesRpc.ts). */
   quote?: V4QuoteUsdInfo | null
+  /** Chain / protocol / manager evidence (debug). */
+  chain?: string
+  protocol?: string | null
+  managerSource?: string | null
+  initializeFound?: boolean
+  timestampMode?: string | null
 }
 
 export type V4QuoteUsdInfo = {
   asset: string
   symbol: string | null
-  source: 'usd_stable' | 'eth_usd_series' | 'independent_pool' | null
+  source: 'usd_stable' | 'eth_usd_series' | 'bnb_usd_series' | 'independent_pool' | null
   pool: string | null
   pairedWith: string | null
   evidence: 'verified' | 'unavailable'
@@ -475,7 +507,7 @@ export type LadderResult = {
   /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
   /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
-  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null } | null
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
   skippedDueToRateLimit: number
@@ -557,8 +589,8 @@ export async function runEvmCandleLadder(input: {
   // A bytes32 pool id (V4 / Infinity) is kept as-is end to end, but never sent to a provider whose
   // support for it is unproven — recorded instead, with zero calls. Never truncated, never swapped
   // for the shared PoolManager.
-  const cgPoolIdOk = input.poolIdSupport?.coingecko ?? COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED
-  const gtPoolIdOk = input.poolIdSupport?.geckoterminal ?? GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED
+  const cgPoolIdOk = input.poolIdSupport?.coingecko ?? v4PoolIdOhlcvSupported('coingecko', networkId)
+  const gtPoolIdOk = input.poolIdSupport?.geckoterminal ?? v4PoolIdOhlcvSupported('geckoterminal', networkId)
   const poolIdUnsupported = (pool: LadderPool, provider: 'coingecko' | 'geckoterminal' = 'geckoterminal') => EVM_POOL_ID_RE.test(pool.address) && !(provider === 'coingecko' ? cgPoolIdOk : gtPoolIdOk)
   const recordUnsupported = (pool: LadderPool, route: CandleAttemptRoute, timeframe: string | null) => {
     r.attempts.push({ route, poolAddress: pool.address, side: resolveEvmPoolTokenSide(pool.pool, input.contract, networkId), timeframe, httpStatus: null, rows: 0, validRows: 0, code: 'provider_unsupported_pool_id' })
@@ -660,7 +692,7 @@ export async function runEvmCandleLadder(input: {
     r.totalHttpCalls += v4.callsUsed
     if (v4.code === 'call_budget_exhausted') budgetExhausted = true
     if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
-    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null }
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null }
     const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
     if (v4.ok && v4.candles.length >= 2) {
@@ -783,6 +815,7 @@ export type ChartDebugInfo = {
     poolModel: 'uniswap_v4'; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null
     timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null
     quote: V4QuoteUsdInfo | null
+    chain: string | null; protocol: string | null; managerSource: string | null; initializeFound: boolean | null; timestampMode: string | null
   } | null
   /** The whole candle path's call budget. */
   callBudget: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
@@ -919,6 +952,8 @@ export function buildEvmChartDebugInfo(input: {
       poolModel: 'uniswap_v4', poolId: input.v4Swap.poolId, poolManager: input.v4Swap.poolManager, logsFound: input.v4Swap.logsFound, candlesBuilt: input.v4Swap.candlesBuilt, code: input.v4Swap.code,
       timeResolution: input.v4Swap.timeResolution, intervalSec: input.v4Swap.intervalSec, callsUsed: input.v4Swap.callsUsed, pagesFetched: input.v4Swap.pagesFetched, budgetStopReason: input.v4Swap.budgetStopReason,
       quote: input.v4Swap.quote ?? null,
+      chain: input.v4Swap.chain ?? null, protocol: input.v4Swap.protocol ?? null, managerSource: input.v4Swap.managerSource ?? null,
+      initializeFound: input.v4Swap.initializeFound ?? null, timestampMode: input.v4Swap.timestampMode ?? null,
     } : null,
     callBudget: input.callBudget ? { callsUsed: input.callBudget.used, callsRemaining: input.callBudget.remaining, budgetStopReason: input.callBudget.stopReason } : null,
   }

@@ -2,20 +2,26 @@
 // candle providers can't serve by its bytes32 PoolId. Pure math lives in lib/v4SwapCandles.ts.
 //
 // Scope — only what can be proven:
-//  - Base only (PoolManager verified in lib/server/uniswapV4BaseRpc.ts). ETH / BNB have no verified
-//    PoolManager here and Robinhood has no fixed block time: explicit v4_chain_not_supported, 0 calls.
-//  - Counter asset: native ETH / WETH (CoinGecko's real historical ETH/USD, one shared cached series),
-//    a USD stablecoin (USDC / USDbC at $1), or — one hop only — any other token whose own USD history
-//    is proven by an INDEPENDENT pool pairing it directly with WETH or a verified stable
-//    (lib/server/v4QuoteUsd.ts). Otherwise quote_usd_price_unproven. Every trade needs a quote USD
-//    point within 15 minutes of it, or that trade is dropped.
+//  - Chains: Base, Ethereum, BNB and Robinhood Chain, each with its own verified Uniswap V4 PoolManager
+//    and timestamp policy (V4_SWAP_CHAIN_CONFIG below — evidence cited per value). Any other chain:
+//    v4_chain_not_supported; a configured chain without an RPC: v4_rpc_unavailable; a pool-id
+//    protocol with no verified contracts here (PancakeSwap Infinity): v4_protocol_unsupported.
+//  - Exact pool: the pool's Initialize must come from a configured manager for exactly this PoolId,
+//    Swap logs are read from that one manager filtered by the PoolId topic, and every decoded log
+//    re-checks both — another pool on the shared PoolManager never leaks in.
+//  - Counter asset: the chain's native asset or its verified wrapped native (CoinGecko's real
+//    historical ETH/USD or BNB/USD, one shared cached series per coin), a verified USD stablecoin ($1),
+//    or — one hop only — any other token whose own USD history is proven by an INDEPENDENT pool pairing
+//    it directly with the native/wrapped native or a verified stable (lib/server/v4QuoteUsd.ts).
+//    Otherwise quote_usd_price_unproven. Every trade needs a quote USD point within 15 minutes of it,
+//    or that trade is dropped.
 //  - The latest candle must sit within 3x of the scan's live token price, or the series is rejected.
 //
-// TIMESTAMPS. A log's own `blockTimestamp` (returned by newer RPC nodes) is exact; when EVERY swap
-// log carries one, candles are 5-minute buckets of exact trade times. Otherwise times are inferred
-// from the real latest block header and Base's protocol-fixed 2s block interval — no per-block header
-// calls — and the series is labelled `inferred_block_time` and bucketed at 15 minutes, never
-// presented as exact 5M candles.
+// TIMESTAMPS. A log's own `blockTimestamp` is exact; when EVERY swap log carries one, candles are
+// 5-minute buckets of exact trade times. Otherwise, per chain: Base infers from the real latest header
+// and its protocol-fixed 2s interval ('inferred_block_time'); ETH / BNB interpolate between two REAL
+// block headers ('block_timestamp_lookup'); Robinhood stops (v4_timestamps_unproven). Any non-exact
+// series is bucketed at 15 minutes, never presented as exact 5M candles.
 //
 // INITIAL WINDOW (every scan). Target: the pool's last 24h — all of it for a pool younger than that —
 // never a crawl of older history. Every call (RPC and CoinGecko) counts against the caller's
@@ -35,6 +41,7 @@
 // each trade within 45 minutes of a real quote point or dropped.
 
 import { RPC } from '../rpc.ts'
+import { getRobinhoodRpcUrl } from './robinhoodChainConfig.ts'
 import { logRpcCall } from './rpcDebug.ts'
 import { auditGlobalAlchemyCall } from './globalRpcAudit.ts'
 import {
@@ -53,22 +60,126 @@ import type { QuoteUsdResult } from './v4QuoteUsd.ts'
 
 const NATIVE = '0x0000000000000000000000000000000000000000'
 
-type V4ChainConfig = {
+// ── Per-chain V4 configuration ───────────────────────────────────────────────────────────────────
+// Every value below is taken from evidence already in this repo, never from memory:
+//  - Uniswap V4 PoolManager, ETH (1) / Base (8453) / BNB (56): lib/server/concentratedLpPositions.ts
+//    V4_POOL_MANAGER ("Official Uniswap v4 deployments", developers.uniswap.org/deployments) and
+//    lib/server/lpProof.ts KNOWN_PROTOCOL_MANAGERS; Base additionally cross-checked live on BaseScan,
+//    Base Blockscout and GeckoTerminal (lib/server/uniswapV4BaseRpc.ts).
+//  - Uniswap V4 PoolManager, Robinhood Chain (4663): verified live on robinhoodchain.blockscout.com —
+//    source-verified PoolManager.sol matching v4-core (lib/server/uniswapV4RobinhoodRpc.ts).
+//  - Same PoolManager bytecode everywhere (CREATE2, same init code) => identical Initialize/Swap ABI.
+//  - Wrapped natives / USD stables and their exact decimals: lib/server/walletSnapshot.ts
+//    (WRAPPED_NATIVE_CONTRACT_BY_CHAIN, STABLE_DECIMALS); Base values as already used here.
+//  - Robinhood native gas asset = ETH: lib/server/robinhoodChainConfig.ts. Robinhood's WETH has no
+//    recorded verification in this repo, so only native ETH (0x0) is priced as ETH there; any other
+//    quote asset must pass the one-hop independent-pool lane.
+//  - PancakeSwap Infinity (BNB): no verified manager address or ABI in this repo => not configured;
+//    a pool whose dex is not Uniswap V4 is reported as v4_protocol_unsupported (zero calls).
+//
+// TIMESTAMPS per chain:
+//  - base: 'fixed_block_time' — Base's protocol-fixed 2s block interval (unchanged behavior).
+//  - eth / bnb: 'header_anchor_interpolation' — block spacing is not fixed (ETH missed slots; BNB
+//    block time changed across hard forks), so one REAL block header ~24h back plus the latest header
+//    anchor the window; exact log timestamps are used when every log carries one, otherwise times are
+//    interpolated between the two real headers ('block_timestamp_lookup', never exact 5M -> 15M).
+//    nominalBlockSec only sizes the window; it is never used as a timestamp.
+//  - robinhood: 'log_timestamp_only' — block production is not proven regular, so candles need every
+//    log's own blockTimestamp; otherwise v4_timestamps_unproven (never guessed).
+
+export type V4TimestampMode = 'fixed_block_time' | 'header_anchor_interpolation' | 'log_timestamp_only'
+export type V4ManagerConfig = { protocol: 'uniswap_v4'; address: string; source: string }
+
+export type V4ChainConfig = {
+  chain: 'base' | 'eth' | 'bnb' | 'robinhood'
+  chainId: number
+  /** Primary manager (debug); the pool's own manager is whichever configured manager emitted its Initialize. */
   poolManager: string
+  managers: ReadonlyArray<V4ManagerConfig>
+  timestampMode: V4TimestampMode
+  /** fixed_block_time only: the protocol-fixed block interval. */
   blockTimeSec: number
+  /** Window sizing only (how many blocks ~24h spans) — never a timestamp source. */
+  nominalBlockSec: number
   rpcUrl: () => string
-  ethLike: Record<string, number>
+  /** Native asset priced by CoinGecko's historical <coinId>/USD. */
+  native: { coinId: 'ethereum' | 'binancecoin'; symbol: 'ETH' | 'BNB' }
+  /** Native (0x0) and verified wrapped-native currencies -> decimals, priced by the native series. */
+  nativeLike: Record<string, number>
+  /** Verified USD stablecoins -> decimals, priced at $1. */
   usdStable: Record<string, number>
 }
 
+const UNISWAP_V4_DEPLOYMENTS = 'developers.uniswap.org/deployments (lib/server/concentratedLpPositions.ts V4_POOL_MANAGER)'
+
 export const V4_SWAP_CHAIN_CONFIG: Readonly<Record<string, V4ChainConfig>> = {
   base: {
+    chain: 'base',
+    chainId: 8453,
     poolManager: '0x498581ff718922c3f8e6a244956af099b2652b2b',
+    managers: [{ protocol: 'uniswap_v4', address: '0x498581ff718922c3f8e6a244956af099b2652b2b', source: 'BaseScan + Base Blockscout + GeckoTerminal (lib/server/uniswapV4BaseRpc.ts)' }],
+    timestampMode: 'fixed_block_time',
     blockTimeSec: 2,
+    nominalBlockSec: 2,
     rpcUrl: () => RPC.base,
-    ethLike: { [NATIVE]: 18, '0x4200000000000000000000000000000000000006': 18 },
+    native: { coinId: 'ethereum', symbol: 'ETH' },
+    nativeLike: { [NATIVE]: 18, '0x4200000000000000000000000000000000000006': 18 },
     usdStable: { '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913': 6, '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca': 6 },
   },
+  eth: {
+    chain: 'eth',
+    chainId: 1,
+    poolManager: '0x000000000004444c5dc75cb358380d2e3de08a90',
+    managers: [{ protocol: 'uniswap_v4', address: '0x000000000004444c5dc75cb358380d2e3de08a90', source: UNISWAP_V4_DEPLOYMENTS }],
+    timestampMode: 'header_anchor_interpolation',
+    blockTimeSec: 0,
+    nominalBlockSec: 12,
+    rpcUrl: () => RPC.eth,
+    native: { coinId: 'ethereum', symbol: 'ETH' },
+    nativeLike: { [NATIVE]: 18, '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 18 },
+    usdStable: { '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6, '0xdac17f958d2ee523a2206206994597c13d831ec7': 6 },
+  },
+  bnb: {
+    chain: 'bnb',
+    chainId: 56,
+    poolManager: '0x28e2ea090877bf75740558f6bfb36a5ffee9e9df',
+    managers: [{ protocol: 'uniswap_v4', address: '0x28e2ea090877bf75740558f6bfb36a5ffee9e9df', source: UNISWAP_V4_DEPLOYMENTS }],
+    timestampMode: 'header_anchor_interpolation',
+    blockTimeSec: 0,
+    nominalBlockSec: 0.75,
+    rpcUrl: () => RPC.bnb,
+    native: { coinId: 'binancecoin', symbol: 'BNB' },
+    nativeLike: { [NATIVE]: 18, '0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c': 18 },
+    usdStable: { '0x55d398326f99059ff775485246999027b3197955': 18, '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d': 18 },
+  },
+  robinhood: {
+    chain: 'robinhood',
+    chainId: 4663,
+    poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951',
+    managers: [{ protocol: 'uniswap_v4', address: '0x8366a39cc670b4001a1121b8f6a443a643e40951', source: 'robinhoodchain.blockscout.com verified source (lib/server/uniswapV4RobinhoodRpc.ts)' }],
+    timestampMode: 'log_timestamp_only',
+    blockTimeSec: 0,
+    nominalBlockSec: 0.25,
+    rpcUrl: () => getRobinhoodRpcUrl() ?? '',
+    native: { coinId: 'ethereum', symbol: 'ETH' },
+    nativeLike: { [NATIVE]: 18 },
+    usdStable: {},
+  },
+}
+
+/**
+ * Protocols that use a DIFFERENT pool-id manager than Uniswap V4 and have no verified contracts here
+ * (PancakeSwap Infinity). A pool the provider labels with one of them is reported as
+ * v4_protocol_unsupported with zero calls. Everything else is judged by the proof that matters: its
+ * Initialize event on a configured, verified Uniswap V4 PoolManager (hook-based launchpads that use
+ * that same PoolManager keep working whatever their dex label).
+ */
+const UNVERIFIED_POOL_ID_PROTOCOLS = /pancake|infinity/i
+
+export function v4ProtocolSupported(chain: string, dexHint: string | null | undefined): boolean {
+  const cfg = V4_SWAP_CHAIN_CONFIG[chain]
+  if (!cfg) return false
+  return !(dexHint && UNVERIFIED_POOL_ID_PROTOCOLS.test(dexHint))
 }
 
 export const V4_SWAP_PAGE_BLOCKS = 7_200
@@ -93,6 +204,11 @@ const INIT_CACHE_MAX = 500
 
 export type V4SwapGapCode =
   | 'v4_chain_not_supported'
+  | 'v4_rpc_unavailable'
+  | 'v4_manager_unresolved'
+  | 'v4_protocol_unsupported'
+  | 'v4_initialize_not_found'
+  | 'v4_timestamps_unproven'
   | 'v4_swap_logs_unavailable'
   | 'v4_swap_history_empty'
   | 'quote_usd_price_unproven'
@@ -100,20 +216,27 @@ export type V4SwapGapCode =
   | 'token_identity_unverified'
   | 'call_budget_exhausted'
 
-export type V4TimeResolution = 'exact_log_timestamps' | 'inferred_block_time'
+/** exact_log_timestamps: every log's own time. inferred_block_time: Base's fixed 2s blocks. block_timestamp_lookup: interpolated between real block headers. */
+export type V4TimeResolution = 'exact_log_timestamps' | 'inferred_block_time' | 'block_timestamp_lookup'
 
 export type V4SwapCandleResult = {
   ok: boolean
   code: V4SwapGapCode | null
   poolManager: string | null
+  /** Chain / protocol / manager evidence for debug. */
+  chain: string
+  protocol: 'uniswap_v4' | null
+  managerSource: string | null
+  initializeFound: boolean
+  timestampMode: V4TimestampMode | null
   poolId: string
   tokenCurrencyIndex: 0 | 1 | null
-  counterAsset: 'eth' | 'usd_stable' | 'independent_quote' | 'other' | null
+  counterAsset: 'eth' | 'bnb' | 'usd_stable' | 'independent_quote' | 'other' | null
   /** How the pool's other asset was priced in USD (null until the pool key is known). */
   quote: {
     asset: string
     symbol: string | null
-    source: 'usd_stable' | 'eth_usd_series' | 'independent_pool' | null
+    source: 'usd_stable' | 'eth_usd_series' | 'bnb_usd_series' | 'independent_pool' | null
     pool: string | null
     pairedWith: string | null
     evidence: 'verified' | 'unavailable'
@@ -140,13 +263,15 @@ export type V4SwapDeps = {
   rpc: (method: string, params: unknown[], timeoutMs: number) => Promise<{ result: unknown; error: boolean }>
   /** Shared, cached real ETH/USD series covering the swap window ([ms, usd] ascending). */
   ethUsdSeries: (timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
+  /** Any chain's native/USD series by CoinGecko coin id (e.g. 'binancecoin'); ETH chains may use ethUsdSeries instead. */
+  nativeUsdSeries?: (coinId: string, timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
   /** One-hop independent USD history for any other quote token (lib/server/v4QuoteUsd.ts). Absent => unproven. */
   quoteUsd?: (input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string>; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
   now?: () => number
 }
 
 const resultCache = new Map<string, { expiresAt: number; value: V4SwapCandleResult }>()
-const initCache = new Map<string, { expiresAt: number; key: V4PoolKey }>()
+const initCache = new Map<string, { expiresAt: number; key: V4PoolKey; manager: string }>()
 const decimalsCache = new Map<string, { expiresAt: number; decimals: number }>()
 const headerCache = new Map<string, { expiresAt: number; block: number; ts: number }>()
 const historyCache = new Map<string, { expiresAt: number; value: V4HistoryResult }>()
@@ -182,7 +307,7 @@ export function makeV4Rpc(chain: string): V4SwapDeps['rpc'] | null {
 const toHex = (n: number) => `0x${Math.max(0, Math.floor(n)).toString(16)}`
 
 export async function loadV4SwapCandles(
-  input: { chain: string; poolId: string; token: string; tokenDecimals: number; livePriceUsd: number | null },
+  input: { chain: string; poolId: string; token: string; tokenDecimals: number; livePriceUsd: number | null; dexHint?: string | null },
   deps: V4SwapDeps,
   /** Calls still allowed on the whole candle path; this read never exceeds min(budget, V4_SWAP_MAX_CALLS). */
   budget: number = V4_SWAP_MAX_CALLS,
@@ -192,12 +317,15 @@ export async function loadV4SwapCandles(
   const token = input.token.toLowerCase()
   const cfg = V4_SWAP_CHAIN_CONFIG[input.chain]
   const r: V4SwapCandleResult = {
-    ok: false, code: null, poolManager: cfg?.poolManager ?? null, poolId, tokenCurrencyIndex: null, counterAsset: null, quote: null, logsFound: 0, tradesUsed: 0,
+    ok: false, code: null, poolManager: cfg?.poolManager ?? null, chain: input.chain, protocol: null, managerSource: null, initializeFound: false, timestampMode: cfg?.timestampMode ?? null,
+    poolId, tokenCurrencyIndex: null, counterAsset: null, quote: null, logsFound: 0, tradesUsed: 0,
     candles: [], intervalSec: V4_EXACT_INTERVAL_SEC, timeResolution: null, callsUsed: 0, rpcCalls: 0, providerCalls: 0, pagesFetched: 0,
     budgetStopReason: null, cache: { result: false, initialize: false, ethUsd: false },
   }
   const gap = (code: V4SwapGapCode): V4SwapCandleResult => ({ ...r, ok: false, code })
   if (!cfg) return gap('v4_chain_not_supported')
+  if (cfg.managers.length === 0) return gap('v4_manager_unresolved')
+  if (!v4ProtocolSupported(input.chain, input.dexHint)) return gap('v4_protocol_unsupported')
   if (!/^0x[a-f0-9]{64}$/.test(poolId) || !/^0x[a-f0-9]{40}$/.test(token)) return gap('token_side_unresolved')
 
   // The scan's own resolved decimals are remembered so an on-demand history request needs no extra read.
@@ -234,29 +362,46 @@ export async function loadV4SwapCandles(
   const latestTs = latest?.timestamp ? Number(BigInt(latest.timestamp)) : null
   if (latestRes.error || latestBlock == null || latestTs == null) { r.budgetStopReason = 'rpc_error'; return done(gap('v4_swap_logs_unavailable')) }
 
-  // 2. The pool's own Initialize event (immutable: cached 24h per PoolId).
-  let key: V4PoolKey | null = null
-  const cachedInit = initCache.get(`${input.chain}:${poolId}`)
-  if (cachedInit && cachedInit.expiresAt > now()) {
-    key = cachedInit.key
-    r.cache.initialize = true
-  } else {
-    if (!canCall()) return gap('call_budget_exhausted')
-    const initRes = await rpc('eth_getLogs', [{ address: cfg.poolManager, topics: [V4_INITIALIZE_TOPIC0, poolId], fromBlock: '0x0', toBlock: toHex(latestBlock) }])
-    if (initRes.error || !Array.isArray(initRes.result)) { r.budgetStopReason = 'rpc_error'; return done(gap('v4_swap_logs_unavailable')) }
-    key = (initRes.result as RawEvmLog[]).filter((l) => l.removed !== true).map((l) => decodeV4Initialize(l, poolId)).find((k) => k != null) ?? null
-    if (!key) return done(gap('v4_swap_logs_unavailable'))
-    bounded(initCache)
-    initCache.set(`${input.chain}:${poolId}`, { expiresAt: now() + INIT_TTL_MS, key })
+  // 2. The pool's own Initialize event on a configured manager (immutable: cached 24h per PoolId).
+  const init = await readPoolInitialize(input.chain, cfg, poolId, latestBlock, now, canCall, rpc)
+  if (init.kind !== 'ok') {
+    if (init.kind === 'budget') return gap('call_budget_exhausted')
+    if (init.kind === 'rpc_error') { r.budgetStopReason = 'rpc_error'; return done(gap('v4_swap_logs_unavailable')) }
+    return done(gap('v4_initialize_not_found'))
   }
+  r.cache.initialize = init.cached
+  const key = init.key
+  const manager = init.manager
+  r.poolManager = manager
+  r.protocol = 'uniswap_v4'
+  r.managerSource = cfg.managers.find((m) => m.address === manager)?.source ?? null
+  r.initializeFound = true
   const tokenIsCurrency0 = key.currency0 === token
   if (!tokenIsCurrency0 && key.currency1 !== token) return done(gap('token_side_unresolved'))
   r.tokenCurrencyIndex = tokenIsCurrency0 ? 0 : 1
   const counter = tokenIsCurrency0 ? key.currency1 : key.currency0
-  const counterEthDec = cfg.ethLike[counter]
+  const counterEthDec = cfg.nativeLike[counter]
   const counterUsdDec = cfg.usdStable[counter]
-  r.counterAsset = counterEthDec != null ? 'eth' : counterUsdDec != null ? 'usd_stable' : 'other'
-  r.quote = { asset: counter, symbol: counterEthDec != null ? 'ETH' : null, source: counterEthDec != null ? 'eth_usd_series' : counterUsdDec != null ? 'usd_stable' : null, pool: null, pairedWith: null, evidence: counterUsdDec != null ? 'verified' : 'unavailable', points: 0, maxGapMs: null, reason: null }
+  const nativeKind: 'eth' | 'bnb' = cfg.native.symbol === 'BNB' ? 'bnb' : 'eth'
+  const isNative = counterEthDec != null
+  r.counterAsset = isNative ? nativeKind : counterUsdDec != null ? 'usd_stable' : 'other'
+  r.quote = { asset: counter, symbol: isNative ? cfg.native.symbol : null, source: isNative ? (nativeKind === 'bnb' ? 'bnb_usd_series' : 'eth_usd_series') : counterUsdDec != null ? 'usd_stable' : null, pool: null, pairedWith: null, evidence: counterUsdDec != null ? 'verified' : 'unavailable', points: 0, maxGapMs: null, reason: null }
+
+  // 2a. Chains without a fixed block interval: one REAL block header ~24h back anchors the window
+  // (and, when logs carry no timestamps, the interpolation between real headers).
+  let anchor: { block: number; ts: number } | null = null
+  if (cfg.timestampMode !== 'fixed_block_time') {
+    const windowBlocks = Math.ceil(V4_SWAP_TARGET_WINDOW_SEC / cfg.nominalBlockSec)
+    const anchorBlock = Math.max(key.initBlock, latestBlock - windowBlocks + 1)
+    if (anchorBlock >= latestBlock) anchor = { block: latestBlock, ts: latestTs }
+    else {
+      if (!canCall()) return gap('call_budget_exhausted')
+      const h = await rpc('eth_getBlockByNumber', [toHex(anchorBlock), false])
+      const hb = h.result as { number?: string; timestamp?: string } | null
+      if (h.error || !hb?.timestamp) { r.budgetStopReason = 'rpc_error'; return done(gap('v4_swap_logs_unavailable')) }
+      anchor = { block: anchorBlock, ts: Number(BigInt(hb.timestamp)) }
+    }
+  }
 
   // 2b. Any other quote token: resolve its independent USD history FIRST (fail fast, before paging),
   // always leaving at least one call for a swap-log page.
@@ -269,7 +414,7 @@ export async function loadV4SwapCandles(
       quoteToken: counter,
       scannedToken: token,
       excludePool: poolId,
-      anchors: new Set([...Object.keys(cfg.ethLike), ...Object.keys(cfg.usdStable)]),
+      anchors: new Set([...Object.keys(cfg.nativeLike), ...Object.keys(cfg.usdStable)]),
       budget: Math.max(0, cap - r.callsUsed - 1),
       deadlineMs: deadline,
     })
@@ -288,7 +433,26 @@ export async function loadV4SwapCandles(
 
   // 3. Swap logs for exactly this PoolId, newest page first, never before creation, back to 24h.
   const swaps: Array<V4Swap & { logTimestamp: number | null }> = []
-  const targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / cfg.blockTimeSec) + 1
+  // Window + page plan: Base keeps its fixed 4h/8h/12h block pages; header-anchored chains split the
+  // real ~24h block span (measured between two real headers) into the same 1/6, 1/3, 1/2 time shares.
+  let targetBlock: number
+  let pagePlan: ReadonlyArray<number>
+  if (!anchor) {
+    targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / cfg.blockTimeSec) + 1
+    pagePlan = V4_SWAP_PAGE_PLAN
+  } else {
+    const spanBlocks = latestBlock - anchor.block
+    const spanSec = latestTs - anchor.ts
+    // Chain slower than the planning estimate: keep only the newest ~24h of blocks (measured rate).
+    targetBlock = spanBlocks > 0 && spanSec > V4_SWAP_TARGET_WINDOW_SEC
+      ? latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / (spanSec / spanBlocks)) + 1
+      : anchor.block
+    const total = latestBlock - targetBlock + 1
+    const p1 = Math.max(1, Math.ceil(total / 6))
+    const p2 = Math.max(1, Math.ceil(total / 3))
+    pagePlan = [p1, p2, Math.max(1, total - p1 - p2)]
+  }
+  const busyPageBlocks = pagePlan[0]
   let toBlock = latestBlock
   let busy = false
   let capped = false
@@ -296,15 +460,15 @@ export async function loadV4SwapCandles(
     if (toBlock < targetBlock) { r.budgetStopReason = 'target_window'; break }
     if (capped) { r.budgetStopReason = 'log_cap'; break }
     if (r.pagesFetched >= V4_SWAP_MAX_PAGES) { r.budgetStopReason = 'page_cap'; break }
-    // Keep one call in hand for the ETH/USD series (it may not be cached yet).
-    if (r.counterAsset === 'eth' && r.callsUsed >= cap - 1) { r.budgetStopReason = 'call_budget'; break }
+    // Keep one call in hand for the native/USD series (it may not be cached yet).
+    if (isNative && r.callsUsed >= cap - 1) { r.budgetStopReason = 'call_budget'; break }
     if (!canCall()) break
-    const size = busy ? V4_SWAP_PAGE_BLOCKS : V4_SWAP_PAGE_PLAN[r.pagesFetched] ?? V4_SWAP_PAGE_BLOCKS
+    const size = busy ? busyPageBlocks : pagePlan[r.pagesFetched] ?? busyPageBlocks
     const fromBlock = Math.max(key.initBlock, targetBlock, toBlock - size + 1)
     r.pagesFetched++
-    const page = await rpc('eth_getLogs', [{ address: cfg.poolManager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
+    const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
     if (page.error || !Array.isArray(page.result)) { r.budgetStopReason = 'rpc_error'; break }
-    const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId)
+    const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
     if (decoded.length >= V4_SWAP_BUSY_PAGE_LOGS) busy = true
     for (const s of decoded) {
       if (swaps.length >= V4_SWAP_MAX_LOGS) { capped = true; break }
@@ -320,11 +484,17 @@ export async function loadV4SwapCandles(
     return done(gap('v4_swap_history_empty'))
   }
 
-  // Exact times only if every swap log carries its own block timestamp; otherwise inferred, 15m.
+  // Exact times only if every swap log carries its own block timestamp. Otherwise: Base infers from its
+  // fixed 2s blocks; header-anchored chains interpolate between two REAL headers; a chain whose block
+  // timing is not proven (log_timestamp_only) stops here. Any non-exact series is bucketed at 15m.
   const exact = swaps.every((s) => s.logTimestamp != null)
-  r.timeResolution = exact ? 'exact_log_timestamps' : 'inferred_block_time'
+  if (!exact && cfg.timestampMode === 'log_timestamp_only') return done(gap('v4_timestamps_unproven'))
+  r.timeResolution = exact ? 'exact_log_timestamps' : anchor ? 'block_timestamp_lookup' : 'inferred_block_time'
   r.intervalSec = exact ? V4_EXACT_INTERVAL_SEC : V4_INFERRED_INTERVAL_SEC
-  let timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.logTimestamp! : latestTs - (latestBlock - s.blockNumber) * cfg.blockTimeSec }))
+  const inferTs = anchor
+    ? interpolateBlockTime([anchor, { block: latestBlock, ts: latestTs }])
+    : (b: number) => latestTs - (latestBlock - b) * cfg.blockTimeSec
+  let timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.logTimestamp! : inferTs(s.blockNumber) }))
   // Log cap hit: the oldest kept bucket may be missing earlier trades — drop it rather than show a partial candle.
   if (capped) timed = dropOldestBucket(timed, r.intervalSec)
 
@@ -338,12 +508,14 @@ export async function loadV4SwapCandles(
     return hit.price
   }
   let counterUsdAt: (tsMs: number) => number | null = () => 1
-  if (r.counterAsset === 'eth') {
+  if (isNative) {
     if (now() >= deadline) { r.budgetStopReason = 'deadline'; return done(gap('quote_usd_price_unproven')) }
-    const eth = await deps.ethUsdSeries(Math.max(1, deadline - now()))
+    const seriesFn = cfg.native.coinId === 'ethereum' ? deps.ethUsdSeries : deps.nativeUsdSeries ? (t: number) => deps.nativeUsdSeries!(cfg.native.coinId, t) : null
+    if (!seriesFn) { r.quote = { ...r.quote!, evidence: 'unavailable', reason: `${cfg.native.coinId}_usd_series_unavailable` }; return done(gap('quote_usd_price_unproven')) }
+    const eth = await seriesFn(Math.max(1, deadline - now()))
     r.cache.ethUsd = eth.cacheHit
     if (!eth.cacheHit) { r.callsUsed++; r.providerCalls++ }
-    if (!eth.points || eth.points.length === 0) { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'eth_usd_series_unavailable' }; return done(gap('quote_usd_price_unproven')) }
+    if (!eth.points || eth.points.length === 0) { r.quote = { ...r.quote!, evidence: 'unavailable', reason: `${cfg.native.coinId === 'ethereum' ? 'eth' : cfg.native.coinId}_usd_series_unavailable` }; return done(gap('quote_usd_price_unproven')) }
     r.quote = { ...r.quote!, evidence: 'verified', points: eth.points.length }
     counterUsdAt = fromSeries(eth.points)
   } else if (quotePoints) {
@@ -361,11 +533,12 @@ export async function loadV4SwapCandles(
   return done({ ...r, ok: true, code: null, candles: built.candles })
 }
 
-/** A page's swaps for exactly this PoolId, newest first (block desc, logIndex desc), reorged logs ignored. */
-function decodePageNewestFirst(logs: ReadonlyArray<RawEvmLog>, poolId: string): V4Swap[] {
+/** A page's swaps for exactly this PoolId on exactly this manager, newest first, reorged logs ignored. */
+function decodePageNewestFirst(logs: ReadonlyArray<RawEvmLog>, poolId: string, manager?: string): V4Swap[] {
   const out: V4Swap[] = []
   for (const log of logs) {
     if (log.removed === true) continue
+    if (manager && typeof log.address === 'string' && log.address.toLowerCase() !== manager) continue
     const s = decodeV4Swap(log, poolId)
     if (s) out.push(s)
   }
@@ -417,7 +590,7 @@ export type V4HistoryResult = {
   callsUsed: number
   pagesFetched: number
   stopReason: string | null
-  quote: { source: 'usd_stable' | 'eth_usd_series' | 'independent_pool' | null; evidence: 'verified' | 'unavailable'; maxGapMs: number | null; reason: string | null } | null
+  quote: { source: 'usd_stable' | 'eth_usd_series' | 'bnb_usd_series' | 'independent_pool' | null; evidence: 'verified' | 'unavailable'; maxGapMs: number | null; reason: string | null } | null
   cache: { result: boolean; header: boolean; initialize: boolean; decimals: boolean; quote: boolean }
 }
 
@@ -425,6 +598,8 @@ export type V4HistoryDeps = {
   rpc: V4SwapDeps['rpc']
   /** Real ETH/USD over [fromSec, toSec] (hourly), cached per window. */
   ethUsdRange?: (fromSec: number, toSec: number, timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
+  /** Real <coinId>/USD over [fromSec, toSec] for non-ETH natives (e.g. 'binancecoin'), cached per window. */
+  nativeUsdRange?: (coinId: string, fromSec: number, toSec: number, timeoutMs: number) => Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }>
   /** The quote token's independent-pool USD history over [fromSec, toSec] (lib/server/v4QuoteUsd.ts resolveIndependentQuoteUsdWindow). */
   quoteUsdWindow?: (input: { quoteToken: string; scannedToken: string; excludePool: string; anchors: ReadonlySet<string>; fromSec: number; toSec: number; budget: number; deadlineMs: number }) => Promise<QuoteUsdResult>
   now?: () => number
@@ -502,28 +677,30 @@ async function readHistoryWindow(
     header = { expiresAt: now() + HEADER_TTL_MS, block: Number(BigInt(b.number)), ts: Number(BigInt(b.timestamp)) }
     headerCache.set(input.chain, header)
   }
-  const blockTs = (block: number) => header!.ts - (header!.block - block) * cfg.blockTimeSec
+  const fixedTime = cfg.timestampMode === 'fixed_block_time'
+  const blockTsFixed = (block: number) => header!.ts - (header!.block - block) * cfg.blockTimeSec
 
-  // 2. Pool key from its own Initialize event (shared 24h cache with the scan).
-  let key: V4PoolKey | null = null
-  const cachedInit = initCache.get(`${input.chain}:${poolId}`)
-  if (cachedInit && cachedInit.expiresAt > now()) { key = cachedInit.key; r.cache.initialize = true }
-  else {
-    if (!canCall()) return fail('call_budget_exhausted')
-    const res = await rpc('eth_getLogs', [{ address: cfg.poolManager, topics: [V4_INITIALIZE_TOPIC0, poolId], fromBlock: '0x0', toBlock: toHex(header.block) }])
-    if (res.error || !Array.isArray(res.result)) return fail('v4_swap_logs_unavailable', 'rpc_error')
-    key = (res.result as RawEvmLog[]).filter((l) => l.removed !== true).map((l) => decodeV4Initialize(l, poolId)).find((k) => k != null) ?? null
-    if (!key) return { ...fail('v4_swap_logs_unavailable'), hasMore: false }
-    bounded(initCache)
-    initCache.set(`${input.chain}:${poolId}`, { expiresAt: now() + INIT_TTL_MS, key })
+  // 2. Pool key from its own Initialize event on a configured manager (shared 24h cache with the scan).
+  const init = await readPoolInitialize(input.chain, cfg, poolId, header.block, now, () => canCall(), rpc)
+  if (init.kind !== 'ok') {
+    if (init.kind === 'budget') return fail('call_budget_exhausted')
+    if (init.kind === 'rpc_error') return fail('v4_swap_logs_unavailable', 'rpc_error')
+    return { ...fail('v4_initialize_not_found'), hasMore: false }
   }
+  if (init.cached) r.cache.initialize = true
+  const key = init.key
+  const manager = init.manager
   const tokenIsCurrency0 = key.currency0 === token
   if (!tokenIsCurrency0 && key.currency1 !== token) return { ...fail('token_side_unresolved'), hasMore: false }
   const counter = tokenIsCurrency0 ? key.currency1 : key.currency0
-  const counterEthDec = cfg.ethLike[counter]
+  const counterEthDec = cfg.nativeLike[counter]
   const counterUsdDec = cfg.usdStable[counter]
-  const counterKind: 'eth' | 'usd_stable' | 'other' = counterEthDec != null ? 'eth' : counterUsdDec != null ? 'usd_stable' : 'other'
-  if (counterKind === 'eth' && !deps.ethUsdRange) return { ...fail('quote_usd_price_unproven'), quote: { source: 'eth_usd_series', evidence: 'unavailable', maxGapMs: null, reason: 'no_eth_usd_source' } }
+  const counterKind: 'native' | 'usd_stable' | 'other' = counterEthDec != null ? 'native' : counterUsdDec != null ? 'usd_stable' : 'other'
+  const nativeSource: 'eth_usd_series' | 'bnb_usd_series' = cfg.native.symbol === 'BNB' ? 'bnb_usd_series' : 'eth_usd_series'
+  const nativeRange = cfg.native.coinId === 'ethereum'
+    ? deps.ethUsdRange
+    : deps.nativeUsdRange ? (f: number, t: number, ms: number) => deps.nativeUsdRange!(cfg.native.coinId, f, t, ms) : undefined
+  if (counterKind === 'native' && !nativeRange) return { ...fail('quote_usd_price_unproven'), quote: { source: nativeSource, evidence: 'unavailable', maxGapMs: null, reason: `no_${cfg.native.coinId}_usd_source` } }
   if (counterKind === 'other' && !deps.quoteUsdWindow) return { ...fail('quote_usd_price_unproven'), quote: { source: 'independent_pool', evidence: 'unavailable', maxGapMs: null, reason: 'no_independent_quote_source' } }
 
   // 3. Scanned-token decimals: the scan's own value when this instance has it, else one decimals() read.
@@ -540,13 +717,40 @@ async function readHistoryWindow(
     decimalsCache.set(`${input.chain}:${token}`, { expiresAt: now() + INIT_TTL_MS, decimals: hex })
   }
 
-  // 4. Swap logs for exactly this PoolId, strictly before the cursor, newest first; adaptive page size.
-  const quoteReserve = counterKind === 'usd_stable' ? 0 : counterKind === 'eth' ? 1 : 2
-  const cursorBlock = header.block - Math.ceil((header.ts - beforeSec + 1) / cfg.blockTimeSec)
+  // 4. Map the time cursor to a block. Base: its fixed 2s blocks. Other chains: one REAL header near
+  // the cursor (A) — the block rate is measured between A and the latest header, never assumed.
+  const readHeader = async (block: number): Promise<{ block: number; ts: number } | null> => {
+    const res = await rpc('eth_getBlockByNumber', [toHex(block), false])
+    const b = res.result as { timestamp?: string } | null
+    return res.error || !b?.timestamp ? null : { block, ts: Number(BigInt(b.timestamp)) }
+  }
+  const anchors: Array<{ block: number; ts: number }> = [{ block: header.block, ts: header.ts }]
+  let secPerBlock = fixedTime ? cfg.blockTimeSec : cfg.nominalBlockSec
+  let cursorBlock: number
+  if (fixedTime) cursorBlock = header.block - Math.ceil((header.ts - beforeSec + 1) / cfg.blockTimeSec)
+  else {
+    const est = Math.max(key.initBlock, Math.min(header.block, header.block - Math.ceil((header.ts - beforeSec) / cfg.nominalBlockSec)))
+    if (est < header.block) {
+      if (!canCall()) return fail('call_budget_exhausted')
+      const a = await readHeader(est)
+      if (!a) return fail('v4_swap_logs_unavailable', 'rpc_error')
+      anchors.push(a)
+      if (header.block > a.block && header.ts > a.ts) secPerBlock = (header.ts - a.ts) / (header.block - a.block)
+      cursorBlock = Math.min(header.block, a.block + Math.floor((beforeSec - 1 - a.ts) / secPerBlock))
+    } else cursorBlock = header.block
+  }
+  const hoursToBlocks = (h: number) => Math.max(1, Math.ceil((h * 3600) / secPerBlock))
+  const firstPage = fixedTime ? V4_HISTORY_FIRST_PAGE_BLOCKS : hoursToBlocks(24)
+  const minPage = fixedTime ? V4_HISTORY_MIN_PAGE_BLOCKS : hoursToBlocks(4)
+  const maxPage = fixedTime ? V4_HISTORY_MAX_PAGE_BLOCKS : hoursToBlocks(96)
+
+  // 5. Swap logs for exactly this PoolId on exactly its manager, strictly before the cursor, newest
+  // first; adaptive page size. Non-fixed chains keep one call for the oldest-block header.
+  const quoteReserve = (counterKind === 'usd_stable' ? 0 : counterKind === 'native' ? 1 : 2) + (fixedTime ? 0 : 1)
   if (cursorBlock < key.initBlock) return { ...r, ok: true, code: null, hasMore: false, nextBeforeSec: null, stopReason: 'pool_creation' }
   const swaps: V4Swap[] = []
   let toBlock = Math.min(header.block, cursorBlock)
-  let size = V4_HISTORY_FIRST_PAGE_BLOCKS
+  let size = firstPage
   let capped = false
   let anyPage = false
   while (toBlock >= key.initBlock) {
@@ -554,29 +758,44 @@ async function readHistoryWindow(
     if (!canCall(quoteReserve)) break
     const fromBlock = Math.max(key.initBlock, toBlock - size + 1)
     r.pagesFetched++
-    const page = await rpc('eth_getLogs', [{ address: cfg.poolManager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
+    const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
     if (page.error || !Array.isArray(page.result)) {
       // Too wide for the node (or a transient error): one smaller page next, never a retry loop.
-      if (size > V4_HISTORY_MIN_PAGE_BLOCKS) { size = Math.max(V4_HISTORY_MIN_PAGE_BLOCKS, Math.floor(size / 4)); continue }
+      if (size > minPage) { size = Math.max(minPage, Math.floor(size / 4)); continue }
       r.stopReason = 'rpc_error'
       break
     }
     anyPage = true
-    const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId)
+    const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
     for (const s of decoded) {
       if (swaps.length >= V4_HISTORY_MAX_LOGS) { capped = true; break }
       swaps.push(s)
     }
     if (capped) { r.stopReason = 'log_cap'; break }
     toBlock = fromBlock - 1
-    size = decoded.length < QUIET_PAGE_LOGS ? Math.min(V4_HISTORY_MAX_PAGE_BLOCKS, size * 2) : decoded.length > BUSY_PAGE_LOGS ? Math.max(V4_HISTORY_MIN_PAGE_BLOCKS, Math.floor(size / 2)) : size
+    size = decoded.length < QUIET_PAGE_LOGS ? Math.min(maxPage, size * 2) : decoded.length > BUSY_PAGE_LOGS ? Math.max(minPage, Math.floor(size / 2)) : size
   }
   r.logsFound = swaps.length
   if (!anyPage) return fail(r.stopReason === 'call_budget' ? 'call_budget_exhausted' : 'v4_swap_logs_unavailable')
 
-  // Exact times only if every swap log carries its own block timestamp; otherwise inferred from the header.
+  // Non-fixed chains: a REAL header at the oldest block read (B) bounds the covered time exactly and,
+  // with A and the latest header, anchors any interpolation.
+  if (!fixedTime) {
+    const oldestRead = Math.max(key.initBlock, toBlock + 1)
+    if (!anchors.some((a) => a.block === oldestRead)) {
+      if (r.callsUsed >= V4_HISTORY_MAX_CALLS || now() >= deadline) return fail('call_budget_exhausted', 'call_budget')
+      const b = await readHeader(oldestRead)
+      if (!b) return fail('v4_swap_logs_unavailable', 'rpc_error')
+      anchors.push(b)
+    }
+  }
+  const blockTs = fixedTime ? blockTsFixed : interpolateBlockTime(anchors)
+
+  // Exact times only if every swap log carries its own block timestamp. Otherwise Base infers from its
+  // fixed blocks, ETH/BNB interpolate between real headers, and Robinhood stops (timing unproven).
   const exact = swaps.length > 0 && swaps.every((s) => s.blockTimestamp != null)
-  r.timeResolution = swaps.length === 0 ? null : exact ? 'exact_log_timestamps' : 'inferred_block_time'
+  if (swaps.length > 0 && !exact && cfg.timestampMode === 'log_timestamp_only') return { ...fail('v4_timestamps_unproven'), hasMore: false }
+  r.timeResolution = swaps.length === 0 ? null : exact ? 'exact_log_timestamps' : fixedTime ? 'inferred_block_time' : 'block_timestamp_lookup'
   let timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.blockTimestamp! : blockTs(s.blockNumber) })).filter((s) => s.timestampSec < beforeSec)
 
   // Cursor: everything from the oldest fully-read block up to the window end is covered. A partial
@@ -599,17 +818,17 @@ async function readHistoryWindow(
   const toSec = Math.max(...timed.map((s) => s.timestampSec))
   let counterDecimals: number | null = (counterEthDec ?? counterUsdDec) ?? null
   let series: Array<[number, number]> | null = null
-  if (counterKind === 'eth') {
+  if (counterKind === 'native') {
     if (now() >= deadline) return { ...fail('quote_usd_price_unproven', 'deadline'), hasMore: r.hasMore }
-    const eth = await deps.ethUsdRange!(fromSec - 3600, toSec + 3600, Math.max(1, deadline - now()))
+    const eth = await nativeRange!(fromSec - 3600, toSec + 3600, Math.max(1, deadline - now()))
     if (!eth.cacheHit) r.callsUsed++
     r.cache.quote = eth.cacheHit
     series = eth.points
-    r.quote = { source: 'eth_usd_series', evidence: series ? 'verified' : 'unavailable', maxGapMs: null, reason: series ? null : 'eth_usd_series_unavailable' }
+    r.quote = { source: nativeSource, evidence: series ? 'verified' : 'unavailable', maxGapMs: null, reason: series ? null : `${nativeSource}_unavailable` }
   } else if (counterKind === 'other') {
     const q = await deps.quoteUsdWindow!({
       quoteToken: counter, scannedToken: token, excludePool: poolId,
-      anchors: new Set([...Object.keys(cfg.ethLike), ...Object.keys(cfg.usdStable)]),
+      anchors: new Set([...Object.keys(cfg.nativeLike), ...Object.keys(cfg.usdStable)]),
       fromSec: fromSec - 3600, toSec: toSec + 3600,
       budget: Math.max(0, V4_HISTORY_MAX_CALLS - r.callsUsed), deadlineMs: deadline,
     })
@@ -641,4 +860,51 @@ async function readHistoryWindow(
   r.quote = { ...r.quote!, maxGapMs: counterKind === 'usd_stable' ? null : maxGapMs }
   if (built.tradesUsed === 0 && counterKind !== 'usd_stable') return { ...fail('quote_usd_price_unproven'), quote: { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_45m_of_any_trade' }, hasMore: r.hasMore, nextBeforeSec: r.nextBeforeSec }
   return { ...r, ok: true, code: null, candles: built.candles }
+}
+
+/** Piecewise-linear block -> time between REAL block headers (ascending by block). Never used as "exact". */
+export function interpolateBlockTime(anchors: ReadonlyArray<{ block: number; ts: number }>): (block: number) => number {
+  const a = [...anchors].sort((x, y) => x.block - y.block)
+  return (block: number) => {
+    if (a.length === 1) return a[0].ts
+    let i = 0
+    while (i < a.length - 2 && block > a[i + 1].block) i++
+    const lo = a[i]
+    const hi = a[i + 1]
+    if (hi.block === lo.block) return lo.ts
+    return Math.round(lo.ts + ((block - lo.block) * (hi.ts - lo.ts)) / (hi.block - lo.block))
+  }
+}
+
+/**
+ * The pool's Initialize event on one of the chain's configured managers (exact PoolId, exact manager:
+ * a log from any other contract is rejected). Cached 24h per chain + PoolId together with its manager.
+ */
+async function readPoolInitialize(
+  chain: string,
+  cfg: V4ChainConfig,
+  poolId: string,
+  latestBlock: number,
+  now: () => number,
+  canCall: () => boolean,
+  rpc: (method: string, params: unknown[]) => Promise<{ result: unknown; error: boolean }>,
+): Promise<{ kind: 'ok'; key: V4PoolKey; manager: string; cached: boolean } | { kind: 'budget' | 'rpc_error' | 'not_found' }> {
+  const cacheKey = `${chain}:${poolId}`
+  const cached = initCache.get(cacheKey)
+  if (cached && cached.expiresAt > now()) return { kind: 'ok', key: cached.key, manager: cached.manager, cached: true }
+  if (!canCall()) return { kind: 'budget' }
+  const managers = cfg.managers.map((m) => m.address.toLowerCase())
+  const res = await rpc('eth_getLogs', [{ address: managers.length === 1 ? managers[0] : managers, topics: [V4_INITIALIZE_TOPIC0, poolId], fromBlock: '0x0', toBlock: toHex(latestBlock) }])
+  if (res.error || !Array.isArray(res.result)) return { kind: 'rpc_error' }
+  for (const log of res.result as RawEvmLog[]) {
+    if (log.removed === true) continue
+    const from = typeof log.address === 'string' ? log.address.toLowerCase() : null
+    if (!from || !managers.includes(from)) continue
+    const key = decodeV4Initialize(log, poolId)
+    if (!key) continue
+    bounded(initCache)
+    initCache.set(cacheKey, { expiresAt: now() + INIT_TTL_MS, key, manager: from })
+    return { kind: 'ok', key, manager: from, cached: false }
+  }
+  return { kind: 'not_found' }
 }

@@ -19,9 +19,8 @@
 import {
   COINGECKO_ONCHAIN_NETWORK,
   EVM_CHART_NETWORK,
-  COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED,
   EVM_POOL_ID_RE,
-  GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED,
+  v4PoolIdOhlcvSupported,
   isEvmPoolIdentifier,
   candleFailureMessage,
   classifyOhlcvResponse,
@@ -110,8 +109,8 @@ export async function loadOnDemandCandles(
   // lib/evmChartCandles.ts). GeckoTerminal also proves the side when it isn't remembered, so an
   // unproven GeckoTerminal needs a remembered side before CoinGecko alone can be asked.
   const isPoolId = EVM_POOL_ID_RE.test(pool)
-  const cgPoolOk = !isPoolId || (opts.poolIdSupport?.coingecko ?? COINGECKO_V4_POOL_ID_OHLCV_CONFIRMED)
-  const gtPoolOk = !isPoolId || (opts.poolIdSupport?.geckoterminal ?? GECKOTERMINAL_V4_POOL_ID_OHLCV_CONFIRMED)
+  const cgPoolOk = !isPoolId || (opts.poolIdSupport?.coingecko ?? v4PoolIdOhlcvSupported('coingecko', EVM_CHART_NETWORK[params.chain] ?? null))
+  const gtPoolOk = !isPoolId || (opts.poolIdSupport?.geckoterminal ?? v4PoolIdOhlcvSupported('geckoterminal', EVM_CHART_NETWORK[params.chain] ?? null))
   if (!cgPoolOk && !gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: 0, cacheHit: false }
   const chain = params.chain
   const network = EVM_CHART_NETWORK[chain]

@@ -44,7 +44,7 @@ import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
 import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
 import { marketPoolMetrics, orderPoolsByLiquidity, orderPoolsForMarket, selectMarketPool } from '@/lib/marketPoolSelection'
 import { describeHolderProvider, isTimeoutError } from '@/lib/holderProviderDiagnostics'
-import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
+import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoNativeUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { V4_SWAP_CHAIN_CONFIG, loadV4SwapCandles, makeV4Rpc } from '@/lib/server/v4SwapCandlesRpc'
 import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd } from '@/lib/server/v4QuoteUsd'
 import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
@@ -6332,17 +6332,19 @@ export async function POST(req: Request) {
         fetchPoolOhlcv: (poolAddress, rung, side) => fetchGeckoTerminalPoolOhlcv(poolAddress, chain, { resolution: rung.resolution, aggregate: rung.aggregate, limit: rung.requestLimit }, side),
         fetchTrades: (poolAddress) => fetchGeckoTerminalPoolTrades(poolAddress, chain),
         // Uniswap V4 pool no proven provider can chart: real candles from its own on-chain Swap events
-        // (Base only; 5m with exact log timestamps, else 15m inferred; bounded by the remaining call
-        // budget, cached — see lib/server/v4SwapCandlesRpc.ts).
+        // on the chain's verified PoolManager (Base / ETH / BNB / Robinhood — per-chain config and
+        // timestamp policy in lib/server/v4SwapCandlesRpc.ts; bounded by the remaining call budget, cached).
         fetchV4SwapCandles: async (pool, budget) => {
           const rpc = makeV4Rpc(chain)
-          if (!rpc) return { ok: false, code: V4_SWAP_CHAIN_CONFIG[chain] ? 'v4_swap_logs_unavailable' : 'v4_chain_not_supported', poolManager: V4_SWAP_CHAIN_CONFIG[chain]?.poolManager ?? null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: null }
+          if (!rpc) return { ok: false, code: V4_SWAP_CHAIN_CONFIG[chain] ? 'v4_rpc_unavailable' : 'v4_chain_not_supported', poolManager: V4_SWAP_CHAIN_CONFIG[chain]?.poolManager ?? null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: null, chain }
           const _gtBaseV4 = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
+          const _v4DexHint = String((((pool.pool as { relationships?: { dex?: { data?: { id?: unknown } } } }).relationships?.dex?.data?.id) ?? '')) || null
           return loadV4SwapCandles(
-            { chain, poolId: pool.address, token: contract, tokenDecimals: Number(resolvedDecimals), livePriceUsd: priceUsd },
+            { chain, poolId: pool.address, token: contract, tokenDecimals: Number(resolvedDecimals), livePriceUsd: priceUsd, dexHint: _v4DexHint },
             {
               rpc,
               ethUsdSeries: (timeoutMs) => fetchCoingeckoEthUsdRecent(timeoutMs),
+              nativeUsdSeries: (coinId, timeoutMs) => fetchCoingeckoNativeUsdRecent(coinId, timeoutMs),
               // Other quote token (e.g. BNKR): one hop to its own independent WETH/stable pool's real
               // USD history — 1 discovery read (cached 24h) + 1 candle read (cached per 10 min).
               quoteUsd: (q) => resolveIndependentQuoteUsd({ chain, ...q }, {

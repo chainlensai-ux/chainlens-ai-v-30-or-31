@@ -12,7 +12,7 @@ import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/req
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { loadOnDemandCandles, loadPoolOhlcvHistory } from '@/lib/server/chartCandlesOnDemand'
 import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
-import { loadV4SwapHistoryWindow } from '@/lib/server/v4SwapCandlesRpc'
+import { loadV4SwapHistoryWindow, V4_SWAP_CHAIN_CONFIG } from '@/lib/server/v4SwapCandlesRpc'
 import { makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
 import { candleFailureMessage } from '@/lib/evmChartCandles'
 
@@ -58,7 +58,10 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, timeframe: 'history', code: 'invalid_request', message: 'Older history needs an exact pool, token and cursor.' }, { status: 400 })
     }
     const deps = makeV4HistoryDeps(chain)
-    if (!deps) return NextResponse.json({ ok: false, timeframe: 'history', code: 'v4_chain_not_supported', message: candleFailureMessage('v4_chain_not_supported'), hasMore: false })
+    if (!deps) {
+      const code = V4_SWAP_CHAIN_CONFIG[chain] ? 'v4_rpc_unavailable' : 'v4_chain_not_supported'
+      return NextResponse.json({ ok: false, timeframe: 'history', code, message: candleFailureMessage(code), hasMore: false })
+    }
     const h = await loadV4SwapHistoryWindow({ chain, poolId: pool, token, beforeSec: before }, deps)
     if (!h.ok) {
       const message = h.code === 'invalid_request' ? 'Older history request is out of range.' : candleFailureMessage(h.code ?? 'v4_swap_logs_unavailable')
