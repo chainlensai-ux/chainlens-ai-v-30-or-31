@@ -246,7 +246,7 @@ test('whole candle path stays <= 10 calls with the BNKR quote lane included', as
   })
   assert.equal(r.candleProvider, 'v4_swap_events')
   assert.equal(v4Calls, 5)
-  assert.equal(r.totalHttpCalls, 7, '2 GeckoTerminal alternate reads + 5 for the V4/BNKR lane')
+  assert.equal(r.totalHttpCalls, 5, 'market V4 pool charted first from its own swaps: 5 for the V4/BNKR lane, no alternate reads')
   assert.ok(r.totalHttpCalls <= EVM_MAX_OHLCV_CALLS)
   assert.equal(r.v4Swap?.quote?.source, 'independent_pool')
 })

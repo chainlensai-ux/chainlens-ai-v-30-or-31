@@ -441,17 +441,17 @@ test('ladder: V4 calls count inside the 10-call cap; exposes used / remaining / 
   assert.deepEqual([d.v4?.poolId, d.v4?.poolManager, d.v4?.timeResolution, d.v4?.callsUsed], [POOL, POOL_MANAGER, 'exact_log_timestamps', 4])
 })
 
-test('ladder: V4 read only gets what V3 alternates left; an exhausted budget stops honestly with 0 extra calls', async () => {
+test('ladder: the V4 MARKET pool is charted first with the whole budget (alternates untouched); an exhausted budget stops honestly with 0 extra calls', async () => {
   const v3a = '0x' + '7a'.repeat(20)
   const v3b = '0x' + '7b'.repeat(20)
   const budgets: number[] = []
   await runEvmCandleLadder({ pools: [lpool(POOL), lpool(v3a), lpool(v3b)], contract: TOKEN, networkId: 'base', coingeckoNetworkId: 'base', currentPriceUsd: 3 }, ladderDeps(v4ok(30), [], budgets))
-  assert.deepEqual(budgets, [8], '2 GeckoTerminal alternate reads already used')
+  assert.deepEqual(budgets, [10], 'no alternate read happens before the market V4 pool')
   const calls: string[] = []
-  const r = await runEvmCandleLadder({ pools: [lpool(POOL), lpool(v3a), lpool(v3b)], contract: TOKEN, networkId: 'base', coingeckoNetworkId: 'base', currentPriceUsd: 3, maxOhlcvCalls: 2 }, ladderDeps(v4ok(30), calls))
+  const r = await runEvmCandleLadder({ pools: [lpool(POOL), lpool(v3a), lpool(v3b)], contract: TOKEN, networkId: 'base', coingeckoNetworkId: 'base', currentPriceUsd: 3, maxOhlcvCalls: 0 }, ladderDeps(v4ok(30), calls))
   assert.ok(!calls.some((c) => c.startsWith('V4')), 'no budget left => the V4 read is not even started')
   assert.equal(r.v4Swap?.code, 'call_budget_exhausted')
-  assert.ok(r.totalHttpCalls <= 2)
+  assert.equal(r.totalHttpCalls, 0)
   assert.ok(r.callBudget.stopReason)
 })
 

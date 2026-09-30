@@ -292,6 +292,8 @@ export type V4SwapCandleResult = {
   } | null
   logsFound: number
   tradesUsed: number
+  /** Swap counts through every stage (debug): raw logs -> exact-PoolId swaps -> timed -> USD-priced -> candles. */
+  pipeline: { logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number }
   candles: EvmChartPoint[]
   intervalSec: number
   timeResolution: V4TimeResolution | null
@@ -365,6 +367,7 @@ export async function loadV4SwapCandles(
   const r: V4SwapCandleResult = {
     ok: false, code: null, poolManager: cfg?.poolManager ?? null, chain: input.chain, protocol: null, managerSource: null, initializeFound: false, timestampMode: cfg?.timestampMode ?? null,
     poolId, tokenCurrencyIndex: null, counterAsset: null, quote: null, logsFound: 0, tradesUsed: 0,
+    pipeline: { logsReturned: 0, exactPoolSwaps: 0, timestampValidSwaps: 0, usdPricedSwaps: 0, candles: 0 },
     candles: [], intervalSec: V4_EXACT_INTERVAL_SEC, timeResolution: null, callsUsed: 0, rpcCalls: 0, providerCalls: 0, pagesFetched: 0,
     budgetStopReason: null, cache: { result: false, initialize: false, ethUsd: false },
   }
@@ -529,6 +532,7 @@ export async function loadV4SwapCandles(
     r.pagesFetched++
     const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
     if (page.error || !Array.isArray(page.result)) { r.budgetStopReason = 'rpc_error'; break }
+    r.pipeline.logsReturned += page.result.length
     const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
     if (decoded.length >= V4_SWAP_BUSY_PAGE_LOGS) busy = true
     for (const s of decoded) {
@@ -539,6 +543,7 @@ export async function loadV4SwapCandles(
   }
   if (!r.budgetStopReason && capped) r.budgetStopReason = 'log_cap'
   r.logsFound = swaps.length
+  r.pipeline.exactPoolSwaps = swaps.length
   if (swaps.length === 0) {
     if (r.budgetStopReason === 'rpc_error' || r.budgetStopReason === 'deadline') return done(gap('v4_swap_logs_unavailable'))
     if (r.budgetStopReason === 'call_budget') return gap('call_budget_exhausted')
@@ -558,6 +563,7 @@ export async function loadV4SwapCandles(
   let timed = swaps.map((s) => ({ ...s, timestampSec: exact ? s.logTimestamp! : inferTs(s.blockNumber) }))
   // Log cap hit: the oldest kept bucket may be missing earlier trades — drop it rather than show a partial candle.
   if (capped) timed = dropOldestBucket(timed, r.intervalSec)
+  r.pipeline.timestampValidSwaps = timed.filter((s) => Number.isFinite(s.timestampSec) && s.timestampSec > 0).length
 
   // 4. Counter-asset USD: $1 stablecoin, the shared cached ETH/USD series, or the independent quote
   // pool's own history. Each trade uses the closest real point within 15 minutes, or is dropped.
@@ -587,6 +593,8 @@ export async function loadV4SwapCandles(
   // 5. Real-trade OHLCV; at least 2 real buckets; identity checked against the live price.
   const built = buildV4SwapCandles({ swaps: timed, tokenIsCurrency0, decimals0, decimals1, counterUsdAt, intervalSec: r.intervalSec })
   r.tradesUsed = built.tradesUsed
+  r.pipeline.usdPricedSwaps = built.tradesUsed
+  r.pipeline.candles = built.candles.length
   r.quote = { ...r.quote!, maxGapMs: r.counterAsset === 'usd_stable' ? null : maxGapMs }
   if (built.tradesUsed === 0 && r.counterAsset !== 'usd_stable') { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_15m_of_any_trade', failureReason: 'quote_history_stale' }; return done(gap('quote_usd_price_unproven')) }
   if (built.candles.length < 2) return done(gap('v4_swap_history_empty'))

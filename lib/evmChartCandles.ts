@@ -445,6 +445,8 @@ export type LadderV4SwapResult = {
   managerSource?: string | null
   initializeFound?: boolean
   timestampMode?: string | null
+  /** Swap counts through every stage (lib/server/v4SwapCandlesRpc.ts pipeline). */
+  pipeline?: { logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number }
 }
 
 export type V4QuoteUsdInfo = {
@@ -536,9 +538,15 @@ export type LadderResult = {
   /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
   /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
-  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null } | null
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null; pipeline?: LadderV4SwapResult['pipeline'] | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
+  /** The market pool (pools[0]) and why its own chart lanes failed, when they did (debug). */
+  marketPool: { address: string; name: string | null } | null
+  primaryChartFailureReason: string | null
+  /** An alternate (non-market) pool is on screen, and why the market pool was not charted. */
+  alternatePoolUsed: boolean
+  alternateReason: string | null
   /** Alternate pools that returned evidence-valid candles, with their presentation quality (null when none ran). */
   alternateSelection: { candidates: Array<{ pool: string; quality: ChartQualityState | null; timeframe: string | null; candles: number }>; chosen: string | null } | null
   skippedDueToRateLimit: number
@@ -610,6 +618,7 @@ export async function runEvmCandleLadder(input: {
     rawTradeCount: 0, validTradePriceCount: 0, totalHttpCalls: 0, rateLimited: false, rateLimitedAt: null,
     coingeckoRateLimited: false, coingeckoAttempted: false, candleProvider: null, v4Swap: null, callBudget: { max: maxCalls, used: 0, remaining: maxCalls, stopReason: null },
     skippedDueToRateLimit: 0, failureReason: null, candleFailure: null, attempts: [], alternateSelection: null,
+    marketPool: input.pools[0] ? { address: input.pools[0].address, name: input.pools[0].name } : null, primaryChartFailureReason: null, alternatePoolUsed: false, alternateReason: null,
   }
   const finish = (): LadderResult => {
     r.callBudget.used = r.totalHttpCalls
@@ -738,9 +747,48 @@ export async function runEvmCandleLadder(input: {
     }
   }
 
+  // V4 SWAP-EVENT CANDLES: a bytes32 V4 pool that no proven provider can chart gets real candles from its
+  // own on-chain Swap events (RPC reads; bounded inside the loader and by the remaining call budget).
+  let v4Tried = false
+  const runV4 = async (v4Pool: LadderPool): Promise<boolean> => {
+    if (!deps.fetchV4SwapCandles) return false
+    v4Tried = true
+    const remaining = Math.max(0, maxCalls - r.totalHttpCalls)
+    const v4: LadderV4SwapResult = remaining > 0
+      ? await deps.fetchV4SwapCandles(v4Pool, remaining)
+      : { ok: false, code: 'call_budget_exhausted', poolManager: null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: 'call_budget' }
+    r.totalHttpCalls += v4.callsUsed
+    if (v4.code === 'call_budget_exhausted') budgetExhausted = true
+    if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null, pipeline: v4.pipeline ?? null }
+    const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
+    r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
+    if (v4.ok && v4.candles.length >= 2) {
+      r.priceChart = { timeframe: '24h', points: v4.candles.slice(-96), sourceStatus: 'ok' }
+      // A read that paged all the way to its 24h target proved that whole window (every log page read).
+      const v4Coverage = buildCoverageMeta({ requestEndSec: nowSec, intervalSec: v4.intervalSec, limit: null, points: v4.candles, poolCreatedSec: poolCreatedSec(v4Pool), windowSec: v4.budgetStopReason === 'target_window' ? 24 * 3600 : null, windowProven: v4.budgetStopReason === 'target_window' })
+      r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}), coverage: v4Coverage }
+      r.selectedPool = { address: v4Pool.address, name: v4Pool.name }
+      r.candleProvider = 'v4_swap_events'
+      r.failureReason = null
+      return true
+    }
+    r.failureReason = v4.code ?? r.failureReason
+    return false
+  }
+
   // Phase 1: primary pool, full ladder.
   if (input.pools.length === 0) r.failureReason = 'primary_pool_missing'
   else if (await tryPool(input.pools[0], EVM_CHART_LADDER, 'pool')) return finish()
+
+  // Phase 2 (ACTIVE MARKET POOL FIRST): when the market pool is a bytes32 V4 pool, its own Swap events
+  // are charted BEFORE any alternate pool. Previously this ran only after the alternates, so a heavily
+  // traded V4 market pool was replaced by whatever thin alternate pool a provider happened to index.
+  if (input.pools[0] && EVM_POOL_ID_RE.test(input.pools[0].address) && !r.rateLimited) {
+    if (await runV4(input.pools[0])) return finish()
+  }
+  // Record exactly why the market pool itself could not be charted before any alternate is considered.
+  if (input.pools[0]) r.primaryChartFailureReason = r.failureReason ?? 'primary_pool_chart_failed'
 
   // Phase 3: up to two alternate pools, 15m rung only. Every alternate must pass the same evidence
   // gates (proven side, meta agreement, live-price sanity) inside tryPool. CHART QUALITY, DISCLOSED:
@@ -766,39 +814,16 @@ export async function runEvmCandleLadder(input: {
       if (r.rateLimited) break
     }
     if (kept) {
-      Object.assign(r, { priceChart: kept.priceChart, chartCandles: kept.chartCandles, selectedPool: kept.selectedPool, candleProvider: kept.candleProvider, failureReason: null })
+      Object.assign(r, { priceChart: kept.priceChart, chartCandles: kept.chartCandles, selectedPool: kept.selectedPool, candleProvider: kept.candleProvider, failureReason: null, alternatePoolUsed: true, alternateReason: r.primaryChartFailureReason })
       r.alternateSelection = { candidates, chosen: kept.selectedPool?.address ?? null }
       return finish()
     }
     if (anyAlternateTried) r.attempts.push({ route: 'alternate_pool', poolAddress: null, side: null, timeframe: null, httpStatus: null, rows: 0, validRows: 0, code: 'alternate_pool_failed' })
   }
 
-  // Phase 4: a bytes32 V4 pool that no proven provider could chart — build real 5m candles from its
-  // own on-chain Swap events. RPC reads, not candle-provider calls; bounded inside the loader.
-  const v4Pool = input.pools.slice(0, 3).find((p) => EVM_POOL_ID_RE.test(p.address))
-  if (deps.fetchV4SwapCandles && v4Pool) {
-    const remaining = Math.max(0, maxCalls - r.totalHttpCalls)
-    const v4: LadderV4SwapResult = remaining > 0
-      ? await deps.fetchV4SwapCandles(v4Pool, remaining)
-      : { ok: false, code: 'call_budget_exhausted', poolManager: null, logsFound: 0, candles: [], intervalSec: 300, timeResolution: null, callsUsed: 0, pagesFetched: 0, budgetStopReason: 'call_budget' }
-    r.totalHttpCalls += v4.callsUsed
-    if (v4.code === 'call_budget_exhausted') budgetExhausted = true
-    if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
-    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null }
-    const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
-    r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
-    if (v4.ok && v4.candles.length >= 2) {
-      r.priceChart = { timeframe: '24h', points: v4.candles.slice(-96), sourceStatus: 'ok' }
-      // A read that paged all the way to its 24h target proved that whole window (every log page read).
-      const v4Coverage = buildCoverageMeta({ requestEndSec: nowSec, intervalSec: v4.intervalSec, limit: null, points: v4.candles, poolCreatedSec: poolCreatedSec(v4Pool), windowSec: v4.budgetStopReason === 'target_window' ? 24 * 3600 : null, windowProven: v4.budgetStopReason === 'target_window' })
-      r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}), coverage: v4Coverage }
-      r.selectedPool = { address: v4Pool.address, name: v4Pool.name }
-      r.candleProvider = 'v4_swap_events'
-      r.failureReason = null
-      return finish()
-    }
-    r.failureReason = v4.code ?? r.failureReason
-  }
+  // Phase 4 (only when the market pool was not a V4 pool): any other bytes32 V4 pool among the first three.
+  const laterV4 = input.pools.slice(1, 3).find((p) => EVM_POOL_ID_RE.test(p.address))
+  if (!v4Tried && laterV4 && await runV4(laterV4)) return finish()
 
   // Phase 5: swap-rebuilt candles from up to two pools (irregular bucket width). Same provider as
   // the OHLCV reads, so it is skipped entirely once that provider has returned 429, and each read
@@ -906,6 +931,8 @@ export type ChartDebugInfo = {
   v4Probe?: { pool: string; side: 'base' | 'quote' } | null
   /** Evidence-valid alternate pools and their presentation quality (LadderResult.alternateSelection). */
   alternateSelection?: LadderResult['alternateSelection']
+  /** Market pool vs chart pool, and the V4 swap pipeline counts (buildChartMarketDiagnostics). */
+  market?: ChartMarketDiagnostics
   /** Uniswap V4 pool model details (PoolId, PoolManager, on-chain swap read) — null for other pools. */
   v4: {
     poolModel: 'uniswap_v4'; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null
@@ -1052,5 +1079,56 @@ export function buildEvmChartDebugInfo(input: {
       initializeFound: input.v4Swap.initializeFound ?? null, timestampMode: input.v4Swap.timestampMode ?? null,
     } : null,
     callBudget: input.callBudget ? { callsUsed: input.callBudget.used, callsRemaining: input.callBudget.remaining, budgetStopReason: input.callBudget.stopReason } : null,
+  }
+}
+
+export type ChartMarketDiagnostics = {
+  marketPoolId: string | null
+  chartPoolId: string | null
+  samePool: boolean
+  marketTxns24h: number | null
+  swapLogsReturned: number | null
+  exactPoolSwaps: number | null
+  decodedSwaps: number | null
+  timestampValidSwaps: number | null
+  usdPricedSwaps: number | null
+  /** Swaps in the chart read vs market txns (not expected to be 1:1 — txns include non-swap activity and aggregator hops). */
+  chartSwapEvents24h: number | null
+  swapToTxnRatio: number | null
+  fiveMinuteBuckets: number
+  fifteenMinuteBuckets: number
+  primaryChartFailureReason: string | null
+  alternatePoolUsed: boolean
+  alternateReason: string | null
+  warnings: string[]
+}
+
+/**
+ * Debug-only: which pool Market Pulse describes vs which pool the chart used, and where a V4 swap stream
+ * shrank. A severe txns-vs-swaps gap or an alternate pool standing in for an active market pool is a
+ * WARNING (never a public claim). Pure.
+ */
+export function buildChartMarketDiagnostics(input: { marketPoolId: string | null; marketTxns24h: number | null; ladder: Pick<LadderResult, 'selectedPool' | 'chartCandles' | 'v4Swap' | 'primaryChartFailureReason' | 'alternatePoolUsed' | 'alternateReason'> }): ChartMarketDiagnostics {
+  const l = input.ladder
+  const chartPoolId = l.selectedPool?.address ?? null
+  const samePool = input.marketPoolId != null && chartPoolId != null && input.marketPoolId.toLowerCase() === chartPoolId.toLowerCase()
+  const p = l.v4Swap?.pipeline ?? null
+  const bucketCount = (sec: number) => {
+    const pts = l.chartCandles?.points ?? []
+    if ((l.chartCandles?.intervalSec ?? 0) > sec) return 0
+    return new Set(pts.map((q) => Math.floor(Date.parse(q.timestamp) / (sec * 1000)))).size
+  }
+  const swaps = p ? p.exactPoolSwaps : null
+  const ratio = swaps != null && input.marketTxns24h != null && input.marketTxns24h > 0 ? Math.round((swaps / input.marketTxns24h) * 1000) / 1000 : null
+  const warnings: string[] = []
+  if (!samePool && chartPoolId != null && input.marketPoolId != null) warnings.push('chart_pool_differs_from_market_pool')
+  if (l.alternatePoolUsed && (input.marketTxns24h ?? 0) >= 200) warnings.push('alternate_pool_charted_while_market_pool_active')
+  if (ratio != null && (input.marketTxns24h ?? 0) >= 200 && ratio < 0.1) warnings.push('chart_swaps_far_below_market_txns')
+  return {
+    marketPoolId: input.marketPoolId, chartPoolId, samePool, marketTxns24h: input.marketTxns24h,
+    swapLogsReturned: p?.logsReturned ?? null, exactPoolSwaps: swaps, decodedSwaps: swaps, timestampValidSwaps: p?.timestampValidSwaps ?? null, usdPricedSwaps: p?.usdPricedSwaps ?? null,
+    chartSwapEvents24h: swaps, swapToTxnRatio: ratio,
+    fiveMinuteBuckets: bucketCount(300), fifteenMinuteBuckets: bucketCount(900),
+    primaryChartFailureReason: l.primaryChartFailureReason, alternatePoolUsed: l.alternatePoolUsed, alternateReason: l.alternateReason, warnings,
   }
 }

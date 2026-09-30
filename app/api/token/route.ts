@@ -41,7 +41,7 @@ import { solanaOutcomeReceipt } from '@/lib/server/solanaOutcomeReceipt'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { rememberVerifiedChartPool } from '@/lib/server/chartCandlesOnDemand'
-import { EVM_POOL_ID_RE, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
+import { EVM_POOL_ID_RE, buildChartMarketDiagnostics, buildEvmChartDebugInfo, candleFailureMessage, resolveEvmPoolTokenSide, runEvmCandleLadder, type CandleAttempt, type CandleFailureSummary, type CandleProvider, type ChartDebugInfo, type ChartMarketDiagnostics, type EvmChartPoint, type LadderResult } from '@/lib/evmChartCandles'
 import { marketPoolMetrics, orderPoolsByLiquidity, orderPoolsForMarket, selectMarketPool } from '@/lib/marketPoolSelection'
 import { describeHolderProvider, isTimeoutError } from '@/lib/holderProviderDiagnostics'
 import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRecent, fetchCoingeckoNativeUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
@@ -6256,6 +6256,7 @@ export async function POST(req: Request) {
     let chartV4Swap: LadderResult['v4Swap'] = null
     let chartCallBudget: LadderResult['callBudget'] | null = null
     let chartAlternateSelection: LadderResult['alternateSelection'] = null
+    let chartMarketDiagnostics: ChartMarketDiagnostics | null = null
     let chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
     let poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
     let tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
@@ -6374,6 +6375,7 @@ export async function POST(req: Request) {
       chartV4Swap = _ladder.v4Swap
       chartCallBudget = _ladder.callBudget
       chartAlternateSelection = _ladder.alternateSelection
+      chartMarketDiagnostics = buildChartMarketDiagnostics({ marketPoolId: primaryAddr || null, marketTxns24h: transactions24h, ladder: _ladder })
       chartSelectedPoolForChart = _ladder.selectedPool
       chartUsedTokenLevelOhlcv = _ladder.usedTokenLevel
       chartUsedTradeReconstruction = _ladder.usedTradeReconstruction
@@ -6533,7 +6535,7 @@ export async function POST(req: Request) {
     const _v4Probe = process.env.VERCEL_ENV === 'preview' && _chartPrimaryPool && EVM_POOL_ID_RE.test(_chartPrimaryPool.address) && _chartPrimarySide
       ? { pool: _chartPrimaryPool.address.toLowerCase(), side: _chartPrimarySide }
       : null
-    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? { v4Probe: _v4Probe, alternateSelection: chartAlternateSelection, ...buildEvmChartDebugInfo({
+    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? { v4Probe: _v4Probe, alternateSelection: chartAlternateSelection, market: chartMarketDiagnostics ?? undefined, ...buildEvmChartDebugInfo({
       chain,
       network: _chartNetworkIdMap[chain] ?? null,
       coingeckoNetwork: _chartCoingeckoNetwork,
