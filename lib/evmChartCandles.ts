@@ -446,7 +446,10 @@ export type LadderV4SwapResult = {
   initializeFound?: boolean
   timestampMode?: string | null
   /** Swap counts through every stage (lib/server/v4SwapCandlesRpc.ts pipeline). */
-  pipeline?: { logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number }
+  pipeline?: { logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number; exactTimestampSwaps?: number; quoteUsdMatched?: number; quoteUsdStale?: number; quoteUsdMissing?: number; quoteUsdMaxNearestGapMs?: number | null }
+  /** Which PoolKey currency is the scanned token (0/1) and what the other asset is (debug). */
+  tokenCurrencyIndex?: 0 | 1 | null
+  counterAsset?: string | null
 }
 
 export type V4QuoteUsdInfo = {
@@ -538,7 +541,7 @@ export type LadderResult = {
   /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
   /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
-  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null; pipeline?: LadderV4SwapResult['pipeline'] | null } | null
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null; pipeline?: LadderV4SwapResult['pipeline'] | null; tokenCurrencyIndex?: 0 | 1 | null; counterAsset?: string | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
   /** The market pool (pools[0]) and why its own chart lanes failed, when they did (debug). */
@@ -760,7 +763,7 @@ export async function runEvmCandleLadder(input: {
     r.totalHttpCalls += v4.callsUsed
     if (v4.code === 'call_budget_exhausted') budgetExhausted = true
     if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
-    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null, pipeline: v4.pipeline ?? null }
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null, pipeline: v4.pipeline ?? null, tokenCurrencyIndex: v4.tokenCurrencyIndex ?? null, counterAsset: v4.counterAsset ?? null }
     const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
     if (v4.ok && v4.candles.length >= 2) {
@@ -1097,6 +1100,18 @@ export type ChartMarketDiagnostics = {
   swapToTxnRatio: number | null
   fiveMinuteBuckets: number
   fifteenMinuteBuckets: number
+  exactTimestampSwaps: number | null
+  quoteUsdMatched: number | null
+  quoteUsdStale: number | null
+  quoteUsdMissing: number | null
+  quoteUsdMaxNearestGapMs: number | null
+  /** V4: which PoolKey currency is the scanned token, the other asset and its registry classification. */
+  scannedTokenCurrencyIndex: 0 | 1 | null
+  counterToken: string | null
+  counterClassification: string | null
+  /** The V4 lane's own failure code (e.g. quote_usd_price_unproven / v4_timestamps_unproven) and the quote lane's exact reason. */
+  v4FailureCode: string | null
+  quoteFailureReason: string | null
   primaryChartFailureReason: string | null
   alternatePoolUsed: boolean
   alternateReason: string | null
@@ -1124,11 +1139,16 @@ export function buildChartMarketDiagnostics(input: { marketPoolId: string | null
   if (!samePool && chartPoolId != null && input.marketPoolId != null) warnings.push('chart_pool_differs_from_market_pool')
   if (l.alternatePoolUsed && (input.marketTxns24h ?? 0) >= 200) warnings.push('alternate_pool_charted_while_market_pool_active')
   if (ratio != null && (input.marketTxns24h ?? 0) >= 200 && ratio < 0.1) warnings.push('chart_swaps_far_below_market_txns')
+  if (p && (p.quoteUsdStale ?? 0) + (p.quoteUsdMissing ?? 0) > (p.quoteUsdMatched ?? 0)) warnings.push('most_swaps_lack_quote_usd_point')
+  if (p && p.exactPoolSwaps > 0 && (p.usdPricedSwaps ?? 0) === 0 && (input.marketTxns24h ?? 0) >= 200) warnings.push('active_market_but_no_usd_priced_swaps')
   return {
     marketPoolId: input.marketPoolId, chartPoolId, samePool, marketTxns24h: input.marketTxns24h,
     swapLogsReturned: p?.logsReturned ?? null, exactPoolSwaps: swaps, decodedSwaps: swaps, timestampValidSwaps: p?.timestampValidSwaps ?? null, usdPricedSwaps: p?.usdPricedSwaps ?? null,
     chartSwapEvents24h: swaps, swapToTxnRatio: ratio,
     fiveMinuteBuckets: bucketCount(300), fifteenMinuteBuckets: bucketCount(900),
+    exactTimestampSwaps: p?.exactTimestampSwaps ?? null, quoteUsdMatched: p?.quoteUsdMatched ?? null, quoteUsdStale: p?.quoteUsdStale ?? null, quoteUsdMissing: p?.quoteUsdMissing ?? null, quoteUsdMaxNearestGapMs: p?.quoteUsdMaxNearestGapMs ?? null,
+    scannedTokenCurrencyIndex: l.v4Swap?.tokenCurrencyIndex ?? null, counterToken: l.v4Swap?.quote?.asset ?? null, counterClassification: l.v4Swap?.quote?.classification ?? null,
+    v4FailureCode: l.v4Swap?.code ?? null, quoteFailureReason: l.v4Swap?.quote?.failureReason ?? null,
     primaryChartFailureReason: l.primaryChartFailureReason, alternatePoolUsed: l.alternatePoolUsed, alternateReason: l.alternateReason, warnings,
   }
 }

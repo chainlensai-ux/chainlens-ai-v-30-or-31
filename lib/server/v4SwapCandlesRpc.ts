@@ -293,7 +293,15 @@ export type V4SwapCandleResult = {
   logsFound: number
   tradesUsed: number
   /** Swap counts through every stage (debug): raw logs -> exact-PoolId swaps -> timed -> USD-priced -> candles. */
-  pipeline: { logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number }
+  pipeline: {
+    logsReturned: number; exactPoolSwaps: number; timestampValidSwaps: number; usdPricedSwaps: number; candles: number
+    /** Swaps whose log carried its own exact block timestamp. */
+    exactTimestampSwaps: number
+    /** Counter-asset USD lookup per swap: a real point within QUOTE_USD_MAX_GAP_MS / inside the series but too far from any point / outside the series entirely. */
+    quoteUsdMatched: number; quoteUsdStale: number; quoteUsdMissing: number
+    /** Largest nearest-point distance seen (ms), matched or not. */
+    quoteUsdMaxNearestGapMs: number | null
+  }
   candles: EvmChartPoint[]
   intervalSec: number
   timeResolution: V4TimeResolution | null
@@ -367,7 +375,7 @@ export async function loadV4SwapCandles(
   const r: V4SwapCandleResult = {
     ok: false, code: null, poolManager: cfg?.poolManager ?? null, chain: input.chain, protocol: null, managerSource: null, initializeFound: false, timestampMode: cfg?.timestampMode ?? null,
     poolId, tokenCurrencyIndex: null, counterAsset: null, quote: null, logsFound: 0, tradesUsed: 0,
-    pipeline: { logsReturned: 0, exactPoolSwaps: 0, timestampValidSwaps: 0, usdPricedSwaps: 0, candles: 0 },
+    pipeline: { logsReturned: 0, exactPoolSwaps: 0, timestampValidSwaps: 0, usdPricedSwaps: 0, candles: 0, exactTimestampSwaps: 0, quoteUsdMatched: 0, quoteUsdStale: 0, quoteUsdMissing: 0, quoteUsdMaxNearestGapMs: null },
     candles: [], intervalSec: V4_EXACT_INTERVAL_SEC, timeResolution: null, callsUsed: 0, rpcCalls: 0, providerCalls: 0, pagesFetched: 0,
     budgetStopReason: null, cache: { result: false, initialize: false, ethUsd: false },
   }
@@ -459,12 +467,76 @@ export async function loadV4SwapCandles(
     }
   }
 
+  // 3. Swap logs for exactly this PoolId, newest page first, never before creation, back to 24h.
+  const swaps: Array<V4Swap & { logTimestamp: number | null }> = []
+  // Window + page plan: Base keeps its fixed 4h/8h/12h block pages; header-anchored chains split the
+  // real ~24h block span (measured between two real headers) into the same 1/6, 1/3, 1/2 time shares.
+  let targetBlock: number
+  let pagePlan: ReadonlyArray<number>
+  if (!anchor) {
+    targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / cfg.blockTimeSec) + 1
+    pagePlan = V4_SWAP_PAGE_PLAN
+  } else {
+    const spanBlocks = latestBlock - anchor.block
+    const spanSec = latestTs - anchor.ts
+    // Chain slower than the planning estimate: keep only the newest ~24h of blocks (measured rate).
+    targetBlock = spanBlocks > 0 && spanSec > V4_SWAP_TARGET_WINDOW_SEC
+      ? latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / (spanSec / spanBlocks)) + 1
+      : anchor.block
+    const total = latestBlock - targetBlock + 1
+    const p1 = Math.max(1, Math.ceil(total / 6))
+    const p2 = Math.max(1, Math.ceil(total / 3))
+    pagePlan = [p1, p2, Math.max(1, total - p1 - p2)]
+  }
+  const busyPageBlocks = pagePlan[0]
+  let toBlock = latestBlock
+  let busy = false
+  let capped = false
+  // Newest-first page reader (bounded by V4_SWAP_MAX_PAGES, the log cap, the budget and the deadline).
+  const readPages = async (maxPages: number) => {
+    while (toBlock >= key.initBlock) {
+      if (toBlock < targetBlock) { r.budgetStopReason = 'target_window'; break }
+      if (capped) { r.budgetStopReason = 'log_cap'; break }
+      if (r.pagesFetched >= Math.min(maxPages, V4_SWAP_MAX_PAGES)) { r.budgetStopReason = 'page_cap'; break }
+      // Keep one call in hand for the native/USD series (it may not be cached yet).
+      if (isNative && r.callsUsed >= cap - 1) { r.budgetStopReason = 'call_budget'; break }
+      if (!canCall()) break
+      const size = busy ? busyPageBlocks : pagePlan[r.pagesFetched] ?? busyPageBlocks
+      const fromBlock = Math.max(key.initBlock, targetBlock, toBlock - size + 1)
+      r.pagesFetched++
+      const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
+      if (page.error || !Array.isArray(page.result)) { r.budgetStopReason = 'rpc_error'; break }
+      r.pipeline.logsReturned += page.result.length
+      const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
+      if (decoded.length >= V4_SWAP_BUSY_PAGE_LOGS) busy = true
+      for (const s of decoded) {
+        if (swaps.length >= V4_SWAP_MAX_LOGS) { capped = true; break }
+        swaps.push({ ...s, logTimestamp: s.blockTimestamp })
+      }
+      toBlock = fromBlock - 1
+    }
+    if (!r.budgetStopReason && capped) r.budgetStopReason = 'log_cap'
+  }
+  // A quote-USD failure must not mask what the pool's own swaps show: read ONE newest swap page (bounded,
+  // only on this failure path) so debug reports real swap / timestamp counts, and a chain whose logs carry
+  // no exact timestamps reports that (the blocker that would remain even with a proven quote).
+  const finishQuoteFailure = async (): Promise<V4SwapCandleResult> => {
+    if (swaps.length === 0 && canCall()) await readPages(1)
+    r.logsFound = swaps.length
+    r.pipeline.exactPoolSwaps = swaps.length
+    const exactCount = swaps.filter((x) => x.logTimestamp != null).length
+    r.pipeline.exactTimestampSwaps = exactCount
+    r.pipeline.timestampValidSwaps = cfg.timestampMode === 'log_timestamp_only' ? exactCount : swaps.length
+    if (swaps.length > 0 && exactCount < swaps.length && cfg.timestampMode === 'log_timestamp_only') return done(gap('v4_timestamps_unproven'))
+    return done(gap('quote_usd_price_unproven'))
+  }
+
   // 2b. Any other quote token: resolve its independent USD history FIRST (fail fast, before paging),
   // always leaving at least one call for a swap-log page.
   let quotePoints: Array<[number, number]> | null = null
   let counterDecimals = (counterEthDec ?? counterUsdDec) ?? null
   if (r.counterAsset === 'other') {
-    const unproven = (reason: string, failureReason: QuoteUsdFailureReason) => { r.quote = { ...r.quote!, evidence: 'unavailable', reason, failureReason }; return done(gap('quote_usd_price_unproven')) }
+    const unproven = (reason: string, failureReason: QuoteUsdFailureReason) => { r.quote = { ...r.quote!, evidence: 'unavailable', reason, failureReason }; return finishQuoteFailure() }
     if (!deps.quoteUsd) return unproven('no_independent_quote_source', 'quote_usd_price_unproven')
     const q = await deps.quoteUsd({
       quoteToken: counter,
@@ -491,57 +563,12 @@ export async function loadV4SwapCandles(
     counterDecimals = qDec
     quotePoints = q.points
   }
-  if (counterDecimals == null) { r.quote = { ...r.quote!, failureReason: 'quote_asset_unverified' }; return done(gap('quote_usd_price_unproven')) }
+  if (counterDecimals == null) { r.quote = { ...r.quote!, failureReason: 'quote_asset_unverified' }; return finishQuoteFailure() }
   const decimals0 = tokenIsCurrency0 ? input.tokenDecimals : counterDecimals
   const decimals1 = tokenIsCurrency0 ? counterDecimals : input.tokenDecimals
 
-  // 3. Swap logs for exactly this PoolId, newest page first, never before creation, back to 24h.
-  const swaps: Array<V4Swap & { logTimestamp: number | null }> = []
-  // Window + page plan: Base keeps its fixed 4h/8h/12h block pages; header-anchored chains split the
-  // real ~24h block span (measured between two real headers) into the same 1/6, 1/3, 1/2 time shares.
-  let targetBlock: number
-  let pagePlan: ReadonlyArray<number>
-  if (!anchor) {
-    targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / cfg.blockTimeSec) + 1
-    pagePlan = V4_SWAP_PAGE_PLAN
-  } else {
-    const spanBlocks = latestBlock - anchor.block
-    const spanSec = latestTs - anchor.ts
-    // Chain slower than the planning estimate: keep only the newest ~24h of blocks (measured rate).
-    targetBlock = spanBlocks > 0 && spanSec > V4_SWAP_TARGET_WINDOW_SEC
-      ? latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / (spanSec / spanBlocks)) + 1
-      : anchor.block
-    const total = latestBlock - targetBlock + 1
-    const p1 = Math.max(1, Math.ceil(total / 6))
-    const p2 = Math.max(1, Math.ceil(total / 3))
-    pagePlan = [p1, p2, Math.max(1, total - p1 - p2)]
-  }
-  const busyPageBlocks = pagePlan[0]
-  let toBlock = latestBlock
-  let busy = false
-  let capped = false
-  while (toBlock >= key.initBlock) {
-    if (toBlock < targetBlock) { r.budgetStopReason = 'target_window'; break }
-    if (capped) { r.budgetStopReason = 'log_cap'; break }
-    if (r.pagesFetched >= V4_SWAP_MAX_PAGES) { r.budgetStopReason = 'page_cap'; break }
-    // Keep one call in hand for the native/USD series (it may not be cached yet).
-    if (isNative && r.callsUsed >= cap - 1) { r.budgetStopReason = 'call_budget'; break }
-    if (!canCall()) break
-    const size = busy ? busyPageBlocks : pagePlan[r.pagesFetched] ?? busyPageBlocks
-    const fromBlock = Math.max(key.initBlock, targetBlock, toBlock - size + 1)
-    r.pagesFetched++
-    const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
-    if (page.error || !Array.isArray(page.result)) { r.budgetStopReason = 'rpc_error'; break }
-    r.pipeline.logsReturned += page.result.length
-    const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
-    if (decoded.length >= V4_SWAP_BUSY_PAGE_LOGS) busy = true
-    for (const s of decoded) {
-      if (swaps.length >= V4_SWAP_MAX_LOGS) { capped = true; break }
-      swaps.push({ ...s, logTimestamp: s.blockTimestamp })
-    }
-    toBlock = fromBlock - 1
-  }
-  if (!r.budgetStopReason && capped) r.budgetStopReason = 'log_cap'
+  await readPages(V4_SWAP_MAX_PAGES)
+
   r.logsFound = swaps.length
   r.pipeline.exactPoolSwaps = swaps.length
   if (swaps.length === 0) {
@@ -554,6 +581,7 @@ export async function loadV4SwapCandles(
   // fixed 2s blocks; header-anchored chains interpolate between two REAL headers; a chain whose block
   // timing is not proven (log_timestamp_only) stops here. Any non-exact series is bucketed at 15m.
   const exact = swaps.every((s) => s.logTimestamp != null)
+  r.pipeline.exactTimestampSwaps = swaps.filter((s) => s.logTimestamp != null).length
   if (!exact && cfg.timestampMode === 'log_timestamp_only') return done(gap('v4_timestamps_unproven'))
   r.timeResolution = exact ? 'exact_log_timestamps' : anchor ? 'block_timestamp_lookup' : 'inferred_block_time'
   r.intervalSec = exact ? V4_EXACT_INTERVAL_SEC : V4_INFERRED_INTERVAL_SEC
@@ -569,12 +597,22 @@ export async function loadV4SwapCandles(
   // pool's own history. Each trade uses the closest real point within 15 minutes, or is dropped.
   let maxGapMs = 0
   const fromSeries = (series: ReadonlyArray<readonly [number, number]>) => (tsMs: number) => {
+    // Per-swap evidence accounting: missing = the series does not cover this time at all; stale = covered,
+    // but no real point within QUOTE_USD_MAX_GAP_MS. Neither is ever filled with another price.
+    const nearest = nearestPriceWithGap(series, tsMs, Number.POSITIVE_INFINITY)
+    if (nearest) r.pipeline.quoteUsdMaxNearestGapMs = Math.max(r.pipeline.quoteUsdMaxNearestGapMs ?? 0, nearest.gapMs)
     const hit = nearestPriceWithGap(series, tsMs, QUOTE_USD_MAX_GAP_MS)
-    if (!hit) return null
+    if (!hit) {
+      const outside = series.length === 0 || tsMs < series[0][0] - QUOTE_USD_MAX_GAP_MS || tsMs > series[series.length - 1][0] + QUOTE_USD_MAX_GAP_MS
+      if (outside) r.pipeline.quoteUsdMissing++
+      else r.pipeline.quoteUsdStale++
+      return null
+    }
+    r.pipeline.quoteUsdMatched++
     maxGapMs = Math.max(maxGapMs, hit.gapMs)
     return hit.price
   }
-  let counterUsdAt: (tsMs: number) => number | null = () => 1
+  let counterUsdAt: (tsMs: number) => number | null = () => { r.pipeline.quoteUsdMatched++; return 1 } // verified $1 stable
   if (isNative) {
     if (now() >= deadline) { r.budgetStopReason = 'deadline'; r.quote = { ...r.quote!, failureReason: 'quote_usd_price_unproven' }; return done(gap('quote_usd_price_unproven')) }
     const seriesFn = cfg.native.coinId === 'ethereum' ? deps.ethUsdSeries : deps.nativeUsdSeries ? (t: number) => deps.nativeUsdSeries!(cfg.native.coinId, t) : null

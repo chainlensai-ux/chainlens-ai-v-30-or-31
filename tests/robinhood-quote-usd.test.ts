@@ -383,3 +383,116 @@ test('wiring: Robinhood quote history goes to GeckoTerminal (labelled); debug pa
   }
   assert.match(page, /rejected: \$\{c\.rejected\}/)
 })
+
+// ── Live quote_usd_price_unproven diagnosis (active Robinhood V4 market, ~25.8K txns / 24h) ──────────
+// The quote lane ran before any swap page, so a quote failure hid every downstream fact (swap counts,
+// exact timestamps). Now: one bounded diagnostic page after a quote failure, per-swap quote-USD
+// accounting (matched / stale / missing), finer candidate rejections, and the $25K-floor-only flag.
+const QT_POOL_A = '0x' + '71'.repeat(20)
+const QT_POOL_B = '0x' + '72'.repeat(20)
+const QT_POOL_C = '0x' + '73'.repeat(20)
+const sel = (json: unknown) => selectIndependentQuotePool(json, { quoteToken: QT, scannedToken: TOKEN, excludePool: POOL, ...quoteLaneSelection('robinhood') })
+
+test('RH-4/5. quote token as BASE and as QUOTE side are both resolved exactly', () => {
+  const asBase = sel(discovery(QT, 'QT', [{ address: QT_POOL_A, other: RH_WETH, reserve: 90_000 }]))
+  assert.deepEqual([asBase.choice?.pool, asBase.choice?.side, asBase.choice?.pairedWith], [QT_POOL_A, 'base', RH_WETH])
+  const asQuote = sel(discovery(QT, 'QT', [{ address: QT_POOL_B, other: RH_WETH, reserve: 90_000, quoteIsBase: false }]))
+  assert.deepEqual([asQuote.choice?.pool, asQuote.choice?.side], [QT_POOL_B, 'quote'])
+})
+
+test('RH-6/7/9/10/11. rejection reasons are exact: malformed id, underscore slug parsed, unrelated pool, missing reserve, <$25K (floor-only flagged)', () => {
+  assert.equal(providerIdAddress(`robinhood_testnet_${QT_POOL_A}`), QT_POOL_A, 'network slug with underscores')
+  const json = discovery(QT, 'QT', [
+    { address: QT_POOL_A, other: RH_WETH, reserve: 90_000, id: 'robinhood_0xnotanaddress' },
+    { address: QT_POOL_B, other: RH_WETH, reserve: null },
+    { address: QT_POOL_C, other: RH_WETH, reserve: 12_000 },
+  ])
+  // An unrelated pool (neither side is QT) and one with no token ids.
+  json.data.push({ ...json.data[1], id: `robinhood_${QT_THIRD_POOL}`, attributes: { address: QT_THIRD_POOL, reserve_in_usd: '500000' }, relationships: { ...json.data[1].relationships, base_token: { data: { id: `robinhood_${THIRD}`, type: 'token' } }, quote_token: { data: { id: `robinhood_${RH_WETH}`, type: 'token' } } } })
+  json.data.push({ ...json.data[1], id: `robinhood_${QT_WETH_THIN}`, attributes: { address: QT_WETH_THIN, reserve_in_usd: '500000' }, relationships: { dex: json.data[1].relationships.dex } as never })
+  const r = sel(json)
+  assert.deepEqual(r.debug?.candidates.map((c) => c.rejected), ['pool_id_invalid', 'liquidity_missing', 'thin_liquidity', 'quote_token_not_in_pool', 'missing_token_ids'])
+  assert.deepEqual([r.choice, r.failure, r.debug?.bestAnchoredLiquidityUsd, r.debug?.rejectedOnlyByLiquidityFloor], [null, 'quote_pool_liquidity_too_low', 12_000, false], 'a missing-reserve anchored pool means the floor was not the only reason')
+  const floorOnly = sel(discovery(QT, 'QT', [{ address: QT_POOL_C, other: RH_WETH, reserve: 18_500 }]))
+  assert.deepEqual([floorOnly.failure, floorOnly.debug?.bestAnchoredLiquidityUsd, floorOnly.debug?.rejectedOnlyByLiquidityFloor], ['quote_pool_liquidity_too_low', 18_500, true])
+  assert.equal(QUOTE_POOL_MIN_LIQUIDITY_USD, 25_000, 'the evidence floor is unchanged')
+})
+
+test('RH-8. circular quote pool (contains the scanned token) rejected', () => {
+  const r = sel(discovery(QT, 'QT', [{ address: QT_POOL_A, other: TOKEN, reserve: 900_000 }]))
+  assert.deepEqual([r.choice, r.debug?.candidates[0].rejected], [null, 'circular'])
+})
+
+test('RH-17. quote failure no longer masks missing exact timestamps: v4_timestamps_unproven after ONE diagnostic page', async () => {
+  reset()
+  const f = fakeRpc(QT)
+  const bare: V4SwapDeps["rpc"] = async (m, p, t) => {
+    const res = await f.rpc(m, p, t)
+    return Array.isArray(res.result) ? { ...res, result: (res.result as RawEvmLog[]).map((l) => (l.topics?.[0] === V4_INITIALIZE_TOPIC0 ? l : { ...l, blockTimestamp: undefined })) } : res
+  }
+  const q = quoteDeps(discovery(QT, 'QT', []))
+  const r = await loadV4SwapCandles(input(0.002), { rpc: bare, now: () => NOW_TS * 1000, ethUsdSeries: ethSeries(3000), quoteUsd: (i) => resolveIndependentQuoteUsd({ chain: 'robinhood', ...i }, q.deps) })
+  assert.equal(r.code, 'v4_timestamps_unproven', 'the blocker that would remain even with a proven quote')
+  assert.ok(r.pipeline.exactPoolSwaps > 0)
+  assert.equal(r.pipeline.exactTimestampSwaps, 0)
+  assert.equal(f.calls.filter((c) => c.method === 'eth_getLogs').length, 2, 'Initialize + exactly one diagnostic swap page')
+})
+
+test('RH-18/19. no candidate -> quote_pool_not_found; candidate but no history -> quote_history_unavailable (swap counts still reported)', async () => {
+  reset()
+  const f1 = fakeRpc(QT)
+  const none = await loadV4SwapCandles(input(0.002), deps(f1, quoteDeps(discovery(QT, 'QT', []))))
+  assert.deepEqual([none.code, none.quote?.failureReason], ['quote_usd_price_unproven', 'quote_pool_not_found'])
+  assert.ok(none.pipeline.exactPoolSwaps > 0 && none.pipeline.exactTimestampSwaps === none.pipeline.exactPoolSwaps)
+  reset()
+  const q = quoteDeps(discovery(QT, 'QT', [{ address: QT_POOL_A, other: RH_WETH, reserve: 90_000 }]))
+  q.deps.fetchPoolUsdOhlcv = async () => ({ json: null, httpStatus: 404, provider: 'geckoterminal' })
+  const noHist = await loadV4SwapCandles(input(0.002), deps(fakeRpc(QT), q))
+  assert.deepEqual([noHist.code, noHist.quote?.failureReason], ['quote_usd_price_unproven', 'quote_history_unavailable'])
+})
+
+test('RH-13/15. fresh GeckoTerminal Q/WETH history -> Q/USD -> every swap matched -> candles', async () => {
+  reset()
+  const r = await loadV4SwapCandles(input(0.002), deps(fakeRpc(QT), quoteDeps(discovery(QT, 'QT', [{ address: QT_POOL_A, other: RH_WETH, reserve: 90_000 }]), 2)))
+  assert.equal(r.ok, true, String(r.code))
+  assert.equal(r.pipeline.quoteUsdMatched, r.pipeline.exactPoolSwaps)
+  assert.deepEqual([r.pipeline.quoteUsdStale, r.pipeline.quoteUsdMissing], [0, 0])
+  assert.ok(Math.abs(r.candles[r.candles.length - 1].close - 0.002) < 1e-9, 'TOKEN/USD = (1/1000 Q) x $2')
+})
+
+test('RH-14. sparse / out-of-range quote history: swaps counted stale or missing, never priced from another time', async () => {
+  reset()
+  const q = quoteDeps(discovery(QT, 'QT', [{ address: QT_POOL_A, other: RH_WETH, reserve: 90_000 }]))
+  // Only two real Q/USD points, 24h apart: nothing within 15 minutes of the swaps in between.
+  q.deps.fetchPoolUsdOhlcv = async () => ({ json: { data: { attributes: { ohlcv_list: [[NOW_TS - 300, 2, 2, 2, 2, 1], [NOW_TS - 86_400, 2, 2, 2, 2, 1]] } } }, httpStatus: 200, provider: 'geckoterminal' })
+  const r = await loadV4SwapCandles(input(0.002), deps(fakeRpc(QT), q))
+  assert.ok(r.pipeline.quoteUsdStale > r.pipeline.quoteUsdMatched, `${r.pipeline.quoteUsdStale} stale vs ${r.pipeline.quoteUsdMatched} matched`)
+  assert.equal(r.pipeline.usdPricedSwaps, r.pipeline.quoteUsdMatched, 'only matched swaps are priced')
+  assert.ok((r.pipeline.quoteUsdMaxNearestGapMs ?? 0) > 15 * 60_000)
+})
+
+test('RH-1/2/16/20/21. active TOKEN/WETH (either side) -> ETH/USD -> dense exact 5M -> 15M; bounded calls', async () => {
+  for (const [c0, c1] of [[RH_WETH, TOKEN], [TOKEN, RH_WETH]] as const) {
+    reset()
+    const f = fakeRpc(c0)
+    const dense: V4SwapDeps["rpc"] = async (m, p, t) => {
+      if (m !== "eth_getLogs") return f.rpc(m, p, t)
+      const flt = p[0] as { topics: string[]; fromBlock: string; toBlock: string }
+      if (flt.topics[0] === V4_INITIALIZE_TOPIC0) return { result: [initLog(c0, c1)], error: false }
+      const from = Number(BigInt(flt.fromBlock)), to = Number(BigInt(flt.toBlock))
+      const out: RawEvmLog[] = []
+      for (let b = Math.ceil(from / 120) * 120; b <= to; b += 120) out.push(swapLog(b)) // one swap / 30s
+      return { result: out, error: false }
+    }
+    const livePrice = c0 === RH_WETH ? 3 : 3_000_000
+    const r = await loadV4SwapCandles(input(livePrice), { rpc: dense, now: () => NOW_TS * 1000, ethUsdSeries: ethSeries(3000) })
+    assert.equal(r.ok, true, `${c0 === RH_WETH ? 'WETH/TOKEN' : 'TOKEN/WETH'}: ${r.code}`)
+    assert.equal(r.timeResolution, 'exact_log_timestamps')
+    assert.equal(r.intervalSec, 300)
+    assert.equal(r.quote?.source, 'eth_usd_series')
+    assert.ok(r.candles.length >= 200, `${r.candles.length} x 5M`)
+    const fifteen = new Set(r.candles.map((k) => Math.floor(Date.parse(k.timestamp) / 900_000))).size
+    assert.ok(fifteen >= 70, `${fifteen} x 15M`)
+    assert.ok(r.callsUsed <= 7, `${r.callsUsed} calls`)
+  }
+})

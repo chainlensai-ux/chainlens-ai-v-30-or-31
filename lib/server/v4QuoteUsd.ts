@@ -28,10 +28,24 @@ const CACHE_MAX = 500
 export type QuotePoolChoice = { pool: string; side: 'base' | 'quote'; pairedWith: string; quoteSymbol: string | null; quoteDecimals: number | null; liquidityUsd: number; dex?: string | null }
 
 /** Why one returned pool was not used as the independent quote pool. */
-export type QuotePoolRejection = 'pool_id_invalid' | 'side_unresolved' | 'excluded_source_pool' | 'circular' | 'wrong_anchor' | 'thin_liquidity'
+export type QuotePoolRejection =
+  | 'pool_id_invalid' // malformed / non-40-byte pool id, or id and address disagree
+  | 'missing_token_ids' // the pool record carries no base/quote token ids
+  | 'quote_token_not_in_pool' // neither side is the quote token
+  | 'side_unresolved'
+  | 'excluded_source_pool'
+  | 'circular' // the other side is the scanned token
+  | 'wrong_anchor' // paired with something other than the verified wrapped native / stables
+  | 'liquidity_missing' // anchored, but the provider reported no reserve
+  | 'thin_liquidity' // anchored, reserve below QUOTE_POOL_MIN_LIQUIDITY_USD
 export type QuotePoolCandidate = { pool: string | null; dex: string | null; side: 'base' | 'quote' | null; pairedWith: string | null; liquidityUsd: number | null; rejected: QuotePoolRejection | null }
 /** Debug view of one discovery read. */
-export type QuoteDiscoveryDebug = { httpStatus: number | null; poolsReturned: number; anchoredFound: number; anchoredRejected: number; candidates: QuotePoolCandidate[]; selectedLiquidityUsd: number | null }
+export type QuoteDiscoveryDebug = {
+  httpStatus: number | null; poolsReturned: number; anchoredFound: number; anchoredRejected: number; candidates: QuotePoolCandidate[]; selectedLiquidityUsd: number | null
+  /** Best liquidity among anchored candidates, and whether the $25K floor was the ONLY reason none was used (product review; the floor is unchanged). */
+  bestAnchoredLiquidityUsd?: number | null
+  rejectedOnlyByLiquidityFloor?: boolean
+}
 /** Debug view of one quote-history read. */
 export type QuoteHistoryDebug = { provider: string | null; httpStatus: number | null; rows: number; validRows: number; oldestSec: number | null; latestSec: number | null }
 
@@ -160,6 +174,7 @@ export function selectIndependentQuotePool(json: unknown, input: QuoteSelectionI
   let sawAny = false
   let anchoredFound = 0
   let anchoredRejected = 0
+  let bestAnchored: number | null = null
   for (const p of data as Array<Record<string, unknown>>) {
     const attrs = (p.attributes ?? {}) as Record<string, unknown>
     const rel = (p.relationships ?? {}) as Record<string, { data?: { id?: unknown } }>
@@ -175,8 +190,9 @@ export function selectIndependentQuotePool(json: unknown, input: QuoteSelectionI
     if (rawAddress === exclude) { cand.rejected = 'excluded_source_pool'; continue }
     const baseAddr = providerIdAddress(rel.base_token?.data?.id)
     const quoteAddr = providerIdAddress(rel.quote_token?.data?.id)
-    const side: 'base' | 'quote' | null = baseAddr && baseAddr === quote ? 'base' : quoteAddr && quoteAddr === quote ? 'quote' : null
-    if (!side || !baseAddr || !quoteAddr) { cand.rejected = 'side_unresolved'; continue }
+    if (!baseAddr || !quoteAddr) { cand.rejected = 'missing_token_ids'; continue }
+    const side: 'base' | 'quote' | null = baseAddr === quote ? 'base' : quoteAddr === quote ? 'quote' : null
+    if (!side) { cand.rejected = 'quote_token_not_in_pool'; continue }
     sawAny = true
     const other = side === 'base' ? quoteAddr : baseAddr
     cand.side = side
@@ -184,12 +200,18 @@ export function selectIndependentQuotePool(json: unknown, input: QuoteSelectionI
     if (other === scanned) { cand.rejected = 'circular'; continue }
     if (!input.anchors.has(other)) { cand.rejected = 'wrong_anchor'; continue }
     anchoredFound++
-    if (liq == null || liq < QUOTE_POOL_MIN_LIQUIDITY_USD) { cand.rejected = 'thin_liquidity'; anchoredRejected++; continue }
+    if (liq != null) bestAnchored = Math.max(bestAnchored ?? 0, liq)
+    if (liq == null) { cand.rejected = 'liquidity_missing'; anchoredRejected++; continue }
+    if (liq < QUOTE_POOL_MIN_LIQUIDITY_USD) { cand.rejected = 'thin_liquidity'; anchoredRejected++; continue }
     const c: QuotePoolChoice = { pool: rawAddress, side, pairedWith: other, quoteSymbol: seen.symbol, quoteDecimals: seen.decimals, liquidityUsd: liq, ...(dex ? { dex } : {}) }
     if (!best || rank(c) > rank(best) || (rank(c) === rank(best) && liq > best.liquidityUsd)) best = c
   }
   const failure: QuoteSelectionFailure | null = best ? null : anchoredFound > 0 ? 'quote_pool_liquidity_too_low' : 'quote_pool_not_found'
-  const debug: QuoteDiscoveryDebug = { httpStatus: null, poolsReturned: data.length, anchoredFound, anchoredRejected, candidates: candidates.slice(0, 20), selectedLiquidityUsd: best?.liquidityUsd ?? null }
+  const debug: QuoteDiscoveryDebug = {
+    httpStatus: null, poolsReturned: data.length, anchoredFound, anchoredRejected, candidates: candidates.slice(0, 20), selectedLiquidityUsd: best?.liquidityUsd ?? null,
+    bestAnchoredLiquidityUsd: bestAnchored,
+    rejectedOnlyByLiquidityFloor: !best && anchoredFound > 0 && candidates.every((c) => c.rejected !== 'liquidity_missing') && candidates.some((c) => c.rejected === 'thin_liquidity'),
+  }
   return { choice: best, detail: best ? null : sawAny ? 'no_independent_quote_pool_with_eth_or_stable_liquidity' : 'no_quote_token_pool_found', failure, seen, debug }
 }
 

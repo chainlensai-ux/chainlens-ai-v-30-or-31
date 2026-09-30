@@ -190,7 +190,7 @@ test('stale quote point: a trade with no BNKR/USD point within 15 minutes is dro
   assert.equal(r2.quote?.reason, 'no_quote_usd_point_within_15m_of_any_trade')
 })
 
-test('unavailable quote evidence stays honest: quote_usd_price_unproven with the reason, zero page calls spent', async () => {
+test('unavailable quote evidence stays honest: quote_usd_price_unproven with the reason; ONE diagnostic swap page so the failure never masks swap / timestamp evidence', async () => {
   reset()
   const d = discoveryJson()
   d.data = d.data.filter((p) => p.attributes.address !== BNKR_WETH_POOL)
@@ -198,7 +198,9 @@ test('unavailable quote evidence stays honest: quote_usd_price_unproven with the
   const r = await loadV4SwapCandles(input, c.deps)
   assert.equal(r.code, 'quote_usd_price_unproven')
   assert.deepEqual([r.quote?.evidence, r.quote?.reason], ['unavailable', 'no_independent_quote_pool_with_eth_or_stable_liquidity'])
-  assert.ok(!c.rpcCalls.slice(2).includes('eth_getLogs'), 'failed fast before any swap-log page')
+  assert.equal(c.rpcCalls.slice(2).filter((m) => m === 'eth_getLogs').length, 1, 'exactly one bounded diagnostic swap page after the quote failure')
+  assert.ok(r.pipeline.exactPoolSwaps > 0 && r.pipeline.logsReturned >= r.pipeline.exactPoolSwaps, 'real swap counts reach debug despite the quote failure')
+  assert.equal(r.pipeline.usdPricedSwaps, 0, 'nothing is priced without a proven quote')
 })
 
 // ── Budget and cache ─────────────────────────────────────────────────────────────────────────────
