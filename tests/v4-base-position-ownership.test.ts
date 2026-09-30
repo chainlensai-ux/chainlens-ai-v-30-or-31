@@ -236,7 +236,7 @@ test('16/17. cache reuse (0 calls) and hard caps: <= 25 candidates, <= 75 reads,
   // cold = blockNumber + Initialize + 1 page + ONE Multicall3 (25 x info + liquidity + ownerOf inside)
   assert.equal(cold.calls, 4)
   assert.equal(f.calls.length, 4)
-  assert.deepEqual(cold.requests, { network: 4, logRequests: 3, logPages: 1, multicallBatches: 1, multicallSubcalls: V4_INDEX_MAX_POSITION_READS, fallbackCalls: 0, rpcLogicalReads: 3 + V4_INDEX_MAX_POSITION_READS })
+  assert.deepEqual(cold.requests, { network: 4, logRequests: 3, logPages: 1, multicallBatches: 1, multicallSubcalls: V4_INDEX_MAX_POSITION_READS, fallbackCalls: 0, rpcLogicalReads: 3 + V4_INDEX_MAX_POSITION_READS, controllerRequests: 0 })
   const warm = await run(f)
   assert.deepEqual([warm.calls, warm.requests.network, warm.cache.state], [0, 0, true])
   assert.equal(f.calls.length, 4, 'warm: zero new requests')

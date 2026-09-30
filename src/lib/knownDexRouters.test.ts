@@ -23,7 +23,7 @@ const REQUIRED_ADDRESSES: Array<[string, string]> = [
   ['0x111111125421ca6dc452d289314280a0f8842a65', '1inch v6'],
   ['0xdef1c0ded9bec7f1a1670819833240f027b25eff', '0x Exchange Proxy'],
   ['0x216b4b4ba9f3e719726886d34a177484278bfcae', 'Paraswap'],
-  ['0x000000000022d473030f116ddee9f6b43ac78ba9', 'Permit2'],
+  ['0x000000000022d473030f116ddee9f6b43ac78ba3', 'Permit2'],
   ['0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae', 'LI.FI Diamond'],
   ['0xcf77a3ba9a5ca399b7c97c74d54e5b1beb874e43', 'Aerodrome'],
   ['0xbe6d8f0d05cc4be24d5167a3ef062215be6d18a5', 'Aerodrome Slipstream'],
@@ -61,5 +61,10 @@ describe('knownDexRouters — the single shared verified registry', () => {
     for (const address of Object.keys(KNOWN_DEX_ROUTERS)) {
       assert.equal(address, address.toLowerCase(), `${address} must be stored lowercase`)
     }
+  })
+  it('Permit2 is the canonical 0x…78ba3 (Uniswap deployments/8453.md), never the mistyped 0x…78ba9', () => {
+    assert.equal(knownDexRouterProtocol('0x000000000022D473030F116dDEE9F6B43aC78BA3'), 'Permit2')
+    assert.equal(isKnownDexRouter('0x000000000022d473030f116ddee9f6b43ac78ba9'), false)
+    assert.deepEqual(Object.entries(KNOWN_DEX_ROUTERS).filter(([, p]) => p === 'Permit2').map(([a]) => a), ['0x000000000022d473030f116ddee9f6b43ac78ba3'])
   })
 })

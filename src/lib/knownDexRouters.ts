@@ -82,7 +82,7 @@ export const KNOWN_DEX_ROUTERS: Readonly<Record<string, KnownDexRouterProtocol>>
   '0xba12222222228d8ba445958a75a0704d566bf2c8': 'Balancer',
   '0x99a58482bd75cbab83b27ec03ca68ff489b5788f': 'Curve',
   '0xf0d4c12a5768d806021f80a262b4d39d26c58b8d': 'CurveSecondary',
-  '0x000000000022d473030f116ddee9f6b43ac78ba9': 'Permit2',
+  '0x000000000022d473030f116ddee9f6b43ac78ba3': 'Permit2', // canonical Permit2 (Uniswap deployments/8453.md; was mistyped ...ba9)
   '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae': 'LiFiDiamond',
 }
 

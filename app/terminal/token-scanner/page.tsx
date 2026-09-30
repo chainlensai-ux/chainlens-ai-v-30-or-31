@@ -202,12 +202,50 @@ type ConcentratedLpPositionAuditView = {
     top5SharePct?: number | null
     owners?: Array<{ owner: string; activePositions: number; sharePct: number | null }>
     coverage?: { reachedPoolCreation?: boolean; truncated?: boolean; pages?: number; eventsScanned?: number; candidateTokenIds?: number; fromBlock?: number | null; toBlock?: number | null }
+    /** Direct liquidity modifiers outside the canonical PositionManager — activity/control evidence, never ownership. */
+    controllerAttribution?: {
+      status?: 'verified' | 'partial' | 'unavailable_with_reason'
+      publicText?: string
+      controllerSummary?: string
+      controllers?: Array<{ address: string; type: string; role: string; label: string | null; activityCount: number; netLiquidityRaw: string; controllerAddress: string | null; controllerType: string | null; safe: { owners: string[]; threshold: number } | null }>
+      hook?: { address: string; label: string | null; isModifier: boolean } | null
+      nonPositionManagerEvents?: number
+      concentration?: { uniqueModifiers?: number; eoaModifiers?: number; contractModifiers?: number; intermediaryModifiers?: number; topModifierEventSharePct?: number | null; topModifierNetAddSharePct?: number | null; text?: string | null }
+    } | null
   } | null
+}
+
+type LpRow = { label: string; value: string; color?: string; note?: string }
+const V4_CONTROLLER_TYPE_LABEL: Record<string, string> = { eoa: 'wallet (EOA)', smart_wallet: 'delegated wallet', router: 'router / periphery', hook: 'hook contract', position_manager: 'position manager', multisig: 'multisig', locker: 'locker', vault: 'vault', contract: 'contract', unknown: 'unclassified' }
+const V4_CONTROLLER_ROLE_LABEL: Record<string, string> = { direct_controller: 'direct controller of its activity', contract_controlled: 'contract with verified controller', intermediary: 'intermediary only', hook: 'hook — not an owner', unverified: 'controller unverified' }
+
+// Non-PositionManager V4 liquidity modifiers -> Liquidity Controller / Controller Attribution / Observed
+// Activity rows. Activity concentration is labelled as such — never as LP ownership concentration.
+function v4ControllerRows(a: NonNullable<NonNullable<ConcentratedLpPositionAuditView['v4PositionIndex']>['controllerAttribution']>): LpRow[] {
+  const shortAddr = (x: string) => `${x.slice(0, 6)}…${x.slice(-4)}`
+  const lines = (a.controllers ?? []).slice(0, 4).map((c) => {
+    const chain = c.safe ? ` → ${c.safe.threshold} of ${c.safe.owners.length} signers` : c.controllerAddress ? ` → controlled by ${shortAddr(c.controllerAddress)}${c.controllerType === 'eoa' ? ' (wallet)' : c.controllerType === 'contract' ? ' (contract)' : ''}` : ''
+    return `${shortAddr(c.address)} · ${c.label ?? V4_CONTROLLER_TYPE_LABEL[c.type] ?? c.type} · ${V4_CONTROLLER_ROLE_LABEL[c.role] ?? c.role} · ${c.activityCount} event${c.activityCount === 1 ? '' : 's'}${chain}`
+  })
+  if (a.hook) lines.push(`Pool hook ${shortAddr(a.hook.address)}${a.hook.label ? ` (${a.hook.label})` : ''}${a.hook.isModifier ? ' — hook-managed liquidity activity observed' : ''}`)
+  const k = a.concentration ?? {}
+  const statusLabel = a.status === 'verified' ? 'Verified' : a.status === 'partial' ? 'Partial' : 'Unavailable'
+  return [
+    { label: 'Liquidity Controller', value: a.controllerSummary ?? 'Liquidity modifiers unresolved', color: '#c084fc', note: lines.join(' | ') || undefined },
+    { label: 'Controller Attribution', value: statusLabel, color: a.status === 'verified' ? '#34d399' : '#fbbf24', note: a.publicText },
+    {
+      label: 'Observed Activity',
+      value: `${k.uniqueModifiers ?? 0} unique modifier${k.uniqueModifiers === 1 ? '' : 's'}${k.topModifierEventSharePct != null ? ` · ${k.topModifierEventSharePct}% from top modifier` : ''}`,
+      note: ['Liquidity activity concentration — not LP ownership concentration.', k.text ?? null, k.topModifierNetAddSharePct != null ? `Top net liquidity adder: ${k.topModifierNetAddSharePct}% of net observed additions.` : null].filter(Boolean).join(' '),
+    },
+  ]
 }
 
 // Uniswap V4 position-NFT index -> the Position Ownership / LP Control rows. Owners come from real
 // PositionManager NFTs; partial coverage is shown as partial, never promoted.
-function v4PositionIndexView(v4: NonNullable<ConcentratedLpPositionAuditView['v4PositionIndex']>): { ownershipValue: string; ownershipNote: string; ownershipColor: string; lpControlValue: string; controllerShareValue: string } {
+function v4PositionIndexView(v4: NonNullable<ConcentratedLpPositionAuditView['v4PositionIndex']>): { ownershipValue: string; ownershipNote: string; ownershipColor: string; lpControlValue: string; controllerShareValue: string; controllerRows: LpRow[] } {
+  const attribution = v4.controllerAttribution ?? null
+  const controllerRows = attribution ? v4ControllerRows(attribution) : []
   const top = v4.owners?.[0] ?? null
   const concentration = [
     top ? `Top owner ${top.owner}${top.sharePct != null ? ` · ${top.sharePct}%` : ''}` : null,
@@ -225,14 +263,19 @@ function v4PositionIndexView(v4: NonNullable<ConcentratedLpPositionAuditView['v4
       ownershipColor: verified ? '#34d399' : '#fbbf24',
       lpControlValue: v4.controlSummary ? `${verified ? '' : 'Partial — '}${v4.controlSummary}` : (verified ? 'Verified' : 'Position proof attempted — partial'),
       controllerShareValue: v4.topOwnerSharePct != null ? `${v4.topOwnerSharePct.toFixed(2)}%${verified ? '' : ' of resolved active positions'}` : '—',
+      controllerRows,
     }
   }
+  const noNfts = v4.reason === 'activity_not_via_position_manager'
   return {
-    ownershipValue: v4.publicText ?? 'Position ownership unavailable — beneficial V4 position owners could not be verified from the indexed range.',
-    ownershipNote: `${coverageNote} ${c.candidateTokenIds ?? 0} candidate position NFT(s), ${c.eventsScanned ?? 0} liquidity event(s) scanned.`,
+    ownershipValue: noNfts ? 'Unavailable — no canonical V4 position NFTs were found.' : (v4.publicText ?? 'Position ownership unavailable — beneficial V4 position owners could not be verified from the indexed range.'),
+    ownershipNote: `${noNfts ? `${v4.publicText ?? ''} ` : ''}${coverageNote} ${c.candidateTokenIds ?? 0} candidate position NFT(s), ${c.eventsScanned ?? 0} liquidity event(s) scanned.`.trim(),
     ownershipColor: '#fbbf24',
-    lpControlValue: 'Owner unavailable — beneficial V4 position owners unresolved',
+    lpControlValue: attribution && attribution.status !== 'unavailable_with_reason'
+      ? `Controller attribution ${attribution.status === 'verified' ? 'verified' : 'partial'} — ${attribution.controllerSummary ?? 'liquidity modifiers classified'} (activity control, not pool ownership)`
+      : attribution ? `Owner unavailable — ${attribution.publicText ?? 'the final liquidity controller could not be verified.'}` : 'Owner unavailable — beneficial V4 position owners unresolved',
     controllerShareValue: 'Beneficial V4 position owners unresolved',
+    controllerRows,
   }
 }
 
@@ -245,6 +288,8 @@ function concentratedLpPositionView(result: ScanResult): {
   controllerShareValue: string
   lpControlValue: string
   showTopOwner: boolean
+  /** Base V4 non-PositionManager liquidity-modifier rows (empty elsewhere). */
+  controllerRows?: LpRow[]
   topOwner: string | null
   topShare: number | null
 } {
@@ -337,6 +382,7 @@ function concentratedLpPositionView(result: ScanResult): {
       controllerShareValue: v.controllerShareValue,
       lpControlValue: v.lpControlValue,
       showTopOwner: v4Verified && Boolean(topOwner),
+      controllerRows: v.controllerRows,
       topOwner,
       topShare,
     }
@@ -8884,6 +8930,7 @@ export default function TerminalTokenScanner() {
                         color: clpView?.ownershipColor,
                         note: clpView?.ownershipNote || 'No reason returned for this position-ownership state.',
                       }] : []),
+                      ...(protocolPosition && clpView?.controllerRows?.length ? clpView.controllerRows : []),
                       { label: 'Exit Risk', value: exitRisk, color: exitRisk === 'Low' ? '#34d399' : exitRisk === 'Watch' || exitRisk === 'Monitor' ? '#fbbf24' : exitRisk === 'High' ? '#f87171' : undefined },
                       { label: 'Liquidity Depth', value: liquidityDepth, color: liquidityDepth === 'Deep' ? '#34d399' : liquidityDepth === 'Moderate' ? '#fbbf24' : liquidityDepth === 'Thin' ? '#f87171' : undefined },
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
