@@ -61,21 +61,14 @@ async function main() {
     assert.equal(resolvePositionManager(4663, 'uniswap_v4'), null, 'Robinhood is out of indexer scope')
   }
 
-  // ── V4 pool runs the position resolver (injected RPC, real ModifyLiquidity decode) ──
+  // ── V4: a ModifyLiquidity sender is NEVER promoted to an owner (it is the caller — usually the
+  // PositionManager). The log index makes no V4 ownership claim and no RPC call; Base V4 ownership comes
+  // from PositionManager position NFTs (lib/server/uniswapV4BasePositions.ts).
   {
     const poolId = '0x' + 'ab'.repeat(32)
     const owner = '0x1111111111111111111111111111111111111111'
-    const delta = 5000
-    const rpc = mockRpc({
-      eth_blockNumber: () => ({ result: '0x1000' }),
-      eth_getLogs: () => ({
-        result: [{
-          topics: [MODIFY_LIQUIDITY_TOPIC0, poolId, padAddr(owner)],
-          data: '0x' + word(0) + word(0) + word(delta) + word(0),
-        }],
-      }),
-      eth_getCode: () => ({ result: '0x' }),
-    })
+    let calls = 0
+    const rpc = { call: async () => { calls++; return { result: [{ topics: [MODIFY_LIQUIDITY_TOPIC0, poolId, padAddr(owner)], data: '0x' + word(0) + word(0) + word(5000) + word(0) }] } } }
     const r = await resolveConcentratedLpPositions({
       chainId: 1,
       tokenAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -83,18 +76,13 @@ async function main() {
       protocol: 'uniswap_v4',
       poolType: 'uniswap_v4',
     }, rpc)
-    assert.equal(r.audit.finalStatus, 'verified_position_owner')
-    assert.equal(r.audit.eventIndexingAttempted, true)
-    assert.equal(r.audit.alchemyRpcAttempted, true)
+    assert.equal(r.audit.finalStatus, 'position_index_unavailable_with_reason')
+    assert.equal(r.owners.length, 0, 'sender is never an owner')
+    assert.equal(r.audit.topOwner, null)
+    assert.equal(calls, 0, 'no RPC call for a claim it will not make')
     assert.equal(r.audit.positionManagerResolved, true)
     assert.equal(r.audit.positionManagerAddress, V4_ETH_PM)
-    assert.equal(r.audit.topOwner, owner)
-    assert.equal(r.audit.topOwnerLiquiditySharePct, 100)
-    assert.equal(r.audit.ownerClassification, 'eoa')
-    assert.equal(r.audit.ownerIsContract, false)
-    assert.equal(r.audit.failureReason, null)
-    assert.equal(r.owners.length, 1)
-    assert.equal(r.owners[0].liquidityRaw, String(delta))
+    assert.match(r.audit.failureReason, /do not identify their beneficial owners/)
   }
 
   // ── V3 pool runs the position resolver (IncreaseLiquidity → positions → ownerOf) ──
@@ -156,11 +144,13 @@ async function main() {
       eth_blockNumber: () => ({ result: '0x3000' }),
       eth_getLogs: () => ({ result: [] }),
     }))
-    assert.equal(empty.audit.finalStatus, 'owner_unavailable_with_reason')
-    assert.equal(empty.audit.failureReason, CONCENTRATED_OWNER_UNAVAILABLE_REASON)
+    // V4 ownership is not claimed from pool-level logs (Base V4 owners come from PositionManager
+    // position NFTs); no misleading "not found in indexed window" wording for V4.
+    assert.equal(empty.audit.finalStatus, 'position_index_unavailable_with_reason')
+    assert.notEqual(empty.audit.failureReason, CONCENTRATED_OWNER_UNAVAILABLE_REASON)
     assert.equal(empty.audit.topOwner, null, 'never fabricates a top owner')
     assert.equal(empty.audit.topOwnerLiquiditySharePct, null, 'never fabricates a share')
-    assert.match(empty.audit.failureReason, /Owner unavailable: active positions not found in indexed window/)
+    assert.doesNotMatch(empty.audit.failureReason, /indexed window/)
   }
 
   // ── Missing index returns exact unavailable reason (RPC failure) ──
@@ -202,7 +192,8 @@ async function main() {
     assert.notEqual(v4.status, 'verified', 'no RPC in this env — never fabricates verified')
     assert.notEqual(v4.status, 'not_supported', 'resolver exists and was attempted')
     assert.ok(v4.concentratedLpPositionAudit, 'proof carries concentratedLpPositionAudit')
-    assert.equal(v4.concentratedLpPositionAudit.eventIndexingAttempted || v4.concentratedLpPositionAudit.alchemyRpcAttempted, true)
+    // V4 ownership is never claimed from pool-level logs, so the generic log index makes no V4 RPC call.
+    assert.equal(v4.concentratedLpPositionAudit.eventIndexingAttempted || v4.concentratedLpPositionAudit.alchemyRpcAttempted, false)
     assert.ok(v4.concentratedLpPositionAudit.finalStatus === 'position_index_unavailable_with_reason' || v4.concentratedLpPositionAudit.finalStatus === 'owner_unavailable_with_reason')
     assert.ok(v4.concentratedLpPositionAudit.failureReason)
     assert.ok(!/not supported yet/i.test(v4.reason), 'attempted resolver never says not supported yet')

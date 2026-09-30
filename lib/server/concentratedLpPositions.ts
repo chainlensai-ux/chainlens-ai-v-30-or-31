@@ -103,8 +103,6 @@ const PROTOCOL_ADDRESSES = new Set([
 
 // Uniswap V3 / Slipstream / Pancake V3: IncreaseLiquidity(uint256 indexed tokenId, uint128, uint256, uint256)
 const INCREASE_LIQUIDITY_TOPIC0 = "0x3067048beee31b25b2f1681f88dac838c8bba36af25bfb2b7cf7473a5847e35f";
-// Uniswap V4 PoolManager: ModifyLiquidity(bytes32 indexed id, address indexed sender, int24, int24, int256, bytes32)
-const MODIFY_LIQUIDITY_TOPIC0 = "0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec";
 
 const OWNER_OF_SELECTOR = "0x6352211e";
 const POSITIONS_SELECTOR = "0x99fbab88";
@@ -118,6 +116,7 @@ const POSITION_CALL_CAP = 40;
 const DEFAULT_WINDOW: Record<number, number> = { 1: 3_000, 8453: 20_000, 56: 15_000 };
 
 const OWNER_UNAVAILABLE_REASON = "Owner unavailable: active positions not found in indexed window";
+export const V4_SENDER_NOT_OWNER_REASON = "Position index unavailable: Uniswap V4 liquidity positions are held through the PositionManager, and pool-level liquidity events do not identify their beneficial owners.";
 
 export function chainIdToLpSlug(chainId: number): "eth" | "base" | "bnb" | null {
   if (chainId === 1) return "eth";
@@ -225,15 +224,6 @@ function addrFromWord(hex: string): string | null {
 function hexToBigInt(hex: string | null | undefined): bigint | null {
   if (!hex || hex === "0x" || hex === "0x0") return null;
   try { return BigInt(hex); } catch { return null; }
-}
-
-function decodeSigned256(word: string): bigint | null {
-  if (word.length !== 64) return null;
-  let value = BigInt(`0x${word}`);
-  const SIGN_BIT = BigInt(1) << BigInt(255);
-  const MODULUS = BigInt(1) << BigInt(256);
-  if (value >= SIGN_BIT) value -= MODULUS;
-  return value;
 }
 
 function tokenIdFromTopic(topic: string | undefined): string | null {
@@ -344,39 +334,6 @@ async function getLogsWindowed(
     return { logs: (res.result as Array<{ topics: string[]; data: string }>).slice(0, LOG_SAMPLE_CAP), fromBlock, toBlock };
   }
   return { error: `Position index unavailable: ${lastError}`, fromBlock: null, toBlock: `0x${toBlockNum.toString(16)}`, alchemyRpcAttempted: true };
-}
-
-async function indexV4(
-  rpc: ConcentratedLpRpc,
-  chainId: number,
-  poolId: string,
-  fromBlockHint: number | null,
-): Promise<{ owners: ConcentratedLpIndexedOwner[]; logsReturned: number; fromBlock: string | null; toBlock: string | null; error?: string }> {
-  const poolManager = resolveV4PoolManager(chainId);
-  if (!poolManager) return { owners: [], logsReturned: 0, fromBlock: null, toBlock: null, error: "Uniswap V4 PoolManager address is not confirmed for this chain" };
-  const fetched = await getLogsWindowed(rpc, chainId, {
-    address: poolManager,
-    topics: [MODIFY_LIQUIDITY_TOPIC0, poolId.toLowerCase()],
-  }, fromBlockHint);
-  if ("error" in fetched) return { owners: [], logsReturned: 0, fromBlock: fetched.fromBlock, toBlock: fetched.toBlock, error: fetched.error };
-  const net = new Map<string, { amount: bigint; count: number }>();
-  for (const log of fetched.logs) {
-    const sender = log.topics[2] ? addrFromWord(log.topics[2]) : null;
-    if (!sender) continue;
-    const hex = (log.data ?? "").startsWith("0x") ? log.data.slice(2) : (log.data ?? "");
-    if (hex.length < 4 * 64) continue;
-    const delta = decodeSigned256(hex.slice(2 * 64, 3 * 64));
-    if (delta == null) continue;
-    const existing = net.get(sender) ?? { amount: BigInt(0), count: 0 };
-    existing.amount += delta;
-    existing.count += 1;
-    net.set(sender, existing);
-  }
-  const owners = Array.from(net.entries())
-    .filter(([, v]) => v.amount > BigInt(0))
-    .map(([address, v]) => ({ address, liquidityRaw: v.amount.toString(), positionCount: v.count }))
-    .sort((a, b) => (BigInt(b.liquidityRaw) > BigInt(a.liquidityRaw) ? 1 : -1));
-  return { owners, logsReturned: fetched.logs.length, fromBlock: fetched.fromBlock, toBlock: fetched.toBlock };
 }
 
 async function indexV3Style(
@@ -536,7 +493,22 @@ export async function resolveConcentratedLpPositions(input: {
         }),
       };
     }
-    indexed = await indexV4(rpc, input.chainId, poolId, fromHint);
+    // V4 beneficial ownership lives in PositionManager position NFTs; ModifyLiquidity.sender is the
+    // caller (usually the PositionManager itself), never the owner. This log index therefore makes no
+    // ownership claim for V4 (and no RPC call): Base V4 is resolved from its position NFTs by
+    // lib/server/uniswapV4BasePositions.ts through lpProof's owner resolver.
+    return {
+      owners: [],
+      audit: emptyAudit({
+        ...baseMeta,
+        positionManagerResolved: true,
+        positionManagerAddress: positionManager,
+        eventIndexingAttempted: false,
+        alchemyRpcAttempted: false,
+        finalStatus: "position_index_unavailable_with_reason",
+        failureReason: V4_SENDER_NOT_OWNER_REASON,
+      }),
+    };
   } else {
     if (!isAddress(poolRef)) {
       return {

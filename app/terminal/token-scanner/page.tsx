@@ -189,6 +189,51 @@ type ConcentratedLpPositionAuditView = {
   ownerClassification?: string | null
   finalStatus?: string | null
   failureReason?: string | null
+  /** Uniswap V4 position-NFT index (Base): coverage status, owners and concentration. */
+  v4PositionIndex?: {
+    status?: 'verified' | 'partial' | 'unavailable_with_reason'
+    reason?: string
+    publicText?: string
+    controlSummary?: string | null
+    ownerCount?: number
+    activePositions?: number
+    topOwnerSharePct?: number | null
+    top3SharePct?: number | null
+    top5SharePct?: number | null
+    owners?: Array<{ owner: string; activePositions: number; sharePct: number | null }>
+    coverage?: { reachedPoolCreation?: boolean; truncated?: boolean; pages?: number; eventsScanned?: number; candidateTokenIds?: number; fromBlock?: number | null; toBlock?: number | null }
+  } | null
+}
+
+// Uniswap V4 position-NFT index -> the Position Ownership / LP Control rows. Owners come from real
+// PositionManager NFTs; partial coverage is shown as partial, never promoted.
+function v4PositionIndexView(v4: NonNullable<ConcentratedLpPositionAuditView['v4PositionIndex']>): { ownershipValue: string; ownershipNote: string; ownershipColor: string; lpControlValue: string; controllerShareValue: string } {
+  const top = v4.owners?.[0] ?? null
+  const concentration = [
+    top ? `Top owner ${top.owner}${top.sharePct != null ? ` · ${top.sharePct}%` : ''}` : null,
+    v4.top3SharePct != null && (v4.ownerCount ?? 0) > 1 ? `top 3 ${v4.top3SharePct}%` : null,
+    v4.top5SharePct != null && (v4.ownerCount ?? 0) > 3 ? `top 5 ${v4.top5SharePct}%` : null,
+    v4.activePositions != null ? `${v4.activePositions} active position${v4.activePositions === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ')
+  const c = v4.coverage ?? {}
+  const coverageNote = c.reachedPoolCreation ? 'Indexed from pool creation.' : `Indexed ${c.pages ?? 0} log page(s)${c.truncated ? '; candidate cap reached' : ''} — older history not fully covered.`
+  if (v4.status === 'verified' || v4.status === 'partial') {
+    const verified = v4.status === 'verified'
+    return {
+      ownershipValue: v4.publicText ?? (verified ? 'Position ownership verified' : 'Position ownership partial'),
+      ownershipNote: [concentration, verified ? 'Owners of active V4 position NFTs (current liquidity).' : coverageNote].filter(Boolean).join(' — '),
+      ownershipColor: verified ? '#34d399' : '#fbbf24',
+      lpControlValue: v4.controlSummary ? `${verified ? '' : 'Partial — '}${v4.controlSummary}` : (verified ? 'Verified' : 'Position proof attempted — partial'),
+      controllerShareValue: v4.topOwnerSharePct != null ? `${v4.topOwnerSharePct.toFixed(2)}%${verified ? '' : ' of resolved active positions'}` : '—',
+    }
+  }
+  return {
+    ownershipValue: v4.publicText ?? 'Position ownership unavailable — beneficial V4 position owners could not be verified from the indexed range.',
+    ownershipNote: `${coverageNote} ${c.candidateTokenIds ?? 0} candidate position NFT(s), ${c.eventsScanned ?? 0} liquidity event(s) scanned.`,
+    ownershipColor: '#fbbf24',
+    lpControlValue: 'Owner unavailable — beneficial V4 position owners unresolved',
+    controllerShareValue: 'Beneficial V4 position owners unresolved',
+  }
 }
 
 function concentratedLpPositionView(result: ScanResult): {
@@ -241,10 +286,12 @@ function concentratedLpPositionView(result: ScanResult): {
     ownershipNote = reason || 'Some position records were indexed, but beneficial ownership is not fully verified.'
     ownershipColor = '#fbbf24'
   } else if (status === 'owner_unavailable_with_reason' || status === 'owner_unavailable') {
-    ownershipValue = reason && /owner unavailable/i.test(reason)
+    ownershipValue = reason && /owner(ship)? unavailable/i.test(reason)
       ? reason
-      : (reason ? `Owner unavailable: ${reason}` : 'Owner unavailable: active positions not found in indexed window')
-    ownershipNote = 'The concentrated position indexer ran, but no active positions were found in the indexed window.'
+      : (reason ? `Owner unavailable: ${reason}` : 'Owner unavailable: beneficial position owners could not be verified')
+    ownershipNote = reason && /indexed window/i.test(reason)
+      ? 'The concentrated position indexer ran, but no active positions were found in the indexed window.'
+      : (reason ?? 'Beneficial position owners could not be verified from the indexed evidence.')
     ownershipColor = '#fbbf24'
   } else if (status === 'position_index_unavailable_with_reason' || status === 'unsupported_with_reason') {
     ownershipValue = reason && /position index unavailable/i.test(reason)
@@ -277,6 +324,23 @@ function concentratedLpPositionView(result: ScanResult): {
   const controllerShareValue = verified && topShare != null
     ? `${topShare.toFixed(2)}%`
     : (reason && /position index unavailable|owner unavailable/i.test(reason) ? reason : 'Position proof attempted — owner unresolved')
+  const v4 = audit?.v4PositionIndex
+  if (v4) {
+    const v = v4PositionIndexView(v4)
+    const v4Verified = v4.status === 'verified'
+    return {
+      lockBurnLabel: CONCENTRATED_ERC20_LOCK_BURN_LABEL,
+      ownershipValue: v.ownershipValue,
+      ownershipNote: v.ownershipNote,
+      ownershipColor: v.ownershipColor,
+      controlProofValue: v4Verified && topOwner ? `Verified — top position controlled by ${topOwner}` : v.ownershipValue,
+      controllerShareValue: v.controllerShareValue,
+      lpControlValue: v.lpControlValue,
+      showTopOwner: v4Verified && Boolean(topOwner),
+      topOwner,
+      topShare,
+    }
+  }
   return {
     lockBurnLabel: CONCENTRATED_ERC20_LOCK_BURN_LABEL,
     ownershipValue,

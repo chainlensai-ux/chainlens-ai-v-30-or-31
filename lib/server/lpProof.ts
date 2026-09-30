@@ -6,6 +6,7 @@ import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
 import { logRpcCall } from "./rpcDebug.ts";
 import { auditGlobalAlchemyCall } from "./globalRpcAudit.ts";
 import { getRobinhoodRpcUrl } from "./robinhoodChainConfig.ts";
+import type { V4PositionIndexResult } from "./uniswapV4BasePositions.ts";
 import {
   resolveConcentratedLpPositions,
   resolvePositionManager,
@@ -1267,6 +1268,8 @@ export interface ConcentratedOwnerLookupResult {
   positionsFound: number | null;
   activePositionsFound: number | null;
   failureReason: string | null;
+  /** Uniswap V4 position-NFT index (Base): owners from PositionManager NFTs with explicit coverage. */
+  v4PositionIndex?: V4PositionIndexResult;
 }
 
 /** Pluggable position-owner source. Returns null when no source is configured/available —
@@ -1722,6 +1725,104 @@ async function _buildVerifiedOrPartialFromOwners(
   };
 }
 
+/** Proof + audit from the Uniswap V4 position-NFT index, honoring its coverage status exactly. */
+async function _buildFromV4PositionIndex(
+  chain: LpChain,
+  base: Omit<ConcentratedPositionProofCore, "status" | "reason" | "evidence" | "missingEvidence" | "nextAction" | "confidence">,
+  lookup: ConcentratedOwnerLookupResult,
+  index: V4PositionIndexResult,
+): Promise<ConcentratedPositionProofCore> {
+  const cov = index.coverage;
+  const hex = (n: number | null) => (n == null ? null : `0x${n.toString(16)}`);
+  const evidence = [
+    `positionManager=${index.positionManager}`,
+    `poolId=${index.poolId}`,
+    `blocks=${cov.fromBlock ?? "?"}..${cov.toBlock ?? "?"}`,
+    `pages=${cov.pages}`,
+    `events=${cov.eventsScanned}`,
+    `candidateTokenIds=${cov.candidateTokenIds}`,
+    `activeTokenIds=${cov.activeTokenIds}`,
+    `reachedPoolCreation=${cov.reachedPoolCreation}`,
+    `truncated=${cov.truncated}`,
+  ];
+  const auditBase: ConcentratedLpPositionAudit = {
+    chainId: lpChainToChainId(chain),
+    tokenAddress: null,
+    poolAddress: index.poolId,
+    protocol: "uniswap_v4",
+    poolType: "uniswap_v4",
+    positionManagerResolved: true,
+    positionManagerAddress: index.positionManager,
+    positionLookupAttempted: true,
+    providerUsed: lookup.providerUsed,
+    positionsFound: cov.candidateTokenIds,
+    activePositionsFound: index.activePositions,
+    totalActiveLiquidity: index.totalActiveLiquidity,
+    topOwner: null,
+    topOwnerLiquiditySharePct: null,
+    ownerIsContract: null,
+    ownerClassification: null,
+    finalStatus: "owner_unavailable_with_reason",
+    failureReason: index.publicText,
+    eventIndexingAttempted: true,
+    alchemyRpcAttempted: true,
+    fromBlock: hex(cov.fromBlock),
+    toBlock: hex(cov.toBlock),
+    logsReturned: cov.eventsScanned,
+    v4PositionIndex: index,
+  };
+  const withLookup = {
+    ...base,
+    positionManager: index.positionManager,
+    positionLookupAttempted: true,
+    positionProviderUsed: lookup.providerUsed,
+    positionsFound: cov.candidateTokenIds,
+    activePositionsFound: index.activePositions,
+    positionLookupFailureReason: lookup.failureReason,
+  };
+  const records = lookup.records ?? [];
+  if (records.length > 0 && index.status !== "unavailable_with_reason") {
+    const core = await _buildVerifiedOrPartialFromOwners(chain, withLookup, records);
+    const verified = index.status === "verified";
+    const ownerType = core.topPositionOwnerType;
+    const finalStatus: ConcentratedLpPositionAuditStatus = !verified
+      ? "partial_position_owner"
+      : ownerType === "protocol" ? "protocol_managed" : ownerType === "contract" ? "contract_owner_unverified" : "verified_position_owner";
+    const { ownerIsContract } = _ownerIsContractFlags(ownerType);
+    return {
+      ...core,
+      status: verified ? "verified" : "partial",
+      confidence: verified ? core.confidence : "medium",
+      reason: `${index.publicText}${index.controlSummary ? ` ${index.controlSummary}.` : ""}`,
+      evidence: [...evidence, ...core.evidence],
+      missingEvidence: verified ? [] : ["complete position-history coverage"],
+      nextAction: verified ? core.nextAction : "Re-scan to extend the position index; shares cover the resolved active positions only.",
+      concentratedLpPositionAudit: {
+        ...auditBase,
+        finalStatus,
+        failureReason: verified
+          ? (finalStatus === "contract_owner_unverified" ? "The top liquidity position is held by a contract, but its beneficial controller is not independently verified." : null)
+          : index.publicText,
+        topOwner: core.topPositionOwner,
+        topOwnerLiquiditySharePct: core.topPositionSharePercent,
+        ownerIsContract,
+        ownerClassification: ownerType,
+      },
+    };
+  }
+  const rpcFailure = index.reason === "rpc_unavailable" || index.reason === "log_query_failed" || index.reason === "deadline_exceeded" || index.reason === "owner_reads_failed";
+  return {
+    ...withLookup,
+    status: rpcFailure ? "failed" : "not_found",
+    confidence: "low",
+    reason: index.publicText,
+    evidence,
+    missingEvidence: ["topPositionOwner", "positionCount", "topPositionSharePercent"],
+    nextAction: rpcFailure ? "Retry the scan; the Base RPC did not return enough position evidence." : "Re-check after liquidity is added through the Uniswap V4 PositionManager.",
+    concentratedLpPositionAudit: { ...auditBase, finalStatus: rpcFailure ? "position_index_unavailable_with_reason" : "owner_unavailable_with_reason" },
+  };
+}
+
 function indexerAuditIsComplete(audit: ConcentratedLpPositionAudit | null | undefined): boolean {
   if (!audit) return false;
   return audit.finalStatus === "verified_position_owner"
@@ -1943,6 +2044,11 @@ export async function attemptConcentratedPositionProof(
   // Existing subgraph / chain-specific RPC / test-fixture owner source. Used when the log
   // indexer found no active positions, had no RPC URL, or is out of scope (Robinhood).
   const fallbackLookup = await _resolveOwnersSafely(resolveOwners, { chain, poolModel, poolAddress: normalizedPoolAddress, poolId: normalizedPoolId });
+  // Uniswap V4 position-NFT index (Base): its own coverage decides verified / partial / unavailable —
+  // never the generic "owners => verified" rule, and never a ModifyLiquidity sender.
+  if (fallbackLookup.v4PositionIndex) {
+    return finish(await _buildFromV4PositionIndex(chain, base, fallbackLookup, fallbackLookup.v4PositionIndex), "external_resolver", "v4_position_nft_index");
+  }
   const fallbackOwners = fallbackLookup.records;
   if (fallbackOwners != null && fallbackOwners.length > 0) {
     const core = await _buildVerifiedOrPartialFromOwners(chain, {
@@ -2322,6 +2428,8 @@ export interface ConcentratedLpPositionAudit {
   fromBlock?: string | null;
   toBlock?: string | null;
   logsReturned?: number | null;
+  /** Uniswap V4 position-NFT index: coverage, owners, concentration and the exact public reason. */
+  v4PositionIndex?: V4PositionIndexResult | null;
 }
 
 /** Required concentrated-position audit. Owner/share fields are populated only after full-pool
