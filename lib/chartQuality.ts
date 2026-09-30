@@ -416,3 +416,47 @@ export function planAutoHistory(input: {
   if (!readable) return { load: true, key: '1D', reason: 'no_readable_timeframe_load_daily_history' }
   return { load: false, key: null, reason: 'default_already_readable' }
 }
+
+// ── Sparse line: break at real gaps ──────────────────────────────────────────────────────────────
+/**
+ * Largest gap (in buckets of the timeframe) across which two REAL closes may be joined by a line in the
+ * sparse view. Beyond it, continuity is not supported by evidence: the line breaks and a new segment
+ * starts. 5M / 15M / 1H / 4H: 3 buckets (a quiet stretch of 2 empty buckets still reads as one move);
+ * 1D: 2 days (one missing day). Nothing is carried forward or interpolated across a break.
+ */
+export const SPARSE_LINE_MAX_GAP_BUCKETS: Readonly<Record<number, number>> = { 300: 3, 900: 3, 3600: 3, 14_400: 3, 86_400: 2 }
+export const sparseLineMaxGapBuckets = (timeframeSec: number | null): number => (timeframeSec != null ? SPARSE_LINE_MAX_GAP_BUCKETS[timeframeSec] ?? 3 : 3)
+
+export type SparseLineSegment = { indices: number[]; points: ReadonlyArray<ChartCandle> }
+export type SparseLineStats = { pointCount: number; segmentCount: number; isolatedPointCount: number; largestGapBuckets: number; continuityThresholdBuckets: number }
+
+/**
+ * Splits real candles (ascending) into continuity segments for the sparse line view: consecutive candles
+ * join only when their gap is <= the timeframe's continuity threshold. A segment of one candle is an
+ * isolated point (drawn as a marker only). Pure; returns the SAME candle objects, never new ones.
+ */
+export function buildSparseLineSegments(candles: ReadonlyArray<ChartCandle>, timeframeSec: number | null): { segments: SparseLineSegment[]; stats: SparseLineStats } {
+  const threshold = sparseLineMaxGapBuckets(timeframeSec)
+  const tfMs = (timeframeSec ?? 0) * 1000
+  const segments: SparseLineSegment[] = []
+  let largest = 0
+  candles.forEach((c, i) => {
+    const gap = i > 0 && tfMs > 0 ? (c.t - candles[i - 1].t) / tfMs : 0
+    if (i > 0) largest = Math.max(largest, gap)
+    const joins = i > 0 && tfMs > 0 && gap <= threshold
+    if (!joins) segments.push({ indices: [], points: [] })
+    const seg = segments[segments.length - 1]
+    seg.indices.push(i)
+    ;(seg.points as ChartCandle[]).push(c)
+  })
+  return {
+    segments,
+    stats: {
+      pointCount: candles.length,
+      segmentCount: segments.length,
+      isolatedPointCount: segments.filter((s) => s.indices.length === 1).length,
+      largestGapBuckets: Math.round(largest * 100) / 100,
+      continuityThresholdBuckets: threshold,
+    },
+  }
+}

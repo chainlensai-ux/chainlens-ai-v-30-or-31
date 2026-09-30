@@ -169,7 +169,7 @@ test('sparse timeframe the user selects renders as a line/area of REAL closes (n
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /const lineMode = activeQuality != null && !isPresentationUsable\(activeQuality\.quality\) && data\.length >= 2/)
   assert.match(panel, /<polyline points=\{pts\.join\(' '\)\}/)
-  assert.match(panel, /data\.map\(\(c, i\) => <circle key=\{`p\$\{c\.t\}`\} cx=\{xC\(i\)\} cy=\{yP\(c\.close\)\}/)
+  assert.match(panel, /<circle key=\{`p\$\{data\[i\]\.t\}`\} cx=\{xC\(i\)\} cy=\{yP\(data\[i\]\.close\)\}/, 'a dot on every genuine candle')
   assert.match(panel, /\{!lineMode && <g>/, 'candles are not drawn in the sparse line view')
   assert.doesNotMatch(panel, /\bcurveBasis|bezier|Q\$\{|C\$\{/i, 'no smoothing')
 })

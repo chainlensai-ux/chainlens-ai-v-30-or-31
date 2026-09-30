@@ -170,7 +170,7 @@ test('UI: sparse chips are dimmed with the explanation; status + ?debug=1 qualit
   assert.match(panel, /title: sparse \? sparseTimeframeTooltip\(q!, clearerThan\(tf\.key\)\)/)
   assert.match(panel, /selected for clearer history/)
   assert.match(panel, /Sparse trading — /)
-  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*timeframeQuality:/)
+  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*sparseLine: sparseLine\?\.stats \?\? null,\s*timeframeQuality:/)
   assert.match(read('app/terminal/token-scanner/page.tsx'), /debug=\{Boolean\(result\.chartDebug\)\}/)
 })
 

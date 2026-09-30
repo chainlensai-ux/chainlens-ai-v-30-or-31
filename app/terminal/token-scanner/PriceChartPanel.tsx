@@ -48,6 +48,7 @@ import {
   assessTimeframeSet,
   chartXLayout,
   lineChartXs,
+  buildSparseLineSegments,
   nearestCandleIndex,
   planAutoHistory,
   AUTO_HISTORY_MAX_REQUESTS,
@@ -410,6 +411,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // never as a handful of floating candle bars.
   const lineMode = activeQuality != null && !isPresentationUsable(activeQuality.quality) && data.length >= 2
   const lineXs = lineMode ? lineChartXs(data.map((c) => c.t), plotW) : null
+  // Continuity segments: real closes join only across gaps the timeframe's threshold allows; the line AND
+  // its area break at every larger gap, and an isolated candle is a marker only.
+  const sparseLine = lineMode ? buildSparseLineSegments(data, intervalSec) : null
   const layout = lineXs ? { slot: 1, pos: lineXs.map((x) => x - 0.5), mode: 'time' as const } : chartXLayout(data.map((c) => c.t), intervalSec, total, plotW)
   const slot = layout.slot
   const bodyW = lineMode ? 4 : Math.max(1, Math.min(slot * 0.66, 16))
@@ -713,15 +717,27 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             <line x1={0} x2={W} y1={volBot + 0.5} y2={volBot + 0.5} stroke={C.border} strokeWidth={1} />
             {hasVolume && <line x1={0} x2={plotW} y1={volTop - volGap / 2} y2={volTop - volGap / 2} stroke={C.grid} strokeWidth={1} />}
 
-            {/* Sparse view: straight segments between REAL closes (no smoothing), a dot per genuine candle */}
-            {lineMode && (() => {
-              const pts = data.map((c, i) => `${xC(i).toFixed(1)},${yP(c.close).toFixed(1)}`)
+            {/* Sparse view: straight segments between REAL closes (no smoothing), broken at every gap the
+                continuity threshold does not support — line and area alike; isolated candles are markers only. */}
+            {lineMode && sparseLine && (() => {
               const trend = data[data.length - 1].close >= data[0].close ? C.bull : C.bear
               return (
-                <g data-chart-mode="line">
-                  <path d={`M${pts[0]} L${pts.slice(1).join(' L')} L${xC(data.length - 1).toFixed(1)},${priceBot} L${xC(0).toFixed(1)},${priceBot} Z`} fill={trend} fillOpacity={0.08} stroke="none" />
-                  <polyline points={pts.join(' ')} fill="none" stroke={trend} strokeWidth={1.6} strokeLinejoin="round" />
-                  {data.map((c, i) => <circle key={`p${c.t}`} cx={xC(i)} cy={yP(c.close)} r={2.4} fill={trend} />)}
+                <g data-chart-mode="line" data-line-segments={sparseLine.stats.segmentCount}>
+                  {sparseLine.segments.map((seg) => {
+                    if (seg.indices.length < 2) return null
+                    const pts = seg.indices.map((i) => `${xC(i).toFixed(1)},${yP(data[i].close).toFixed(1)}`)
+                    const first = seg.indices[0]
+                    const lastI = seg.indices[seg.indices.length - 1]
+                    return (
+                      <g key={`s${data[first].t}`}>
+                        <path d={`M${pts[0]} L${pts.slice(1).join(' L')} L${xC(lastI).toFixed(1)},${priceBot} L${xC(first).toFixed(1)},${priceBot} Z`} fill={trend} fillOpacity={0.08} stroke="none" />
+                        <polyline points={pts.join(' ')} fill="none" stroke={trend} strokeWidth={1.6} strokeLinejoin="round" />
+                      </g>
+                    )
+                  })}
+                  {sparseLine.segments.flatMap((seg) => seg.indices.map((i) => (
+                    <circle key={`p${data[i].t}`} cx={xC(i)} cy={yP(data[i].close)} r={seg.indices.length === 1 ? 3.2 : 2.4} fill={trend} />
+                  )))}
                 </g>
               )
             })()}
@@ -847,6 +863,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           {JSON.stringify({
             selectedTimeframe: activeKey,
             selectedTimeframeReason: selectionReason,
+            sparseLine: sparseLine?.stats ?? null,
             timeframeQuality: [...Object.values(tfQuality), ...(fiveQuality && !tfQuality['5M'] ? [fiveQuality] : [])].map((q) => ({
               timeframe: q!.timeframe, candleCount: q!.candleCount,
               candleSpanSec: q!.candleSpanSec, coverageStartSec: q!.coverageStartSec, coverageEndSec: q!.coverageEndSec, coverageSpanSec: q!.coverageSpanSec, coverageKnown: q!.coverageKnown,
