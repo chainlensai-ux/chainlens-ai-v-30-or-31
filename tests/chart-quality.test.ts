@@ -161,7 +161,8 @@ test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop); a short serie
   assert.deepEqual([full.mode, full.slot, full.pos[5]], ['index', 10, 5])
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /const fit = restingCandleTarget\(plotW, compact\)/)
-  assert.match(panel, /: chartXLayout\(data\.map\(\(c\) => c\.t\), intervalSec, total, plotW\)/)
+  // Candles use index bar-spacing (lib/chartGeometry.ts); chartXLayout remains the pure time-spacing helper.
+  assert.match(panel, /const geo = candleGeometry\(data\.length, total, plotW\)/)
   assert.match(panel, /nearestCandleIndex\(x, layout\)/)
 })
 

@@ -138,5 +138,7 @@ test('panel: 1D shorter than a useful daily chart while its first history batch 
   assert.match(panel, /'Loading older candles…'/)
   // Viewport: keyed by timeframe + newest candle; prepended history shifts the view once.
   assert.match(panel, /const seriesKey = `\$\{activeKey \?\? 'native'\}:\$\{series\[series\.length - 1\]\?\.t \?\? 0\}`/)
-  assert.match(panel, /const prepended = viewRaw && viewRaw\.key === seriesKey \? Math\.max\(0, total - viewRaw\.total\) : 0/)
+  // ... and to this scan's candle array, so a new scan never inherits a previous token's view.
+  assert.match(panel, /const viewValid = viewRaw != null && viewRaw\.key === seriesKey && viewRaw\.source === candles/)
+  assert.match(panel, /const prepended = viewValid \? Math\.max\(0, total - viewRaw!\.total\) : 0/)
 })

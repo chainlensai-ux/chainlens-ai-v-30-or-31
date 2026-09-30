@@ -31,6 +31,7 @@ import {
   type ChartTimeframeKey,
   type ChartViewport,
 } from '@/lib/priceChartCandles'
+import { candleGeometry, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
 import { formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
 import {
   DAILY_FIRST_BATCH_MIN_CANDLES,
@@ -46,7 +47,6 @@ import {
 import {
   assessTimeframeQuality,
   assessTimeframeSet,
-  chartXLayout,
   lineChartXs,
   buildSparseLineSegments,
   nearestCandleIndex,
@@ -371,8 +371,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const axisW = Math.min(110, Math.max(56, Math.ceil(widestLabel * axisCharW + 14)))
   const plotW = W - axisW
   const priceH = compact ? 220 : 310
-  const volGap = 6
-  const volH = hasVolume ? (compact ? 44 : 60) : 0
+  // Dedicated volume pane: a proportional share of the price pane, clearly separated from it.
+  const volGap = hasVolume ? 14 : 0
+  const volH = volumePaneHeight(priceH, hasVolume)
   const timeAxisH = 22
   const priceTop = 8
   const priceBot = priceTop + priceH
@@ -391,13 +392,16 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // the number of added candles, so the candles the user is looking at stay in place.
   const seriesKey = `${activeKey ?? 'native'}:${series[series.length - 1]?.t ?? 0}`
   const restView = defaultViewport(total, fit)
-  const [viewRaw, setViewRaw] = useState<{ key: string; view: ChartViewport; total: number } | null>(null)
-  const prepended = viewRaw && viewRaw.key === seriesKey ? Math.max(0, total - viewRaw.total) : 0
-  const view = viewRaw && viewRaw.key === seriesKey ? clampViewport({ start: viewRaw.view.start + prepended, end: viewRaw.view.end + prepended }, total) : restView
+  // Also tied to the scan's candle array: a new scan (even with the same timeframe and newest candle)
+  // always starts from its own resting view, never a previous token's zoom.
+  const [viewRaw, setViewRaw] = useState<{ key: string; source: ReadonlyArray<ChartCandleInput>; view: ChartViewport; total: number } | null>(null)
+  const viewValid = viewRaw != null && viewRaw.key === seriesKey && viewRaw.source === candles
+  const prepended = viewValid ? Math.max(0, total - viewRaw!.total) : 0
+  const view = viewValid ? clampViewport({ start: viewRaw!.view.start + prepended, end: viewRaw!.view.end + prepended }, total) : restView
   const isRest = sameViewport(view, restView)
   const setView = (v: ChartViewport) => {
     const next = clampViewport(v, total)
-    setViewRaw({ key: seriesKey, view: next, total })
+    setViewRaw({ key: seriesKey, source: candles, view: next, total })
     if (next.start === 0) loadOlderAtLeftEdge()
   }
   const resetView = () => { setViewRaw(null); setHover(null) }
@@ -414,9 +418,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // Continuity segments: real closes join only across gaps the timeframe's threshold allows; the line AND
   // its area break at every larger gap, and an isolated candle is a marker only.
   const sparseLine = lineMode ? buildSparseLineSegments(data, intervalSec) : null
-  const layout = lineXs ? { slot: 1, pos: lineXs.map((x) => x - 0.5), mode: 'time' as const } : chartXLayout(data.map((c) => c.t), intervalSec, total, plotW)
+  // Candles: TradingView-style bar spacing from the VISIBLE count (lib/chartGeometry.ts) — a short series
+  // fills ~82% of the plot (capped per bar), a long/zoomed one fills it, newest at the right with a modest
+  // offset; index-spaced, so no fake future timestamps and no empty timeline.
+  const geo = candleGeometry(data.length, total, plotW)
+  const layout = lineXs ? { slot: 1, pos: lineXs.map((x) => x - 0.5), mode: 'time' as const } : { slot: geo.spacing || 1, pos: geo.xs.map((x) => x / (geo.spacing || 1) - 0.5), mode: 'index' as const }
   const slot = layout.slot
-  const bodyW = lineMode ? 4 : Math.max(1, Math.min(slot * 0.66, 16))
+  const bodyW = lineMode ? 4 : geo.bodyW
   const xC = (i: number) => ((layout.pos[i] ?? i) + 0.5) * slot
 
   // Wheel / trackpad: vertical wheel zooms around the cursor, horizontal swipe pans. Needs a
@@ -464,12 +472,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     )
   }
 
-  let lo = Infinity
-  let hi = -Infinity
-  for (const c of data) { if (c.low < lo) lo = c.low; if (c.high > hi) hi = c.high }
-  const span = hi - lo > 0 ? hi - lo : hi * 0.02
-  const yMin = Math.max(0, lo - span * 0.08)
-  const yMax = hi + span * 0.08
+  // Robust autoscale from the VISIBLE candles (recomputed every render: timeframe, PRICE/MCAP, resize and
+  // new scans never keep an old domain). One extreme wick no longer squeezes the rest into a strip — it is
+  // drawn to the edge and its TRUE value is flagged; the candle's OHLC is never changed.
+  const domain = robustPriceDomain(data)
+  const yMin = domain.min
+  const yMax = domain.max
   const yP = (v: number) => priceTop + ((yMax - v) / (yMax - yMin)) * priceH
   const vFromY = (y: number) => yMax - ((y - priceTop) / priceH) * (yMax - yMin)
   const { ticks: yTicks } = niceTicks(yMin, yMax, compact ? 4 : 6)
@@ -640,7 +648,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           <span style={{ fontSize: '13px', fontWeight: 700, fontFamily: MONO, color: windowChange == null ? C.axisText : windowChange >= 0 ? C.bull : C.bear }}>
             {formatChartPct(windowChange)}
           </span>
-          {windowSpan && <span style={{ fontSize: '10px', color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{windowSpan}</span>}
+          {windowSpan && <span title="Change across the visible candles (first open to last close)" style={{ fontSize: '10px', color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{windowSpan} view</span>}
           <div role="group" aria-label="Chart value" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '7px', background: 'rgba(15,23,42,0.7)', border: `1px solid ${C.border}`, alignSelf: 'center' }}>
             {(['MCAP', 'PRICE'] as const).map((m) => {
               const disabled = m === 'MCAP' && !mcapAvailable
@@ -687,7 +695,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         <span>L <span style={{ color: readoutColor }}>{fmtValue(readout.low)}</span></span>
         <span>C <span style={{ color: readoutColor }}>{fmtValue(readout.close)}</span></span>
         <span>V <span style={{ color: C.text }}>{formatChartVolume(readout.volume)}</span></span>
-        <span>Chg <span style={{ color: readoutChange == null ? C.axisText : readoutChange >= 0 ? C.bull : C.bear }}>{formatChartPct(readoutChange)}</span></span>
+        <span title="This candle's change (its open to its close)">Candle <span style={{ color: readoutChange == null ? C.axisText : readoutChange >= 0 ? C.bull : C.bear }}>{formatChartPct(readoutChange)}</span></span>
       </div>
 
       <div ref={wrapRef} style={{ position: 'relative', width: '100%' }}>
@@ -715,7 +723,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             ))}
             <line x1={plotW + 0.5} x2={plotW + 0.5} y1={0} y2={volBot} stroke={C.border} strokeWidth={1} />
             <line x1={0} x2={W} y1={volBot + 0.5} y2={volBot + 0.5} stroke={C.border} strokeWidth={1} />
-            {hasVolume && <line x1={0} x2={plotW} y1={volTop - volGap / 2} y2={volTop - volGap / 2} stroke={C.grid} strokeWidth={1} />}
+            {hasVolume && <line x1={0} x2={W} y1={volTop - volGap / 2} y2={volTop - volGap / 2} stroke={C.border} strokeWidth={1} shapeRendering="crispEdges" />}
 
             {/* Sparse view: straight segments between REAL closes (no smoothing), broken at every gap the
                 continuity threshold does not support — line and area alike; isolated candles are markers only. */}
@@ -751,14 +759,41 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 const bodyH = Math.max(1, yP(Math.min(c.open, c.close)) - top)
                 return (
                   <g key={c.t}>
-                    <line x1={x} x2={x} y1={yP(c.high)} y2={yP(c.low)} stroke={clr} strokeWidth={1} shapeRendering="crispEdges" />
+                    {/* A wick beyond the robust display range is drawn to the edge (its true value is flagged below). */}
+                    <line x1={x} x2={x} y1={yP(Math.min(c.high, yMax))} y2={yP(Math.max(c.low, yMin))} stroke={clr} strokeWidth={1} shapeRendering="crispEdges" />
                     <rect x={x - bodyW / 2} y={top} width={bodyW} height={bodyH} fill={clr} shapeRendering="crispEdges" />
                   </g>
                 )
               })}
             </g>}
 
-            {/* Volume — same index scale as the candles above */}
+            {/* Clipped extreme wicks: marker at the edge with the TRUE high / low (raw OHLC untouched) */}
+            {!lineMode && domain.clippedHigh && (() => {
+              const i = data.reduce((b, c, k) => (c.high > data[b].high ? k : b), 0)
+              const x = xC(i)
+              const label = `▲ ${fmtValue(domain.trueMax, 4)}`
+              const tx = Math.max(4, Math.min(plotW - label.length * 6 - 4, x + 6))
+              return (
+                <g data-clipped="high" pointerEvents="none">
+                  <path d={`M${x - 3.5},${priceTop + 6} L${x + 3.5},${priceTop + 6} L${x},${priceTop + 1} Z`} fill={C.text} />
+                  <text x={tx} y={priceTop + 10} fill={C.text} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
+                </g>
+              )
+            })()}
+            {!lineMode && domain.clippedLow && (() => {
+              const i = data.reduce((b, c, k) => (c.low < data[b].low ? k : b), 0)
+              const x = xC(i)
+              const label = `▼ ${fmtValue(domain.trueMin, 4)}`
+              const tx = Math.max(4, Math.min(plotW - label.length * 6 - 4, x + 6))
+              return (
+                <g data-clipped="low" pointerEvents="none">
+                  <path d={`M${x - 3.5},${priceBot - 6} L${x + 3.5},${priceBot - 6} L${x},${priceBot - 1} Z`} fill={C.text} />
+                  <text x={tx} y={priceBot - 3} fill={C.text} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
+                </g>
+              )
+            })()}
+
+            {/* Volume — its own lower pane, same x and bar width as the candles above */}
             {hasVolume && (
               <g>
                 {data.map((c, i) => {
