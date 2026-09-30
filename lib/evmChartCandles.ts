@@ -33,7 +33,8 @@
 //     a trade naming two other tokens is rejected. Bucket width stays data-dependent (span / 20),
 //     so the chart keeps treating these as an irregular, non-standard interval.
 
-import { normalizeChartCandles, type ChartCandleInput } from './priceChartCandles.ts'
+import { buildChartTimeframes, normalizeChartCandles, type ChartCandleInput } from './priceChartCandles.ts'
+import { assessTimeframeSet, qualityRank, selectPresentationTimeframe, type ChartQualityState } from './chartQuality.ts'
 
 export type EvmChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
 
@@ -538,6 +539,8 @@ export type LadderResult = {
   v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
+  /** Alternate pools that returned evidence-valid candles, with their presentation quality (null when none ran). */
+  alternateSelection: { candidates: Array<{ pool: string; quality: ChartQualityState | null; timeframe: string | null; candles: number }>; chosen: string | null } | null
   skippedDueToRateLimit: number
   /** Legacy free-text reason (route diagnostics). */
   failureReason: string | null
@@ -552,6 +555,19 @@ export type LadderResult = {
  * alternate pools + 2 trades reads), so the cap is never the binding limit; it guards future changes.
  */
 export const EVM_MAX_OHLCV_CALLS = 10
+
+/**
+ * Best presentation a candle series offers across its genuine timeframes (pure; no calls). `score` ranks
+ * candidates: quality first, then the finer presentable timeframe (a pool that reads well at 15M beats one
+ * that only reads at 1D). `needsFallback` = its default timeframe was sparse.
+ */
+export function presentationQuality(chartCandles: LadderResult['chartCandles']): { quality: ChartQualityState | null; timeframe: string | null; count: number; score: number; needsFallback: boolean } {
+  const candles = normalizeChartCandles(chartCandles?.points ?? [])
+  const sel = selectPresentationTimeframe(assessTimeframeSet(buildChartTimeframes(candles, chartCandles?.intervalSec ?? null)))
+  const finer: Record<string, number> = { '5M': 4, '15M': 4, '1H': 3, '4H': 2, '1D': 1 }
+  const score = (sel.quality ? qualityRank(sel.quality) * 10 : 0) + (sel.key ? finer[sel.key] ?? 0 : 0)
+  return { quality: sel.quality, timeframe: sel.key, count: candles.length, score, needsFallback: sel.fallbackFrom != null || !(sel.quality === 'good' || sel.quality === 'usable') }
+}
 
 /**
  * The EVM chart ladder:
@@ -590,7 +606,7 @@ export async function runEvmCandleLadder(input: {
     tokenOhlcvAttempts: [], attemptedTimeframes: [], attemptedPools: [], tradePoolsAttempted: [], rejectedTradeReasons: {},
     rawTradeCount: 0, validTradePriceCount: 0, totalHttpCalls: 0, rateLimited: false, rateLimitedAt: null,
     coingeckoRateLimited: false, coingeckoAttempted: false, candleProvider: null, v4Swap: null, callBudget: { max: maxCalls, used: 0, remaining: maxCalls, stopReason: null },
-    skippedDueToRateLimit: 0, failureReason: null, candleFailure: null, attempts: [],
+    skippedDueToRateLimit: 0, failureReason: null, candleFailure: null, attempts: [], alternateSelection: null,
   }
   const finish = (): LadderResult => {
     r.callBudget.used = r.totalHttpCalls
@@ -715,14 +731,33 @@ export async function runEvmCandleLadder(input: {
   if (input.pools.length === 0) r.failureReason = 'primary_pool_missing'
   else if (await tryPool(input.pools[0], EVM_CHART_LADDER, 'pool')) return finish()
 
-  // Phase 3: up to two alternate pools, 15m rung only.
+  // Phase 3: up to two alternate pools, 15m rung only. Every alternate must pass the same evidence
+  // gates (proven side, meta agreement, live-price sanity) inside tryPool. CHART QUALITY, DISCLOSED:
+  // when the first evidence-valid alternate's candles are too sparse to present as a chart (e.g. 7 x 15M
+  // across 13 days), the second alternate — which this loop would already have been allowed to call —
+  // is tried too, and the one whose genuine candles present better is kept. At most the same 2 calls;
+  // the primary pool is never replaced for a prettier chart.
   if (!r.rateLimited && input.pools.length > 1) {
     let anyAlternateTried = false
+    type Kept = { priceChart: LadderResult['priceChart']; chartCandles: LadderResult['chartCandles']; selectedPool: LadderResult['selectedPool']; candleProvider: LadderResult['candleProvider']; rank: number; count: number }
+    let kept: Kept | null = null
+    const candidates: NonNullable<LadderResult['alternateSelection']>['candidates'] = []
     for (const pool of input.pools.slice(1, 3)) {
       if (!canCall()) break
       anyAlternateTried = true
-      if (await tryPool(pool, [EVM_CHART_LADDER[0]], 'alternate_pool')) return finish()
+      if (await tryPool(pool, [EVM_CHART_LADDER[0]], 'alternate_pool')) {
+        const q = presentationQuality(r.chartCandles)
+        candidates.push({ pool: pool.address, quality: q.quality, timeframe: q.timeframe, candles: q.count })
+        const cur: Kept = { priceChart: r.priceChart, chartCandles: r.chartCandles, selectedPool: r.selectedPool, candleProvider: r.candleProvider, rank: q.score, count: q.count }
+        if (!kept || cur.rank > kept.rank || (cur.rank === kept.rank && cur.count > kept.count)) kept = cur
+        if (!q.needsFallback) break
+      }
       if (r.rateLimited) break
+    }
+    if (kept) {
+      Object.assign(r, { priceChart: kept.priceChart, chartCandles: kept.chartCandles, selectedPool: kept.selectedPool, candleProvider: kept.candleProvider, failureReason: null })
+      r.alternateSelection = { candidates, chosen: kept.selectedPool?.address ?? null }
+      return finish()
     }
     if (anyAlternateTried) r.attempts.push({ route: 'alternate_pool', poolAddress: null, side: null, timeframe: null, httpStatus: null, rows: 0, validRows: 0, code: 'alternate_pool_failed' })
   }
@@ -856,6 +891,8 @@ export type ChartDebugInfo = {
   /** TEMPORARY, Preview-only: set by the route when the primary pool is a 64-hex PoolId with a proven
    * side, enabling the panel's "TEST V4 CANDLES" diagnostic. Absent otherwise. */
   v4Probe?: { pool: string; side: 'base' | 'quote' } | null
+  /** Evidence-valid alternate pools and their presentation quality (LadderResult.alternateSelection). */
+  alternateSelection?: LadderResult['alternateSelection']
   /** Uniswap V4 pool model details (PoolId, PoolManager, on-chain swap read) — null for other pools. */
   v4: {
     poolModel: 'uniswap_v4'; poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null

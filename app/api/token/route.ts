@@ -6255,6 +6255,7 @@ export async function POST(req: Request) {
     let _coingeckoRateLimited = false
     let chartV4Swap: LadderResult['v4Swap'] = null
     let chartCallBudget: LadderResult['callBudget'] | null = null
+    let chartAlternateSelection: LadderResult['alternateSelection'] = null
     let chartAttemptedPools: Array<{ address: string; name: string | null; liquidityUsd: number | null }> = []
     let poolOhlcvAttempts: Array<{ poolId: string; poolAddress: string; tokenPosition: 'base' | 'quote'; timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
     let tokenOhlcvAttempts: Array<{ timeframe: string; httpStatus?: number; rawPointCount: number; validPointCount: number; rejectedReason?: string }> = []
@@ -6372,6 +6373,7 @@ export async function POST(req: Request) {
       _coingeckoRateLimited = _ladder.coingeckoRateLimited
       chartV4Swap = _ladder.v4Swap
       chartCallBudget = _ladder.callBudget
+      chartAlternateSelection = _ladder.alternateSelection
       chartSelectedPoolForChart = _ladder.selectedPool
       chartUsedTokenLevelOhlcv = _ladder.usedTokenLevel
       chartUsedTradeReconstruction = _ladder.usedTradeReconstruction
@@ -6531,7 +6533,7 @@ export async function POST(req: Request) {
     const _v4Probe = process.env.VERCEL_ENV === 'preview' && _chartPrimaryPool && EVM_POOL_ID_RE.test(_chartPrimaryPool.address) && _chartPrimarySide
       ? { pool: _chartPrimaryPool.address.toLowerCase(), side: _chartPrimarySide }
       : null
-    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? { v4Probe: _v4Probe, ...buildEvmChartDebugInfo({
+    const chartDebug: ChartDebugInfo | undefined = chartDebugAuthorized ? { v4Probe: _v4Probe, alternateSelection: chartAlternateSelection, ...buildEvmChartDebugInfo({
       chain,
       network: _chartNetworkIdMap[chain] ?? null,
       coingeckoNetwork: _chartCoingeckoNetwork,
@@ -8590,6 +8592,9 @@ export async function POST(req: Request) {
         : { available: false, code: chartCandleFailure?.code ?? (noActivePools ? 'pool_not_indexed' : 'provider_empty'), message: chartCandleFailure?.message ?? candleFailureMessage(noActivePools ? 'pool_not_indexed' : 'provider_empty') },
       chartStatus,
       chartSource,
+      // How the V4 swap candles' times were resolved (exact log timestamps vs inferred) — the chart only
+      // presents native 5M as a default when they are exact. Null for every other source.
+      chartTimeResolution: chartSource === 'v4_swap_events' ? (chartV4Swap?.timeResolution ?? null) : null,
       chartReason,
       chartDataSource,
       // TEMPORARY, admin/debug-only (see buildEvmChartDebugInfo) — absent entirely for every other

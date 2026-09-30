@@ -43,6 +43,16 @@ import {
   withHistory,
   type HistoryWindowResult,
 } from '@/lib/chartHistory'
+import {
+  assessTimeframeSet,
+  chartSlotLayout,
+  formatSpanShort,
+  isPresentationUsable,
+  restingCandleTarget,
+  selectPresentationTimeframe,
+  sparseTimeframeTooltip,
+  type TimeframeQuality,
+} from '@/lib/chartQuality'
 
 const C = {
   panel: '#070d19',
@@ -90,6 +100,12 @@ export type PriceChartPanelProps = {
   loadHistory?: (beforeSec: number) => Promise<HistoryLoadResult>
   /** What the loaded candles are, for the "24h loaded · real V4 swaps" line (null hides it). */
   historySourceLabel?: string | null
+  /** Admin ?debug=1 scans only: shows per-timeframe presentation quality and why the timeframe was chosen. */
+  debug?: boolean
+  /** When the scan's candles were received (epoch ms) — the reference for the stale-data rule. Null disables it. */
+  referenceTimeMs?: number | null
+  /** False when native 5M timestamps are inferred/interpolated (V4 swaps without exact log times): 5M is never auto-selected. */
+  fiveMinuteExactTime?: boolean
 }
 
 export type HistoryLoadResult = HistoryWindowResult
@@ -138,7 +154,7 @@ type FiveMinuteState =
   | { status: 'ready'; candles: ChartCandle[] }
   | { status: 'failed'; message: string }
 
-type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean; reason: string | null; title: string }
+type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean; reason: string | null; title: string; sparse?: boolean }
 
 type HistoryState = { candles: ChartCandle[]; nextBeforeSec: number | null; hasMore: boolean; status: 'idle' | 'loading' | 'failed'; message: string | null; endReason?: string | null }
 
@@ -146,10 +162,17 @@ const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const IDLE_HISTORY: HistoryState = { candles: [], nextBeforeSec: null, hasMore: true, status: 'idle', message: null }
 const FIVE_MIN_SEC = 300
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   const scanSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
-  const defaultKey = useMemo(() => pickDefaultTimeframe(scanSet), [scanSet])
+  // PRESENTATION QUALITY (lib/chartQuality.ts): "has >= 2 genuine buckets" only means the data exists.
+  // The default is the finest timeframe whose genuine candles read as a coherent chart; a sparse one
+  // (e.g. 7 x 15M across 13 days) is never the default. Decided from the SCAN's own candles only — so
+  // history loaded later never flips the default mid-view — with zero extra requests.
+  const qualityOpts = useMemo(() => ({ referenceMs: referenceTimeMs ?? null, fiveMinuteExactTime: fiveMinuteExactTime !== false }), [referenceTimeMs, fiveMinuteExactTime])
+  const scanQuality = useMemo(() => assessTimeframeSet(scanSet, qualityOpts), [scanSet, qualityOpts])
+  const autoSelection = useMemo(() => selectPresentationTimeframe(scanQuality), [scanQuality])
+  const defaultKey = useMemo(() => autoSelection.key ?? pickDefaultTimeframe(scanSet), [autoSelection, scanSet])
 
   // On-demand OLDER history (hourly, genuine swaps), merged under the scan's candles for 1H / 4H / 1D.
   // Tied to the `candles` array it was loaded for, so a new scan starts from idle.
@@ -162,6 +185,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const newestMs = normalized.length > 0 ? normalized[normalized.length - 1].t : null
   const historyCoveredSec = (h: HistoryState) => (newestMs == null || cutoffMs == null ? 0 : newestMs / 1000 - (h.nextBeforeSec ?? cutoffMs / 1000))
   const canLoadOlder = historyEnabled && hist.hasMore && hist.status !== 'loading'
+  // Current (history-aware) quality per available timeframe, for chip states and status copy.
+  const tfQuality = useMemo(() => assessTimeframeSet(tfSet, qualityOpts), [tfSet, qualityOpts])
+  const clearerThan = (key: ChartTimeframeKey): ChartTimeframeKey | null => {
+    const order: ChartTimeframeKey[] = ['5M', '15M', '1H', '4H', '1D']
+    return order.slice(order.indexOf(key) + 1).find((k) => { const q = tfQuality[k]; return q != null && isPresentationUsable(q.quality) }) ?? null
+  }
   const [picked, setPicked] = useState<ChartTimeframeKey | null>(null)
   // Why an unavailable interval is off. Shown on tap/click (not only as a hover title) so the
   // reason reaches touch users too.
@@ -183,12 +212,17 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     if (!tf.available && historyEnabled && isHistoryTimeframe(tf.key) && hist.hasMore && hist.status !== 'failed') {
       return { key: tf.key, available: true, loadable: true, reason: null, title: hist.status === 'loading' ? 'Loading older candles…' : `Load older real ${tf.key} candles for this pool` }
     }
+    // Data available but not presentation-usable: still selectable (the genuine candles stay reachable),
+    // but dimmed and explained — never presented like normal chart coverage.
+    const q = tfQuality[tf.key]
+    const sparse = tf.available && q != null && !isPresentationUsable(q.quality)
     return {
       key: tf.key,
       available: tf.available,
       loadable: false,
       reason: tf.available ? null : (tf.unavailableReason ?? 'Needs more trading history'),
-      title: tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : (tf.unavailableReason ?? 'Needs more trading history'),
+      title: sparse ? sparseTimeframeTooltip(q!, clearerThan(tf.key)) : tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : (tf.unavailableReason ?? 'Needs more trading history'),
+      sparse,
     }
   })
 
@@ -216,6 +250,16 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const fmtValue = (v: number, digits?: number) => (valueMode === 'MCAP' ? formatCompactUsd(v, 2) : formatChartPrice(v, digits))
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
   const intervalSec = fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
+  // Quality of what is on screen (PRICE candles; MCAP is the same series scaled, so the same verdict).
+  const activeQuality: TimeframeQuality | null = activeKey && !fiveActive ? (tfQuality[activeKey] ?? null) : null
+  const userPicked = picked != null && activeKey === picked
+  const selectionReason = userPicked ? `user_selected_${activeKey!.toLowerCase()}` : autoSelection.reason
+  const fromQ = autoSelection.fallbackFrom ? scanQuality[autoSelection.fallbackFrom] : null
+  const qualityNote: string | null = activeQuality && !isPresentationUsable(activeQuality.quality)
+    ? `Sparse trading — ${activeQuality.candleCount} genuine ${activeKey} candle${activeQuality.candleCount === 1 ? '' : 's'} across ${formatSpanShort(activeQuality.spanSec)}${!userPicked ? '' : clearerThan(activeKey!) ? ` · ${clearerThan(activeKey!)} reads clearer` : ''}`
+    : !userPicked && fromQ && activeKey
+      ? `${autoSelection.fallbackFrom} sparse · ${fromQ.candleCount} genuine candles across ${formatSpanShort(fromQ.spanSec)} — ${activeKey} selected for clearer history`
+      : null
 
   const requestFive = async () => {
     if (!loadFiveMinute || five.status === 'loading') return
@@ -294,8 +338,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // Resting view: the newest candles that fit at a readable minimum width. The user can zoom out to
   // every loaded candle, or in to MIN_VIEW_CANDLES. The view is tied to the series it was set on,
   // so a timeframe switch or new scan returns to the resting view.
-  const minSlot = compact ? 4 : 5
-  const fit = Math.max(2, Math.floor(plotW / minSlot))
+  // Resting view: ~40 (phone) to ~100 (desktop) of the newest candles — a readable trading-chart density.
+  const fit = restingCandleTarget(plotW, compact)
   const total = series.length
   // Keyed by timeframe + newest candle: older history prepended to the same series shifts the view by
   // the number of added candles, so the candles the user is looking at stay in place.
@@ -314,9 +358,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
   const data = enough ? series.slice(view.start, view.end) : []
   const n = data.length
-  const slot = n > 0 ? plotW / n : plotW
+  // A short series is drawn at a fixed minimum slot count, right-aligned (newest at the right edge), so
+  // a handful of candles is not stretched across the whole plot. Candle order is untouched.
+  const { slot, offset: slotOffset } = chartSlotLayout(n, total, plotW)
   const bodyW = Math.max(1, Math.min(slot * 0.66, 16))
-  const xC = (i: number) => (i + 0.5) * slot
+  const xC = (i: number) => (i + slotOffset + 0.5) * slot
 
   // Wheel / trackpad: vertical wheel zooms around the cursor, horizontal swipe pans. Needs a
   // non-passive native listener so the page does not scroll while the cursor is on the chart.
@@ -399,7 +445,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   }
   const setCrosshair = (x: number, y: number) => {
     if (x < 0 || x > plotW || y < 0 || y > volBot) { setHover(null); return }
-    setHover({ idx: Math.max(0, Math.min(n - 1, Math.floor(x / slot))), y })
+    setHover({ idx: Math.max(0, Math.min(n - 1, Math.floor(x / slot) - slotOffset)), y })
   }
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     const g = gesture.current
@@ -482,7 +528,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             aria-disabled={!chip.available}
             aria-pressed={active}
             aria-busy={loading || undefined}
-            aria-label={chip.available ? `${chip.key} candles${chip.loadable ? ' (loads on demand)' : ''}` : `${chip.key} unavailable: ${chip.reason ?? 'Needs more trading history'}`}
+            aria-label={chip.available ? `${chip.key} candles${chip.loadable ? ' (loads on demand)' : ''}${chip.sparse ? ' (sparse)' : ''}` : `${chip.key} unavailable: ${chip.reason ?? 'Needs more trading history'}`}
             title={chip.title}
             onClick={() => {
               if (!chip.available) {
@@ -511,7 +557,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               fontFamily: MONO,
               letterSpacing: '0.04em',
               cursor: chip.available ? (loading ? 'progress' : 'pointer') : 'not-allowed',
-              color: active ? C.textStrong : chip.available ? '#94a3b8' : '#334155',
+              color: active ? C.textStrong : chip.available ? (chip.sparse ? '#56657a' : '#94a3b8') : '#334155',
               background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
               textDecoration: chip.available ? 'none' : 'line-through',
               textDecorationColor: 'rgba(51,65,85,0.8)',
@@ -519,6 +565,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             }}
           >
             {chip.key}
+            {chip.sparse && <span aria-hidden style={{ display: 'inline-block', width: '4px', height: '4px', marginLeft: '3px', borderRadius: '50%', background: '#b45309', verticalAlign: 'middle' }} />}
           </button>
         )
       })}
@@ -709,6 +756,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         </span>
         {footnote && <span>{footnote}</span>}
       </div>
+      {qualityNote && (
+        <div role="status" data-chart-quality={activeQuality?.quality ?? undefined} data-selected-timeframe-reason={selectionReason} style={{ marginTop: '2px', fontSize: '10px', color: '#b7791f', fontFamily: MONO }}>
+          {qualityNote}
+        </div>
+      )}
       {(historySourceLabel || historyEnabled) && (
         <div role="status" data-history-end={hist.endReason ?? undefined} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '2px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
           {historySourceLabel ? <span>{loadedSpanLabel(series[0].t, latest.t, intervalSec ?? 0)} · {historySourceLabel}</span> : <span />}
@@ -726,6 +778,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             </span>
           )}
         </div>
+      )}
+      {debug && (
+        <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(2,6,23,0.6)', color: '#94a3b8', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+          {JSON.stringify({ selectedTimeframe: activeKey, selectedTimeframeReason: selectionReason, timeframeQuality: Object.values(tfQuality).map((q) => ({ timeframe: q!.timeframe, candleCount: q!.candleCount, span: formatSpanShort(q!.spanSec), expectedBuckets: q!.expectedBuckets, density: q!.density, largestGapBuckets: q!.largestGapBuckets, recentCoverage: q!.recentCoverage, quality: q!.quality, rejectionReason: q!.rejectionReason })) }, null, 1)}
+        </pre>
       )}
     </div>
   )

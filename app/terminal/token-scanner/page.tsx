@@ -880,6 +880,8 @@ type ScanResult = {
   chartCandleStatus?: { available: boolean; code: string | null; message: string | null } | null
   chartStatus?: 'ok' | 'snapshot_only' | 'unavailable_with_reason' | 'no_candles' | 'fallback_snapshot_only' | 'partial' | null
   chartSource?: string | null
+  /** V4 swap candles only: 'exact_log_timestamps' | 'block_timestamp_lookup' | 'inferred_block_time'. */
+  chartTimeResolution?: string | null
   chartReason?: string | null
   chartDataSource?: 'primary' | 'fallback' | 'none' | null
   /** TEMPORARY, admin/debug-only: candle-resolution attempt trail. Absent for every other caller —
@@ -4887,6 +4889,8 @@ export default function TerminalTokenScanner() {
   // shape carries LP-lock/honeypot/tax/owner fields that have no honest Solana value, and forcing
   // them would be exactly the fake-parity this task forbids.
   const [solanaResult, setSolanaResult] = useState<SolanaBetaResult | null>(null)
+  // When the current scan result arrived — the reference time for the chart's stale-data rule (set in handlers, never during render).
+  const [chartReferenceMs, setChartReferenceMs] = useState<number | null>(null)
   // DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): tracks the explicit, user-triggered
   // deep creator check separately from the normal scan's loading state — this never fires from
   // handleScan itself, only from runSolanaDeepCreatorCheck below, on a button click.
@@ -5343,6 +5347,7 @@ export default function TerminalTokenScanner() {
           setSolanaResult(null)
         } else {
           setSolanaResult(json as SolanaBetaResult)
+          setChartReferenceMs(Date.now())
         }
       } catch {
         setError('Solana scan failed. Try again shortly.')
@@ -5574,6 +5579,7 @@ export default function TerminalTokenScanner() {
           scanAudit: json.scanAudit ?? null,
         }
         setResult(mapped)
+        setChartReferenceMs(Date.now())
         if (json.devIntel) {
           const tokenDevIntel = json.devIntel as DevWalletIntel
           setDevIntel(tokenDevIntel)
@@ -5621,6 +5627,7 @@ export default function TerminalTokenScanner() {
         setSolanaDeepError(typeof json?.error === 'string' ? json.error : 'Deep creator check failed. Try again shortly.')
       } else {
         setSolanaResult(json as SolanaBetaResult)
+        setChartReferenceMs(Date.now())
       }
     } catch {
       setSolanaDeepError('Deep creator check failed. Try again shortly.')
@@ -5650,6 +5657,7 @@ export default function TerminalTokenScanner() {
         setSolanaClusterError(typeof json?.error === 'string' ? json.error : 'Deep cluster check failed. Try again shortly.')
       } else {
         setSolanaResult(json as SolanaBetaResult)
+        setChartReferenceMs(Date.now())
       }
     } catch {
       setSolanaClusterError('Deep cluster check failed. Try again shortly.')
@@ -6371,6 +6379,8 @@ export default function TerminalTokenScanner() {
                         declaredIntervalSec={chartIntervalSec(sr.ohlcv.timeframe)}
                         loadHistory={makeSolanaHistoryLoader(sr.mintAddress, sr.ohlcv.poolAddress, sr.ohlcv.tokenSide)}
                         historySourceLabel="real pool candles"
+                        debug={typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1'}
+                        referenceTimeMs={chartReferenceMs}
                       />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
@@ -8236,6 +8246,9 @@ export default function TerminalTokenScanner() {
                           marketCapBasis={_mcapSupply.enabled ? _mcapSupply.basis : null}
                           loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartCandles?.tokenSide ?? null)}
                           historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : result.chartSource === 'pool_ohlcv' && result.chartCandles ? 'real pool candles' : null}
+                          debug={Boolean(result.chartDebug)}
+                          referenceTimeMs={chartReferenceMs}
+                          fiveMinuteExactTime={result.chartSource !== 'v4_swap_events' || result.chartTimeResolution === 'exact_log_timestamps'}
                         />
                       )
                     }
