@@ -32,6 +32,7 @@ import {
   type CandleProvider,
   type EvmChartPoint,
 } from '../evmChartCandles.ts'
+import { buildCoverageMeta, type ChartCoverageMeta } from '../chartQuality.ts'
 
 export const ON_DEMAND_CHAINS = ['eth', 'base', 'bnb', 'robinhood'] as const
 export type OnDemandChain = (typeof ON_DEMAND_CHAINS)[number]
@@ -47,7 +48,7 @@ const RATE_LIMITED_TTL_MS = 30_000
 const VERIFIED_POOL_TTL_MS = 30 * 60_000
 
 export type OnDemandResult =
-  | { ok: true; timeframe: OnDemandTimeframe; intervalSec: number; points: EvmChartPoint[]; source: CandleProvider }
+  | { ok: true; timeframe: OnDemandTimeframe; intervalSec: number; points: EvmChartPoint[]; source: CandleProvider; /** Requested/received window (limit x interval ending at the answer time; pool creation when known). */ coverage?: ChartCoverageMeta }
   | { ok: false; timeframe: OnDemandTimeframe | null; code: CandleFailureCode | 'invalid_request'; message: string }
 
 export type FetchJson = (url: string) => Promise<{ json: unknown; httpStatus: number | null }>
@@ -144,14 +145,21 @@ export async function loadOnDemandCandles(
       side = resolveEvmPoolTokenSide(data as Record<string, unknown>, token, network)
       if (!side) return { result: fail(timeframe, 'token_side_unresolved'), providerCalls: calls }
       rememberVerifiedChartPool(chain, token, pool, side, now())
+      const createdMs = Date.parse(String(((data as { attributes?: Record<string, unknown> }).attributes ?? {}).pool_created_at ?? ''))
+      if (Number.isFinite(createdMs) && createdMs > 0) poolCreatedAtSec.set(`${chain}:${pool.toLowerCase()}`, Math.floor(createdMs / 1000))
     }
+    // Coverage of THIS request: `limit` x interval ending now (no extra call; pool age only when already read).
+    const coverageOf = (points: EvmChartPoint[]) => buildCoverageMeta({
+      requestEndSec: Math.floor(now() / 1000), intervalSec: tf.intervalSec, limit: tf.limit, points,
+      poolCreatedSec: poolCreatedAtSec.get(`${chain}:${pool.toLowerCase()}`) ?? poolCreatedAtSec.get(`${chain}:${pool}`) ?? null,
+    })
     if (cgPoolOk && opts.fetchCoingecko && COINGECKO_ONCHAIN_NETWORK[chain]) {
       calls++
       const cg = await opts.fetchCoingecko(chain, pool.toLowerCase(), { resolution: tf.resolution, aggregate: tf.aggregate, limit: tf.limit }, side)
       const cgOut = classifyOhlcvResponse('pool', cg.httpStatus, cg.json)
       // Its meta, when it names the token, must agree with the proven side (as in the history lane).
       const cgMetaOk = !(cg.json as { meta?: unknown } | null)?.meta || coingeckoMetaTokenSide(cg.json, token) == null || coingeckoMetaTokenSide(cg.json, token) === side
-      if (cgOut.code === 'ok' && cgMetaOk) return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain' }, providerCalls: calls }
+      if (cgOut.code === 'ok' && cgMetaOk) return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: cgOut.normalized.points, source: 'coingecko_onchain', coverage: coverageOf(cgOut.normalized.points) }, providerCalls: calls }
     }
     if (!gtPoolOk) return { result: fail(timeframe, 'provider_unsupported_pool_id'), providerCalls: calls }
     if (calls >= ON_DEMAND_MAX_PROVIDER_CALLS) return { result: fail(timeframe, 'call_budget_exhausted'), providerCalls: calls }
@@ -160,7 +168,7 @@ export async function loadOnDemandCandles(
     const raw = await fetchJson(url)
     const { code, normalized } = classifyOhlcvResponse('pool', raw.httpStatus, raw.json)
     if (code !== 'ok') return { result: fail(timeframe, code), providerCalls: calls }
-    return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: normalized.points, source: 'geckoterminal' }, providerCalls: calls }
+    return { result: { ok: true, timeframe, intervalSec: tf.intervalSec, points: normalized.points, source: 'geckoterminal', coverage: coverageOf(normalized.points) }, providerCalls: calls }
   })()
   inFlight.set(key, work)
   try {

@@ -34,7 +34,7 @@
 //     so the chart keeps treating these as an irregular, non-standard interval.
 
 import { buildChartTimeframes, normalizeChartCandles, type ChartCandleInput } from './priceChartCandles.ts'
-import { assessTimeframeSet, qualityRank, selectPresentationTimeframe, type ChartQualityState } from './chartQuality.ts'
+import { assessTimeframeSet, buildCoverageMeta, qualityRank, resolveCoverageWindow, selectPresentationTimeframe, type ChartCoverageMeta, type ChartQualityState } from './chartQuality.ts'
 
 export type EvmChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
 
@@ -509,7 +509,7 @@ export type LadderPriceChart = { timeframe: EvmChartRung['key']; points: EvmChar
 export type LadderResult = {
   priceChart: LadderPriceChart | null
   /** poolAddress/tokenSide are set only for pool OHLCV — the proven source the on-demand 5M read reuses. */
-  chartCandles: { intervalSec: number; points: EvmChartPoint[]; poolAddress?: string; tokenSide?: 'base' | 'quote' } | null
+  chartCandles: { intervalSec: number; points: EvmChartPoint[]; poolAddress?: string; tokenSide?: 'base' | 'quote'; /** The window this read requested/received (lib/chartQuality.ts). */ coverage?: ChartCoverageMeta | null } | null
   selectedPool: { address: string; name: string | null } | null
   /** Always false — token-level OHLCV is no longer requested (kept for the route's diagnostics shape). */
   usedTokenLevel: boolean
@@ -563,7 +563,8 @@ export const EVM_MAX_OHLCV_CALLS = 10
  */
 export function presentationQuality(chartCandles: LadderResult['chartCandles']): { quality: ChartQualityState | null; timeframe: string | null; count: number; score: number; needsFallback: boolean } {
   const candles = normalizeChartCandles(chartCandles?.points ?? [])
-  const sel = selectPresentationTimeframe(assessTimeframeSet(buildChartTimeframes(candles, chartCandles?.intervalSec ?? null)))
+  const window = resolveCoverageWindow(chartCandles?.coverage ?? null)
+  const sel = selectPresentationTimeframe(assessTimeframeSet(buildChartTimeframes(candles, chartCandles?.intervalSec ?? null), { coverageFor: () => window }))
   const finer: Record<string, number> = { '5M': 4, '15M': 4, '1H': 3, '4H': 2, '1D': 1 }
   const score = (sel.quality ? qualityRank(sel.quality) * 10 : 0) + (sel.key ? finer[sel.key] ?? 0 : 0)
   return { quality: sel.quality, timeframe: sel.key, count: candles.length, score, needsFallback: sel.fallbackFrom != null || !(sel.quality === 'good' || sel.quality === 'usable') }
@@ -598,6 +599,8 @@ export async function runEvmCandleLadder(input: {
   maxOhlcvCalls?: number
   /** Overrides the per-provider V4 PoolId support flags (tests only). */
   poolIdSupport?: { coingecko?: boolean; geckoterminal?: boolean }
+  /** When the candle requests are answered (epoch seconds) — the end of their coverage window. Defaults to now. */
+  nowSec?: number
 }, deps: LadderDeps): Promise<LadderResult> {
   const maxCalls = input.maxOhlcvCalls ?? EVM_MAX_OHLCV_CALLS
   const r: LadderResult = {
@@ -620,10 +623,18 @@ export async function runEvmCandleLadder(input: {
   }
   const networkId = input.networkId
   let budgetExhausted = false
-  const accept = (rung: EvmChartRung, points: EvmChartPoint[]) => {
+  const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000)
+  // Coverage metadata comes from the request just made (its limit, end time, and the pool's own
+  // pool_created_at when the provider reported it) — no extra call.
+  const poolCreatedSec = (pool: LadderPool | undefined): number | null => {
+    const raw = (pool?.pool as { attributes?: { pool_created_at?: unknown } } | undefined)?.attributes?.pool_created_at
+    const ms = typeof raw === 'string' ? Date.parse(raw) : NaN
+    return Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : null
+  }
+  const accept = (rung: EvmChartRung, points: EvmChartPoint[], pool?: LadderPool) => {
     const { window, deep } = splitChartWindow(points, rung.windowLimit)
     r.priceChart = { timeframe: rung.key, points: window, sourceStatus: 'ok' }
-    r.chartCandles = { intervalSec: rung.intervalSec, points: deep }
+    r.chartCandles = { intervalSec: rung.intervalSec, points: deep, coverage: buildCoverageMeta({ requestEndSec: nowSec, intervalSec: rung.intervalSec, limit: rung.requestLimit, points, poolCreatedSec: poolCreatedSec(pool) }) }
   }
   const canCall = () => {
     if (r.rateLimited) { r.skippedDueToRateLimit++; return false }
@@ -677,7 +688,7 @@ export async function runEvmCandleLadder(input: {
         return false
       }
       if (code === 'ok') {
-        accept(rung, normalized.points)
+        accept(rung, normalized.points, pool)
         r.chartCandles = { ...r.chartCandles!, poolAddress: pool.address, tokenSide: side }
         r.selectedPool = { address: pool.address, name: pool.name }
         r.candleProvider = 'geckoterminal'
@@ -718,7 +729,7 @@ export async function runEvmCandleLadder(input: {
     r.attempts.push({ route: 'coingecko_pool', poolAddress: cgPool.address, side, timeframe: rung.key, httpStatus: raw.httpStatus, rows: classified.normalized.rawPointCount, validRows: classified.normalized.validPointCount, code })
     if (code === 'provider_rate_limited') r.coingeckoRateLimited = true
     if (code === 'ok' && side) {
-      accept(rung, classified.normalized.points)
+      accept(rung, classified.normalized.points, cgPool)
       r.chartCandles = { ...r.chartCandles!, poolAddress: cgPool.address, tokenSide: side }
       r.selectedPool = { address: cgPool.address, name: cgPool.name }
       r.candleProvider = 'coingecko_onchain'
@@ -778,7 +789,9 @@ export async function runEvmCandleLadder(input: {
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
     if (v4.ok && v4.candles.length >= 2) {
       r.priceChart = { timeframe: '24h', points: v4.candles.slice(-96), sourceStatus: 'ok' }
-      r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}) }
+      // A read that paged all the way to its 24h target proved that whole window (every log page read).
+      const v4Coverage = buildCoverageMeta({ requestEndSec: nowSec, intervalSec: v4.intervalSec, limit: null, points: v4.candles, poolCreatedSec: poolCreatedSec(v4Pool), windowSec: v4.budgetStopReason === 'target_window' ? 24 * 3600 : null, windowProven: v4.budgetStopReason === 'target_window' })
+      r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}), coverage: v4Coverage }
       r.selectedPool = { address: v4Pool.address, name: v4Pool.name }
       r.candleProvider = 'v4_swap_events'
       r.failureReason = null

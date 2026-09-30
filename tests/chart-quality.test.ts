@@ -8,7 +8,7 @@ import { buildChartTimeframes, normalizeChartCandles, pickDefaultTimeframe, type
 import {
   assessTimeframeQuality,
   assessTimeframeSet,
-  chartSlotLayout,
+  chartXLayout,
   MIN_DISPLAY_SLOTS,
   restingCandleTarget,
   selectPresentationTimeframe,
@@ -144,18 +144,23 @@ test('16-22. chain-neutral: one policy for every source (15m pool OHLCV, 5m V4 s
   assert.doesNotMatch(read('lib/chartQuality.ts'), /\bchain\b.*===|solana|robinhood|'base'|'bnb'|'eth'/i, 'no chain-specific thresholds')
 })
 
-test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop) candles; short series drawn right-aligned, not stretched', () => {
+test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop); a short series keeps its real time gaps, right-aligned, never stretched', () => {
   assert.equal(restingCandleTarget(320, true), 40)
   assert.equal(restingCandleTarget(560, false), 62)
   assert.equal(restingCandleTarget(1400, false), 100)
-  const short = chartSlotLayout(7, 7, 720)
-  assert.deepEqual([short.slot, short.offset], [720 / MIN_DISPLAY_SLOTS, MIN_DISPLAY_SLOTS - 7])
-  const full = chartSlotLayout(90, 400, 900)
-  assert.deepEqual([full.slot, full.offset], [10, 0])
+  // 6 x 5M: two adjacent, then a 10-bucket gap, then the rest — positions keep the gap, newest at the right edge.
+  const times = [0, 1, 11, 12, 13, 14].map((k) => T0 + k * 300_000)
+  const short = chartXLayout(times, 300, 6, 720)
+  assert.equal(short.mode, 'time')
+  assert.equal(short.slot, 720 / MIN_DISPLAY_SLOTS)
+  assert.deepEqual(short.pos, [9, 10, 20, 21, 22, 23])
+  assert.equal(short.pos[2] - short.pos[1], 10, 'the real 10-bucket gap is preserved')
+  const full = chartXLayout(Array.from({ length: 90 }, (_, i) => T0 + i * M15), 900, 400, 900)
+  assert.deepEqual([full.mode, full.slot, full.pos[5]], ['index', 10, 5])
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /const fit = restingCandleTarget\(plotW, compact\)/)
-  assert.match(panel, /const xC = \(i: number\) => \(i \+ slotOffset \+ 0\.5\) \* slot/)
-  assert.match(panel, /Math\.floor\(x \/ slot\) - slotOffset/)
+  assert.match(panel, /const layout = chartXLayout\(data\.map\(\(c\) => c\.t\), intervalSec, total, plotW\)/)
+  assert.match(panel, /nearestCandleIndex\(x, layout\)/)
 })
 
 test('UI: sparse chips are dimmed with the explanation; status + ?debug=1 quality output', () => {
@@ -163,7 +168,7 @@ test('UI: sparse chips are dimmed with the explanation; status + ?debug=1 qualit
   assert.match(panel, /title: sparse \? sparseTimeframeTooltip\(q!, clearerThan\(tf\.key\)\)/)
   assert.match(panel, /selected for clearer history/)
   assert.match(panel, /Sparse trading — /)
-  assert.match(panel, /selectedTimeframeReason: selectionReason, timeframeQuality:/)
+  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*timeframeQuality:/)
   assert.match(read('app/terminal/token-scanner/page.tsx'), /debug=\{Boolean\(result\.chartDebug\)\}/)
 })
 
@@ -191,7 +196,7 @@ function deps(byPool: Record<string, LadderFetchResult>, calls: string[]): Ladde
 
 for (const chain of ['base', 'eth', 'bnb', 'robinhood'] as const) {
   const net = EVM_CHART_NETWORK[chain]
-  const run = (d: LadderDeps) => runEvmCandleLadder({ pools: [pool(net, P1), pool(net, P2), pool(net, P3)], contract: TOKEN, networkId: net, currentPriceUsd: 1 }, d)
+  const run = (d: LadderDeps) => runEvmCandleLadder({ pools: [pool(net, P1), pool(net, P2), pool(net, P3)], contract: TOKEN, networkId: net, currentPriceUsd: 1, nowSec: END }, d)
 
   test(`${chain} 11/12. sparse first alternate + valid denser second alternate -> the denser one; <= the same 2 alternate calls`, async () => {
     const calls: string[] = []
@@ -214,7 +219,7 @@ for (const chain of ['base', 'eth', 'bnb', 'robinhood'] as const) {
 
   test(`${chain} 12. a second alternate that fails evidence (no proven side) is never chosen for a prettier chart`, async () => {
     const calls: string[] = []
-    const r = await runEvmCandleLadder({ pools: [pool(net, P1), pool(net, P2), pool(net, P3, 'none')], contract: TOKEN, networkId: net, currentPriceUsd: 1 }, deps({ [P2]: ok(SPARSE), [P3]: ok(DENSE) }, calls))
+    const r = await runEvmCandleLadder({ pools: [pool(net, P1), pool(net, P2), pool(net, P3, 'none')], contract: TOKEN, networkId: net, currentPriceUsd: 1, nowSec: END }, deps({ [P2]: ok(SPARSE), [P3]: ok(DENSE) }, calls))
     assert.equal(r.selectedPool?.address, P2)
     assert.equal(calls.some((c) => c.startsWith(P3)), false)
   })
@@ -310,4 +315,137 @@ test('PRICE/MCAP unchanged and zero provider-call delta for all quality inputs',
   assert.doesNotMatch(read('lib/chartQuality.ts'), /\bfetch\(|Date\.now\(\)|Math\.random\(\)/)
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /referenceTimeMs=\{chartReferenceMs\}/)
+})
+
+// ── Loaded-window coverage (live bug #2: 6 x 5M candles in a 2h loaded window) ───────────────────────
+import { buildCoverageMeta, resolveCoverageWindow, type ChartCoverageMeta } from '../lib/chartQuality.ts'
+import { loadOnDemandCandles, resetOnDemandCandleState } from '../lib/server/chartCandlesOnDemand.ts'
+
+const M5 = 300_000
+const WEND = T0 + 30 * D1
+const ESTABLISHED = Math.floor((WEND - 120 * D1) / 1000)
+const pts = (ts: number[]) => ts.map((t) => ({ timestamp: new Date(t).toISOString() }))
+const winOf = (meta: ChartCoverageMeta) => resolveCoverageWindow(meta)
+const q5 = (cs: ChartCandle[], meta: ChartCoverageMeta | null) => assessTimeframeQuality(cs, 300, { timeframe: '5M', coverage: meta ? winOf(meta) : null, poolCreatedMs: meta?.poolCreatedSec != null ? meta.poolCreatedSec * 1000 : null })
+const meta2h = (ts: number[], poolCreatedSec: number | null = ESTABLISHED) => buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 24, points: pts(ts), poolCreatedSec })
+
+test('ROOT CAUSE (verified): judged only first->last, a 6-candle 25-minute burst rated "good"', () => {
+  const burst = series(Array.from({ length: 6 }, (_, i) => WEND - 30 * 60_000 + i * M5))
+  assert.equal(assessTimeframeQuality(burst, 300, { timeframe: '5M' }).quality, 'good', 'unknown window keeps the old candle-span logic')
+  assert.equal(q5(burst, meta2h(burst.map((c) => c.t))).quality, 'sparse', 'against the loaded 2h window it is sparse')
+})
+
+test('LIVE REGRESSION: established pool, 5M, 2h loaded, 6 genuine candles clustered in ~25 min -> sparse, never auto-selected, nothing fabricated', () => {
+  const ts = Array.from({ length: 6 }, (_, i) => WEND - 55 * 60_000 + i * M5)
+  const cs = series(ts)
+  const meta = meta2h(ts)
+  const window = winOf(meta)!
+  assert.deepEqual([window.basis, (window.endMs - window.startMs) / 60_000], ['requested_window', 120])
+  const q = q5(cs, meta)
+  assert.deepEqual([q.quality, q.rejectionReason, q.candleCount], ['sparse', 'insufficient_loaded_window_coverage', 6])
+  assert.deepEqual([q.candleSpanExpectedBuckets, q.coverageExpectedBuckets, q.clusterDensity, q.coverageDensity], [6, 25, 1, 0.24])
+  assert.deepEqual([q.coverageSpanSec, q.effectiveCoverageSpanSec, q.poolAgeSec], [7200, 7200, 120 * 86_400])
+  const set = setOf(cs, 300)
+  const sel = selectPresentationTimeframe(assessTimeframeSet(set, { coverageFor: () => window, poolCreatedMs: ESTABLISHED * 1000 }))
+  assert.notEqual(sel.key, '5M')
+  assert.deepEqual(set.timeframes.find((t) => t.key === '5M')!.candles.map((c) => c.t), ts, 'all 6 genuine candles preserved')
+  for (const tf of set.timeframes) assert.ok(tf.candles.length <= 6)
+})
+
+test('LIVE REGRESSION fallback: 5M sparse over its loaded day -> the finest coarser usable timeframe (15M)', () => {
+  const ts = Array.from({ length: 32 }, (_, i) => WEND - 24 * H1 + i * 45 * 60_000)
+  const meta = buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 288, points: pts(ts), poolCreatedSec: ESTABLISHED })
+  const window = winOf(meta)!
+  const q = assessTimeframeSet(setOf(series(ts), 300), { coverageFor: () => window, poolCreatedMs: ESTABLISHED * 1000 })
+  assert.deepEqual([q['5M']!.quality, q['15M']!.quality], ['sparse', 'usable'])
+  assert.deepEqual([selectPresentationTimeframe(q).key, selectPresentationTimeframe(q).reason], ['15M', '5m_sparse_fallback_to_15m'])
+})
+
+test('1. young 30-minute pool + 6 x 5M -> usable (window clamped to pool creation)', () => {
+  const created = WEND / 1000 - 30 * 60
+  const ts = Array.from({ length: 6 }, (_, i) => WEND - 30 * 60_000 + i * M5)
+  const meta = buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 288, points: pts(ts), poolCreatedSec: created })
+  const q = q5(series(ts), meta)
+  assert.ok(q.quality === 'usable' || q.quality === 'good', q.quality)
+  assert.deepEqual([q.effectiveCoverageSpanSec, q.poolAgeSec], [1800, 1800])
+})
+
+test('2/3/6. established 2h window: 20/24 -> good; 6/24 spread -> sparse; 24/24 -> good', () => {
+  const ts20 = Array.from({ length: 20 }, (_, i) => WEND - 2 * H1 + (i + 4) * M5)
+  assert.equal(q5(series(ts20), meta2h(ts20)).quality, 'good')
+  const ts6 = [0, 5, 9, 14, 19, 23].map((k) => WEND - 2 * H1 + k * M5)
+  assert.equal(q5(series(ts6), meta2h(ts6)).quality, 'sparse')
+  const ts24 = Array.from({ length: 24 }, (_, i) => WEND - 2 * H1 + (i + 1) * M5)
+  assert.equal(q5(series(ts24), meta2h(ts24)).quality, 'good')
+})
+
+test('4/5. a burst at the WEND or the START of a large loaded window is sparse', () => {
+  const day = (ts: number[]) => buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 288, points: pts(ts), poolCreatedSec: ESTABLISHED })
+  const atEnd = Array.from({ length: 10 }, (_, i) => WEND - 50 * 60_000 + i * M5)
+  assert.equal(q5(series(atEnd), day(atEnd)).quality, 'sparse')
+  const atStart = Array.from({ length: 10 }, (_, i) => WEND - 24 * H1 + i * M5)
+  assert.equal(q5(series(atStart), day(atStart)).quality, 'sparse')
+})
+
+test('7. unknown window: conservative candle-span logic, never a guessed window; count-truncated page proves only its own range', () => {
+  const ts = Array.from({ length: 6 }, (_, i) => WEND - 30 * 60_000 + i * M5)
+  const q = q5(series(ts), null)
+  assert.deepEqual([q.coverageKnown, q.coverageExpectedBuckets, q.quality], [false, 6, 'good'])
+  // Pool age unknown: the window is what was returned, up to the answer time (a young pool is never penalized by a guess).
+  const noAge = resolveCoverageWindow(buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 288, points: pts(ts) }))!
+  assert.deepEqual([noAge.basis, noAge.startMs, noAge.endMs], ['returned_range', ts[0], WEND])
+  // A full (count-truncated) page proves nothing older than its oldest row.
+  const full = Array.from({ length: 288 }, (_, i) => WEND - 288 * M5 + i * M5)
+  const trunc = resolveCoverageWindow(buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: 288, points: pts(full), poolCreatedSec: ESTABLISHED }))!
+  assert.deepEqual([trunc.basis, trunc.startMs], ['returned_range', full[0]])
+  // A proven time window (every V4 log page read) is used as-is.
+  const v4 = resolveCoverageWindow(buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: null, points: pts(ts), windowSec: 86_400, windowProven: true }))!
+  assert.deepEqual([v4.basis, v4.startMs], ['requested_window', WEND - D1])
+  assert.equal(resolveCoverageWindow(null), null)
+})
+
+test('8. PRICE/MCAP identical under the loaded-window rule', () => {
+  const ts = Array.from({ length: 6 }, (_, i) => WEND - 55 * 60_000 + i * M5)
+  const cs = series(ts)
+  const w = winOf(meta2h(ts))
+  assert.deepEqual(assessTimeframeQuality(scaleCandlesToMarketCap(cs, 7e7), 300, { timeframe: '5M', coverage: w }), assessTimeframeQuality(cs, 300, { timeframe: '5M', coverage: w }))
+})
+
+test('9. exact-timestamp V4 rule unchanged: inferred 5M stays excluded even with a proven window', () => {
+  const ts = Array.from({ length: 288 }, (_, i) => WEND - D1 + (i + 1) * M5)
+  const w = resolveCoverageWindow(buildCoverageMeta({ requestEndSec: WEND / 1000, intervalSec: 300, limit: null, points: pts(ts), windowSec: 86_400, windowProven: true }))
+  const set = setOf(series(ts), 300)
+  assert.equal(selectPresentationTimeframe(assessTimeframeSet(set, { coverageFor: () => w })).key, '5M')
+  const inferred = assessTimeframeSet(set, { coverageFor: () => w, fiveMinuteExactTime: false })
+  assert.deepEqual([inferred['5M']!.rejectionReason, selectPresentationTimeframe(inferred).key], ['inferred_timestamps', '15M'])
+})
+
+test('10. zero provider-call delta: coverage rides on requests already made', async () => {
+  // On-demand 5M: the same 2 calls (pool proof + OHLCV) as before, now carrying the request window.
+  resetOnDemandCandleState()
+  const calls: string[] = []
+  const TOKEN = '0xabcdef0123456789abcdef0123456789abcdef01'
+  const POOL = '0x1111111111111111111111111111111111111111'
+  const nowMs = WEND
+  const rows = Array.from({ length: 6 }, (_, i) => [Math.floor((WEND - 55 * 60_000 + i * M5) / 1000), 1, 1.1, 0.9, 1.05, 5])
+  const fetchJson = async (url: string) => {
+    calls.push(url)
+    if (/\/ohlcv\//.test(url)) return { httpStatus: 200, json: { data: { attributes: { ohlcv_list: rows } } } }
+    return { httpStatus: 200, json: { data: { attributes: { pool_created_at: new Date(ESTABLISHED * 1000).toISOString() }, relationships: { base_token: { data: { id: `base_${TOKEN}` } }, quote_token: { data: { id: 'base_0x4200000000000000000000000000000000000006' } } } } } }
+  }
+  const out = await loadOnDemandCandles({ chain: 'base', token: TOKEN, pool: POOL, timeframe: '5m' }, fetchJson, { now: () => nowMs })
+  assert.equal(out.providerCalls, 2)
+  assert.equal(calls.length, 2)
+  assert.ok(out.result.ok)
+  const cov = out.result.ok ? out.result.coverage! : null
+  assert.deepEqual([cov?.requestedLimit, cov?.returnedRows, cov?.requestEndSec, cov?.requestedStartSec, cov?.poolCreatedSec], [288, 6, WEND / 1000, WEND / 1000 - 86_400, ESTABLISHED])
+  assert.equal(q5(series(rows.map((r) => (r[0] as number) * 1000)), cov).quality, 'sparse')
+  // The panel judges on-demand 5M (it was never assessed before) and makes no request of its own.
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /const activeQuality: TimeframeQuality \| null = fiveActive \? fiveQuality :/)
+  assert.match(panel, /coverage: resolveCoverageWindow\(five\.coverage, poolCreatedMs\)/)
+  assert.doesNotMatch(panel, /\bfetch\(/)
+  // Scan ladder / Solana attach coverage to the reads they already make.
+  assert.match(read('lib/evmChartCandles.ts'), /coverage: buildCoverageMeta\(\{ requestEndSec: nowSec, intervalSec: rung\.intervalSec, limit: rung\.requestLimit, points, poolCreatedSec: poolCreatedSec\(pool\) \}\)/)
+  assert.match(read('lib/server/solanaProviders.ts'), /buildCoverageMeta\(\{ requestEndSec: Math\.floor\(Date\.now\(\) \/ 1000\), intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles \}\)/)
 })

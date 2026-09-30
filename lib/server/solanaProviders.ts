@@ -14,6 +14,7 @@
 
 import { isHeliusConfigured, isJupiterConfigured, getHeliusApiKey } from './solanaChainConfig.ts'
 import { getTokenCache, setTokenCache } from './cache/tokenCache.ts'
+import { buildCoverageMeta, type ChartCoverageMeta } from '../chartQuality.ts'
 
 type FetchImpl = typeof fetch
 
@@ -213,6 +214,8 @@ export type SolanaOhlcvResult = {
   /** The exact pool (case preserved) and the mint's proven side the candles belong to — reused by the on-demand history loader. */
   poolAddress?: string | null
   tokenSide?: 'base' | 'quote' | null
+  /** The window this request covered: 672 x 15m ending at the answer time (lib/chartQuality.ts). */
+  coverage?: ChartCoverageMeta | null
 }
 
 // CANDLE DEPTH + TOKEN SIDE, DISCLOSED (Price Chart terminal upgrade — reported "too few candles").
@@ -267,7 +270,8 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
       const ratio = lastClose / livePriceUsd
       if (!(ratio >= 1 / SOLANA_CHART_PRICE_SANITY_RATIO && ratio <= SOLANA_CHART_PRICE_SANITY_RATIO)) return emptyOhlcvResult(true, 'price_sanity_mismatch')
     }
-    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null, poolAddress, tokenSide }
+    const coverage = buildCoverageMeta({ requestEndSec: Math.floor(Date.now() / 1000), intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles })
+    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null, poolAddress, tokenSide, coverage }
   } catch {
     return emptyOhlcvResult(true, 'geckoterminal_unreachable')
   }

@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabaseClient'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
+import type { ChartCoverageMeta } from '@/lib/chartQuality'
 import { formatHolderProviderDiagnostic, type HolderProviderDiagnostic } from '@/lib/holderProviderDiagnostics'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, fmtResolverUsd, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
@@ -875,6 +876,8 @@ type ScanResult = {
     /** The proven pool/side the candles came from — only for pool OHLCV; enables on-demand 5M. */
     poolAddress?: string
     tokenSide?: 'base' | 'quote'
+    /** The window the candle request covered — chart quality is judged against it (lib/chartQuality.ts). */
+    coverage?: ChartCoverageMeta | null
   } | null
   /** Why indexed OHLCV candles are unavailable, in plain language (available=true when they loaded). */
   chartCandleStatus?: { available: boolean; code: string | null; message: string | null } | null
@@ -1581,8 +1584,8 @@ function makeFiveMinuteLoader(chain: string | null | undefined, token: string | 
     const authToken = session?.access_token
     const qs = new URLSearchParams({ chain, token, pool, timeframe: '5m' })
     const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
-    const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; message?: string } | null
-    if (json?.ok && Array.isArray(json.points)) return { ok: true, intervalSec: json.intervalSec ?? 300, points: json.points }
+    const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; message?: string; coverage?: ChartCoverageMeta | null } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, intervalSec: json.intervalSec ?? 300, points: json.points, coverage: json.coverage ?? null }
     return { ok: false, message: json?.message ?? (res.status === 401 ? 'Sign in to load 5M candles.' : 'The 5M candle request did not complete.') }
   }
 }
@@ -6381,6 +6384,7 @@ export default function TerminalTokenScanner() {
                         historySourceLabel="real pool candles"
                         debug={typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1'}
                         referenceTimeMs={chartReferenceMs}
+                        coverage={sr.ohlcv.coverage ?? null}
                       />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
@@ -8249,6 +8253,7 @@ export default function TerminalTokenScanner() {
                           debug={Boolean(result.chartDebug)}
                           referenceTimeMs={chartReferenceMs}
                           fiveMinuteExactTime={result.chartSource !== 'v4_swap_events' || result.chartTimeResolution === 'exact_log_timestamps'}
+                          coverage={result.chartCandles?.coverage ?? null}
                         />
                       )
                     }

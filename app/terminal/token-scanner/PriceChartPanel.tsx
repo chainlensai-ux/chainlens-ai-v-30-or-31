@@ -44,8 +44,12 @@ import {
   type HistoryWindowResult,
 } from '@/lib/chartHistory'
 import {
+  assessTimeframeQuality,
   assessTimeframeSet,
-  chartSlotLayout,
+  chartXLayout,
+  nearestCandleIndex,
+  resolveCoverageWindow,
+  type ChartCoverageMeta,
   formatSpanShort,
   isPresentationUsable,
   restingCandleTarget,
@@ -106,6 +110,8 @@ export type PriceChartPanelProps = {
   referenceTimeMs?: number | null
   /** False when native 5M timestamps are inferred/interpolated (V4 swaps without exact log times): 5M is never auto-selected. */
   fiveMinuteExactTime?: boolean
+  /** The window the scan's candle request covered (lib/chartQuality.ts) — quality is judged against it, not just first->last candle. */
+  coverage?: ChartCoverageMeta | null
 }
 
 export type HistoryLoadResult = HistoryWindowResult
@@ -145,13 +151,13 @@ function fmtSpan(ms: number): string {
 }
 
 export type FiveMinuteLoadResult =
-  | { ok: true; intervalSec: number; points: ReadonlyArray<ChartCandleInput> }
+  | { ok: true; intervalSec: number; points: ReadonlyArray<ChartCandleInput>; coverage?: ChartCoverageMeta | null }
   | { ok: false; message: string }
 
 type FiveMinuteState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; candles: ChartCandle[] }
+  | { status: 'ready'; candles: ChartCandle[]; coverage: ChartCoverageMeta | null }
   | { status: 'failed'; message: string }
 
 type ChipState = { key: ChartTimeframeKey; available: boolean; loadable: boolean; reason: string | null; title: string; sparse?: boolean }
@@ -162,14 +168,18 @@ const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const IDLE_HISTORY: HistoryState = { candles: [], nextBeforeSec: null, hasMore: true, status: 'idle', message: null }
 const FIVE_MIN_SEC = 300
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   const scanSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
   // PRESENTATION QUALITY (lib/chartQuality.ts): "has >= 2 genuine buckets" only means the data exists.
   // The default is the finest timeframe whose genuine candles read as a coherent chart; a sparse one
   // (e.g. 7 x 15M across 13 days) is never the default. Decided from the SCAN's own candles only — so
   // history loaded later never flips the default mid-view — with zero extra requests.
-  const qualityOpts = useMemo(() => ({ referenceMs: referenceTimeMs ?? null, fiveMinuteExactTime: fiveMinuteExactTime !== false }), [referenceTimeMs, fiveMinuteExactTime])
+  // LOADED WINDOW: the scan request's own window (limit x interval ending at the answer time, pool
+  // creation when known) — a burst of candles is judged against what was loaded, not its own span.
+  const scanWindow = useMemo(() => resolveCoverageWindow(coverage ?? null), [coverage])
+  const poolCreatedMs = coverage?.poolCreatedSec != null ? coverage.poolCreatedSec * 1000 : null
+  const qualityOpts = useMemo(() => ({ referenceMs: referenceTimeMs ?? null, fiveMinuteExactTime: fiveMinuteExactTime !== false, coverageFor: () => scanWindow, poolCreatedMs }), [referenceTimeMs, fiveMinuteExactTime, scanWindow, poolCreatedMs])
   const scanQuality = useMemo(() => assessTimeframeSet(scanSet, qualityOpts), [scanSet, qualityOpts])
   const autoSelection = useMemo(() => selectPresentationTimeframe(scanQuality), [scanQuality])
   const defaultKey = useMemo(() => autoSelection.key ?? pickDefaultTimeframe(scanSet), [autoSelection, scanSet])
@@ -186,7 +196,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const historyCoveredSec = (h: HistoryState) => (newestMs == null || cutoffMs == null ? 0 : newestMs / 1000 - (h.nextBeforeSec ?? cutoffMs / 1000))
   const canLoadOlder = historyEnabled && hist.hasMore && hist.status !== 'loading'
   // Current (history-aware) quality per available timeframe, for chip states and status copy.
-  const tfQuality = useMemo(() => assessTimeframeSet(tfSet, qualityOpts), [tfSet, qualityOpts])
+  // With older history merged, 1H / 4H / 1D cover from the oldest genuine history candle to the scan's end.
+  const tfQuality = useMemo(() => assessTimeframeSet(tfSet, {
+    ...qualityOpts,
+    coverageFor: (key) => (scanWindow && isHistoryTimeframe(key) && hist.candles.length > 0 ? { startMs: Math.min(scanWindow.startMs, hist.candles[0].t), endMs: scanWindow.endMs } : scanWindow),
+  }), [tfSet, qualityOpts, scanWindow, hist.candles])
   const clearerThan = (key: ChartTimeframeKey): ChartTimeframeKey | null => {
     const order: ChartTimeframeKey[] = ['5M', '15M', '1H', '4H', '1D']
     return order.slice(order.indexOf(key) + 1).find((k) => { const q = tfQuality[k]; return q != null && isPresentationUsable(q.quality) }) ?? null
@@ -202,12 +216,17 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const five: FiveMinuteState = fiveRaw && fiveRaw.source === candles ? fiveRaw.state : IDLE_FIVE
   const nativeFive = tfSet.timeframes.find((tf) => tf.key === '5M')!
   const fiveLoadable = !nativeFive.available && loadFiveMinute != null && (tfSet.nativeSec ?? 0) > FIVE_MIN_SEC
+  // On-demand 5M is judged like every other timeframe, against ITS OWN request window (never skipped).
+  const fiveQuality = useMemo(() => (five.status === 'ready' && five.candles.length > 0
+    ? assessTimeframeQuality(five.candles, FIVE_MIN_SEC, { timeframe: '5M', referenceMs: referenceTimeMs ?? null, coverage: resolveCoverageWindow(five.coverage, poolCreatedMs), poolCreatedMs })
+    : null), [five, referenceTimeMs, poolCreatedMs])
 
   const chipStates: ChipState[] = tfSet.timeframes.map((tf) => {
     if (tf.key === '5M' && fiveLoadable) {
       if (five.status === 'failed') return { key: tf.key, available: false, loadable: false, reason: `5M unavailable — ${five.message}`, title: five.message }
       if (five.status === 'ready' && five.candles.length < 2) return { key: tf.key, available: false, loadable: false, reason: '5M unavailable — the pool returned no 5-minute trading history yet', title: 'No 5M history yet' }
-      return { key: tf.key, available: true, loadable: five.status !== 'ready', reason: null, title: five.status === 'loading' ? 'Loading real 5M candles…' : five.status === 'ready' ? `${five.candles.length} real 5M candles` : 'Load real 5M candles for this pool' }
+      const fiveSparse = fiveQuality != null && !isPresentationUsable(fiveQuality.quality)
+      return { key: tf.key, available: true, loadable: five.status !== 'ready', reason: null, sparse: fiveSparse, title: five.status === 'loading' ? 'Loading real 5M candles…' : fiveSparse ? sparseTimeframeTooltip(fiveQuality!, clearerThan('5M')) : five.status === 'ready' ? `${five.candles.length} real 5M candles` : 'Load real 5M candles for this pool' }
     }
     if (!tf.available && historyEnabled && isHistoryTimeframe(tf.key) && hist.hasMore && hist.status !== 'failed') {
       return { key: tf.key, available: true, loadable: true, reason: null, title: hist.status === 'loading' ? 'Loading older candles…' : `Load older real ${tf.key} candles for this pool` }
@@ -251,12 +270,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
   const intervalSec = fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
   // Quality of what is on screen (PRICE candles; MCAP is the same series scaled, so the same verdict).
-  const activeQuality: TimeframeQuality | null = activeKey && !fiveActive ? (tfQuality[activeKey] ?? null) : null
+  const activeQuality: TimeframeQuality | null = fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
   const userPicked = picked != null && activeKey === picked
   const selectionReason = userPicked ? `user_selected_${activeKey!.toLowerCase()}` : autoSelection.reason
   const fromQ = autoSelection.fallbackFrom ? scanQuality[autoSelection.fallbackFrom] : null
   const qualityNote: string | null = activeQuality && !isPresentationUsable(activeQuality.quality)
-    ? `Sparse trading — ${activeQuality.candleCount} genuine ${activeKey} candle${activeQuality.candleCount === 1 ? '' : 's'} across ${formatSpanShort(activeQuality.spanSec)}${!userPicked ? '' : clearerThan(activeKey!) ? ` · ${clearerThan(activeKey!)} reads clearer` : ''}`
+    ? `Sparse trading — ${activeQuality.candleCount} genuine ${activeKey} candle${activeQuality.candleCount === 1 ? '' : 's'} across ${activeQuality.coverageKnown ? `the loaded ${formatSpanShort(activeQuality.coverageSpanSec ?? activeQuality.spanSec)}` : formatSpanShort(activeQuality.spanSec)}${!userPicked ? '' : clearerThan(activeKey!) ? ` · ${clearerThan(activeKey!)} reads clearer` : ''}`
     : !userPicked && fromQ && activeKey
       ? `${autoSelection.fallbackFrom} sparse · ${fromQ.candleCount} genuine candles across ${formatSpanShort(fromQ.spanSec)} — ${activeKey} selected for clearer history`
       : null
@@ -269,7 +288,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     let next: FiveMinuteState
     try {
       const res = await loadFiveMinute()
-      next = res.ok ? { status: 'ready', candles: normalizeChartCandles(res.points) } : { status: 'failed', message: res.message }
+      next = res.ok ? { status: 'ready', candles: normalizeChartCandles(res.points), coverage: res.coverage ?? null } : { status: 'failed', message: res.message }
     } catch {
       next = { status: 'failed', message: 'The 5M candle request did not complete.' }
     }
@@ -360,9 +379,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const n = data.length
   // A short series is drawn at a fixed minimum slot count, right-aligned (newest at the right edge), so
   // a handful of candles is not stretched across the whole plot. Candle order is untouched.
-  const { slot, offset: slotOffset } = chartSlotLayout(n, total, plotW)
+  const layout = chartXLayout(data.map((c) => c.t), intervalSec, total, plotW)
+  const slot = layout.slot
   const bodyW = Math.max(1, Math.min(slot * 0.66, 16))
-  const xC = (i: number) => (i + slotOffset + 0.5) * slot
+  const xC = (i: number) => ((layout.pos[i] ?? i) + 0.5) * slot
 
   // Wheel / trackpad: vertical wheel zooms around the cursor, horizontal swipe pans. Needs a
   // non-passive native listener so the page does not scroll while the cursor is on the chart.
@@ -445,7 +465,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   }
   const setCrosshair = (x: number, y: number) => {
     if (x < 0 || x > plotW || y < 0 || y > volBot) { setHover(null); return }
-    setHover({ idx: Math.max(0, Math.min(n - 1, Math.floor(x / slot) - slotOffset)), y })
+    setHover({ idx: Math.max(0, Math.min(n - 1, nearestCandleIndex(x, layout))), y })
   }
   const onPointerDown = (e: ReactPointerEvent<SVGSVGElement>) => {
     const g = gesture.current
@@ -781,7 +801,18 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       )}
       {debug && (
         <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(2,6,23,0.6)', color: '#94a3b8', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
-          {JSON.stringify({ selectedTimeframe: activeKey, selectedTimeframeReason: selectionReason, timeframeQuality: Object.values(tfQuality).map((q) => ({ timeframe: q!.timeframe, candleCount: q!.candleCount, span: formatSpanShort(q!.spanSec), expectedBuckets: q!.expectedBuckets, density: q!.density, largestGapBuckets: q!.largestGapBuckets, recentCoverage: q!.recentCoverage, quality: q!.quality, rejectionReason: q!.rejectionReason })) }, null, 1)}
+          {JSON.stringify({
+            selectedTimeframe: activeKey,
+            selectedTimeframeReason: selectionReason,
+            timeframeQuality: [...Object.values(tfQuality), ...(fiveQuality && !tfQuality['5M'] ? [fiveQuality] : [])].map((q) => ({
+              timeframe: q!.timeframe, candleCount: q!.candleCount,
+              candleSpanSec: q!.candleSpanSec, coverageStartSec: q!.coverageStartSec, coverageEndSec: q!.coverageEndSec, coverageSpanSec: q!.coverageSpanSec, coverageKnown: q!.coverageKnown,
+              candleSpanExpectedBuckets: q!.candleSpanExpectedBuckets, coverageExpectedBuckets: q!.coverageExpectedBuckets,
+              clusterDensity: q!.clusterDensity, coverageDensity: q!.coverageDensity, recentCoverage: q!.recentCoverage, largestGapBuckets: q!.largestGapBuckets,
+              poolAgeSec: q!.poolAgeSec, effectiveCoverageSpanSec: q!.effectiveCoverageSpanSec,
+              quality: q!.quality, reason: q!.rejectionReason,
+            })),
+          }, null, 1)}
         </pre>
       )}
     </div>
