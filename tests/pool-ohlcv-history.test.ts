@@ -299,7 +299,10 @@ test('wiring: scan never requests history; endpoint routes 20-byte pools to pool
   assert.match(page, /const normalPool = source === 'pool_ohlcv' && \/\^0x\[a-fA-F0-9\]\{40\}\$\/\.test\(pool\) && \(tokenSide === 'base' \|\| tokenSide === 'quote'\)/)
   assert.match(page, /makeHistoryLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress, result\.chartSource, result\.chartCandles\?\.tokenSide \?\? null\)/)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.equal((panel.match(/void requestHistory\(/g) ?? []).length, 2, 'history loads only from a timeframe pick or reaching the left edge')
+  // Triggers: a timeframe pick, reaching the left edge, and ONE bounded automatic batch per scan when the
+  // default view needs history to read as a chart (lib/chartQuality.ts planAutoHistory).
+  assert.equal((panel.match(/void requestHistory\(/g) ?? []).length, 3, 'pick, left edge, readable-default auto batch')
+  assert.match(panel, /if \(autoRan\.current === candles \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return\n\s*autoRan\.current = candles/, 'the automatic batch runs at most once per scan')
   assert.doesNotMatch(read('lib/server/chartCandlesOnDemand.ts'), /COINGECKO_API_KEY/)
 })
 

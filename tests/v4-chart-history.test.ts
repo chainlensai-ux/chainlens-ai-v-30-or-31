@@ -354,13 +354,15 @@ test('normal scan never requests history; the whole candle path with the 24h V4 
   assert.equal(r.chartCandles?.points.length, 288, 'all 24h of candles reach the chart')
 })
 
-test('client: history loads only from explicit actions; loader only for exact V4 PoolId sources; endpoint auth + validation', () => {
+test('client: history loads from explicit actions plus one bounded readable-default batch; loader only for exact V4 PoolId sources; endpoint auth + validation', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.doesNotMatch(panel, /\bfetch\(/)
-  assert.equal((panel.match(/void requestHistory\(/g) ?? []).length, 2, 'two triggers: timeframe pick and left edge')
+  assert.equal((panel.match(/void requestHistory\(/g) ?? []).length, 3, 'three triggers: timeframe pick, left edge, one readable-default auto batch')
   assert.match(panel, /if \(historyEnabled && isHistoryTimeframe\(chip\.key\)/)
   assert.match(panel, /if \(next\.start === 0\) loadOlderAtLeftEdge\(\)/)
-  assert.doesNotMatch(panel, /useEffect\([^)]*requestHistory/, 'never fetched from an effect on mount')
+  // The only effect-driven load is the bounded readable-default batch: once per scan, at most AUTO_HISTORY_MAX_REQUESTS.
+  assert.equal((panel.match(/void requestHistory\(AUTO_HISTORY_MAX_REQUESTS, /g) ?? []).length, 1)
+  assert.match(panel, /autoRan\.current = candles/)
   assert.match(panel, /'Loading older candles…'/)
   assert.match(panel, /'Scroll\/zoom left for older history'/)
   assert.match(read('lib/chartHistory.ts'), /if \(res\.hasMore && !\(next != null && next < before\)\) \{/, 'a cursor that does not move ends paging')

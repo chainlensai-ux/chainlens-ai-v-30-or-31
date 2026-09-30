@@ -9,7 +9,6 @@ import {
   assessTimeframeQuality,
   assessTimeframeSet,
   chartXLayout,
-  MIN_DISPLAY_SLOTS,
   restingCandleTarget,
   selectPresentationTimeframe,
   sparseTimeframeTooltip,
@@ -128,7 +127,10 @@ test('14/15. history merge never flips the default mid-view: the default comes f
   const merged = withHistory(scan, history, Math.ceil(cs[0].t / H1) * H1)
   assert.equal(assessTimeframeSet(merged)['15M']!.quality, assessTimeframeSet(scan)['15M']!.quality, '15M is untouched by hourly history')
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const autoSelection = useMemo\(\(\) => selectPresentationTimeframe\(scanQuality\), \[scanQuality\]\)/)
+  // The default is chosen from the scan set, re-chosen ONCE over the automatic history snapshot (never on later loads).
+  assert.match(panel, /const autoSelection = useMemo\(\(\) => selectPresentationTimeframe\(defaultQuality\), \[defaultQuality\]\)/)
+  assert.match(panel, /autoHist && autoHist\.length > 0 \? assessTimeframeSet\(withHistory\(scanSet, autoHist, cutoffMs\)/)
+  assert.match(panel, /if \(auto\) setAutoSnap\(\{ source, candles: done\.candles \}\)/)
   assert.match(panel, /const defaultKey = useMemo\(\(\) => autoSelection\.key \?\? pickDefaultTimeframe\(scanSet\), \[autoSelection, scanSet\]\)/)
   assert.doesNotMatch(panel, /\bfetch\(/, 'quality decisions make no requests')
 })
@@ -144,7 +146,7 @@ test('16-22. chain-neutral: one policy for every source (15m pool OHLCV, 5m V4 s
   assert.doesNotMatch(read('lib/chartQuality.ts'), /\bchain\b.*===|solana|robinhood|'base'|'bnb'|'eth'/i, 'no chain-specific thresholds')
 })
 
-test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop); a short series keeps its real time gaps, right-aligned, never stretched', () => {
+test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop); a short series keeps its real time gaps, centred, never stretched', () => {
   assert.equal(restingCandleTarget(320, true), 40)
   assert.equal(restingCandleTarget(560, false), 62)
   assert.equal(restingCandleTarget(1400, false), 100)
@@ -152,14 +154,14 @@ test('23/24. viewport: resting view ~40 (phone) to ~100 (desktop); a short serie
   const times = [0, 1, 11, 12, 13, 14].map((k) => T0 + k * 300_000)
   const short = chartXLayout(times, 300, 6, 720)
   assert.equal(short.mode, 'time')
-  assert.equal(short.slot, 720 / MIN_DISPLAY_SLOTS)
-  assert.deepEqual(short.pos, [9, 10, 20, 21, 22, 23])
+  assert.equal(short.slot, 720 / 15)
+  assert.deepEqual(short.pos, [0, 1, 11, 12, 13, 14], 'spread over its own real span, not pinned right in a blank panel')
   assert.equal(short.pos[2] - short.pos[1], 10, 'the real 10-bucket gap is preserved')
   const full = chartXLayout(Array.from({ length: 90 }, (_, i) => T0 + i * M15), 900, 400, 900)
   assert.deepEqual([full.mode, full.slot, full.pos[5]], ['index', 10, 5])
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /const fit = restingCandleTarget\(plotW, compact\)/)
-  assert.match(panel, /const layout = chartXLayout\(data\.map\(\(c\) => c\.t\), intervalSec, total, plotW\)/)
+  assert.match(panel, /: chartXLayout\(data\.map\(\(c\) => c\.t\), intervalSec, total, plotW\)/)
   assert.match(panel, /nearestCandleIndex\(x, layout\)/)
 })
 

@@ -47,7 +47,10 @@ import {
   assessTimeframeQuality,
   assessTimeframeSet,
   chartXLayout,
+  lineChartXs,
   nearestCandleIndex,
+  planAutoHistory,
+  AUTO_HISTORY_MAX_REQUESTS,
   resolveCoverageWindow,
   type ChartCoverageMeta,
   formatSpanShort,
@@ -181,8 +184,6 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const poolCreatedMs = coverage?.poolCreatedSec != null ? coverage.poolCreatedSec * 1000 : null
   const qualityOpts = useMemo(() => ({ referenceMs: referenceTimeMs ?? null, fiveMinuteExactTime: fiveMinuteExactTime !== false, coverageFor: () => scanWindow, poolCreatedMs }), [referenceTimeMs, fiveMinuteExactTime, scanWindow, poolCreatedMs])
   const scanQuality = useMemo(() => assessTimeframeSet(scanSet, qualityOpts), [scanSet, qualityOpts])
-  const autoSelection = useMemo(() => selectPresentationTimeframe(scanQuality), [scanQuality])
-  const defaultKey = useMemo(() => autoSelection.key ?? pickDefaultTimeframe(scanSet), [autoSelection, scanSet])
 
   // On-demand OLDER history (hourly, genuine swaps), merged under the scan's candles for 1H / 4H / 1D.
   // Tied to the `candles` array it was loaded for, so a new scan starts from idle.
@@ -195,12 +196,27 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const newestMs = normalized.length > 0 ? normalized[normalized.length - 1].t : null
   const historyCoveredSec = (h: HistoryState) => (newestMs == null || cutoffMs == null ? 0 : newestMs / 1000 - (h.nextBeforeSec ?? cutoffMs / 1000))
   const canLoadOlder = historyEnabled && hist.hasMore && hist.status !== 'loading'
+  const historyCoverage = (histCandles: ReadonlyArray<ChartCandle>) => (key: ChartTimeframeKey) =>
+    (scanWindow && isHistoryTimeframe(key) && histCandles.length > 0 ? { startMs: Math.min(scanWindow.startMs, histCandles[0].t), endMs: scanWindow.endMs } : scanWindow)
+  // READABLE DEFAULT: when the chosen default still needs older genuine history to read as a chart, ONE
+  // bounded batch is loaded automatically (planAutoHistory). The default is then re-chosen ONCE over that
+  // snapshot — later pans/loads never flip it — so the view settles in a single stable update.
+  const [autoSnap, setAutoSnap] = useState<{ source: ReadonlyArray<ChartCandleInput>; candles: ChartCandle[] } | null>(null)
+  const autoHist = autoSnap && autoSnap.source === candles ? autoSnap.candles : null
+  const defaultQuality = useMemo(
+    () => (autoHist && autoHist.length > 0 ? assessTimeframeSet(withHistory(scanSet, autoHist, cutoffMs), { ...qualityOpts, coverageFor: historyCoverage(autoHist) }) : scanQuality),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
+    [autoHist, scanSet, cutoffMs, qualityOpts, scanQuality, scanWindow],
+  )
+  const autoSelection = useMemo(() => selectPresentationTimeframe(defaultQuality), [defaultQuality])
+  const defaultKey = useMemo(() => autoSelection.key ?? pickDefaultTimeframe(scanSet), [autoSelection, scanSet])
   // Current (history-aware) quality per available timeframe, for chip states and status copy.
   // With older history merged, 1H / 4H / 1D cover from the oldest genuine history candle to the scan's end.
-  const tfQuality = useMemo(() => assessTimeframeSet(tfSet, {
-    ...qualityOpts,
-    coverageFor: (key) => (scanWindow && isHistoryTimeframe(key) && hist.candles.length > 0 ? { startMs: Math.min(scanWindow.startMs, hist.candles[0].t), endMs: scanWindow.endMs } : scanWindow),
-  }), [tfSet, qualityOpts, scanWindow, hist.candles])
+  const tfQuality = useMemo(
+    () => assessTimeframeSet(tfSet, { ...qualityOpts, coverageFor: historyCoverage(hist.candles) }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
+    [tfSet, qualityOpts, scanWindow, hist.candles],
+  )
   const clearerThan = (key: ChartTimeframeKey): ChartTimeframeKey | null => {
     const order: ChartTimeframeKey[] = ['5M', '15M', '1H', '4H', '1D']
     return order.slice(order.indexOf(key) + 1).find((k) => { const q = tfQuality[k]; return q != null && isPresentationUsable(q.quality) }) ?? null
@@ -273,7 +289,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const activeQuality: TimeframeQuality | null = fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
   const userPicked = picked != null && activeKey === picked
   const selectionReason = userPicked ? `user_selected_${activeKey!.toLowerCase()}` : autoSelection.reason
-  const fromQ = autoSelection.fallbackFrom ? scanQuality[autoSelection.fallbackFrom] : null
+  const fromQ = autoSelection.fallbackFrom ? defaultQuality[autoSelection.fallbackFrom] : null
   const qualityNote: string | null = activeQuality && !isPresentationUsable(activeQuality.quality)
     ? `Sparse trading — ${activeQuality.candleCount} genuine ${activeKey} candle${activeQuality.candleCount === 1 ? '' : 's'} across ${activeQuality.coverageKnown ? `the loaded ${formatSpanShort(activeQuality.coverageSpanSec ?? activeQuality.spanSec)}` : formatSpanShort(activeQuality.spanSec)}${!userPicked ? '' : clearerThan(activeKey!) ? ` · ${clearerThan(activeKey!)} reads clearer` : ''}`
     : !userPicked && fromQ && activeKey
@@ -301,9 +317,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     }
   }
 
-  // Older history: explicit user action only. A timeframe pick may chain up to 3 bounded requests
-  // toward that timeframe's target span; reaching the left edge makes one. Never auto-retried.
-  const requestHistory = async (maxRequests: number, targetSpanSec: number | null) => {
+  // Older history: a timeframe pick may chain up to 3 bounded requests toward that timeframe's target
+  // span; reaching the left edge makes one; the readable-default rule below makes at most one automatic
+  // batch per scan. Never auto-retried.
+  const requestHistory = async (maxRequests: number, targetSpanSec: number | null, auto = false) => {
     if (!loadHistory || cutoffMs == null || historyBusy.current || !hist.hasMore) return
     historyBusy.current = true
     const source = candles
@@ -319,8 +336,17 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       done = { ...hist, status: 'failed', message: 'The history request did not complete.' }
     }
     setHistRaw((cur) => (cur && cur.source === source ? { source, state: done } : cur))
+    if (auto) setAutoSnap({ source, candles: done.candles })
     historyBusy.current = false
   }
+  // Once per scan (keyed by the candle array): load what the default needs to read as a chart.
+  const autoPlan = planAutoHistory({ defaultKey, defaultQuality: defaultKey ? (scanQuality[defaultKey] ?? null) : null, historyEnabled, hasMore: hist.hasMore })
+  const autoRan = useRef<ReadonlyArray<ChartCandleInput> | null>(null)
+  useEffect(() => {
+    if (autoRan.current === candles || !autoPlan.load || !autoPlan.key || picked != null) return
+    autoRan.current = candles
+    void requestHistory(AUTO_HISTORY_MAX_REQUESTS, HISTORY_TARGET_SPAN_SEC[autoPlan.key], true)
+  })
   const loadOlderAtLeftEdge = () => {
     if (canLoadOlder && hist.status !== 'failed' && isHistoryTimeframe(activeKey)) void requestHistory(1, null)
   }
@@ -379,9 +405,14 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const n = data.length
   // A short series is drawn at a fixed minimum slot count, right-aligned (newest at the right edge), so
   // a handful of candles is not stretched across the whole plot. Candle order is untouched.
-  const layout = chartXLayout(data.map((c) => c.t), intervalSec, total, plotW)
+  // SPARSE VIEW: a timeframe that is not presentation-usable (only reachable by choosing it) is drawn as a
+  // line/area through its REAL closes, spaced by real time, with a dot on every genuine observation —
+  // never as a handful of floating candle bars.
+  const lineMode = activeQuality != null && !isPresentationUsable(activeQuality.quality) && data.length >= 2
+  const lineXs = lineMode ? lineChartXs(data.map((c) => c.t), plotW) : null
+  const layout = lineXs ? { slot: 1, pos: lineXs.map((x) => x - 0.5), mode: 'time' as const } : chartXLayout(data.map((c) => c.t), intervalSec, total, plotW)
   const slot = layout.slot
-  const bodyW = Math.max(1, Math.min(slot * 0.66, 16))
+  const bodyW = lineMode ? 4 : Math.max(1, Math.min(slot * 0.66, 16))
   const xC = (i: number) => ((layout.pos[i] ?? i) + 0.5) * slot
 
   // Wheel / trackpad: vertical wheel zooms around the cursor, horizontal swipe pans. Needs a
@@ -682,8 +713,20 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             <line x1={0} x2={W} y1={volBot + 0.5} y2={volBot + 0.5} stroke={C.border} strokeWidth={1} />
             {hasVolume && <line x1={0} x2={plotW} y1={volTop - volGap / 2} y2={volTop - volGap / 2} stroke={C.grid} strokeWidth={1} />}
 
+            {/* Sparse view: straight segments between REAL closes (no smoothing), a dot per genuine candle */}
+            {lineMode && (() => {
+              const pts = data.map((c, i) => `${xC(i).toFixed(1)},${yP(c.close).toFixed(1)}`)
+              const trend = data[data.length - 1].close >= data[0].close ? C.bull : C.bear
+              return (
+                <g data-chart-mode="line">
+                  <path d={`M${pts[0]} L${pts.slice(1).join(' L')} L${xC(data.length - 1).toFixed(1)},${priceBot} L${xC(0).toFixed(1)},${priceBot} Z`} fill={trend} fillOpacity={0.08} stroke="none" />
+                  <polyline points={pts.join(' ')} fill="none" stroke={trend} strokeWidth={1.6} strokeLinejoin="round" />
+                  {data.map((c, i) => <circle key={`p${c.t}`} cx={xC(i)} cy={yP(c.close)} r={2.4} fill={trend} />)}
+                </g>
+              )
+            })()}
             {/* Candles */}
-            <g>
+            {!lineMode && <g>
               {data.map((c, i) => {
                 const x = xC(i)
                 const bull = c.close >= c.open
@@ -697,7 +740,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                   </g>
                 )
               })}
-            </g>
+            </g>}
 
             {/* Volume — same index scale as the candles above */}
             {hasVolume && (

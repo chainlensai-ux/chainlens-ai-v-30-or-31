@@ -337,6 +337,8 @@ export function restingCandleTarget(plotW: number, compact: boolean): number {
   const t = Math.round(plotW / (compact ? 8 : 9))
   return Math.max(40, Math.min(100, Number.isFinite(t) ? t : 40))
 }
+/** Fewest slots a short series is spread over in time-proportional layout. */
+export const MIN_TIME_SLOTS = 12
 /** Most slots a short series is spread over in time-proportional layout (wider spans are scaled down). */
 export const MAX_TIME_SLOTS = 96
 /**
@@ -355,8 +357,12 @@ export function chartXLayout(times: ReadonlyArray<number>, intervalSec: number |
   const offs = times.map((t) => (t - times[0]) / tfMs)
   const spanB = offs[n - 1]
   const scale = spanB + 1 > MAX_TIME_SLOTS ? (MAX_TIME_SLOTS - 1) / spanB : 1
-  const slots = Math.max(MIN_DISPLAY_SLOTS, Math.min(MAX_TIME_SLOTS, Math.ceil(spanB * scale) + 1))
-  return { slot: plotW / slots, pos: offs.map((b) => slots - 1 - (spanB - b) * scale), mode: 'time' }
+  // At least MIN_TIME_SLOTS wide (a few candles are not blown up), the cluster centred in any spare room
+  // so the plot never shows one tiny group pinned to the far right of a blank panel.
+  const used = Math.ceil(spanB * scale) + 1
+  const slots = Math.max(MIN_TIME_SLOTS, Math.min(MAX_TIME_SLOTS, used))
+  const lead = (slots - used) / 2
+  return { slot: plotW / slots, pos: offs.map((b) => lead + b * scale), mode: 'time' }
 }
 
 /** Index of the candle whose centre is nearest `x` (layout from chartXLayout). */
@@ -365,4 +371,48 @@ export function nearestCandleIndex(x: number, layout: { slot: number; pos: Reado
   let bestD = Infinity
   layout.pos.forEach((p, i) => { const d = Math.abs((p + 0.5) * layout.slot - x); if (d < bestD) { bestD = d; best = i } })
   return best
+}
+
+// ── Sparse view: line / area of REAL closes ──────────────────────────────────────────────────────
+/**
+ * X positions (px) for a line/area view of real closes: proportional to each candle's real timestamp
+ * across the plot (first at the left inset, last at the right inset). Used only when a timeframe the
+ * user chose is sparse — isolated candles read as a price path instead of floating bars. Each point is a
+ * genuine close; nothing between points is invented (the path is straight segments, no smoothing).
+ */
+export function lineChartXs(times: ReadonlyArray<number>, plotW: number, inset = 12): number[] {
+  const n = times.length
+  if (n === 0) return []
+  if (n === 1) return [plotW / 2]
+  const span = times[n - 1] - times[0]
+  const w = Math.max(1, plotW - 2 * inset)
+  return times.map((t, i) => inset + (span > 0 ? ((t - times[0]) / span) * w : (i / (n - 1)) * w))
+}
+
+// ── Readable default: bounded automatic history ──────────────────────────────────────────────────
+/** A default timeframe with fewer genuine candles than this does not yet read as an "actual chart". */
+export const READABLE_MIN_CANDLES = 30
+/** Automatic history for the default view: one batch, at most this many requests, once per scan. */
+export const AUTO_HISTORY_MAX_REQUESTS = 2
+
+/**
+ * Whether the DEFAULT view needs older genuine history to read as a chart, and for which timeframe.
+ * Loads only when (a) a history loader exists and more history remains, and (b) the chosen default is a
+ * history timeframe (1H / 4H / 1D) still short of READABLE_MIN_CANDLES or not presentation-usable, or
+ * nothing at all is presentation-usable (then 1D's span is loaded — the widest real view). Never for a
+ * default that already reads well; never repeated (the caller runs it once per scan).
+ */
+export function planAutoHistory(input: {
+  defaultKey: ChartTimeframeKey | null
+  defaultQuality: TimeframeQuality | null
+  historyEnabled: boolean
+  hasMore: boolean
+}): { load: boolean; key: '1H' | '4H' | '1D' | null; reason: string } {
+  if (!input.historyEnabled || !input.hasMore) return { load: false, key: null, reason: 'no_history_source' }
+  const q = input.defaultQuality
+  const readable = q != null && isPresentationUsable(q.quality)
+  const hist = input.defaultKey === '1H' || input.defaultKey === '4H' || input.defaultKey === '1D' ? input.defaultKey : null
+  if (hist && (!readable || (q?.candleCount ?? 0) < READABLE_MIN_CANDLES)) return { load: true, key: hist, reason: `default_${hist.toLowerCase()}_needs_history` }
+  if (!readable) return { load: true, key: '1D', reason: 'no_readable_timeframe_load_daily_history' }
+  return { load: false, key: null, reason: 'default_already_readable' }
 }
