@@ -12,7 +12,12 @@
 //     MAX_BAR_SPACING per candle, so a fresh token's 10-20 candles read as a chart instead of being
 //     spread across a huge fixed timeline or blown up to full width;
 //   - a zoomed / long series fills the plot (minus the right offset);
-//   - body width is ~72% of the spacing, at least 1px, at most MAX_BODY_WIDTH, always leaving a gap.
+//   - body width is a share of the spacing that grows with density: ~52% for a short series (<= 24 bars,
+//     so a fresh token's candles read slim instead of chunky) rising to ~72% from 60 bars; at least 1px,
+//     at most MAX_BODY_WIDTH, always leaving a gap. Volume bars use the same width as the candles;
+//   - a doji (open ~= close) keeps a minimum visible body height, centred on its open/close level, so it
+//     reads as a candle rather than a stray horizontal line;
+//   - a short series (< SHORT_SERIES_CANDLES) gets a ~12% shorter price pane so it doesn't feel oversized.
 //
 // VERTICAL (robust autoscale): the TYPICAL band is the candle BODIES plus a wick allowance of
 // max(WICK_ALLOWANCE_BODY_FRACTION x body span, WICK_ALLOWANCE_RANGE_MULTIPLE x median candle range).
@@ -38,6 +43,13 @@ export const MAX_BAR_SPACING = 80
 export const MIN_BAR_SPACING = 1
 export const MAX_BODY_WIDTH = 40
 export const BODY_FRACTION = 0.72
+/** Body share of the slot for a short series (<= 24 visible bars); rises to BODY_FRACTION from 60 bars. */
+export const BODY_FRACTION_SHORT = 0.52
+export function bodyFraction(visible: number): number {
+  if (visible <= 24) return BODY_FRACTION_SHORT
+  if (visible >= 60) return BODY_FRACTION
+  return BODY_FRACTION_SHORT + ((visible - 24) / 36) * (BODY_FRACTION - BODY_FRACTION_SHORT)
+}
 export const RIGHT_OFFSET_BARS = 1
 /** The right offset is one bar, but never more than this many px (room for the live price, no empty future). */
 export const MAX_RIGHT_OFFSET_PX = 24
@@ -58,7 +70,7 @@ export function candleGeometry(visible: number, total: number, plotW: number): C
   const spacing = visible >= total
     ? Math.max(MIN_BAR_SPACING, Math.min(MAX_BAR_SPACING, (plotW * candleFillFraction(visible)) / visible, fitAll))
     : Math.max(MIN_BAR_SPACING, fitAll)
-  const bodyW = Math.max(1, Math.min(MAX_BODY_WIDTH, spacing * BODY_FRACTION, spacing >= 3 ? spacing - 1 : spacing))
+  const bodyW = Math.max(1, Math.min(MAX_BODY_WIDTH, spacing * bodyFraction(visible), spacing >= 3 ? spacing - 1 : spacing))
   const xs = Array.from({ length: visible }, (_, i) => plotW - rightPad - (visible - 1 - i + 0.5) * spacing)
   return { spacing, bodyW, xs, fill: Math.min(1, (visible * spacing) / plotW) }
 }
@@ -121,6 +133,32 @@ export function robustPriceDomain(candles: ReadonlyArray<ChartCandle>, padFracti
   const min = Math.max(0, lo - pad)
   const max = hi + pad
   return { min, max, trueMin, trueMax, clippedHigh: trueMax > max, clippedLow: trueMin < min }
+}
+
+/** Minimum drawn body height (px) for a doji / near-flat candle. */
+export const DOJI_MIN_BODY_PX = 3
+
+/**
+ * Body rect between the open and close y positions (either order). A body thinner than DOJI_MIN_BODY_PX
+ * is drawn at that height CENTRED on its real open/close level — display only, the values are unchanged.
+ */
+export function candleBodyRect(yOpen: number, yClose: number, minH = DOJI_MIN_BODY_PX): { y: number; h: number } {
+  const top = Math.min(yOpen, yClose)
+  const h = Math.abs(yOpen - yClose)
+  if (h >= minH) return { y: top, h }
+  return { y: top + h / 2 - minH / 2, h: minH }
+}
+
+/** A loaded series shorter than this is a short-history chart (slightly shorter price pane). */
+export const SHORT_SERIES_CANDLES = 24
+export const PRICE_PANE_HEIGHT = 310
+export const PRICE_PANE_HEIGHT_COMPACT = 220
+export const SHORT_SERIES_HEIGHT_FACTOR = 0.88
+
+/** Price pane height: the standard height, ~12% shorter for a short-history series (< 24 candles). */
+export function pricePaneHeight(compact: boolean, candleCount: number): number {
+  const base = compact ? PRICE_PANE_HEIGHT_COMPACT : PRICE_PANE_HEIGHT
+  return candleCount < SHORT_SERIES_CANDLES ? Math.round(base * SHORT_SERIES_HEIGHT_FACTOR) : base
 }
 
 /** Volume pane height: a proportional share of the price pane (0 when there is no real volume). */

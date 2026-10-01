@@ -5,8 +5,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  CANDLE_FILL_FRACTION, MAX_BAR_SPACING, MAX_BODY_WIDTH, MAX_RIGHT_OFFSET_PX,
-  candleGeometry, robustPriceDomain, volumePaneHeight,
+  CANDLE_FILL_FRACTION, MAX_BAR_SPACING, MAX_BODY_WIDTH, MAX_RIGHT_OFFSET_PX, DOJI_MIN_BODY_PX,
+  PRICE_PANE_HEIGHT, PRICE_PANE_HEIGHT_COMPACT,
+  candleBodyRect, candleGeometry, candleFillFraction, pricePaneHeight, robustPriceDomain, volumePaneHeight,
 } from '../lib/chartGeometry.ts'
 import { aggregateCandles, type ChartCandle } from '../lib/priceChartCandles.ts'
 import { scaleCandlesToMarketCap } from '../lib/chartMarketCap.ts'
@@ -133,4 +134,66 @@ test('header vs candle change are named differently', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   assert.match(panel, /\{windowSpan\} view<\/span>/)
   assert.match(panel, /title="This candle's change \(its open to its close\)">Candle </)
+})
+
+// ── Short-series polish: slimmer bodies, visible dojis, matched volume width, shorter pane ─────────
+test('body/slot ratio: ~48-55% for 12/17/24 candles, rising to ~72% at 60; spacing and fill unchanged', () => {
+  for (const plotW of [360, 900, 1100]) {
+    for (const n of [12, 17, 24]) {
+      const g = candleGeometry(n, n, plotW)
+      const ratio = g.bodyW / g.spacing
+      // A huge slot can hit MAX_BODY_WIDTH first (only ever slimmer).
+      assert.ok(ratio <= 0.55 + 1e-9 && (ratio >= 0.48 || g.bodyW === MAX_BODY_WIDTH), `${n} @ ${plotW}px: ${ratio}`)
+      // Adaptive plot fill / spacing unchanged.
+      assert.equal(g.spacing, Math.min(MAX_BAR_SPACING, (plotW * candleFillFraction(n)) / n, (plotW - Math.min(MAX_RIGHT_OFFSET_PX, plotW / (n + 1))) / n))
+    }
+    const g60 = candleGeometry(60, 60, plotW)
+    const r60 = g60.bodyW / g60.spacing
+    assert.ok(Math.abs(r60 - 0.72) < 0.01 || (g60.spacing < 4 && r60 > 0.5), `60 @ ${plotW}px: ${r60}`)
+  }
+})
+
+test('doji visibility: open == close still draws a visible body centred on the real level', () => {
+  const flat = candleBodyRect(120, 120)
+  assert.equal(flat.h, DOJI_MIN_BODY_PX)
+  assert.ok(flat.h >= 3)
+  assert.equal(flat.y + flat.h / 2, 120, 'centred on the open/close price')
+  const near = candleBodyRect(100.4, 100)
+  assert.equal(near.h, DOJI_MIN_BODY_PX)
+  assert.ok(Math.abs(near.y + near.h / 2 - 100.2) < 1e-9)
+  // Real bodies are drawn exactly (either order).
+  assert.deepEqual(candleBodyRect(80, 140), { y: 80, h: 60 })
+  assert.deepEqual(candleBodyRect(140, 80), { y: 80, h: 60 })
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /const body = candleBodyRect\(yP\(c\.open\), yP\(c\.close\)\)/)
+  assert.match(panel, /<rect x=\{x - bodyW \/ 2\} y=\{body\.y\} width=\{bodyW\} height=\{body\.h\}/)
+})
+
+test('volume bars use the same (narrower) width and x as the candles for 12/17/24/60 candles', () => {
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /x=\{xC\(i\) - bodyW \/ 2\} y=\{volBot - h\} width=\{bodyW\}/)
+  assert.match(panel, /<rect x=\{x - bodyW \/ 2\} y=\{body\.y\} width=\{bodyW\}/)
+  for (const n of [12, 17, 24, 60]) {
+    const g = candleGeometry(n, n, 900)
+    assert.ok(g.bodyW < g.spacing, `${n}: gap between volume bars too`)
+  }
+})
+
+test('short-history (<24 candles) price pane is ~10-15% shorter; denser series keep the standard height', () => {
+  for (const compact of [false, true]) {
+    const base = compact ? PRICE_PANE_HEIGHT_COMPACT : PRICE_PANE_HEIGHT
+    for (const n of [12, 17]) {
+      const h = pricePaneHeight(compact, n)
+      const cut = 1 - h / base
+      assert.ok(cut >= 0.1 && cut <= 0.15, `${n} candles: ${h} vs ${base}`)
+    }
+    assert.equal(pricePaneHeight(compact, 24), base)
+    assert.equal(pricePaneHeight(compact, 60), base)
+  }
+  assert.equal(PRICE_PANE_HEIGHT, 310)
+  assert.equal(PRICE_PANE_HEIGHT_COMPACT, 220)
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /const priceH = pricePaneHeight\(compact, series\.length\)/)
+  // The volume pane stays proportional to the (possibly shorter) price pane.
+  assert.equal(volumePaneHeight(pricePaneHeight(false, 12), true), Math.round(pricePaneHeight(false, 12) * 0.24))
 })

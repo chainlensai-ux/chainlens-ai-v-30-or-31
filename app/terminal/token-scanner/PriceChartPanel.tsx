@@ -34,7 +34,7 @@ import {
   type ChartViewport,
   type StoredChartViewport,
 } from '@/lib/priceChartCandles'
-import { candleGeometry, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
+import { candleBodyRect, candleGeometry, pricePaneHeight, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
 import { formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
 import {
   DAILY_FIRST_BATCH_MIN_CANDLES,
@@ -384,7 +384,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   }
   const axisW = Math.min(110, Math.max(56, Math.ceil(widestLabel * axisCharW + 14)))
   const plotW = W - axisW
-  const priceH = compact ? 220 : 310
+  // Short-history series (< 24 loaded candles for this timeframe) get a slightly shorter price pane.
+  const priceH = pricePaneHeight(compact, series.length)
   // Dedicated volume pane: a proportional share of the price pane, clearly separated from it.
   const volGap = hasVolume ? 14 : 0
   const volH = volumePaneHeight(priceH, hasVolume)
@@ -768,8 +769,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 const x = xC(i)
                 const bull = c.close >= c.open
                 const clr = bull ? C.bull : C.bear
-                const top = yP(Math.max(c.open, c.close))
-                const bodyH = Math.max(1, yP(Math.min(c.open, c.close)) - top)
+                // Doji / near-flat candles keep a minimum visible body, centred on the real open/close level.
+                const body = candleBodyRect(yP(c.open), yP(c.close))
                 // A wick beyond the robust display range (a genuine outlier only) is NOT given a fake end: the
                 // solid wick stops WICK_BREAK_PX short of the plot edge and continues dashed through the edge,
                 // with the TRUE high / low labelled below. The candle's OHLC is never changed.
@@ -782,7 +783,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                     <line x1={x} x2={x} y1={wickTop} y2={wickBot} stroke={clr} strokeWidth={1} shapeRendering="crispEdges" />
                     {hiOut && <line data-wick-continues="high" x1={x} x2={x} y1={priceTop + WICK_BREAK_PX - 2} y2={priceTop} stroke={clr} strokeWidth={1} strokeDasharray="2 2" />}
                     {loOut && <line data-wick-continues="low" x1={x} x2={x} y1={priceBot - WICK_BREAK_PX + 2} y2={priceBot} stroke={clr} strokeWidth={1} strokeDasharray="2 2" />}
-                    <rect x={x - bodyW / 2} y={top} width={bodyW} height={bodyH} fill={clr} shapeRendering="crispEdges" />
+                    <rect x={x - bodyW / 2} y={body.y} width={bodyW} height={body.h} fill={clr} shapeRendering="crispEdges" />
                   </g>
                 )
               })}
