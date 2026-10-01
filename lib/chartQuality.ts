@@ -399,8 +399,11 @@ export const AUTO_HISTORY_MAX_REQUESTS = 2
  * Whether the DEFAULT view needs older genuine history to read as a chart, and for which timeframe.
  * Loads only when (a) a history loader exists and more history remains, and (b) the chosen default is a
  * history timeframe (1H / 4H / 1D) still short of READABLE_MIN_CANDLES or not presentation-usable, or
- * nothing at all is presentation-usable (then 1D's span is loaded — the widest real view). Never for a
- * default that already reads well; never repeated (the caller runs it once per scan).
+ * nothing at all is presentation-usable (then 1D's span is loaded — the widest real view), or
+ * (FULL CHART) the default is a readable but SHORT intraday view (5M / 15M with fewer than
+ * READABLE_MIN_CANDLES candles, e.g. 17 x 15M because only ~4h were loaded) — then 1H's span of real
+ * hourly history is loaded so the chart can open on the token's fuller history (fullChartSelection).
+ * Never for a default that already reads well; never repeated (the caller runs it once per scan).
  */
 export function planAutoHistory(input: {
   defaultKey: ChartTimeframeKey | null
@@ -414,7 +417,30 @@ export function planAutoHistory(input: {
   const hist = input.defaultKey === '1H' || input.defaultKey === '4H' || input.defaultKey === '1D' ? input.defaultKey : null
   if (hist && (!readable || (q?.candleCount ?? 0) < READABLE_MIN_CANDLES)) return { load: true, key: hist, reason: `default_${hist.toLowerCase()}_needs_history` }
   if (!readable) return { load: true, key: '1D', reason: 'no_readable_timeframe_load_daily_history' }
+  if ((input.defaultKey === '5M' || input.defaultKey === '15M') && (q?.candleCount ?? 0) < READABLE_MIN_CANDLES) {
+    return { load: true, key: '1H', reason: 'short_intraday_window_load_hourly_history' }
+  }
   return { load: false, key: null, reason: 'default_already_readable' }
+}
+
+/**
+ * FULL CHART default: after the automatic hourly batch, a short intraday default (5M / 15M with fewer
+ * than READABLE_MIN_CANDLES genuine candles) gives way to 1H when 1H — scan + real older history — is
+ * presentation-usable, has at least READABLE_MIN_CANDLES candles and more candles than the intraday view.
+ * A genuinely young pool (history adds little) keeps its intraday view. Selection only — no candles made.
+ */
+export function fullChartSelection(
+  selection: TimeframeSelection,
+  qualities: Partial<Record<ChartTimeframeKey, TimeframeQuality>>,
+  historyLoaded: boolean,
+): TimeframeSelection {
+  const k = selection.key
+  if (!historyLoaded || (k !== '5M' && k !== '15M')) return selection
+  const cur = qualities[k]
+  const hour = qualities['1H']
+  if (!cur || cur.candleCount >= READABLE_MIN_CANDLES || !hour || !isPresentationUsable(hour.quality)) return selection
+  if (hour.candleCount < READABLE_MIN_CANDLES || hour.candleCount <= cur.candleCount) return selection
+  return { key: '1H', reason: `short_${k.toLowerCase()}_window_full_1h_history`, fallbackFrom: null, quality: hour.quality }
 }
 
 // ── Sparse line: break at real gaps ──────────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@ import {
   READABLE_MIN_CANDLES,
   assessTimeframeSet,
   buildCoverageMeta,
+  fullChartSelection,
   lineChartXs,
   planAutoHistory,
   resolveCoverageWindow,
@@ -183,4 +184,43 @@ test('PRICE/MCAP toggle unchanged: same candles scaled, same quality and timefra
   for (const k of Object.keys(a) as Array<keyof typeof a>) assert.equal(a[k]!.quality, b[k]!.quality)
   assert.equal(selectPresentationTimeframe(a).key, selectPresentationTimeframe(b).key)
   assert.match(read('app/terminal/token-scanner/PriceChartPanel.tsx'), /const series: ChartCandle\[\] = valueMode === 'MCAP' \? scaleCandlesToMarketCap\(priceSeries, marketCapSupply!\)/)
+})
+
+// ── FULL CHART: a short intraday default opens on 1H with real older hourly history ─────────────────
+test('full chart: 17 x 15M over ~4h (4-day-old pool) -> loads hourly history once, opens on 1H with the whole history', () => {
+  // The production case: exact 5M swaps, but only ~4h loaded (a trade every ~15 min).
+  const scanTs = Array.from({ length: 17 }, (_, i) => NOW - (16 - i) * M15)
+  const set = buildChartTimeframes(series(scanTs), 900)
+  const q = assessTimeframeSet(set)
+  const sel = selectPresentationTimeframe(q)
+  assert.equal(sel.key, '15M')
+  assert.ok(q['15M']!.candleCount < READABLE_MIN_CANDLES)
+  const plan = planAutoHistory({ defaultKey: sel.key, defaultQuality: q[sel.key!]!, historyEnabled: true, hasMore: true })
+  assert.deepEqual(plan, { load: true, key: '1H', reason: 'short_intraday_window_load_hourly_history' })
+  assert.equal(HISTORY_TARGET_SPAN_SEC['1H'], 3 * 86_400)
+  // Real hourly history before the scan's first candle (the 4-day-old pool's own trades).
+  const cutoff = historyCutoffMs(series(scanTs))!
+  const hist = Array.from({ length: 92 }, (_, i) => c(cutoff - (92 - i) * H1, 0.8 + i * 0.002))
+  const merged = withHistory(set, hist, cutoff)
+  const q2 = assessTimeframeSet(merged)
+  const full = fullChartSelection(selectPresentationTimeframe(q2), q2, true)
+  assert.equal(full.key, '1H')
+  assert.equal(full.reason, 'short_15m_window_full_1h_history')
+  assert.ok(q2['1H']!.candleCount >= 90, String(q2['1H']!.candleCount))
+  assert.equal(q2['15M']!.candleCount, 17, '15M itself is never padded with history')
+})
+
+test('full chart: a genuinely young pool (history adds nothing) keeps its intraday view; a readable default never loads', () => {
+  const scanTs = Array.from({ length: 17 }, (_, i) => NOW - (16 - i) * M15)
+  const set = buildChartTimeframes(series(scanTs), 900)
+  const q = assessTimeframeSet(set)
+  const sel = selectPresentationTimeframe(q)
+  assert.equal(fullChartSelection(sel, q, true).key, '15M', 'no older history -> 1H is not fuller')
+  assert.equal(fullChartSelection(sel, q, false).key, '15M', 'never before the automatic batch')
+  // A 15M default that already reads as a chart (>= 30 candles) never triggers the hourly batch.
+  assert.equal(planAutoHistory({ defaultKey: '15M', defaultQuality: { quality: 'good', candleCount: READABLE_MIN_CANDLES } as never, historyEnabled: true, hasMore: true }).load, false)
+  assert.equal(planAutoHistory({ defaultKey: '15M', defaultQuality: { quality: 'good', candleCount: 17 } as never, historyEnabled: false, hasMore: true }).load, false, 'no history source -> nothing')
+  // Wired once per scan, only when the user has not picked a timeframe.
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /if \(autoRan\.current === dataId \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return/)
 })

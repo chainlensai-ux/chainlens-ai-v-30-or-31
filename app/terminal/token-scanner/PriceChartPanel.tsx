@@ -58,6 +58,7 @@ import {
   resolveCoverageWindow,
   type ChartCoverageMeta,
   formatSpanShort,
+  fullChartSelection,
   isPresentationUsable,
   restingCandleTarget,
   selectPresentationTimeframe,
@@ -223,7 +224,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
     [autoHist, scanSet, cutoffMs, qualityOpts, scanQuality, scanWindow],
   )
-  const autoSelection = useMemo(() => selectPresentationTimeframe(defaultQuality), [defaultQuality])
+  // FULL CHART: a short intraday default (e.g. 17 x 15M over 4h) opens on 1H once the automatic batch of
+  // real hourly history makes 1H the fuller chart (lib/chartQuality.ts fullChartSelection).
+  const autoSelection = useMemo(() => fullChartSelection(selectPresentationTimeframe(defaultQuality), defaultQuality, autoHist != null && autoHist.length > 0), [defaultQuality, autoHist])
   const defaultKey = useMemo(() => autoSelection.key ?? pickDefaultTimeframe(scanSet), [autoSelection, scanSet])
   // Current (history-aware) quality per available timeframe, for chip states and status copy.
   // With older history merged, 1H / 4H / 1D cover from the oldest genuine history candle to the scan's end.
