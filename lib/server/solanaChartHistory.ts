@@ -50,7 +50,7 @@ type FetchJson = (url: string) => Promise<{ json: unknown; httpStatus: number | 
 const sideCache = new Map<string, { side: 'base' | 'quote'; createdSec: number | null; expiresAt: number }>()
 const historyCache = new Map<string, { value: SolanaHistoryResult; expiresAt: number }>()
 const inFlight = new Map<string, Promise<{ result: SolanaHistoryResult; providerCalls: number }>>()
-export function resetSolanaChartHistoryState() { sideCache.clear(); historyCache.clear(); inFlight.clear() }
+export function resetSolanaChartHistoryState() { sideCache.clear(); historyCache.clear(); inFlight.clear(); intradayCache.clear(); intradayInFlight.clear() }
 const bounded = <K, V>(m: Map<K, V>) => { if (m.size >= CACHE_MAX) m.delete(m.keys().next().value!) }
 const fail = (code: SolanaHistoryFailure, hasMore = true): SolanaHistoryResult => ({ ok: false, code, message: MESSAGES[code], hasMore })
 
@@ -130,7 +130,10 @@ export async function loadSolanaPoolHistory(
     const list = (raw.json as { data?: { attributes?: { ohlcv_list?: unknown } } } | null)?.data?.attributes?.ohlcv_list
     if (!Array.isArray(list)) return { result: fail('provider_schema_invalid'), providerCalls: calls }
     if (list.length === 0) return { result: end('no_older_candles'), providerCalls: calls }
-    const points = normalizeGtOhlcvRows(list).points.filter((p) => Date.parse(p.timestamp) / 1000 < before)
+    const normalized = normalizeGtOhlcvRows(list).points
+    // Rows came back but none is a valid OHLC row: a schema problem, never "end of history".
+    if (normalized.length === 0) return { result: fail('provider_schema_invalid'), providerCalls: calls }
+    const points = normalized.filter((p) => Date.parse(p.timestamp) / 1000 < before)
     if (points.length === 0) return { result: end('history_cursor_not_advancing'), providerCalls: calls }
     const oldest = Math.min(...points.map((p) => Date.parse(p.timestamp) / 1000))
     if (proof.createdSec != null && oldest <= Math.floor(proof.createdSec / 3600) * 3600) return { result: end('reached_pool_creation', points), providerCalls: calls }
@@ -144,5 +147,129 @@ export async function loadSolanaPoolHistory(
     return { result: checkClaim(out.result), providerCalls: out.providerCalls, cacheHit: false }
   } finally {
     inFlight.delete(key)
+  }
+}
+
+// ── On-demand Solana 5M / 1M (only when the user clicks 5M / 1M — never during a scan) ─────────────
+// Genuine GeckoTerminal pool OHLCV at minute resolution for the SAME exact pool and the mint's proven
+// side (the side proof + pool creation are shared with the history lane above: one pool read, cached
+// 30 min per exact-case mint + pool). Never derived from 15M. The provider must PROVE the interval:
+// every returned bucket is aligned to it and successive buckets are whole multiples of it apart (empty
+// buckets stay absent); anything else is provider_interval_unsupported and nothing is shown.
+// Hard cap: 2 provider calls per request (0 on a cache hit); cached per exact-case mint + pool + timeframe.
+
+export type SolanaIntradayTimeframe = '5m' | '1m'
+export const SOLANA_INTRADAY_REQUEST: Readonly<Record<SolanaIntradayTimeframe, { resolution: 'minute'; aggregate: number; limit: number; intervalSec: number }>> = {
+  '5m': { resolution: 'minute', aggregate: 5, limit: 1000, intervalSec: 300 },
+  '1m': { resolution: 'minute', aggregate: 1, limit: 1000, intervalSec: 60 },
+}
+export type SolanaIntradayFailure = SolanaHistoryFailure | 'provider_interval_unsupported' | 'insufficient_candles'
+export type SolanaIntradayResult =
+  | { ok: true; intervalSec: number; points: EvmChartPoint[]; coverage: { requestEndSec: number; requestedStartSec: number | null; requestedLimit: number; returnedRows: number; oldestSec: number | null; newestSec: number | null }; source: 'geckoterminal' }
+  | { ok: false; code: SolanaIntradayFailure; message: string }
+const INTRADAY_OK_TTL_MS = 2 * 60_000
+const INTRADAY_MESSAGES: Record<'provider_interval_unsupported' | 'insufficient_candles', string> = {
+  provider_interval_unsupported: 'the candle provider did not return genuine candles at this interval for this pool',
+  insufficient_candles: 'the pool returned fewer than two candles at this interval',
+}
+const intradayCache = new Map<string, { value: SolanaIntradayResult; expiresAt: number }>()
+const intradayInFlight = new Map<string, Promise<{ result: SolanaIntradayResult; providerCalls: number }>>()
+export function resetSolanaIntradayState() { intradayCache.clear(); intradayInFlight.clear() }
+const intradayFail = (code: SolanaIntradayFailure): SolanaIntradayResult => ({ ok: false, code, message: code in INTRADAY_MESSAGES ? INTRADAY_MESSAGES[code as keyof typeof INTRADAY_MESSAGES] : MESSAGES[code as SolanaHistoryFailure] })
+
+/** The next coarser standard bucket: a provider that ignored the requested aggregate would answer in it. */
+const COARSER_INTERVAL_SEC: Readonly<Record<number, number>> = { 60: 300, 300: 900 }
+export const GENUINE_INTERVAL_MIN_PROOF_ROWS = 6
+
+/**
+ * True when the provider PROVED `intervalSec`: every point sits on an `intervalSec` boundary, successive points
+ * are whole multiples apart (empty buckets absent, never filled), and — with enough rows to tell — the series is
+ * not entirely on the next coarser boundary (e.g. 5-minute buckets returned for a 1-minute request). Pure.
+ */
+export function isGenuineIntervalSeries(points: ReadonlyArray<{ timestamp: string }>, intervalSec: number): boolean {
+  let prev: number | null = null
+  let allCoarse = true
+  const coarse = COARSER_INTERVAL_SEC[intervalSec] ?? null
+  for (const p of points) {
+    const t = Date.parse(p.timestamp) / 1000
+    if (!Number.isFinite(t) || t % intervalSec !== 0) return false
+    if (prev != null && (t <= prev || (t - prev) % intervalSec !== 0)) return false
+    if (coarse == null || t % coarse !== 0) allCoarse = false
+    prev = t
+  }
+  return !(coarse != null && allCoarse && points.length >= GENUINE_INTERVAL_MIN_PROOF_ROWS)
+}
+
+export async function loadSolanaPoolIntraday(
+  params: { mint: string | null; pool: string | null; side?: string | null; timeframe: string | null },
+  fetchJson: FetchJson,
+  opts: { baseUrl?: string; now?: () => number } = {},
+): Promise<{ result: SolanaIntradayResult; providerCalls: number; cacheHit: boolean }> {
+  const now = opts.now ?? Date.now
+  const mint = String(params.mint ?? '')
+  const pool = String(params.pool ?? '')
+  const tf = params.timeframe === '5m' || params.timeframe === '1m' ? params.timeframe : null
+  const claimed = params.side == null || params.side === '' ? null : params.side
+  if (!tf || !SOLANA_BASE58_RE.test(mint) || !SOLANA_BASE58_RE.test(pool) || (claimed != null && claimed !== 'base' && claimed !== 'quote')) {
+    return { result: intradayFail('invalid_request'), providerCalls: 0, cacheHit: false }
+  }
+  const idKey = `solana:${mint}:${pool}`
+  const key = `${idKey}:${tf}`
+  const checkClaim = (r: SolanaIntradayResult): SolanaIntradayResult => {
+    const proven = sideCache.get(idKey)?.side ?? null
+    return claimed != null && proven != null && claimed !== proven ? intradayFail('token_side_unresolved') : r
+  }
+  const cached = intradayCache.get(key)
+  if (cached && cached.expiresAt > now()) return { result: checkClaim(cached.value), providerCalls: 0, cacheHit: true }
+  const pending = intradayInFlight.get(key)
+  if (pending) return { result: checkClaim((await pending).result), providerCalls: 0, cacheHit: true }
+
+  const base = (opts.baseUrl ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
+  const work = (async (): Promise<{ result: SolanaIntradayResult; providerCalls: number }> => {
+    let calls = 0
+    let proof = sideCache.get(idKey)
+    if (!proof || proof.expiresAt <= now()) {
+      calls++
+      const res = await fetchJson(`${base}/api/v2/networks/solana/pools/${pool}`)
+      if (res.httpStatus === 429) return { result: intradayFail('provider_rate_limited'), providerCalls: calls }
+      if (res.httpStatus === 404) return { result: intradayFail('pool_not_indexed'), providerCalls: calls }
+      if (res.httpStatus == null || res.httpStatus < 200 || res.httpStatus >= 300) return { result: intradayFail('provider_http_error'), providerCalls: calls }
+      const data = (res.json as { data?: unknown } | null)?.data
+      if (!data || typeof data !== 'object') return { result: intradayFail('provider_schema_invalid'), providerCalls: calls }
+      const side = resolveSolanaGtPoolSide(data, mint)
+      if (!side) return { result: intradayFail('token_side_unresolved'), providerCalls: calls }
+      const createdMs = Date.parse(String(((data as { attributes?: Record<string, unknown> }).attributes ?? {}).pool_created_at ?? ''))
+      proof = { side, createdSec: Number.isFinite(createdMs) && createdMs > 0 ? Math.floor(createdMs / 1000) : null, expiresAt: now() + SIDE_TTL_MS }
+      bounded(sideCache)
+      sideCache.set(idKey, proof)
+    }
+    const side = proof.side
+    if (claimed != null && claimed !== side) return { result: intradayFail('token_side_unresolved'), providerCalls: calls }
+    calls++
+    const r = SOLANA_INTRADAY_REQUEST[tf]
+    const raw = await fetchJson(`${base}/api/v2/networks/solana/pools/${pool}/ohlcv/${r.resolution}?aggregate=${r.aggregate}&limit=${r.limit}&currency=usd&token=${side}`)
+    if (raw.httpStatus === 429) return { result: intradayFail('provider_rate_limited'), providerCalls: calls }
+    if (raw.httpStatus == null || raw.httpStatus < 200 || raw.httpStatus >= 300) return { result: intradayFail(raw.httpStatus === 404 ? 'pool_not_indexed' : raw.httpStatus === 400 || raw.httpStatus === 422 ? 'provider_interval_unsupported' : 'provider_http_error'), providerCalls: calls }
+    const meta = (raw.json as { meta?: { base?: { address?: unknown }; quote?: { address?: unknown } } } | null)?.meta
+    const metaSide = meta ? (meta.base?.address === mint ? 'base' : meta.quote?.address === mint ? 'quote' : null) : null
+    if (metaSide != null && metaSide !== side) return { result: intradayFail('token_identity_unverified'), providerCalls: calls }
+    const list = (raw.json as { data?: { attributes?: { ohlcv_list?: unknown } } } | null)?.data?.attributes?.ohlcv_list
+    if (!Array.isArray(list)) return { result: intradayFail('provider_schema_invalid'), providerCalls: calls }
+    const points = normalizeGtOhlcvRows(list).points
+    if (points.length < 2) return { result: intradayFail('insufficient_candles'), providerCalls: calls }
+    if (!isGenuineIntervalSeries(points, r.intervalSec)) return { result: intradayFail('provider_interval_unsupported'), providerCalls: calls }
+    const ts = points.map((p) => Date.parse(p.timestamp) / 1000)
+    const endSec = Math.floor(now() / 1000)
+    const coverage = { requestEndSec: endSec, requestedStartSec: endSec - r.limit * r.intervalSec, requestedLimit: r.limit, returnedRows: points.length, oldestSec: Math.min(...ts), newestSec: Math.max(...ts) }
+    return { result: { ok: true, intervalSec: r.intervalSec, points, coverage, source: 'geckoterminal' }, providerCalls: calls }
+  })()
+  intradayInFlight.set(key, work)
+  try {
+    const out = await work
+    bounded(intradayCache)
+    intradayCache.set(key, { value: out.result, expiresAt: now() + (out.result.ok ? INTRADAY_OK_TTL_MS : out.result.code === 'provider_rate_limited' ? RATE_LIMITED_TTL_MS : FAIL_TTL_MS) })
+    return { result: checkClaim(out.result), providerCalls: out.providerCalls, cacheHit: false }
+  } finally {
+    intradayInFlight.delete(key)
   }
 }

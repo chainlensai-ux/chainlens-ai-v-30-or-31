@@ -181,6 +181,6 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
 }
 
 /** Real OHLCV candles for the Price Chart — see solanaProviders.ts's fetchSolanaOhlcv for the full disclosure. */
-export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null): Promise<SolanaOhlcvResult> {
-  return fetchSolanaOhlcv(poolAddress, fetchImpl, tokenSide, livePriceUsd)
+export async function analyzeSolanaCandles(poolAddress: string | null, fetchImpl: RpcFetch, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null, mintAddress: string | null = null): Promise<SolanaOhlcvResult> {
+  return fetchSolanaOhlcv(poolAddress, fetchImpl, tokenSide, livePriceUsd, mintAddress)
 }

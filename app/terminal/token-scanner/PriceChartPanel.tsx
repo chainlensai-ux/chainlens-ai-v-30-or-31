@@ -116,6 +116,10 @@ export type PriceChartPanelProps = {
    * compared to it: a material drift is shown, never silently hidden, and no candle is changed.
    */
   livePriceUsd?: number | null
+  /** Where `livePriceUsd` comes from (debug / tooltip only). */
+  livePriceSource?: string | null
+  /** Admin ?debug=1 only: the candle source's own evidence (pool, side, request, rows, coverage) shown verbatim. */
+  sourceDebug?: unknown
   /**
    * Loads OLDER genuine hourly candles strictly before `beforeSec` (lib/chartHistory.ts). Called only
    * after the user selects 1H / 4H / 1D or pans/zooms past the oldest loaded candle. Omit when the
@@ -197,7 +201,7 @@ const ONE_MIN_SEC = 60
 /** A clipped (outlier) wick turns into a dashed continuation this many px before the plot edge. */
 const WICK_BREAK_PX = 12
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, loadOneMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, marketCapVerifiedUsd, livePriceUsd, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, loadOneMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, marketCapVerifiedUsd, livePriceUsd, livePriceSource, sourceDebug, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   // Per-scan identity (lib/priceChartCandles.ts chartDataIdentity): scan key + O(1) series fingerprint.
   // Equivalent candle arrays share it; a new token/pool or a genuinely new series does not.
@@ -331,7 +335,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
   // Latest close vs the scanner's live price, from the scan's own newest candle (PRICE; MCAP = × supply).
   const scanNewest = normalized.length > 0 ? normalized[normalized.length - 1] : null
-  const latestAudit = auditLatestClose({ lastCandle: scanNewest, livePriceUsd, livePriceAtMs: referenceTimeMs, supply: mcapAvailable ? marketCapSupply : null, basis: mcapAvailable ? marketCapBasis : null, verifiedMarketCapUsd: marketCapVerifiedUsd })
+  const latestAudit = auditLatestClose({ lastCandle: scanNewest, livePriceUsd, livePriceAtMs: referenceTimeMs, supply: mcapAvailable ? marketCapSupply : null, basis: mcapAvailable ? marketCapBasis : null, verifiedMarketCapUsd: marketCapVerifiedUsd, intervalSec: scanSet.nativeSec, livePriceSource })
   const intervalSec = oneActive ? ONE_MIN_SEC : fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
   // Quality of what is on screen (PRICE candles; MCAP is the same series scaled, so the same verdict).
   const activeQuality: TimeframeQuality | null = oneActive ? oneQuality : fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
@@ -957,6 +961,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               {` · latest candle ${Math.abs(latestAudit.closeVsLive * 100).toFixed(1)}% ${latestAudit.closeVsLive < 0 ? 'below' : 'above'} live price`}
             </span>
           )}
+          {latestAudit.stale && latestAudit.candleAgeSec != null && (
+            <span data-latest-candle-stale title="No newer candle was returned for this pool; candles are never extended to the live price." style={{ color: '#b45309' }}>
+              {` · latest candle ${formatSpanShort(latestAudit.candleAgeSec)} old`}
+            </span>
+          )}
         </span>
         {footnote && <span>{footnote}</span>}
       </div>
@@ -989,6 +998,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             selectedTimeframe: activeKey,
             selectedTimeframeReason: selectionReason,
             latestClose: latestAudit,
+            source: sourceDebug ?? null,
             sparseLine: sparseLine?.stats ?? null,
             timeframeQuality: [...Object.values(tfQuality), ...(fiveQuality && !tfQuality['5M'] ? [fiveQuality] : [])].map((q) => ({
               timeframe: q!.timeframe, candleCount: q!.candleCount,

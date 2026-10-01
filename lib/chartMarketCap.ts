@@ -113,6 +113,9 @@ function trimZeros(s: string): string {
 
 /** A latest close more than this far from the scanner's live price is flagged on the chart. */
 export const LATEST_CLOSE_DRIFT_NOTICE = 0.05
+/** The newest candle is flagged as stale when older than this many of its own buckets AND at least LATEST_CANDLE_STALE_MIN_SEC. */
+export const LATEST_CANDLE_STALE_BUCKETS = 3
+export const LATEST_CANDLE_STALE_MIN_SEC = 3600
 
 export type LatestCloseAudit = {
   lastCandleAtMs: number | null
@@ -131,6 +134,10 @@ export type LatestCloseAudit = {
   /** (MCAP close − verified MC) / verified MC — equals closeVsLive under the inferred basis. */
   mcapCloseVsVerified: number | null
   drifted: boolean
+  /** Where the live price came from (e.g. 'dexscreener'); null when unknown. */
+  livePriceSource: string | null
+  /** The newest candle is materially old vs the live price time (no newer candle indexed). */
+  stale: boolean
 }
 
 export function auditLatestClose(input: {
@@ -140,6 +147,9 @@ export function auditLatestClose(input: {
   supply: number | null | undefined
   basis: ChartMarketCapBasis | null | undefined
   verifiedMarketCapUsd: number | null | undefined
+  /** The newest candle's bucket width (s), for the staleness rule; null skips it. */
+  intervalSec?: number | null
+  livePriceSource?: string | null
 }): LatestCloseAudit {
   const close = input.lastCandle && positive(input.lastCandle.close) ? input.lastCandle.close : null
   const live = positive(input.livePriceUsd) ? input.livePriceUsd : null
@@ -148,18 +158,23 @@ export function auditLatestClose(input: {
   const closeVsLive = close != null && live != null ? (close - live) / live : null
   const mcapClose = close != null && supply != null ? close * supply : null
   const at = input.livePriceAtMs != null && Number.isFinite(input.livePriceAtMs) ? input.livePriceAtMs : null
+  const ageSec = input.lastCandle && at != null ? Math.max(0, Math.round((at - input.lastCandle.t) / 1000)) : null
+  const iv = input.intervalSec != null && input.intervalSec > 0 ? input.intervalSec : null
   return {
     lastCandleAtMs: input.lastCandle?.t ?? null,
     lastCloseUsd: close,
     livePriceUsd: live,
     livePriceAtMs: at,
     closeVsLive,
-    candleAgeSec: input.lastCandle && at != null ? Math.max(0, Math.round((at - input.lastCandle.t) / 1000)) : null,
+    candleAgeSec: ageSec,
     supply,
     basis: input.basis ?? null,
     mcapClose,
     verifiedMarketCapUsd: verified,
     mcapCloseVsVerified: mcapClose != null && verified != null ? (mcapClose - verified) / verified : null,
     drifted: closeVsLive != null && Math.abs(closeVsLive) > LATEST_CLOSE_DRIFT_NOTICE,
+    livePriceSource: input.livePriceSource ?? null,
+    // Measured from the bucket START, so a bucket's own width counts toward its age.
+    stale: ageSec != null && iv != null && ageSec > Math.max(LATEST_CANDLE_STALE_BUCKETS * iv, LATEST_CANDLE_STALE_MIN_SEC),
   }
 }

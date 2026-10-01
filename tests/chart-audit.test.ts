@@ -312,5 +312,5 @@ test('solana wiring: route lane before EVM checks; panel gets the exact-case loa
   assert.match(page, /reason === 'token_side_unresolved'/)
   assert.match(page, /reason === 'price_sanity_mismatch'/)
   const merge = read('lib/server/solana/providerMerge.ts')
-  assert.match(merge, /analyzeSolanaCandles\(chartPool, fetchImpl, chartSide, chartLivePrice\)/)
+  assert.match(merge, /analyzeSolanaCandles\(chartPool, fetchImpl, chartSide, chartLivePrice, mintAddress\)/)
 })

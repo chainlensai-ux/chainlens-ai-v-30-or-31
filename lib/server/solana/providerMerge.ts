@@ -132,9 +132,12 @@ export async function runSolanaProviderMerge(
   const chartSide = market.data ? (market.data.chartPoolAddress !== undefined ? market.data.chartPoolTokenSide ?? null : market.data.primaryPoolTokenSide ?? null) : null
   const chartLivePrice = market.data?.priceUsd ?? metadata.jupiter.resolved.price ?? null
   const [ohlcv, pool] = await Promise.all([
-    analyzeSolanaCandles(chartPool, fetchImpl, chartSide, chartLivePrice),
+    analyzeSolanaCandles(chartPool, fetchImpl, chartSide, chartLivePrice, mintAddress),
     analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl }),
   ])
+  // Chart pool vs the market card's primary (deepest) pool, disclosed: the chart deliberately uses the
+  // ACTIVE market pair (selectSolanaChartPair); debug shows both and the rule.
+  if (ohlcv.debug) ohlcv.debug = { ...ohlcv.debug, primaryPoolAddress: poolAddress, chartPoolRule: market.data?.chartPoolRule ?? null }
   if (poolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')
   evidenceGaps.push(...pool.evidenceGaps)
 

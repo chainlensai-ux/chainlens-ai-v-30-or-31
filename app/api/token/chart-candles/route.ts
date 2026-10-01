@@ -4,7 +4,9 @@
 //      * an exact Uniswap V4 PoolId (bytes32) on a V4-configured chain: the pool's own on-chain Swap
 //        events, only when every log carries its exact timestamp (lib/server/v4SwapCandlesRpc.ts
 //        loadV4SwapFiveMinuteWindow) — never the providers' pool OHLCV, which can't serve a PoolId;
-//      * a normal 20-byte pool: the providers' pool OHLCV (lib/server/chartCandlesOnDemand.ts).
+//      * a normal 20-byte pool: the providers' pool OHLCV (lib/server/chartCandlesOnDemand.ts);
+//      * chain=solana (5m / 1m): the exact-case pool's own GeckoTerminal minute OHLCV for the mint's proven
+//        side, only when the provider proves the interval (lib/server/solanaChartHistory.ts loadSolanaPoolIntraday).
 //  - timeframe=history: older HOURLY candles when a user selects 1H / 4H / 1D or pans past the
 //    oldest loaded candle — `before` cursor in, genuine candles + `hasMore` + next cursor out:
 //      * an exact Uniswap V4 PoolId (bytes32): swap-derived (lib/server/v4SwapCandlesRpc.ts
@@ -20,7 +22,7 @@ import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/
 import { loadV4SwapHistoryWindow, loadV4SwapIntradayWindow, V4_FIVE_MINUTE_NOT_EXACT_MESSAGE, V4_ONE_MINUTE_NOT_EXACT_MESSAGE, V4_SWAP_CHAIN_CONFIG, type V4FiveMinuteCode } from '@/lib/server/v4SwapCandlesRpc'
 import { makeV4FiveMinuteDeps, makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
 import { buildCoverageMeta } from '@/lib/chartQuality'
-import { loadSolanaPoolHistory } from '@/lib/server/solanaChartHistory'
+import { loadSolanaPoolHistory, loadSolanaPoolIntraday } from '@/lib/server/solanaChartHistory'
 import { candleFailureMessage } from '@/lib/evmChartCandles'
 
 function v4FiveMinuteMessage(code: V4FiveMinuteCode, label: '1M' | '5M' = '5M'): string {
@@ -89,6 +91,13 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec }, { status: h.code === 'invalid_request' ? 400 : 200 })
     }
     return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.candles, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason ?? null, windowEndSec: h.windowEndSec, source: 'v4_swap_events' })
+  }
+  // Solana 5M / 1M: its own exact-case lane (never the EVM or V4 paths, never derived from 15M).
+  if (url.searchParams.get('chain') === 'solana' && (url.searchParams.get('timeframe') === '5m' || url.searchParams.get('timeframe') === '1m')) {
+    const tf = url.searchParams.get('timeframe')!
+    const { result: s } = await loadSolanaPoolIntraday({ mint: url.searchParams.get('token'), pool: url.searchParams.get('pool'), side: url.searchParams.get('side'), timeframe: tf }, fetchJson, { baseUrl: process.env.GECKO_BASE_URL })
+    if (!s.ok) return NextResponse.json({ ok: false, timeframe: tf, code: s.code, message: s.message, source: 'geckoterminal' }, { status: s.code === 'invalid_request' ? 400 : 200 })
+    return NextResponse.json({ ok: true, timeframe: tf, intervalSec: s.intervalSec, points: s.points, coverage: s.coverage, source: s.source })
   }
   // 5M / 1M for an exact Uniswap V4 PoolId on a V4-configured chain: its own Swap events (never provider
   // PoolId OHLCV). 1M exists ONLY on this lane: genuine swaps with exact log timestamps, on demand.

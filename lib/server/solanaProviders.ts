@@ -15,6 +15,7 @@
 import { isHeliusConfigured, isJupiterConfigured, getHeliusApiKey } from './solanaChainConfig.ts'
 import { getTokenCache, setTokenCache } from './cache/tokenCache.ts'
 import { buildCoverageMeta, type ChartCoverageMeta } from '../chartQuality.ts'
+import { normalizeGtOhlcvRows } from '../evmChartCandles.ts'
 
 type FetchImpl = typeof fetch
 
@@ -216,6 +217,28 @@ export type SolanaOhlcvResult = {
   tokenSide?: 'base' | 'quote' | null
   /** The window this request covered: 672 x 15m ending at the answer time (lib/chartQuality.ts). */
   coverage?: ChartCoverageMeta | null
+  /** Evidence for ?debug=1: exactly which pool/side/request produced these candles and what they cover. */
+  debug?: SolanaOhlcvDebug | null
+}
+
+export type SolanaOhlcvDebug = {
+  poolAddress: string | null
+  tokenSide: 'base' | 'quote' | null
+  request: { resolution: 'minute' | 'hour'; aggregate: number; limit: number }
+  rowsReturned: number
+  rowsNormalized: number
+  /** Provider rows dropped by normalization (invalid / non-positive / body outside wick / duplicate timestamp). */
+  rowsDropped: number
+  oldestSec: number | null
+  newestSec: number | null
+  /** Seconds from the oldest candle's bucket start to the newest candle's bucket end. */
+  coveredSec: number | null
+  /** Seconds between the newest candle's bucket start and the answer time. */
+  latestCandleAgeSec: number | null
+  source: 'geckoterminal_pool_ohlcv'
+  /** Set by the scan merge: the market card's primary (deepest) pool and why the chart pool was chosen. */
+  primaryPoolAddress?: string | null
+  chartPoolRule?: string | null
 }
 
 // CANDLE DEPTH + TOKEN SIDE, DISCLOSED (Price Chart terminal upgrade — reported "too few candles").
@@ -240,7 +263,7 @@ function emptyOhlcvResult(called: boolean, errorReason: string | null): SolanaOh
 // shown — the same band the EVM chart uses.
 export const SOLANA_CHART_PRICE_SANITY_RATIO = 3
 
-export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null): Promise<SolanaOhlcvResult> {
+export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl, tokenSide: 'base' | 'quote' | null = null, livePriceUsd: number | null = null, mintAddress: string | null = null, opts: { now?: () => number } = {}): Promise<SolanaOhlcvResult> {
   if (!poolAddress) return emptyOhlcvResult(false, 'No indexed pool address to fetch candle history for.')
   if (tokenSide !== 'base' && tokenSide !== 'quote') return emptyOhlcvResult(false, 'token_side_unresolved')
   try {
@@ -249,29 +272,35 @@ export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: Fe
       signal: AbortSignal.timeout(8000),
     })
     if (!res.ok) return emptyOhlcvResult(true, `geckoterminal_http_${res.status}`)
-    const json = await res.json().catch(() => null) as { data?: { attributes?: { ohlcv_list?: unknown } } } | null
+    const json = await res.json().catch(() => null) as { data?: { attributes?: { ohlcv_list?: unknown } }; meta?: { base?: { address?: unknown }; quote?: { address?: unknown } } } | null
     const rows = Array.isArray(json?.data?.attributes?.ohlcv_list) ? json!.data!.attributes!.ohlcv_list as unknown[] : null
     if (!rows) return emptyOhlcvResult(true, 'geckoterminal_unexpected_shape')
-    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-    // GeckoTerminal rows are [unix_seconds, open, high, low, close, volume], newest-first.
-    const candles = rows
-      .map((row) => (Array.isArray(row) && row.length >= 6 ? row : null))
-      .filter((row): row is unknown[] => row != null)
-      .map((row): SolanaOhlcvCandle | null => {
-        const ts = num(row[0]); const o = num(row[1]); const h = num(row[2]); const l = num(row[3]); const c = num(row[4]); const v = num(row[5])
-        if (ts == null || o == null || h == null || l == null || c == null) return null
-        return { timestamp: new Date(ts * 1000).toISOString(), open: o, high: h, low: l, close: c, volume: v }
-      })
-      .filter((c): c is SolanaOhlcvCandle => c != null)
-      .reverse() // chronological ascending, for the chart
+    // The response's own meta, when it names the mint, must name the SAME side (exact, case-sensitive).
+    if (mintAddress && json?.meta) {
+      const metaSide = json.meta.base?.address === mintAddress ? 'base' : json.meta.quote?.address === mintAddress ? 'quote' : null
+      if (metaSide != null && metaSide !== tokenSide) return emptyOhlcvResult(true, 'token_identity_unverified')
+    }
+    // GeckoTerminal rows are [unix_seconds, open, high, low, close, volume], newest-first. The shared
+    // normalizer (lib/evmChartCandles.ts normalizeGtOhlcvRows) sorts ascending, collapses duplicate
+    // timestamps deterministically and DROPS invalid rows (non-positive, body outside wick) — never repairs.
+    const norm = normalizeGtOhlcvRows(rows)
+    const candles: SolanaOhlcvCandle[] = norm.points.map((p) => ({ timestamp: p.timestamp, open: p.open, high: p.high, low: p.low, close: p.close, volume: p.volume }))
     if (candles.length < 2) return emptyOhlcvResult(true, 'geckoterminal_insufficient_candles')
     const lastClose = candles[candles.length - 1].close
     if (livePriceUsd != null && livePriceUsd > 0) {
       const ratio = lastClose / livePriceUsd
       if (!(ratio >= 1 / SOLANA_CHART_PRICE_SANITY_RATIO && ratio <= SOLANA_CHART_PRICE_SANITY_RATIO)) return emptyOhlcvResult(true, 'price_sanity_mismatch')
     }
-    const coverage = buildCoverageMeta({ requestEndSec: Math.floor(Date.now() / 1000), intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles })
-    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null, poolAddress, tokenSide, coverage }
+    const nowSec = Math.floor((opts.now ?? Date.now)() / 1000)
+    const coverage = buildCoverageMeta({ requestEndSec: nowSec, intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles })
+    const oldestSec = Math.floor(Date.parse(candles[0].timestamp) / 1000)
+    const newestSec = Math.floor(Date.parse(candles[candles.length - 1].timestamp) / 1000)
+    const debug: SolanaOhlcvDebug = {
+      poolAddress, tokenSide, request: { resolution: 'minute', aggregate: 15, limit: SOLANA_OHLCV_LIMIT },
+      rowsReturned: rows.length, rowsNormalized: candles.length, rowsDropped: rows.length - candles.length,
+      oldestSec, newestSec, coveredSec: newestSec + 900 - oldestSec, latestCandleAgeSec: Math.max(0, nowSec - newestSec), source: 'geckoterminal_pool_ohlcv',
+    }
+    return { called: true, success: true, candles, timeframe: SOLANA_OHLCV_TIMEFRAME, errorReason: null, poolAddress, tokenSide, coverage, debug }
   } catch {
     return emptyOhlcvResult(true, 'geckoterminal_unreachable')
   }

@@ -171,7 +171,7 @@ test('UI: sparse chips are dimmed with the explanation; status + ?debug=1 qualit
   assert.match(panel, /title: sparse \? sparseTimeframeTooltip\(q!, clearerThan\(tf\.key\)\)/)
   assert.match(panel, /selected for clearer history/)
   assert.match(panel, /Sparse trading — /)
-  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*latestClose: latestAudit,\s*sparseLine: sparseLine\?\.stats \?\? null,\s*timeframeQuality:/)
+  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*latestClose: latestAudit,\s*source: sourceDebug \?\? null,\s*sparseLine: sparseLine\?\.stats \?\? null,\s*timeframeQuality:/)
   assert.match(read('app/terminal/token-scanner/page.tsx'), /debug=\{Boolean\(result\.chartDebug\)\}/)
 })
 
@@ -450,5 +450,5 @@ test('10. zero provider-call delta: coverage rides on requests already made', as
   assert.doesNotMatch(panel, /\bfetch\(/)
   // Scan ladder / Solana attach coverage to the reads they already make.
   assert.match(read('lib/evmChartCandles.ts'), /coverage: buildCoverageMeta\(\{ requestEndSec: nowSec, intervalSec: rung\.intervalSec, limit: rung\.requestLimit, points, poolCreatedSec: poolCreatedSec\(pool\) \}\)/)
-  assert.match(read('lib/server/solanaProviders.ts'), /buildCoverageMeta\(\{ requestEndSec: Math\.floor\(Date\.now\(\) \/ 1000\), intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles \}\)/)
+  assert.match(read('lib/server/solanaProviders.ts'), /buildCoverageMeta\(\{ requestEndSec: nowSec, intervalSec: 900, limit: SOLANA_OHLCV_LIMIT, points: candles \}\)/)
 })

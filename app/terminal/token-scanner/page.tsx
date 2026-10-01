@@ -1648,6 +1648,22 @@ function makeSolanaHistoryLoader(mint: string | null | undefined, pool: string |
   }
 }
 
+// Solana 5M / 1M on demand: the exact-case pool's own provider minute candles for the proven side (server
+// re-proves the side and the interval; never derived from 15M). Loaders exist only when the scan proved both.
+function makeSolanaIntradayLoader(mint: string | null | undefined, pool: string | null | undefined, tokenSide: 'base' | 'quote' | null | undefined, timeframe: '5m' | '1m'): (() => Promise<FiveMinuteLoadResult>) | undefined {
+  if (!mint || !pool || (tokenSide !== 'base' && tokenSide !== 'quote')) return undefined
+  const label = timeframe === '1m' ? '1M' : '5M'
+  return async () => {
+    const { data: { session } } = await supabase.auth.getSession()
+    const authToken = session?.access_token
+    const qs = new URLSearchParams({ chain: 'solana', token: mint, pool, side: tokenSide, timeframe })
+    const res = await fetch(`/api/token/chart-candles?${qs.toString()}`, { headers: authToken ? { Authorization: `Bearer ${authToken}` } : {}, cache: 'no-store' })
+    const json = await res.json().catch(() => null) as { ok?: boolean; intervalSec?: number; points?: FiveMinuteLoadPoint[]; message?: string; coverage?: ChartCoverageMeta | null } | null
+    if (json?.ok && Array.isArray(json.points)) return { ok: true, intervalSec: json.intervalSec ?? (timeframe === '1m' ? 60 : 300), points: json.points, coverage: json.coverage ?? null }
+    return { ok: false, message: json?.message ?? (res.status === 401 ? `Sign in to load ${label} candles.` : `The ${label} candle request did not complete.`) }
+  }
+}
+
 // Why the Solana chart has no candles, from the scan's own reason (never a generic guess).
 function solanaChartUnavailableText(sr: { marketData?: unknown; ohlcv?: { errorReason?: string | null } | null }): string {
   if (!sr.marketData) return 'Chart data unavailable — no indexed Solana pool found for this mint.'
@@ -6407,6 +6423,12 @@ export default function TerminalTokenScanner() {
                       <PriceChartPanel candles={sr.ohlcv.candles}
                         declaredIntervalSec={chartIntervalSec(sr.ohlcv.timeframe)}
                         loadHistory={makeSolanaHistoryLoader(sr.mintAddress, sr.ohlcv.poolAddress, sr.ohlcv.tokenSide)}
+                        loadFiveMinute={makeSolanaIntradayLoader(sr.mintAddress, sr.ohlcv.poolAddress, sr.ohlcv.tokenSide, '5m')}
+                        loadOneMinute={makeSolanaIntradayLoader(sr.mintAddress, sr.ohlcv.poolAddress, sr.ohlcv.tokenSide, '1m')}
+                        livePriceUsd={sr.marketData?.priceUsd ?? null}
+                        livePriceSource="dexscreener"
+                        footnote={sr.ohlcv.debug?.primaryPoolAddress && sr.ohlcv.poolAddress && sr.ohlcv.debug.primaryPoolAddress !== sr.ohlcv.poolAddress ? `Most active pair (by 24h volume) · ${sr.ohlcv.poolAddress.slice(0, 4)}…${sr.ohlcv.poolAddress.slice(-4)} — not the deepest pool` : undefined}
+                        sourceDebug={sr.ohlcv.debug ?? null}
                         historySourceLabel="real pool candles"
                         debug={typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1'}
                         referenceTimeMs={chartReferenceMs}
@@ -8278,6 +8300,7 @@ export default function TerminalTokenScanner() {
                           marketCapBasis={_mcapSupply.enabled ? _mcapSupply.basis : null}
                           marketCapVerifiedUsd={_mcapSupply.enabled ? _mcapSupply.verifiedMarketCapUsd : null}
                           livePriceUsd={result.price ?? null}
+                          livePriceSource="scan_price"
                           loadHistory={makeHistoryLoader(result.chain, result.contract, result.chartCandles?.poolAddress, result.chartSource, result.chartCandles?.tokenSide ?? null, result.chartCandles?.coverage?.swapsPerHour ?? null)}
                           historySourceLabel={result.chartSource === 'v4_swap_events' ? 'real V4 swaps' : result.chartSource === 'pool_ohlcv' && result.chartCandles ? 'real pool candles' : null}
                           debug={Boolean(result.chartDebug)}
