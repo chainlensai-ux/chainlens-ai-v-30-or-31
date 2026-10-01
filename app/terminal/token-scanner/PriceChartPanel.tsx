@@ -35,7 +35,7 @@ import {
   type StoredChartViewport,
 } from '@/lib/priceChartCandles'
 import { candleBodyRect, candleGeometry, pricePaneHeight, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
-import { auditLatestClose, formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
+import { auditVisibleSeries, formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
 import {
   DAILY_FIRST_BATCH_MIN_CANDLES,
   HISTORY_MAX_REQUESTS_PER_ACTION,
@@ -333,10 +333,11 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const series: ChartCandle[] = valueMode === 'MCAP' ? scaleCandlesToMarketCap(priceSeries, marketCapSupply!) : priceSeries
   const fmtValue = (v: number, digits?: number) => (valueMode === 'MCAP' ? formatCompactUsd(v, 2) : formatChartPrice(v, digits))
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
-  // Latest close vs the scanner's live price, from the scan's own newest candle (PRICE; MCAP = × supply).
-  const scanNewest = normalized.length > 0 ? normalized[normalized.length - 1] : null
-  const latestAudit = auditLatestClose({ lastCandle: scanNewest, livePriceUsd, livePriceAtMs: referenceTimeMs, supply: mcapAvailable ? marketCapSupply : null, basis: mcapAvailable ? marketCapBasis : null, verifiedMarketCapUsd: marketCapVerifiedUsd, intervalSec: scanSet.nativeSec, livePriceSource })
   const intervalSec = oneActive ? ONE_MIN_SEC : fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
+  // Latest close vs the scanner's live price, from the DISPLAYED series: its newest PRICE candle (never the
+  // MCAP-scaled one) at the selected interval (1M=60, 5M=300, else the active timeframe) — so switching
+  // timeframe updates the stale/drift note and debug at once.
+  const latestAudit = auditVisibleSeries({ priceSeries, intervalSec, livePriceUsd, livePriceAtMs: referenceTimeMs, supply: mcapAvailable ? marketCapSupply : null, basis: mcapAvailable ? marketCapBasis : null, verifiedMarketCapUsd: marketCapVerifiedUsd, livePriceSource })
   // Quality of what is on screen (PRICE candles; MCAP is the same series scaled, so the same verdict).
   const activeQuality: TimeframeQuality | null = oneActive ? oneQuality : fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
   const userPicked = picked != null && activeKey === picked

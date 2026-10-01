@@ -153,9 +153,11 @@ export async function loadSolanaPoolHistory(
 // ── On-demand Solana 5M / 1M (only when the user clicks 5M / 1M — never during a scan) ─────────────
 // Genuine GeckoTerminal pool OHLCV at minute resolution for the SAME exact pool and the mint's proven
 // side (the side proof + pool creation are shared with the history lane above: one pool read, cached
-// 30 min per exact-case mint + pool). Never derived from 15M. The provider must PROVE the interval:
-// every returned bucket is aligned to it and successive buckets are whole multiples of it apart (empty
-// buckets stay absent); anything else is provider_interval_unsupported and nothing is shown.
+// 30 min per exact-case mint + pool). Never derived from 15M. Unsupported => nothing shown: an HTTP 400/422
+// for the requested aggregate, or any off-grid / unordered / non-multiple-gap row (classifyIntervalSeries).
+// Rows valid on the requested grid are accepted (empty buckets stay absent); a series that also happens to
+// sit on the next coarser grid is only flagged 'ambiguous_coarser_grid' — the response has no interval
+// metadata that could prove a different interval.
 // Hard cap: 2 provider calls per request (0 on a cache hit); cached per exact-case mint + pool + timeframe.
 
 export type SolanaIntradayTimeframe = '5m' | '1m'
@@ -165,7 +167,7 @@ export const SOLANA_INTRADAY_REQUEST: Readonly<Record<SolanaIntradayTimeframe, {
 }
 export type SolanaIntradayFailure = SolanaHistoryFailure | 'provider_interval_unsupported' | 'insufficient_candles'
 export type SolanaIntradayResult =
-  | { ok: true; intervalSec: number; points: EvmChartPoint[]; coverage: { requestEndSec: number; requestedStartSec: number | null; requestedLimit: number; returnedRows: number; oldestSec: number | null; newestSec: number | null }; source: 'geckoterminal' }
+  | { ok: true; intervalSec: number; points: EvmChartPoint[]; coverage: { requestEndSec: number; requestedStartSec: number | null; requestedLimit: number; returnedRows: number; oldestSec: number | null; newestSec: number | null }; source: 'geckoterminal'; intervalEvidence: Exclude<IntervalSeriesClass, 'invalid'> }
   | { ok: false; code: SolanaIntradayFailure; message: string }
 const INTRADAY_OK_TTL_MS = 2 * 60_000
 const INTRADAY_MESSAGES: Record<'provider_interval_unsupported' | 'insufficient_candles', string> = {
@@ -177,27 +179,37 @@ const intradayInFlight = new Map<string, Promise<{ result: SolanaIntradayResult;
 export function resetSolanaIntradayState() { intradayCache.clear(); intradayInFlight.clear() }
 const intradayFail = (code: SolanaIntradayFailure): SolanaIntradayResult => ({ ok: false, code, message: code in INTRADAY_MESSAGES ? INTRADAY_MESSAGES[code as keyof typeof INTRADAY_MESSAGES] : MESSAGES[code as SolanaHistoryFailure] })
 
-/** The next coarser standard bucket: a provider that ignored the requested aggregate would answer in it. */
+/** The next coarser standard bucket (debug classification only). */
 const COARSER_INTERVAL_SEC: Readonly<Record<number, number>> = { 60: 300, 300: 900 }
 export const GENUINE_INTERVAL_MIN_PROOF_ROWS = 6
 
 /**
- * True when the provider PROVED `intervalSec`: every point sits on an `intervalSec` boundary, successive points
- * are whole multiples apart (empty buckets absent, never filled), and — with enough rows to tell — the series is
- * not entirely on the next coarser boundary (e.g. 5-minute buckets returned for a 1-minute request). Pure.
+ * How a returned series relates to the requested interval (pure):
+ *   - 'invalid': a non-finite or off-grid timestamp, not strictly ascending, or a gap that is not a whole
+ *     multiple of the interval — the provider did not answer at this interval (rejected);
+ *   - 'genuine': every row on the requested grid, gaps whole multiples (empty buckets absent, never filled);
+ *   - 'ambiguous_coarser_grid': valid on the requested grid, but every row (>= GENUINE_INTERVAL_MIN_PROOF_ROWS)
+ *     also falls on the next coarser boundary. A SPARSE genuine market can do that by chance, and GeckoTerminal's
+ *     OHLCV response carries no interval metadata to prove otherwise — so it is accepted and only flagged
+ *     (debug), never treated as proof the provider ignored the requested aggregate.
  */
-export function isGenuineIntervalSeries(points: ReadonlyArray<{ timestamp: string }>, intervalSec: number): boolean {
+export type IntervalSeriesClass = 'invalid' | 'genuine' | 'ambiguous_coarser_grid'
+export function classifyIntervalSeries(points: ReadonlyArray<{ timestamp: string }>, intervalSec: number): IntervalSeriesClass {
   let prev: number | null = null
   let allCoarse = true
   const coarse = COARSER_INTERVAL_SEC[intervalSec] ?? null
   for (const p of points) {
     const t = Date.parse(p.timestamp) / 1000
-    if (!Number.isFinite(t) || t % intervalSec !== 0) return false
-    if (prev != null && (t <= prev || (t - prev) % intervalSec !== 0)) return false
+    if (!Number.isFinite(t) || t % intervalSec !== 0) return 'invalid'
+    if (prev != null && (t <= prev || (t - prev) % intervalSec !== 0)) return 'invalid'
     if (coarse == null || t % coarse !== 0) allCoarse = false
     prev = t
   }
-  return !(coarse != null && allCoarse && points.length >= GENUINE_INTERVAL_MIN_PROOF_ROWS)
+  return coarse != null && allCoarse && points.length >= GENUINE_INTERVAL_MIN_PROOF_ROWS ? 'ambiguous_coarser_grid' : 'genuine'
+}
+/** Valid rows on the requested grid (genuine or ambiguous-but-valid). Pure. */
+export function isGenuineIntervalSeries(points: ReadonlyArray<{ timestamp: string }>, intervalSec: number): boolean {
+  return classifyIntervalSeries(points, intervalSec) !== 'invalid'
 }
 
 export async function loadSolanaPoolIntraday(
@@ -257,11 +269,12 @@ export async function loadSolanaPoolIntraday(
     if (!Array.isArray(list)) return { result: intradayFail('provider_schema_invalid'), providerCalls: calls }
     const points = normalizeGtOhlcvRows(list).points
     if (points.length < 2) return { result: intradayFail('insufficient_candles'), providerCalls: calls }
-    if (!isGenuineIntervalSeries(points, r.intervalSec)) return { result: intradayFail('provider_interval_unsupported'), providerCalls: calls }
+    const intervalEvidence = classifyIntervalSeries(points, r.intervalSec)
+    if (intervalEvidence === 'invalid') return { result: intradayFail('provider_interval_unsupported'), providerCalls: calls }
     const ts = points.map((p) => Date.parse(p.timestamp) / 1000)
     const endSec = Math.floor(now() / 1000)
     const coverage = { requestEndSec: endSec, requestedStartSec: endSec - r.limit * r.intervalSec, requestedLimit: r.limit, returnedRows: points.length, oldestSec: Math.min(...ts), newestSec: Math.max(...ts) }
-    return { result: { ok: true, intervalSec: r.intervalSec, points, coverage, source: 'geckoterminal' }, providerCalls: calls }
+    return { result: { ok: true, intervalSec: r.intervalSec, points, coverage, source: 'geckoterminal', intervalEvidence }, providerCalls: calls }
   })()
   intradayInFlight.set(key, work)
   try {

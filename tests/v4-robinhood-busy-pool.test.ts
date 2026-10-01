@@ -276,7 +276,7 @@ test('latest-price freshness + quote drift: the latest close carries its exact q
   assert.equal(auditLatestClose({ lastCandle: { t: 0, close: 3.5 }, livePriceUsd: live, livePriceAtMs: 0, supply, basis: 'inferred_current_mc', verifiedMarketCapUsd: 488_000 }).drifted, false)
   assert.equal(LATEST_CLOSE_DRIFT_NOTICE, 0.05)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const latestAudit = auditLatestClose\(\{ lastCandle: scanNewest, livePriceUsd, livePriceAtMs: referenceTimeMs,/)
+  assert.match(panel, /const latestAudit = auditVisibleSeries\(\{ priceSeries, intervalSec, livePriceUsd, livePriceAtMs: referenceTimeMs,/)
   assert.match(panel, /latestAudit\.drifted && latestAudit\.closeVsLive != null/)
   assert.match(panel, /latestClose: latestAudit,/)
   assert.match(read('app/terminal/token-scanner/page.tsx'), /livePriceUsd=\{result\.price \?\? null\}/)

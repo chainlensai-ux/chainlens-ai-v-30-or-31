@@ -97,7 +97,7 @@ export async function GET(req: Request) {
     const tf = url.searchParams.get('timeframe')!
     const { result: s } = await loadSolanaPoolIntraday({ mint: url.searchParams.get('token'), pool: url.searchParams.get('pool'), side: url.searchParams.get('side'), timeframe: tf }, fetchJson, { baseUrl: process.env.GECKO_BASE_URL })
     if (!s.ok) return NextResponse.json({ ok: false, timeframe: tf, code: s.code, message: s.message, source: 'geckoterminal' }, { status: s.code === 'invalid_request' ? 400 : 200 })
-    return NextResponse.json({ ok: true, timeframe: tf, intervalSec: s.intervalSec, points: s.points, coverage: s.coverage, source: s.source })
+    return NextResponse.json({ ok: true, timeframe: tf, intervalSec: s.intervalSec, points: s.points, coverage: s.coverage, source: s.source, intervalEvidence: s.intervalEvidence })
   }
   // 5M / 1M for an exact Uniswap V4 PoolId on a V4-configured chain: its own Swap events (never provider
   // PoolId OHLCV). 1M exists ONLY on this lane: genuine swaps with exact log timestamps, on demand.

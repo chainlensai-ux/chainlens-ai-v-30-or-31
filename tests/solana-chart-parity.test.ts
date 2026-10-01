@@ -6,10 +6,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fetchSolanaOhlcv } from '../lib/server/solanaProviders.ts'
 import {
-  GENUINE_INTERVAL_MIN_PROOF_ROWS, SOLANA_INTRADAY_REQUEST, isGenuineIntervalSeries, loadSolanaPoolHistory, loadSolanaPoolIntraday,
+  GENUINE_INTERVAL_MIN_PROOF_ROWS, SOLANA_INTRADAY_REQUEST, classifyIntervalSeries, isGenuineIntervalSeries, loadSolanaPoolHistory, loadSolanaPoolIntraday,
   resetSolanaChartHistoryState,
 } from '../lib/server/solanaChartHistory.ts'
-import { auditLatestClose, LATEST_CANDLE_STALE_MIN_SEC } from '../lib/chartMarketCap.ts'
+import { auditLatestClose, auditVisibleSeries, LATEST_CANDLE_STALE_MIN_SEC } from '../lib/chartMarketCap.ts'
 
 const read = (rel: string) => readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8')
 const MINT = 'So1anaMintCaseSensitiveAAAAAAAAAAAAAAAAAAAB'
@@ -56,27 +56,37 @@ test('solana 5M: genuine provider minute/5 rows for the exact pool + proven side
   }
 })
 
-test('solana 1M: genuine minute/1 rows accepted; a provider answering in 5-minute buckets is NOT shown as 1M', async () => {
-  resetSolanaChartHistoryState()
-  const ok = await loadSolanaPoolIntraday({ mint: MINT, pool: POOL, side: 'base', timeframe: '1m' }, gt({ side: 'base', rows: () => rows(60, 500) }).fetchJson, opts)
-  assert.equal(ok.result.ok, true)
-  assert.equal(ok.result.ok && ok.result.intervalSec, 60)
-  // 1M requested, 5-minute buckets returned (aggregate ignored): unproven => not shown, precise reason.
-  resetSolanaChartHistoryState()
-  const coarse = await loadSolanaPoolIntraday({ mint: MINT, pool: POOL, side: 'base', timeframe: '1m' }, gt({ side: 'base', rows: () => rows(300, 50) }).fetchJson, opts)
-  assert.deepEqual(!coarse.result.ok && [coarse.result.code, coarse.result.message], ['provider_interval_unsupported', 'the candle provider did not return genuine candles at this interval for this pool'])
-  // Misaligned rows (not on a minute boundary) and a provider 400 are also unsupported.
-  resetSolanaChartHistoryState()
-  const misaligned = await loadSolanaPoolIntraday({ mint: MINT, pool: POOL, side: 'base', timeframe: '1m' }, gt({ side: 'base', rows: () => rows(60, 20).map((r) => [Number(r[0]) + 7, ...r.slice(1)]) }).fetchJson, opts)
-  assert.equal(!misaligned.result.ok && misaligned.result.code, 'provider_interval_unsupported')
-  resetSolanaChartHistoryState()
-  const rejected = await loadSolanaPoolIntraday({ mint: MINT, pool: POOL, side: 'base', timeframe: '1m' }, gt({ side: 'base', status: 400 }).fetchJson, opts)
-  assert.equal(!rejected.result.ok && rejected.result.code, 'provider_interval_unsupported')
-  // Interval proof is pure and exact: gaps (missing buckets) are fine, never filled.
-  const iso = (s: number) => ({ timestamp: new Date(s * 1000).toISOString() })
-  assert.equal(isGenuineIntervalSeries([iso(NOW - 600), iso(NOW - 300), iso(NOW - 60)], 60), true, 'genuine minutes with a gap')
-  assert.equal(isGenuineIntervalSeries(Array.from({ length: GENUINE_INTERVAL_MIN_PROOF_ROWS }, (_, i) => iso(NOW - 900 * (i + 1))).reverse(), 300), false, 'all on 15M boundaries => not proven 5M')
+test('solana 1M/5M interval proof: requested-grid rows accepted (incl. sparse ones on a coarser grid); off-grid or HTTP-unsupported rejected', async () => {
+  const run = async (tf: '1m' | '5m', f: ReturnType<typeof gt>) => { resetSolanaChartHistoryState(); return (await loadSolanaPoolIntraday({ mint: MINT, pool: POOL, side: 'base', timeframe: tf }, f.fetchJson, opts)).result }
+  // Dense genuine 1M.
+  const dense = await run('1m', gt({ side: 'base', rows: () => rows(60, 500) }))
+  assert.deepEqual(dense.ok && [dense.intervalSec, dense.points.length, dense.intervalEvidence], [60, 500, 'genuine'])
+  // Genuine SPARSE 1M that only traded at :00, :05, :10 … — accepted (flagged ambiguous in debug, never rejected).
+  const sparse1 = await run('1m', gt({ side: 'base', rows: () => rows(300, 50) }))
+  assert.deepEqual(sparse1.ok && [sparse1.intervalSec, sparse1.points.length, sparse1.intervalEvidence], [60, 50, 'ambiguous_coarser_grid'])
+  // Genuine SPARSE 5M only at :00, :15, :30 … — accepted.
+  const sparse5 = await run('5m', gt({ side: 'base', rows: () => rows(900, 40) }))
+  assert.deepEqual(sparse5.ok && [sparse5.intervalSec, sparse5.points.length, sparse5.intervalEvidence], [300, 40, 'ambiguous_coarser_grid'])
+  // Missing buckets stay missing: exactly the provider's rows, nothing invented.
+  assert.ok(sparse1.ok && sparse1.points.every((p, i, a) => i === 0 || Date.parse(p.timestamp) - Date.parse(a[i - 1].timestamp) === 300_000))
+  // Off-grid rows: rejected for 1M (7s past the minute) and 5M (on minutes but not on 5-minute boundaries).
+  const off1 = await run('1m', gt({ side: 'base', rows: () => rows(60, 20).map((r) => [Number(r[0]) + 7, ...r.slice(1)]) }))
+  assert.deepEqual(!off1.ok && [off1.code, off1.message], ['provider_interval_unsupported', 'the candle provider did not return genuine candles at this interval for this pool'])
+  const off5 = await run('5m', gt({ side: 'base', rows: () => rows(300, 20).map((r) => [Number(r[0]) + 60, ...r.slice(1)]) }))
+  assert.equal(!off5.ok && off5.code, 'provider_interval_unsupported')
+  // HTTP 400 / 422 for the requested aggregate: unsupported.
+  for (const status of [400, 422]) {
+    const bad = await run('1m', gt({ side: 'base', status }))
+    assert.equal(!bad.ok && bad.code, 'provider_interval_unsupported', String(status))
+  }
+  // Pure classification.
+  const iso = (sec: number) => ({ timestamp: new Date(sec * 1000).toISOString() })
+  assert.equal(classifyIntervalSeries([iso(NOW - 600), iso(NOW - 300), iso(NOW - 60)], 60), 'genuine', 'genuine minutes with a gap')
+  assert.equal(classifyIntervalSeries([iso(NOW - 60), iso(NOW - 120)], 60), 'invalid', 'not ascending')
+  assert.equal(classifyIntervalSeries(Array.from({ length: GENUINE_INTERVAL_MIN_PROOF_ROWS }, (_, i) => iso(NOW - 900 * (GENUINE_INTERVAL_MIN_PROOF_ROWS - i))), 300), 'ambiguous_coarser_grid')
+  assert.equal(isGenuineIntervalSeries(Array.from({ length: GENUINE_INTERVAL_MIN_PROOF_ROWS }, (_, i) => iso(NOW - 900 * (GENUINE_INTERVAL_MIN_PROOF_ROWS - i))), 300), true, 'ambiguous is still a valid series')
   assert.deepEqual([SOLANA_INTRADAY_REQUEST['5m'].aggregate, SOLANA_INTRADAY_REQUEST['1m'].aggregate], [5, 1])
+  assert.match(read('app/api/token/chart-candles/route.ts'), /intervalEvidence: s\.intervalEvidence/)
 })
 
 test('solana intraday identity: exact-case mint/pool, wrong claimed side, case-twin, meta naming the other side', async () => {
@@ -154,7 +164,6 @@ test('latest-close freshness: stale newest candle and live-price drift are measu
   assert.deepEqual([fresh.stale, fresh.drifted], [false, false])
   assert.equal(LATEST_CANDLE_STALE_MIN_SEC, 3600)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /intervalSec: scanSet\.nativeSec, livePriceSource \}\)/)
   assert.match(panel, /data-latest-candle-stale/)
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /livePriceUsd=\{sr\.marketData\?\.priceUsd \?\? null\}\n\s*livePriceSource="dexscreener"/)
@@ -184,4 +193,35 @@ test('wiring: Solana 5M/1M lane runs before EVM/V4 paths; panel gets exact-case 
   assert.match(panel, /const intervalSec = oneActive \? ONE_MIN_SEC : fiveActive \? FIVE_MIN_SEC : activeTf/)
   assert.match(panel, /const fiveLoadable = !nativeFive\.available && loadFiveMinute != null && \(tfSet\.nativeSec \?\? 0\) > FIVE_MIN_SEC/)
   assert.doesNotMatch(read('lib/server/solanaChartHistory.ts'), /toLowerCase\(/, 'no case-folding anywhere in the Solana lanes')
+})
+
+test('latest-close audit follows the DISPLAYED series: stale 15M scan + fresh 1M => no stale warning while 1M is selected', () => {
+  const H = 3_600_000
+  const at = NOW * 1000
+  const live = 2
+  const c = (t: number, close: number) => ({ t, close })
+  // The scan's 15M series ended 5h ago; the on-demand 1M series has a candle 1 minute ago; 5M 4 min ago.
+  const scan15 = [c(at - 6 * H, 1.5), c(at - 5 * H, 1.6)]
+  const one = [c(at - 3 * 60_000, 1.98), c(at - 60_000, 2.01)]
+  const five = [c(at - 9 * 60_000, 1.97), c(at - 4 * 60_000, 1.99)]
+  const hour = [c(at - 3 * H, 1.9), c(at - H, 1.96)]
+  const base = { livePriceUsd: live, livePriceAtMs: at, supply: null, basis: null, verifiedMarketCapUsd: null, livePriceSource: 'dexscreener' }
+  const a15 = auditVisibleSeries({ ...base, priceSeries: scan15, intervalSec: 900 })
+  assert.deepEqual([a15.stale, a15.drifted, a15.lastCloseUsd], [true, true, 1.6], '15M view: its own stale, drifted newest close')
+  const a1 = auditVisibleSeries({ ...base, priceSeries: one, intervalSec: 60 })
+  assert.deepEqual([a1.stale, a1.drifted, a1.lastCloseUsd, a1.candleAgeSec], [false, false, 2.01, 60], '1M view: the fresh 1M close, no stale warning')
+  const a5 = auditVisibleSeries({ ...base, priceSeries: five, intervalSec: 300 })
+  assert.deepEqual([a5.stale, a5.lastCloseUsd, a5.candleAgeSec], [false, 1.99, 240], '5M view audits the 5M newest close')
+  const a1h = auditVisibleSeries({ ...base, priceSeries: hour, intervalSec: 3600 })
+  assert.deepEqual([a1h.stale, a1h.lastCloseUsd], [false, 1.96], '1H view audits the selected (real/aggregated) series')
+  // MCAP mode: the audit takes the PRICE close; MCAP close = PRICE close x supply (never a scaled close as "price").
+  const mcap = auditVisibleSeries({ ...base, priceSeries: one, intervalSec: 60, supply: 1e9, basis: 'inferred_current_mc', verifiedMarketCapUsd: 2e9 })
+  assert.equal(mcap.lastCloseUsd, 2.01)
+  assert.ok(Math.abs(mcap.mcapClose! - 2.01e9) < 1)
+  // Wiring: the panel audits priceSeries (PRICE, pre-MCAP) at the displayed interval, after it is resolved.
+  const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
+  assert.match(panel, /const latestAudit = auditVisibleSeries\(\{ priceSeries, intervalSec, livePriceUsd, livePriceAtMs: referenceTimeMs,/)
+  assert.ok(panel.indexOf('const intervalSec = oneActive ? ONE_MIN_SEC') < panel.indexOf('const latestAudit = auditVisibleSeries('))
+  assert.ok(panel.indexOf('const priceSeries: ChartCandle[]') < panel.indexOf('const latestAudit = auditVisibleSeries('))
+  assert.doesNotMatch(panel, /scanNewest|lastCandle: normalized/, 'never the scan series when another timeframe is shown')
 })

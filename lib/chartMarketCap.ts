@@ -178,3 +178,25 @@ export function auditLatestClose(input: {
     stale: ageSec != null && iv != null && ageSec > Math.max(LATEST_CANDLE_STALE_BUCKETS * iv, LATEST_CANDLE_STALE_MIN_SEC),
   }
 }
+
+/**
+ * The audit for what the chart SHOWS: the newest candle of the displayed PRICE series (PRICE, never the
+ * MCAP-scaled series — MCAP is that close × supply) at the displayed interval. Pure.
+ */
+export function auditVisibleSeries(input: {
+  priceSeries: ReadonlyArray<{ t: number; close: number }>
+  intervalSec: number | null | undefined
+  livePriceUsd: number | null | undefined
+  livePriceAtMs: number | null | undefined
+  supply: number | null | undefined
+  basis: ChartMarketCapBasis | null | undefined
+  verifiedMarketCapUsd: number | null | undefined
+  livePriceSource?: string | null
+}): LatestCloseAudit {
+  const last = input.priceSeries.length > 0 ? input.priceSeries[input.priceSeries.length - 1] : null
+  return auditLatestClose({
+    lastCandle: last ? { t: last.t, close: last.close } : null,
+    livePriceUsd: input.livePriceUsd, livePriceAtMs: input.livePriceAtMs, supply: input.supply, basis: input.basis,
+    verifiedMarketCapUsd: input.verifiedMarketCapUsd, intervalSec: input.intervalSec ?? null, livePriceSource: input.livePriceSource ?? null,
+  })
+}
