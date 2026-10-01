@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
 import { deepScanRemainingLabel, deepScanQuotaPeriod, scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
+import { checkWalletScanInput, robinhoodScanErrorBanner, walletScanErrorBanner } from '@/lib/walletAddressInput'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
@@ -743,8 +744,12 @@ export default function WalletScannerPage() {
   // The only pipeline entry point this page calls. mode 'deep' also covers the two admin-only
   // buttons below, since V2 has no equivalent of the old full_recovery/smart_recovery scan modes.
   async function handleScan(mode: 'normal' | 'deep' = 'normal') {
-    const address = input.trim()
-    if (!address) return
+    // ADDRESS GUARD (lib/walletAddressInput.ts): a malformed address is answered here — no scan request,
+    // no Robinhood request, no loading state, one validation message (Scan and Deep Scan alike).
+    const check = checkWalletScanInput(input)
+    if (check.action === 'ignore') return
+    if (check.action === 'reject') { setRobinhoodError(null); setError(check.message); return }
+    const address = check.address
     // STUCK-SCANNING-LIFECYCLE FIX, DISCLOSED: a scan already in flight only blocks a new one while
     // it still LOOKS like it's scanning to the user (limitedEvidenceMode is false). Once portfolio
     // evidence is ready and the grace period has elapsed, the button is meant to work again — this
@@ -1022,8 +1027,11 @@ export default function WalletScannerPage() {
   // touches resultEnvelope/loading/error above. Runs entirely independently of a Base/ETH scan; a
   // user can have both a Base/ETH result and a Robinhood result on screen at once.
   async function handleRobinhoodScan() {
-    const address = input.trim()
-    if (!address) return
+    // Same guard for the Robinhood sidecar / rescan (it reads the input field too).
+    const check = checkWalletScanInput(input)
+    if (check.action === 'ignore') return
+    if (check.action === 'reject') { setRobinhoodError(null); setError(check.message); return }
+    const address = check.address
     setRobinhoodLoading(true)
     setRobinhoodError(null)
     try {
@@ -1307,7 +1315,7 @@ export default function WalletScannerPage() {
           {/* Error state */}
           {!loading && error && (
             <div className="ws-card" style={{ borderColor: 'rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#fca5a5', fontSize: '13px' }}>
-              Scan failed — try again later. ({error})
+              {walletScanErrorBanner(error)}
             </div>
           )}
 
@@ -1329,9 +1337,9 @@ export default function WalletScannerPage() {
               Scanning Robinhood Chain for {input.trim()}…
             </div>
           )}
-          {!robinhoodLoading && robinhoodError && !result && (
+          {!robinhoodLoading && robinhoodScanErrorBanner(robinhoodError) != null && !result && (
             <div className="ws-card" style={{ borderColor: 'rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#fca5a5', fontSize: '13px', marginBottom: '16px' }}>
-              Robinhood Chain scan failed — try again later. ({robinhoodError})
+              {robinhoodScanErrorBanner(robinhoodError)}
             </div>
           )}
           {/* CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the
