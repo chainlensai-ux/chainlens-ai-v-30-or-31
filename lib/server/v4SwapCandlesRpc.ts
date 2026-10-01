@@ -332,7 +332,11 @@ const decimalsCache = new Map<string, { expiresAt: number; decimals: number }>()
 const headerCache = new Map<string, { expiresAt: number; block: number; ts: number }>()
 const historyCache = new Map<string, { expiresAt: number; value: V4HistoryResult }>()
 const historyInflight = new Map<string, Promise<V4HistoryResult>>()
+const fiveCache = new Map<string, { expiresAt: number; value: V4FiveMinuteResult }>()
+const fiveInflight = new Map<string, Promise<V4FiveMinuteResult>>()
 export function resetV4SwapCandleCache() {
+  fiveCache.clear()
+  fiveInflight.clear()
   resultCache.clear()
   initCache.clear()
   decimalsCache.clear()
@@ -363,7 +367,15 @@ export function makeV4Rpc(chain: string): V4SwapDeps['rpc'] | null {
 const toHex = (n: number) => `0x${Math.max(0, Math.floor(n)).toString(16)}`
 
 export async function loadV4SwapCandles(
-  input: { chain: string; poolId: string; token: string; tokenDecimals: number; livePriceUsd: number | null; dexHint?: string | null },
+  input: {
+    chain: string; poolId: string; token: string; tokenDecimals: number; livePriceUsd: number | null; dexHint?: string | null
+    /**
+     * On-demand 5M read (loadV4SwapFiveMinuteWindow) only: never reads or writes the SCAN result cache, and
+     * token identity rests on the pool's own Initialize (the scanned token must be currency0 / currency1 of
+     * exactly this PoolId) — the same proof the on-demand history lane uses — since no live price is passed.
+     */
+    onDemand?: boolean
+  },
   deps: V4SwapDeps,
   /** Calls still allowed on the whole candle path; this read never exceeds min(budget, V4_SWAP_MAX_CALLS). */
   budget: number = V4_SWAP_MAX_CALLS,
@@ -391,11 +403,11 @@ export async function loadV4SwapCandles(
     decimalsCache.set(`${input.chain}:${token}`, { expiresAt: now() + INIT_TTL_MS, decimals: input.tokenDecimals })
   }
   const cacheKey = `${input.chain}:${poolId}:${token}`
-  const hit = resultCache.get(cacheKey)
+  const hit = input.onDemand ? undefined : resultCache.get(cacheKey)
   if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, rpcCalls: 0, providerCalls: 0, pagesFetched: 0, cache: { ...hit.value.cache, result: true } }
   const done = (v: V4SwapCandleResult) => {
-    // A budget stop says nothing about the pool itself — never cache it.
-    if (v.code !== 'call_budget_exhausted') resultCache.set(cacheKey, { expiresAt: now() + (v.ok ? OK_TTL_MS : FAIL_TTL_MS), value: v })
+    // A budget stop says nothing about the pool itself — never cache it. On-demand reads cache on their own.
+    if (v.code !== 'call_budget_exhausted' && !input.onDemand) resultCache.set(cacheKey, { expiresAt: now() + (v.ok ? OK_TTL_MS : FAIL_TTL_MS), value: v })
     return v
   }
   const cap = Math.min(budget, V4_SWAP_MAX_CALLS)
@@ -636,7 +648,7 @@ export async function loadV4SwapCandles(
   r.quote = { ...r.quote!, maxGapMs: r.counterAsset === 'usd_stable' ? null : maxGapMs }
   if (built.tradesUsed === 0 && r.counterAsset !== 'usd_stable') { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_15m_of_any_trade', failureReason: 'quote_history_stale' }; return done(gap('quote_usd_price_unproven')) }
   if (built.candles.length < 2) return done(gap('v4_swap_history_empty'))
-  if (!closeMatchesLivePrice(built.candles, input.livePriceUsd)) return done(gap('token_identity_unverified'))
+  if (!input.onDemand && !closeMatchesLivePrice(built.candles, input.livePriceUsd)) return done(gap('token_identity_unverified'))
   return done({ ...r, ok: true, code: null, candles: built.candles })
 }
 
@@ -1031,4 +1043,100 @@ async function readPoolInitialize(
     return { kind: 'ok', key, manager: from, cached: false }
   }
   return { kind: 'not_found' }
+}
+
+// ── On-demand 5M (only after the user clicks 5M — never during a scan) ─────────────────────────────
+// A bytes32 Uniswap V4 PoolId is never sent to a provider's pool OHLCV for 5M: the candles come from the
+// same exact-PoolId Swap-event pipeline as the scan (loadV4SwapCandles — Initialize proof of the scanned
+// token's side, removed-log filtering, log/page/call caps, deadline, quote USD evidence, deterministic
+// newest-first order). 5M is returned ONLY when every swap log carries its own exact block timestamp
+// (exact_log_timestamps -> V4_EXACT_INTERVAL_SEC buckets of real trades). A series whose times are
+// inferred (Base fixed blocks) or interpolated between headers (ETH / BNB) is never cut into 5-minute
+// candles — v4_timestamps_not_exact, and the scan's 15M stays as it is. Never derived from 15M candles,
+// never interpolated trades.
+//
+// Reuse first: the scan's own cached V4 result for this (chain, PoolId, token) answers with zero calls
+// (exact -> its 5M candles; non-exact -> the precise reason). Otherwise one bounded read (<= 1 decimals
+// call when the scan's decimals are not cached + <= V4_SWAP_MAX_CALLS), cached per pool + token; concurrent
+// identical requests share one read.
+
+export type V4FiveMinuteCode = V4SwapGapCode | 'invalid_request' | 'v4_timestamps_not_exact' | 'token_decimals_unavailable'
+
+export type V4FiveMinuteResult = {
+  ok: boolean
+  code: V4FiveMinuteCode | null
+  chain: string
+  poolId: string
+  intervalSec: number
+  /** Genuine 5-minute swap candles (ascending). Empty unless ok. */
+  candles: EvmChartPoint[]
+  timeResolution: V4TimeResolution | null
+  source: 'v4_swap_events'
+  /** The read covered its full 24h target window (every log page read). */
+  windowProven: boolean
+  logsFound: number
+  tradesUsed: number
+  callsUsed: number
+  budgetStopReason: string | null
+  /** scanResult: answered from the scan's cached V4 read; fiveMinute: from this lane's own cache. */
+  cache: { scanResult: boolean; fiveMinute: boolean }
+}
+
+/** The 5M chip's message after "5M unavailable — " for a V4 5M failure (no provider wording). */
+export const V4_FIVE_MINUTE_NOT_EXACT_MESSAGE = 'exact swap timestamps are not available for this V4 pool, so 5M candles are not built (15M stays available)'
+
+function fiveMinuteFrom(v: V4SwapCandleResult, cache: V4FiveMinuteResult['cache']): V4FiveMinuteResult {
+  const base: V4FiveMinuteResult = {
+    ok: false, code: v.code, chain: v.chain, poolId: v.poolId, intervalSec: V4_EXACT_INTERVAL_SEC, candles: [], timeResolution: v.timeResolution, source: 'v4_swap_events',
+    windowProven: v.budgetStopReason === 'target_window', logsFound: v.logsFound, tradesUsed: v.tradesUsed, callsUsed: cache.scanResult || cache.fiveMinute ? 0 : v.callsUsed, budgetStopReason: v.budgetStopReason, cache,
+  }
+  if (!v.ok) return base
+  if (v.timeResolution !== 'exact_log_timestamps' || v.intervalSec !== V4_EXACT_INTERVAL_SEC) return { ...base, code: 'v4_timestamps_not_exact' }
+  return { ...base, ok: true, code: null, candles: v.candles }
+}
+
+export async function loadV4SwapFiveMinuteWindow(
+  input: { chain: string; poolId: string; token: string },
+  deps: V4SwapDeps,
+): Promise<V4FiveMinuteResult> {
+  const now = deps.now ?? Date.now
+  const poolId = String(input.poolId ?? '').toLowerCase()
+  const token = String(input.token ?? '').toLowerCase()
+  const empty = (code: V4FiveMinuteCode): V4FiveMinuteResult => ({
+    ok: false, code, chain: input.chain, poolId, intervalSec: V4_EXACT_INTERVAL_SEC, candles: [], timeResolution: null, source: 'v4_swap_events',
+    windowProven: false, logsFound: 0, tradesUsed: 0, callsUsed: 0, budgetStopReason: null, cache: { scanResult: false, fiveMinute: false },
+  })
+  if (!V4_SWAP_CHAIN_CONFIG[input.chain]) return empty('v4_chain_not_supported')
+  if (!/^0x[a-f0-9]{64}$/.test(poolId) || !/^0x[a-f0-9]{40}$/.test(token)) return empty('invalid_request')
+  const key = `${input.chain}:${poolId}:${token}`
+  // 1. The scan's own V4 read for exactly this pool + token (zero calls).
+  const scan = resultCache.get(key)
+  if (scan && scan.expiresAt > now() && scan.value.code !== 'call_budget_exhausted') return fiveMinuteFrom(scan.value, { scanResult: true, fiveMinute: false })
+  // 2. This lane's own cache / in-flight read.
+  const hit = fiveCache.get(key)
+  if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, cache: { scanResult: false, fiveMinute: true } }
+  const running = fiveInflight.get(key)
+  if (running) return running
+  const p = (async (): Promise<V4FiveMinuteResult> => {
+    // 3. Bounded on-demand read: the token's decimals (scan-cached, else its own decimals()), then the same
+    // exact-PoolId swap pipeline as the scan.
+    let decimalsCalls = 0
+    const cached = decimalsCache.get(`${input.chain}:${token}`)
+    let decimals = cached && cached.expiresAt > now() ? cached.decimals : null
+    if (decimals == null) {
+      decimalsCalls = 1
+      decimals = await readTokenDecimals(input.chain, token, (m, params) => deps.rpc(m, params, RPC_TIMEOUT_MS), now)
+      if (decimals == null) return { ...empty('token_decimals_unavailable'), callsUsed: decimalsCalls }
+    }
+    const v = await loadV4SwapCandles({ chain: input.chain, poolId, token, tokenDecimals: decimals, livePriceUsd: null, onDemand: true }, deps, V4_SWAP_MAX_CALLS)
+    const out = fiveMinuteFrom(v, { scanResult: false, fiveMinute: false })
+    out.callsUsed = v.callsUsed + decimalsCalls
+    if (out.code !== 'call_budget_exhausted') {
+      bounded(fiveCache)
+      fiveCache.set(key, { expiresAt: now() + (v.ok ? OK_TTL_MS : FAIL_TTL_MS), value: out })
+    }
+    return out
+  })().finally(() => fiveInflight.delete(key))
+  fiveInflight.set(key, p)
+  return p
 }

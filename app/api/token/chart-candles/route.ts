@@ -1,6 +1,10 @@
 // GET /api/token/chart-candles — on-demand candles for the Token Scanner Price Chart. Same account
 // requirement as token scans; nothing here runs during a scan.
-//  - timeframe=5m: real 5M candles when a user clicks 5M (lib/server/chartCandlesOnDemand.ts).
+//  - timeframe=5m: real 5M candles when a user clicks 5M:
+//      * an exact Uniswap V4 PoolId (bytes32) on a V4-configured chain: the pool's own on-chain Swap
+//        events, only when every log carries its exact timestamp (lib/server/v4SwapCandlesRpc.ts
+//        loadV4SwapFiveMinuteWindow) — never the providers' pool OHLCV, which can't serve a PoolId;
+//      * a normal 20-byte pool: the providers' pool OHLCV (lib/server/chartCandlesOnDemand.ts).
 //  - timeframe=history: older HOURLY candles when a user selects 1H / 4H / 1D or pans past the
 //    oldest loaded candle — `before` cursor in, genuine candles + `hasMore` + next cursor out:
 //      * an exact Uniswap V4 PoolId (bytes32): swap-derived (lib/server/v4SwapCandlesRpc.ts
@@ -13,10 +17,18 @@ import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/req
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { loadOnDemandCandles, loadPoolOhlcvHistory } from '@/lib/server/chartCandlesOnDemand'
 import { fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
-import { loadV4SwapHistoryWindow, V4_SWAP_CHAIN_CONFIG } from '@/lib/server/v4SwapCandlesRpc'
-import { makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
+import { loadV4SwapFiveMinuteWindow, loadV4SwapHistoryWindow, V4_FIVE_MINUTE_NOT_EXACT_MESSAGE, V4_SWAP_CHAIN_CONFIG, type V4FiveMinuteCode } from '@/lib/server/v4SwapCandlesRpc'
+import { makeV4FiveMinuteDeps, makeV4HistoryDeps } from '@/lib/server/v4SwapHistoryDeps'
+import { buildCoverageMeta } from '@/lib/chartQuality'
 import { loadSolanaPoolHistory } from '@/lib/server/solanaChartHistory'
 import { candleFailureMessage } from '@/lib/evmChartCandles'
+
+function v4FiveMinuteMessage(code: V4FiveMinuteCode): string {
+  if (code === 'v4_timestamps_not_exact') return V4_FIVE_MINUTE_NOT_EXACT_MESSAGE
+  if (code === 'invalid_request') return 'The 5M request needs an exact V4 PoolId and token.'
+  if (code === 'token_decimals_unavailable') return "the token's decimals could not be read on-chain."
+  return candleFailureMessage(code)
+}
 
 export const dynamic = 'force-dynamic'
 
@@ -76,6 +88,20 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, timeframe: 'history', code: h.code, message, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec }, { status: h.code === 'invalid_request' ? 400 : 200 })
     }
     return NextResponse.json({ ok: true, timeframe: 'history', intervalSec: h.intervalSec, points: h.candles, hasMore: h.hasMore, nextBeforeSec: h.nextBeforeSec, endReason: h.endReason ?? null, windowEndSec: h.windowEndSec, source: 'v4_swap_events' })
+  }
+  // 5M for an exact Uniswap V4 PoolId on a V4-configured chain: its own Swap events (never provider PoolId OHLCV).
+  const fivePool = url.searchParams.get('pool') ?? ''
+  const fiveChain = url.searchParams.get('chain') ?? ''
+  if (url.searchParams.get('timeframe') === '5m' && /^0x[a-fA-F0-9]{64}$/.test(fivePool) && V4_SWAP_CHAIN_CONFIG[fiveChain]) {
+    const deps = makeV4FiveMinuteDeps(fiveChain)
+    if (!deps) return NextResponse.json({ ok: false, timeframe: '5m', code: 'v4_rpc_unavailable', message: candleFailureMessage('v4_rpc_unavailable'), source: 'v4_swap_events' })
+    const f = await loadV4SwapFiveMinuteWindow({ chain: fiveChain, poolId: fivePool, token: url.searchParams.get('token') ?? '' }, deps)
+    if (!f.ok) {
+      const code = f.code ?? 'v4_swap_logs_unavailable'
+      return NextResponse.json({ ok: false, timeframe: '5m', code, message: v4FiveMinuteMessage(code), timeResolution: f.timeResolution, source: 'v4_swap_events' }, { status: code === 'invalid_request' ? 400 : 200 })
+    }
+    const coverage = buildCoverageMeta({ requestEndSec: Date.now() / 1000, intervalSec: f.intervalSec, limit: null, points: f.candles, windowSec: f.windowProven ? 24 * 3600 : null, windowProven: f.windowProven })
+    return NextResponse.json({ ok: true, timeframe: '5m', intervalSec: f.intervalSec, points: f.candles, coverage, timeResolution: f.timeResolution, source: 'v4_swap_events' })
   }
   const { result } = await loadOnDemandCandles(
     {

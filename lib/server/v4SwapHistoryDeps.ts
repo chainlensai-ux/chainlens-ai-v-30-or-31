@@ -1,15 +1,16 @@
-// lib/server/v4SwapHistoryDeps.ts — production wiring for on-demand Uniswap V4 chart history
-// (lib/server/v4SwapCandlesRpc.ts loadV4SwapHistoryWindow). Used ONLY by GET /api/token/chart-candles
-// with timeframe=history, i.e. after the user asks for older candles — never during a scan.
+// lib/server/v4SwapHistoryDeps.ts — production wiring for on-demand Uniswap V4 chart reads
+// (lib/server/v4SwapCandlesRpc.ts loadV4SwapHistoryWindow / loadV4SwapFiveMinuteWindow). Used ONLY by
+// GET /api/token/chart-candles (timeframe=history or timeframe=5m), i.e. after the user asks for older
+// candles or clicks 5M — never during a scan.
 //
 // Quote USD for a history window: CoinGecko's hourly ETH/USD for that window, or the quote token's
 // independent WETH/stable pool's hourly candles ending at the window's end (CoinGecko on-chain when
 // configured, else GeckoTerminal). The CoinGecko key stays inside lib/server/coingeckoOnchainOhlcv.ts.
 
 import { EVM_CHART_NETWORK } from '../evmChartCandles.ts'
-import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRange, fetchCoingeckoNativeUsdRange, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from './coingeckoOnchainOhlcv.ts'
-import { resolveIndependentQuoteUsdWindow } from './v4QuoteUsd.ts'
-import { makeV4Rpc, V4_SWAP_CHAIN_CONFIG, type V4HistoryDeps } from './v4SwapCandlesRpc.ts'
+import { coingeckoOnchainNetwork, fetchCoingeckoEthUsdRange, fetchCoingeckoEthUsdRecent, fetchCoingeckoNativeUsdRange, fetchCoingeckoNativeUsdRecent, fetchCoingeckoOnchainPoolOhlcv, isCoingeckoOnchainConfigured } from './coingeckoOnchainOhlcv.ts'
+import { QUOTE_SERIES_REQUEST, resolveIndependentQuoteUsd, resolveIndependentQuoteUsdWindow } from './v4QuoteUsd.ts'
+import { makeV4Rpc, V4_SWAP_CHAIN_CONFIG, type V4HistoryDeps, type V4SwapDeps } from './v4SwapCandlesRpc.ts'
 
 const gtBase = () => (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
 
@@ -36,6 +37,27 @@ export function makeV4HistoryDeps(chain: string): V4HistoryDeps | null {
       fetchPoolUsdOhlcvBefore: async (_c, pool, side, req, beforeSec, timeoutMs) => isCoingeckoOnchainConfigured() && coingeckoOnchainNetwork(chain)
         ? { ...(await fetchCoingeckoOnchainPoolOhlcv(chain, pool, req, side, undefined, beforeSec)), provider: 'coingecko_onchain' }
         : { ...(await gtJson(`${gtBase()}/api/v2/networks/${network}/pools/${pool}/ohlcv/${req.resolution}?aggregate=${req.aggregate}&limit=${req.limit}&currency=usd&token=${side}&before_timestamp=${beforeSec}`, timeoutMs)), provider: 'geckoterminal' },
+    }),
+  }
+}
+
+/**
+ * On-demand 5M for an exact V4 PoolId: the SAME quote-USD wiring as the scan's V4 read (recent ETH / native
+ * USD series, or the quote token's independent pool's 5-minute USD candles) — shared caches included.
+ */
+export function makeV4FiveMinuteDeps(chain: string): V4SwapDeps | null {
+  const rpc = makeV4Rpc(chain)
+  const network = EVM_CHART_NETWORK[chain]
+  if (!rpc || !network || !V4_SWAP_CHAIN_CONFIG[chain]) return null
+  return {
+    rpc,
+    ethUsdSeries: (timeoutMs) => fetchCoingeckoEthUsdRecent(timeoutMs),
+    nativeUsdSeries: (coinId, timeoutMs) => fetchCoingeckoNativeUsdRecent(coinId, timeoutMs),
+    quoteUsd: (q) => resolveIndependentQuoteUsd({ chain, ...q }, {
+      fetchTokenPools: (_c, quoteToken, timeoutMs) => gtJson(`${gtBase()}/api/v2/networks/${network}/tokens/${quoteToken}/pools?page=1&include=base_token%2Cquote_token`, timeoutMs),
+      fetchPoolUsdOhlcv: async (_c, quotePool, side) => isCoingeckoOnchainConfigured() && coingeckoOnchainNetwork(chain)
+        ? { ...(await fetchCoingeckoOnchainPoolOhlcv(chain, quotePool, QUOTE_SERIES_REQUEST, side)), provider: 'coingecko_onchain' }
+        : { ...(await gtJson(`${gtBase()}/api/v2/networks/${network}/pools/${quotePool}/ohlcv/${QUOTE_SERIES_REQUEST.resolution}?aggregate=${QUOTE_SERIES_REQUEST.aggregate}&limit=${QUOTE_SERIES_REQUEST.limit}&currency=usd&token=${side}`, 5_000)), provider: 'geckoterminal' },
     }),
   }
 }
