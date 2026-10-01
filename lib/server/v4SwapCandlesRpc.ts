@@ -34,9 +34,10 @@
 //
 // ON-DEMAND HISTORY (loadV4SwapHistoryWindow — only after the user selects 1H/4H/1D or pans past the
 // oldest loaded candle): hourly candles for the same exact PoolId strictly before a `before` cursor.
-// Adaptive pages (24h, growing to 4 days while the pool is quiet, shrinking when busy), at most 3 pages
-// and 6,000 logs per request, 8 calls, 9s deadline, results cached per window; the response carries
-// `hasMore` and the next cursor. Quote USD over the window: USD stable at $1, CoinGecko's hourly
+// Adaptive pages (24h, growing to 4 days while the pool is quiet, sized to ~5,000 logs when the pool's swap
+// density is known or busy), at most 3 pages and 15,000 kept logs (V4_HISTORY_MAX_LOGS) per request,
+// 8 calls, 9s deadline; successes cached per window (retryable RPC failures per window + density class);
+// the response carries `hasMore` and the next cursor. Quote USD over the window: USD stable at $1, CoinGecko's hourly
 // ETH/USD for that window, or the independent quote pool's hourly candles ending at the window's end —
 // each trade within 45 minutes of a real quote point or dropped.
 
@@ -865,7 +866,7 @@ export type V4HistoryDeps = {
 
 /**
  * Older hourly candles for exactly this V4 PoolId, strictly before `beforeSec`. Only ever called from
- * the interactive chart-candles endpoint — never during a scan. Bounded: <= 3 log pages, <= 6,000 logs,
+ * the interactive chart-candles endpoint — never during a scan. Bounded: <= 3 log pages, <= 15,000 kept logs,
  * <= 8 calls, 9s; cached per (pool, token, hour-aligned cursor); concurrent identical requests share one read.
  */
 export async function loadV4SwapHistoryWindow(
@@ -887,21 +888,48 @@ export async function loadV4SwapHistoryWindow(
   if (!/^0x[a-f0-9]{64}$/.test(poolId) || !/^0x[a-f0-9]{40}$/.test(token) || !Number.isFinite(beforeSec) || beforeSec > nowSec + 3600 || beforeSec < nowSec - V4_HISTORY_MAX_AGE_SEC) {
     return { ...base, code: 'invalid_request', hasMore: false }
   }
-  const key = `${input.chain}:${poolId}:${token}:${beforeSec}`
-  const hit = historyCache.get(key)
-  if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, pagesFetched: 0, cache: { ...hit.value.cache, result: true } }
-  const running = historyInflight.get(key)
+  const hintRaw = Number(input.swapsPerHourHint)
+  const hint = Number.isFinite(hintRaw) && hintRaw > 0 && hintRaw <= 1_000_000 ? hintRaw : null
+  // CACHE KEYS. The result for a cursor is the same genuine data whatever the page sizing, so a SUCCESS is
+  // shared by cursor (any hint). Page sizing only matters to a RETRYABLE failure (RPC error / node
+  // range-or-response limit / deadline): those are keyed by a small density class too, so a blind 24h read the
+  // node rejected never blocks a later density-sized read of the same cursor. In-flight reads dedupe per
+  // cursor + class (identical requests share one read). At most HISTORY_DENSITY_CLASSES per cursor.
+  const cursorKey = `${input.chain}:${poolId}:${token}:${beforeSec}`
+  const known = densityCache.get(`${input.chain}:${poolId}`)
+  const densityClass = known && known.expiresAt > now() ? 'measured' : historyDensityClass(hint)
+  const sizedKey = `${cursorKey}:${densityClass}`
+  for (const k of [cursorKey, sizedKey]) {
+    const hit = historyCache.get(k)
+    if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, pagesFetched: 0, cache: { ...hit.value.cache, result: true } }
+  }
+  const running = historyInflight.get(sizedKey)
   if (running) return running
-  const hint = Number(input.swapsPerHourHint)
-  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec, swapsPerHourHint: Number.isFinite(hint) && hint > 0 && hint <= 1_000_000 ? hint : null }, cfg, base, deps, now).then((v) => {
+  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec, swapsPerHourHint: hint }, cfg, base, deps, now).then((v) => {
+    // A budget stop says nothing about the pool — never cached (as before).
     if (v.code !== 'call_budget_exhausted') {
       bounded(historyCache)
-      historyCache.set(key, { expiresAt: now() + (v.ok ? HISTORY_OK_TTL_MS : HISTORY_FAIL_TTL_MS), value: v })
+      historyCache.set(isRetryableHistoryFailure(v) ? sizedKey : cursorKey, { expiresAt: now() + (v.ok ? HISTORY_OK_TTL_MS : HISTORY_FAIL_TTL_MS), value: v })
     }
     return v
-  }).finally(() => historyInflight.delete(key))
-  historyInflight.set(key, p)
+  }).finally(() => historyInflight.delete(sizedKey))
+  historyInflight.set(sizedKey, p)
   return p
+}
+
+/** Normalized swap-density class for history cache keys (bounded cardinality — never the raw hint). */
+export type HistoryDensityClass = 'unknown' | 'quiet' | 'normal' | 'busy' | 'very_busy' | 'measured'
+export const HISTORY_DENSITY_CLASSES: ReadonlyArray<HistoryDensityClass> = ['unknown', 'quiet', 'normal', 'busy', 'very_busy', 'measured']
+export function historyDensityClass(swapsPerHour: number | null | undefined): Exclude<HistoryDensityClass, 'measured'> {
+  if (swapsPerHour == null || !Number.isFinite(swapsPerHour) || swapsPerHour <= 0) return 'unknown'
+  if (swapsPerHour < 200) return 'quiet'
+  if (swapsPerHour < 1_000) return 'normal'
+  if (swapsPerHour < 5_000) return 'busy'
+  return 'very_busy'
+}
+/** A failure page sizing could change: an RPC error / node range or response limit / deadline. */
+function isRetryableHistoryFailure(v: V4HistoryResult): boolean {
+  return !v.ok && v.code === 'v4_swap_logs_unavailable'
 }
 
 async function readHistoryWindow(

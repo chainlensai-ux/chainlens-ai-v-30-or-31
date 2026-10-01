@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs'
 import { encodeAbiParameters, encodeEventTopics, type Hex } from 'viem'
 import { V4_INITIALIZE_TOPIC0, V4_POOL_MANAGER_ABI, V4_SWAP_TOPIC0, type RawEvmLog } from '../lib/v4SwapCandles.ts'
 import {
-  V4_HISTORY_MAX_LOGS, V4_HISTORY_TARGET_PAGE_LOGS, V4_SWAP_CHAIN_CONFIG, V4_SWAP_MAX_LOGS, V4_SWAP_TARGET_WINDOW_SEC,
+  HISTORY_DENSITY_CLASSES, V4_HISTORY_MAX_LOGS, V4_HISTORY_TARGET_PAGE_LOGS, historyDensityClass, V4_SWAP_CHAIN_CONFIG, V4_SWAP_MAX_LOGS, V4_SWAP_TARGET_WINDOW_SEC,
   loadV4SwapCandles, loadV4SwapHistoryWindow, loadV4SwapIntradayWindow, resetV4SwapCandleCache,
   type V4HistoryDeps, type V4SwapDeps,
 } from '../lib/server/v4SwapCandlesRpc.ts'
@@ -289,4 +289,92 @@ test('timeframe label always matches the real candle interval (1M / 5M on demand
   assert.match(panel, /const priceSeries: ChartCandle\[\] = oneActive && one\.status === 'ready' \? one\.candles : fiveActive && five\.status === 'ready' \? five\.candles :/)
   assert.match(panel, /× \{formatIntervalLabel\(intervalSec\)\} real candles/)
   assert.match(panel, /const oneLoadable = loadOneMinute != null/)
+})
+
+// ── History cache hardening: retryable sizing failures never block a density-sized read ─────────────
+// Base (fixed 2s blocks) pool behind a node that rejects block ranges wider than `maxRange`.
+function rangeLimitedBase(swapsPerHour: number, maxRange: number) {
+  const mgr = V4_SWAP_CHAIN_CONFIG.base.poolManager
+  const every = Math.max(1, Math.round(3600 / swapsPerHour / 2))
+  const tsOf = (b: number) => LATEST_TS - (LATEST - b) * 2
+  const topics = encodeEventTopics({ abi: V4_POOL_MANAGER_ABI, eventName: 'Swap', args: { id: POOL, sender: '0x000000000000000000000000000000000000beef' } }) as string[]
+  let logPages = 0
+  const deps: V4HistoryDeps = {
+    now: () => LATEST_TS * 1000,
+    rpc: async (method, params) => {
+      if (method === 'eth_getBlockByNumber') return { result: { number: hex(LATEST), timestamp: hex(LATEST_TS) }, error: false }
+      if (method === 'eth_call') return { result: hex(18), error: false }
+      const f = params[0] as { topics: string[]; fromBlock: string; toBlock: string }
+      if (f.topics[0] === V4_INITIALIZE_TOPIC0) {
+        return { result: [{ address: mgr, topics: encodeEventTopics({ abi: V4_POOL_MANAGER_ABI, eventName: 'Initialize', args: { id: POOL, currency0: NATIVE as Hex, currency1: TOKEN as Hex } }) as string[], data: encodeAbiParameters([{ type: 'uint24' }, { type: 'int24' }, { type: 'address' }, { type: 'uint160' }, { type: 'int24' }], [10000, 200, NATIVE, BigInt(2) ** BigInt(96), 0]), blockNumber: hex(LATEST - 10 * 43_200), logIndex: '0x0' }], error: false }
+      }
+      logPages++
+      const from = Number(BigInt(f.fromBlock)), to = Number(BigInt(f.toBlock))
+      if (to - from + 1 > maxRange) return { result: null, error: true } // node block-range limit
+      const out: RawEvmLog[] = []
+      for (let b = Math.ceil(from / every) * every; b <= to; b += every) out.push({ address: mgr, topics, data: swapData(1000), blockNumber: hex(b), logIndex: '0x0', blockTimestamp: hex(tsOf(b)) } as RawEvmLog)
+      return { result: out, error: false }
+    },
+    ethUsdRange: async (f, t) => ({ points: Array.from({ length: Math.ceil((t - f) / 3600) + 2 }, (_, i) => [(f + i * 3600) * 1000, 3000] as [number, number]), cacheHit: false }),
+  }
+  return { deps, logPages: () => logPages }
+}
+const historyReq = (hint: number | null) => ({ chain: 'base', poolId: POOL, token: TOKEN, beforeSec: LATEST_TS - 4 * 3600, swapsPerHourHint: hint })
+
+test('history cache: a no-hint read the node rejects (rpc_error) does not block a later busy-hint read of the same cursor; the success is then shared', async () => {
+  resetV4SwapCandleCache()
+  const node = rangeLimitedBase(1500, 6_500) // 24h / 6h / 4h pages all exceed the node's 6,500-block range
+  // 1. No hint: blind 24h page, shrunk to the 4h floor — every page rejected => retryable failure.
+  const blind = await loadV4SwapHistoryWindow(historyReq(null), node.deps)
+  assert.equal(blind.ok, false)
+  assert.equal(blind.code, 'v4_swap_logs_unavailable')
+  assert.equal(blind.stopReason, 'rpc_error')
+  const pagesAfterBlind = node.logPages()
+  // 2. Busy hint: density-sized pages under the node limit — it actually executes (not the cached failure) and succeeds.
+  const sized = await loadV4SwapHistoryWindow(historyReq(1500), node.deps)
+  assert.equal(sized.ok, true, String(sized.code))
+  assert.ok(sized.callsUsed > 0 && node.logPages() > pagesAfterBlind, 'a fresh read, not the cached failure')
+  assert.ok(sized.candles.length > 0)
+  // 3. The success is reusable for that cursor regardless of hint — even a no-hint request now gets it, 0 calls.
+  const pagesAfterSuccess = node.logPages()
+  for (const h of [null, 300, 1500, 12_000]) {
+    const again = await loadV4SwapHistoryWindow(historyReq(h), node.deps)
+    assert.equal(again.ok, true)
+    assert.deepEqual([again.callsUsed, again.cache.result], [0, true])
+  }
+  assert.equal(node.logPages(), pagesAfterSuccess)
+})
+
+test('history cache: the same no-hint failure IS reused for the same class (no hammering); identical busy requests dedupe; bounded key cardinality', async () => {
+  resetV4SwapCandleCache()
+  const node = rangeLimitedBase(1500, 6_500)
+  await loadV4SwapHistoryWindow(historyReq(null), node.deps)
+  const pages = node.logPages()
+  const repeat = await loadV4SwapHistoryWindow(historyReq(null), node.deps)
+  assert.deepEqual([repeat.ok, repeat.callsUsed, node.logPages()], [false, 0, pages], 'same blind class: cached failure, zero calls')
+  // 4. Identical concurrent busy-hint requests share one read (1500 and 1499.7 normalize to the same class).
+  resetV4SwapCandleCache()
+  const shared = rangeLimitedBase(1500, 6_500)
+  const [a, b] = await Promise.all([loadV4SwapHistoryWindow(historyReq(1500), shared.deps), loadV4SwapHistoryWindow(historyReq(1499.7), shared.deps)])
+  assert.deepEqual(a, b)
+  const single = rangeLimitedBase(1500, 6_500)
+  resetV4SwapCandleCache()
+  await loadV4SwapHistoryWindow(historyReq(1500), single.deps)
+  assert.equal(shared.logPages(), single.logPages(), 'two identical concurrent requests = one read')
+  // Raw floating-point hints never become keys: a small fixed set of classes.
+  assert.deepEqual([historyDensityClass(null), historyDensityClass(50), historyDensityClass(600), historyDensityClass(1500), historyDensityClass(1499.7), historyDensityClass(9000)], ['unknown', 'quiet', 'normal', 'busy', 'busy', 'very_busy'])
+  assert.equal(HISTORY_DENSITY_CLASSES.length, 6)
+})
+
+test('history cache: a call-budget stop stays uncached (as before)', async () => {
+  resetV4SwapCandleCache()
+  // Every log page is rejected; a cold non-fixed chain (header + Initialize + decimals + anchor) runs out of calls first.
+  const c = robinhood({ swapsPerHour: 1500, nodeMaxLogs: 1 })
+  const req = { chain: 'robinhood', poolId: POOL, token: TOKEN, beforeSec: LATEST_TS - 4 * 3600 }
+  const first = await loadV4SwapHistoryWindow(req, c.historyDeps)
+  assert.deepEqual([first.ok, first.code, first.stopReason], [false, 'call_budget_exhausted', 'call_budget'])
+  const before = c.calls.length
+  const second = await loadV4SwapHistoryWindow(req, c.historyDeps)
+  assert.equal(second.cache.result, false, 'a budget stop says nothing about the pool: never served from cache')
+  assert.ok(c.calls.length > before && second.callsUsed > 0, 'the second request really executes')
 })
