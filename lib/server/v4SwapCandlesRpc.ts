@@ -52,6 +52,7 @@ import {
   decodeV4Initialize,
   decodeV4Swap,
   nearestPriceWithGap,
+  v4TokenPriceInCounter,
   type RawEvmLog,
   type V4PoolKey,
   type V4Swap,
@@ -313,6 +314,47 @@ export type V4SwapCandleResult = {
   /** Why paging stopped: 'target_window' (24h covered) | 'log_cap' | 'page_cap' | 'deadline' | 'call_budget' | 'rpc_error' | null (reached pool creation). */
   budgetStopReason: string | null
   cache: { result: boolean; initialize: boolean; ethUsd: boolean }
+  /** Window evidence (debug + truthful coverage): exactly which blocks were read and what they covered. */
+  window?: V4SwapWindowDebug | null
+  /** The newest priced trade behind the latest close (debug: latest-close / MCAP audit). */
+  latestTrade?: V4LatestTradeEvidence | null
+}
+
+export type V4SwapWindowDebug = {
+  latestBlock: number
+  latestTs: number
+  /** The pool's creation block (its Initialize event). */
+  initBlock: number | null
+  /** Header-anchored chains: the REAL header ~24h back (nominal block time) used to measure the block rate. */
+  anchor: { block: number; ts: number } | null
+  /** Seconds per block: protocol-fixed (Base), or measured between two real headers. */
+  secPerBlock: number | null
+  /** Oldest block the 24h target asks for, and how it was derived. */
+  targetBlock: number | null
+  targetSource: 'fixed_block_time' | 'real_header' | 'measured_rate' | null
+  /** Every Swap-log page read, newest first: inclusive block range + logs returned for the exact PoolId. */
+  pages: Array<{ fromBlock: number; toBlock: number; logs: number }>
+  oldestSwapTs: number | null
+  newestSwapTs: number | null
+  /** Seconds of the pool's history this read actually covers (window to the latest header). */
+  coveredSec: number | null
+  /** Real swap rate over the covered window (exact PoolId swaps per hour); sizes on-demand history pages. */
+  swapsPerHour: number | null
+}
+
+export type V4LatestTradeEvidence = {
+  timestampSec: number
+  blockNumber: number
+  logIndex: number
+  /** Token price in the counter asset from the swap's own sqrtPriceX96. */
+  priceInCounter: number
+  counterAsset: string | null
+  counterSymbol: string | null
+  /** Counter-asset USD used for this trade and the real quote point it came from ($1 stablecoin: no point). */
+  counterUsd: number
+  quotePointMs: number | null
+  quoteGapMs: number | null
+  priceUsd: number
 }
 
 export type V4SwapDeps = {
@@ -335,6 +377,7 @@ const historyInflight = new Map<string, Promise<V4HistoryResult>>()
 const fiveCache = new Map<string, { expiresAt: number; value: V4FiveMinuteResult }>()
 const fiveInflight = new Map<string, Promise<V4FiveMinuteResult>>()
 export function resetV4SwapCandleCache() {
+  densityCache.clear()
   fiveCache.clear()
   fiveInflight.clear()
   resultCache.clear()
@@ -375,6 +418,8 @@ export async function loadV4SwapCandles(
      * exactly this PoolId) — the same proof the on-demand history lane uses — since no live price is passed.
      */
     onDemand?: boolean
+    /** On-demand only: the exact-timestamp bucket width (60 = 1M, default 300 = 5M). Non-exact series stay 15M. */
+    exactIntervalSec?: 60 | 300
   },
   deps: V4SwapDeps,
   /** Calls still allowed on the whole candle path; this read never exceeds min(budget, V4_SWAP_MAX_CALLS). */
@@ -430,6 +475,8 @@ export async function loadV4SwapCandles(
   const latestBlock = latest?.number ? Number(BigInt(latest.number)) : null
   const latestTs = latest?.timestamp ? Number(BigInt(latest.timestamp)) : null
   if (latestRes.error || latestBlock == null || latestTs == null) { r.budgetStopReason = 'rpc_error'; return done(gap('v4_swap_logs_unavailable')) }
+  const win: V4SwapWindowDebug = { latestBlock, latestTs, initBlock: null, anchor: null, secPerBlock: cfg.timestampMode === 'fixed_block_time' ? cfg.blockTimeSec : null, targetBlock: null, targetSource: null, pages: [], oldestSwapTs: null, newestSwapTs: null, coveredSec: null, swapsPerHour: null }
+  r.window = win
 
   // 2. The pool's own Initialize event on a configured manager (immutable: cached 24h per PoolId).
   const init = await readPoolInitialize(input.chain, cfg, poolId, latestBlock, now, canCall, rpc)
@@ -445,6 +492,7 @@ export async function loadV4SwapCandles(
   r.protocol = 'uniswap_v4'
   r.managerSource = cfg.managers.find((m) => m.address === manager)?.source ?? null
   r.initializeFound = true
+  win.initBlock = key.initBlock
   const tokenIsCurrency0 = key.currency0 === token
   if (!tokenIsCurrency0 && key.currency1 !== token) return done(gap('token_side_unresolved'))
   r.tokenCurrencyIndex = tokenIsCurrency0 ? 0 : 1
@@ -488,19 +536,34 @@ export async function loadV4SwapCandles(
   if (!anchor) {
     targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / cfg.blockTimeSec) + 1
     pagePlan = V4_SWAP_PAGE_PLAN
+    win.targetSource = 'fixed_block_time'
   } else {
     const spanBlocks = latestBlock - anchor.block
     const spanSec = latestTs - anchor.ts
-    // Chain slower than the planning estimate: keep only the newest ~24h of blocks (measured rate).
-    targetBlock = spanBlocks > 0 && spanSec > V4_SWAP_TARGET_WINDOW_SEC
-      ? latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / (spanSec / spanBlocks)) + 1
-      : anchor.block
+    const measured = spanBlocks > 0 && spanSec > 0 ? spanSec / spanBlocks : null
+    win.anchor = anchor
+    win.secPerBlock = measured
+    if (measured != null && spanSec > V4_SWAP_TARGET_WINDOW_SEC) {
+      // Chain slower than the planning estimate: keep only the newest ~24h of blocks (measured rate).
+      targetBlock = latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / measured) + 1
+      win.targetSource = 'measured_rate'
+    } else if (measured != null && spanSec < V4_SWAP_TARGET_WINDOW_SEC && anchor.block > key.initBlock && cfg.timestampMode === 'log_timestamp_only') {
+      // Chain FASTER than the planning estimate (e.g. Robinhood producing blocks quicker than the nominal
+      // 0.25s): the nominal window spans less than 24h, so extend it by the measured rate. Only on chains
+      // whose candles use each log's own timestamp (never an extrapolated time). No extra call.
+      targetBlock = Math.max(key.initBlock, latestBlock - Math.floor(V4_SWAP_TARGET_WINDOW_SEC / measured) + 1)
+      win.targetSource = 'measured_rate'
+    } else {
+      targetBlock = anchor.block
+      win.targetSource = 'real_header'
+    }
     const total = latestBlock - targetBlock + 1
     const p1 = Math.max(1, Math.ceil(total / 6))
     const p2 = Math.max(1, Math.ceil(total / 3))
     pagePlan = [p1, p2, Math.max(1, total - p1 - p2)]
   }
   const busyPageBlocks = pagePlan[0]
+  win.targetBlock = targetBlock
   let toBlock = latestBlock
   let busy = false
   let capped = false
@@ -520,6 +583,7 @@ export async function loadV4SwapCandles(
       if (page.error || !Array.isArray(page.result)) { r.budgetStopReason = 'rpc_error'; break }
       r.pipeline.logsReturned += page.result.length
       const decoded = decodePageNewestFirst(page.result as RawEvmLog[], poolId, manager)
+      win.pages.push({ fromBlock, toBlock, logs: decoded.length })
       if (decoded.length >= V4_SWAP_BUSY_PAGE_LOGS) busy = true
       for (const s of decoded) {
         if (swaps.length >= V4_SWAP_MAX_LOGS) { capped = true; break }
@@ -596,7 +660,7 @@ export async function loadV4SwapCandles(
   r.pipeline.exactTimestampSwaps = swaps.filter((s) => s.logTimestamp != null).length
   if (!exact && cfg.timestampMode === 'log_timestamp_only') return done(gap('v4_timestamps_unproven'))
   r.timeResolution = exact ? 'exact_log_timestamps' : anchor ? 'block_timestamp_lookup' : 'inferred_block_time'
-  r.intervalSec = exact ? V4_EXACT_INTERVAL_SEC : V4_INFERRED_INTERVAL_SEC
+  r.intervalSec = exact ? (input.exactIntervalSec ?? V4_EXACT_INTERVAL_SEC) : V4_INFERRED_INTERVAL_SEC
   const inferTs = anchor
     ? interpolateBlockTime([anchor, { block: latestBlock, ts: latestTs }])
     : (b: number) => latestTs - (latestBlock - b) * cfg.blockTimeSec
@@ -604,6 +668,27 @@ export async function loadV4SwapCandles(
   // Log cap hit: the oldest kept bucket may be missing earlier trades — drop it rather than show a partial candle.
   if (capped) timed = dropOldestBucket(timed, r.intervalSec)
   r.pipeline.timestampValidSwaps = timed.filter((s) => Number.isFinite(s.timestampSec) && s.timestampSec > 0).length
+  // Truthful coverage: the target window when it was read in full, else back to the oldest kept trade
+  // (log cap / page cap / budget / deadline / RPC error) — never a claimed 24h.
+  if (timed.length > 0) {
+    const tss = timed.map((s) => s.timestampSec)
+    win.oldestSwapTs = Math.min(...tss)
+    win.newestSwapTs = Math.max(...tss)
+  }
+  const blockTimeAt = (b: number): number | null => anchor
+    ? (win.secPerBlock != null ? latestTs - (latestBlock - b) * win.secPerBlock : null)
+    : latestTs - (latestBlock - b) * cfg.blockTimeSec
+  const reachedCreation = !capped && toBlock < key.initBlock
+  if (r.budgetStopReason === 'target_window' || reachedCreation) {
+    const from = reachedCreation ? key.initBlock : targetBlock
+    const t0 = win.targetSource === 'real_header' && anchor && from === anchor.block ? anchor.ts : blockTimeAt(from)
+    win.coveredSec = t0 != null ? Math.max(0, latestTs - t0) : null
+  } else if (win.oldestSwapTs != null) {
+    // Partial window: only from the oldest kept bucket boundary (the partial oldest bucket was dropped on a cap).
+    win.coveredSec = Math.max(0, latestTs - Math.floor(win.oldestSwapTs / r.intervalSec) * r.intervalSec)
+  }
+  if (win.coveredSec != null && win.coveredSec > 0) win.swapsPerHour = Math.round((timed.length / win.coveredSec) * 3600)
+  rememberSwapDensity(input.chain, poolId, win, now)
 
   // 4. Counter-asset USD: $1 stablecoin, the shared cached ETH/USD series, or the independent quote
   // pool's own history. Each trade uses the closest real point within 15 minutes, or is dropped.
@@ -624,6 +709,7 @@ export async function loadV4SwapCandles(
     maxGapMs = Math.max(maxGapMs, hit.gapMs)
     return hit.price
   }
+  let auditSeries: ReadonlyArray<readonly [number, number]> | null = null
   let counterUsdAt: (tsMs: number) => number | null = () => { r.pipeline.quoteUsdMatched++; return 1 } // verified $1 stable
   if (isNative) {
     if (now() >= deadline) { r.budgetStopReason = 'deadline'; r.quote = { ...r.quote!, failureReason: 'quote_usd_price_unproven' }; return done(gap('quote_usd_price_unproven')) }
@@ -634,9 +720,11 @@ export async function loadV4SwapCandles(
     if (!eth.cacheHit) { r.callsUsed++; r.providerCalls++ }
     if (!eth.points || eth.points.length === 0) { r.quote = { ...r.quote!, evidence: 'unavailable', reason: `${cfg.native.coinId === 'ethereum' ? 'eth' : cfg.native.coinId}_usd_series_unavailable`, failureReason: 'quote_history_unavailable' }; return done(gap('quote_usd_price_unproven')) }
     r.quote = { ...r.quote!, evidence: 'verified', points: eth.points.length }
+    auditSeries = eth.points
     counterUsdAt = fromSeries(eth.points)
   } else if (quotePoints) {
     r.quote = { ...r.quote!, evidence: 'verified' }
+    auditSeries = quotePoints
     counterUsdAt = fromSeries(quotePoints)
   }
 
@@ -647,6 +735,7 @@ export async function loadV4SwapCandles(
   r.pipeline.candles = built.candles.length
   r.quote = { ...r.quote!, maxGapMs: r.counterAsset === 'usd_stable' ? null : maxGapMs }
   if (built.tradesUsed === 0 && r.counterAsset !== 'usd_stable') { r.quote = { ...r.quote!, evidence: 'unavailable', reason: 'no_quote_usd_point_within_15m_of_any_trade', failureReason: 'quote_history_stale' }; return done(gap('quote_usd_price_unproven')) }
+  r.latestTrade = latestTradeEvidence(timed, { tokenIsCurrency0, decimals0, decimals1, counterAsset: counter, counterSymbol: r.quote?.symbol ?? null, series: auditSeries })
   if (built.candles.length < 2) return done(gap('v4_swap_history_empty'))
   if (!input.onDemand && !closeMatchesLivePrice(built.candles, input.livePriceUsd)) return done(gap('token_identity_unverified'))
   return done({ ...r, ok: true, code: null, candles: built.candles })
@@ -664,6 +753,38 @@ function decodePageNewestFirst(logs: ReadonlyArray<RawEvmLog>, poolId: string, m
   return out.sort((a, b) => b.blockNumber - a.blockNumber || b.logIndex - a.logIndex)
 }
 
+/** The newest trade that can be priced, with the exact quote point it used (same 15-minute rule as the candles). */
+function latestTradeEvidence(
+  timed: ReadonlyArray<V4Swap & { timestampSec: number }>,
+  o: { tokenIsCurrency0: boolean; decimals0: number; decimals1: number; counterAsset: string; counterSymbol: string | null; series: ReadonlyArray<readonly [number, number]> | null },
+): V4LatestTradeEvidence | null {
+  const newestFirst = [...timed].sort((a, b) => b.blockNumber - a.blockNumber || b.logIndex - a.logIndex)
+  for (const s of newestFirst) {
+    const inCounter = v4TokenPriceInCounter(s.sqrtPriceX96, o.tokenIsCurrency0, o.decimals0, o.decimals1)
+    if (inCounter == null) continue
+    const hit = o.series ? nearestPriceWithGap(o.series, s.timestampSec * 1000, QUOTE_USD_MAX_GAP_MS) : { price: 1, gapMs: 0 }
+    if (!hit) continue
+    const nearestPoint = o.series ? o.series.reduce((best, p) => (Math.abs(p[0] - s.timestampSec * 1000) < Math.abs(best[0] - s.timestampSec * 1000) ? p : best), o.series[0]) : null
+    return {
+      timestampSec: s.timestampSec, blockNumber: s.blockNumber, logIndex: s.logIndex, priceInCounter: inCounter,
+      counterAsset: o.counterAsset, counterSymbol: o.counterSymbol, counterUsd: hit.price,
+      quotePointMs: nearestPoint ? nearestPoint[0] : null, quoteGapMs: o.series ? hit.gapMs : null, priceUsd: inCounter * hit.price,
+    }
+  }
+  return null
+}
+
+// Real swap density per pool (logs per block), remembered from a completed read so an on-demand history
+// request can size its pages to the pool's activity instead of pulling a 24h page of a busy pool.
+const densityCache = new Map<string, { expiresAt: number; logsPerBlock: number }>()
+function rememberSwapDensity(chain: string, poolId: string, win: V4SwapWindowDebug, now: () => number) {
+  const blocks = win.pages.reduce((n, p) => n + (p.toBlock - p.fromBlock + 1), 0)
+  const logs = win.pages.reduce((n, p) => n + p.logs, 0)
+  if (blocks <= 0 || logs <= 0) return
+  bounded(densityCache)
+  densityCache.set(`${chain}:${poolId}`, { expiresAt: now() + HISTORY_OK_TTL_MS, logsPerBlock: logs / blocks })
+}
+
 function dropOldestBucket<T extends { timestampSec: number }>(timed: ReadonlyArray<T>, intervalSec: number): T[] {
   if (timed.length === 0) return []
   const oldest = Math.min(...timed.map((s) => Math.floor(s.timestampSec / intervalSec)))
@@ -677,7 +798,11 @@ export const V4_HISTORY_FIRST_PAGE_BLOCKS = 43_200 // 24h
 export const V4_HISTORY_MIN_PAGE_BLOCKS = 7_200 // 4h
 export const V4_HISTORY_MAX_PAGE_BLOCKS = 172_800 // 4 days
 export const V4_HISTORY_MAX_PAGES = 3
-export const V4_HISTORY_MAX_LOGS = 6_000
+// Kept logs per history request. Pages are sized to the pool's REAL swap density (~V4_HISTORY_TARGET_PAGE_LOGS
+// each, below common 10k-log node response limits), so a busy pool no longer downloads a 24h page (~36k logs at
+// 1,500 swaps/h) to keep 6,000: 3 density-sized pages keep up to 15,000 genuine swaps with less transfer.
+export const V4_HISTORY_MAX_LOGS = 15_000
+export const V4_HISTORY_TARGET_PAGE_LOGS = 5_000
 export const V4_HISTORY_MAX_CALLS = 8
 export const V4_HISTORY_DEADLINE_MS = 9_000
 /** Oldest cursor accepted — bounds how far interactive paging can crawl. */
@@ -744,7 +869,7 @@ export type V4HistoryDeps = {
  * <= 8 calls, 9s; cached per (pool, token, hour-aligned cursor); concurrent identical requests share one read.
  */
 export async function loadV4SwapHistoryWindow(
-  input: { chain: string; poolId: string; token: string; beforeSec: number },
+  input: { chain: string; poolId: string; token: string; beforeSec: number; /** The scan's real swap rate (coverage.swapsPerHour) — a page-size hint only. */ swapsPerHourHint?: number | null },
   deps: V4HistoryDeps,
 ): Promise<V4HistoryResult> {
   const now = deps.now ?? Date.now
@@ -767,7 +892,8 @@ export async function loadV4SwapHistoryWindow(
   if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, pagesFetched: 0, cache: { ...hit.value.cache, result: true } }
   const running = historyInflight.get(key)
   if (running) return running
-  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec }, cfg, base, deps, now).then((v) => {
+  const hint = Number(input.swapsPerHourHint)
+  const p = readHistoryWindow({ chain: input.chain, poolId, token, beforeSec, swapsPerHourHint: Number.isFinite(hint) && hint > 0 && hint <= 1_000_000 ? hint : null }, cfg, base, deps, now).then((v) => {
     if (v.code !== 'call_budget_exhausted') {
       bounded(historyCache)
       historyCache.set(key, { expiresAt: now() + (v.ok ? HISTORY_OK_TTL_MS : HISTORY_FAIL_TTL_MS), value: v })
@@ -779,7 +905,7 @@ export async function loadV4SwapHistoryWindow(
 }
 
 async function readHistoryWindow(
-  input: { chain: string; poolId: string; token: string; beforeSec: number },
+  input: { chain: string; poolId: string; token: string; beforeSec: number; swapsPerHourHint: number | null },
   cfg: V4ChainConfig,
   base: V4HistoryResult,
   deps: V4HistoryDeps,
@@ -873,9 +999,18 @@ async function readHistoryWindow(
     } else cursorBlock = header.block
   }
   const hoursToBlocks = (h: number) => Math.max(1, Math.ceil((h * 3600) / secPerBlock))
-  const firstPage = fixedTime ? V4_HISTORY_FIRST_PAGE_BLOCKS : hoursToBlocks(24)
   const minPage = fixedTime ? V4_HISTORY_MIN_PAGE_BLOCKS : hoursToBlocks(4)
   const maxPage = fixedTime ? V4_HISTORY_MAX_PAGE_BLOCKS : hoursToBlocks(96)
+  // Swap density (logs per block): this instance's own completed read of the pool, else the scan's measured
+  // rate passed as a hint. Known density sizes every page to ~V4_HISTORY_TARGET_PAGE_LOGS (down to 30 min of
+  // blocks); unknown density keeps the 24h first page with the quiet/busy adaptation below.
+  const knownDensity = densityCache.get(`${input.chain}:${poolId}`)
+  const logsPerBlock = knownDensity && knownDensity.expiresAt > now()
+    ? knownDensity.logsPerBlock
+    : input.swapsPerHourHint != null ? (input.swapsPerHourHint / 3600) * secPerBlock : null
+  const floorPage = logsPerBlock != null ? hoursToBlocks(0.5) : minPage
+  const densityPage = (lpb: number) => Math.max(floorPage, Math.min(maxPage, Math.ceil(V4_HISTORY_TARGET_PAGE_LOGS / lpb)))
+  const firstPage = logsPerBlock != null && logsPerBlock > 0 ? densityPage(logsPerBlock) : fixedTime ? V4_HISTORY_FIRST_PAGE_BLOCKS : hoursToBlocks(24)
 
   // 5. Swap logs for exactly this PoolId on exactly its manager, strictly before the cursor, newest
   // first; adaptive page size. Non-fixed chains keep one call for the oldest-block header.
@@ -894,7 +1029,7 @@ async function readHistoryWindow(
     const page = await rpc('eth_getLogs', [{ address: manager, topics: [V4_SWAP_TOPIC0, poolId], fromBlock: toHex(fromBlock), toBlock: toHex(toBlock) }])
     if (page.error || !Array.isArray(page.result)) {
       // Too wide for the node (or a transient error): one smaller page next, never a retry loop.
-      if (size > minPage) { size = Math.max(minPage, Math.floor(size / 4)); continue }
+      if (size > floorPage) { size = Math.max(floorPage, Math.floor(size / 4)); continue }
       r.stopReason = 'rpc_error'
       break
     }
@@ -905,8 +1040,12 @@ async function readHistoryWindow(
       swaps.push(s)
     }
     if (capped) { r.stopReason = 'log_cap'; break }
+    const observed = decoded.length / Math.max(1, toBlock - fromBlock + 1)
     toBlock = fromBlock - 1
-    size = decoded.length < QUIET_PAGE_LOGS ? Math.min(maxPage, size * 2) : decoded.length > BUSY_PAGE_LOGS ? Math.max(minPage, Math.floor(size / 2)) : size
+    size = logsPerBlock != null || decoded.length > BUSY_PAGE_LOGS
+      // Density-sized: the next page targets ~V4_HISTORY_TARGET_PAGE_LOGS at the rate just observed.
+      ? (observed > 0 ? densityPage(observed) : Math.min(maxPage, size * 2))
+      : decoded.length < QUIET_PAGE_LOGS ? Math.min(maxPage, size * 2) : size
   }
   r.logsFound = swaps.length
   if (!anyPage) return fail(r.stopReason === 'call_budget' ? 'call_budget_exhausted' : 'v4_swap_logs_unavailable')
@@ -1061,6 +1200,8 @@ async function readPoolInitialize(
 // identical requests share one read.
 
 export type V4FiveMinuteCode = V4SwapGapCode | 'invalid_request' | 'v4_timestamps_not_exact' | 'token_decimals_unavailable'
+/** On-demand exact-timestamp bucket widths: 5M (300s) and 1M (60s). Never derived from wider candles. */
+export type V4IntradayIntervalSec = 60 | 300
 
 export type V4FiveMinuteResult = {
   ok: boolean
@@ -1072,8 +1213,10 @@ export type V4FiveMinuteResult = {
   candles: EvmChartPoint[]
   timeResolution: V4TimeResolution | null
   source: 'v4_swap_events'
-  /** The read covered its full 24h target window (every log page read). */
+  /** The read covered its full target window (every log page read). */
   windowProven: boolean
+  /** Seconds the read actually covered (truthful coverage; null when unknown). */
+  coveredSec: number | null
   logsFound: number
   tradesUsed: number
   callsUsed: number
@@ -1084,14 +1227,16 @@ export type V4FiveMinuteResult = {
 
 /** The 5M chip's message after "5M unavailable — " for a V4 5M failure (no provider wording). */
 export const V4_FIVE_MINUTE_NOT_EXACT_MESSAGE = 'exact swap timestamps are not available for this V4 pool, so 5M candles are not built (15M stays available)'
+/** Same for the 1M chip. */
+export const V4_ONE_MINUTE_NOT_EXACT_MESSAGE = 'exact swap timestamps are not available for this V4 pool, so 1M candles are not built (15M stays available)'
 
-function fiveMinuteFrom(v: V4SwapCandleResult, cache: V4FiveMinuteResult['cache']): V4FiveMinuteResult {
+function fiveMinuteFrom(v: V4SwapCandleResult, cache: V4FiveMinuteResult['cache'], intervalSec: V4IntradayIntervalSec = V4_EXACT_INTERVAL_SEC): V4FiveMinuteResult {
   const base: V4FiveMinuteResult = {
-    ok: false, code: v.code, chain: v.chain, poolId: v.poolId, intervalSec: V4_EXACT_INTERVAL_SEC, candles: [], timeResolution: v.timeResolution, source: 'v4_swap_events',
-    windowProven: v.budgetStopReason === 'target_window', logsFound: v.logsFound, tradesUsed: v.tradesUsed, callsUsed: cache.scanResult || cache.fiveMinute ? 0 : v.callsUsed, budgetStopReason: v.budgetStopReason, cache,
+    ok: false, code: v.code, chain: v.chain, poolId: v.poolId, intervalSec, candles: [], timeResolution: v.timeResolution, source: 'v4_swap_events',
+    windowProven: v.budgetStopReason === 'target_window', coveredSec: v.window?.coveredSec ?? null, logsFound: v.logsFound, tradesUsed: v.tradesUsed, callsUsed: cache.scanResult || cache.fiveMinute ? 0 : v.callsUsed, budgetStopReason: v.budgetStopReason, cache,
   }
   if (!v.ok) return base
-  if (v.timeResolution !== 'exact_log_timestamps' || v.intervalSec !== V4_EXACT_INTERVAL_SEC) return { ...base, code: 'v4_timestamps_not_exact' }
+  if (v.timeResolution !== 'exact_log_timestamps' || v.intervalSec !== intervalSec) return { ...base, code: 'v4_timestamps_not_exact' }
   return { ...base, ok: true, code: null, candles: v.candles }
 }
 
@@ -1099,19 +1244,39 @@ export async function loadV4SwapFiveMinuteWindow(
   input: { chain: string; poolId: string; token: string },
   deps: V4SwapDeps,
 ): Promise<V4FiveMinuteResult> {
+  return loadV4SwapIntradayWindow({ ...input, intervalSec: V4_EXACT_INTERVAL_SEC }, deps)
+}
+
+/**
+ * On-demand 1M / 5M candles of exactly this V4 PoolId's swaps (see the 5M notes above). 1M is the SAME
+ * bounded read as 5M — same pages, log cap, call budget, PoolId / token-side / quote-USD proof — bucketed at
+ * 60s; it is never derived from 5M or 15M and needs every log's own exact timestamp. The scan's cached read
+ * answers 5M directly; for 1M it can only answer "not exact" (its 5M candles cannot be split).
+ */
+export async function loadV4SwapIntradayWindow(
+  input: { chain: string; poolId: string; token: string; intervalSec: V4IntradayIntervalSec },
+  deps: V4SwapDeps,
+): Promise<V4FiveMinuteResult> {
+  const interval: V4IntradayIntervalSec = input.intervalSec === 60 ? 60 : V4_EXACT_INTERVAL_SEC
   const now = deps.now ?? Date.now
   const poolId = String(input.poolId ?? '').toLowerCase()
   const token = String(input.token ?? '').toLowerCase()
   const empty = (code: V4FiveMinuteCode): V4FiveMinuteResult => ({
-    ok: false, code, chain: input.chain, poolId, intervalSec: V4_EXACT_INTERVAL_SEC, candles: [], timeResolution: null, source: 'v4_swap_events',
-    windowProven: false, logsFound: 0, tradesUsed: 0, callsUsed: 0, budgetStopReason: null, cache: { scanResult: false, fiveMinute: false },
+    ok: false, code, chain: input.chain, poolId, intervalSec: interval, candles: [], timeResolution: null, source: 'v4_swap_events',
+    windowProven: false, coveredSec: null, logsFound: 0, tradesUsed: 0, callsUsed: 0, budgetStopReason: null, cache: { scanResult: false, fiveMinute: false },
   })
   if (!V4_SWAP_CHAIN_CONFIG[input.chain]) return empty('v4_chain_not_supported')
   if (!/^0x[a-f0-9]{64}$/.test(poolId) || !/^0x[a-f0-9]{40}$/.test(token)) return empty('invalid_request')
-  const key = `${input.chain}:${poolId}:${token}`
-  // 1. The scan's own V4 read for exactly this pool + token (zero calls).
-  const scan = resultCache.get(key)
-  if (scan && scan.expiresAt > now() && scan.value.code !== 'call_budget_exhausted') return fiveMinuteFrom(scan.value, { scanResult: true, fiveMinute: false })
+  const scanKey = `${input.chain}:${poolId}:${token}`
+  const key = `${scanKey}:${interval}`
+  // 1. The scan's own V4 read for exactly this pool + token (zero calls): its 5M candles for 5M; for 1M only
+  //    a proven "not exact" / failure answer (5M candles are never split into 1M).
+  const scan = resultCache.get(scanKey)
+  if (scan && scan.expiresAt > now() && scan.value.code !== 'call_budget_exhausted') {
+    const fromScan = fiveMinuteFrom(scan.value, { scanResult: true, fiveMinute: false }, V4_EXACT_INTERVAL_SEC)
+    if (interval === V4_EXACT_INTERVAL_SEC) return fromScan
+    if (!fromScan.ok) return { ...fromScan, intervalSec: interval }
+  }
   // 2. This lane's own cache / in-flight read.
   const hit = fiveCache.get(key)
   if (hit && hit.expiresAt > now()) return { ...hit.value, callsUsed: 0, cache: { scanResult: false, fiveMinute: true } }
@@ -1128,8 +1293,8 @@ export async function loadV4SwapFiveMinuteWindow(
       decimals = await readTokenDecimals(input.chain, token, (m, params) => deps.rpc(m, params, RPC_TIMEOUT_MS), now)
       if (decimals == null) return { ...empty('token_decimals_unavailable'), callsUsed: decimalsCalls }
     }
-    const v = await loadV4SwapCandles({ chain: input.chain, poolId, token, tokenDecimals: decimals, livePriceUsd: null, onDemand: true }, deps, V4_SWAP_MAX_CALLS)
-    const out = fiveMinuteFrom(v, { scanResult: false, fiveMinute: false })
+    const v = await loadV4SwapCandles({ chain: input.chain, poolId, token, tokenDecimals: decimals, livePriceUsd: null, onDemand: true, exactIntervalSec: interval }, deps, V4_SWAP_MAX_CALLS)
+    const out = fiveMinuteFrom(v, { scanResult: false, fiveMinute: false }, interval)
     out.callsUsed = v.callsUsed + decimalsCalls
     if (out.code !== 'call_budget_exhausted') {
       bounded(fiveCache)

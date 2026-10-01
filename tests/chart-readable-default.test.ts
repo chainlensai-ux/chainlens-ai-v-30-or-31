@@ -8,6 +8,8 @@ import { readFileSync } from 'node:fs'
 import { buildChartTimeframes, type ChartCandle } from '../lib/priceChartCandles.ts'
 import {
   AUTO_HISTORY_MAX_REQUESTS,
+  AUTO_HISTORY_MAX_REQUESTS_BUSY,
+  autoHistoryMaxRequests,
   READABLE_MIN_CANDLES,
   assessTimeframeSet,
   buildCoverageMeta,
@@ -158,7 +160,12 @@ test('auto history: bounded (<= 2 requests, once), only when the default needs i
   const q = assessTimeframeSet(merged)
   assert.equal(selectPresentationTimeframe(q).key, '1H', 'with its history the hourly view reads as a chart')
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /void requestHistory\(AUTO_HISTORY_MAX_REQUESTS, HISTORY_TARGET_SPAN_SEC\[autoPlan\.key\], true\)/)
+  assert.match(panel, /void requestHistory\(autoHistoryMaxRequests\(coverage\), HISTORY_TARGET_SPAN_SEC\[autoPlan\.key\], true\)/)
+  // 2 requests, or 4 only for a pool the scan proved busy (its swap read stopped on the log cap).
+  assert.equal(autoHistoryMaxRequests(null), AUTO_HISTORY_MAX_REQUESTS)
+  assert.equal(autoHistoryMaxRequests({ stopReason: 'target_window' }), AUTO_HISTORY_MAX_REQUESTS)
+  assert.equal(autoHistoryMaxRequests({ stopReason: 'log_cap' }), AUTO_HISTORY_MAX_REQUESTS_BUSY)
+  assert.equal(AUTO_HISTORY_MAX_REQUESTS_BUSY, 4)
   assert.match(panel, /picked != null\) return/, 'never overrides a timeframe the user chose')
 })
 

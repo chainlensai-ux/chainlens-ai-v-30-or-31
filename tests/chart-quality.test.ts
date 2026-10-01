@@ -171,7 +171,7 @@ test('UI: sparse chips are dimmed with the explanation; status + ?debug=1 qualit
   assert.match(panel, /title: sparse \? sparseTimeframeTooltip\(q!, clearerThan\(tf\.key\)\)/)
   assert.match(panel, /selected for clearer history/)
   assert.match(panel, /Sparse trading — /)
-  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*sparseLine: sparseLine\?\.stats \?\? null,\s*timeframeQuality:/)
+  assert.match(panel, /selectedTimeframeReason: selectionReason,\s*latestClose: latestAudit,\s*sparseLine: sparseLine\?\.stats \?\? null,\s*timeframeQuality:/)
   assert.match(read('app/terminal/token-scanner/page.tsx'), /debug=\{Boolean\(result\.chartDebug\)\}/)
 })
 
@@ -445,7 +445,7 @@ test('10. zero provider-call delta: coverage rides on requests already made', as
   assert.equal(q5(series(rows.map((r) => (r[0] as number) * 1000)), cov).quality, 'sparse')
   // The panel judges on-demand 5M (it was never assessed before) and makes no request of its own.
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const activeQuality: TimeframeQuality \| null = fiveActive \? fiveQuality :/)
+  assert.match(panel, /const activeQuality: TimeframeQuality \| null = oneActive \? oneQuality : fiveActive \? fiveQuality :/)
   assert.match(panel, /coverage: resolveCoverageWindow\(five\.coverage, poolCreatedMs\)/)
   assert.doesNotMatch(panel, /\bfetch\(/)
   // Scan ladder / Solana attach coverage to the reads they already make.

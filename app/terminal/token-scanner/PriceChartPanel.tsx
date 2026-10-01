@@ -35,7 +35,7 @@ import {
   type StoredChartViewport,
 } from '@/lib/priceChartCandles'
 import { candleBodyRect, candleGeometry, pricePaneHeight, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
-import { formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
+import { auditLatestClose, formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
 import {
   DAILY_FIRST_BATCH_MIN_CANDLES,
   HISTORY_MAX_REQUESTS_PER_ACTION,
@@ -54,7 +54,7 @@ import {
   buildSparseLineSegments,
   nearestCandleIndex,
   planAutoHistory,
-  AUTO_HISTORY_MAX_REQUESTS,
+  autoHistoryMaxRequests,
   resolveCoverageWindow,
   type ChartCoverageMeta,
   formatSpanShort,
@@ -97,6 +97,11 @@ export type PriceChartPanelProps = {
    */
   loadFiveMinute?: () => Promise<FiveMinuteLoadResult>
   /**
+   * Loads REAL 1M candles on demand (only when the user selects 1M) from an exact Uniswap V4 pool's own
+   * swaps with exact log timestamps. Omit it everywhere else: 1M is then not offered (never derived from 5M).
+   */
+  loadOneMinute?: () => Promise<FiveMinuteLoadResult>
+  /**
    * Trusted circulating supply for MCAP mode (lib/chartMarketCap.ts resolveChartMarketCapSupply).
    * Null keeps the chart in PRICE with MCAP disabled for `marketCapUnavailableReason`.
    */
@@ -104,6 +109,13 @@ export type PriceChartPanelProps = {
   marketCapUnavailableReason?: string | null
   /** Which MCAP basis `marketCapSupply` is: verified circulating supply, or inferred from verified current MC ÷ price. */
   marketCapBasis?: ChartMarketCapBasis | null
+  /** The verified market cap behind `marketCapSupply` (latest-close audit only). */
+  marketCapVerifiedUsd?: number | null
+  /**
+   * The scanner's live token price (same price the Market Cap card uses). The chart's latest close is
+   * compared to it: a material drift is shown, never silently hidden, and no candle is changed.
+   */
+  livePriceUsd?: number | null
   /**
    * Loads OLDER genuine hourly candles strictly before `beforeSec` (lib/chartHistory.ts). Called only
    * after the user selects 1H / 4H / 1D or pans/zooms past the oldest loaded candle. Omit when the
@@ -181,10 +193,11 @@ type HistoryState = { candles: ChartCandle[]; nextBeforeSec: number | null; hasM
 const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const IDLE_HISTORY: HistoryState = { candles: [], nextBeforeSec: null, hasMore: true, status: 'idle', message: null }
 const FIVE_MIN_SEC = 300
+const ONE_MIN_SEC = 60
 /** A clipped (outlier) wick turns into a dashed continuation this many px before the plot edge. */
 const WICK_BREAK_PX = 12
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, loadOneMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, marketCapVerifiedUsd, livePriceUsd, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
   // Per-scan identity (lib/priceChartCandles.ts chartDataIdentity): scan key + O(1) series fingerprint.
   // Equivalent candle arrays share it; a new token/pool or a genuinely new series does not.
@@ -255,7 +268,19 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     ? assessTimeframeQuality(five.candles, FIVE_MIN_SEC, { timeframe: '5M', referenceMs: referenceTimeMs ?? null, coverage: resolveCoverageWindow(five.coverage, poolCreatedMs), poolCreatedMs })
     : null), [five, referenceTimeMs, poolCreatedMs])
 
-  const chipStates: ChipState[] = tfSet.timeframes.map((tf) => {
+  // On-demand real 1M candles (exact V4 swaps only — never derived from 5M/15M). Same per-scan identity.
+  const [oneRaw, setOneRaw] = useState<{ source: string; state: FiveMinuteState } | null>(null)
+  const one: FiveMinuteState = oneRaw && oneRaw.source === dataId ? oneRaw.state : IDLE_FIVE
+  const oneLoadable = loadOneMinute != null
+  const oneQuality = useMemo(() => (one.status === 'ready' && one.candles.length > 0
+    ? assessTimeframeQuality(one.candles, ONE_MIN_SEC, { timeframe: '1M', referenceMs: referenceTimeMs ?? null, coverage: resolveCoverageWindow(one.coverage, poolCreatedMs), poolCreatedMs })
+    : null), [one, referenceTimeMs, poolCreatedMs])
+  const oneChip: ChipState | null = !oneLoadable ? null
+    : one.status === 'failed' ? { key: '1M', available: false, loadable: false, reason: `1M unavailable — ${one.message}`, title: one.message }
+    : one.status === 'ready' && one.candles.length < 2 ? { key: '1M', available: false, loadable: false, reason: '1M unavailable — the pool returned no 1-minute trading history yet', title: 'No 1M history yet' }
+    : { key: '1M', available: true, loadable: one.status !== 'ready', reason: null, sparse: oneQuality != null && !isPresentationUsable(oneQuality.quality), title: one.status === 'loading' ? 'Loading real 1M candles…' : one.status === 'ready' ? `${one.candles.length} real 1M candles from exact on-chain swaps` : 'Load real 1M candles from this pool\'s exact on-chain swaps' }
+
+  const chipStates: ChipState[] = [...(oneChip ? [oneChip] : []), ...tfSet.timeframes.map((tf) => {
     if (tf.key === '5M' && fiveLoadable) {
       if (five.status === 'failed') return { key: tf.key, available: false, loadable: false, reason: `5M unavailable — ${five.message}`, title: five.message }
       if (five.status === 'ready' && five.candles.length < 2) return { key: tf.key, available: false, loadable: false, reason: '5M unavailable — the pool returned no 5-minute trading history yet', title: 'No 5M history yet' }
@@ -277,11 +302,13 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       title: sparse ? sparseTimeframeTooltip(q!, clearerThan(tf.key)) : tf.available ? `${tf.candles.length} real ${tf.key} candles${tf.origin === 'aggregated' ? ' (rolled up from finer real candles)' : ''}` : (tf.unavailableReason ?? 'Needs more trading history'),
       sparse,
     }
-  })
+  })]
 
   // A pick that is no longer available (new scan data) falls back to the default — never to
   // another timeframe's candles under the picked label.
-  const fiveActive = picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
+  const oneActive = picked === '1M' && oneLoadable && one.status === 'ready' && one.candles.length >= 2
+  const fiveActive = !oneActive && picked === '5M' && fiveLoadable && five.status === 'ready' && five.candles.length >= 2
+  const onDemandActive = oneActive || fiveActive
   // 1D picked while its first history batch loads, with fewer daily candles than a useful daily chart
   // (e.g. the scan's ~7 days): keep showing the timeframe that was on screen (with "Loading older
   // candles…") instead of flashing that short 1D chart and then replacing it. 1D appears once the
@@ -290,9 +317,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const dailyCandleCount = tfSet.timeframes.find((tf) => tf.key === '1D')?.candles.length ?? 0
   const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === dataId && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES
   const shownPick = deferDaily ? dailyDefer!.fallback : picked
-  const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === shownPick && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
-  const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)
-  const priceSeries: ChartCandle[] = fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
+  const activeTf = onDemandActive ? null : (tfSet.timeframes.find((tf) => tf.key === shownPick && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
+  const activeKey: ChartTimeframeKey | null = oneActive ? '1M' : fiveActive ? '5M' : (activeTf?.key ?? null)
+  const priceSeries: ChartCandle[] = oneActive && one.status === 'ready' ? one.candles : fiveActive && five.status === 'ready' ? five.candles : activeTf ? activeTf.candles : tfSet.nativeCandles
   // MCAP / PRICE: a view over the SAME candles (O/H/L/C × trusted circulating supply; volume
   // unchanged). The choice is tied to this scan's candle set, so a new scan starts from its default
   // and toggling never refetches or rescans.
@@ -302,9 +329,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const series: ChartCandle[] = valueMode === 'MCAP' ? scaleCandlesToMarketCap(priceSeries, marketCapSupply!) : priceSeries
   const fmtValue = (v: number, digits?: number) => (valueMode === 'MCAP' ? formatCompactUsd(v, 2) : formatChartPrice(v, digits))
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
-  const intervalSec = fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
+  // Latest close vs the scanner's live price, from the scan's own newest candle (PRICE; MCAP = × supply).
+  const scanNewest = normalized.length > 0 ? normalized[normalized.length - 1] : null
+  const latestAudit = auditLatestClose({ lastCandle: scanNewest, livePriceUsd, livePriceAtMs: referenceTimeMs, supply: mcapAvailable ? marketCapSupply : null, basis: mcapAvailable ? marketCapBasis : null, verifiedMarketCapUsd: marketCapVerifiedUsd })
+  const intervalSec = oneActive ? ONE_MIN_SEC : fiveActive ? FIVE_MIN_SEC : activeTf ? activeTf.sec : tfSet.nativeSec
   // Quality of what is on screen (PRICE candles; MCAP is the same series scaled, so the same verdict).
-  const activeQuality: TimeframeQuality | null = fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
+  const activeQuality: TimeframeQuality | null = oneActive ? oneQuality : fiveActive ? fiveQuality : activeKey ? (tfQuality[activeKey] ?? null) : null
   const userPicked = picked != null && activeKey === picked
   const selectionReason = userPicked ? `user_selected_${activeKey!.toLowerCase()}` : autoSelection.reason
   const fromQ = autoSelection.fallbackFrom ? defaultQuality[autoSelection.fallbackFrom] : null
@@ -313,6 +343,27 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     : !userPicked && fromQ && activeKey
       ? `${autoSelection.fallbackFrom} sparse · ${fromQ.candleCount} genuine candles across ${formatSpanShort(fromQ.spanSec)} — ${activeKey} selected for clearer history`
       : null
+
+  const requestOne = async () => {
+    if (!loadOneMinute || one.status === 'loading') return
+    const source = dataId
+    setOneRaw({ source, state: { status: 'loading' } })
+    setChipNotice({ key: '1M', text: 'Loading real 1M candles…' })
+    let next: FiveMinuteState
+    try {
+      const res = await loadOneMinute()
+      next = res.ok ? { status: 'ready', candles: normalizeChartCandles(res.points), coverage: res.coverage ?? null } : { status: 'failed', message: res.message }
+    } catch {
+      next = { status: 'failed', message: 'The 1M candle request did not complete.' }
+    }
+    setOneRaw((cur) => (cur && cur.source === source ? { source, state: next } : cur))
+    if (next.status === 'ready' && next.candles.length >= 2) {
+      setChipNotice(null)
+      setPicked('1M')
+    } else {
+      setChipNotice({ key: '1M', text: next.status === 'failed' ? `1M unavailable — ${next.message}` : '1M unavailable — the pool returned no 1-minute trading history yet' })
+    }
+  }
 
   const requestFive = async () => {
     if (!loadFiveMinute || five.status === 'loading') return
@@ -358,12 +409,15 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     historyBusy.current = false
   }
   // Once per scan (keyed by the data identity): load what the default needs to read as a chart.
+  // The scan's swap read stopped on its log cap: the loaded window is the cap, not the pool's history.
+  const busyCapped = coverage?.stopReason === 'log_cap' && hist.candles.length === 0
   const autoPlan = planAutoHistory({ defaultKey, defaultQuality: defaultKey ? (scanQuality[defaultKey] ?? null) : null, historyEnabled, hasMore: hist.hasMore })
   const autoRan = useRef<string | null>(null)
   useEffect(() => {
     if (autoRan.current === dataId || !autoPlan.load || !autoPlan.key || picked != null) return
     autoRan.current = dataId
-    void requestHistory(AUTO_HISTORY_MAX_REQUESTS, HISTORY_TARGET_SPAN_SEC[autoPlan.key], true)
+    // A pool the scan proved busy (log cap) may chain a few more bounded requests (autoHistoryMaxRequests).
+    void requestHistory(autoHistoryMaxRequests(coverage), HISTORY_TARGET_SPAN_SEC[autoPlan.key], true)
   })
   const loadOlderAtLeftEdge = () => {
     if (canLoadOlder && hist.status !== 'failed' && isHistoryTimeframe(activeKey)) void requestHistory(1, null)
@@ -585,7 +639,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     </g>
   )
 
-  const noticeVisible = chipNotice != null && (chipNotice.key === '5M' && five.status === 'loading'
+  const noticeVisible = chipNotice != null && ((chipNotice.key === '5M' && five.status === 'loading') || (chipNotice.key === '1M' && one.status === 'loading')
     ? true
     : chipStates.some((c) => c.key === chipNotice.key && !c.available))
 
@@ -598,7 +652,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       )}
       {chipStates.map((chip) => {
         const active = activeKey === chip.key
-        const loading = (chip.key === '5M' && five.status === 'loading') || (chip.loadable && isHistoryTimeframe(chip.key) && hist.status === 'loading') || (chip.key === '1D' && deferDaily)
+        const loading = (chip.key === '5M' && five.status === 'loading') || (chip.key === '1M' && one.status === 'loading') || (chip.loadable && isHistoryTimeframe(chip.key) && hist.status === 'loading') || (chip.key === '1D' && deferDaily)
         return (
           <button
             key={chip.key}
@@ -617,6 +671,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 return
               }
               if (chip.key === '5M' && chip.loadable) { void requestFive(); return }
+              if (chip.key === '1M' && chip.loadable) { void requestOne(); return }
               setChipNotice(null)
               setPicked(chip.key)
               setHover(null)
@@ -896,7 +951,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         <span>
           {n === total ? `${n}` : `${n} of ${total}`} × {formatIntervalLabel(intervalSec)} real candles
           {activeTf?.origin === 'aggregated' ? ` · rolled up from ${hist.candles.length > 0 && isHistoryTimeframe(activeKey) ? `1H history + ${formatIntervalLabel(tfSet.nativeSec)}` : formatIntervalLabel(tfSet.nativeSec)}` : ''}
-          {fiveActive ? ' · loaded on demand' : ''}
+          {onDemandActive ? ' · loaded on demand' : ''}
+          {latestAudit.drifted && latestAudit.closeVsLive != null && (
+            <span data-latest-close-drift title={`Latest real candle close ${formatChartPrice(latestAudit.lastCloseUsd!)} vs the scanner's live price ${formatChartPrice(latestAudit.livePriceUsd!)}. Candles are real swaps; the live price comes from the scan's price source.`} style={{ color: '#b45309' }}>
+              {` · latest candle ${Math.abs(latestAudit.closeVsLive * 100).toFixed(1)}% ${latestAudit.closeVsLive < 0 ? 'below' : 'above'} live price`}
+            </span>
+          )}
         </span>
         {footnote && <span>{footnote}</span>}
       </div>
@@ -907,7 +967,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
       )}
       {(historySourceLabel || historyEnabled) && (
         <div role="status" data-history-end={hist.endReason ?? undefined} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '2px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
-          {historySourceLabel ? <span>{loadedSpanLabel(series[0].t, latest.t, intervalSec ?? 0)} · {historySourceLabel}</span> : <span />}
+          {historySourceLabel ? <span>{loadedSpanLabel(series[0].t, latest.t, intervalSec ?? 0)}{busyCapped ? <span title="This pool is busy: the scan read its newest swaps up to the per-scan log limit. Older real history loads automatically for 1H / 4H / 1D."> · newest swaps (busy pool)</span> : null} · {historySourceLabel}</span> : <span />}
           {historyEnabled && (
             <span style={{ color: hist.status === 'failed' ? '#94a3b8' : C.muted }}>
               {hist.status === 'loading'
@@ -928,6 +988,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
           {JSON.stringify({
             selectedTimeframe: activeKey,
             selectedTimeframeReason: selectionReason,
+            latestClose: latestAudit,
             sparseLine: sparseLine?.stats ?? null,
             timeframeQuality: [...Object.values(tfQuality), ...(fiveQuality && !tfQuality['5M'] ? [fiveQuality] : [])].map((q) => ({
               timeframe: q!.timeframe, candleCount: q!.candleCount,

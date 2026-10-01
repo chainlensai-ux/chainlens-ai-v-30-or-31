@@ -102,3 +102,64 @@ export function formatCompactUsd(value: number | null | undefined, maxDecimals =
 function trimZeros(s: string): string {
   return s.includes('.') ? s.replace(/\.?0+$/, '') : s
 }
+
+// ── Latest close vs live price (audit) ──────────────────────────────────────────────────────────────
+// The chart's MCAP is candle close × ONE constant supply basis. With the inferred basis
+// (supply = verified current MC ÷ live price) the latest MCAP close equals the Market Cap card exactly
+// when the latest candle close equals the live price — so any gap splits into (a) the chart's latest
+// close drifting from the scanner's live price (stale or differently-priced candles) and (b) the
+// verified MC itself differing from another site's number (different supply / price semantics).
+// This makes (a) visible and measurable; it never adjusts a candle.
+
+/** A latest close more than this far from the scanner's live price is flagged on the chart. */
+export const LATEST_CLOSE_DRIFT_NOTICE = 0.05
+
+export type LatestCloseAudit = {
+  lastCandleAtMs: number | null
+  lastCloseUsd: number | null
+  livePriceUsd: number | null
+  livePriceAtMs: number | null
+  /** (latest close − live price) / live price; null when either is unknown. */
+  closeVsLive: number | null
+  /** Seconds between the latest candle's bucket and the live price time. */
+  candleAgeSec: number | null
+  supply: number | null
+  basis: ChartMarketCapBasis | null
+  /** latest close × supply (what the MCAP header shows for the newest candle). */
+  mcapClose: number | null
+  verifiedMarketCapUsd: number | null
+  /** (MCAP close − verified MC) / verified MC — equals closeVsLive under the inferred basis. */
+  mcapCloseVsVerified: number | null
+  drifted: boolean
+}
+
+export function auditLatestClose(input: {
+  lastCandle: { t: number; close: number } | null
+  livePriceUsd: number | null | undefined
+  livePriceAtMs: number | null | undefined
+  supply: number | null | undefined
+  basis: ChartMarketCapBasis | null | undefined
+  verifiedMarketCapUsd: number | null | undefined
+}): LatestCloseAudit {
+  const close = input.lastCandle && positive(input.lastCandle.close) ? input.lastCandle.close : null
+  const live = positive(input.livePriceUsd) ? input.livePriceUsd : null
+  const supply = positive(input.supply) ? input.supply : null
+  const verified = positive(input.verifiedMarketCapUsd) ? input.verifiedMarketCapUsd : null
+  const closeVsLive = close != null && live != null ? (close - live) / live : null
+  const mcapClose = close != null && supply != null ? close * supply : null
+  const at = input.livePriceAtMs != null && Number.isFinite(input.livePriceAtMs) ? input.livePriceAtMs : null
+  return {
+    lastCandleAtMs: input.lastCandle?.t ?? null,
+    lastCloseUsd: close,
+    livePriceUsd: live,
+    livePriceAtMs: at,
+    closeVsLive,
+    candleAgeSec: input.lastCandle && at != null ? Math.max(0, Math.round((at - input.lastCandle.t) / 1000)) : null,
+    supply,
+    basis: input.basis ?? null,
+    mcapClose,
+    verifiedMarketCapUsd: verified,
+    mcapCloseVsVerified: mcapClose != null && verified != null ? (mcapClose - verified) / verified : null,
+    drifted: closeVsLive != null && Math.abs(closeVsLive) > LATEST_CLOSE_DRIFT_NOTICE,
+  }
+}

@@ -104,10 +104,10 @@ test('provider PoolId unsupported does NOT block the V4 RPC 5M path: no provider
   assert.deepEqual(c.providerCalls, ['eth_usd'], 'only the quote USD evidence — never a pool OHLCV provider')
   assert.ok(c.calls.every((x) => x.method.startsWith('eth_')), 'every other call is a JSON-RPC read')
   const route = read('app/api/token/chart-candles/route.ts')
-  const v4At = route.indexOf("if (url.searchParams.get('timeframe') === '5m' && /^0x[a-fA-F0-9]{64}$/.test(fivePool) && V4_SWAP_CHAIN_CONFIG[fiveChain])")
+  const v4At = route.indexOf("if ((tfParam === '5m' || tfParam === '1m') && isV4Pool)")
   const providerAt = route.indexOf('const { result } = await loadOnDemandCandles(')
   assert.ok(v4At > 0 && providerAt > v4At, 'the bytes32 V4 5M branch runs before (and instead of) provider pool OHLCV')
-  assert.match(route, /loadV4SwapFiveMinuteWindow\(\{ chain: fiveChain, poolId: fivePool, token: url\.searchParams\.get\('token'\) \?\? '' \}, deps\)/)
+  assert.match(route, /loadV4SwapIntradayWindow\(\{ chain: fiveChain, poolId: fivePool, token: url\.searchParams\.get\('token'\) \?\? '', intervalSec: tfParam === '1m' \? 60 : 300 \}, deps\)/)
   assert.match(route, /source: 'v4_swap_events'/)
 })
 
@@ -122,7 +122,7 @@ test('inferred / non-exact V4 timestamps: 5M unavailable with the exact reason; 
   assert.match(V4_FIVE_MINUTE_NOT_EXACT_MESSAGE, /^exact swap timestamps are not available for this V4 pool/)
   assert.match(V4_FIVE_MINUTE_NOT_EXACT_MESSAGE, /15M stays available/)
   const route = read('app/api/token/chart-candles/route.ts')
-  assert.match(route, /if \(code === 'v4_timestamps_not_exact'\) return V4_FIVE_MINUTE_NOT_EXACT_MESSAGE/)
+  assert.match(route, /if \(code === 'v4_timestamps_not_exact'\) return label === '1M' \? V4_ONE_MINUTE_NOT_EXACT_MESSAGE : V4_FIVE_MINUTE_NOT_EXACT_MESSAGE/)
   // The scan's own read of the same pool still charts at 15M.
   resetV4SwapCandleCache()
   const scan = await loadV4SwapCandles({ chain: 'base', poolId: POOL, token: TOKEN, tokenDecimals: 18, livePriceUsd: 3 }, chain({ exactTs: false }).deps)
@@ -153,7 +153,7 @@ test('wrong PoolId / token identity rejected; another pool on the same manager n
 test('20-byte pool 5M path unchanged: provider pool OHLCV via loadOnDemandCandles', () => {
   const route = read('app/api/token/chart-candles/route.ts')
   // The V4 branch only takes a bytes32 PoolId on a V4-configured chain; everything else falls through unchanged.
-  assert.match(route, /\/\^0x\[a-fA-F0-9\]\{64\}\$\/\.test\(fivePool\) && V4_SWAP_CHAIN_CONFIG\[fiveChain\]/)
+  assert.match(route, /const isV4Pool = \/\^0x\[a-fA-F0-9\]\{64\}\$\/\.test\(fivePool\) && Boolean\(V4_SWAP_CHAIN_CONFIG\[fiveChain\]\)/)
   assert.match(route, /const \{ result \} = await loadOnDemandCandles\(\s*\{\s*chain: url\.searchParams\.get\('chain'\),\s*token: url\.searchParams\.get\('token'\),\s*pool: url\.searchParams\.get\('pool'\),\s*timeframe: url\.searchParams\.get\('timeframe'\),/)
 })
 
@@ -204,17 +204,18 @@ test('UI: clicking 5M on an eligible V4 pool loads it and activates the returned
   // Loadable on every V4-configured chain; the bytes32 PoolId is sent as `pool` (served by the V4 lane).
   assert.match(page, /const ON_DEMAND_5M_CHAINS = new Set\(\['eth', 'base', 'bnb', 'robinhood'\]\)/)
   for (const c of ['eth', 'base', 'bnb', 'robinhood']) assert.match(read('lib/server/v4SwapCandlesRpc.ts'), new RegExp(`\\n  ${c}: \\{\\n    chain: '${c}'`))
-  assert.match(page, /const qs = new URLSearchParams\(\{ chain, token, pool, timeframe: '5m' \}\)/)
-  assert.match(page, /if \(json\?\.ok && Array\.isArray\(json\.points\)\) return \{ ok: true, intervalSec: json\.intervalSec \?\? 300, points: json\.points, coverage: json\.coverage \?\? null \}/)
+  assert.match(page, /function makeFiveMinuteLoader\(chain: string \| null \| undefined, token: string \| null \| undefined, pool: string \| null \| undefined, timeframe: '5m' \| '1m' = '5m'\)/)
+  assert.match(page, /const qs = new URLSearchParams\(\{ chain, token, pool, timeframe \}\)/)
+  assert.match(page, /if \(json\?\.ok && Array\.isArray\(json\.points\)\) return \{ ok: true, intervalSec: json\.intervalSec \?\? \(timeframe === '1m' \? 60 : 300\), points: json\.points, coverage: json\.coverage \?\? null \}/)
   const route = read('app/api/token/chart-candles/route.ts')
-  assert.match(route, /return NextResponse\.json\(\{ ok: true, timeframe: '5m', intervalSec: f\.intervalSec, points: f\.candles, coverage, timeResolution: f\.timeResolution, source: 'v4_swap_events' \}\)/)
+  assert.match(route, /return NextResponse\.json\(\{ ok: true, timeframe: tfParam, intervalSec: f\.intervalSec, points: f\.candles, coverage, timeResolution: f\.timeResolution, source: 'v4_swap_events' \}\)/)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   // 15M V4 (non-exact) scan: native 5M absent, so the chip is loadable via the loader...
   assert.match(panel, /const fiveLoadable = !nativeFive\.available && loadFiveMinute != null && \(tfSet\.nativeSec \?\? 0\) > FIVE_MIN_SEC/)
   // ...a ready response with >= 2 real candles selects 5M and draws exactly those candles.
   assert.match(panel, /if \(next\.status === 'ready' && next\.candles\.length >= 2\) \{\s*setChipNotice\(null\)\s*setPicked\('5M'\)/)
-  assert.match(panel, /const fiveActive = picked === '5M' && fiveLoadable && five\.status === 'ready' && five\.candles\.length >= 2/)
-  assert.match(panel, /const priceSeries: ChartCandle\[\] = fiveActive && five\.status === 'ready' \? five\.candles :/)
+  assert.match(panel, /const fiveActive = !oneActive && picked === '5M' && fiveLoadable && five\.status === 'ready' && five\.candles\.length >= 2/)
+  assert.match(panel, /const priceSeries: ChartCandle\[\] = oneActive && one\.status === 'ready' \? one\.candles : fiveActive && five\.status === 'ready' \? five\.candles :/)
   // A failure shows its precise reason and leaves the other timeframes as they are.
   assert.match(panel, /`5M unavailable — \$\{next\.message\}`/)
 })

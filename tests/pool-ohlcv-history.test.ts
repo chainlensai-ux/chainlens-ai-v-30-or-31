@@ -293,11 +293,11 @@ test('wiring: scan never requests history; endpoint routes 20-byte pools to pool
   const hist = ep.slice(ep.indexOf("timeframe') === 'history'"))
   assert.ok(hist.indexOf('/^0x[a-fA-F0-9]{40}$/.test(pool)') < hist.indexOf('loadV4SwapHistoryWindow'), 'normal pools are handled before the V4 branch')
   assert.match(hist, /loadPoolOhlcvHistory\(\s*\{ chain, token, pool, side: url\.searchParams\.get\('side'\)/)
-  assert.match(hist, /const h = await loadV4SwapHistoryWindow\(\{ chain, poolId: pool, token, beforeSec: before \}, deps\)/, 'V4 history unchanged')
+  assert.match(hist, /const h = await loadV4SwapHistoryWindow\(\{ chain, poolId: pool, token, beforeSec: before, swapsPerHourHint: Number\(url\.searchParams\.get\('rate'\)\) \|\| null \}, deps\)/, 'V4 history: same exact-PoolId lane (+ a page-size hint only)')
   assert.ok(ep.indexOf('requireAuthenticatedUser(req)') < ep.indexOf("timeframe') === 'history'"), 'authenticated + rate limited first')
   const page = read('app/terminal/token-scanner/page.tsx')
   assert.match(page, /const normalPool = source === 'pool_ohlcv' && \/\^0x\[a-fA-F0-9\]\{40\}\$\/\.test\(pool\) && \(tokenSide === 'base' \|\| tokenSide === 'quote'\)/)
-  assert.match(page, /makeHistoryLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress, result\.chartSource, result\.chartCandles\?\.tokenSide \?\? null\)/)
+  assert.match(page, /makeHistoryLoader\(result\.chain, result\.contract, result\.chartCandles\?\.poolAddress, result\.chartSource, result\.chartCandles\?\.tokenSide \?\? null, result\.chartCandles\?\.coverage\?\.swapsPerHour \?\? null\)/)
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
   // Triggers: a timeframe pick, reaching the left edge, and ONE bounded automatic batch per scan when the
   // default view needs history to read as a chart (lib/chartQuality.ts planAutoHistory).

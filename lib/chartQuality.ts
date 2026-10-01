@@ -119,6 +119,10 @@ export type ChartCoverageMeta = {
   newestSec: number | null
   windowProven?: boolean
   poolCreatedSec?: number | null
+  /** V4 swap reads: the pool's real swap rate over the covered window (sizes on-demand history pages). */
+  swapsPerHour?: number
+  /** V4 swap reads: why the initial read stopped (e.g. log_cap) — the window is what was read, not the pool's age. */
+  stopReason?: string
 }
 
 /** Builds coverage metadata from a request that was just answered (pure). */
@@ -394,6 +398,14 @@ export function lineChartXs(times: ReadonlyArray<number>, plotW: number, inset =
 export const READABLE_MIN_CANDLES = 30
 /** Automatic history for the default view: one batch, at most this many requests, once per scan. */
 export const AUTO_HISTORY_MAX_REQUESTS = 2
+/**
+ * A pool the scan PROVED busy (its swap read stopped on the log cap, so the loaded window is the cap, not the
+ * pool's age) may chain this many automatic history requests — each density-sized and bounded server-side —
+ * so its 1H view reaches a full chart after load. Zero extra scan cost; once per scan.
+ */
+export const AUTO_HISTORY_MAX_REQUESTS_BUSY = 4
+export const autoHistoryMaxRequests = (coverage: { stopReason?: string } | null | undefined): number =>
+  coverage?.stopReason === 'log_cap' ? AUTO_HISTORY_MAX_REQUESTS_BUSY : AUTO_HISTORY_MAX_REQUESTS
 
 /**
  * Whether the DEFAULT view needs older genuine history to read as a chart, and for which timeframe.

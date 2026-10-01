@@ -34,6 +34,7 @@
 //     so the chart keeps treating these as an irregular, non-standard interval.
 
 import { buildChartTimeframes, normalizeChartCandles, type ChartCandleInput } from './priceChartCandles.ts'
+import type { V4LatestTradeEvidence, V4SwapWindowDebug } from './server/v4SwapCandlesRpc.ts'
 import { assessTimeframeSet, buildCoverageMeta, qualityRank, resolveCoverageWindow, selectPresentationTimeframe, type ChartCoverageMeta, type ChartQualityState } from './chartQuality.ts'
 
 export type EvmChartPoint = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null; priceUsd: number }
@@ -450,6 +451,10 @@ export type LadderV4SwapResult = {
   /** Which PoolKey currency is the scanned token (0/1) and what the other asset is (debug). */
   tokenCurrencyIndex?: 0 | 1 | null
   counterAsset?: string | null
+  /** Window evidence: blocks/pages read, covered seconds, real swap rate (lib/server/v4SwapCandlesRpc.ts). */
+  window?: V4SwapWindowDebug | null
+  /** The newest priced trade behind the latest close (latest-close / MCAP audit). */
+  latestTrade?: V4LatestTradeEvidence | null
 }
 
 export type V4QuoteUsdInfo = {
@@ -541,7 +546,7 @@ export type LadderResult = {
   /** Which provider's candles are on screen; null for GeckoTerminal swap-rebuilt or no candles. */
   candleProvider: CandleProvider | null
   /** The on-chain V4 Swap-event read, when one ran (its calls are included in totalHttpCalls). */
-  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null; pipeline?: LadderV4SwapResult['pipeline'] | null; tokenCurrencyIndex?: 0 | 1 | null; counterAsset?: string | null } | null
+  v4Swap: { poolId: string; poolManager: string | null; logsFound: number; candlesBuilt: number; code: CandleFailureCode | null; timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null; quote: V4QuoteUsdInfo | null; chain?: string; protocol?: string | null; managerSource?: string | null; initializeFound?: boolean; timestampMode?: string | null; pipeline?: LadderV4SwapResult['pipeline'] | null; tokenCurrencyIndex?: 0 | 1 | null; counterAsset?: string | null; window?: V4SwapWindowDebug | null; latestTrade?: V4LatestTradeEvidence | null } | null
   /** The whole candle path's call budget: max, used, remaining, and why work stopped early (if it did). */
   callBudget: { max: number; used: number; remaining: number; stopReason: string | null }
   /** The market pool (pools[0]) and why its own chart lanes failed, when they did (debug). */
@@ -763,13 +768,16 @@ export async function runEvmCandleLadder(input: {
     r.totalHttpCalls += v4.callsUsed
     if (v4.code === 'call_budget_exhausted') budgetExhausted = true
     if (v4.budgetStopReason && v4.budgetStopReason !== 'target_window') r.callBudget.stopReason = `v4_${v4.budgetStopReason}`
-    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null, pipeline: v4.pipeline ?? null, tokenCurrencyIndex: v4.tokenCurrencyIndex ?? null, counterAsset: v4.counterAsset ?? null }
+    r.v4Swap = { poolId: v4Pool.address, poolManager: v4.poolManager, logsFound: v4.logsFound, candlesBuilt: v4.ok ? v4.candles.length : 0, code: v4.code, timeResolution: v4.timeResolution, intervalSec: v4.intervalSec, callsUsed: v4.callsUsed, pagesFetched: v4.pagesFetched, budgetStopReason: v4.budgetStopReason, quote: v4.quote ?? null, chain: v4.chain, protocol: v4.protocol ?? null, managerSource: v4.managerSource ?? null, initializeFound: v4.initializeFound, timestampMode: v4.timestampMode ?? null, pipeline: v4.pipeline ?? null, tokenCurrencyIndex: v4.tokenCurrencyIndex ?? null, counterAsset: v4.counterAsset ?? null, window: v4.window ?? null, latestTrade: v4.latestTrade ?? null }
     const side = resolveEvmPoolTokenSide(v4Pool.pool, input.contract, networkId)
     r.attempts.push({ route: 'v4_swaps', poolAddress: v4Pool.address, side, timeframe: null, httpStatus: null, rows: v4.logsFound, validRows: v4.ok ? v4.candles.length : 0, code: v4.ok ? 'ok' : (v4.code ?? 'v4_swap_logs_unavailable') })
     if (v4.ok && v4.candles.length >= 2) {
       r.priceChart = { timeframe: '24h', points: v4.candles.slice(-96), sourceStatus: 'ok' }
-      // A read that paged all the way to its 24h target proved that whole window (every log page read).
-      const v4Coverage = buildCoverageMeta({ requestEndSec: nowSec, intervalSec: v4.intervalSec, limit: null, points: v4.candles, poolCreatedSec: poolCreatedSec(v4Pool), windowSec: v4.budgetStopReason === 'target_window' ? 24 * 3600 : null, windowProven: v4.budgetStopReason === 'target_window' })
+      // A read that paged all the way to its target proved exactly the seconds it covered (every log page
+      // read) — the REAL covered span, never a claimed 24h (a chain faster than its nominal block time, or a
+      // pool younger than the target). A capped read (log cap / pages / budget) proves only its own trades.
+      const v4Full = v4.budgetStopReason === 'target_window'
+      const v4Coverage = { ...buildCoverageMeta({ requestEndSec: nowSec, intervalSec: v4.intervalSec, limit: null, points: v4.candles, poolCreatedSec: poolCreatedSec(v4Pool), windowSec: v4Full ? (v4.window?.coveredSec ?? 24 * 3600) : null, windowProven: v4Full }), ...(v4.window?.swapsPerHour != null ? { swapsPerHour: v4.window.swapsPerHour } : {}), ...(v4.budgetStopReason ? { stopReason: v4.budgetStopReason } : {}) }
       r.chartCandles = { intervalSec: v4.intervalSec, points: v4.candles, poolAddress: v4Pool.address, ...(side ? { tokenSide: side } : {}), coverage: v4Coverage }
       r.selectedPool = { address: v4Pool.address, name: v4Pool.name }
       r.candleProvider = 'v4_swap_events'
@@ -942,6 +950,9 @@ export type ChartDebugInfo = {
     timeResolution: LadderV4SwapResult['timeResolution']; intervalSec: number; callsUsed: number; pagesFetched: number; budgetStopReason: string | null
     quote: V4QuoteUsdInfo | null
     chain: string | null; protocol: string | null; managerSource: string | null; initializeFound: boolean | null; timestampMode: string | null
+    window?: V4SwapWindowDebug | null
+    latestTrade?: V4LatestTradeEvidence | null
+    pipeline?: LadderV4SwapResult['pipeline'] | null
   } | null
   /** The whole candle path's call budget. */
   callBudget: { callsUsed: number; callsRemaining: number; budgetStopReason: string | null } | null
@@ -1080,6 +1091,7 @@ export function buildEvmChartDebugInfo(input: {
       quote: input.v4Swap.quote ?? null,
       chain: input.v4Swap.chain ?? null, protocol: input.v4Swap.protocol ?? null, managerSource: input.v4Swap.managerSource ?? null,
       initializeFound: input.v4Swap.initializeFound ?? null, timestampMode: input.v4Swap.timestampMode ?? null,
+      window: input.v4Swap.window ?? null, latestTrade: input.v4Swap.latestTrade ?? null, pipeline: input.v4Swap.pipeline ?? null,
     } : null,
     callBudget: input.callBudget ? { callsUsed: input.callBudget.used, callsRemaining: input.callBudget.remaining, budgetStopReason: input.callBudget.stopReason } : null,
   }

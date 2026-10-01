@@ -39,7 +39,7 @@ export type ChartCandleInput = {
   volume?: unknown
 }
 
-export type ChartTimeframeKey = '5M' | '15M' | '1H' | '4H' | '1D'
+export type ChartTimeframeKey = '1M' | '5M' | '15M' | '1H' | '4H' | '1D'
 
 export const CHART_TIMEFRAMES: ReadonlyArray<{ key: ChartTimeframeKey; sec: number }> = [
   { key: '5M', sec: 300 },

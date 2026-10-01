@@ -361,7 +361,7 @@ test('client: history loads from explicit actions plus one bounded readable-defa
   assert.match(panel, /if \(historyEnabled && isHistoryTimeframe\(chip\.key\)/)
   assert.match(panel, /if \(next\.start === 0\) loadOlderAtLeftEdge\(\)/)
   // The only effect-driven load is the bounded readable-default batch: once per scan, at most AUTO_HISTORY_MAX_REQUESTS.
-  assert.equal((panel.match(/void requestHistory\(AUTO_HISTORY_MAX_REQUESTS, /g) ?? []).length, 1)
+  assert.equal((panel.match(/void requestHistory\(autoHistoryMaxRequests\(coverage\), /g) ?? []).length, 1)
   assert.match(panel, /autoRan\.current = dataId/)
   assert.match(panel, /'Loading older candles…'/)
   assert.match(panel, /'Scroll\/zoom left for older history'/)
