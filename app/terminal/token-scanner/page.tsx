@@ -6388,6 +6388,7 @@ export default function TerminalTokenScanner() {
                         debug={typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1'}
                         referenceTimeMs={chartReferenceMs}
                         coverage={sr.ohlcv.coverage ?? null}
+                        scanKey={`solana:${sr.mintAddress}:${sr.ohlcv.poolAddress ?? ''}`}
                       />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
@@ -8257,6 +8258,7 @@ export default function TerminalTokenScanner() {
                           referenceTimeMs={chartReferenceMs}
                           fiveMinuteExactTime={result.chartSource !== 'v4_swap_events' || result.chartTimeResolution === 'exact_log_timestamps'}
                           coverage={result.chartCandles?.coverage ?? null}
+                          scanKey={`${result.chain}:${result.contract}:${result.chartCandles?.poolAddress ?? ''}:${result.chartSource ?? ''}`}
                         />
                       )
                     }

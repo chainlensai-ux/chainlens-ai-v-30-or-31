@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import {
   buildChartTimeframes,
+  chartDataIdentity,
   clampViewport,
   defaultViewport,
   formatChartPct,
@@ -23,6 +24,7 @@ import {
   pctChange,
   panViewport,
   pickDefaultTimeframe,
+  resolveChartViewport,
   sameViewport,
   timeTickIndices,
   zoomViewport,
@@ -30,6 +32,7 @@ import {
   type ChartCandleInput,
   type ChartTimeframeKey,
   type ChartViewport,
+  type StoredChartViewport,
 } from '@/lib/priceChartCandles'
 import { candleGeometry, robustPriceDomain, volumePaneHeight } from '@/lib/chartGeometry'
 import { formatCompactUsd, marketCapBasisLabel, scaleCandlesToMarketCap, type ChartMarketCapBasis } from '@/lib/chartMarketCap'
@@ -116,6 +119,12 @@ export type PriceChartPanelProps = {
   fiveMinuteExactTime?: boolean
   /** The window the scan's candle request covered (lib/chartQuality.ts) — quality is judged against it, not just first->last candle. */
   coverage?: ChartCoverageMeta | null
+  /**
+   * Stable identity of the scanned market (e.g. chain + token + pool). Per-scan chart state (zoom/pan,
+   * loaded history, 5M, MCAP/PRICE) is tied to this key + a cheap fingerprint of the series, never to
+   * the candle array's object identity, so an equivalent re-render keeps the user's view.
+   */
+  scanKey?: string | null
 }
 
 export type HistoryLoadResult = HistoryWindowResult
@@ -171,9 +180,14 @@ type HistoryState = { candles: ChartCandle[]; nextBeforeSec: number | null; hasM
 const IDLE_FIVE: FiveMinuteState = { status: 'idle' }
 const IDLE_HISTORY: HistoryState = { candles: [], nextBeforeSec: null, hasMore: true, status: 'idle', message: null }
 const FIVE_MIN_SEC = 300
+/** A clipped (outlier) wick turns into a dashed continuation this many px before the plot edge. */
+const WICK_BREAK_PX = 12
 
-export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage }: PriceChartPanelProps) {
+export default function PriceChartPanel({ candles, declaredIntervalSec, badge, footnote, loadFiveMinute, marketCapSupply, marketCapUnavailableReason, marketCapBasis, loadHistory, historySourceLabel, debug, referenceTimeMs, fiveMinuteExactTime, coverage, scanKey }: PriceChartPanelProps) {
   const normalized = useMemo(() => normalizeChartCandles(candles), [candles])
+  // Per-scan identity (lib/priceChartCandles.ts chartDataIdentity): scan key + O(1) series fingerprint.
+  // Equivalent candle arrays share it; a new token/pool or a genuinely new series does not.
+  const dataId = useMemo(() => chartDataIdentity(scanKey, normalized), [scanKey, normalized])
   const scanSet = useMemo(() => buildChartTimeframes(normalized, declaredIntervalSec), [normalized, declaredIntervalSec])
   // PRESENTATION QUALITY (lib/chartQuality.ts): "has >= 2 genuine buckets" only means the data exists.
   // The default is the finest timeframe whose genuine candles read as a coherent chart; a sparse one
@@ -187,9 +201,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const scanQuality = useMemo(() => assessTimeframeSet(scanSet, qualityOpts), [scanSet, qualityOpts])
 
   // On-demand OLDER history (hourly, genuine swaps), merged under the scan's candles for 1H / 4H / 1D.
-  // Tied to the `candles` array it was loaded for, so a new scan starts from idle.
-  const [histRaw, setHistRaw] = useState<{ source: ReadonlyArray<ChartCandleInput>; state: HistoryState } | null>(null)
-  const hist: HistoryState = histRaw && histRaw.source === candles ? histRaw.state : IDLE_HISTORY
+  // Tied to the scan's data identity, so a new scan starts from idle.
+  const [histRaw, setHistRaw] = useState<{ source: string; state: HistoryState } | null>(null)
+  const hist: HistoryState = histRaw && histRaw.source === dataId ? histRaw.state : IDLE_HISTORY
   const cutoffMs = useMemo(() => historyCutoffMs(normalized), [normalized])
   const tfSet = useMemo(() => withHistory(scanSet, hist.candles, cutoffMs), [scanSet, hist.candles, cutoffMs])
   const historyEnabled = loadHistory != null && cutoffMs != null && scanSet.nativeSec != null && scanSet.nativeSec <= 3600
@@ -202,8 +216,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // READABLE DEFAULT: when the chosen default still needs older genuine history to read as a chart, ONE
   // bounded batch is loaded automatically (planAutoHistory). The default is then re-chosen ONCE over that
   // snapshot — later pans/loads never flip it — so the view settles in a single stable update.
-  const [autoSnap, setAutoSnap] = useState<{ source: ReadonlyArray<ChartCandleInput>; candles: ChartCandle[] } | null>(null)
-  const autoHist = autoSnap && autoSnap.source === candles ? autoSnap.candles : null
+  const [autoSnap, setAutoSnap] = useState<{ source: string; candles: ChartCandle[] } | null>(null)
+  const autoHist = autoSnap && autoSnap.source === dataId ? autoSnap.candles : null
   const defaultQuality = useMemo(
     () => (autoHist && autoHist.length > 0 ? assessTimeframeSet(withHistory(scanSet, autoHist, cutoffMs), { ...qualityOpts, coverageFor: historyCoverage(autoHist) }) : scanQuality),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- historyCoverage is a pure function of scanWindow
@@ -227,10 +241,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // reason reaches touch users too.
   const [chipNotice, setChipNotice] = useState<{ key: ChartTimeframeKey; text: string } | null>(null)
 
-  // On-demand real 5M candles (never derived from 15M). Tied to the `candles` array it was loaded
+  // On-demand real 5M candles (never derived from 15M). Tied to the scan's data identity it was loaded
   // for, so a new scan starts from idle without an effect.
-  const [fiveRaw, setFiveRaw] = useState<{ source: ReadonlyArray<ChartCandleInput>; state: FiveMinuteState } | null>(null)
-  const five: FiveMinuteState = fiveRaw && fiveRaw.source === candles ? fiveRaw.state : IDLE_FIVE
+  const [fiveRaw, setFiveRaw] = useState<{ source: string; state: FiveMinuteState } | null>(null)
+  const five: FiveMinuteState = fiveRaw && fiveRaw.source === dataId ? fiveRaw.state : IDLE_FIVE
   const nativeFive = tfSet.timeframes.find((tf) => tf.key === '5M')!
   const fiveLoadable = !nativeFive.available && loadFiveMinute != null && (tfSet.nativeSec ?? 0) > FIVE_MIN_SEC
   // On-demand 5M is judged like every other timeframe, against ITS OWN request window (never skipped).
@@ -269,9 +283,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // (e.g. the scan's ~7 days): keep showing the timeframe that was on screen (with "Loading older
   // candles…") instead of flashing that short 1D chart and then replacing it. 1D appears once the
   // batch is applied (or fails) — one stable update.
-  const [dailyDefer, setDailyDefer] = useState<{ source: ReadonlyArray<ChartCandleInput>; fallback: ChartTimeframeKey | null } | null>(null)
+  const [dailyDefer, setDailyDefer] = useState<{ source: string; fallback: ChartTimeframeKey | null } | null>(null)
   const dailyCandleCount = tfSet.timeframes.find((tf) => tf.key === '1D')?.candles.length ?? 0
-  const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === candles && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES
+  const deferDaily = picked === '1D' && hist.status === 'loading' && dailyDefer != null && dailyDefer.source === dataId && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES
   const shownPick = deferDaily ? dailyDefer!.fallback : picked
   const activeTf = fiveActive ? null : (tfSet.timeframes.find((tf) => tf.key === shownPick && tf.available) ?? tfSet.timeframes.find((tf) => tf.key === defaultKey) ?? null)
   const activeKey: ChartTimeframeKey | null = fiveActive ? '5M' : (activeTf?.key ?? null)
@@ -280,8 +294,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // unchanged). The choice is tied to this scan's candle set, so a new scan starts from its default
   // and toggling never refetches or rescans.
   const mcapAvailable = marketCapSupply != null && Number.isFinite(marketCapSupply) && marketCapSupply > 0
-  const [modeRaw, setModeRaw] = useState<{ source: ReadonlyArray<ChartCandleInput>; mode: ChartValueMode } | null>(null)
-  const valueMode: ChartValueMode = !mcapAvailable ? 'PRICE' : modeRaw && modeRaw.source === candles ? modeRaw.mode : 'MCAP'
+  const [modeRaw, setModeRaw] = useState<{ source: string; mode: ChartValueMode } | null>(null)
+  const valueMode: ChartValueMode = !mcapAvailable ? 'PRICE' : modeRaw && modeRaw.source === dataId ? modeRaw.mode : 'MCAP'
   const series: ChartCandle[] = valueMode === 'MCAP' ? scaleCandlesToMarketCap(priceSeries, marketCapSupply!) : priceSeries
   const fmtValue = (v: number, digits?: number) => (valueMode === 'MCAP' ? formatCompactUsd(v, 2) : formatChartPrice(v, digits))
   const mcapBasisInfo = marketCapBasisLabel(marketCapBasis ?? 'circulating_supply')
@@ -299,7 +313,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 
   const requestFive = async () => {
     if (!loadFiveMinute || five.status === 'loading') return
-    const source = candles
+    const source = dataId
     setFiveRaw({ source, state: { status: 'loading' } })
     setChipNotice({ key: '5M', text: 'Loading real 5M candles…' })
     let next: FiveMinuteState
@@ -324,7 +338,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   const requestHistory = async (maxRequests: number, targetSpanSec: number | null, auto = false) => {
     if (!loadHistory || cutoffMs == null || historyBusy.current || !hist.hasMore) return
     historyBusy.current = true
-    const source = candles
+    const source = dataId
     setHistRaw({ source, state: { ...hist, status: 'loading', message: null } })
     // The chained responses are merged inside loadHistoryBatch and applied as ONE update below, so
     // the chart keeps its current view (with "Loading older candles…") instead of re-laying out
@@ -340,12 +354,12 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     if (auto) setAutoSnap({ source, candles: done.candles })
     historyBusy.current = false
   }
-  // Once per scan (keyed by the candle array): load what the default needs to read as a chart.
+  // Once per scan (keyed by the data identity): load what the default needs to read as a chart.
   const autoPlan = planAutoHistory({ defaultKey, defaultQuality: defaultKey ? (scanQuality[defaultKey] ?? null) : null, historyEnabled, hasMore: hist.hasMore })
-  const autoRan = useRef<ReadonlyArray<ChartCandleInput> | null>(null)
+  const autoRan = useRef<string | null>(null)
   useEffect(() => {
-    if (autoRan.current === candles || !autoPlan.load || !autoPlan.key || picked != null) return
-    autoRan.current = candles
+    if (autoRan.current === dataId || !autoPlan.load || !autoPlan.key || picked != null) return
+    autoRan.current = dataId
     void requestHistory(AUTO_HISTORY_MAX_REQUESTS, HISTORY_TARGET_SPAN_SEC[autoPlan.key], true)
   })
   const loadOlderAtLeftEdge = () => {
@@ -392,16 +406,15 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
   // the number of added candles, so the candles the user is looking at stay in place.
   const seriesKey = `${activeKey ?? 'native'}:${series[series.length - 1]?.t ?? 0}`
   const restView = defaultViewport(total, fit)
-  // Also tied to the scan's candle array: a new scan (even with the same timeframe and newest candle)
-  // always starts from its own resting view, never a previous token's zoom.
-  const [viewRaw, setViewRaw] = useState<{ key: string; source: ReadonlyArray<ChartCandleInput>; view: ChartViewport; total: number } | null>(null)
-  const viewValid = viewRaw != null && viewRaw.key === seriesKey && viewRaw.source === candles
-  const prepended = viewValid ? Math.max(0, total - viewRaw!.total) : 0
-  const view = viewValid ? clampViewport({ start: viewRaw!.view.start + prepended, end: viewRaw!.view.end + prepended }, total) : restView
+  // Also tied to the scan's DATA IDENTITY (scan key + series fingerprint), not the array object: an
+  // equivalent re-render keeps the zoom; a new token/pool scan (even with the same timeframe and newest
+  // candle) starts from its own resting view, never a previous token's zoom.
+  const [viewRaw, setViewRaw] = useState<StoredChartViewport | null>(null)
+  const { view } = resolveChartViewport(viewRaw, { identity: dataId, seriesKey, total }, restView)
   const isRest = sameViewport(view, restView)
   const setView = (v: ChartViewport) => {
     const next = clampViewport(v, total)
-    setViewRaw({ key: seriesKey, source: candles, view: next, total })
+    setViewRaw({ identity: dataId, seriesKey, view: next, total })
     if (next.start === 0) loadOlderAtLeftEdge()
   }
   const resetView = () => { setViewRaw(null); setHover(null) }
@@ -609,7 +622,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 willLoad = hist.hasMore && historyCoveredSec(hist) < target && hist.status !== 'loading'
                 if (willLoad) void requestHistory(HISTORY_MAX_REQUESTS_PER_ACTION, target)
               }
-              setDailyDefer(chip.key === '1D' && (willLoad || hist.status === 'loading') ? { source: candles, fallback: activeKey } : null)
+              setDailyDefer(chip.key === '1D' && (willLoad || hist.status === 'loading') ? { source: dataId, fallback: activeKey } : null)
             }}
             style={{
               padding: compact ? '4px 8px' : '4px 10px',
@@ -660,7 +673,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                   aria-pressed={active}
                   disabled={disabled}
                   title={disabled ? (marketCapUnavailableReason ?? 'Verified market cap unavailable') : m === 'MCAP' ? mcapBasisInfo.tooltip : 'Token price (USD)'}
-                  onClick={() => { if (!disabled) { setModeRaw({ source: candles, mode: m }); setHover(null) } }}
+                  onClick={() => { if (!disabled) { setModeRaw({ source: dataId, mode: m }); setHover(null) } }}
                   style={{
                     padding: '3px 8px', borderRadius: '5px', border: 'none', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.05em',
                     cursor: disabled ? 'not-allowed' : 'pointer',
@@ -757,38 +770,51 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                 const clr = bull ? C.bull : C.bear
                 const top = yP(Math.max(c.open, c.close))
                 const bodyH = Math.max(1, yP(Math.min(c.open, c.close)) - top)
+                // A wick beyond the robust display range (a genuine outlier only) is NOT given a fake end: the
+                // solid wick stops WICK_BREAK_PX short of the plot edge and continues dashed through the edge,
+                // with the TRUE high / low labelled below. The candle's OHLC is never changed.
+                const hiOut = c.high > yMax
+                const loOut = c.low < yMin
+                const wickTop = hiOut ? priceTop + WICK_BREAK_PX : yP(c.high)
+                const wickBot = loOut ? priceBot - WICK_BREAK_PX : yP(c.low)
                 return (
                   <g key={c.t}>
-                    {/* A wick beyond the robust display range is drawn to the edge (its true value is flagged below). */}
-                    <line x1={x} x2={x} y1={yP(Math.min(c.high, yMax))} y2={yP(Math.max(c.low, yMin))} stroke={clr} strokeWidth={1} shapeRendering="crispEdges" />
+                    <line x1={x} x2={x} y1={wickTop} y2={wickBot} stroke={clr} strokeWidth={1} shapeRendering="crispEdges" />
+                    {hiOut && <line data-wick-continues="high" x1={x} x2={x} y1={priceTop + WICK_BREAK_PX - 2} y2={priceTop} stroke={clr} strokeWidth={1} strokeDasharray="2 2" />}
+                    {loOut && <line data-wick-continues="low" x1={x} x2={x} y1={priceBot - WICK_BREAK_PX + 2} y2={priceBot} stroke={clr} strokeWidth={1} strokeDasharray="2 2" />}
                     <rect x={x - bodyW / 2} y={top} width={bodyW} height={bodyH} fill={clr} shapeRendering="crispEdges" />
                   </g>
                 )
               })}
             </g>}
 
-            {/* Clipped extreme wicks: marker at the edge with the TRUE high / low (raw OHLC untouched) */}
+            {/* Clipped extreme wicks (genuine outliers only): an edge continuation chevron on the wick and a tag
+                with the TRUE high / low of the visible candles — PRICE or MCAP alike, raw OHLC untouched. */}
             {!lineMode && domain.clippedHigh && (() => {
               const i = data.reduce((b, c, k) => (c.high > data[b].high ? k : b), 0)
               const x = xC(i)
-              const label = `▲ ${fmtValue(domain.trueMax, 4)}`
-              const tx = Math.max(4, Math.min(plotW - label.length * 6 - 4, x + 6))
+              const label = `High ${fmtValue(domain.trueMax, 4)}`
+              const tw = label.length * 5.9 + 8
+              const tx = Math.max(2, Math.min(plotW - tw - 2, x + 7))
               return (
-                <g data-clipped="high" pointerEvents="none">
-                  <path d={`M${x - 3.5},${priceTop + 6} L${x + 3.5},${priceTop + 6} L${x},${priceTop + 1} Z`} fill={C.text} />
-                  <text x={tx} y={priceTop + 10} fill={C.text} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
+                <g data-clipped="high" data-true-value={domain.trueMax} pointerEvents="none">
+                  <path d={`M${x - 3.5},${priceTop + 6} L${x},${priceTop + 2} L${x + 3.5},${priceTop + 6}`} fill="none" stroke={C.textStrong} strokeWidth={1.3} />
+                  <rect x={tx} y={priceTop + 1} width={tw} height={13} rx={2} fill={C.tagBg} stroke={C.border} />
+                  <text x={tx + 4} y={priceTop + 10.5} fill={C.textStrong} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
                 </g>
               )
             })()}
             {!lineMode && domain.clippedLow && (() => {
               const i = data.reduce((b, c, k) => (c.low < data[b].low ? k : b), 0)
               const x = xC(i)
-              const label = `▼ ${fmtValue(domain.trueMin, 4)}`
-              const tx = Math.max(4, Math.min(plotW - label.length * 6 - 4, x + 6))
+              const label = `Low ${fmtValue(domain.trueMin, 4)}`
+              const tw = label.length * 5.9 + 8
+              const tx = Math.max(2, Math.min(plotW - tw - 2, x + 7))
               return (
-                <g data-clipped="low" pointerEvents="none">
-                  <path d={`M${x - 3.5},${priceBot - 6} L${x + 3.5},${priceBot - 6} L${x},${priceBot - 1} Z`} fill={C.text} />
-                  <text x={tx} y={priceBot - 3} fill={C.text} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
+                <g data-clipped="low" data-true-value={domain.trueMin} pointerEvents="none">
+                  <path d={`M${x - 3.5},${priceBot - 6} L${x},${priceBot - 2} L${x + 3.5},${priceBot - 6}`} fill="none" stroke={C.textStrong} strokeWidth={1.3} />
+                  <rect x={tx} y={priceBot - 14} width={tw} height={13} rx={2} fill={C.tagBg} stroke={C.border} />
+                  <text x={tx + 4} y={priceBot - 4.5} fill={C.textStrong} style={{ fontSize: 9.5, fontFamily: MONO }}>{label}</text>
                 </g>
               )
             })()}

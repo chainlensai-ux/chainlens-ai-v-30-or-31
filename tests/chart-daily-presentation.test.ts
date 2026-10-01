@@ -130,15 +130,16 @@ test('panel: exactly two history state writes per batch (loading, then the merge
 
 test('panel: 1D shorter than a useful daily chart while its first history batch loads keeps the current chart; viewport logic unchanged', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const deferDaily = picked === '1D' && hist\.status === 'loading' && dailyDefer != null && dailyDefer\.source === candles && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES/)
+  assert.match(panel, /const deferDaily = picked === '1D' && hist\.status === 'loading' && dailyDefer != null && dailyDefer\.source === dataId && dailyCandleCount < DAILY_FIRST_BATCH_MIN_CANDLES/)
   assert.match(panel, /const shownPick = deferDaily \? dailyDefer!\.fallback : picked/)
   assert.match(panel, /tfSet\.timeframes\.find\(\(tf\) => tf\.key === shownPick && tf\.available\)/)
-  assert.match(panel, /setDailyDefer\(chip\.key === '1D' && \(willLoad \|\| hist\.status === 'loading'\) \? \{ source: candles, fallback: activeKey \} : null\)/)
+  assert.match(panel, /setDailyDefer\(chip\.key === '1D' && \(willLoad \|\| hist\.status === 'loading'\) \? \{ source: dataId, fallback: activeKey \} : null\)/)
   assert.match(panel, /\|\| \(chip\.key === '1D' && deferDaily\)/, 'the 1D chip shows it is loading')
   assert.match(panel, /'Loading older candles…'/)
   // Viewport: keyed by timeframe + newest candle; prepended history shifts the view once.
   assert.match(panel, /const seriesKey = `\$\{activeKey \?\? 'native'\}:\$\{series\[series\.length - 1\]\?\.t \?\? 0\}`/)
-  // ... and to this scan's candle array, so a new scan never inherits a previous token's view.
-  assert.match(panel, /const viewValid = viewRaw != null && viewRaw\.key === seriesKey && viewRaw\.source === candles/)
-  assert.match(panel, /const prepended = viewValid \? Math\.max\(0, total - viewRaw!\.total\) : 0/)
+  // ... and to this scan's DATA IDENTITY (not the array object), so a new scan never inherits a previous
+  // token's view while an equivalent re-render keeps it; prepended history shifts it (resolveChartViewport).
+  assert.match(panel, /const \{ view \} = resolveChartViewport\(viewRaw, \{ identity: dataId, seriesKey, total \}, restView\)/)
+  assert.match(panel, /setViewRaw\(\{ identity: dataId, seriesKey, view: next, total \}\)/)
 })

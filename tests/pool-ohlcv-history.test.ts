@@ -302,7 +302,7 @@ test('wiring: scan never requests history; endpoint routes 20-byte pools to pool
   // Triggers: a timeframe pick, reaching the left edge, and ONE bounded automatic batch per scan when the
   // default view needs history to read as a chart (lib/chartQuality.ts planAutoHistory).
   assert.equal((panel.match(/void requestHistory\(/g) ?? []).length, 3, 'pick, left edge, readable-default auto batch')
-  assert.match(panel, /if \(autoRan\.current === candles \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return\n\s*autoRan\.current = candles/, 'the automatic batch runs at most once per scan')
+  assert.match(panel, /if \(autoRan\.current === dataId \|\| !autoPlan\.load \|\| !autoPlan\.key \|\| picked != null\) return\n\s*autoRan\.current = dataId/, 'the automatic batch runs at most once per scan')
   assert.doesNotMatch(read('lib/server/chartCandlesOnDemand.ts'), /COINGECKO_API_KEY/)
 })
 

@@ -403,3 +403,39 @@ export function panViewport(view: ChartViewport, total: number, deltaCandles: nu
 export function sameViewport(a: ChartViewport, b: ChartViewport): boolean {
   return a.start === b.start && a.end === b.end
 }
+
+// ── Scan / data identity (viewport + per-scan UI state) ─────────────────────────────────────────
+// Per-scan chart state (zoom/pan, loaded history, 5M, MCAP/PRICE choice) is tied to WHAT the chart
+// shows, never to the candle array's object identity: a parent re-render that rebuilds an equivalent
+// array must not reset the user's zoom. The identity is the scan's own key (chain / token / pool, from
+// the scan result) plus an O(1) fingerprint of the scan's series — count, first and last candle
+// (timestamp + boundary prices). A new token or pool (different scan key) or a genuinely new series for
+// the same token (new candle, different count or boundary prices) gets a new identity; an equivalent
+// array keeps it. Never hashes the full series.
+
+export function chartDataIdentity(scanKey: string | null | undefined, candles: ReadonlyArray<ChartCandle>): string {
+  const n = candles.length
+  if (n === 0) return `${scanKey ?? ''}|0`
+  const a = candles[0]
+  const z = candles[n - 1]
+  return `${scanKey ?? ''}|${n}|${a.t}:${a.open}|${z.t}:${z.close}`
+}
+
+/** A stored zoom/pan: the data identity + timeframe/series key it was set on, and the series length then. */
+export type StoredChartViewport = { identity: string; seriesKey: string; view: ChartViewport; total: number }
+
+/**
+ * The viewport to draw: the stored one when it belongs to this data identity AND this timeframe series
+ * (older history prepended to the same series shifts it by the added candles, so the candles on screen
+ * stay on screen), otherwise the resting view (new scan, new token/pool, timeframe switch).
+ */
+export function resolveChartViewport(
+  stored: StoredChartViewport | null,
+  current: { identity: string; seriesKey: string; total: number },
+  rest: ChartViewport,
+): { view: ChartViewport; valid: boolean; prepended: number } {
+  const valid = stored != null && stored.identity === current.identity && stored.seriesKey === current.seriesKey
+  if (!valid) return { view: rest, valid: false, prepended: 0 }
+  const prepended = Math.max(0, current.total - stored!.total)
+  return { view: clampViewport({ start: stored!.view.start + prepended, end: stored!.view.end + prepended }, current.total), valid: true, prepended }
+}

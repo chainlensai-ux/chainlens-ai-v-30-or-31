@@ -150,9 +150,9 @@ test('scaling commutes with timeframe roll-ups, so V4 5m candles give exact 15M 
 // ── Wiring: default, toggle, no provider calls ───────────────────────────────────────────────────
 test('panel: MCAP by default whenever a verified or inferred basis is passed; toggle is pure client state (no fetch, no rescan)', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const valueMode: ChartValueMode = !mcapAvailable \? 'PRICE' : modeRaw && modeRaw\.source === candles \? modeRaw\.mode : 'MCAP'/)
+  assert.match(panel, /const valueMode: ChartValueMode = !mcapAvailable \? 'PRICE' : modeRaw && modeRaw\.source === dataId \? modeRaw\.mode : 'MCAP'/)
   assert.match(panel, /const series: ChartCandle\[\] = valueMode === 'MCAP' \? scaleCandlesToMarketCap\(priceSeries, marketCapSupply!\) : priceSeries/)
-  assert.match(panel, /onClick=\{\(\) => \{ if \(!disabled\) \{ setModeRaw\(\{ source: candles, mode: m \}\); setHover\(null\) \} \}\}/)
+  assert.match(panel, /onClick=\{\(\) => \{ if \(!disabled\) \{ setModeRaw\(\{ source: dataId, mode: m \}\); setHover\(null\) \} \}\}/)
   assert.match(panel, /title=\{disabled \? \(marketCapUnavailableReason \?\? 'Verified market cap unavailable'\) : m === 'MCAP' \? mcapBasisInfo\.tooltip : 'Token price \(USD\)'\}/)
   assert.match(panel, /\{valueMode === 'MCAP' && \(\s*<span title=\{mcapBasisInfo\.tooltip\} data-mcap-basis=/, 'the active basis is always shown next to MCAP')
   assert.doesNotMatch(panel, /\bfetch\(/, 'the chart panel never calls a provider — 5M loads go through the page-supplied loader only')

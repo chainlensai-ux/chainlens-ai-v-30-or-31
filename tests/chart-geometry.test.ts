@@ -116,14 +116,15 @@ test('MCAP <-> PRICE: the domain scales exactly with the series (same clipping, 
 
 test('new scan / resize: the view is tied to the scan and recomputed; volume is its own proportional pane', () => {
   const panel = read('app/terminal/token-scanner/PriceChartPanel.tsx')
-  assert.match(panel, /const viewValid = viewRaw != null && viewRaw\.key === seriesKey && viewRaw\.source === candles/)
+  assert.match(panel, /const \{ view \} = resolveChartViewport\(viewRaw, \{ identity: dataId, seriesKey, total \}, restView\)/)
   assert.match(panel, /const volH = volumePaneHeight\(priceH, hasVolume\)/)
   assert.equal(volumePaneHeight(310, true), 74)
   assert.equal(volumePaneHeight(310, false), 0)
   // Volume bars share the candles' x and width.
   assert.match(panel, /x=\{xC\(i\) - bodyW \/ 2\} y=\{volBot - h\} width=\{bodyW\}/)
-  // Clipped wicks drawn to the edge + a true-value marker; OHLC never modified.
-  assert.match(panel, /y1=\{yP\(Math\.min\(c\.high, yMax\)\)\} y2=\{yP\(Math\.max\(c\.low, yMin\)\)\}/)
+  // Clipped (outlier) wicks: solid wick stops short of the edge and continues dashed; true-value tag; OHLC never modified.
+  assert.match(panel, /const wickTop = hiOut \? priceTop \+ WICK_BREAK_PX : yP\(c\.high\)/)
+  assert.match(panel, /const wickBot = loOut \? priceBot - WICK_BREAK_PX : yP\(c\.low\)/)
   assert.match(panel, /data-clipped="high"/)
   assert.doesNotMatch(read('lib/chartGeometry.ts'), /\bfetch\(/)
 })
