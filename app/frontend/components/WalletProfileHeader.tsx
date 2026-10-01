@@ -30,7 +30,8 @@ import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, mergedTotalText, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
+import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -65,6 +66,9 @@ export type WalletV2Report = FinalReport & {
   // WalletV2Report is a separate, structurally-identical type, not an import of page.tsx's).
   canonicalTotalValueUsd?: number | null
   finalCanonicalMergeAudit?: { robinhoodMerged: boolean }
+  /** lib/walletScan/portfolioEvidence.ts — the worker's EVM lane and merged evidence (absent on older reports). */
+  evmPortfolioEvidence?: PortfolioEvidence | null
+  canonicalPortfolioEvidence?: PortfolioEvidence | null
   // AFTER-MERGE CHAIN BREAKDOWN, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix):
   // workers/walletScanV2.ts's own per-chain map (numeric chain id string keys, includes '4663' only
   // when Robinhood was actually merged) — see selectChainBreakdown's own header for the full trace.
@@ -269,7 +273,7 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
   // own already-merged canonical total (report.canonicalTotalValueUsd) when this report came from a
   // completed deep-scan job — the hero total must show the SAME after-merge figure the worker's own
   // finalCanonicalMergeAudit log proves, never a second, independently-recomputed number.
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))
   const totalValueUsd = merged.totalValueUsd
 
   // DIAGNOSTICS, DISCLOSED (this task's explicit requirement): compares what the backend actually
@@ -338,7 +342,7 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
       </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
         <span className="wph-value" style={{ fontSize: '28px', fontWeight: 900, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
-          {totalValueUsd != null ? fmtUsdFull(totalValueUsd) : 'Not available'}
+          {mergedTotalText(merged, fmtUsdFull)}
         </span>
         <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(139,92,246,0.85)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', border: '1px solid rgba(139,92,246,0.35)', borderRadius: '999px', padding: '3px 9px' }}>
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
@@ -491,6 +495,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
         activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
         robinhoodResult={robinhoodResult}
         canonicalOverride={deriveCanonicalMergeOverride(report)}
+        evmEvidence={deriveEvmPortfolioEvidence(report)}
       />
       {report.smartMoneyScore && (
         <>

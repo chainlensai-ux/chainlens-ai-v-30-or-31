@@ -28,4 +28,6 @@ export type PricingEngineOutput = {
   totalValueUsd: number
   chainValueUsd: Record<number, number>
   priceStatus: 'ok' | 'partial' | 'unavailable'
+  /** Unpriced holdings with a REAL local materiality signal above dust (provider partial value / stable peg). */
+  potentiallyMaterialUnpricedCount?: number
 }

@@ -8,6 +8,8 @@
 // QSTASH REMOVAL, DISCLOSED: this path intentionally avoids the deleted QStash-backed
 // /api/scan-start, /api/scan-status, /api/scan-v2/worker, and full-scan start/status routes.
 
+import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
+
 export type ScanMode = 'normal' | 'deep'
 
 export type ScanWalletApiResponse = {
@@ -129,6 +131,7 @@ export type ScanWalletStatusUpdate = {
   // echoes `partial`; this client previously dropped it, so the UI waited for the full ~100s job.
   partial?: {
     portfolioTotalValueUsd: number | null
+    portfolioEvidence?: PortfolioEvidence | null
     holdingsCount: number
     topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
     activeChainIds: number[]

@@ -41,6 +41,8 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
     canonicalOverride: deriveCanonicalMergeOverride(report),
     canonicalTotalValueUsd: report.canonicalTotalValueUsd,
     finalCanonicalMergeAudit: report.finalCanonicalMergeAudit,
+    evmPortfolioEvidence: report.evmPortfolioEvidence ?? null,
+    canonicalPortfolioEvidence: report.canonicalPortfolioEvidence ?? null,
     pnlV2: report.pnlV2,
     publicPnlStatus: report.finalSummary?.financialStatus?.officialPnlStatus,
     unrealizedReconciliation: report.fifoAndPnl?.unrealizedReconciliation,
@@ -71,6 +73,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
           // this is the live V3 layout's actual rendered card (WALLET_SCANNER_UI_V3 = true), so this
           // is the real, user-visible total that must match the worker's finalCanonicalMergeAudit log.
           canonicalOverride={deriveCanonicalMergeOverride(report)}
+          evmEvidence={report.evmPortfolioEvidence ?? null}
         />
       </div>
 

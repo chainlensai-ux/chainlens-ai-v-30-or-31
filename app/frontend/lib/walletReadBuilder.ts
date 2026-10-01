@@ -20,6 +20,7 @@
 // classification PnlStatusCard.tsx's own RobinhoodPnlRow uses. This function has no PnL math of its
 // own; it only reads the already-classified lane status and a message.
 
+import { portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
 import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
@@ -182,6 +183,8 @@ export function buildKeySignals(params: {
   chainsScanned: string[]
   robinhoodIncluded: boolean
   totalValueUsd: number | null
+  /** Same evidence the hero uses (lib/walletScan/portfolioEvidence.ts): verified / Partial / "Value unavailable". */
+  portfolioEvidence?: PortfolioEvidence | null
   topChain: ChainBreakdownRow | null
   pricedTokenCount: number
   lastActiveMs: number | null
@@ -192,7 +195,7 @@ export function buildKeySignals(params: {
   const signals: WalletReadKeySignal[] = []
   const chains = [...params.chainsScanned.map(chainLabel), ...(params.robinhoodIncluded ? ['Robinhood'] : [])]
   signals.push({ label: 'Chains active', value: chains.length > 0 ? chains.join(', ') : 'None' })
-  signals.push({ label: 'Portfolio value', value: params.totalValueUsd != null ? fmtUsd(params.totalValueUsd) : 'Not available' })
+  signals.push({ label: 'Portfolio value', value: params.portfolioEvidence ? portfolioValueText(params.portfolioEvidence, fmtUsd) : params.totalValueUsd != null ? fmtUsd(params.totalValueUsd) : PORTFOLIO_VALUE_UNAVAILABLE_TEXT })
   if (params.topChain) {
     signals.push({ label: 'Largest chain exposure', value: `${chainLabel(params.topChain.chain)} · ${params.topChain.percent.toFixed(0)}%` })
   }
@@ -340,6 +343,7 @@ export function buildWalletReadV2(params: {
   behaviorIntel: BehaviorIntelResult | null | undefined
   finalSummary: FinalSummary | null | undefined
   totalValueUsd: number | null
+  portfolioEvidence?: PortfolioEvidence | null
   robinhoodIncluded: boolean
   chainBreakdown: ChainBreakdownRow[]
   pricedTokenCount: number
@@ -379,6 +383,7 @@ export function buildWalletReadV2(params: {
       chainsScanned: params.chainsScanned,
       robinhoodIncluded: params.robinhoodIncluded,
       totalValueUsd: params.totalValueUsd,
+      portfolioEvidence: params.portfolioEvidence ?? null,
       topChain,
       pricedTokenCount: params.pricedTokenCount,
       lastActiveMs: params.lastActiveMs,

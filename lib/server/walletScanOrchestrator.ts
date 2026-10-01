@@ -402,7 +402,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     missingEvidence.push('Robinhood Chain scanning is currently disabled.')
   }
 
-  const merged = computeMergedTotalValueUsd(evmTotalValueUsd, robinhoodResponse, canonicalOverride)
+  // EVM lane evidence from the V2 report (lib/walletScan/portfolioEvidence.ts): an unknown EVM total is never summed as $0.
+  const evmEvidence = (evmReport as unknown as { evmPortfolioEvidence?: import('../walletScan/portfolioEvidence').PortfolioEvidence | null } | null)?.evmPortfolioEvidence ?? null
+  const merged = computeMergedTotalValueUsd(evmTotalValueUsd, robinhoodResponse, canonicalOverride, evmEvidence)
   const totalValueUsd = merged.totalValueUsd
   const pricedHoldingsCount = holdings.filter((h) => h.valueUsd != null).length
   const unpricedHoldingsCount = holdings.length - pricedHoldingsCount
@@ -547,6 +549,7 @@ function overlayWorkerEvmPnl(
     setters.setOverride(deriveCanonicalMergeOverride({
       canonicalTotalValueUsd: report.canonicalTotalValueUsd as number | null,
       finalCanonicalMergeAudit: (report.finalCanonicalMergeAudit as { robinhoodMerged: boolean } | null) ?? null,
+      canonicalPortfolioEvidence: (report.canonicalPortfolioEvidence as import('../walletScan/portfolioEvidence').PortfolioEvidence | null | undefined) ?? null,
     }))
   }
   const recon = report.reconciliationSummary as RunWalletScanV2Result['reconciliationSummary'] | undefined

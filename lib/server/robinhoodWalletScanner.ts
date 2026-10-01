@@ -42,6 +42,9 @@
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
+import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
+import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
+import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
 import {
   decodeRobinhoodSwapLog, resolvePoolCurrenciesViaRpc, fetchTokenDecimalsViaRpc, buildRobinhoodMatchedLotsFromSwaps,
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
@@ -102,6 +105,8 @@ export type RobinhoodTokenHolding = {
   priceUsd: number | null
   priceSource: 'goldrush' | 'dexscreener' | null
   valueUsd: number | null
+  /** Exactly how this holding's price was (or was not) resolved — debug evidence, never a value. */
+  pricingDebug?: RobinhoodPriceDebug
 }
 
 export type RobinhoodNativeBalance = {
@@ -109,8 +114,24 @@ export type RobinhoodNativeBalance = {
   rawBalance: string
   uiBalance: number | null
   priceUsd: number | null
-  priceSource: 'goldrush' | null
+  /** goldrush: the native row's own quote_rate. eth_usd_series: ChainLens's verified ETH/USD series (Robinhood's native currency is ETH). */
+  priceSource: 'goldrush' | 'eth_usd_series' | null
   valueUsd: number | null
+  pricingDebug?: RobinhoodPriceDebug
+}
+
+export type RobinhoodPriceDebug = {
+  /** GoldRush balances_v2 quote_rate as returned (null when absent / non-positive). */
+  goldrushQuoteRate: number | null
+  /** DexScreener: all pairs returned, those on Robinhood with THIS token as the priced base token and a positive price. */
+  dexscreenerPairsReturned: number | null
+  dexscreenerValidPairs: number | null
+  selectedPair: { pairAddress: string | null; dexId: string | null; liquidityUsd: number | null; volume24hUsd: number | null; priceUsd: number } | null
+  /** Native ETH: the verified ETH/USD point used and its age. */
+  ethUsdPoint?: { priceUsd: number; atMs: number; ageSec: number } | null
+  resolvedPriceUsd: number | null
+  priceSource: 'goldrush' | 'dexscreener' | 'eth_usd_series' | null
+  failureReason: string | null
 }
 
 export type RobinhoodHoldingsStatus = 'ok' | 'partial' | 'unavailable' | 'not_configured'
@@ -126,6 +147,10 @@ export type RobinhoodWalletHoldingsResult = {
   unpricedTokenCount: number
   reason: string | null
   fromCache: boolean
+  /** What is known about this lane's value (lib/walletScan/portfolioEvidence.ts) — never $0 for unknown. */
+  portfolioEvidence?: PortfolioEvidence
+  /** Counts for debug: held assets (non-zero balance), priced, unpriced, known subtotal, value status. */
+  pricingSummary?: { holdingsCount: number; pricedCount: number; unpricedCount: number; knownSubtotalUsd: number | null; valueStatus: PortfolioEvidence['status']; repricedFromCache?: boolean }
 }
 
 export type RobinhoodTransferDirection = 'incoming' | 'outgoing'
@@ -591,34 +616,170 @@ async function fetchCovalentBalances(wallet: string, fetchImpl: FetchImpl): Prom
 
 // ── DexScreener: current price fallback (Robinhood's own indexed slug — confirmed real support:
 // app/api/token/route.ts's own COVALENT/DexScreener disclosure for Robinhood tokens) ─────────────
+//
+// PAIR SELECTION, HARDENED: every returned pair is checked with the SAME identity rule the Token
+// Scanner / Clark market data use (lib/server/clarkMarketDataProviders.ts dexScreenerPairIsRequestedPricedToken):
+// the pair must be on Robinhood ('robinhood') AND the requested contract must be its priced BASE token
+// (a quote-side pair's priceUsd is the OTHER token's price). Pairs with a malformed / non-positive price
+// are ignored. Among the valid ones the strongest market wins — highest liquidity, then 24h volume, then
+// pair address (deterministic) — never array order, never another token's pair.
 
-export async function fetchRobinhoodDexscreenerPrice(contract: string, fetchImpl: FetchImpl): Promise<number | null> {
+type DexPairRow = Record<string, unknown>
+
+export function selectRobinhoodDexscreenerPair(pairs: ReadonlyArray<DexPairRow>, contract: string): { pair: DexPairRow; priceUsd: number; liquidityUsd: number | null; volume24hUsd: number | null } | null {
+  const num = (v: unknown): number | null => { const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN; return Number.isFinite(n) ? n : null }
+  const valid = pairs
+    .filter((p) => p && typeof p === 'object' && dexScreenerPairIsRequestedPricedToken(p, contract, ROBINHOOD_CHAIN_SLUG))
+    .map((p) => {
+      const priceUsd = num(p.priceUsd)
+      return { pair: p, priceUsd, liquidityUsd: num((p.liquidity as Record<string, unknown> | undefined)?.usd), volume24hUsd: num((p.volume as Record<string, unknown> | undefined)?.h24) }
+    })
+    .filter((r): r is { pair: DexPairRow; priceUsd: number; liquidityUsd: number | null; volume24hUsd: number | null } => r.priceUsd != null && r.priceUsd > 0)
+  if (valid.length === 0) return null
+  const addr = (p: DexPairRow) => String(p.pairAddress ?? '')
+  valid.sort((a, b) => ((b.liquidityUsd ?? 0) - (a.liquidityUsd ?? 0)) || ((b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)) || (addr(a) < addr(b) ? -1 : addr(a) > addr(b) ? 1 : 0))
+  return valid[0]
+}
+
+export async function resolveRobinhoodDexscreenerPrice(contract: string, fetchImpl: FetchImpl): Promise<{ priceUsd: number | null; pairsReturned: number | null; validPairs: number | null; selected: RobinhoodPriceDebug['selectedPair']; failureReason: string | null }> {
   try {
     const res = await fetchImpl(`https://api.dexscreener.com/latest/dex/tokens/${contract}`, { signal: AbortSignal.timeout(6_000) })
-    if (!res.ok) return null
-    const json = await res.json().catch(() => null) as { pairs?: Array<{ chainId?: string; priceUsd?: string }> } | null
-    const pair = (json?.pairs ?? []).find((p) => String(p.chainId ?? '').toLowerCase() === ROBINHOOD_CHAIN_SLUG)
-    if (!pair?.priceUsd) return null
-    const n = Number(pair.priceUsd)
-    return Number.isFinite(n) && n > 0 ? n : null
+    if (!res.ok) return { priceUsd: null, pairsReturned: null, validPairs: null, selected: null, failureReason: `dexscreener_http_${res.status}` }
+    const json = await res.json().catch(() => null) as { pairs?: unknown } | null
+    const pairs = Array.isArray(json?.pairs) ? (json!.pairs as DexPairRow[]) : []
+    const validCount = pairs.filter((p) => p && typeof p === 'object' && dexScreenerPairIsRequestedPricedToken(p, contract, ROBINHOOD_CHAIN_SLUG)).length
+    const best = selectRobinhoodDexscreenerPair(pairs, contract)
+    if (!best) {
+      return { priceUsd: null, pairsReturned: pairs.length, validPairs: validCount, selected: null, failureReason: pairs.length === 0 ? 'dexscreener_no_pairs' : validCount === 0 ? 'dexscreener_no_robinhood_pair_for_token' : 'dexscreener_no_positive_price' }
+    }
+    return {
+      priceUsd: best.priceUsd, pairsReturned: pairs.length, validPairs: validCount, failureReason: null,
+      selected: { pairAddress: typeof best.pair.pairAddress === 'string' ? best.pair.pairAddress : null, dexId: typeof best.pair.dexId === 'string' ? best.pair.dexId : null, liquidityUsd: best.liquidityUsd, volume24hUsd: best.volume24hUsd, priceUsd: best.priceUsd },
+    }
   } catch {
-    return null
+    return { priceUsd: null, pairsReturned: null, validPairs: null, selected: null, failureReason: 'dexscreener_unreachable' }
   }
+}
+
+/** Back-compat wrapper (swap-decoder price lookup): the selected Robinhood pair's price, or null. */
+export async function fetchRobinhoodDexscreenerPrice(contract: string, fetchImpl: FetchImpl): Promise<number | null> {
+  return (await resolveRobinhoodDexscreenerPrice(contract, fetchImpl)).priceUsd
+}
+
+// ── Native ETH: ChainLens's verified ETH/USD (the shared CoinGecko series the V4 swap candles use) ───
+// Robinhood Chain's native currency is ETH. When GoldRush's native row carries no quote_rate, the RPC-proven
+// native balance is priced from that same verified ETH/USD series — its LATEST point, only if fresh. Never a
+// DexScreener symbol lookup, never a guessed WETH address.
+export const ROBINHOOD_ETH_USD_MAX_AGE_MS = 30 * 60_000
+export type EthUsdLatest = () => Promise<{ priceUsd: number; atMs: number } | null>
+export const defaultEthUsdLatest: EthUsdLatest = async () => {
+  const s = await fetchCoingeckoEthUsdRecent(5_000).catch(() => null)
+  const last = s?.points && s.points.length > 0 ? s.points[s.points.length - 1] : null
+  return last && Number.isFinite(last[1]) && last[1] > 0 ? { priceUsd: last[1], atMs: last[0] } : null
 }
 
 // ── Phase 1: holdings + portfolio ───────────────────────────────────────────────────────────────
 
-export async function resolveRobinhoodWalletHoldings(wallet: string, deps: { fetchImpl: FetchImpl; cached?: (RobinhoodWalletHoldingsResult & { chainSlug: 'robinhood'; wallet: string }) | null }): Promise<RobinhoodWalletHoldingsResult> {
+export type RobinhoodHoldingsDeps = {
+  fetchImpl: FetchImpl
+  cached?: (RobinhoodWalletHoldingsResult & { chainSlug: 'robinhood'; wallet: string }) | null
+  /** Verified current ETH/USD (default: the shared CoinGecko series). */
+  ethUsdLatest?: EthUsdLatest
+  now?: () => number
+}
+
+const positiveRaw = (raw: string | null | undefined): boolean => { try { return raw != null && BigInt(raw) > BigInt(0) } catch { return false } }
+
+/** Lane evidence + summary from (possibly re-priced) holdings. Held = non-zero balance; never values an unpriced asset. */
+export function summarizeRobinhoodHoldings(native: RobinhoodNativeBalance | null, holdings: ReadonlyArray<RobinhoodTokenHolding>, holdingsComplete: boolean, reason: string | null): { portfolioEvidence: PortfolioEvidence; pricingSummary: NonNullable<RobinhoodWalletHoldingsResult['pricingSummary']>; portfolioTotalUsd: number | null; unpricedTokenCount: number } {
+  const held: Array<{ valueUsd: number | null }> = [
+    ...(native && positiveRaw(native.rawBalance) ? [native] : []),
+    ...holdings.filter((h) => positiveRaw(h.rawBalance)),
+  ]
+  const portfolioEvidence = evidenceFromHoldings({ holdingsComplete, values: held.map((h) => h.valueUsd), reason })
+  const pricedCount = held.filter((h) => h.valueUsd != null).length
+  return {
+    portfolioEvidence,
+    pricingSummary: { holdingsCount: held.length, pricedCount, unpricedCount: held.length - pricedCount, knownSubtotalUsd: portfolioEvidence.pricedSubtotalUsd, valueStatus: portfolioEvidence.status },
+    // Back-compat field: the known priced subtotal (null when nothing is priced) — status is in portfolioEvidence.
+    portfolioTotalUsd: pricedCount > 0 ? held.reduce((s, h) => s + (h.valueUsd ?? 0), 0) : null,
+    unpricedTokenCount: holdings.filter((h) => h.priceUsd == null).length,
+  }
+}
+
+async function priceNative(native: RobinhoodNativeBalance, goldrushQuoteRate: number | null, deps: RobinhoodHoldingsDeps): Promise<RobinhoodNativeBalance> {
+  const now = deps.now ?? Date.now
+  if (goldrushQuoteRate != null) {
+    return { ...native, priceUsd: goldrushQuoteRate, priceSource: 'goldrush', valueUsd: native.uiBalance != null ? native.uiBalance * goldrushQuoteRate : null,
+      pricingDebug: { goldrushQuoteRate, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, ethUsdPoint: null, resolvedPriceUsd: goldrushQuoteRate, priceSource: 'goldrush', failureReason: null } }
+  }
+  const eth = await (deps.ethUsdLatest ?? defaultEthUsdLatest)().catch(() => null)
+  const fresh = eth && now() - eth.atMs <= ROBINHOOD_ETH_USD_MAX_AGE_MS ? eth : null
+  const point = eth ? { priceUsd: eth.priceUsd, atMs: eth.atMs, ageSec: Math.max(0, Math.round((now() - eth.atMs) / 1000)) } : null
+  if (!fresh) {
+    return { ...native, priceUsd: null, priceSource: null, valueUsd: null,
+      pricingDebug: { goldrushQuoteRate: null, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, ethUsdPoint: point, resolvedPriceUsd: null, priceSource: null, failureReason: eth ? 'eth_usd_point_stale' : 'eth_usd_unavailable' } }
+  }
+  return { ...native, priceUsd: fresh.priceUsd, priceSource: 'eth_usd_series', valueUsd: native.uiBalance != null ? native.uiBalance * fresh.priceUsd : null,
+    pricingDebug: { goldrushQuoteRate: null, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, ethUsdPoint: point, resolvedPriceUsd: fresh.priceUsd, priceSource: 'eth_usd_series', failureReason: null } }
+}
+
+async function priceToken(h: RobinhoodTokenHolding, goldrushQuoteRate: number | null, deps: RobinhoodHoldingsDeps): Promise<RobinhoodTokenHolding> {
+  const valueOf = (p: number) => (h.uiBalance != null && Number.isFinite(h.uiBalance) ? h.uiBalance * p : null)
+  if (goldrushQuoteRate != null) {
+    return { ...h, priceUsd: goldrushQuoteRate, priceSource: 'goldrush', valueUsd: valueOf(goldrushQuoteRate),
+      pricingDebug: { goldrushQuoteRate, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, resolvedPriceUsd: goldrushQuoteRate, priceSource: 'goldrush', failureReason: null } }
+  }
+  const ds = await resolveRobinhoodDexscreenerPrice(h.address, deps.fetchImpl)
+  const debug: RobinhoodPriceDebug = { goldrushQuoteRate: null, dexscreenerPairsReturned: ds.pairsReturned, dexscreenerValidPairs: ds.validPairs, selectedPair: ds.selected, resolvedPriceUsd: ds.priceUsd, priceSource: ds.priceUsd != null ? 'dexscreener' : null, failureReason: ds.priceUsd != null ? null : (h.uiBalance == null ? 'decimals_unknown' : ds.failureReason) }
+  if (ds.priceUsd == null) return { ...h, priceUsd: null, priceSource: null, valueUsd: null, pricingDebug: debug }
+  return { ...h, priceUsd: ds.priceUsd, priceSource: 'dexscreener', valueUsd: valueOf(ds.priceUsd), pricingDebug: debug }
+}
+
+// CACHE SAFETY: holdings discovery is cached ~60s, but a cached UNPRICED holding must not suppress newly
+// available price evidence for that whole window. A cache hit re-attempts pricing for the unpriced assets
+// only (balances are not re-read), with a short per-asset retry window so repeated requests cannot hammer
+// the price providers.
+const PRICE_RETRY_MS = 15_000
+const priceMissAt = new Map<string, number>()
+export function resetRobinhoodPriceRetryState() { priceMissAt.clear() }
+
+async function repriceCachedHoldings(cached: RobinhoodWalletHoldingsResult, deps: RobinhoodHoldingsDeps): Promise<RobinhoodWalletHoldingsResult> {
+  const now = deps.now ?? Date.now
+  const due = (key: string) => { const at = priceMissAt.get(key); return at == null || now() - at >= PRICE_RETRY_MS }
+  let changed = false
+  let native = cached.native
+  if (native && positiveRaw(native.rawBalance) && native.valueUsd == null && due(`${cached.wallet}:native`)) {
+    const next = await priceNative(native, null, deps)
+    if (next.valueUsd != null) changed = true
+    else priceMissAt.set(`${cached.wallet}:native`, now())
+    native = next
+  }
+  const holdings: RobinhoodTokenHolding[] = []
+  for (const h of cached.holdings) {
+    const key = `token:${h.address.toLowerCase()}`
+    if (positiveRaw(h.rawBalance) && h.priceUsd == null && due(key)) {
+      const next = await priceToken(h, null, deps)
+      if (next.priceUsd != null) changed = true
+      else priceMissAt.set(key, now())
+      holdings.push(next)
+    } else holdings.push(h)
+  }
+  if (!changed) return { ...cached, fromCache: true }
+  const holdingsComplete = cached.portfolioEvidence?.holdingsComplete ?? (cached.status === 'ok')
+  const sum = summarizeRobinhoodHoldings(native, holdings, holdingsComplete, cached.reason)
+  const status: RobinhoodHoldingsStatus = cached.status === 'unavailable' || cached.status === 'not_configured' ? cached.status : (sum.portfolioEvidence.status === 'verified' || sum.portfolioEvidence.status === 'verified_zero' ? 'ok' : 'partial')
+  return { ...cached, native, holdings, ...sum, pricingSummary: { ...sum.pricingSummary, repricedFromCache: true }, status, reason: status === 'ok' ? null : cached.reason, fromCache: true }
+}
+
+export async function resolveRobinhoodWalletHoldings(wallet: string, deps: RobinhoodHoldingsDeps): Promise<RobinhoodWalletHoldingsResult> {
   if (deps.cached && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
-    return { ...deps.cached, fromCache: true }
+    return repriceCachedHoldings(deps.cached, deps)
   }
-  if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', chainId: ROBINHOOD_CHAIN_ID, native: null, holdings: [], portfolioTotalUsd: null, unpricedTokenCount: 0, reason: 'Robinhood Chain is not configured (missing feature flag or RPC URL).', fromCache: false }
-  }
+  const notConfigured = (reason: string): RobinhoodWalletHoldingsResult => ({ status: 'not_configured', wallet, chainSlug: 'robinhood', chainId: ROBINHOOD_CHAIN_ID, native: null, holdings: [], portfolioTotalUsd: null, unpricedTokenCount: 0, reason, fromCache: false })
+  if (!isRobinhoodChainAvailable()) return notConfigured('Robinhood Chain is not configured (missing feature flag or RPC URL).')
   const rpcUrl = getRobinhoodRpcUrl()
-  if (!rpcUrl) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', chainId: ROBINHOOD_CHAIN_ID, native: null, holdings: [], portfolioTotalUsd: null, unpricedTokenCount: 0, reason: 'Robinhood RPC URL is not configured.', fromCache: false }
-  }
+  if (!rpcUrl) return notConfigured('Robinhood RPC URL is not configured.')
 
   const [nativeResult, balances] = await Promise.all([
     fetchRobinhoodNativeBalance(wallet, deps.fetchImpl, rpcUrl),
@@ -627,68 +788,39 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: { fet
 
   let native: RobinhoodNativeBalance | null = null
   if (nativeResult.rawBalance != null) {
-    // NEVER-FAKE-A-PRICE FIX, DISCLOSED (Phase 1/2 audit): this used to query DexScreener with the
-    // literal string 'WETH' as if it were a token CONTRACT ADDRESS — dexscreener.com/latest/dex/
-    // tokens/WETH is not a real lookup, it would only ever return zero pairs (silently degrading
-    // native pricing to "unavailable" every time) or, in the worst case, whatever DexScreener's own
-    // fuzzy matching did with a bare symbol string — neither is a real, verified same-chain price.
-    // No verified wrapped-native (WETH-equivalent) contract address for Robinhood Chain exists
-    // anywhere in this codebase (checked: robinhoodChainConfig.ts, lpProof.ts,
-    // uniswapV4RobinhoodRpc.ts — none define one), so guessing one is exactly the "assumption
-    // unless verified" this task's hard rules forbid. Instead, this now reads the REAL price
-    // Covalent/GoldRush's own balances_v2 response already returns for the wallet's native-ETH row
-    // (`native_token: true`, same `quote_rate` field already trusted for every ERC-20 holding below)
-    // — a real, chain-scoped provider price, not a guessed lookup. Stays null, honestly, if
-    // GoldRush's own response has no native row or no rate for it.
+    // NEVER-FAKE-A-PRICE, DISCLOSED: native ETH is priced from GoldRush's own native row quote_rate, else
+    // ChainLens's verified ETH/USD series (priceNative above). Never a DexScreener symbol lookup ('WETH' is
+    // not a contract address) and never a guessed wrapped-native address.
     const nativeCovalentRow = balances.items?.find((item) => item.native_token)
-    const nativePriceUsd = typeof nativeCovalentRow?.quote_rate === 'number' && nativeCovalentRow.quote_rate > 0 ? nativeCovalentRow.quote_rate : null
+    const quoteRate = typeof nativeCovalentRow?.quote_rate === 'number' && nativeCovalentRow.quote_rate > 0 ? nativeCovalentRow.quote_rate : null
     const uiBalance = Number(nativeResult.rawBalance) / 1e18
-    native = {
-      symbol: ROBINHOOD_CHAIN_NATIVE_CURRENCY,
-      rawBalance: nativeResult.rawBalance,
-      uiBalance: Number.isFinite(uiBalance) ? uiBalance : null,
-      priceUsd: nativePriceUsd,
-      priceSource: nativePriceUsd != null ? 'goldrush' : null,
-      valueUsd: nativePriceUsd != null && Number.isFinite(uiBalance) ? uiBalance * nativePriceUsd : null,
-    }
+    const unpriced: RobinhoodNativeBalance = { symbol: ROBINHOOD_CHAIN_NATIVE_CURRENCY, rawBalance: nativeResult.rawBalance, uiBalance: Number.isFinite(uiBalance) ? uiBalance : null, priceUsd: null, priceSource: null, valueUsd: null }
+    native = positiveRaw(nativeResult.rawBalance) || quoteRate != null ? await priceNative(unpriced, quoteRate, deps) : unpriced
   }
 
   const holdings: RobinhoodTokenHolding[] = []
-  let unpricedTokenCount = 0
   if (balances.items) {
     for (const item of balances.items) {
       if (item.native_token) continue
       if (!item.contract_address || !item.balance) continue
       const decimals = typeof item.contract_decimals === 'number' ? item.contract_decimals : null
       const uiBalance = decimals != null ? Number(item.balance) / 10 ** decimals : null
-      let priceUsd: number | null = typeof item.quote_rate === 'number' && item.quote_rate > 0 ? item.quote_rate : null
-      let priceSource: RobinhoodTokenHolding['priceSource'] = priceUsd != null ? 'goldrush' : null
-      if (priceUsd == null) {
-        const fallback = await fetchRobinhoodDexscreenerPrice(item.contract_address, deps.fetchImpl).catch(() => null)
-        if (fallback != null) { priceUsd = fallback; priceSource = 'dexscreener' }
+      const quoteRate = typeof item.quote_rate === 'number' && item.quote_rate > 0 ? item.quote_rate : null
+      const base: RobinhoodTokenHolding = {
+        address: item.contract_address, symbol: item.contract_ticker_symbol ?? null, name: item.contract_name ?? null, decimals,
+        rawBalance: item.balance, uiBalance: uiBalance != null && Number.isFinite(uiBalance) ? uiBalance : null, priceUsd: null, priceSource: null, valueUsd: null,
       }
-      if (priceUsd == null) unpricedTokenCount += 1
-      holdings.push({
-        address: item.contract_address,
-        symbol: item.contract_ticker_symbol ?? null,
-        name: item.contract_name ?? null,
-        decimals,
-        rawBalance: item.balance,
-        uiBalance: uiBalance != null && Number.isFinite(uiBalance) ? uiBalance : null,
-        priceUsd,
-        priceSource,
-        valueUsd: priceUsd != null && uiBalance != null && Number.isFinite(uiBalance) ? uiBalance * priceUsd : null,
-      })
+      holdings.push(await priceToken(base, quoteRate, deps))
     }
   }
 
+  // Complete holdings evidence = the native balance read AND the token balance list both answered.
+  const holdingsComplete = nativeResult.rawBalance != null && balances.items != null
+  const failure = balances.reason ?? nativeResult.reason ?? null
+  const sum = summarizeRobinhoodHoldings(native, holdings, holdingsComplete, failure)
   const status: RobinhoodHoldingsStatus = native == null && holdings.length === 0
     ? (balances.reason === 'no_api_key' ? 'not_configured' : 'unavailable')
-    : (unpricedTokenCount > 0 || balances.reason ? 'partial' : 'ok')
-
-  const portfolioTotalUsd = (native?.valueUsd != null || holdings.some((h) => h.valueUsd != null))
-    ? (native?.valueUsd ?? 0) + holdings.reduce((sum, h) => sum + (h.valueUsd ?? 0), 0)
-    : null
+    : (sum.portfolioEvidence.status === 'verified' || sum.portfolioEvidence.status === 'verified_zero' ? 'ok' : 'partial')
 
   return {
     status,
@@ -697,10 +829,12 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: { fet
     chainId: ROBINHOOD_CHAIN_ID,
     native,
     holdings,
-    portfolioTotalUsd,
-    unpricedTokenCount,
-    reason: status === 'ok' ? null : (balances.reason ?? nativeResult.reason ?? 'no_holdings_data_returned'),
+    portfolioTotalUsd: sum.portfolioTotalUsd,
+    unpricedTokenCount: sum.unpricedTokenCount,
+    reason: status === 'ok' ? null : (failure ?? (sum.pricingSummary.unpricedCount > 0 ? 'some_holdings_unpriced' : 'no_holdings_data_returned')),
     fromCache: false,
+    portfolioEvidence: sum.portfolioEvidence,
+    pricingSummary: sum.pricingSummary,
   }
 }
 
@@ -1169,7 +1303,8 @@ export async function getCachedRobinhoodWalletHoldings(wallet: string, fetchImpl
   const cached = await getTokenCache<RobinhoodWalletHoldingsResult & { chainSlug: 'robinhood'; wallet: string }>(key).catch(() => null)
   const wrongChainCacheRejected = rejectWrongChainRobinhoodCache(cached, { wallet })
   const result = await resolveRobinhoodWalletHoldings(wallet, { fetchImpl, cached: cached && !wrongChainCacheRejected ? cached : null })
-  if (!result.fromCache) await setTokenCache(key, result, CACHE_TTL_SECONDS).catch(() => {})
+  // A fresh scan, or a cached scan whose unpriced holdings just got real prices, is (re)stored.
+  if (!result.fromCache || result.pricingSummary?.repricedFromCache) await setTokenCache(key, { ...result, fromCache: false }, CACHE_TTL_SECONDS).catch(() => {})
   return { ...result, wrongChainCacheRejected }
 }
 

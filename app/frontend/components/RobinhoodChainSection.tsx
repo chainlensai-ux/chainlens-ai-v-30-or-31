@@ -248,6 +248,15 @@ export function RobinhoodChainSection({
             )}
           </div>
 
+          {/* DEBUG-ONLY PRICING EVIDENCE (?debug=true): per held asset — raw balance, decimals, ui balance, GoldRush
+              quote_rate, DexScreener pairs returned / valid Robinhood pairs, selected pair + liquidity, resolved
+              price + source, failure reason — and the lane's counts / known subtotal / value status. */}
+          {debugMode && result.holdings && (
+            <details style={{ marginTop: '14px' }} data-robinhood-pricing-debug>
+              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>Pricing evidence (debug)</summary>
+              <pre style={{ fontSize: '10px', color: 'rgba(148,163,184,0.75)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{robinhoodPricingDebugText(result.holdings)}</pre>
+            </details>
+          )}
           {/* DEBUG-ONLY RAW VIEW: only rendered with ?debug=true — never the default page. */}
           {debugMode && (
             <details style={{ marginTop: '14px' }}>
@@ -259,6 +268,23 @@ export function RobinhoodChainSection({
       )}
     </div>
   )
+}
+
+/** Plain-text pricing evidence for the debug panel (pure; exported for tests). */
+export function robinhoodPricingDebugText(h: RobinhoodWalletScanResponse['holdings']): string {
+  const sum = h.pricingSummary
+  const ev = h.portfolioEvidence
+  const head = sum
+    ? `holdings ${sum.holdingsCount} · priced ${sum.pricedCount} · unpriced ${sum.unpricedCount} · known subtotal ${sum.knownSubtotalUsd != null ? `$${sum.knownSubtotalUsd.toFixed(2)}` : '—'} · value status ${sum.valueStatus}${sum.repricedFromCache ? ' · re-priced from cache' : ''}`
+    : `status ${h.status} · portfolioTotalUsd ${h.portfolioTotalUsd ?? 'null'}`
+  const row = (label: string, raw: string | undefined, decimals: number | null | undefined, ui: number | null, d: NonNullable<RobinhoodWalletScanResponse['holdings']['holdings'][number]['pricingDebug']> | undefined) =>
+    `${label}\n  raw ${raw ?? '—'} · decimals ${decimals ?? '—'} · ui ${ui ?? '—'}\n  goldrush quote_rate ${d?.goldrushQuoteRate ?? '—'} · DS pairs ${d?.dexscreenerPairsReturned ?? '—'} · valid Robinhood pairs ${d?.dexscreenerValidPairs ?? '—'}`
+    + `${d?.selectedPair ? ` · selected ${d.selectedPair.pairAddress ?? '?'} (${d.selectedPair.dexId ?? '?'}, liq $${d.selectedPair.liquidityUsd ?? '?'})` : ''}${d?.ethUsdPoint ? ` · ETH/USD $${d.ethUsdPoint.priceUsd} (${d.ethUsdPoint.ageSec}s old)` : ''}`
+    + `\n  price ${d?.resolvedPriceUsd ?? '—'} · source ${d?.priceSource ?? '—'}${d?.failureReason ? ` · failure ${d.failureReason}` : ''}`
+  const lines = [head, ev ? `evidence: ${ev.status}${ev.reason ? ` (${ev.reason})` : ''} · holdings complete ${ev.holdingsComplete}` : '']
+  if (h.native) lines.push(row(`native ${h.native.symbol}`, h.native.rawBalance, 18, h.native.uiBalance, h.native.pricingDebug))
+  for (const t of h.holdings) lines.push(row(`${t.symbol ?? '?'} ${t.address}`, t.rawBalance, t.decimals, t.uiBalance, t.pricingDebug))
+  return lines.filter(Boolean).join('\n')
 }
 
 export default RobinhoodChainSection

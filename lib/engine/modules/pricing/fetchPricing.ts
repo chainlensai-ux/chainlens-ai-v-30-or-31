@@ -942,5 +942,5 @@ export async function priceHoldings(
     }
   }))
 
-  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus }
+  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount }
 }

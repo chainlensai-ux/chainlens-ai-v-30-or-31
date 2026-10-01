@@ -120,12 +120,20 @@ export function __resetNegativeBalanceCacheForTest(): void {
 // provider_unavailable/[] result on any failure (see that module's own guarantees) rather than
 // throwing, and this function adds no additional network calls of its own that could fail.
 export async function fetchChainBalances(walletAddress: string, chainId: number): Promise<ChainHolding[]> {
+  return (await fetchChainBalancesWithEvidence(walletAddress, chainId)).holdings
+}
+
+/** Per-chain holdings evidence: did the holdings providers actually answer for this chain? */
+export type ChainHoldingsEvidence = { chainId: number; providerStatus: 'ok' | 'partial' | 'provider_unavailable' | 'confirmed_empty_cached' | 'unsupported_chain' }
+
+export async function fetchChainBalancesWithEvidence(walletAddress: string, chainId: number): Promise<{ holdings: ChainHolding[]; evidence: ChainHoldingsEvidence }> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
-  if (!chain) return [] // unsupported chainId — honestly empty, never a guessed chain
+  if (!chain) return { holdings: [], evidence: { chainId, providerStatus: 'unsupported_chain' } } // never a guessed chain
 
   const cacheKey = negativeCacheKey(chainId, walletAddress)
   const cachedExpiry = negativeBalanceCache.get(cacheKey)
-  if (cachedExpiry !== undefined && Date.now() < cachedExpiry) return [] // real, recently-confirmed empty result — no live call
+  // A real, recently-CONFIRMED empty result (providers answered, nothing held) — no live call.
+  if (cachedExpiry !== undefined && Date.now() < cachedExpiry) return { holdings: [], evidence: { chainId, providerStatus: 'confirmed_empty_cached' } }
 
   const result = await fetchRealHoldings(chain, walletAddress)
 
@@ -146,10 +154,12 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
       amountRaw: h.amountRaw,
     }))
 
-  if (holdings.length === 0) negativeBalanceCache.set(cacheKey, Date.now() + NEGATIVE_BALANCE_CACHE_TTL_MS)
-  else negativeBalanceCache.delete(cacheKey) // a real non-zero result always wins over any stale negative entry
+  // PROVIDER FAILURE IS NOT "EMPTY": only an answered, empty result is negative-cached — a provider_unavailable
+  // result (both holdings providers failed) must never be remembered as a confirmed-empty wallet.
+  if (holdings.length === 0 && result.providerStatus !== 'provider_unavailable') negativeBalanceCache.set(cacheKey, Date.now() + NEGATIVE_BALANCE_CACHE_TTL_MS)
+  else if (holdings.length > 0) negativeBalanceCache.delete(cacheKey) // a real non-zero result always wins over any stale negative entry
 
-  return holdings
+  return { holdings, evidence: { chainId, providerStatus: result.providerStatus } }
 }
 
 // CHAIN-CALL AUDIT, DISCLOSED: real, measured chain-scoping decisions for every fetchAllHoldings
@@ -182,4 +192,19 @@ export async function fetchAllHoldings(walletAddress: string, allowedChainIds: r
 
   const results = await Promise.all(allowed.map((c) => fetchChainBalances(walletAddress, c)))
   return results.flat()
+}
+
+/**
+ * Same holdings as fetchAllHoldings, plus per-chain provider evidence — so a caller can tell a CONFIRMED
+ * empty wallet (every requested chain answered with nothing) from an unknown one (a provider failed).
+ */
+export async function fetchAllHoldingsWithEvidence(walletAddress: string, allowedChainIds: readonly number[] = DEFAULT_HOLDINGS_CHAIN_IDS): Promise<{ holdings: ChainHolding[]; chains: ChainHoldingsEvidence[]; complete: boolean }> {
+  const supportedChainIds = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
+  const requested = allowedChainIds.slice(0, MAX_CHAINS_PER_HOLDINGS_REQUEST)
+  const allowed = requested.filter((c) => supportedChainIds.includes(c))
+  const blocked = [...new Set(allowedChainIds)].filter((c) => !allowed.includes(c))
+  logChainCallAudit(allowedChainIds, allowed, blocked)
+  const results = await Promise.all(allowed.map((c) => fetchChainBalancesWithEvidence(walletAddress, c)))
+  const chains = results.map((r) => r.evidence)
+  return { holdings: results.flatMap((r) => r.holdings), chains, complete: allowed.length > 0 && chains.every((c) => c.providerStatus !== 'provider_unavailable') }
 }

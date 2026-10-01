@@ -7,7 +7,7 @@
 // can never disagree about the same scan.
 import { selectPortfolioStats, selectChainBreakdown } from '@/app/frontend/components'
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
-import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence } from '@/app/frontend/lib/mergedWalletView'
 import { buildWalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
 import type { RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { TokenListEntry } from '@/src/modules/portfolio/types'
@@ -62,7 +62,7 @@ export function mapWalletScanReportToPortfolioViewModel(
   }
 
   const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))
   const chainBreakdown = selectChainBreakdown(report.chainValueUsd, merged.totalValueUsd, report.portfolio?.chainValueBreakdown, report.portfolioTotalByChain)
 
   // Full enumerable holdings list — report.portfolio.tokens (v1 PortfolioSummary) is the one shape

@@ -22,7 +22,9 @@ import {
   deriveCanonicalMergeOverride,
   mergeRobinhoodIntoPricedHoldings,
   type CanonicalMergeOverride,
+  mergedTotalText,
 } from '@/app/frontend/lib/mergedWalletView'
+import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import {
   buildWalletPnlViewModel,
@@ -43,6 +45,8 @@ export type PortfolioValueView = {
   topHoldings: Array<{ symbol: string; percent: number }>
   valueStatus: PortfolioValueStatus
   failureReason: string | null
+  /** lib/walletScan/portfolioEvidence.ts — verified / partial / unavailable / verified_zero (null on legacy reports). */
+  portfolioEvidence: PortfolioEvidence | null
 }
 
 export type PnlEvidenceView = {
@@ -91,6 +95,9 @@ export type BuildWalletScannerViewModelParams = {
   canonicalOverride?: CanonicalMergeOverride
   canonicalTotalValueUsd?: number | null
   finalCanonicalMergeAudit?: { robinhoodMerged: boolean } | null
+  /** lib/walletScan/portfolioEvidence.ts — the worker's EVM lane and merged evidence (absent on older reports). */
+  evmPortfolioEvidence?: PortfolioEvidence | null
+  canonicalPortfolioEvidence?: PortfolioEvidence | null
   pnlV2?: PnlV2 | null
   publicPnlStatus?: PublicPnlStatus | null
   unrealizedReconciliation?: UnrealizedReconciliationSummary | null
@@ -119,8 +126,9 @@ export function buildPortfolioValueView(params: BuildWalletScannerViewModelParam
   const canonicalOverride = params.canonicalOverride ?? deriveCanonicalMergeOverride({
     canonicalTotalValueUsd: params.canonicalTotalValueUsd,
     finalCanonicalMergeAudit: params.finalCanonicalMergeAudit,
+    canonicalPortfolioEvidence: params.canonicalPortfolioEvidence,
   })
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, params.robinhoodResult, canonicalOverride)
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, params.robinhoodResult, canonicalOverride, params.evmPortfolioEvidence ?? null)
   const totalValueUsd = merged.totalValueUsd
   const breakdown = selectChainBreakdown(
     params.chainValueUsd,
@@ -154,6 +162,7 @@ export function buildPortfolioValueView(params: BuildWalletScannerViewModelParam
     topHoldings: stats.topChips,
     valueStatus,
     failureReason: valueStatus === 'unavailable' ? 'No priced holdings found for this wallet.' : null,
+    portfolioEvidence: merged.evidence,
   }
 }
 
@@ -254,7 +263,7 @@ export function buildWalletScannerViewAudit(params: {
     baseRealizedPnlUsd: parseSignedUsd(baseRow?.value ?? null),
     ethPnlStatus: ethRow?.status ?? null,
     robinhoodPnlStatus: rhRow?.status ?? null,
-    displayedPortfolioValue: p.totalValueUsd != null ? fmtUsd(p.totalValueUsd) : null,
+    displayedPortfolioValue: mergedTotalText({ totalValueUsd: p.totalValueUsd, evidence: p.portfolioEvidence }, fmtUsd),
     displayedPnlValues,
     zeroValuesSuppressed,
     finalUiState,

@@ -34,6 +34,8 @@ export type WalletScanJobProgress = {
 // early in a way a caller might mistake for the complete report.
 export type WalletScanPartialSnapshot = {
   portfolioTotalValueUsd: number | null
+  /** What is known about the EVM value (lib/walletScan/portfolioEvidence.ts) — distinguishes verified $0 from unknown. */
+  portfolioEvidence?: import('../../lib/walletScan/portfolioEvidence').PortfolioEvidence | null
   holdingsCount: number
   topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
   activeChainIds: number[]

@@ -41,7 +41,8 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, mergedTotalText, robinhoodStatusCopy, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { ChainBadge } from './ChainBadge'
 
 export type PortfolioIntelligenceCardProps = {
@@ -61,6 +62,8 @@ export type PortfolioIntelligenceCardProps = {
   // never a second, independently-recomputed number. Omitting it degrades to the existing
   // v2Total + robinhoodResult computation (the fast preview path, which never has this field).
   canonicalOverride?: CanonicalMergeOverride
+  /** The worker's EVM lane evidence (report.evmPortfolioEvidence) — an unknown EVM total is never shown as $0.00. */
+  evmEvidence?: PortfolioEvidence | null
 }
 
 type PortfolioStats = {
@@ -135,7 +138,7 @@ function StatBox({ label, value, sub, valueColor }: { label: string; value: Reac
   )
 }
 
-export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain, robinhoodResult, canonicalOverride }: PortfolioIntelligenceCardProps) {
+export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain, robinhoodResult, canonicalOverride, evmEvidence }: PortfolioIntelligenceCardProps) {
   const { stats, usingV2 } = selectPortfolioStats(portfolio, portfolioV2)
   // TEMPORARY, per this migration's own instructions — remove once portfolioV2 is verified live
   // and this fallback path is no longer needed.
@@ -146,8 +149,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
   // ONLY when Robinhood was actually, successfully scanned (see mergedWalletView.ts's own header) —
   // never a fabricated number, never silently dropping a real Robinhood value that was on screen a
   // card away.
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride)
-  const totalValueUsd = merged.totalValueUsd
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride, evmEvidence)
   const { concentration, topChips } = stats
   // AFTER-MERGE PRICED-TOKEN COUNT, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix):
   // "Priced Tokens" must not silently stay EVM-only while the total two lines above it already
@@ -176,7 +178,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
         <StatBox
           label="Supported On-Chain Portfolio Value"
-          value={totalValueUsd != null ? fmtUsd(totalValueUsd) : 'Not available'}
+          value={mergedTotalText(merged, fmtUsd)}
           sub={robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}
           valueColor="#2DD4BF"
         />

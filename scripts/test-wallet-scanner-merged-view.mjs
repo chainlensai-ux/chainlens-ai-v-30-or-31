@@ -150,8 +150,8 @@ function run() {
     // can prefer the worker's own already-merged canonicalTotalValueUsd when present — the underlying
     // guarantee (Robinhood is merged in via computeMergedTotalValueUsd, never a separate computation)
     // is unchanged, just with a 3rd param now present.
-    check('PortfolioIntelligenceCard merges Robinhood into its displayed total via computeMergedTotalValueUsd', portfolioCardSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride)'))
-    check('WalletProfileHeader\'s PortfolioSnapshot (the live V3 hero total) merges Robinhood in the same way', walletProfileHeaderSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
+    check('PortfolioIntelligenceCard merges Robinhood into its displayed total via computeMergedTotalValueUsd', portfolioCardSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride, evmEvidence)'))
+    check('WalletProfileHeader\'s PortfolioSnapshot (the live V3 hero total) merges Robinhood in the same way', walletProfileHeaderSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))'))
     check('WalletScannerSummaryRowV3 forwards robinhoodResult into PortfolioIntelligenceCard', summaryRowSrc.includes('robinhoodResult={robinhoodResult}'))
     check('WalletScannerHeaderV3 forwards robinhoodResult into PortfolioSnapshot', headerV3Src.includes('robinhoodResult={robinhoodResult}'))
     check('WalletScannerResultsV3 forwards robinhoodResult into both the header and the summary row', (resultsV3Src.match(/robinhoodResult=\{robinhoodResult\}/g) ?? []).length >= 2)
@@ -173,7 +173,7 @@ function run() {
     // sources its total from selectPortfolioStats(...).stats.totalValueUsd (the SAME selector
     // PortfolioIntelligenceCard uses) rather than a locally re-derived `v2TotalValueUsd` — still the
     // same computeMergedTotalValueUsd/deriveCanonicalMergeOverride helpers underneath.
-    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
+    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))'))
     check('buildCortexReadV2 sources totalValueUsd from the same selectPortfolioStats selector PortfolioIntelligenceCard uses', pageSrc.includes('const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)'))
     check('the CORTEX sidebar call site passes the real robinhoodResult state through', pageSrc.includes('buildCortexReadV2(result, robinhoodResult)'))
     check('buildCortexReadV2 returns null (not a fabricated empty read) when there is no report at all', pageSrc.includes('if (!report) return null'))
@@ -284,7 +284,7 @@ function run() {
         return result.totalValueUsd === 14942.25 && result.robinhoodIncluded === true
       })(),
     )
-    check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\)\)/.test(pageSrc))
+    check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\), deriveEvmPortfolioEvidence\(report\)\)/.test(pageSrc))
     check('PortfolioIntelligenceCard accepts a canonicalOverride prop', read('app/frontend/components/PortfolioIntelligenceCard.tsx').includes('canonicalOverride?: CanonicalMergeOverride'))
     check('WalletScannerSummaryRowV3 (the live V3 layout) forwards deriveCanonicalMergeOverride(report) into PortfolioIntelligenceCard', read('app/frontend/components/WalletScannerSummaryRowV3.tsx').includes('canonicalOverride={deriveCanonicalMergeOverride(report)}'))
   }
@@ -589,8 +589,8 @@ function run() {
     check('performance audit includes uiFirstResultMs (client-measured, never guessed on the worker)', perfSrc.includes('uiFirstResultMs: null'))
     check('scanWallet client forwards the worker partial snapshot', scanWalletSrc.includes('partial: pollBody.partial'))
     check('Wallet Scanner page consumes partial snapshot for a live portfolio card', pageSrc.includes('partialSnapshot') && pageSrc.includes('Deep scan still running'))
-    check('snapshot total uses computeMergedTotalValueUsd — one merged total, not a second card', pageSrc.includes('computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)'))
-    check('snapshot total does NOT pass a worker canonicalOverride — sidecar merge is the snapshot source of truth', /computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult\)/.test(pageSrc) && !/computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult,/.test(pageSrc))
+    check('snapshot total uses computeMergedTotalValueUsd — one merged total, not a second card', pageSrc.includes('computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult, undefined, partialSnapshot.portfolioEvidence ?? null)'))
+    check('snapshot total does NOT pass a worker canonicalOverride — sidecar merge is the snapshot source of truth', /computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult, undefined, partialSnapshot\.portfolioEvidence \?\? null\)/.test(pageSrc) && !/computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult, (?!undefined)/.test(pageSrc))
     check('snapshot PnL is pending / Deep scan still running — never a completed PnL figure', pageSrc.includes('PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.'))
     check('standalone Robinhood card is hidden while the snapshot is on screen — no duplicate totals', /\{robinhoodResult && \(!result \|\| debugMode\) && !partialSnapshot &&/.test(pageSrc))
     // STUCK-SCANNING-LIFECYCLE FIX, DISCLOSED: this assertion previously required the `loading &&`
@@ -603,7 +603,7 @@ function run() {
     check('snapshot card is hidden once the completed result exists', /\{partialSnapshot && !result &&/.test(pageSrc))
     check('user-facing Deep Scan copy no longer says V2 engine', !/V2 engine · holdings/.test(pageSrc))
     check('page logs walletScanPerformanceAudit with uiFirstResultMs', pageSrc.includes('[walletScanPerformanceAudit]') && pageSrc.includes('uiFirstResultMs'))
-    check('worker canonical EVM total prefers the live snapshot/portfolioV2 figure, not stale V1 portfolio', workerSrcQa.includes('const evmTotalFromSnapshot = typeof portfolioOutput.portfolio.totalValueUsd === \'number\'') && workerSrcQa.includes('const evmTotalValueUsd = snapshotTimedOutEmpty ? evmTotalFromV1 : (evmTotalFromSnapshot ?? evmTotalFromV1)'))
+    check('worker canonical EVM total prefers the live snapshot/portfolioV2 figure, not stale V1 portfolio', workerSrcQa.includes('const evmTotalFromSnapshot = typeof portfolioOutput.portfolio.totalValueUsd === \'number\'') && workerSrcQa.includes("const evmLaneEvidence: PortfolioEvidence = evmPortfolioEvidence.status === 'unavailable' && snapshotTimedOutEmpty && evmTotalFromV1 != null && evmTotalFromV1 > 0"))
     check('worker chain map prefers pricing.chainValueUsd (same source as the snapshot) over V1 token sums', workerSrcQa.includes('for (const [chainId, valueUsd] of Object.entries(pricing.chainValueUsd))'))
     check('this QA does not rewrite Clark routing', clarkRouteSrc.length > 0 && clarkRoutingSrc.length > 0)
     const changedFiles = execSync('git diff --name-only HEAD', { encoding: 'utf8', cwd: fileURLToPath(new URL('..', import.meta.url)) })

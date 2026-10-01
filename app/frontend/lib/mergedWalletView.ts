@@ -31,6 +31,7 @@
 import type { RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
 import { ROBINHOOD_CHAIN_META } from '@/lib/walletScan/canonicalWalletSelectors'
+import { evidenceFromHoldings, mergePortfolioEvidence, portfolioDisplayValueUsd, portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 
 export type RobinhoodInclusion = {
   // True only when Robinhood Chain was actually, successfully scanned this session AND produced a
@@ -98,6 +99,49 @@ export type MergedTotal = {
   totalValueUsd: number | null
   robinhoodIncluded: boolean
   robinhoodValueUsd: number | null
+  /**
+   * What is KNOWN about this total (lib/walletScan/portfolioEvidence.ts): verified / verified_zero / partial
+   * (totalValueUsd is then the known priced subtotal) / unavailable (totalValueUsd null — "Value unavailable",
+   * never $0.00). Null only on the legacy path without enough evidence to classify.
+   */
+  evidence: PortfolioEvidence | null
+}
+
+/**
+ * The Robinhood lane's evidence for the canonical merge: null when Robinhood was not scanned or is not
+ * configured (it then neither adds nor blocks); an unknown lane when the sidecar failed; else the server's
+ * own portfolioEvidence (older responses: derived from the same holdings fields — never values an unpriced asset).
+ */
+export function robinhoodLaneEvidence(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): PortfolioEvidence | null {
+  if (!robinhoodResult) return null
+  if (!robinhoodResult.ok) return { valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', pricedHoldings: 0, unpricedHoldings: 0, holdingsComplete: false, reason: 'robinhood_scan_failed' }
+  const h = robinhoodResult.holdings
+  if (h.status === 'not_configured') return null
+  if (h.portfolioEvidence) return h.portfolioEvidence
+  if (h.status === 'unavailable') return { valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', pricedHoldings: 0, unpricedHoldings: 0, holdingsComplete: false, reason: h.reason ?? 'robinhood_holdings_unavailable' }
+  // Older / minimal responses without the per-asset arrays: only the lane total is known.
+  if (!Array.isArray(h.holdings)) {
+    if (h.portfolioTotalUsd == null) return { valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', pricedHoldings: 0, unpricedHoldings: 0, holdingsComplete: false, reason: h.reason ?? 'no_holdings_priced' }
+    const verified = h.status === 'ok'
+    return { valueUsd: verified ? h.portfolioTotalUsd : null, pricedSubtotalUsd: h.portfolioTotalUsd, status: verified ? 'verified' : 'partial', pricedHoldings: 1, unpricedHoldings: verified ? 0 : (h.unpricedTokenCount ?? 0), holdingsComplete: verified, reason: verified ? null : (h.reason ?? 'some_holdings_unpriced') }
+  }
+  const held = [...(h.native && (h.native.uiBalance ?? 0) > 0 ? [h.native.valueUsd] : []), ...h.holdings.filter((t) => (t.uiBalance ?? 1) > 0).map((t) => t.valueUsd)]
+  return evidenceFromHoldings({ holdingsComplete: h.status === 'ok', values: held, reason: h.reason })
+}
+
+/**
+ * The ONE display string for a merged total on every surface (hero, Portfolio Intelligence, CORTEX, live
+ * snapshot): `$X` (verified / verified zero), `$X · Partial` (known priced subtotal) or "Value unavailable" —
+ * never `$0.00` for an unknown value.
+ */
+export function mergedTotalText(merged: Pick<MergedTotal, 'totalValueUsd' | 'evidence'>, fmt: (usd: number) => string): string {
+  if (merged.evidence) return portfolioValueText(merged.evidence, fmt)
+  return merged.totalValueUsd != null ? fmt(merged.totalValueUsd) : PORTFOLIO_VALUE_UNAVAILABLE_TEXT
+}
+
+/** The EVM lane's evidence published by the worker (report.evmPortfolioEvidence), when present. */
+export function deriveEvmPortfolioEvidence(report: { evmPortfolioEvidence?: PortfolioEvidence | null } | null | undefined): PortfolioEvidence | null {
+  return report?.evmPortfolioEvidence ?? null
 }
 
 // CANONICAL WORKER OVERRIDE, DISCLOSED (final-canonical-merge-proof follow-up, hardened in
@@ -113,20 +157,58 @@ export type MergedTotal = {
 export type CanonicalMergeOverride = {
   totalValueUsd: number | null
   robinhoodMerged: boolean
+  /** The worker's own merged evidence (report.canonicalPortfolioEvidence), when published. */
+  evidence?: PortfolioEvidence | null
 } | null | undefined
 
 export function computeMergedTotalValueUsd(
   v2TotalValueUsd: number | null | undefined,
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
   canonicalOverride?: CanonicalMergeOverride,
+  evmEvidence?: PortfolioEvidence | null,
 ): MergedTotal {
   const { included, valueUsd } = computeRobinhoodInclusion(robinhoodResult)
+  // EVIDENCE PATH (worker-published EVM evidence): the total is what the evidence proves — a verified sum,
+  // a partial known subtotal, or null (unavailable). An unknown lane is never summed as 0.
+  if (evmEvidence) {
+    const rhLane = robinhoodLaneEvidence(robinhoodResult)
+    // No sidecar on screen but the worker merged Robinhood itself: its own merged evidence is authoritative.
+    const evidence = rhLane == null && canonicalOverride?.robinhoodMerged && canonicalOverride.evidence
+      ? canonicalOverride.evidence
+      : mergePortfolioEvidence([evmEvidence, rhLane])
+    const rhKnown = rhLane && rhLane.pricedHoldings > 0 ? rhLane.pricedSubtotalUsd : null
+    return {
+      totalValueUsd: portfolioDisplayValueUsd(evidence),
+      robinhoodIncluded: rhKnown != null || (rhLane == null && Boolean(canonicalOverride?.robinhoodMerged)),
+      robinhoodValueUsd: rhKnown,
+      evidence,
+    }
+  }
+  const legacy = computeLegacyMergedTotal(v2TotalValueUsd, robinhoodResult, canonicalOverride, included, valueUsd)
+  // LEGACY GUARD: without EVM evidence, a 0 EVM figure is not proof of zero. When Robinhood proves the wallet
+  // HOLDS assets it could not price, the total is unknown — never $0.00.
+  const rhLane = robinhoodLaneEvidence(robinhoodResult)
+  if (legacy.totalValueUsd === 0 && rhLane && rhLane.pricedHoldings === 0 && (rhLane.unpricedHoldings > 0 || rhLane.status === 'unavailable')) {
+    return { ...legacy, totalValueUsd: null, evidence: { valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', pricedHoldings: 0, unpricedHoldings: rhLane.unpricedHoldings, holdingsComplete: false, reason: rhLane.reason ?? 'no_holdings_priced' } }
+  }
+  return legacy
+}
+
+function computeLegacyMergedTotal(
+  v2TotalValueUsd: number | null | undefined,
+  robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
+  canonicalOverride: CanonicalMergeOverride,
+  included: boolean,
+  valueUsd: number | null,
+): MergedTotal {
+  void robinhoodResult
   if (canonicalOverride) {
     if (canonicalOverride.robinhoodMerged) {
       return {
         totalValueUsd: canonicalOverride.totalValueUsd,
         robinhoodIncluded: true,
         robinhoodValueUsd: (canonicalOverride.totalValueUsd ?? 0) - (v2TotalValueUsd ?? 0),
+        evidence: canonicalOverride.evidence ?? null,
       }
     }
     // Worker published an EVM-only canonical total. Keep it only when the sidecar has no priced
@@ -136,16 +218,17 @@ export function computeMergedTotalValueUsd(
         totalValueUsd: canonicalOverride.totalValueUsd,
         robinhoodIncluded: false,
         robinhoodValueUsd: null,
+        evidence: canonicalOverride.evidence ?? null,
       }
     }
     const evm = v2TotalValueUsd ?? canonicalOverride.totalValueUsd ?? 0
-    return { totalValueUsd: evm + (valueUsd ?? 0), robinhoodIncluded: true, robinhoodValueUsd: valueUsd }
+    return { totalValueUsd: evm + (valueUsd ?? 0), robinhoodIncluded: true, robinhoodValueUsd: valueUsd, evidence: null }
   }
   const v2Total = v2TotalValueUsd ?? null
   if (v2Total == null && valueUsd == null) {
-    return { totalValueUsd: null, robinhoodIncluded: included, robinhoodValueUsd: valueUsd }
+    return { totalValueUsd: null, robinhoodIncluded: included, robinhoodValueUsd: valueUsd, evidence: null }
   }
-  return { totalValueUsd: (v2Total ?? 0) + (valueUsd ?? 0), robinhoodIncluded: included, robinhoodValueUsd: valueUsd }
+  return { totalValueUsd: (v2Total ?? 0) + (valueUsd ?? 0), robinhoodIncluded: included, robinhoodValueUsd: valueUsd, evidence: null }
 }
 
 // WORKER-CANONICAL-TO-OVERRIDE ADAPTER, DISCLOSED: a small, pure helper turning a WalletV2Report's
@@ -155,11 +238,13 @@ export function computeMergedTotalValueUsd(
 export function deriveCanonicalMergeOverride(report: {
   canonicalTotalValueUsd?: number | null
   finalCanonicalMergeAudit?: { robinhoodMerged: boolean } | null
+  canonicalPortfolioEvidence?: PortfolioEvidence | null
 } | null | undefined): CanonicalMergeOverride {
   if (!report || report.canonicalTotalValueUsd === undefined) return null
   return {
     totalValueUsd: report.canonicalTotalValueUsd,
     robinhoodMerged: report.finalCanonicalMergeAudit?.robinhoodMerged ?? false,
+    evidence: report.canonicalPortfolioEvidence ?? null,
   }
 }
 

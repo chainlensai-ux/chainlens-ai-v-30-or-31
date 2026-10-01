@@ -12,6 +12,7 @@
 // Wallet Scanner page already has. Moving them out of 'use client' files is the only way Clark's
 // server route can call the SAME functions the UI uses without bundling React into /api/clark.
 
+import type { PortfolioEvidence } from './portfolioEvidence'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
@@ -45,6 +46,17 @@ export type RobinhoodPnlVerificationAudit = {
   rejectedReasonIfNotVerified: string | null
 }
 
+export type RobinhoodHoldingPriceDebugView = {
+  goldrushQuoteRate: number | null
+  dexscreenerPairsReturned: number | null
+  dexscreenerValidPairs: number | null
+  selectedPair: { pairAddress: string | null; dexId: string | null; liquidityUsd: number | null; volume24hUsd: number | null; priceUsd: number } | null
+  ethUsdPoint?: { priceUsd: number; atMs: number; ageSec: number } | null
+  resolvedPriceUsd: number | null
+  priceSource: string | null
+  failureReason: string | null
+}
+
 export type RobinhoodWalletScanResponse = {
   ok: boolean
   wallet: string
@@ -52,11 +64,14 @@ export type RobinhoodWalletScanResponse = {
   chainId: number
   holdings: {
     status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
-    native: { symbol: string; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null } | null
-    holdings: Array<{ address: string; symbol: string | null; name: string | null; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null }>
+    native: { symbol: string; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null; rawBalance?: string; priceSource?: string | null; pricingDebug?: RobinhoodHoldingPriceDebugView } | null
+    holdings: Array<{ address: string; symbol: string | null; name: string | null; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null; rawBalance?: string; decimals?: number | null; pricingDebug?: RobinhoodHoldingPriceDebugView }>
     portfolioTotalUsd: number | null
     unpricedTokenCount: number
     reason: string | null
+    /** What is known about this lane's value (lib/walletScan/portfolioEvidence.ts). Absent on older responses. */
+    portfolioEvidence?: PortfolioEvidence
+    pricingSummary?: { holdingsCount: number; pricedCount: number; unpricedCount: number; knownSubtotalUsd: number | null; valueStatus: PortfolioEvidence['status']; repricedFromCache?: boolean }
   }
   activity: {
     status: 'ok' | 'partial' | 'unavailable' | 'not_configured'

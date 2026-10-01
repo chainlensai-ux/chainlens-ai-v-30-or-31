@@ -29,7 +29,7 @@ const whalePageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.
 {
   check('watchlist helper exists', /function watchlistPortfolioValueUsd\(/.test(scannerSrc))
   check('watchlist save calls watchlistPortfolioValueUsd(result, robinhoodResult)', /portfolio_value:\s*watchlistPortfolioValueUsd\(result,\s*robinhoodResult\)/.test(scannerSrc))
-  check('watchlist helper uses computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhood, deriveCanonicalMergeOverride\(report\)\)/.test(scannerSrc))
+  check('watchlist helper uses computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhood, deriveCanonicalMergeOverride\(report\), deriveEvmPortfolioEvidence\(report\)\)/.test(scannerSrc))
   check('watchlist save no longer writes raw portfolioV2.totalValueUsd', !/portfolio_value:\s*result\.portfolioV2\?\.totalValueUsd/.test(scannerSrc))
   const merged = computeMergedTotalValueUsd(
     20070,

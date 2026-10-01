@@ -35,7 +35,8 @@ import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyC
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
 import { savePortfolioScanResult } from '@/app/frontend/lib/portfolioSharedCache'
-import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, computeRobinhoodDisplayState, mergedTotalText } from '@/app/frontend/lib/mergedWalletView'
+import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
 import { buildWalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
@@ -155,6 +156,9 @@ export type WalletV2Report = FinalReport & {
   robinhood?: { holdings: unknown; activity: unknown; pnl: unknown; audit: unknown } | null
   canonicalChainsScanned?: string[]
   canonicalTotalValueUsd?: number | null
+  /** lib/walletScan/portfolioEvidence.ts — the worker's EVM lane and merged evidence (absent on older reports). */
+  evmPortfolioEvidence?: PortfolioEvidence | null
+  canonicalPortfolioEvidence?: PortfolioEvidence | null
   portfolioTotalByChain?: Record<string, number>
   finalCanonicalMergeAudit?: {
     evmWorkerChains: number[]
@@ -208,7 +212,7 @@ function watchlistPortfolioValueUsd(
 ): number | null {
   if (!report) return null
   const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhood, deriveCanonicalMergeOverride(report))
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhood, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))
   const v = merged.totalValueUsd
   return typeof v === 'number' && Number.isFinite(v) ? v : null
 }
@@ -243,7 +247,7 @@ function buildCortexReadV2(
   // scanned, nonzero Robinhood balance would show a DIFFERENT, lower "Portfolio value" here than the
   // main result card two feet to its left. Now reads through the SAME merge helper every other
   // canonical-total display uses (see app/frontend/lib/mergedWalletView.ts).
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report), deriveEvmPortfolioEvidence(report))
   // SAME CHAIN BARS THE MAIN UI RENDERS, DISCLOSED: selectChainBreakdown is the exact function
   // WalletProfileHeader.tsx's PortfolioSnapshot uses for the hero chain bars — reused verbatim here
   // (same priority: canonical portfolioTotalByChain first) so "Largest chain exposure" can never
@@ -296,6 +300,7 @@ function buildCortexReadV2(
     behaviorIntel: b,
     finalSummary: report.finalSummary,
     totalValueUsd: merged.totalValueUsd,
+    portfolioEvidence: merged.evidence,
     robinhoodIncluded: merged.robinhoodIncluded,
     chainBreakdown,
     pricedTokenCount: stats.pricedTokenCount + (merged.robinhoodIncluded && robinhoodResult?.ok ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0) : 0),
@@ -1262,7 +1267,7 @@ export default function WalletScannerPage() {
               `result`: the instant the full report lands this card unmounts (its guard is
               `!result`) and the full result view below takes over. */}
           {partialSnapshot && !result && (() => {
-            const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)
+            const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult, undefined, partialSnapshot.portfolioEvidence ?? null)
             const chainLabels = partialSnapshot.activeChainIds.map((id) => (
               id === 8453 ? 'Base' : id === 1 ? 'ETH' : id === 4663 ? 'Robinhood' : `chain ${id}`
             ))
@@ -1274,7 +1279,7 @@ export default function WalletScannerPage() {
                   {limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
-                  {fmtUsd(merged.totalValueUsd)}
+                  {mergedTotalText(merged, (v) => fmtUsd(v))}
                 </div>
                 <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.8)', marginBottom: '10px' }}>
                   Chains: {chainLabels.join(', ') || 'pending'} · {partialSnapshot.holdingsCount} holdings

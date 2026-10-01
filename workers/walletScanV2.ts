@@ -18,6 +18,8 @@
 
 import { router } from '@/src/deployment/index'
 import { fetchAllHoldings, resolveHoldingsAllowedChainIds, SUPPORTED_CHAIN_TO_CHAIN_ID } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { fetchAllHoldingsWithEvidence } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { evidenceFromHoldings, mergePortfolioEvidence, portfolioDisplayValueUsd, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
@@ -447,9 +449,12 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // at this point the count is whatever this scan itself has made so far (0 on a normal scan) —
     // this check exists for defense-in-depth consistency with the trades check below, not because
     // holdings is expected to ever trip it first.
-    const chainHoldings = scanRpcBudgetExceeded(moduleErrors)
-      ? ([] as Awaited<ReturnType<typeof fetchAllHoldings>>)
-      : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress, holdingsAllowedChainIds), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors, moduleTimeoutMs(startTime))
+    // HOLDINGS EVIDENCE: the same holdings, plus whether every requested chain's providers actually answered —
+    // a budget skip, a timeout or a provider failure is NOT a confirmed-empty wallet (never $0.00).
+    const holdingsWithEvidence = scanRpcBudgetExceeded(moduleErrors)
+      ? { holdings: [] as Awaited<ReturnType<typeof fetchAllHoldings>>, chains: [], complete: false }
+      : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldingsWithEvidence(walletAddress, holdingsAllowedChainIds), { holdings: [] as Awaited<ReturnType<typeof fetchAllHoldings>>, chains: [], complete: false } as Awaited<ReturnType<typeof fetchAllHoldingsWithEvidence>>, moduleErrors, moduleTimeoutMs(startTime))
+    const chainHoldings = holdingsWithEvidence.holdings
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
     logProviderCallsForStage('holdings', providerCallsBefore)
@@ -489,6 +494,16 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
     const timeToFirstPortfolioMs = Date.now() - startTime
+    // EVM LANE EVIDENCE (lib/walletScan/portfolioEvidence.ts): one entry per held asset — its USD value, or
+    // null when unpriced. If pricing produced no rows for real holdings (timeout), every holding is unpriced.
+    // Only POTENTIALLY MATERIAL unpriced holdings make the lane partial (dust/spam stay excluded, as the card
+    // discloses); nothing priced is never a verified number.
+    const evmPortfolioEvidence: PortfolioEvidence = evidenceFromHoldings({
+      holdingsComplete: holdingsWithEvidence.complete,
+      values: pricing.pricedHoldings.length > 0 ? pricing.pricedHoldings.map((p) => (typeof p.valueUsd === 'number' && Number.isFinite(p.valueUsd) ? p.valueUsd : null)) : chainHoldings.map(() => null),
+      materialUnpriced: pricing.pricedHoldings.length > 0 ? (pricing.potentiallyMaterialUnpricedCount ?? null) : null,
+      reason: holdingsWithEvidence.complete ? null : 'holdings_provider_unavailable',
+    })
 
     // PARTIAL PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): a real, small, display-
     // shaped snapshot — never the full holdings array, never a fabricated value — published to the
@@ -502,7 +517,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     if (jobId) {
       try {
         await publishWalletScanPartialSnapshot(jobId, {
-          portfolioTotalValueUsd: portfolioOutput.portfolio.totalValueUsd,
+          portfolioTotalValueUsd: portfolioDisplayValueUsd(evmPortfolioEvidence),
+          portfolioEvidence: evmPortfolioEvidence,
           holdingsCount: chainHoldings.length,
           topHoldings: portfolioOutput.portfolio.topHoldings.slice(0, 10).map((h) => ({
             chainId: h.chainId, tokenAddress: h.tokenAddress, symbol: h.symbol, valueUsd: h.valueUsd,
@@ -536,7 +552,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     })
 
     return {
-      chainHoldings, pricing, portfolioOutput,
+      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     }
@@ -628,7 +644,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       console.warn('[fast-snapshot-audit] chainsScanned diverged from preflight-sanitized chains', { chainsScanned, sanitizedChains: sanitized.chains })
     }
     const {
-      chainHoldings, pricing, portfolioOutput,
+      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     } = await fastSnapshotPromise
@@ -936,6 +952,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         priceStatus: pricing.priceStatus,
         portfolioV2: portfolioOutput.portfolio,
         portfolioStatus: portfolioOutput.portfolioStatus,
+        evmPortfolioEvidence,
         pnlV2: pnlOutput.pnlV2,
         pnlStatus: pnlOutput.pnlStatus,
         walletPnlEvidenceAudit: pnlOutput.walletPnlEvidenceAudit,
@@ -1066,15 +1083,25 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     const evmTotalFromV1 = typeof evmPortfolio?.totalValueUsd === 'number' ? evmPortfolio.totalValueUsd : null
     // Timeout/empty fallback from runWithTimeoutAndRpcAudit is { totalValueUsd: 0, status: 'empty' }.
     // Don't let that clobber a real V1 total; a genuine empty wallet still lands on 0 either way.
+    const evmTokens = Array.isArray(evmPortfolio?.tokens) ? evmPortfolio!.tokens! : []
     const snapshotTimedOutEmpty = portfolioOutput.portfolioStatus === 'empty'
       && (evmTotalFromSnapshot ?? 0) === 0
       && evmTotalFromV1 != null
-    const evmTotalValueUsd = snapshotTimedOutEmpty ? evmTotalFromV1 : (evmTotalFromSnapshot ?? evmTotalFromV1)
-    const evmTokens = Array.isArray(evmPortfolio?.tokens) ? evmPortfolio!.tokens! : []
+    // V1 FALLBACK, KEPT IN EVIDENCE FORM: when the fast snapshot timed out empty (its EVM lane is then unknown)
+    // but the core pipeline's V1 portfolio carries a real positive total, that total is a real known subtotal —
+    // partial (holdings completeness is not proven by it), never discarded and never a fabricated verified value.
+    const evmLaneEvidence: PortfolioEvidence = evmPortfolioEvidence.status === 'unavailable' && snapshotTimedOutEmpty && evmTotalFromV1 != null && evmTotalFromV1 > 0
+      ? { valueUsd: null, pricedSubtotalUsd: evmTotalFromV1, status: 'partial', pricedHoldings: Math.max(1, evmTokens.filter((t) => typeof t.valueUsd === 'number' && t.valueUsd > 0).length), unpricedHoldings: 0, holdingsComplete: false, reason: 'evm_snapshot_unavailable_core_total_used' }
+      : evmPortfolioEvidence
     const robinhoodTotalValueUsd = robinhood?.holdings?.portfolioTotalUsd ?? null
-    const canonicalTotalValueUsd = (evmTotalValueUsd == null && robinhoodTotalValueUsd == null)
-      ? null
-      : (evmTotalValueUsd ?? 0) + (robinhoodTotalValueUsd ?? 0)
+    // CANONICAL TOTAL FROM EVIDENCE (lib/walletScan/portfolioEvidence.ts): a verified sum, a partial known
+    // subtotal, or null (unavailable) — never `0` for an unknown lane. Robinhood joins only when it was
+    // actually scanned (configured); a requested-but-failed Robinhood scan is an unknown lane, not $0.
+    const robinhoodLaneEvidence: PortfolioEvidence | null = robinhood
+      ? (robinhood.holdings.status === 'not_configured' ? null : (robinhood.holdings.portfolioEvidence ?? null))
+      : includeRobinhood ? { valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', pricedHoldings: 0, unpricedHoldings: 0, holdingsComplete: false, reason: 'robinhood_scan_failed' } : null
+    const canonicalPortfolioEvidence = mergePortfolioEvidence([evmLaneEvidence, robinhoodLaneEvidence])
+    const canonicalTotalValueUsd = portfolioDisplayValueUsd(canonicalPortfolioEvidence)
     const portfolioTotalByChain: Record<string, number> = {}
     // Same source as the live snapshot's EVM total (pricing.chainValueUsd → buildPortfolio), so
     // the completed chain map cannot silently revert to a smaller V1 token-sum.
@@ -1251,6 +1278,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         robinhoodBlockscoutUsageAudit,
         canonicalChainsScanned: actualChainsScanned,
         canonicalTotalValueUsd,
+        canonicalPortfolioEvidence,
         portfolioTotalByChain,
         canonicalHoldings,
       },
