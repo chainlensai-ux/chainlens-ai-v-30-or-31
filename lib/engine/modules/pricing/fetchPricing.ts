@@ -198,13 +198,33 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
 const DUST_VALUE_USD_THRESHOLD = 1
 const DUST_QUANTITY_FLOOR = 1e-6
 
-function isEligibleForFallbackPricing(h: ChainHolding): boolean {
-  if (h.providerPriceUsd != null && h.providerPriceUsd > 0) return false // already has a free price
-  if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) return false
-  const quantity = Number(h.quantity)
-  if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) return false
-  return true
+// DECIMALS PROVENANCE (fallback-selection fix): an Alchemy-only row carries ASSUMED 18 decimals, so its
+// `quantity` is meaningless for a 6-decimal USDC (1,250 USDC -> 1.25e-9 "units"). Confirmed production
+// effect: canonical stablecoins were dropped as "dust" before any lookup. For such a row only the raw
+// on-chain amount can prove "zero"; the quantity floor applies only when decimals are known.
+function decimalsKnown(h: ChainHolding): boolean {
+  return h.decimalsVerified !== false
 }
+
+function hasPositiveRawAmount(h: ChainHolding): boolean {
+  if (h.amountRaw == null) return false
+  try {
+    return BigInt(h.amountRaw) > BigInt(0)
+  } catch {
+    return false
+  }
+}
+
+/** Why a holding never reaches the fallback (null = eligible). */
+function fallbackGateReason(h: ChainHolding): 'priced_by_provider' | 'known_negligible_provider_value' | 'zero_or_malformed_quantity' | null {
+  if (h.providerPriceUsd != null && h.providerPriceUsd > 0) return 'priced_by_provider' // already has a free price
+  if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) return 'known_negligible_provider_value'
+  if (!decimalsKnown(h)) return hasPositiveRawAmount(h) ? null : 'zero_or_malformed_quantity'
+  const quantity = Number(h.quantity)
+  if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) return 'zero_or_malformed_quantity'
+  return null
+}
+
 
 // BOUNDED FALLBACK BUDGET, DISCLOSED (provider-call-audit follow-up task, confirmed cause of
 // remaining "80-90 DexScreener lookups"): the dust filter above only catches near-zero-quantity or
@@ -299,7 +319,8 @@ export function estimateMaterialityUsd(h: ChainHolding): number | null {
   // previously granted a huge fake ~$1/unit materiality estimate from that unit count alone). No
   // other classification supports a local estimate without a price lookup, which is the exact thing
   // being queued.
-  if (isVerifiedStableHolding(h)) return quantity
+  // Assumed decimals make the unit count meaningless — no estimate (the holding still ranks as material).
+  if (isVerifiedStableHolding(h) && decimalsKnown(h)) return quantity
   return null
 }
 
@@ -357,6 +378,91 @@ function compareFallbackPriority(a: number[], b: number[]): number {
   return 0
 }
 
+// ─── FALLBACK LANES (fallback-selection fix) ─────────────────────────────────────────────────────────
+// CONFIRMED PRODUCTION BUG: GoldRush balances failed (transient http_503), Alchemy supplied 108 holdings
+// with no symbol, no price and assumed decimals — so NOTHING carried a "real materiality signal", all 103
+// eligible holdings were classed no-signal, and the exploratory gate (default off) spent ZERO of the 30
+// lookups: `103 eligible / 0 selected / 0 priced`. A missing price is exactly why the fallback exists —
+// "no price evidence" must never by itself mean "spam". The budget is now split into three lanes, filled
+// in order, all inside the SAME unchanged 30-lookup cap:
+//   1. material    — provider value, canonical (address-verified) stablecoin, native / canonical WETH;
+//   2. activity    — a real recent-transfer signal (lastActivityAt);
+//   3. exploratory — every other eligible holding, with a small RESERVED slice of the budget
+//      (FALLBACK_EXPLORATORY_RESERVED_SLOTS) that lanes 1–2 can never take. Unused reserved slots go back
+//      to lanes 1–2. The rest of the budget stays closed to exploratory holdings unless
+//      HOLDINGS_FALLBACK_EXPLORATORY_SPAM_LOOKUP_ENABLED opts in, so spam can never drain the budget.
+// Spoofed stable/blue-chip tickers (impersonation evidence) are never explored.
+export const FALLBACK_EXPLORATORY_RESERVED_SLOTS = 8
+
+export type FallbackLane = 'material' | 'activity' | 'exploratory'
+
+function isMaterialHolding(h: ChainHolding): boolean {
+  return (h.providerValueUsd != null && h.providerValueUsd > 0) || isVerifiedStableHolding(h) || isVerifiedBlueChipHolding(h)
+}
+
+function fallbackLaneOf(h: ChainHolding): FallbackLane {
+  if (isMaterialHolding(h)) return 'material'
+  if (h.lastActivityAt != null) return 'activity'
+  return 'exploratory'
+}
+
+const LANE_ORDER: Record<FallbackLane, number> = { material: 0, activity: 1, exploratory: 2 }
+
+/**
+ * Why an exploratory holding looks like junk — used ONLY to rank it lower, never to exclude it or to call
+ * it worthless. All signals are local, already-available evidence; a symbol is never proof of value.
+ */
+export type ExploratorySuspicion = 'malformed_decimals' | 'nft_like_zero_decimals' | 'astronomical_unit_count' | 'round_airdrop_amount' | 'advertising_symbol'
+
+// Airdrop spam is minted with absurd unit counts — the exact axis the old ranking maximized.
+const ASTRONOMICAL_UNIT_COUNT = 1e12
+
+export function exploratorySuspicion(h: ChainHolding): ExploratorySuspicion | null {
+  if (decimalsKnown(h)) {
+    if (!Number.isInteger(h.decimals) || h.decimals < 0 || h.decimals > 36) return 'malformed_decimals'
+    if (h.decimals === 0) return 'nft_like_zero_decimals'
+    if (Number(h.quantity) >= ASTRONOMICAL_UNIT_COUNT) return 'astronomical_unit_count'
+  }
+  // Airdrop spam is minted in round amounts (exactly 1, 1,000, 1,000,000 units …); a traded balance almost
+  // never is. Raw amount with trailing zeros stripped has at most 2 significant digits.
+  if (h.amountRaw != null && /^\d+$/.test(h.amountRaw)) {
+    const significant = h.amountRaw.replace(/^0+/, '').replace(/0+$/, '')
+    if (significant.length > 0 && significant.length <= 2) return 'round_airdrop_amount'
+  }
+  const sym = typeof h.symbol === 'string' ? h.symbol.trim() : ''
+  if (sym !== '' && sym !== '?' && !isWellFormedSymbol(sym)) return 'advertising_symbol'
+  return null
+}
+
+// Exploratory ranking: no junk signal first, then token metadata present, then (decimals known only) the
+// larger balance; the caller's lexicographic key tiebreak keeps it fully deterministic.
+function exploratoryPriorityScore(h: ChainHolding): number[] {
+  const quantity = Number(h.quantity)
+  return [
+    exploratorySuspicion(h) == null ? 1 : 0,
+    isWellFormedSymbol(h.symbol) ? 1 : 0, // token metadata present
+    // Larger balance only when decimals are known (an assumed-decimals quantity is not comparable).
+    decimalsKnown(h) && Number.isFinite(quantity) ? quantity : 0,
+  ]
+}
+
+/** Deterministic lane-based selection inside the fixed budget. Pure, exported for tests. */
+export function selectFallbackKeys(params: {
+  rankedKeysByLane: Record<FallbackLane, string[]>
+  budget: number
+  exploratoryReserved: number
+  allowExploratorySpamLookup: boolean
+}): { material: string[]; activity: string[]; exploratory: string[] } {
+  const { rankedKeysByLane: lanes, budget } = params
+  const reserved = Math.min(Math.max(0, params.exploratoryReserved), lanes.exploratory.length, budget)
+  const primaryCap = budget - reserved
+  const material = lanes.material.slice(0, primaryCap)
+  const activity = lanes.activity.slice(0, primaryCap - material.length)
+  const exploratoryCap = params.allowExploratorySpamLookup ? budget - material.length - activity.length : reserved
+  const exploratory = lanes.exploratory.slice(0, exploratoryCap)
+  return { material, activity, exploratory }
+}
+
 // HOLDINGS-COVERAGE AUDIT, DISCLOSED (this task's explicit diagnostic requirement): one record per
 // UNPRICED holding, carrying exactly the requested fields. Pure and exported so the full set can be
 // asserted in tests ("required diagnostics for every unpriced holding") — while the console audit
@@ -372,22 +478,28 @@ export type FallbackSkipReason =
   | 'fallback_lookup_returned_no_price'
   | 'spoof_stable_symbol'
   | 'quantity_only_spam_suppressed'
+  // Fallback-selection fix: an exploratory holding with no junk signal that the reserved slice didn't reach.
+  | 'outside_exploratory_budget'
+  // A fallback price was found, but the holding's decimals were only assumed and could not be verified
+  // on-chain — never valued from a guessed quantity.
+  | 'decimals_unverified'
 
 // EXPLICIT SELECTION REASONS, DISCLOSED (holdings-fallback-spam follow-up task's explicit
 // requirement: "add explicit skip/selection reasons"). ADDITIVE, separate from `skipReason` above —
 // `skipReason` describes the post-hoc OUTCOME (was this ever priced, and if not, why is it still
 // unpriced right now); `selectionReason` describes the ranking-time RATIONALE for whether this
 // holding was ever a real candidate for one of the bounded fallback slots, independent of whether
-// the lookup (if it ran) later found a price. Kept as two fields rather than overloading one, so
-// existing `skipReason` consumers/tests are completely unaffected by this addition.
+// the lookup (if it ran) later found a price.
 export type FallbackSelectionReason =
   | 'priced_by_provider'
   | 'known_negligible_provider_value'
   | 'zero_or_malformed_quantity'
   | 'spoof_stable_symbol'
   | 'selected_material_candidate'
-  | 'no_materiality_signal'
+  | 'selected_activity_candidate'
+  | 'selected_exploratory_candidate'
   | 'outside_fallback_budget'
+  | 'outside_exploratory_budget'
   | 'quantity_only_spam_suppressed'
 
 export type UnpricedHoldingDiagnostic = {
@@ -398,6 +510,7 @@ export type UnpricedHoldingDiagnostic = {
   providerPriceUsd: number | null
   providerValueUsd: number | null
   fallbackEligible: boolean
+  fallbackLane: FallbackLane | null
   fallbackRank: number | null
   selectedForFallback: boolean
   skipReason: FallbackSkipReason
@@ -407,6 +520,40 @@ export type UnpricedHoldingDiagnostic = {
   estimatedMaterialitySignal: number | null
 }
 
+type FallbackClassification = {
+  eligible: boolean
+  lane: FallbackLane | null
+  rank: number | null
+  selected: boolean
+  skipReason: FallbackSkipReason
+  selectionReason: FallbackSelectionReason
+  suspicion: ExploratorySuspicion | null
+}
+
+// One classifier for both the unpriced diagnostics and the full per-holding audit.
+function classifyFallbackHolding(
+  h: ChainHolding,
+  key: string,
+  ctx: { rankByKey: Map<string, number>; budgeted: Set<string>; decimalsUnverifiedKeys?: ReadonlySet<string> },
+): FallbackClassification {
+  const gate = fallbackGateReason(h)
+  const rank = ctx.rankByKey.get(key) ?? null
+  const selected = ctx.budgeted.has(key)
+  const suspicion = exploratorySuspicion(h)
+  if (gate) return { eligible: false, lane: null, rank, selected: false, skipReason: gate, selectionReason: gate, suspicion }
+  if (isSpoofStableSymbol(h)) return { eligible: true, lane: null, rank, selected: false, skipReason: 'spoof_stable_symbol', selectionReason: 'spoof_stable_symbol', suspicion }
+  const lane = fallbackLaneOf(h)
+  if (selected) {
+    const selectionReason: FallbackSelectionReason = lane === 'material' ? 'selected_material_candidate' : lane === 'activity' ? 'selected_activity_candidate' : 'selected_exploratory_candidate'
+    const skipReason: FallbackSkipReason = ctx.decimalsUnverifiedKeys?.has(key) ? 'decimals_unverified' : 'fallback_lookup_returned_no_price'
+    return { eligible: true, lane, rank, selected, skipReason, selectionReason, suspicion }
+  }
+  if (lane !== 'exploratory') return { eligible: true, lane, rank, selected, skipReason: 'outside_fallback_budget', selectionReason: 'outside_fallback_budget', suspicion }
+  const junk = suspicion != null || isSpoofBlueChipSymbol(h)
+  const reason = junk ? 'quantity_only_spam_suppressed' : 'outside_exploratory_budget'
+  return { eligible: true, lane, rank, selected, skipReason: reason, selectionReason: reason, suspicion }
+}
+
 // PURE, exported for direct testing.
 export function buildUnpricedHoldingDiagnostics(params: {
   holdings: ChainHolding[]
@@ -414,10 +561,10 @@ export function buildUnpricedHoldingDiagnostics(params: {
   rankedFallbackKeys: string[]
   budgetedFallbackKeys: string[]
   keyOf: (h: ChainHolding) => string
+  decimalsUnverifiedKeys?: ReadonlySet<string>
 }): UnpricedHoldingDiagnostic[] {
   const { holdings, pricedHoldings, rankedFallbackKeys, budgetedFallbackKeys, keyOf } = params
-  const rankByKey = new Map(rankedFallbackKeys.map((k, i) => [k, i]))
-  const budgeted = new Set(budgetedFallbackKeys)
+  const ctx = { rankByKey: new Map(rankedFallbackKeys.map((k, i) => [k, i])), budgeted: new Set(budgetedFallbackKeys), decimalsUnverifiedKeys: params.decimalsUnverifiedKeys }
   const diagnostics: UnpricedHoldingDiagnostic[] = []
 
   for (let i = 0; i < holdings.length; i += 1) {
@@ -425,43 +572,11 @@ export function buildUnpricedHoldingDiagnostics(params: {
     const p = pricedHoldings[i]
     if (p?.priceUsd != null) continue // genuinely priced — not part of this audit
 
-    const key = keyOf(h)
-    const eligible = isEligibleForFallbackPricing(h)
-    const rank = rankByKey.get(key) ?? null
-    const selected = budgeted.has(key)
+    const c = classifyFallbackHolding(h, keyOf(h), ctx)
     const quantity = Number(h.quantity)
-    const estimatedMaterialitySignal = estimateMaterialityUsd(h)
-
-    const spoofStable = isSpoofStableSymbol(h)
-    const hasRealSignal = hasRealMaterialitySignal(h)
-
-    // ENRICHED, DISCLOSED (holdings-fallback-spam follow-up task #2 — explicit requirement: "skip
-    // reason quantity_only_spam_suppressed" / "spoof stable symbol => skipReason
-    // spoof_stable_symbol" must appear in production, not only in the separate `selectionReason`
-    // field below). A holding that IS selected is always reported as `fallback_lookup_returned_no_price`
-    // regardless of WHY it was selected (material, or exploratory-mode no-signal) — this field
-    // answers "what happened to this holding", `selectionReason` below answers "why was it
-    // (not) chosen".
-    let skipReason: FallbackSkipReason
-    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) skipReason = 'priced_by_provider'
-    else if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) skipReason = 'known_negligible_provider_value'
-    else if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) skipReason = 'zero_or_malformed_quantity'
-    else if (spoofStable) skipReason = 'spoof_stable_symbol'
-    else if (selected) skipReason = 'fallback_lookup_returned_no_price'
-    else if (hasRealSignal) skipReason = 'outside_fallback_budget'
-    else skipReason = 'quantity_only_spam_suppressed'
-
-    let selectionReason: FallbackSelectionReason
-    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) selectionReason = 'priced_by_provider'
-    else if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) selectionReason = 'known_negligible_provider_value'
-    else if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) selectionReason = 'zero_or_malformed_quantity'
-    else if (spoofStable) selectionReason = 'spoof_stable_symbol'
-    else if (selected) selectionReason = hasRealSignal ? 'selected_material_candidate' : 'no_materiality_signal'
-    else selectionReason = hasRealSignal ? 'outside_fallback_budget' : 'quantity_only_spam_suppressed'
-
     const knownBalanceSignal = h.providerValueUsd != null && h.providerValueUsd > 0
       ? 'provider_value'
-      : isVerifiedStableHolding(h) && Number.isFinite(quantity) && quantity > 0
+      : isVerifiedStableHolding(h) && decimalsKnown(h) && Number.isFinite(quantity) && quantity > 0
         ? 'stable_unit_peg'
         : Number.isFinite(quantity) && quantity > 0
           ? 'quantity_only'
@@ -474,21 +589,135 @@ export function buildUnpricedHoldingDiagnostics(params: {
       quantity: h.quantity,
       providerPriceUsd: h.providerPriceUsd ?? null,
       providerValueUsd: h.providerValueUsd ?? null,
-      fallbackEligible: eligible,
-      fallbackRank: rank,
-      selectionReason,
-      selectedForFallback: selected,
-      skipReason,
+      fallbackEligible: c.eligible,
+      fallbackLane: c.lane,
+      fallbackRank: c.rank,
+      selectionReason: c.selectionReason,
+      selectedForFallback: c.selected,
+      skipReason: c.skipReason,
       knownBalanceSignal,
-      // HONEST NULL, DISCLOSED: `lastActivityAt` is hardcoded null for every holding by
-      // lib/engine/modules/holdings/fetchHoldings.ts (no per-token activity indexer is wired at that
-      // level — see its own header). Reported as the real null it is, never fabricated.
+      // `lastActivityAt` is null for every holding today (no per-token activity indexer at the holdings
+      // level) — reported as the real null it is, never fabricated.
       currentTransferRecency: h.lastActivityAt ?? null,
-      estimatedMaterialitySignal,
+      estimatedMaterialitySignal: estimateMaterialityUsd(h),
     })
   }
 
   return diagnostics
+}
+
+/** Full per-holding fallback audit (every current holding, priced or not). */
+export type HoldingFallbackAuditRow = {
+  chainId: number
+  tokenAddress: string
+  symbol: string
+  rawQuantity: string | null
+  decimals: number
+  decimalsSource: 'provider' | 'assumed' | 'onchain_verified'
+  uiBalance: string
+  providerPriceUsd: number | null
+  providerValueUsd: number | null
+  transferRecency: string | null
+  currentActivitySignal: boolean
+  assetClass: 'native' | 'wrapped_native' | 'verified_stablecoin' | 'spoof_stable_symbol' | 'spoof_blue_chip_symbol' | 'unverified'
+  knownMetadata: boolean
+  materialitySignal: 'provider_value' | 'verified_asset' | 'recent_activity' | 'none'
+  spamDustReason: string | null
+  fallbackEligible: boolean
+  fallbackLane: FallbackLane | null
+  fallbackRank: number | null
+  selectedForFallback: boolean
+  priceUsd: number | null
+  valueUsd: number | null
+  priceSource: 'provider' | 'dexscreener_fallback' | 'unpriced'
+  skipReason: FallbackSkipReason | null
+}
+
+const HOLDING_AUDIT_MAX_ROWS = 150
+
+export type HoldingsFallbackAudit = {
+  holdingsTotal: number
+  providerPriced: number
+  fallbackEligible: number
+  fallbackBudget: number
+  exploratoryReservedSlots: number
+  candidates: Record<FallbackLane, number>
+  selected: Record<FallbackLane, number>
+  budgetedForLookup: number
+  fallbackPriced: number
+  decimalsVerifiedOnchain: number
+  decimalsUnverified: number
+  pricedCount: number
+  unpricedCount: number
+  rows: HoldingFallbackAuditRow[]
+  rowsTruncated: boolean
+}
+
+export function buildHoldingFallbackAudit(params: {
+  holdings: ChainHolding[]
+  pricedHoldings: PricedHolding[]
+  rankedFallbackKeys: string[]
+  budgetedFallbackKeys: string[]
+  keyOf: (h: ChainHolding) => string
+  decimalsUnverifiedKeys?: ReadonlySet<string>
+  onchainDecimalsByKey?: ReadonlyMap<string, number>
+}): HoldingFallbackAuditRow[] {
+  const { holdings, pricedHoldings, keyOf } = params
+  const ctx = { rankByKey: new Map(params.rankedFallbackKeys.map((k, i) => [k, i])), budgeted: new Set(params.budgetedFallbackKeys), decimalsUnverifiedKeys: params.decimalsUnverifiedKeys }
+  return holdings.map((h, i) => {
+    const p = pricedHoldings[i]
+    const key = keyOf(h)
+    const c = classifyFallbackHolding(h, key, ctx)
+    const providerPriced = h.providerPriceUsd != null && h.providerPriceUsd > 0
+    const priced = p?.priceUsd != null
+    const assetClass: HoldingFallbackAuditRow['assetClass'] = isNativePseudoAddress(h.tokenAddress)
+      ? 'native'
+      : isVerifiedBlueChipHolding(h)
+        ? 'wrapped_native'
+        : isVerifiedStableHolding(h)
+          ? 'verified_stablecoin'
+          : isSpoofStableSymbol(h)
+            ? 'spoof_stable_symbol'
+            : isSpoofBlueChipSymbol(h)
+              ? 'spoof_blue_chip_symbol'
+              : 'unverified'
+    const materialitySignal: HoldingFallbackAuditRow['materialitySignal'] = h.providerValueUsd != null && h.providerValueUsd > 0
+      ? 'provider_value'
+      : isVerifiedStableHolding(h) || isVerifiedBlueChipHolding(h)
+        ? 'verified_asset'
+        : h.lastActivityAt != null
+          ? 'recent_activity'
+          : 'none'
+    const gate = fallbackGateReason(h)
+    const spamDustReason = gate === 'known_negligible_provider_value' || gate === 'zero_or_malformed_quantity'
+      ? gate
+      : c.suspicion ?? (assetClass === 'spoof_stable_symbol' || assetClass === 'spoof_blue_chip_symbol' ? assetClass : null)
+    return {
+      chainId: h.chainId,
+      tokenAddress: h.tokenAddress,
+      symbol: h.symbol,
+      rawQuantity: h.amountRaw ?? null,
+      decimals: p?.decimals ?? h.decimals,
+      decimalsSource: decimalsKnown(h) ? 'provider' : params.onchainDecimalsByKey?.has(key) ? 'onchain_verified' : 'assumed',
+      uiBalance: p?.quantity ?? h.quantity,
+      providerPriceUsd: h.providerPriceUsd ?? null,
+      providerValueUsd: h.providerValueUsd ?? null,
+      transferRecency: h.lastActivityAt ?? null,
+      currentActivitySignal: h.lastActivityAt != null,
+      assetClass,
+      knownMetadata: isWellFormedSymbol(h.symbol),
+      materialitySignal,
+      spamDustReason,
+      fallbackEligible: c.eligible,
+      fallbackLane: c.lane,
+      fallbackRank: c.rank,
+      selectedForFallback: c.selected,
+      priceUsd: p?.priceUsd ?? null,
+      valueUsd: p?.valueUsd ?? null,
+      priceSource: providerPriced ? 'provider' : priced ? 'dexscreener_fallback' : 'unpriced',
+      skipReason: priced ? null : c.skipReason,
+    }
+  })
 }
 
 // Public entry point. `priceHoldings(holdings)` — exactly the signature specified; the second
@@ -519,70 +748,77 @@ function exploratorySpamLookupEnabledByDefault(): boolean {
   return process.env.HOLDINGS_FALLBACK_EXPLORATORY_SPAM_LOOKUP_ENABLED === 'true'
 }
 
+export type PriceHoldingsOptions = {
+  allowExploratorySpamLookup?: boolean
+  /** On-chain decimals() reader (testing seam). Default: RPC-verified, permanently cached. */
+  decimalsFn?: (chainId: number, tokenAddress: string) => Promise<number | null>
+}
+
 export async function priceHoldings(
   holdings: ChainHolding[],
   priceFn: (chainId: number, tokenAddress: string) => Promise<number | null> = fetchTokenPriceUsd,
-  options: { allowExploratorySpamLookup?: boolean } = {},
+  options: PriceHoldingsOptions = {},
 ): Promise<PricingEngineOutput> {
   const allowExploratorySpamLookup = options.allowExploratorySpamLookup ?? exploratorySpamLookupEnabledByDefault()
+  const decimalsFn = options.decimalsFn ?? verifyOnchainDecimals
   // Only holdings genuinely eligible for the fallback (no free provider price, not dust) ever reach
-  // priceFn — see isEligibleForFallbackPricing's own header for the two real signals used.
+  // priceFn — see fallbackGateReason.
   const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
-  const providerPriced = holdings.filter((h) => h.providerPriceUsd != null && h.providerPriceUsd > 0)
-  const knownUnderDollarSkipped = holdings.filter(
-    (h) => !(h.providerPriceUsd != null && h.providerPriceUsd > 0)
-      && h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD,
-  )
-  const quantityDustSkipped = holdings.filter((h) => {
-    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) return false
-    if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) return false
-    const quantity = Number(h.quantity)
-    return !Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR
-  })
-  const eligibleHoldings = holdings.filter(isEligibleForFallbackPricing)
+  const gateByIndex = holdings.map(fallbackGateReason)
+  const providerPriced = holdings.filter((_, i) => gateByIndex[i] === 'priced_by_provider')
+  const knownUnderDollarSkipped = holdings.filter((_, i) => gateByIndex[i] === 'known_negligible_provider_value')
+  const quantityDustSkipped = holdings.filter((_, i) => gateByIndex[i] === 'zero_or_malformed_quantity')
+  const eligibleHoldings = holdings.filter((_, i) => gateByIndex[i] === null)
   const distinctFallbackKeys = Array.from(new Set(eligibleHoldings.map(fallbackKeyOf)))
 
-  // Best (highest-priority) score across every holding sharing a key — a token appearing under two
-  // classification buckets is ranked by whichever bucket carries the strongest real signal.
+  // DUPLICATES: holdings sharing (chainId, tokenAddress) are ONE fallback candidate — the strongest lane
+  // and score among them wins. The same address on two chains is two distinct tokens (chainId is in the key).
+  const laneByKey = new Map<string, FallbackLane>()
+  const spoofedKeys = new Set<string>()
   const bestScoreByKey = new Map<string, number[]>()
   for (const h of eligibleHoldings) {
     const key = fallbackKeyOf(h)
-    const score = fallbackPriorityScore(h)
+    if (isSpoofStableSymbol(h) || isSpoofBlueChipSymbol(h)) spoofedKeys.add(key)
+    const lane = fallbackLaneOf(h)
+    const existingLane = laneByKey.get(key)
+    if (existingLane === undefined || LANE_ORDER[lane] < LANE_ORDER[existingLane]) laneByKey.set(key, lane)
+  }
+  for (const h of eligibleHoldings) {
+    const key = fallbackKeyOf(h)
+    const lane = laneByKey.get(key)!
+    if (fallbackLaneOf(h) !== lane) continue // scored only within the key's strongest lane
+    const score = lane === 'exploratory' ? exploratoryPriorityScore(h) : fallbackPriorityScore(h)
     const existing = bestScoreByKey.get(key)
     if (!existing || compareFallbackPriority(score, existing) < 0) bestScoreByKey.set(key, score)
   }
-  // DETERMINISTIC ORDERING, DISCLOSED (this task's explicit requirement): an explicit
-  // lexicographic tiebreak on the `chainId:tokenAddress` key means two holdings with genuinely
-  // identical signals always resolve the same way — the selected 30 can never shift between scans
-  // because of provider response ordering or Array.sort implementation details.
+  // DETERMINISTIC ORDERING: lane first, then score, then an explicit lexicographic `chainId:tokenAddress`
+  // tiebreak — identical inputs (and exploration memory) always select the same keys, whatever the
+  // provider's response order.
   const rankedFallbackKeys = [...distinctFallbackKeys].sort((a, b) => {
+    const byLane = LANE_ORDER[laneByKey.get(a)!] - LANE_ORDER[laneByKey.get(b)!]
+    if (byLane !== 0) return byLane
     const byScore = compareFallbackPriority(bestScoreByKey.get(a)!, bestScoreByKey.get(b)!)
     if (byScore !== 0) return byScore
     return a.localeCompare(b)
   })
-  // ELIGIBILITY GATE, NOT JUST RANKING, DISCLOSED (holdings-fallback-spam follow-up task #2):
-  // `bestScoreByKey.get(key)![0]` is exactly `realSignalRank` from `fallbackPriorityScore` — 1 when
-  // at least one holding sharing this key has a real materiality signal (provider value, a
-  // canonically address-verified stablecoin, or real transfer recency), 0 otherwise. Material
-  // candidates are budgeted FIRST, in full rank order; a no-signal candidate only ever consumes a
-  // real DexScreener call when material candidates leave slack in the budget AND exploratory lookup
-  // is explicitly allowed — production defaults to neither spending calls on them nor leaving them
-  // ranked-but-unselected as a false promise, they are genuinely never queued.
-  const materialFallbackKeys = rankedFallbackKeys.filter((key) => bestScoreByKey.get(key)![0] === 1)
-  const noSignalFallbackKeys = rankedFallbackKeys.filter((key) => bestScoreByKey.get(key)![0] === 0)
-  const budgetedMaterialKeys = materialFallbackKeys.slice(0, MAX_FALLBACK_TOKENS)
-  const remainingBudgetAfterMaterial = MAX_FALLBACK_TOKENS - budgetedMaterialKeys.length
-  const budgetedNoSignalKeys = allowExploratorySpamLookup && remainingBudgetAfterMaterial > 0
-    ? noSignalFallbackKeys.slice(0, remainingBudgetAfterMaterial)
-    : []
-  const budgetedFallbackKeys = [...budgetedMaterialKeys, ...budgetedNoSignalKeys]
+  const rankedKeysByLane: Record<FallbackLane, string[]> = { material: [], activity: [], exploratory: [] }
+  for (const key of rankedFallbackKeys) {
+    if (spoofedKeys.has(key) && laneByKey.get(key) === 'exploratory') continue // impersonation is never explored
+    rankedKeysByLane[laneByKey.get(key)!].push(key)
+  }
+  const selection = selectFallbackKeys({
+    rankedKeysByLane,
+    budget: MAX_FALLBACK_TOKENS,
+    exploratoryReserved: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
+    allowExploratorySpamLookup,
+  })
+  const budgetedFallbackKeys = [...selection.material, ...selection.activity, ...selection.exploratory]
   const budgetedFallbackKeySet = new Set(budgetedFallbackKeys)
   const overBudgetKeys = rankedFallbackKeys.filter((key) => !budgetedFallbackKeySet.has(key))
+  const materialFallbackKeys = rankedKeysByLane.material
+  const noSignalFallbackKeys = rankedFallbackKeys.filter((key) => laneByKey.get(key) === 'exploratory')
 
-  // DIAGNOSTIC, DISCLOSED (provider-call-audit follow-up task, explicit "report before changing
-  // thresholds" requirement): real counts only, no behavior change from this log — reports exactly
-  // how many holdings fall into each eligibility bucket so a future pass can decide whether the
-  // DUST_VALUE_USD_THRESHOLD/DUST_QUANTITY_FLOOR heuristics need adjusting, instead of guessing.
+  // DIAGNOSTIC: real counts only. `budgetedForLookup` can never exceed `fallbackBudget`.
   // eslint-disable-next-line no-console
   console.warn('[provider-call-audit] DexScreener fallback eligibility', {
     holdingsTotal: holdings.length,
@@ -594,21 +830,45 @@ export async function priceHoldings(
     fallbackBudget: MAX_FALLBACK_TOKENS,
     budgetedForLookup: budgetedFallbackKeys.length,
     overBudgetUnpriced: overBudgetKeys.length,
-    // ELIGIBILITY-GATE VISIBILITY, DISCLOSED (holdings-fallback-spam follow-up task #2): real counts
-    // proving no-signal holdings were genuinely excluded from spend, not merely reordered.
     materialFallbackCandidates: materialFallbackKeys.length,
+    activityFallbackCandidates: rankedKeysByLane.activity.length,
     noSignalFallbackCandidates: noSignalFallbackKeys.length,
-    budgetedMaterialKeys: budgetedMaterialKeys.length,
-    budgetedNoSignalKeys: budgetedNoSignalKeys.length,
+    spoofSuppressedCandidates: [...spoofedKeys].filter((k) => laneByKey.get(k) === 'exploratory').length,
+    budgetedMaterialKeys: selection.material.length,
+    budgetedActivityKeys: selection.activity.length,
+    budgetedNoSignalKeys: selection.exploratory.length,
+    exploratoryReservedSlots: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
+    lanes: { material: selection.material.length, activity: selection.activity.length, exploratory: selection.exploratory.length },
     allowExploratorySpamLookup,
     timestamp: Date.now(),
   })
   const fallbackPriceByKey = new Map<string, number | null>()
   const resolvedPrices = await mapWithConcurrencyLimit(budgetedFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
     const [chainIdStr, tokenAddress] = key.split(':')
-    return priceFn(Number(chainIdStr), tokenAddress)
+    const price = await priceFn(Number(chainIdStr), tokenAddress)
+    // A non-positive or non-finite price is never a price.
+    return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null
   })
   budgetedFallbackKeys.forEach((key, i) => fallbackPriceByKey.set(key, resolvedPrices[i]))
+
+  // ASSUMED DECIMALS ARE NEVER VALUED: a fallback-priced holding whose decimals were only assumed (an
+  // Alchemy-only row) gets its real decimals() read on-chain — bounded by the same budget (only keys that
+  // actually found a price) and permanently cached per token. If that read fails, the holding stays
+  // unpriced ('decimals_unverified') rather than being valued from a guessed quantity.
+  const onchainDecimalsByKey = new Map<string, number>()
+  const decimalsUnverifiedKeys = new Set<string>()
+  const keysNeedingDecimals = Array.from(new Set(
+    holdings.filter((h) => !decimalsKnown(h) && fallbackPriceByKey.get(fallbackKeyOf(h)) != null).map(fallbackKeyOf),
+  ))
+  const verifiedDecimals = await mapWithConcurrencyLimit(keysNeedingDecimals, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    const [chainIdStr, tokenAddress] = key.split(':')
+    return decimalsFn(Number(chainIdStr), tokenAddress)
+  })
+  keysNeedingDecimals.forEach((key, i) => {
+    const d = verifiedDecimals[i]
+    if (typeof d === 'number' && Number.isInteger(d) && d >= 0 && d <= 36) onchainDecimalsByKey.set(key, d)
+    else decimalsUnverifiedKeys.add(key)
+  })
   // Holdings whose key didn't make the cut stay honestly unpriced (priceUsd/valueUsd: null below) —
   // never hidden from pricedHoldings, never defaulted to zero.
 
@@ -616,10 +876,23 @@ export async function priceHoldings(
     // Prefer the balances provider's own real, free price (see file header) — only fall through
     // to the weaker, capped, deduped DexScreener-only lookup when the provider genuinely didn't
     // supply one.
+    // Assumed decimals: use the on-chain-verified decimals for quantity, or stay unpriced.
+    let decimals = h.decimals
+    let quantity = h.quantity
+    let fallbackPrice = fallbackPriceByKey.get(fallbackKeyOf(h)) ?? null
+    if (!decimalsKnown(h)) {
+      const verified = onchainDecimalsByKey.get(fallbackKeyOf(h))
+      if (verified != null && h.amountRaw != null && /^\d+$/.test(h.amountRaw)) {
+        decimals = verified
+        quantity = String(Number(h.amountRaw) / 10 ** verified)
+      } else {
+        fallbackPrice = null
+      }
+    }
     const priceUsd = h.providerPriceUsd != null && h.providerPriceUsd > 0
       ? h.providerPriceUsd
-      : fallbackPriceByKey.get(fallbackKeyOf(h)) ?? null
-    const recomputedValueUsd = priceUsd != null ? Number(h.quantity) * priceUsd : null
+      : fallbackPrice
+    const recomputedValueUsd = priceUsd != null ? Number(quantity) * priceUsd : null
     // CONFIRMED ROOT CAUSE, DISCLOSED (dominant-holding price audit, real production evidence: the
     // same wallet's total swinging between ~$5.2k/$9k/$13.5k/$6.4k across scans while its priced-
     // holding COUNT stayed stable — one dominant token, e.g. FreeCode, worth thousands of dollars
@@ -654,8 +927,8 @@ export async function priceHoldings(
       chainId: h.chainId,
       tokenAddress: h.tokenAddress,
       symbol: h.symbol,
-      decimals: h.decimals,
-      quantity: h.quantity,
+      decimals,
+      quantity,
       priceUsd,
       valueUsd,
       classification: h.classification,
@@ -734,10 +1007,17 @@ export async function priceHoldings(
     rankedFallbackKeys,
     budgetedFallbackKeys,
     keyOf: fallbackKeyOf,
+    decimalsUnverifiedKeys,
   })
-  const estimatedPotentiallyMaterialUnpricedCount = unpricedDiagnostics.filter(
-    (d) => d.estimatedMaterialitySignal != null && d.estimatedMaterialitySignal > DUST_VALUE_USD_THRESHOLD,
-  ).length
+  // POTENTIALLY MATERIAL UNPRICED: a real local estimate above $1 (provider partial value / verified stable
+  // peg) — PLUS any unpriced Alchemy-only row (no spam filter, no metadata, no price: genuinely unknown)
+  // that shows no junk signal. Those keep the lane "Partial", never a silently complete total.
+  const holdingByKey = new Map(holdings.map((h) => [fallbackKeyOf(h), h]))
+  const estimatedPotentiallyMaterialUnpricedCount = unpricedDiagnostics.filter((d) => {
+    if (d.estimatedMaterialitySignal != null && d.estimatedMaterialitySignal > DUST_VALUE_USD_THRESHOLD) return true
+    const h = holdingByKey.get(`${d.chainId}:${d.tokenAddress.toLowerCase()}`)
+    return h != null && d.fallbackEligible && !decimalsKnown(h) && exploratorySuspicion(h) == null && !isSpoofStableSymbol(h) && !isSpoofBlueChipSymbol(h)
+  }).length
   const TOP_UNPRICED_CANDIDATES_LOGGED = 15
   const topUnpricedCandidates = unpricedDiagnostics
     .filter((d) => d.fallbackEligible)
@@ -808,8 +1088,8 @@ export async function priceHoldings(
       // Bounded to dominant holdings only (never a per-holding blanket RPC audit) and cached
       // permanently per (chainId, tokenAddress) by verifyOnchainDecimals itself.
       let decimalsRecomputed = false
-      const rpcVerifiedDecimals = await verifyOnchainDecimals(h.chainId, h.tokenAddress)
-      if (rpcVerifiedDecimals != null && rpcVerifiedDecimals !== h.decimals && h.amountRaw != null && p.priceUsd != null) {
+      const rpcVerifiedDecimals = await decimalsFn(h.chainId, h.tokenAddress)
+      if (rpcVerifiedDecimals != null && rpcVerifiedDecimals !== p.decimals && h.amountRaw != null && p.priceUsd != null) {
         const correctedQuantity = Number(h.amountRaw) / 10 ** rpcVerifiedDecimals
         if (Number.isFinite(correctedQuantity)) {
           const correctedValueUsd = correctedQuantity * p.priceUsd
@@ -942,5 +1222,29 @@ export async function priceHoldings(
     }
   }))
 
-  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount }
+  // PER-HOLDING FALLBACK AUDIT: every current holding (capped for payload size), plus the lane counts.
+  const holdingAuditRows = buildHoldingFallbackAudit({
+    holdings, pricedHoldings, rankedFallbackKeys, budgetedFallbackKeys, keyOf: fallbackKeyOf, decimalsUnverifiedKeys, onchainDecimalsByKey,
+  })
+  const fallbackAudit: HoldingsFallbackAudit = {
+    holdingsTotal: holdings.length,
+    providerPriced: providerPriced.length,
+    fallbackEligible: eligibleHoldings.length,
+    fallbackBudget: MAX_FALLBACK_TOKENS,
+    exploratoryReservedSlots: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
+    candidates: { material: rankedKeysByLane.material.length, activity: rankedKeysByLane.activity.length, exploratory: rankedKeysByLane.exploratory.length },
+    selected: { material: selection.material.length, activity: selection.activity.length, exploratory: selection.exploratory.length },
+    budgetedForLookup: budgetedFallbackKeys.length,
+    fallbackPriced: budgetedFallbackKeys.filter((k) => fallbackPriceByKey.get(k) != null && !decimalsUnverifiedKeys.has(k)).length,
+    decimalsVerifiedOnchain: onchainDecimalsByKey.size,
+    decimalsUnverified: decimalsUnverifiedKeys.size,
+    pricedCount,
+    unpricedCount: pricedHoldings.length - pricedCount,
+    rows: holdingAuditRows.slice(0, HOLDING_AUDIT_MAX_ROWS),
+    rowsTruncated: holdingAuditRows.length > HOLDING_AUDIT_MAX_ROWS,
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[holdings-fallback-selection] lanes', { ...fallbackAudit, rows: undefined })
+
+  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount, fallbackAudit }
 }

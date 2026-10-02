@@ -3,7 +3,7 @@
 // chain, never paginated, never repeated.
 
 import type { SupportedChain } from '../providerFetchWindow/types'
-import type { TokenHolding } from './types'
+import type { GoldrushFailureKind, TokenHolding } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { profileGoldrush } from '@/lib/providers/goldrush'
 import { auditRPC } from '@/lib/server/alchemyAudit'
@@ -55,23 +55,40 @@ function goldrushChainName(chain: SupportedChain): string | null {
   return GOLDRUSH_VERIFIED_CHAIN_SLUGS[chain] ?? null
 }
 
-export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress: string): Promise<{ ok: boolean; holdings: TokenHolding[] }> {
+/**
+ * Classifies a GoldRush HTTP failure. 401/403 = auth/config, 402 = billing, 429 = rate limit,
+ * 5xx = transient provider failure (never billing/auth, never "empty"), other 4xx = request rejected.
+ */
+export function classifyGoldrushHttpFailure(httpStatus: number): GoldrushFailureKind {
+  if (httpStatus === 401 || httpStatus === 403) return 'auth_config'
+  if (httpStatus === 402) return 'billing'
+  if (httpStatus === 429) return 'rate_limited'
+  if (httpStatus >= 500 && httpStatus <= 599) return 'transient_provider'
+  return 'request_rejected'
+}
+
+export type GoldrushHoldingsResult = { ok: boolean; holdings: TokenHolding[]; failure?: { kind: GoldrushFailureKind; httpStatus: number | null } | null }
+
+export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress: string): Promise<GoldrushHoldingsResult> {
   // PROFILER, DISCLOSED: "call" only, no caching added here — live balance data changes as a wallet
   // trades, unlike fetchGoldrushHistoricalPrice's permanent historical-fact caching. Caching this
   // would risk showing a stale portfolio value, a real correctness regression this task's own rules
   // (only cache where redundant calls occur; never cache live, changing data) explicitly warn against.
   profileGoldrush('fetchHoldings', { chain, walletAddress }, 'call')
   const chainSlug = goldrushChainName(chain)
-  if (!chainSlug) return { ok: false, holdings: [] }
+  if (!chainSlug) return { ok: false, holdings: [], failure: { kind: 'not_configured', httpStatus: null } }
   const apiKey = goldrushApiKey()
-  if (!apiKey) return { ok: false, holdings: [] }
+  if (!apiKey) return { ok: false, holdings: [], failure: { kind: 'not_configured', httpStatus: null } }
   try {
     const url = `https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/balances_v2/?no-spam=true&no-nft-fetch=true`
     logRpcCall({ route: 'holdings', chain, method: 'goldrush_balances_v2' })
     const res = await fetch(url, { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(10_000) })
-    if (!res.ok) return { ok: false, holdings: [] }
+    if (!res.ok) return { ok: false, holdings: [], failure: { kind: classifyGoldrushHttpFailure(res.status), httpStatus: res.status } }
     const json = await res.json()
-    if (json?.error) return { ok: false, holdings: [] }
+    if (json?.error) {
+      const code = typeof json?.error_code === 'number' ? json.error_code : null
+      return { ok: false, holdings: [], failure: { kind: code != null ? classifyGoldrushHttpFailure(code) : 'provider_error', httpStatus: code } }
+    }
     const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
 
     const holdings: TokenHolding[] = items
@@ -92,13 +109,15 @@ export async function fetchGoldrushHoldings(chain: SupportedChain, walletAddress
           tokenDecimals: decimals,
           providerPriceUsd,
           providerValueUsd,
+          decimalsKnown: typeof it.contract_decimals === 'number',
         } satisfies TokenHolding
       })
       .filter((h) => h.contract.startsWith('0x') && Number.isFinite(h.amount) && h.amount > 0)
 
-    return { ok: true, holdings }
+    return { ok: true, holdings, failure: null }
   } catch {
-    return { ok: false, holdings: [] }
+    // Timeout or network error: transient, same class as a 5xx.
+    return { ok: false, holdings: [], failure: { kind: 'transient_provider', httpStatus: null } }
   }
 }
 
@@ -141,6 +160,7 @@ export async function fetchAlchemyHoldings(chain: SupportedChain, walletAddress:
           tokenDecimals: 18,
           providerPriceUsd: null,
           providerValueUsd: null,
+          decimalsKnown: false,
         } satisfies TokenHolding
       })
       .filter((h) => h.contract.startsWith('0x') && Number.isFinite(h.amount) && h.amount > 0)

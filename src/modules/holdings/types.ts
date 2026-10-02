@@ -20,10 +20,29 @@ export type TokenHolding = {
   // balance (GoldRush's balances_v2 does, for free, in the same call) — never fabricated here.
   providerPriceUsd: number | null
   providerValueUsd: number | null
+  // False when `tokenDecimals` is an ASSUMED default (Alchemy's balance call carries no metadata, so 18 is
+  // assumed). Optional: undefined means the provider reported decimals itself. A quantity derived from
+  // assumed decimals is never valued and never used to call a holding "dust".
+  decimalsKnown?: boolean
 }
+
+// Why GoldRush's balances call failed — kept distinct so a transient 5xx is never reported (or cached)
+// as an auth/billing problem or a confirmed-empty wallet.
+export type GoldrushFailureKind =
+  | 'not_configured' // no API key / no verified chain slug
+  | 'auth_config' // 401 / 403
+  | 'billing' // 402
+  | 'rate_limited' // 429
+  | 'transient_provider' // 5xx, timeout, network error
+  | 'request_rejected' // any other 4xx
+  | 'provider_error' // 2xx with an error body / unparseable response
 
 export type HoldingsFetchResult = {
   chain: SupportedChain
   providerStatus: ProviderStatus
   holdings: TokenHolding[]
+  // GoldRush's balances call is the only holdings source that includes the NATIVE balance (Alchemy's
+  // alchemy_getTokenBalances is ERC-20 only). When it failed, the holdings list cannot be complete.
+  nativeBalanceCovered?: boolean
+  goldrushFailure?: { kind: GoldrushFailureKind; httpStatus: number | null } | null
 }

@@ -21,6 +21,7 @@ import {
   estimateMaterialityUsd,
   isWellFormedSymbol,
   buildUnpricedHoldingDiagnostics,
+  FALLBACK_EXPLORATORY_RESERVED_SLOTS,
 } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding } from './types'
@@ -81,12 +82,15 @@ describe('fallback prioritisation — likely USD materiality, not raw unit count
       ],
       fn,
     )
-    assert.deepEqual(order, [CANONICAL_BASE_WETH.toLowerCase()], 'a tiny, address-verified wrapped-native balance must be looked up; the huge-unit-count no-signal spam must not spend a call at all')
+    // Fallback-selection fix: no-signal holdings get a small reserved exploratory slice — but only AFTER
+    // every material candidate, so unit count still can never outrank real evidence.
+    assert.equal(order[0], CANONICAL_BASE_WETH.toLowerCase(), 'the address-verified wrapped-native balance is looked up first')
+    assert.ok(order.length <= 2)
   })
 })
 
 describe('fallback prioritisation — native / wrapped-native / stablecoin assets receive priority', () => {
-  it('stablecoins rank above blue-chip; a no-signal unclassified token is never selected by default', async () => {
+  it('stablecoins rank above blue-chip; a no-signal unclassified token only gets an exploratory slot after them', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -97,7 +101,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       ],
       fn,
     )
-    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_WETH.toLowerCase()], 'both real, address-verified assets are looked up, in stable-before-blue-chip order; the no-signal token is excluded entirely')
+    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_WETH.toLowerCase(), '0xother'], 'verified assets first (stable before blue-chip); the no-signal token only via the reserved exploratory slice')
   })
 
   it('an address-verified blue-chip alone (no exploratory mode) is looked up even with no other candidates present', async () => {
@@ -149,7 +153,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
     assert.equal(order[0], '0xreal', 'the real, address-unverified-nothing-to-do-with-it position must be looked up first')
   })
 
-  it('neither a malformed-symbol nor a well-formed no-signal row is selected by default (both are pure quantity-only candidates)', async () => {
+  it('no-signal rows get the reserved exploratory slice by default, a row with token metadata ahead of one without', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -160,7 +164,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       ],
       fn,
     )
-    assert.deepEqual(order, [], 'neither candidate has any real materiality signal, so neither spends a default-mode call')
+    assert.deepEqual(order, ['0xnamed', '0xnometa'], 'missing price evidence is not spam — both are explored, metadata first')
   })
 
   it('in exploratory mode (opt-in only), a malformed-symbol row still ranks below a well-formed one of the same no-signal class', async () => {
@@ -191,20 +195,20 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
 })
 
 describe('production live shape — no-signal spam is genuinely excluded, not merely reordered', () => {
-  it('HARD ASSERTION (required regression): a wallet with 347 no-signal quantity-only holdings and zero material candidates spends zero DexScreener calls, not up to 30', async () => {
+  it('HARD ASSERTION (required regression): a wallet with 347 no-signal quantity-only holdings and zero material candidates spends only the small reserved exploratory slice, never the whole 30', async () => {
     const { fn, order } = recordingPriceFn()
     const spamHoldings = Array.from({ length: 347 }, (_, i) =>
       holding({ tokenAddress: `0xspam${String(i).padStart(4, '0')}`, symbol: `SPAM${i}`, quantity: String(1_000_000_000 - i) }),
     )
     const result = await priceHoldings(spamHoldings, fn)
-    assert.equal(order.length, 0, 'no material candidate exists anywhere in this wallet — the budget must go entirely unspent')
+    assert.equal(order.length, FALLBACK_EXPLORATORY_RESERVED_SLOTS, 'only the reserved exploratory slice is spent — never the remaining budget')
     for (const p of result.pricedHoldings) {
       assert.equal(p.priceUsd, null)
       assert.equal(p.valueUsd, null)
     }
   })
 
-  it('a mix of real material candidates and no-signal spam only ever spends calls on the material ones, up to the unchanged 30-slot budget', async () => {
+  it('a mix of real material candidates and no-signal holdings spends every material call first, then only the reserved exploratory slice', async () => {
     const { fn, order } = recordingPriceFn()
     const materialHoldings = Array.from({ length: 5 }, (_, i) =>
       holding({ tokenAddress: `0xmat${String(i).padStart(4, '0')}`, symbol: `MAT${i}`, quantity: '2', providerValueUsd: 10 + i }),
@@ -213,8 +217,8 @@ describe('production live shape — no-signal spam is genuinely excluded, not me
       holding({ tokenAddress: `0xspam${String(i).padStart(4, '0')}`, symbol: `SPAM${i}`, quantity: String(1_000_000_000 - i) }),
     )
     await priceHoldings([...spamHoldings, ...materialHoldings], fn)
-    assert.equal(order.length, 5, 'only the 5 real material candidates are looked up — the 300 no-signal ones never spend budget even though 25 slots remain unused')
-    for (const key of order) assert.ok(key.startsWith('0xmat'), `unexpected non-material key selected: ${key}`)
+    assert.equal(order.length, 5 + FALLBACK_EXPLORATORY_RESERVED_SLOTS, 'the 5 material candidates plus the reserved exploratory slice — the other 17 free slots stay unspent')
+    for (const key of order.slice(0, 5)) assert.ok(key.startsWith('0xmat'), `material candidates must be looked up first: ${key}`)
   })
 })
 
@@ -228,13 +232,13 @@ describe('fallback budget — exactly 30, never consumed by malformed or zero ba
     assert.equal(order.length, 30, 'the fallback budget must remain exactly 30 — never widened by this change')
   })
 
-  it('HARD ASSERTION (required regression): with no material candidates at all, the budget is never spent — zero calls, not merely bounded at 30', async () => {
+  it('HARD ASSERTION (required regression): with no material candidates at all, only the reserved exploratory slice is spent — never the full 30', async () => {
     const { fn, order } = recordingPriceFn()
     const holdings = Array.from({ length: 400 }, (_, i) =>
       holding({ tokenAddress: `0xtok${String(i).padStart(4, '0')}`, symbol: `T${i}`, quantity: '100' }),
     )
     await priceHoldings(holdings, fn)
-    assert.equal(order.length, 0, 'no holding here has any real materiality signal — none may spend a default-mode DexScreener call')
+    assert.equal(order.length, FALLBACK_EXPLORATORY_RESERVED_SLOTS, 'no-signal holdings are bounded to the reserved exploratory slice')
   })
 
   it('zero, negative and malformed balances never consume a slot of the budget', async () => {
@@ -405,15 +409,16 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
       holding({ tokenAddress: '0xnegligible', quantity: '10', providerValueUsd: 0.5 }),
       // A REAL material candidate (providerValueUsd) that simply missed the bounded budget.
       holding({ tokenAddress: '0xbudget', quantity: '10', providerValueUsd: 3 }),
-      // A no-signal quantity-only candidate that missed the budget — correctly spam-suppressed,
-      // never 'outside_fallback_budget' (which now means "real, just didn't fit").
+      // A no-signal candidate that missed the reserved exploratory slice, with no junk signal.
       holding({ tokenAddress: '0xnosignalbudget', quantity: '10' }),
+      // A no-signal candidate with a junk signal (absurd unit count) — spam-suppressed.
+      holding({ tokenAddress: '0xjunk', quantity: '500000000000000' }),
       holding({ tokenAddress: '0xnoprice', quantity: '10' }),
     ]
     const diagnostics = buildUnpricedHoldingDiagnostics({
       holdings,
       pricedHoldings: holdings.map((h) => priced({ tokenAddress: h.tokenAddress })),
-      rankedFallbackKeys: ['8453:0xbudget', '8453:0xnosignalbudget', '8453:0xnoprice'],
+      rankedFallbackKeys: ['8453:0xbudget', '8453:0xnosignalbudget', '8453:0xjunk', '8453:0xnoprice'],
       budgetedFallbackKeys: ['8453:0xnoprice'],
       keyOf,
     })
@@ -421,7 +426,8 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     assert.equal(byToken.get('0xzero')?.skipReason, 'zero_or_malformed_quantity')
     assert.equal(byToken.get('0xnegligible')?.skipReason, 'known_negligible_provider_value')
     assert.equal(byToken.get('0xbudget')?.skipReason, 'outside_fallback_budget')
-    assert.equal(byToken.get('0xnosignalbudget')?.skipReason, 'quantity_only_spam_suppressed')
+    assert.equal(byToken.get('0xnosignalbudget')?.skipReason, 'outside_exploratory_budget')
+    assert.equal(byToken.get('0xjunk')?.skipReason, 'quantity_only_spam_suppressed')
     assert.equal(byToken.get('0xnoprice')?.skipReason, 'fallback_lookup_returned_no_price')
   })
 
@@ -430,7 +436,7 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     const holdings = [
       // No provider value, no verified stable address, no transfer recency — pure quantity-only spam,
       // outside the budget.
-      holding({ tokenAddress: '0xspam', symbol: 'BONKO', quantity: '900000000000' }),
+      holding({ tokenAddress: '0xspam', symbol: 'BONKO', quantity: '900000000000000' }),
       // Symbol claims 'stable' but the address is not canonical — spoofed.
       holding({ tokenAddress: '0xspoof', symbol: 'USDC', quantity: '5000000000', classification: 'stable' }),
       // Real providerValue signal, selected.
@@ -449,7 +455,7 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     assert.equal(byToken.get('0xspam')?.selectionReason, 'quantity_only_spam_suppressed')
     assert.equal(byToken.get('0xspoof')?.selectionReason, 'spoof_stable_symbol')
     assert.equal(byToken.get('0xmaterial')?.selectionReason, 'selected_material_candidate')
-    assert.equal(byToken.get('0xfiller')?.selectionReason, 'no_materiality_signal')
+    assert.equal(byToken.get('0xfiller')?.selectionReason, 'selected_exploratory_candidate')
     // HARD ASSERTION (required regression): skipReason itself — not just selectionReason — must
     // also carry these explicit values in production (this task's own explicit requirement:
     // "skipReason quantity_only_spam_suppressed" / "spoof stable symbol => skipReason

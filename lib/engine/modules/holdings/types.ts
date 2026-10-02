@@ -40,6 +40,12 @@ export type ChainHolding = {
   // same reasoning as providerPriceUsd/providerValueUsd above — a missing value just means this
   // recomputation path is skipped, never fabricated.
   amountRaw?: string | null
+  // DECIMALS PROVENANCE, ADDITIVE: false when `decimals` (and therefore `quantity`) is an ASSUMED default —
+  // an Alchemy-only row (alchemy_getTokenBalances carries no metadata; 18 is assumed). Optional; undefined
+  // means the balances provider reported decimals itself. fetchPricing.ts never values a holding, and never
+  // calls it dust, from assumed decimals — it verifies them on-chain first.
+  decimalsVerified?: boolean
+  metadataSource?: 'goldrush' | 'alchemy'
 }
 
 export type HoldingsEngineInput = {

@@ -169,15 +169,16 @@ describe('priceHoldings', () => {
 
   it('regression guard: fallback lookups for many distinct tokens stay functionally correct under the bounded-concurrency cap', async () => {
     const holdings = Array.from({ length: 25 }, (_, i) => holding({ tokenAddress: `0xtoken${i}`, quantity: '1' }))
+    // n + 1: a price of 0 is not a price (non-positive fallback prices are rejected).
     const fakePriceFn = async (_chainId: number, tokenAddress: string) => {
       const n = Number(tokenAddress.replace('0xtoken', ''))
-      return n
+      return n + 1
     }
     const result = await priceHoldingsForTest(holdings, fakePriceFn)
     assert.equal(result.pricedHoldings.length, 25)
     for (const p of result.pricedHoldings) {
       const n = Number(p.tokenAddress.replace('0xtoken', ''))
-      assert.equal(p.priceUsd, n, `token ${p.tokenAddress} must resolve its OWN price, never another token's`)
+      assert.equal(p.priceUsd, n + 1, `token ${p.tokenAddress} must resolve its OWN price, never another token's`)
     }
   })
 

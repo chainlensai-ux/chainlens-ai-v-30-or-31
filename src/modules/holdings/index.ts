@@ -145,6 +145,21 @@ export async function fetchHoldings(chain: SupportedChain, walletAddress: string
 
   const providerStatus = detectHoldingsProviderUnavailable(goldrush.ok, alchemy.ok)
   const holdings = providerStatus === 'provider_unavailable' ? [] : mergeHoldingsResults(goldrush.holdings, alchemy.holdings).holdings
+  const goldrushFailure = goldrush.ok ? null : (goldrush.failure ?? { kind: 'transient_provider' as const, httpStatus: null })
 
-  return { chain, providerStatus, holdings }
+  if (goldrushFailure) {
+    // AUDIT: a 5xx/timeout is a transient provider failure — never billing/auth, never a confirmed-empty
+    // wallet. Alchemy (ERC-20 only, no metadata/prices) carries the scan; the native balance is unknown.
+    // eslint-disable-next-line no-console
+    console.warn('[holdings-provider-audit] GoldRush balances unavailable', {
+      chain,
+      goldrushFailureKind: goldrushFailure.kind,
+      goldrushHttpStatus: goldrushFailure.httpStatus,
+      transient: goldrushFailure.kind === 'transient_provider' || goldrushFailure.kind === 'rate_limited',
+      alchemyOk: alchemy.ok,
+      alchemyHoldings: alchemy.holdings.length,
+    })
+  }
+
+  return { chain, providerStatus, holdings, nativeBalanceCovered: goldrush.ok, goldrushFailure }
 }

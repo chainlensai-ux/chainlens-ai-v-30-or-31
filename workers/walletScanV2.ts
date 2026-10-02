@@ -502,7 +502,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       holdingsComplete: holdingsWithEvidence.complete,
       values: pricing.pricedHoldings.length > 0 ? pricing.pricedHoldings.map((p) => (typeof p.valueUsd === 'number' && Number.isFinite(p.valueUsd) ? p.valueUsd : null)) : chainHoldings.map(() => null),
       materialUnpriced: pricing.pricedHoldings.length > 0 ? (pricing.potentiallyMaterialUnpricedCount ?? null) : null,
-      reason: holdingsWithEvidence.complete ? null : 'holdings_provider_unavailable',
+      reason: holdingsWithEvidence.complete
+        ? null
+        : holdingsWithEvidence.chains.some((c) => c.providerStatus !== 'provider_unavailable' && c.nativeBalanceCovered === false)
+          ? 'goldrush_unavailable_native_balance_unknown' // e.g. transient http_503: Alchemy is ERC-20 only
+          : 'holdings_provider_unavailable',
     })
 
     // PARTIAL PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): a real, small, display-
@@ -552,7 +556,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     })
 
     return {
-      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence,
+      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence, holdingsProviderEvidence: holdingsWithEvidence.chains,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     }
@@ -644,7 +648,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       console.warn('[fast-snapshot-audit] chainsScanned diverged from preflight-sanitized chains', { chainsScanned, sanitizedChains: sanitized.chains })
     }
     const {
-      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence,
+      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence, holdingsProviderEvidence,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     } = await fastSnapshotPromise
@@ -953,6 +957,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         portfolioV2: portfolioOutput.portfolio,
         portfolioStatus: portfolioOutput.portfolioStatus,
         evmPortfolioEvidence,
+        // Debug: per-holding fallback selection (lanes, ranks, skip reasons) and per-chain provider status
+        // (GoldRush failure kind: auth_config / billing / rate_limited / transient_provider …).
+        evmHoldingsPricingAudit: pricing.fallbackAudit ?? null,
+        evmHoldingsProviderEvidence: holdingsProviderEvidence,
         pnlV2: pnlOutput.pnlV2,
         pnlStatus: pnlOutput.pnlStatus,
         walletPnlEvidenceAudit: pnlOutput.walletPnlEvidenceAudit,

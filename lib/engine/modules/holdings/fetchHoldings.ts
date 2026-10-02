@@ -29,6 +29,7 @@
 
 import { fetchHoldings as fetchRealHoldings } from '@/src/modules/holdings'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
+import type { GoldrushFailureKind } from '@/src/modules/holdings/types'
 import { HYPEREVM_CHAIN_ID } from '@/src/modules/providerFetchWindow/types'
 import type { ChainHolding } from './types'
 
@@ -124,7 +125,14 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
 }
 
 /** Per-chain holdings evidence: did the holdings providers actually answer for this chain? */
-export type ChainHoldingsEvidence = { chainId: number; providerStatus: 'ok' | 'partial' | 'provider_unavailable' | 'confirmed_empty_cached' | 'unsupported_chain' }
+export type ChainHoldingsEvidence = {
+  chainId: number
+  providerStatus: 'ok' | 'partial' | 'provider_unavailable' | 'confirmed_empty_cached' | 'unsupported_chain'
+  /** False when GoldRush (the only source with the native balance) failed — the chain's holdings are incomplete. */
+  nativeBalanceCovered?: boolean
+  goldrushFailureKind?: GoldrushFailureKind | null
+  goldrushHttpStatus?: number | null
+}
 
 export async function fetchChainBalancesWithEvidence(walletAddress: string, chainId: number): Promise<{ holdings: ChainHolding[]; evidence: ChainHoldingsEvidence }> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
@@ -152,14 +160,27 @@ export async function fetchChainBalancesWithEvidence(walletAddress: string, chai
       providerValueUsd: h.providerValueUsd,
       // See this file's ChainHolding type comment — previously dropped here entirely.
       amountRaw: h.amountRaw,
+      ...(h.decimalsKnown === false ? { decimalsVerified: false, metadataSource: 'alchemy' as const } : {}),
     }))
 
   // PROVIDER FAILURE IS NOT "EMPTY": only an answered, empty result is negative-cached — a provider_unavailable
-  // result (both holdings providers failed) must never be remembered as a confirmed-empty wallet.
-  if (holdings.length === 0 && result.providerStatus !== 'provider_unavailable') negativeBalanceCache.set(cacheKey, Date.now() + NEGATIVE_BALANCE_CACHE_TTL_MS)
+  // result (both holdings providers failed) must never be remembered as a confirmed-empty wallet. Nor may an
+  // Alchemy-only answer (GoldRush failed, e.g. a transient http_503): Alchemy is ERC-20 only, so "no tokens"
+  // there says nothing about the native balance.
+  const nativeBalanceCovered = result.nativeBalanceCovered ?? result.providerStatus !== 'provider_unavailable'
+  if (holdings.length === 0 && result.providerStatus !== 'provider_unavailable' && nativeBalanceCovered) negativeBalanceCache.set(cacheKey, Date.now() + NEGATIVE_BALANCE_CACHE_TTL_MS)
   else if (holdings.length > 0) negativeBalanceCache.delete(cacheKey) // a real non-zero result always wins over any stale negative entry
 
-  return { holdings, evidence: { chainId, providerStatus: result.providerStatus } }
+  return {
+    holdings,
+    evidence: {
+      chainId,
+      providerStatus: result.providerStatus,
+      nativeBalanceCovered,
+      goldrushFailureKind: result.goldrushFailure?.kind ?? null,
+      goldrushHttpStatus: result.goldrushFailure?.httpStatus ?? null,
+    },
+  }
 }
 
 // CHAIN-CALL AUDIT, DISCLOSED: real, measured chain-scoping decisions for every fetchAllHoldings
@@ -206,5 +227,7 @@ export async function fetchAllHoldingsWithEvidence(walletAddress: string, allowe
   logChainCallAudit(allowedChainIds, allowed, blocked)
   const results = await Promise.all(allowed.map((c) => fetchChainBalancesWithEvidence(walletAddress, c)))
   const chains = results.map((r) => r.evidence)
-  return { holdings: results.flatMap((r) => r.holdings), chains, complete: allowed.length > 0 && chains.every((c) => c.providerStatus !== 'provider_unavailable') }
+  // Complete only when every chain answered AND its native balance was covered (an Alchemy-only answer is ERC-20 only).
+  const complete = allowed.length > 0 && chains.every((c) => c.providerStatus !== 'provider_unavailable' && c.nativeBalanceCovered !== false)
+  return { holdings: results.flatMap((r) => r.holdings), chains, complete }
 }

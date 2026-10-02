@@ -117,6 +117,7 @@ export async function fetchDexscreenerPriceDetailed(
         dexId?: string
         priceUsd?: string
         liquidity?: { usd?: number }
+        volume?: { h24?: number }
         pairCreatedAt?: number
         baseToken?: { address?: string; symbol?: string }
         quoteToken?: { symbol?: string; address?: string }
@@ -139,9 +140,14 @@ export async function fetchDexscreenerPriceDetailed(
     // quote side is excluded here (honestly unpriced by this pair, never a wrong/inverted price
     // fabricated in its place); if the SAME token has another real pair where it IS the base token,
     // that pair still qualifies normally.
-    const chainMatched = (data.pairs ?? []).filter(
-      (p) => p.chainId === chainId && p.priceUsd && p.baseToken?.address?.toLowerCase() === token.toLowerCase(),
-    )
+    // EXACT IDENTITY + VALID PRICE: the pair must be on the requested chain, the requested token must be the
+    // BASE token (a quote-side pair's priceUsd is the OTHER token's price), and the price must be a finite
+    // positive number — a malformed or non-positive price is dropped here so it can never win the ranking.
+    const chainMatched = (data.pairs ?? []).filter((p) => {
+      const price = Number(p.priceUsd)
+      return p.chainId === chainId && p.priceUsd != null && Number.isFinite(price) && price > 0
+        && p.baseToken?.address?.toLowerCase() === token.toLowerCase()
+    })
     if (chainMatched.length === 0) return { priceUsd: null, reason: 'no_matching_pair', ...emptyPairInfo(), alternatePairs: [], winnerReason: null }
 
     // LOW-LIQUIDITY/MANIPULATED PAIR, CONFIRMED AND FIXED, DISCLOSED: previously NO liquidity floor
@@ -162,6 +168,9 @@ export async function fetchDexscreenerPriceDetailed(
     const sorted = [...liquidPairs].sort((a, b) => {
       const liqDiff = (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0)
       if (liqDiff !== 0) return liqDiff
+      // Strongest market: liquidity, then 24h volume, then pair address (deterministic).
+      const volDiff = (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0)
+      if (volDiff !== 0) return volDiff
       return (a.pairAddress ?? '').localeCompare(b.pairAddress ?? '')
     })
     const best = sorted[0]

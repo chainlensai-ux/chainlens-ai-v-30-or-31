@@ -30,4 +30,6 @@ export type PricingEngineOutput = {
   priceStatus: 'ok' | 'partial' | 'unavailable'
   /** Unpriced holdings with a REAL local materiality signal above dust (provider partial value / stable peg). */
   potentiallyMaterialUnpricedCount?: number
+  /** Per-holding fallback selection audit (lanes, ranks, skip reasons) — debug only. */
+  fallbackAudit?: import('./fetchPricing').HoldingsFallbackAudit
 }
