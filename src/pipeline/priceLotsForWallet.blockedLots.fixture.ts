@@ -37,11 +37,21 @@ const deposit = (dst: string, raw: bigint): ReceiptQuoteLog => ({ address: WETH,
 const withdrawal = (src: string, raw: bigint): ReceiptQuoteLog => ({ address: WETH, topics: [WETH_WITHDRAWAL_TOPIC0, topic(src)], data: word(raw) })
 const swap = (): ReceiptQuoteLog => ({ address: POOL, topics: [V2_SWAP, topic(ROUTER), topic(ROUTER)], data: `0x${'0'.repeat(256)}` })
 const okTx = (from: string, valueWei: bigint, logs: ReceiptQuoteLog[]): ReceiptQuoteTx => ({ status: 'ok', from, to: ROUTER, valueWei: valueWei.toString(), input: '0x3593564c0000', logs })
+// How much internal-transfer trace evidence the sell receipts carry:
+//   'unavailable'       — receipts only (what f9a98df1's fixture had): the unwrap recipient is unproven.
+//   'proven_to_wallet'  — a callTracer trace shows WETH -> router -> scanned wallet for the full amount.
+export type SellTraceEvidence = 'unavailable' | 'proven_to_wallet'
+let sellTraceEvidence: SellTraceEvidence = 'unavailable'
 
 // Router buy paid with native ETH via tx.value: wrap -> pool -> wallet receives CLAW.
 const nativeBuy = (eth: number, depositEth = eth) => okTx(WALLET, wei(eth), [deposit(ROUTER, wei(depositEth)), transfer(WETH, ROUTER, POOL, wei(depositEth)), swap(), transfer(CLAW, POOL, WALLET, CLAW_RAW)])
 // Router sell paid out as native ETH: wallet -> pool CLAW, pool -> router WETH, router unwraps.
-const nativeSell = (eth: number, extra: ReceiptQuoteLog[] = []) => okTx(WALLET, BigInt(0), [transfer(CLAW, WALLET, POOL, CLAW_RAW), swap(), transfer(WETH, POOL, ROUTER, wei(eth)), withdrawal(ROUTER, wei(eth)), ...extra])
+const nativeSell = (eth: number, extra: ReceiptQuoteLog[] = []): ReceiptQuoteTx => ({
+  ...okTx(WALLET, BigInt(0), [transfer(CLAW, WALLET, POOL, CLAW_RAW), swap(), transfer(WETH, POOL, ROUTER, wei(eth)), withdrawal(ROUTER, wei(eth)), ...extra]),
+  ...(sellTraceEvidence === 'proven_to_wallet'
+    ? { internalTransfers: [{ from: WETH, to: ROUTER, valueWei: wei(eth).toString() }, { from: ROUTER, to: WALLET, valueWei: wei(eth).toString() }], traceSource: 'debug_trace_call_tracer' as const }
+    : { internalTransfers: null, traceSource: null }),
+})
 
 export type BlockedLotKind =
   | 'completion_ready_native_unwrap_exit'
@@ -68,7 +78,8 @@ function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   }
 }
 
-export function buildBlockedLotFixture() {
+export function buildBlockedLotFixture(traces: SellTraceEvidence = 'unavailable') {
+  sellTraceEvidence = traces
   const events: NormalizedEvent[] = []
   const receipts = new Map<string, ReceiptQuoteTx>()
   const lots: Array<{ kind: BlockedLotKind; buyTx: string; sellTx: string }> = []
@@ -140,11 +151,11 @@ function fakeKv(): AcceptedEvidenceKvLike {
   }
 }
 
-export async function runBlockedLotFixture(options: { receiptLane: boolean; maxTxs?: number; coinPaprikaFetchImpl?: typeof fetch } = { receiptLane: true }) {
+export async function runBlockedLotFixture(options: { receiptLane: boolean; maxTxs?: number; coinPaprikaFetchImpl?: typeof fetch; sellTraces?: SellTraceEvidence } = { receiptLane: true }) {
   __resetNativePriceResolverForTest()
   __seedAcceptedNativePriceForTest(Date.parse(`${BUY_DAY}T12:00:00Z`), ETH_USD_BUY_DAY, 'coingecko_native_coin_history')
   __seedAcceptedNativePriceForTest(Date.parse(`${SELL_DAY}T12:00:00Z`), ETH_USD_SELL_DAY, 'coingecko_native_coin_history')
-  const { events, receipts, lots } = buildBlockedLotFixture()
+  const { events, receipts, lots } = buildBlockedLotFixture(options.sellTraces ?? 'unavailable')
   const kv = fakeKv()
   const now = Date.parse('2026-04-05T00:00:00Z')
   for (let i = 0; i < 4; i++) {

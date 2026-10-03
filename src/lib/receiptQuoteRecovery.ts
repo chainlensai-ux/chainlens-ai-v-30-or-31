@@ -11,7 +11,11 @@
 //                        pool -> wallet TOKEN. Missing whenever the provider that supplied the event
 //                        did not synthesize the `tx.value` leg.
 //
-// The receipt (+ the transaction's own from/to/value/input) proves the exact quote amount. This
+// The receipt (+ the transaction's own from/to/value/input) proves the exact quote amount — EXCEPT
+// for the sell side's last hop: a receipt proves a WETH unwrap but never who received the native
+// ETH afterwards (an internal call emits no log). A sell paid out through an unwrap is therefore
+// priced ONLY when an internal-transfer trace (debug_traceTransaction callTracer, or Blockscout's
+// indexed internal transactions) proves the exact amount that reached the scanned wallet. This
 // module is PURE except for `fetchReceiptQuoteTx`; it never infers from a symbol, never uses a
 // current price, and fails closed on every ambiguous shape (unaccounted refund, unrelated wallet
 // assets in a multicall, liquidity/staking events, mixed wrap+unwrap, a transaction the wallet did
@@ -41,8 +45,16 @@ export const LIQUIDITY_TOPIC0S = new Set([
 ])
 
 export type ReceiptQuoteLog = { address: string; topics: string[]; data: string; logIndex?: number }
+// One executed (non-reverted) native value transfer inside the transaction, below the top-level call.
+export type InternalNativeTransfer = { from: string; to: string; valueWei: string }
+export type InternalTraceSource = 'debug_trace_call_tracer' | 'blockscout_internal_transactions'
 export type ReceiptQuoteTx =
-  | { status: 'ok'; from: string; to: string | null; valueWei: string; input: string; logs: ReceiptQuoteLog[] }
+  | {
+    status: 'ok'; from: string; to: string | null; valueWei: string; input: string; logs: ReceiptQuoteLog[]
+    // null = no trace evidence could be obtained (unsupported, failed, or incomplete). Never guessed.
+    internalTransfers?: InternalNativeTransfer[] | null
+    traceSource?: InternalTraceSource | null
+  }
   | { status: 'missing' | 'reverted' | 'unavailable' }
 export type ReceiptQuoteTxFetcher = (chain: SupportedChain, txHash: string) => Promise<ReceiptQuoteTx>
 
@@ -53,7 +65,13 @@ export type ReceiptQuoteClassification =
   | 'true_plain_token_transfer'
   | 'liquidity_or_staking_activity'
   | 'native_eth_paid_via_tx_value'
-  | 'native_eth_received_via_router_unwrap'
+  | 'native_eth_received_via_router_unwrap_verified'
+  | 'native_unwrap_recipient_unverified'
+  | 'native_unwrap_recipient_not_wallet'
+  | 'native_payout_attribution_ambiguous'
+  | 'unrelated_swap_path_in_tx'
+  | 'unrelated_token_flow_in_tx'
+  | 'unrelated_outputs_in_tx'
   | 'quote_leg_omitted_from_provider_activity'
   | 'native_refund_unaccounted'
   | 'native_spend_on_exit_unaccounted'
@@ -65,7 +83,7 @@ export type ReceiptQuoteClassification =
 
 export const RECOVERED_RECEIPT_CLASSIFICATIONS: ReadonlySet<ReceiptQuoteClassification> = new Set([
   'native_eth_paid_via_tx_value',
-  'native_eth_received_via_router_unwrap',
+  'native_eth_received_via_router_unwrap_verified',
   'quote_leg_omitted_from_provider_activity',
 ])
 
@@ -81,6 +99,14 @@ export type ReceiptQuoteForensics = {
   inputSelector: string | null
   swapEvents: string[]
   liquidityEvents: number
+  // Target-path attribution audit.
+  distinctPoolEmitters: string[]
+  pathAttribution: 'not_evaluated' | 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'
+  unrelatedOutputs: Array<{ address: string; token: string; netRaw: string }>
+  // Native payout proof (sell via unwrap only).
+  traceSource: InternalTraceSource | null
+  walletNativeReceivedWei: string | null
+  unwrapperNativeOutWei: string | null
 }
 
 export type ReceiptQuoteResult = {
@@ -162,6 +188,12 @@ export function classifyReceiptQuoteEvidence(params: {
     inputSelector: tx.input && tx.input.length >= 10 ? tx.input.slice(0, 10).toLowerCase() : null,
     swapEvents,
     liquidityEvents,
+    distinctPoolEmitters: [...new Set(tx.logs.filter((l) => SWAP_TOPIC0S[lower(l.topics[0])]).map((l) => lower(l.address)))].sort(),
+    pathAttribution: 'not_evaluated',
+    unrelatedOutputs: [],
+    traceSource: tx.traceSource ?? null,
+    walletNativeReceivedWei: null,
+    unwrapperNativeOutWei: null,
   }
   const result = (classification: ReceiptQuoteClassification, quote: ReceiptQuoteResult['quote'] = null): ReceiptQuoteResult => ({ classification, quote, forensics })
 
@@ -192,6 +224,22 @@ export function classifyReceiptQuoteEvidence(params: {
   if (swapEvents.length === 0) return result('non_swap_contract_interaction')
   if (unrelatedWalletLegs.length > 0) return result('multicall_unrelated_wallet_assets')
 
+  // TARGET-PATH ATTRIBUTION: the quote must belong to the target's own swap path. Starting from the
+  // target outflow (exit), the wallet's quote outflow, or the tx.value wrap (entry), every pool that
+  // emitted a Swap must be reachable through this tx's token flows; no token may enter the path from
+  // an outside address; and no non-pool intermediary may keep an output (only the target token may
+  // land with a third party — transfer tax). Otherwise the same receipt funds or pays out more than
+  // one economic action and the quote cannot be attributed.
+  const attribution = attributeTargetPath({
+    chain, wallet, target, logs: tx.logs,
+    startNodes: side === 'exit' || walletQuoteLegs.length > 0 ? [wallet] : depositDestinations(chain, tx.logs),
+  })
+  forensics.pathAttribution = attribution.status
+  forensics.unrelatedOutputs = attribution.unrelatedOutputs
+  if (attribution.status === 'unrelated_swap_path') return result('unrelated_swap_path_in_tx')
+  if (attribution.status === 'unrelated_token_flow') return result('unrelated_token_flow_in_tx')
+  if (attribution.status === 'unrelated_outputs') return result('unrelated_outputs_in_tx')
+
   // A wallet-touching WETH/stable quote leg is in the receipt but was missing from provider activity.
   if (walletQuoteLegs.length > 0) {
     const tokens = new Set(walletQuoteLegs.map((leg) => leg.token))
@@ -220,7 +268,86 @@ export function classifyReceiptQuoteEvidence(params: {
   // never a router's pre-existing balance.
   const wethIntoUnwrappers = [...withdrawalSources].reduce((sum, src) => sum + (wethInByAddress.get(src) ?? ZERO), ZERO)
   if (wethIntoUnwrappers < withdrawalWei) return result('unwrap_not_backed_by_swap_output')
-  return result('native_eth_received_via_router_unwrap', { kind: 'native', token: 'native', quantity: toUnits(withdrawalWei, 18) })
+
+  // RECIPIENT PROOF. The receipt ends at the unwrap; only an internal-transfer trace shows where the
+  // native ETH went. Router conventions are never treated as evidence.
+  const internal = tx.internalTransfers
+  if (!internal) return result('native_unwrap_recipient_unverified')
+  const unwrappers = withdrawalSources
+  const positive = internal.filter((t) => /^[0-9]+$/.test(t.valueWei) && BigInt(t.valueWei) > ZERO)
+  const toWallet = positive.filter((t) => lower(t.to) === wallet)
+  const walletFromUnwrapper = toWallet.filter((t) => unwrappers.has(lower(t.from))).reduce((sum, t) => sum + BigInt(t.valueWei), ZERO)
+  const unwrapperOut = positive.filter((t) => unwrappers.has(lower(t.from))).reduce((sum, t) => sum + BigInt(t.valueWei), ZERO)
+  forensics.walletNativeReceivedWei = walletFromUnwrapper.toString()
+  forensics.unwrapperNativeOutWei = unwrapperOut.toString()
+  if (walletFromUnwrapper === ZERO) return result(toWallet.length > 0 ? 'native_payout_attribution_ambiguous' : 'native_unwrap_recipient_not_wallet')
+  // Deterministic attribution only: the wallet's native comes solely from the unwrapper, and the
+  // unwrapper pays out exactly what it unwrapped (a split, e.g. a router fee, is accepted only when
+  // every wei is accounted for; the wallet is credited with its own proven share, never the gross).
+  if (toWallet.some((t) => !unwrappers.has(lower(t.from)))) return result('native_payout_attribution_ambiguous')
+  if (unwrapperOut !== withdrawalWei) return result('native_payout_attribution_ambiguous')
+  return result('native_eth_received_via_router_unwrap_verified', { kind: 'native', token: 'native', quantity: toUnits(walletFromUnwrapper, 18) })
+}
+
+function depositDestinations(chain: SupportedChain, logs: readonly ReceiptQuoteLog[]): string[] {
+  return logs
+    .filter((l) => isCanonicalWethAddress(chain, lower(l.address)) && lower(l.topics[0]) === WETH_DEPOSIT_TOPIC0)
+    .map((l) => topicAddress(l.topics[1]))
+}
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+// PURE. See the TARGET-PATH ATTRIBUTION note in classifyReceiptQuoteEvidence.
+export function attributeTargetPath(params: {
+  chain: SupportedChain
+  wallet: string
+  target: string
+  logs: readonly ReceiptQuoteLog[]
+  startNodes: readonly string[]
+}): { status: 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'; unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs'] } {
+  const { chain, wallet, target, logs } = params
+  const transfers = logs
+    .filter((l) => lower(l.topics[0]) === TRANSFER_TOPIC0 && l.topics.length >= 3)
+    .map((l) => ({ token: lower(l.address), from: topicAddress(l.topics[1]), to: topicAddress(l.topics[2]), raw: dataWord(l.data) }))
+  const emitters = new Set(logs.filter((l) => SWAP_TOPIC0S[lower(l.topics[0])]).map((l) => lower(l.address)))
+  // Reachability from the start nodes over this tx's token flows (never back out of the wallet).
+  const reached = new Set(params.startNodes.map(lower))
+  let grew = true
+  while (grew) {
+    grew = false
+    for (const t of transfers) {
+      if (reached.has(t.from) && !reached.has(t.to) && t.to !== wallet) {
+        reached.add(t.to)
+        grew = true
+      }
+    }
+  }
+  if ([...emitters].some((pool) => !reached.has(pool))) return { status: 'unrelated_swap_path', unrelatedOutputs: [] }
+  if (transfers.some((t) => !reached.has(t.from) && t.from !== wallet && t.from !== ZERO_ADDRESS)) return { status: 'unrelated_token_flow', unrelatedOutputs: [] }
+  // Net per (address, token): WETH deposits credit the wrapper, withdrawals debit the unwrapper.
+  const nets = new Map<string, bigint>()
+  const add = (address: string, token: string, delta: bigint) => nets.set(`${address}|${token}`, (nets.get(`${address}|${token}`) ?? ZERO) + delta)
+  for (const t of transfers) {
+    add(t.from, t.token, -t.raw)
+    add(t.to, t.token, t.raw)
+  }
+  for (const l of logs) {
+    const address = lower(l.address)
+    if (!isCanonicalWethAddress(chain, address)) continue
+    const topic0 = lower(l.topics[0])
+    if (topic0 === WETH_DEPOSIT_TOPIC0) add(topicAddress(l.topics[1]), address, dataWord(l.data))
+    if (topic0 === WETH_WITHDRAWAL_TOPIC0) add(topicAddress(l.topics[1]), address, -dataWord(l.data))
+  }
+  const unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs'] = []
+  for (const [key, net] of nets) {
+    const [address, token] = key.split('|')
+    if (net === ZERO || address === wallet || address === ZERO_ADDRESS || emitters.has(address)) continue
+    if (isCanonicalWethAddress(chain, address)) continue
+    if (token === target && net > ZERO) continue // transfer tax on the target token itself
+    unrelatedOutputs.push({ address, token, netRaw: net.toString() })
+  }
+  if (unrelatedOutputs.length > 0) return { status: 'unrelated_outputs', unrelatedOutputs }
+  return { status: 'single_target_path', unrelatedOutputs }
 }
 
 // Mined transactions are immutable — a process-lifetime cache never serves stale data.
@@ -270,11 +397,90 @@ export const fetchReceiptQuoteTx: ReceiptQuoteTxFetcher = async (chain, txHash) 
         .filter((l) => l.removed !== true && typeof l.address === 'string' && Array.isArray(l.topics) && typeof l.data === 'string')
         .map((l) => ({ address: l.address as string, topics: l.topics as string[], data: l.data as string })),
     }
-    receiptQuoteTxCache.set(cacheKey, outcome)
+    // Native recipient proof is needed only when the receipt shows a WETH unwrap.
+    if (outcome.status === 'ok' && outcome.logs.some((l) => lower(l.topics[0]) === WETH_WITHDRAWAL_TOPIC0)) {
+      const trace = await fetchInternalNativeTransfers(chain, txHash, url)
+      outcome.internalTransfers = trace?.transfers ?? null
+      outcome.traceSource = trace?.source ?? null
+    }
+    // A missing trace may be a transient provider failure: only fully evidenced results are cached.
+    if (outcome.status !== 'ok' || outcome.internalTransfers !== null) receiptQuoteTxCache.set(cacheKey, outcome)
     return outcome
   } catch {
     return { status: 'unavailable' }
   } finally {
     clearTimeout(timeout)
   }
+}
+
+type CallFrame = { type?: string; from?: string; to?: string; value?: string; error?: string; calls?: CallFrame[] }
+
+// PURE. Flattens a callTracer result into executed internal value transfers. The top-level frame is
+// the transaction itself (tx.value), not an internal transfer; a reverted frame and everything below
+// it moved nothing.
+export function internalTransfersFromCallTrace(root: CallFrame): InternalNativeTransfer[] {
+  const out: InternalNativeTransfer[] = []
+  const walk = (frame: CallFrame, depth: number) => {
+    if (frame.error) return
+    if (depth > 0 && typeof frame.value === 'string' && /^0x[0-9a-f]+$/i.test(frame.value) && BigInt(frame.value) > ZERO
+      && typeof frame.from === 'string' && typeof frame.to === 'string' && (frame.type ?? 'CALL').toUpperCase() !== 'DELEGATECALL') {
+      out.push({ from: frame.from.toLowerCase(), to: frame.to.toLowerCase(), valueWei: BigInt(frame.value).toString() })
+    }
+    for (const child of frame.calls ?? []) walk(child, depth + 1)
+  }
+  walk(root, 0)
+  return out
+}
+
+const BLOCKSCOUT_API: Partial<Record<SupportedChain, string>> = {
+  base: 'https://base.blockscout.com',
+  eth: 'https://eth.blockscout.com',
+}
+
+// PURE. Blockscout v2 internal-transactions page → executed internal value transfers. Returns null
+// when the page is paginated (incomplete evidence is no evidence) or malformed.
+export function internalTransfersFromBlockscout(json: unknown): InternalNativeTransfer[] | null {
+  const body = json as { items?: Array<Record<string, unknown>>; next_page_params?: unknown } | null
+  if (!body || !Array.isArray(body.items) || body.next_page_params != null) return null
+  const out: InternalNativeTransfer[] = []
+  for (const item of body.items) {
+    const from = (item.from as { hash?: string } | null)?.hash
+    const to = (item.to as { hash?: string } | null)?.hash
+    const value = typeof item.value === 'string' ? item.value : null
+    if (item.success === false || !from || !to || !value || !/^[0-9]+$/.test(value) || value === '0') continue
+    if (String(item.type ?? 'call').toLowerCase() === 'delegatecall') continue
+    out.push({ from: from.toLowerCase(), to: to.toLowerCase(), valueWei: value })
+  }
+  return out
+}
+
+async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal })
+    if (!res.ok) return null
+    return await res.json().catch(() => null)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+// debug_traceTransaction (callTracer) on the configured RPC first; Blockscout's indexed internal
+// transactions second. Null when neither yields complete evidence.
+async function fetchInternalNativeTransfers(chain: SupportedChain, txHash: string, rpcUrl: string): Promise<{ transfers: InternalNativeTransfer[]; source: InternalTraceSource } | null> {
+  const traced = await fetchJson(rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'debug_traceTransaction', params: [txHash, { tracer: 'callTracer' }] }),
+  }) as { result?: CallFrame } | null
+  if (traced?.result && typeof traced.result === 'object' && typeof traced.result.from === 'string') {
+    return { transfers: internalTransfersFromCallTrace(traced.result), source: 'debug_trace_call_tracer' }
+  }
+  const base = BLOCKSCOUT_API[chain]
+  if (!base) return null
+  const indexed = internalTransfersFromBlockscout(await fetchJson(`${base}/api/v2/transactions/${txHash}/internal-transactions`, { headers: { accept: 'application/json' } }))
+  return indexed ? { transfers: indexed, source: 'blockscout_internal_transactions' } : null
 }
