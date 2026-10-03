@@ -8,6 +8,8 @@ import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MI
 import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, getRadarSimulationEvidence, getRadarAgeEvidence, getRadarLpPositionEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
 import { buildBaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
 import { buildRadarSignals, buildWhyItMatters, buildRadarTimeline, buildNextFiveMinuteRead } from '@/lib/baseRadarSignals'
+import { buildReceiptDashboard } from '@/lib/radarReceiptDashboard'
+import { EvidenceChip, RECEIPT_DASHBOARD_CSS, ReceiptActions, ReceiptChecksMatrix, ReceiptFindings, ReceiptSummaryStrip } from './ReceiptDashboard'
 import WhyItMattersBox from './WhyItMattersBox'
 import TimelineMiniChart from './TimelineMiniChart'
 import SignalsSidebar from './SignalsSidebar'
@@ -529,6 +531,25 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
 // the `open`/`onToggle` props the drawer passes in — see the drawer's own `sectionOpen()`/
 // `toggleSection()` helpers for how each section's default (open vs. collapsed) is decided. Content
 // is always reachable via the toggle; nothing here is ever permanently hidden.
+// Compact long-form list for the collapsed "Evidence notes" group: hairline rows, one tone dot, no boxes.
+function NoteList({ title, tone, lines }: { title: string; tone: 'risk' | 'amber' | 'mint' | 'neutral'; lines: string[] }) {
+  const dot = tone === 'risk' ? '#f0868a' : tone === 'amber' ? '#fbbf24' : tone === 'mint' ? '#2dd4bf' : '#64748b'
+  if (!lines.length) return null
+  return (
+    <div>
+      <p style={{ margin: '0 0 6px', color: '#64748b', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title}</p>
+      <div style={{ display: 'grid' }}>
+        {lines.map((line, i) => (
+          <div key={`${i}-${line}`} style={{ display: 'grid', gridTemplateColumns: '10px 1fr', gap: 8, padding: '6px 0', borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.045)' }}>
+            <span aria-hidden style={{ marginTop: 6, width: 5, height: 5, borderRadius: 999, background: dot }} />
+            <span style={{ color: '#a3b1c2', fontSize: 12, lineHeight: 1.5 }}>{line}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state, badge, children }: { id: string; title: string; tone?: 'default' | 'risk' | 'mint' | 'amber' | 'purple'; open: boolean; onToggle: (id: string) => void; state?: ApiState<unknown>; badge?: React.ReactNode; children: React.ReactNode }) {
   const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#64748b'
   return (
@@ -601,18 +622,6 @@ function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: R
 // FINAL-POLISH, DISCLOSED (Radar full report final polish task — "sharpen Primary Risk / Main
 // Positive / Next Check copy spacing"): tighter eyebrow-to-value gap and line-height so the tile
 // reads as one crisp unit instead of two loosely-related lines — same content/props, spacing only.
-// UNIFIED VERDICT COLUMN (receipt polish): one column of a single verdict surface (no box per tile) —
-// a short accent bar on top, a quiet eyebrow, and the statement. `emphasis` makes the main risk the
-// strongest line in the section.
-function VerdictTile({ eyebrow, value, tone = 'neutral', accent, emphasis = false }: { eyebrow: string; value: React.ReactNode; tone?: 'mint' | 'risk' | 'neutral'; accent: string; emphasis?: boolean }) {
-  return (
-    <div className="receipt-verdict-col" style={{ minWidth: 0, padding: '2px 18px 4px' }}>
-      <div aria-hidden style={{ width: 22, height: 2, borderRadius: 2, background: accent, marginBottom: 10, opacity: 0.9 }} />
-      <div style={{ color: '#5b7186', fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', marginBottom: 6, fontFamily: 'var(--font-plex-mono)' }}>{eyebrow}</div>
-      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#b7f0e4' : '#dbe3ec', fontSize: emphasis ? 15 : 13, fontWeight: emphasis ? 650 : 550, lineHeight: 1.4, letterSpacing: emphasis ? '-0.01em' : 0 }}>{value}</div>
-    </div>
-  )
-}
 
 function MiniBar({ label, value, tone = 'mint' }: { label: string; value: number | null | undefined; tone?: 'mint' | 'amber' | 'risk' }) {
   const n = value == null || !Number.isFinite(value) ? 0 : Math.max(0, Math.min(100, value))
@@ -1022,7 +1031,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     }
   }, [address])
   function isSectionOpen(id: string): boolean {
-    return sectionOverrides[id] ?? true
+    // Every detail section defaults open (earlier user feedback). The one exception is the long-form
+    // "Evidence notes" group, whose content the visual dashboard above already summarises.
+    return sectionOverrides[id] ?? id !== 'notes'
   }
   function toggleSection(id: string) {
     setSectionOverrides(prev => ({ ...prev, [id]: !isSectionOpen(id) }))
@@ -1044,6 +1055,52 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const evidenceQualityLabel = dedupedEvidenceGaps.length === 0 ? 'Full Evidence' : dedupedEvidenceGaps.length <= 2 ? 'Mostly Verified' : 'Limited Evidence'
   const evidenceQualityTone: 'mint' | 'amber' | 'risk' = dedupedEvidenceGaps.length === 0 ? 'mint' : dedupedEvidenceGaps.length <= 2 ? 'amber' : 'risk'
 
+  // VISUAL RECEIPT (receipt dashboard redesign): one view-model over the SAME evidence computed above —
+  // see lib/radarReceiptDashboard.ts. No new data; gaps are never upgraded to "confirmed".
+  const clusterSupplyPct = deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null
+  const receipt = buildReceiptDashboard({
+    enrichmentLoading: enrichment.isLoading && !enrichment.data,
+    score: Number(effectiveScore) || 0,
+    verdictLabel: publicStatus(severityLabel),
+    verdictTone,
+    evidenceQualityLabel,
+    evidenceQualityTone,
+    openCheckCount: dedupedEvidenceGaps.length,
+    riskFactCount: dedupedRiskFacts.length,
+    mainConcern: cortexMainRisk,
+    positiveSignal: verdictPositiveSignal,
+    liquidityUsdLabel: liquidityUsd != null ? fmtUSD(liquidityUsd) : null,
+    lp: {
+      applicability: lp?.lpProofApplicability ?? null,
+      lockStatus: lp?.lpLockStatus ?? null,
+      proofStatus: lp?.lpProofStatus ?? null,
+      burnProofLabel: lpProofDisplay?.burnProof ?? null,
+      controlStatus: lpControlStatus,
+      secondaryTeamControlled: secondaryLpSignal?.status === 'team_controlled',
+    },
+    simulation: {
+      status: displayModel?.simulation.status ?? token?.simulationStatus ?? null,
+      reason: displayModel?.simulation.reason ?? token?.simulationReason ?? null,
+      isHoneypot: security?.honeypot?.isHoneypot ?? null,
+      buyTax: displayModel?.simulation.buyTax ?? null,
+      sellTax: displayModel?.simulation.sellTax ?? null,
+    },
+    socials: { status: socialsEvidence.status, linkCount: projectLinks.length },
+    ownership: { status: security?.devOwnership?.ownershipStatus ?? null },
+    deployerKnown: Boolean(deployer?.deployerAddress),
+    holders: {
+      concentrationStatus: concentration.holderEvidence?.concentrationStatus ?? (concentration.top10 != null ? 'resolved' : 'unavailable'),
+      concentrationRisk,
+      top10Pct: concentration.top10 ?? null,
+    },
+    cluster: {
+      confirmed: deployer?.clusterEvidence?.confirmed ?? null,
+      linkedWallets: deployer?.clusterEvidence?.matchedLinkedWallets ?? (Array.isArray(deployer?.linkedWallets) ? deployer.linkedWallets.length : null),
+      supplyPct: clusterSupplyPct,
+    },
+  })
+  const scannerHref = `/terminal/token-scanner?contract=${token?.contract ?? ''}${chain === 'base' ? '' : `&chain=${chain}`}`
+
   // WHOLE-PAGE-UNCLICKABLE FIX, DISCLOSED (reported: "still cant scroll down and click buttons and
   // cant click on it no panel opens up nothing" — persisted even after the sibling fix in
   // QuickPreviewPanel, app/terminal/base-radar/page.tsx). Root cause here: this component's `token`
@@ -1061,7 +1118,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-verdict-col + .receipt-verdict-col { border-left: 1px solid rgba(255,255,255,0.06); } @media (max-width: 640px) { .receipt-verdict { grid-template-columns: 1fr !important; row-gap: 14px; } .receipt-verdict-col + .receipt-verdict-col { border-left: 0; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 14px !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #3bcfc0 !important; border-color: #3bcfc0 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; }`}</style>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #3bcfc0 !important; border-color: #3bcfc0 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; } ${RECEIPT_DASHBOARD_CSS}`}</style>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(2,6,23,0.78)' : 'rgba(2,6,23,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
       {/* FULL-REPORT-MODE, DISCLOSED: see the DrawerProps.mode comment above — only this element's
           own style object branches on mode; everything rendered inside (all children below) is
@@ -1130,9 +1187,16 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               <span aria-hidden style={{ width: 34, height: 3, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, Number(effectiveScore) || 0))}%`, background: verdictColor, opacity: 0.85 }} /></span>
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 6, background: `${verdictColor}12`, border: `1px solid ${verdictColor}33`, color: verdictColor, fontSize: 9.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span aria-hidden style={{ width: 5, height: 5, borderRadius: 999, background: verdictColor }} />{publicStatus(severityLabel)}</span>
+            {/* Confidence badge — same evidenceQualityLabel bucketing the old verdict chip showed. */}
+            <span title={`${receipt.summary.openChecks.count} open evidence gap(s)`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 6, border: '1px solid rgba(148,163,184,0.16)', color: evidenceQualityTone === 'mint' ? '#99f6e4' : evidenceQualityTone === 'amber' ? '#fde68a' : '#fecaca', fontSize: 9.5, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{evidenceQualityLabel}</span>
             <span title={token.contract} style={{ color: '#475569', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
           <p style={{ margin: '10px 0 0', color: '#94a3b8', fontSize: 12.5, lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
+          {receipt.heroChips.length > 0 ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+              {receipt.heroChips.map(c => <EvidenceChip key={c.label} label={c.label} status={c.status} />)}
+            </div>
+          ) : null}
           {/* ACTION HIERARCHY (receipt polish): primary = Add Watchlist (the only state-changing action here;
               Deep/Scan Token was removed from this panel earlier), secondary = Open Explorer, tertiary =
               Copy CA (quiet text action with a brief "Copied" confirmation). Same handlers as before. */}
@@ -1143,31 +1207,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
         </header>
 
-        {/* VERDICT MODULE, DISCLOSED (Robinhood/Base Radar panel premium polish task #2 — "replace
-            the long verdict paragraph presentation with 3 concise summary tiles... keep the same
-            underlying data/copy intent, just restructure for fast reading"): cortexMainRisk/
-            verdictPositiveSignal/verdictNextCheck are the exact same already-computed values the
-            prior inline " · "-joined paragraph read from — same copy intent, now three distinct
-            tiles instead of one dense run-on line. The headline sentence (severity.cortexSevereLine)
-            now lives once, in the hero header above, instead of being repeated here too — removing
-            that duplication is itself part of "too text-heavy and repetitive." */}
-        <Section title="CORTEX Verdict" tone={verdictTone}>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
-            <Chip label={`Evidence: ${evidenceQualityLabel}`} tone={evidenceQualityTone} />
-            {[...marketSignals, ...riskSignals].slice(0, 2).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}
-          </div>
-          <div className="receipt-verdict" style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', padding: '14px 0 12px', borderRadius: 12, background: 'rgba(2,6,23,0.35)' }}>
-            {/* Risk = restrained red, Positive = teal, Next Check = slate (accent per meaning only). */}
-            <VerdictTile eyebrow="Primary Risk" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} accent="#f0868a" emphasis />
-            <VerdictTile eyebrow="Main Positive" value={verdictPositiveSignal ?? 'No confirmed strength yet'} tone={verdictPositiveSignal ? 'mint' : 'neutral'} accent={verdictPositiveSignal ? '#2dd4bf' : '#475569'} />
-            <VerdictTile eyebrow="Next Check" value={verdictNextCheck ?? 'Continue monitoring liquidity and holder activity.'} tone="neutral" accent="#64748b" />
-          </div>
-        </Section>
-
-        {/* WHY IT MATTERS, DISCLOSED (task #5): same WhyItMattersBox component, same sentence
-            content — only its own internal bullet styling changed (subtle dot per line instead of
-            default list markers), see WhyItMattersBox.tsx. */}
-        <WhyItMattersBox sentences={whyItMatters} />
+        {/* VISUAL RECEIPT (receipt dashboard redesign): reads in order — what is the risk (summary strip)
+            → why (key findings) → what is still open (evidence checks) → what to do (next actions). The
+            verdict tiles and Why-It-Matters prose it replaces now live, unchanged, in "Evidence notes". */}
+        <ReceiptSummaryStrip d={receipt} />
+        <ReceiptFindings d={receipt} />
+        <ReceiptChecksMatrix d={receipt} />
+        <ReceiptActions
+          d={receipt}
+          hrefFor={(id) => id === 'scanner' || id === 'verify_lp' ? scannerHref : id === 'watch_holders' ? (explorer ?? undefined) : undefined}
+          onWatchlist={onTrackToggle}
+          watching={tracking}
+        />
 
         {/* MARKET SNAPSHOT, DISCLOSED (Robinhood/Base Radar panel premium polish task #4): same six
             metrics, same values — split into a primary row (Liquidity/Valuation/24h Volume, the
@@ -1189,10 +1240,6 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <MetricCard size="sm" label="Market Evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} sublabel={marketValuationCard.sublabel} tone={market?.marketConfidence?.toLowerCase().includes('open') ? 'amber' : 'neutral'} />
           </div>
           </div>
-        </Section>
-
-        <Section title="Signal Stack" tone="purple">
-          {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={signalChipTone(x, tone as 'mint' | 'amber' | 'risk')} />)}</div></div>)}
         </Section>
 
         {/* LOWER SECTIONS — GROUPED ACCORDIONS, DISCLOSED (task #7): each wraps the exact same
@@ -1342,19 +1389,29 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           <MiniChart points={chartPoints} />
         </CollapsibleSection>
 
-        <CollapsibleSection id="cortexRead" title="CORTEX Deep Read" tone="purple" open={isSectionOpen('cortexRead')} onToggle={toggleSection}>
-          {[['What CORTEX found', cortexFound], ['Main risk', [cortexMainRisk]], ['Watch next', cortexWatch]].map(([title, lines]) => <div key={title as string} style={{ marginBottom: 12 }}><p style={{ margin: '0 0 7px', color: '#a78bfa', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><ul style={{ margin: 0, paddingLeft: 18, color: '#cbd5e1', fontSize: 12, lineHeight: 1.6 }}>{(lines as string[]).slice(0, title === 'What CORTEX found' ? 3 : 2).map((line) => <li key={line}>{line}</li>)}</ul></div>)}
-        </CollapsibleSection>
-
+        {/* EVIDENCE NOTES (receipt dashboard redesign): every long-form line the old receipt showed —
+            primary risk / main positive / next check, Why It Matters, the signal stack, CORTEX found,
+            risk facts, all open checks and all watch items — kept verbatim, collapsed by default because
+            the dashboard above already summarises them. Nothing is dropped. */}
         <CollapsibleSection
-          id="riskFlags"
-          title="Risk Flags & Watch Next"
-          tone={dedupedRiskFacts.length ? 'risk' : 'default'}
-          open={isSectionOpen('riskFlags')}
+          id="notes"
+          title="Evidence notes"
+          tone={dedupedRiskFacts.length ? 'risk' : 'purple'}
+          open={isSectionOpen('notes')}
           onToggle={toggleSection}
-          badge={dedupedRiskFacts.length ? <Chip label={`${dedupedRiskFacts.length} Risk Fact${dedupedRiskFacts.length === 1 ? '' : 's'}`} tone="risk" /> : undefined}
+          badge={<Chip label={`${dedupedRiskFacts.length + dedupedEvidenceGaps.length + dedupedWatchNext.length} notes`} tone="neutral" />}
         >
-          {[['Risk Facts', dedupedRiskFacts.length ? dedupedRiskFacts : ['No high-confidence risk facts from current structured checks.'], 'risk'], ['Open Checks', dedupedEvidenceGaps.length ? dedupedEvidenceGaps.slice(0, 6) : ['No open evidence gaps from current checks.'], 'amber'], ['Watch Next', dedupedWatchNext.slice(0, 5), 'mint']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 10 }}><p style={{ margin: '0 0 8px', color: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 900 }}>{title as string}</p><div style={{ display: 'grid', gap: 8 }}>{(items as string[]).map((line) => <div key={line} style={{ display: 'grid', gridTemplateColumns: '14px 1fr', gap: 8, padding: 10, borderRadius: 13, border: '1px solid rgba(148,163,184,.11)', background: 'rgba(15,23,42,.48)' }}><span style={{ marginTop: 4, width: 7, height: 7, borderRadius: 999, background: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf' }} /><span style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.45 }}>{line}</span></div>)}</div></div>)}
+          <div style={{ display: 'grid', gap: 12 }}>
+            <NoteList title="Verdict" tone="neutral" lines={[`Primary risk: ${cortexMainRisk}`, `Main positive: ${verdictPositiveSignal ?? 'No confirmed strength yet'}`, `Next check: ${verdictNextCheck ?? 'Continue monitoring liquidity and holder activity.'}`]} />
+            <WhyItMattersBox sentences={whyItMatters} />
+            <NoteList title="What CORTEX found" tone="neutral" lines={cortexFound.filter((x): x is string => Boolean(x))} />
+            <NoteList title="Risk facts" tone="risk" lines={dedupedRiskFacts.length ? dedupedRiskFacts : ['No high-confidence risk facts from current structured checks.']} />
+            <NoteList title="Open checks" tone="amber" lines={dedupedEvidenceGaps.length ? dedupedEvidenceGaps : ['No open evidence gaps from current checks.']} />
+            <NoteList title="Watch next" tone="mint" lines={dedupedWatchNext} />
+            <div>
+              {[['Market signals', marketSignals, 'mint'], ['Risk signals', riskSignals, 'risk'], ['Control signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 9 }}><p style={{ margin: '0 0 6px', color: '#64748b', fontSize: 9.5, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{title as string}</p><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={signalChipTone(x, tone as 'mint' | 'amber' | 'risk')} />)}</div></div>)}
+            </div>
+          </div>
         </CollapsibleSection>
 
         {/* NEXT ACTION, DISCLOSED (task #7 — "Next action" group): kept as a small, always-visible
