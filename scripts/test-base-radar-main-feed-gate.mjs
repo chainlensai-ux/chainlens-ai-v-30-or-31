@@ -305,9 +305,13 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // numbers are generated from fixed, always-positive constants (NEW_POOLS_PAGES_PER_REQUEST etc.),
   // never from unbounded/unvalidated user input, and the total requested page count is a fixed,
   // finite constant — not something that can grow unbounded from a malformed cursor.
+  // Per-chain budget (Robinhood outage fix): the caps now come from radarDiscoveryBudget, whose values are
+  // fixed literals per chain — still never derived from request input.
   for (const constName of ['NEW_POOLS_PAGES_PER_REQUEST', 'TRENDING_PAGES_PER_REQUEST', 'VOLUME_POOLS_PAGES_PER_REQUEST']) {
-    assert.ok(new RegExp(`const ${constName} = \\d+`).test(routeSource), `${constName} must be a fixed, safe page-count cap, not unbounded`)
+    assert.ok(new RegExp(`const ${constName} = discoveryBudget\\.\\w+`).test(routeSource), `${constName} must come from the fixed per-chain budget, not unbounded input`)
   }
+  const resilienceSource = readFileSync(fileURLToPath(new URL('../lib/radarDiscoveryResilience.ts', import.meta.url)), 'utf8')
+  assert.match(resilienceSource, /\{ newPoolsPages: 2, trendingPages: 1, volumePages: 1 \}\s*\n\s*: \{ newPoolsPages: 4, trendingPages: 2, volumePages: 2 \}/, 'per-chain page caps must be fixed literals')
   // A failed/skipped page is captured with real per-page detail (source/page/status/errorName/
   // errorMessage/retryable/durationMs) — "audited" means real fields, not a swallowed catch.
   for (const field of ['source', 'page', 'urlOrEndpointName', 'status', 'errorName', 'errorMessage', 'retryable', 'durationMs', 'skippedByBackoff']) {

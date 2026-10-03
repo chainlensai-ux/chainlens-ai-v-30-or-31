@@ -126,7 +126,7 @@ interface RadarData {
   baseRadarLoadAudit?: {
     chainSlug?: string
     chainId?: number
-    providerErrors?: { source: string; status: number | null; errorName: string | null; errorMessage: string | null }[]
+    providerErrors?: { source: string; status: number | null; failureClass?: string }[]
     userVisibleError?: string | null
   }
   // LAST-GOOD-CACHE VISIBILITY, DISCLOSED: set only when this response is a re-served prior
@@ -134,6 +134,12 @@ interface RadarData {
   // FAILURE fallback in app/api/radar/route.ts) — lets the UI show a subtle "showing cached
   // results" note instead of presenting aging data as this cycle's fresh live fetch.
   servedFromStaleCache?: boolean
+  // ROBINHOOD OUTAGE FIX: 'delayed' when live discovery failed this cycle; retryAfterMs is the longest
+  // remaining source cooldown, so the client never retries into a guaranteed backoff_skip.
+  liveDiscovery?: 'live' | 'delayed'
+  retryAfterMs?: number | null
+  staleAgeMs?: number
+  publicDiscoveryMessage?: string
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -296,6 +302,13 @@ function fmtUSD(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
   if (v >= 1_000) return `$${(v / 1_000).toFixed(1)}K`
   return `$${v.toFixed(0)}`
+}
+
+function fmtStaleAge(fetchedAt: string | undefined): string {
+  const ms = fetchedAt ? Date.now() - Date.parse(fetchedAt) : NaN
+  if (!Number.isFinite(ms) || ms < 0) return 'recently'
+  const minutes = Math.floor(ms / 60_000)
+  return minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`
 }
 
 function fmtAge(minutes: number): string {
@@ -1282,8 +1295,7 @@ function StagedRadarLoading() {
 // loaded."). Only fires when discoveryDegradedSignificant (majority-or-more pages failed) — a
 // single failed page out of 18 combined with a legitimate 0-token gate result no longer gets
 // mislabeled as a source outage.
-function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, pagesAttempted, rawCandidatesRecovered, finalState, userVisibleError }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number; finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates'; userVisibleError?: string | null }) {
-  const pagesLoaded = Math.max(0, pagesAttempted - sourcesFailedCount)
+function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, finalState, userVisibleError }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number; finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates'; userVisibleError?: string | null }) {
   // TRUTHFUL EMPTY STATE, DISCLOSED (same fix as Pump Alerts): finalState is authoritative — it is
   // computed server-side from the exact same counters (sourcesSucceeded/rawTotalBeforeDedupe/
   // tokens.length) this component's other props already come from, so it can never disagree with
@@ -1295,12 +1307,16 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
   // baseRadarLoadAudit.userVisibleError, which names the actual failing source and its real error
   // message/status — the vague generic sentence is now only a fallback for the (should-be-rare)
   // case the backend didn't send one.
+  // PUBLIC COPY (Robinhood outage fix): no source keys, page counts or cooldown timestamps in the normal
+  // UI — those stay in ?debug=true. A healthy cycle whose pages were genuinely empty is a quiet market,
+  // not a provider failure (Robinhood's smaller listing depth makes that routine).
+  const degradedEmpty = finalState === 'noRawCandidates' && sourcesFailedCount > 0
   const headline = finalState === 'providerUnavailable'
-    ? (userVisibleError ?? 'Providers failed — could not reach discovery sources for this chain.')
-    : finalState === 'noRawCandidates'
-      ? 'No candidates found — providers returned zero pools this cycle.'
-      : discoveryDegradedSignificant
-        ? `Radar source degraded — ${pagesLoaded}/${pagesAttempted} pages loaded${rawCandidatesRecovered > 0 ? ` (${rawCandidatesRecovered} raw candidates recovered from the loaded pages, none cleared the gate)` : ' (no candidates recovered)'}. Try refresh.`
+    ? (userVisibleError ?? 'Market discovery is temporarily delayed. Retrying automatically.')
+    : degradedEmpty || discoveryDegradedSignificant
+      ? 'Market discovery is temporarily delayed. Retrying automatically.'
+      : finalState === 'noRawCandidates'
+        ? 'No new pools were listed on this chain in this cycle.'
         : holderCheckBudgetExhausted
           ? 'Holder-check budget reached for this cycle.'
           : 'No candidates passed the $50K+ valuation / real liquidity gate in this cycle.'
@@ -1308,11 +1324,11 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
     <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
       <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>
-        {finalState === 'providerUnavailable' || finalState === 'noRawCandidates' ? 'Radar could not load this cycle.' : 'No strong radar candidates right now.'}
+        {finalState === 'providerUnavailable' || degradedEmpty ? 'Live discovery temporarily delayed.' : 'No strong radar candidates right now.'}
       </p>
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>{headline}</p>
-      {finalState === 'providerUnavailable' || finalState === 'noRawCandidates'
-        ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>This is a provider issue, not a filtering result — try refreshing shortly.</p>
+      {finalState === 'providerUnavailable' || degradedEmpty
+        ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>This is a market-data delay, not a filtering result.</p>
         : limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
   )
@@ -1539,7 +1555,7 @@ export default function BaseRadarPage() {
   const effectivePlan = elitePass.active ? 'elite' : plan
   const showUpsell = effectivePlan === 'free'
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (opts?: { manual?: boolean }) => {
     // Cancel any still-in-flight request (e.g. manual refresh firing while the interval-driven
     // fetch hasn't resolved yet) before starting a new one — the old request's response, once it
     // arrives, is aborted rather than allowed to race the new one and potentially overwrite it with
@@ -1574,7 +1590,8 @@ export default function BaseRadarPage() {
     try {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
-      const res = await fetch(`/api/radar?chain=${effectiveRadarChainRef.current}`, { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      // manual=1 lets the server run its single bounded recovery probe when every source is cooling down.
+      const res = await fetch(`/api/radar?chain=${effectiveRadarChainRef.current}${opts?.manual ? '&manual=1' : ''}`, { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       timing.done({ status: res.status, chain: effectiveRadarChainRef.current })
       const json = await res.json().catch(() => null)
       if (!json || !res.ok || json.error) {
@@ -1583,8 +1600,13 @@ export default function BaseRadarPage() {
         hasRadarDataRef.current = radarHasVisibleFeed(json)
         setData(json as RadarData)
         const rd = json as RadarData
-        if (rd.finalState === 'providerUnavailable' && rd.tokens.length === 0 && autoRetryCountRef.current < 2) {
-          const delayMs = autoRetryCountRef.current === 0 ? 8_000 : 20_000
+        const discoveryDelayed = (rd.finalState === 'providerUnavailable' && rd.tokens.length === 0) || rd.servedFromStaleCache === true
+        if (discoveryDelayed && autoRetryCountRef.current < 2) {
+          // COOLDOWN-AWARE RETRY (Robinhood outage fix): the old fixed 8s retry landed inside the server's
+          // 20s source cooldown, so it was guaranteed to come back all backoff_skip. Wait until the
+          // longest reported cooldown has passed (still bounded to two retries).
+          const baseDelayMs = autoRetryCountRef.current === 0 ? 8_000 : 20_000
+          const delayMs = Math.max(baseDelayMs, typeof rd.retryAfterMs === 'number' ? rd.retryAfterMs + 750 : 0)
           autoRetryCountRef.current += 1
           if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
           autoRetryTimeoutRef.current = setTimeout(() => { fetchDataRef.current() }, delayMs)
@@ -1909,7 +1931,7 @@ export default function BaseRadarPage() {
     setCountdownResetKey(k => k + 1)
     if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
     autoRetryCountRef.current = 0
-    fetchData()
+    void fetchData({ manual: true })
   }
 
   // CHAIN-AWARE-SCAN-LINK FIX, DISCLOSED (reported: "Scan Token"/watchlist working for Base but not
@@ -2449,6 +2471,18 @@ export default function BaseRadarPage() {
               <p style={{ margin: 0, fontSize: '11px', color: '#a5f3fc', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
                 <span style={{ fontWeight: 800, letterSpacing: '0.04em' }}>ROBINHOOD CHAIN — BETA · </span>
                 Market/liquidity discovery is live. Tax/honeypot simulation may be unavailable until provider support improves.
+              </p>
+            </div>
+          )}
+
+          {/* LAST-VERIFIED BANNER (Robinhood outage fix): stale cards are labelled, keep their original
+              timestamp, and are never presented as this cycle's live feed. */}
+          {data?.servedFromStaleCache && tokens.length > 0 && (
+            <div role='status' style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '9px 13px', marginBottom: '10px', maxWidth: '760px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.22)' }}>
+              <span aria-hidden style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#fbbf24', flexShrink: 0 }} />
+              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ fontWeight: 800, letterSpacing: '0.04em' }}>LIVE DISCOVERY TEMPORARILY DELAYED · </span>
+                Showing last verified Radar results · updated {fmtStaleAge(data.fetchedAt)}
               </p>
             </div>
           )}
