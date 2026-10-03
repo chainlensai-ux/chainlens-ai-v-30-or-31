@@ -21,6 +21,7 @@ import {
   NOT_IN_INDEXED_HOLDER_ROWS,
   type TokenScannerEvidence,
 } from './tokenScannerEvidence'
+import type { LaunchReceiptEvidence } from './walletDetailEvidence'
 import type { LinkedWalletGraphStatus } from './devClusterDiagnosis'
 
 export type YesNoUnknown = 'yes' | 'no' | 'unknown'
@@ -114,6 +115,7 @@ export interface ResolveDeployerWalletIntelInput {
   transferEdges?: DeployerIntelTransferEdge[] | null
   clusterMap?: DeployerIntelClusterMap | null
   devControlResult?: DeployerIntelDevControlResult | null
+  launchReceipts?: LaunchReceiptEvidence[] | null
   cheapBalance?: DeployerIntelCheapBalanceResult | null
   nativeBalance?: DeployerIntelNativeBalanceResult | null
   holdersVerified?: boolean | null
@@ -304,7 +306,7 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
   // violate the "do NOT invent supply position" hard rule.
   const cheapBalance = input.cheapBalance ?? null
   let currentTokenBalance: number | null = null
-  if (cheapBalance?.succeeded && typeof cheapBalance.balance === 'number') {
+  if (cheapBalance?.succeeded && typeof cheapBalance.balance === 'number' && Number.isFinite(cheapBalance.balance) && cheapBalance.balance >= 0) {
     currentTokenBalance = cheapBalance.balance
     evidenceSource.push('live_balance_call')
   }
@@ -369,12 +371,12 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
   const linkedWallets = Array.from(linkedByAddress.values())
 
   const deployerSentTransfer = deployerEdges.some(e => addrEq(e.source, deployerAddress))
-  const deployerReceivedTransfer = devLinkedWallets.some(lw => lw.reason === 'token_supply_transfer' && lw.amountReceived != null)
+  const deployerReceivedTransfer = input.launchReceipts?.some(e => addrEq(e.wallet, deployerAddress)) === true
 
   // These two yes/no/unknown fields are deliberately conservative — the hard rule is "do NOT fake
   // transfer links" / "do NOT invent supply position", so each is only 'yes' when direct evidence
   // supports it and 'unknown' (never a guessed 'no') absent that evidence.
-  const receivedSupplyAtLaunch: YesNoUnknown = deployerReceivedTransfer || (deployerFoundInHolders && (supplyPercent ?? 0) > 0)
+  const receivedSupplyAtLaunch: YesNoUnknown = deployerReceivedTransfer
     ? 'yes'
     : 'unknown'
   const transferredOrSold: YesNoUnknown = deployerSentTransfer || Boolean(devControl?.suspiciousTransfers)
@@ -382,11 +384,8 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
     : 'unknown'
 
   const isCurrentHolder: YesNoUnknown =
-    (currentTokenBalance != null && currentTokenBalance > 0) || (deployerFoundInHolders && (supplyPercent ?? 0) > 0)
-      ? 'yes'
-      : (cheapBalance?.succeeded && currentTokenBalance === 0) || (deployerFoundInHolders === false && holderSnapshotAvailable && cheapBalance?.succeeded && currentTokenBalance === 0)
-        ? 'no'
-        : 'unknown'
+    currentTokenBalance != null ? (currentTokenBalance > 0 ? 'yes' : 'no')
+      : 'unknown'
 
   // Step 6 — cached related deployments (Dev Control's previousProjects), chain-checked already above.
   const relatedDeployments = devControl?.previousProjects ?? []
@@ -468,7 +467,7 @@ export function resolveDeployerWalletIntel(input: ResolveDeployerWalletIntelInpu
     supplyLabel,
     holderRank,
     holderRankLabel,
-    receivedSupplyAtLaunchLabel: displayYesNoUnknown(receivedSupplyAtLaunch, evidence),
+    receivedSupplyAtLaunchLabel: displayYesNoUnknown(receivedSupplyAtLaunch, evidence, 'Not established'),
     transferredOrSoldLabel: displayYesNoUnknown(transferredOrSold, evidence, evidence.labels.transferredOrSold),
     deployerNativeBalance: {
       amount: input.nativeBalance?.succeeded ? (input.nativeBalance.amount ?? null) : null,

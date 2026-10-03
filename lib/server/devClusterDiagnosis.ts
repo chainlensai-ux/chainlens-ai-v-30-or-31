@@ -1,3 +1,4 @@
+import { launchReceiptsFromTransfers, type LaunchReceiptEvidence } from '../walletDetailEvidence'
 // TOKEN SCANNER DEV MAP / CLUSTER DIAGNOSIS — SERVER, DISCLOSED.
 //
 // Overlay for Token Scanner Dev Map + Cluster Wallets. Fills gaps with:
@@ -73,6 +74,7 @@ export interface DevClusterDiagnosisResult {
   deployerStatus: 'confirmed' | 'possible_match' | 'not_confirmed'
   linkedWallets: DevClusterLinkedWallet[]
   graphRan: boolean
+  launchReceipts?: LaunchReceiptEvidence[]
   /** Current-holder rows only (never transfer_derived). */
   holders: DevClusterHolderRow[]
   holdersSource: DevClusterDiagnosisAudit['holderResolution']['holdersSource']
@@ -295,6 +297,7 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
   let creationTxHash = typeof existing.creationTxHash === 'string' ? existing.creationTxHash : null
   let holders: DevClusterHolderRow[] = (existing.holders ?? []).filter((h) => isUsableDevClusterWallet(h.address, tokenAddress))
   let transfers: DevClusterTransfer[] = existing.transfers ?? []
+  let cachedLaunchReceipts: LaunchReceiptEvidence[] = []
   let linkedWallets: DevClusterLinkedWallet[] = existing.linkedWallets ?? []
   let holdersSource: DevClusterDiagnosisAudit['holderResolution']['holdersSource'] = holders.length > 0 ? 'existing' : 'none'
   let linkedSource: DevClusterDiagnosisAudit['linkedWalletGraph']['linkedWalletsSource'] = linkedWallets.length > 0 ? 'existing' : 'none'
@@ -316,6 +319,7 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
         audit.providerHealth.supabaseCache.hit = true
         audit.providerHealth.supabaseCache.chainMatched = true
         if (cached.result) {
+          cachedLaunchReceipts = cached.result.launchReceipts ?? []
           // Cache can fill gaps only — live existing evidence still wins when it is stronger.
           if (!originAddress && cached.result.originAddress) originAddress = cached.result.originAddress
           if (!factoryAddress && cached.result.factoryAddress) factoryAddress = cached.result.factoryAddress
@@ -740,6 +744,9 @@ export async function resolveDevClusterDiagnosis(input: ResolveDevClusterInput):
   audit.finalReason = finals.finalReason
 
   const result: DevClusterDiagnosisResult = {
+    // Only a confirmed creation record anchors the window; inferred origin txs do not.
+    launchReceipts: [...cachedLaunchReceipts, ...launchReceiptsFromTransfers(transfers, existing.deployerStatus === 'confirmed' ? existing.creationTxHash ?? null : null)]
+      .filter((receipt, index, all) => all.findIndex(other => other.wallet === receipt.wallet && other.txHash === receipt.txHash) === index),
     audit,
     originAddress,
     factoryAddress,

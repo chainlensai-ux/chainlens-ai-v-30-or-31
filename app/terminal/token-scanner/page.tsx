@@ -1,5 +1,8 @@
 'use client'
 
+import { resolveWalletDetail, type WalletBalanceSnapshot, type LaunchReceiptEvidence } from '@/lib/walletDetailEvidence'
+import { loadSelectedWalletBalance } from '@/lib/walletDetailClient'
+
 import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
@@ -485,6 +488,7 @@ type ScanResult = {
   marketConfidence?: 'high' | 'medium' | 'low'
   priceSource?: 'dexscreener' | 'coingecko' | 'geckoterminal' | 'fdv_derived' | null
   decimals?: number
+  walletDetailMetadata?: { decimals: number | null; totalSupplyRaw: string | null }
   holderDistribution?: { top1:number|null; top5:number|null; top10:number|null; top20:number|null; others:number|null; holderCount:number|null; holderCountReason?: string | null; holderCountExact?: boolean; holderCountCapped?: boolean; holderCountProvenance?: HolderCountProvenance | null; topHolders:Array<{rank:number;address:string;amount:string|number|null;percent:number|null;classification?:{kind:'ordinary'|'liquidity_custody'|'unclassified';role?:string;label?:string;evidence:string[]}}>; ordinaryTop1?: number | null; ordinaryTop5?: number | null; ordinaryTop10?: number | null; ordinaryTop20?: number | null; ordinaryCoverage?: { status: 'verified' | 'partial' | 'insufficient' | 'not_computed'; verifiedScope?: 'requested_ordinary_top_n_window'; impliesCompleteCustodyCoverage?: false; excludedCustodyCount: number; excludedCustodyPercent: number | null; sourceRowCount: number; requestedDepth: number; reason: string; evidence: string[] } } | null
   /** Stage-1 verified pool/reserve custody summary. Optional / backward compatible. */
   liquidityCustody?: {
@@ -1336,6 +1340,7 @@ type DevWalletIntel = {
   // RELATED-DEPLOYMENTS FIELDS, DISCLOSED (deployer wallet detail fix): /api/dev-wallet already
   // returns previousProjects (the deployer's other deployed contracts) — never previously reached
   // this client type, so "Check Related Deployments" had no data to render.
+  launchReceipts?: LaunchReceiptEvidence[]
   previousActivityAvailable?: boolean | null
   previousActivityStatus?: string | null
   previousProjects?: Array<{ contractAddress: string; name: string | null; symbol: string | null; createdAt: string | null; rugFlag: boolean | null }>
@@ -2383,7 +2388,7 @@ function deriveClusterEdgeColor(edge: ClusterEdge): string {
   return edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
 }
 
-function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName, clusterAudit, holdersVerified }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null; clusterAudit?: DevClusterDiagnosisAudit | null; holdersVerified?: boolean }) {
+function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName, walletDetailMetadata, clusterAudit, holdersVerified }: { walletDetailMetadata?: ScanResult['walletDetailMetadata']; clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null; clusterAudit?: DevClusterDiagnosisAudit | null; holdersVerified?: boolean }) {
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
   const map = clusterMap
   // PERF FIX, DISCLOSED (audit: Cluster Map tab pegged a CPU core / froze the page): nodes/edges
@@ -2430,42 +2435,25 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const clusterIsTouch = useRef(false)
   const [hoveredClusterEdgeId, setHoveredClusterEdgeId] = useState<string | null>(null)
   const [edgeTooltipPosition, setEdgeTooltipPosition] = useState<{ x: number; y: number } | null>(null)
-  // CHEAP-BALANCE-CALL, DISCLOSED (deployer wallet detail fix, resolution step 5): one small,
-  // rate-limited /api/deployer-balance read fired only when the DEPLOYER node is selected — never the
-  // full Wallet Scanner. eth/base only (matches Dev Control's own chain support); any other chain, or
-  // any failure, just leaves the indexed holder-snapshot figures as the answer.
-  const [deployerCheapBalance, setDeployerCheapBalance] = useState<{ attempted: boolean; succeeded: boolean; balance: number | null } | null>(null)
+  // Only the opened node initiates enrichment. Context-keyed state prevents stale replies
+  // from a previous wallet/token/chain from leaking into the newly opened panel.
+  const selectedBalanceAddress = nodes.find(n => n.id === selectedClusterNodeId)?.address ?? null
+  const balanceKey = `${chain}:${tokenAddress}:${selectedBalanceAddress}`
+  const [walletBalanceState, setWalletBalanceState] = useState<{ key: string; snapshot: WalletBalanceSnapshot } | null>(null)
   const [showRelatedDeployments, setShowRelatedDeployments] = useState(false)
+  const selectedBalance = walletBalanceState?.key === balanceKey ? walletBalanceState.snapshot : null
   useEffect(() => {
-    // Resets the previous node's cheap-balance result before the (possibly async) fetch below for
-    // the newly-selected node resolves.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setDeployerCheapBalance(null)
-    const node = (clusterMap?.nodes ?? []).find((n) => n.id === selectedClusterNodeId)
-    if (!node || node.type !== 'deployer') return
-    if (chain !== 'eth' && chain !== 'base') return
-    if (!tokenAddress || !node.address) return
+    if (!selectedBalanceAddress || !chain || !tokenAddress) return
     let cancelled = false
-    // Marks the call as in-flight before the fetch below settles; see the disclosure above.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null })
-    fetch(`/api/deployer-balance?chain=${chain}&tokenAddress=${tokenAddress}&walletAddress=${node.address}`)
-      .then((res) => res.json())
-      .then((json: { ok?: boolean; tokenBalanceRaw?: string | null; tokenBalanceSucceeded?: boolean }) => {
-        if (cancelled) return
-        if (!json?.ok || !json.tokenBalanceSucceeded || json.tokenBalanceRaw == null) {
-          setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null })
-          return
-        }
-        // Raw balance is base-unit (no decimals applied) — shown as a raw integer count when decimals
-        // aren't independently known here; the resolver only uses it to answer "holds >0 tokens now",
-        // not to compute a supply percent (that stays sourced from the indexed holder snapshot).
-        const raw = Number(json.tokenBalanceRaw)
-        setDeployerCheapBalance({ attempted: true, succeeded: Number.isFinite(raw), balance: Number.isFinite(raw) ? raw : null })
-      })
-      .catch(() => { if (!cancelled) setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null }) })
+    void loadSelectedWalletBalance(chain, tokenAddress, selectedBalanceAddress).then(snapshot => {
+      if (!cancelled) setWalletBalanceState({ key: balanceKey, snapshot })
+    })
     return () => { cancelled = true }
-  }, [selectedClusterNodeId, chain, tokenAddress, clusterMap])
+  }, [selectedBalanceAddress, chain, tokenAddress, balanceKey])
+  const deployerCheapBalance = selectedBalance ? {
+    attempted: true, succeeded: selectedBalance.tokenBalanceSucceeded,
+    balance: selectedBalance.tokenBalanceRaw == null ? null : Number(selectedBalance.tokenBalanceRaw),
+  } : null
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
   const edgeColorFor = (type: string, reason: string) => {
     const lowerType = type.toLowerCase()
@@ -2814,7 +2802,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
     chainSlug: chain ?? null,
   })
   const openChecks = selectedClusterNode && selectedClusterNode.type !== 'deployer' ? [
-    ...(supplyPercent == null ? [holdersAreVerified ? walletEvidence.labels.walletSupply : 'Wallet not indexed in this pass.'] : []),
+    ...(supplyPercent == null && !selectedBalance?.tokenBalanceSucceeded ? [holdersAreVerified ? walletEvidence.labels.walletSupply : 'Wallet not indexed in this pass.'] : []),
     ...(map.status === 'partial' ? ['Some wallet data may be incomplete.'] : []),
     ...(selectedClusterNode.confidence === 'open_check' && !holdersAreVerified ? ['CORTEX needs more holder or transfer evidence before confirming cluster influence.'] : []),
     ...(relatedEdges.length === 0 ? [walletEvidence.labels.linkedWallets.includes('Linked wallet graph not run') ? walletEvidence.labels.linkedWallets : 'No transfer edge confirmed for this wallet.'] : []),
@@ -2846,11 +2834,26 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       suspiciousTransfers: devIntel.suspiciousTransfers ?? null,
       suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
     } : null,
+    launchReceipts: devIntel?.launchReceipts,
     cheapBalance: deployerCheapBalance,
+    nativeBalance: selectedBalance ? { attempted: true, succeeded: selectedBalance.nativeBalanceSucceeded, amount: selectedBalance.nativeBalance, asset: selectedBalance.nativeSymbol } : null,
     holdersVerified: holdersAreVerified,
     linkedWalletGraph: clusterAudit?.linkedWalletGraph ?? null,
   }) : null
   const deployerIntel = deployerIntelResult?.intel ?? null
+  const selectedWalletDetail = resolveWalletDetail({
+    wallet: selectedClusterNode?.address ?? '',
+    symbol: tokenSymbol,
+    decimals: walletDetailMetadata?.decimals,
+    totalSupplyRaw: walletDetailMetadata?.totalSupplyRaw,
+    indexed: holderRank != null || supplyPercent != null || deployerIntel?.holderRank != null || deployerIntel?.currentSupplyPercent != null
+      ? { rank: holderRank ?? deployerIntel?.holderRank, percent: supplyPercent ?? deployerIntel?.currentSupplyPercent } : null,
+    indexAvailable: holderRows.length > 0,
+    snapshot: selectedBalance,
+    loading: Boolean(selectedClusterNode && !selectedBalance),
+    launchReceipts: devIntel?.launchReceipts,
+  })
+
 
   // LINEAGE-CARD-DEPLOYER-INTEL, DISCLOSED: the "DEPLOYER LINEAGE" card below is always visible
   // (not gated on node selection), so it needs its own resolver pass keyed off the graph's own
@@ -2876,6 +2879,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       suspiciousTransfers: devIntel.suspiciousTransfers ?? null,
       suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
     } : null,
+    launchReceipts: devIntel?.launchReceipts,
     cheapBalance: isDeployerSelected ? deployerCheapBalance : null,
     holdersVerified: holdersAreVerified,
     linkedWalletGraph: clusterAudit?.linkedWalletGraph ?? null,
@@ -3069,21 +3073,22 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 <section style={{ display:'grid', gap:'7px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SUPPLY POSITION</p>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Supply</p><p style={{ margin:0, color:(isDeployerSelected ? supplyPercent == null : supplyPercent == null) ? '#94a3b8' : '#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.supplyLabel : (supplyPercent == null ? walletEvidence.labels.walletSupply : `${supplyPercent.toFixed(1)}% of supply`)}</p></div>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Holder rank</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.holderRankLabel : (holderRank != null ? `#${holderRank}` : walletEvidence.labels.walletHolderRank)}</p></div>
+                    {[
+                      { title: 'Supply', value: selectedWalletDetail.supply, source: selectedWalletDetail.supplySource, verified: selectedWalletDetail.provenance.tokenBalance.status === 'verified', extra: selectedWalletDetail.indexedSupply },
+                      { title: 'Holder rank', value: selectedWalletDetail.holderRank, source: selectedWalletDetail.rankSource, verified: selectedWalletDetail.provenance.holderRank.status === 'verified' },
+                      { title: 'Is current holder?', value: selectedWalletDetail.currentHolder, source: selectedWalletDetail.currentHolderSource, verified: selectedWalletDetail.currentHolder !== 'Unknown' },
+                      { title: 'Native balance', value: selectedWalletDetail.nativeBalance, source: selectedWalletDetail.provenance.nativeBalance.status === 'verified' ? 'Direct on-chain balance' : selectedBalance ? 'RPC balance unavailable' : 'Direct on-chain check in progress', verified: selectedWalletDetail.provenance.nativeBalance.status === 'verified' },
+                      { title: 'Received supply at launch?', value: selectedWalletDetail.launchReceipt, source: selectedWalletDetail.launchSource, verified: selectedWalletDetail.provenance.launchReceipt.status === 'verified' },
+                    ].map(field => (
+                      <div key={field.title} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)', minWidth:0 }}>
+                        <p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{field.title}</p>
+                        <p style={{ margin:0, color:field.verified ? '#e2e8f0' : '#94a3b8', fontSize:'12px', fontWeight:800, overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.value}</p>
+                        <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.source}</p>
+                        {field.extra && <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px' }}>{field.extra}</p>}
+                      </div>
+                    ))}
                   </div>
-                  {isDeployerSelected && deployerIntel && (
-                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Is current holder?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.isCurrentHolderLabel}</p></div>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Native balance</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.deployerNativeBalance.available && deployerIntel.deployerNativeBalance.amount != null ? `${deployerIntel.deployerNativeBalance.amount.toFixed(4)} ${deployerIntel.deployerNativeBalance.asset ?? ''}` : 'Not checked'}</p></div>
-                    </div>
-                  )}
-                  {isDeployerSelected && deployerIntel && (
-                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Received supply at launch?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.receivedSupplyAtLaunchLabel}</p></div>
-                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Transferred/sold tokens?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.transferredOrSoldLabel}</p></div>
-                    </div>
-                  )}
+                  {isDeployerSelected && deployerIntel && <p style={{ margin:0, color:'#94a3b8', fontSize:'10px' }}>Transferred/sold tokens? {deployerIntel.transferredOrSoldLabel}</p>}
                 </section>
                 <section style={{ display:'grid', gap:'7px', paddingTop:'2px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER ROLE</p>
@@ -5525,6 +5530,7 @@ export default function TerminalTokenScanner() {
           name:           json.name,
           symbol:         json.symbol,
           decimals:       typeof json.decimals === 'number' ? json.decimals : (json.tokenInfo?.decimals ?? 18),
+          walletDetailMetadata: json.walletDetailMetadata ?? undefined,
           contract:       json.contract,
           chain:          json.chain ?? 'base',
           noActivePools:    json.noActivePools ?? false,
@@ -10217,7 +10223,7 @@ export default function TerminalTokenScanner() {
                         )}
                       </div>
                     )}
-                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} clusterAudit={clusterAudit} holdersVerified={holderState.kind === 'rowsWithPercent'} />}
+                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={{ ...activeDevIntel, launchReceipts: activeDevIntel?.launchReceipts ?? result.devIntel?.launchReceipts }} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} walletDetailMetadata={result.walletDetailMetadata} clusterAudit={clusterAudit} holdersVerified={holderState.kind === 'rowsWithPercent'} />}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (

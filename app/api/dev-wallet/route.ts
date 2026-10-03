@@ -2038,6 +2038,7 @@ export async function POST(req: Request) {
       deployerConfidence,
       methodUsed,
       linkedWallets,
+      launchReceipts: (tokenEvidence?.devIntel as { launchReceipts?: unknown } | undefined)?.launchReceipts ?? [],
       holderDistribution: holderPercentDerived.holderDistribution ?? holderDistributionRaw ?? null,
       holderDistributionStatus: holderPercentDerived.holderDistributionStatus ?? tokenHolderStatus ?? 'partial',
       holderPercentAvailable: holderPercentDerived.holderPercentAvailable,

@@ -232,8 +232,8 @@ export function classifyTokenScannerEvidence(input: TokenScannerEvidenceInput): 
         : linkedLabel,
     walletSupply,
     walletHolderRank: walletSupply,
-    currentHolder: unknownReplacement,
-    receivedSupplyAtLaunch: unknownReplacement,
+    currentHolder: 'Unknown',
+    receivedSupplyAtLaunch: 'Not established',
     transferredOrSold: graphNotRun ? linkedLabel : unknownReplacement,
     clusterSupply: deployerUnresolvedWithHolders
       ? DEV_SUPPLY_DEPLOYER_UNRESOLVED
@@ -253,7 +253,7 @@ export function classifyTokenScannerEvidence(input: TokenScannerEvidenceInput): 
   return {
     holdersVerified,
     deployerResolved,
-    walletInIndexedRows: selectedWallet ? (inRows ?? false) : null,
+    walletInIndexedRows: selectedWallet ? inRows : null,
     lpProofComplete: lpComplete,
     graphStatus,
     graphRan,

@@ -5694,12 +5694,12 @@ export async function POST(req: Request) {
     // through on null/undefined, so a real 0 from any provider is now trusted as-is.
     const decimalsCandidate = (v: unknown): number | null =>
       typeof v === 'number' && Number.isFinite(v) ? v : null
-    const resolvedDecimals =
+    const verifiedWalletDecimals =
       decimalsCandidate(gtToken?.decimals) ??
       decimalsCandidate(metaItem?.contract_decimals) ??
       decimalsCandidate(goldItem?.contract_decimals) ??
-      decimalsCandidate(gmgnItem?.decimals) ??
-      18;
+      decimalsCandidate(gmgnItem?.decimals);
+    const resolvedDecimals = verifiedWalletDecimals ?? 18;
 
     
     // Moralis holder fallback — normalise to common shape so downstream code is unaware of source
@@ -7903,6 +7903,7 @@ export async function POST(req: Request) {
       ? (ethOrigin?.reason ?? 'No origin candidate found from Token Scanner checks')
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
     let factoryAddress: string | null = null
+    let walletLaunchReceipts: import('@/lib/walletDetailEvidence').LaunchReceiptEvidence[] = []
     let devClusterDiagnosisAudit: Awaited<ReturnType<typeof resolveDevClusterDiagnosis>>['audit'] | null = null
 
     const clusterChainSlug = (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood' || chain === 'polygon')
@@ -7948,6 +7949,7 @@ export async function POST(req: Request) {
           totalSupplyRaw: rpcSupplyToDecimal(rpcSupply),
         },
       })
+      walletLaunchReceipts = overlay.launchReceipts ?? []
       devClusterDiagnosisAudit = overlay.audit
       if (!deployerAddress && overlay.originAddress) {
         deployerAddress = overlay.originAddress
@@ -8285,6 +8287,7 @@ export async function POST(req: Request) {
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
       supplyControl,
       clusterMap,
+      launchReceipts: walletLaunchReceipts,
       ...(devClusterDiagnosisAudit ? { devClusterDiagnosisAudit } : {}),
     }
 
@@ -8409,6 +8412,13 @@ export async function POST(req: Request) {
       name: finalResolvedName,
       symbol: finalResolvedSymbol,
       decimals: resolvedDecimals,
+      walletDetailMetadata: {
+        decimals: verifiedWalletDecimals,
+        totalSupplyRaw: selectHolderPercentDenominator({
+          rpcPhase1TotalSupplyHex: rpcSupply,
+          providerTotalSupplyRaw: _holderProviderSupply,
+        })?.totalSupply.toString() ?? null,
+      },
 
       // Pool state — reflects both primary and fallback market reads
       noActivePools: noActivePools,

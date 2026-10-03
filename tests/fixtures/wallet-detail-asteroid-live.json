@@ -1,0 +1,279 @@
+{
+  "token": "0xaff2565091e7207191dbe340b8528d02fa78d044",
+  "wallet": "0xe843439d8c0917961aa7076e2f8b25c6d1b92778",
+  "capturedAt": "2026-10-03T10:25:55.906Z",
+  "holdersStatus": 200,
+  "balanceStatus": 200,
+  "metadataStatus": 200,
+  "holderRows": [
+    {
+      "address": "0x7Dfc9DD51638573a812b39d33EDed20Df468E7bC",
+      "balanceRaw": "82306814870687650542272007",
+      "rank": 1
+    },
+    {
+      "address": "0x9642b23Ed1E01Df1092B92641051881a322F5D4E",
+      "balanceRaw": "62860295926286419791290946",
+      "rank": 2
+    },
+    {
+      "address": "0x037612c566E58Abcd20B2C28b4Be5b7009641F50",
+      "balanceRaw": "21999613913142790817893562",
+      "rank": 3
+    },
+    {
+      "address": "0x84Cb133FBf9039693292577ec28E7341712a75B1",
+      "balanceRaw": "20524624598992350000000000",
+      "rank": 4
+    },
+    {
+      "address": "0x3B397B824B1bFE608025A2aB22C03B6655A0CD8C",
+      "balanceRaw": "20022305153878955665496743",
+      "rank": 5
+    },
+    {
+      "address": "0x87Ea97F28fE02B073A590B4c176024E6FD783B7C",
+      "balanceRaw": "18096633967683952837047689",
+      "rank": 6
+    },
+    {
+      "address": "0xAFF2565091E7207191dBe340B8528D02FA78d044",
+      "balanceRaw": "16002238535964753801812822",
+      "rank": 7
+    },
+    {
+      "address": "0x3edE7A2fE5cc11E77874FfDC791Fb420F405c977",
+      "balanceRaw": "15857053656534313775261790",
+      "rank": 8
+    },
+    {
+      "address": "0x586cE35eDfFEAccdd1c4900F3B879872fa75151C",
+      "balanceRaw": "14896089438537918623131816",
+      "rank": 9
+    },
+    {
+      "address": "0xe8882Fbe83b10AF4fF0681a0C5aECdEE7D47219b",
+      "balanceRaw": "14232568586869661795968283",
+      "rank": 10
+    },
+    {
+      "address": "0xa73DA0895679D8c8F39B6010Ee2e32f4d814B839",
+      "balanceRaw": "13937913327003085106446179",
+      "rank": 11
+    },
+    {
+      "address": "0x9AA0C1e7cDCD1bbE6E5300dEbB28F377F4488B20",
+      "balanceRaw": "12319646120937800832923658",
+      "rank": 12
+    },
+    {
+      "address": "0x8E3a43812F09e53E9800993C41293DC10E67a2e3",
+      "balanceRaw": "11991812335228351861263633",
+      "rank": 13
+    },
+    {
+      "address": "0x10724F3A5508A06fE2650BD5aEc27A4Ff109C566",
+      "balanceRaw": "11435932931113755122691510",
+      "rank": 14
+    },
+    {
+      "address": "0xC2c97F3e08dAD53b89aA20bc9C86657f07C942CB",
+      "balanceRaw": "11288801488279381349464142",
+      "rank": 15
+    },
+    {
+      "address": "0x9Da8F0F78cd05e0CB862c6D0D8CdEc92fB73D35b",
+      "balanceRaw": "10648428918751090700153896",
+      "rank": 16
+    },
+    {
+      "address": "0xe77682A662387174e9D9442c93f05AE17BaE6006",
+      "balanceRaw": "9509440157308903276225480",
+      "rank": 17
+    },
+    {
+      "address": "0x23e8231e71332a51aeac10FdABa51A7D59A07Cce",
+      "balanceRaw": "9504690261923898125247340",
+      "rank": 18
+    },
+    {
+      "address": "0xE3Fd77C87DB7759D2a9d6F21e6097d69A29e8E57",
+      "balanceRaw": "9280199301594412131913864",
+      "rank": 19
+    },
+    {
+      "address": "0xe413efA2f6220fF25C9C89FfcB4B4528F53A1Eb5",
+      "balanceRaw": "9003451993393866704391357",
+      "rank": 20
+    },
+    {
+      "address": "0x2e28c8b4DB14a6E06139132D3A2C5440b713C07A",
+      "balanceRaw": "8982207155181672217919597",
+      "rank": 21
+    },
+    {
+      "address": "0xf6444dF1D14f122941F1344F8F95F9b647b7AF37",
+      "balanceRaw": "8331346488401957072743656",
+      "rank": 22
+    },
+    {
+      "address": "0xA3D3A11F89E2d53DE844c2ba800344C5c85ccc1D",
+      "balanceRaw": "8005500789536150296246619",
+      "rank": 23
+    },
+    {
+      "address": "0xA0686aFB77ed32Fbb402A39642d05158b9Fa4C96",
+      "balanceRaw": "7832973726201566655801946",
+      "rank": 24
+    },
+    {
+      "address": "0x79bf38b6364457a32bE11763Ca3c8c2a658fF829",
+      "balanceRaw": "7783674335715251085925355",
+      "rank": 25
+    },
+    {
+      "address": "0xCD3C2dF3838bb6E4AeD65Fb0E349C5414eD70920",
+      "balanceRaw": "7128997541392267879753008",
+      "rank": 26
+    },
+    {
+      "address": "0xDa143fbd0f7FB196d51Ce9D6aDCe3892A8B0a84f",
+      "balanceRaw": "6866273884594869480125525",
+      "rank": 27
+    },
+    {
+      "address": "0x9f276DB9852ECa36ca278e014Aa9D2eeBeB7F676",
+      "balanceRaw": "6489269100674524829882322",
+      "rank": 28
+    },
+    {
+      "address": "0x57339D8fEA7E3f06D94d88beb6c0A375C64BAAB1",
+      "balanceRaw": "6304703738794051173339379",
+      "rank": 29
+    },
+    {
+      "address": "0x6F6EC31a5A903b153377e45A1A857fE7f54b4118",
+      "balanceRaw": "6000239775108600409220370",
+      "rank": 30
+    },
+    {
+      "address": "0xFA7B53949538E4A88dfEDF0A32588C49504c0042",
+      "balanceRaw": "5961957521201485123912686",
+      "rank": 31
+    },
+    {
+      "address": "0x9009dB279Dd7Fe1Daf1261f4dC75b31d26925AcB",
+      "balanceRaw": "5558973750120715023635280",
+      "rank": 32
+    },
+    {
+      "address": "0x0Cb31e24B5c63F97653BD0Db3678Fee360aC5540",
+      "balanceRaw": "5476467561452407892710217",
+      "rank": 33
+    },
+    {
+      "address": "0x6360849af633711a7Ddb9280f120da90388eB229",
+      "balanceRaw": "5187128090045406990173113",
+      "rank": 34
+    },
+    {
+      "address": "0xd022d0316Cfc53B49F58DC34d27c199Cc192800c",
+      "balanceRaw": "5127504773566310161810594",
+      "rank": 35
+    },
+    {
+      "address": "0x79c668d4274e16a8aA2e9B70aB8FEb2B1179c296",
+      "balanceRaw": "5092201219257839668075623",
+      "rank": 36
+    },
+    {
+      "address": "0xf3C3AAC5a8a1B58E43eCbaFF5F8C881E6c2A3998",
+      "balanceRaw": "5075318575065143943512710",
+      "rank": 37
+    },
+    {
+      "address": "0x0faeb60e1B406c2F84454F169a2512a5792e1aA8",
+      "balanceRaw": "5010893685517750012870316",
+      "rank": 38
+    },
+    {
+      "address": "0x9A3eeF96Fdd404221637dE8C8D284325F3dCF0b8",
+      "balanceRaw": "5010777071752196323645664",
+      "rank": 39
+    },
+    {
+      "address": "0xEa28f177ceAb26bF45c106d224f91e9D21fEe660",
+      "balanceRaw": "5000000000000000000000000",
+      "rank": 40
+    },
+    {
+      "address": "0xb0E01c927ad14f03Ea3C5C5B925c692e77D8EeF9",
+      "balanceRaw": "5000000000000000000000000",
+      "rank": 41
+    },
+    {
+      "address": "0x614A3200ecDe0DfF0589F7cD33Dbd9CB3D87F536",
+      "balanceRaw": "4846748882714773182591873",
+      "rank": 42
+    },
+    {
+      "address": "0xf7b4FF31422206EC4eb427e69D27a9b93faC0c8C",
+      "balanceRaw": "4690526606809442986721194",
+      "rank": 43
+    },
+    {
+      "address": "0x402C2Ef4F575B081109Cb07e31E518F8076A4408",
+      "balanceRaw": "4568839555999025775468718",
+      "rank": 44
+    },
+    {
+      "address": "0xE5a273eEB2Dee2dea3D579710841959eba799C2e",
+      "balanceRaw": "4534060676247514555503177",
+      "rank": 45
+    },
+    {
+      "address": "0x8d8E88185d7Fc9808807013047B78852903656C7",
+      "balanceRaw": "4484628712281608967250528",
+      "rank": 46
+    },
+    {
+      "address": "0xe3Dc453FFf12351F90A95B7ca27782A0200EC6dd",
+      "balanceRaw": "4426816074886728409854780",
+      "rank": 47
+    },
+    {
+      "address": "0x9a1f04853aAe68c55cb7Cc06d8408b605aD6c736",
+      "balanceRaw": "4407022241351453766679668",
+      "rank": 48
+    },
+    {
+      "address": "0xbfD6bCB4680CD6B3d851Df6c48f913772116Ab16",
+      "balanceRaw": "4300000000001528663445857",
+      "rank": 49
+    },
+    {
+      "address": "0x503d1f2038D9e532d2B29Bde26787B7E76D9D8AA",
+      "balanceRaw": "4295337300986117227325353",
+      "rank": 50
+    }
+  ],
+  "decimals": "18",
+  "totalSupplyRaw": "1000000000000000000000000000",
+  "symbol": "ASTEROID",
+  "snapshot": {
+    "ok": true,
+    "chain": "eth",
+    "tokenAddress": "0xaff2565091e7207191dbe340b8528d02fa78d044",
+    "walletAddress": "0xe843439d8c0917961aa7076e2f8b25c6d1b92778",
+    "tokenBalanceRaw": null,
+    "tokenBalanceSucceeded": false,
+    "nativeBalance": null,
+    "nativeBalanceSucceeded": false
+  },
+  "sources": {
+    "holders": "https://eth.blockscout.com/api/v2/tokens/0xaff2565091e7207191dbe340b8528d02fa78d044/holders",
+    "metadata": "https://eth.blockscout.com/api/v2/tokens/0xaff2565091e7207191dbe340b8528d02fa78d044",
+    "balances": "https://chainlens-vthirty.vercel.app/api/deployer-balance?chain=eth&tokenAddress=0xaff2565091e7207191dbe340b8528d02fa78d044&walletAddress=0xe843439d8c0917961aa7076e2f8b25c6d1b92778",
+    "origin": "Existing tests/fixtures/asteroid-eth-launch-transfers.json initial mint recipient; origin, not newly verified contract creator"
+  }
+}

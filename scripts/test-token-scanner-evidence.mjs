@@ -50,7 +50,7 @@ const holderRows = [
     chainSlug: 'base',
   })
   check('holders verified + deployer unresolved uses exact supply copy', ev.labels.supplyControl === DEV_SUPPLY_DEPLOYER_UNRESOLVED)
-  check('does not say Unknown', !/unknown/i.test(ev.labels.currentHolder) && ev.labels.currentHolder !== 'Unknown')
+  check('unresolved holder remains Unknown', ev.labels.currentHolder === 'Unknown')
   check('does not say Needs holder evidence', !/needs holder evidence/i.test(ev.labels.supplyControl))
   check('deployer status is not_checked, not unknown display', ev.deployerStatus === 'not_checked')
 
@@ -62,7 +62,7 @@ const holderRows = [
     holderSnapshot: { available: true, topHolders: holderRows },
   }).intel
   check('Wallet Detail unresolved deployer uses same helper copy', intel.supplyLabel === DEV_SUPPLY_DEPLOYER_UNRESOLVED)
-  check('Wallet Detail current-holder label is not Unknown', intel.isCurrentHolderLabel === DEV_SUPPLY_DEPLOYER_UNRESOLVED)
+  check('Wallet Detail unresolved wallet remains Unknown', intel.isCurrentHolderLabel === 'Unknown')
   check('Wallet Detail does not finish as open_check when holders verified', intel.confidence !== 'open_check')
 }
 
@@ -79,7 +79,7 @@ const holderRows = [
   })
   check('absent wallet is Not in indexed holder rows', ev.labels.walletSupply === NOT_IN_INDEXED_HOLDER_ROWS)
   check('wallet status is not_in_indexed_holder_rows', ev.walletStatus === 'not_in_indexed_holder_rows')
-  check('current holder is not Unknown', ev.labels.currentHolder === NOT_IN_INDEXED_HOLDER_ROWS)
+  check('index absence cannot establish current holder status', ev.labels.currentHolder === 'Unknown')
 
   const intel = resolveDeployerWalletIntel({
     chainSlug: 'base',
@@ -90,7 +90,7 @@ const holderRows = [
   }).intel
   check('Wallet Detail absent wallet uses same helper', intel.supplyLabel === NOT_IN_INDEXED_HOLDER_ROWS)
   check('Wallet Detail holder rank uses same helper', intel.holderRankLabel === NOT_IN_INDEXED_HOLDER_ROWS)
-  check('Wallet Detail current-holder label is not Unknown', intel.isCurrentHolderLabel === NOT_IN_INDEXED_HOLDER_ROWS)
+  check('Wallet Detail absent index cannot prove holder status', intel.isCurrentHolderLabel === 'Unknown')
 }
 
 // ── 3. graph not run vs graph ran and found none ───────────────────────────
@@ -127,6 +127,10 @@ const holderRows = [
     chainId: 8453,
   })
   for (const [k, v] of Object.entries(ev.labels)) {
+    if (k === 'currentHolder') {
+      check('unproven current holder remains Unknown', v === 'Unknown')
+      continue
+    }
     check(`label ${k} is specific: ${v}`, evidenceLabelsAreSpecific(String(v)))
   }
 }
@@ -145,8 +149,8 @@ const holderRows = [
 // ── 6. Wallet Detail uses the same helper ──────────────────────────────────
 {
   check('page imports classifyTokenScannerEvidence', pageSrc.includes("from '@/lib/tokenScannerEvidence'"))
-  check('Wallet Detail uses isCurrentHolderLabel', pageSrc.includes('deployerIntel.isCurrentHolderLabel'))
-  check('Wallet Detail uses receivedSupplyAtLaunchLabel', pageSrc.includes('deployerIntel.receivedSupplyAtLaunchLabel'))
+  check('Wallet Detail uses isCurrentHolderLabel', pageSrc.includes('selectedWalletDetail.currentHolder'))
+  check('Wallet Detail uses receivedSupplyAtLaunchLabel', pageSrc.includes('selectedWalletDetail.launchReceipt'))
   check('Wallet Detail uses transferredOrSoldLabel', pageSrc.includes('deployerIntel.transferredOrSoldLabel'))
   check('ClusterMapPanel passes clusterAudit into helper', pageSrc.includes('clusterAudit={clusterAudit}'))
   check('Dev tab overlays holder-tab evidence', pageSrc.includes('holdersVerified: holderState.kind === \'rowsWithPercent\''))
