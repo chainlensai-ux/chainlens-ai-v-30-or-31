@@ -34,6 +34,8 @@ import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
 import { isVerifiedStablecoinAddress, isCanonicalWethAddress, isNativePseudoAddress } from '@/src/modules/quoteLegPricing/index'
 import {
   createCurrentPriceResolver,
+  isCanonicalEthAsset,
+  isCanonicalStable,
   recordCurrentPrice,
   type CurrentPriceAttempts,
   type CurrentPriceResolverDeps,
@@ -709,6 +711,8 @@ export type HoldingsFallbackAudit = {
     /** ETH/USD anchor lookups (≤ 1 per chain per scan). */
     anchorCalls: number
   }
+  /** Current-price cache layers (L1 process, L2 KV). Write failures counted when known at audit time. */
+  cache: { l1Hits: number; l2Hits: number; l2Misses: number; l2ReadFailures: number; l2WriteFailures: number; networkAvoidedByCache: number }
   avoidedExpensiveLookups: number
   cheapResolved: number
   negativeCacheSkips: number
@@ -888,6 +892,11 @@ export async function priceHoldings(
   const negativeCachedKeys = new Set<string>()
   const firstHoldingByKey = new Map<string, ChainHolding>()
   for (const h of eligibleHoldings) if (!firstHoldingByKey.has(fallbackKeyOf(h))) firstHoldingByKey.set(fallbackKeyOf(h), h)
+  // One batched L2 (KV) read for the keys that need a cache at all — canonical registry assets resolve
+  // without one, and provider-priced holdings never reach this pass.
+  await resolver.prefetchShared(allEligibleKeys
+    .map((k) => firstHoldingByKey.get(k)!)
+    .filter((h) => !isCanonicalStable(h.chainId, h.tokenAddress) && !isCanonicalEthAsset(h.chainId, h.tokenAddress)))
   await mapWithConcurrencyLimit(allEligibleKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
     const h = firstHoldingByKey.get(key)!
     const r = await resolver.resolveCheap({ chainId: h.chainId, tokenAddress: h.tokenAddress, providerPriceUsd: h.providerPriceUsd, providerValueUsd: h.providerValueUsd, balanceRaw: h.amountRaw ?? null, decimals: decimalsKnown(h) ? h.decimals : null })
@@ -1443,6 +1452,14 @@ export async function priceHoldings(
       callsUsed: expensiveUsed.dexscreener + expensiveUsed.geckoterminal + resolver.counters.onchainPoolReads,
       onchainPoolReads: resolver.counters.onchainPoolReads,
       anchorCalls: resolver.counters.anchorCalls,
+    },
+    cache: {
+      l1Hits: resolver.counters.l1Hits,
+      l2Hits: resolver.counters.l2Hits,
+      l2Misses: resolver.counters.l2Misses,
+      l2ReadFailures: resolver.counters.l2ReadFailures,
+      l2WriteFailures: resolver.counters.l2WriteFailures,
+      networkAvoidedByCache: resolver.counters.networkAvoidedByCache,
     },
     // Cheap resolution avoided an expensive lookup for each of these (and negative-cache skips).
     avoidedExpensiveLookups: cheapResolvedKeys.size + negativeCachedKeys.size,

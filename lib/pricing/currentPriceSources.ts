@@ -9,7 +9,9 @@ import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import { fetchCoingeckoEthUsdRecent, isCoingeckoOnchainConfigured } from '@/lib/server/coingeckoOnchainOhlcv'
 import { getRpcClientForChain, verifyOnchainDecimals } from '@/lib/engine/modules/pricing/rpcDecimals'
 import { createOnchainPoolSource } from './onchainPoolSource'
-import type { CurrentPriceResolverDeps, DexscreenerLookup, EthUsdLookup, GeckoTerminalLookup } from './currentPriceResolver'
+import { kv as vercelKv } from '@vercel/kv'
+import { getKvCircuitBreakerState } from '@/lib/server/cache/tokenCache'
+import type { CurrentPriceL2Store, CurrentPriceResolverDeps, DexscreenerLookup, EthUsdLookup, GeckoTerminalLookup } from './currentPriceResolver'
 
 const CHAIN: Record<number, SupportedChain> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum' }
 const ETH_USD_MAX_AGE_MS = 30 * 60 * 1000
@@ -49,6 +51,39 @@ export const ethUsdSource: EthUsdLookup = async (chainId) => {
 
 export const onchainPoolSource = createOnchainPoolSource(getRpcClientForChain, verifyOnchainDecimals)
 
+// ─── L2: the existing ChainLens Vercel KV (same KV_REST_API_URL / KV_REST_API_TOKEN as lib/server/cache/
+// tokenCache.ts and lib/server/kv.ts). Not routed through getTokenCache: that helper turns every failure
+// into a silent miss (so read failures could not be counted), retries for up to ~1.9s per key, and has no
+// batch read. This adapter instead does ONE `mget` per scan with a short timeout, throws on failure (the
+// resolver counts it and falls through to the network), and honours tokenCache's open circuit breaker so
+// a KV outage already detected elsewhere costs zero extra roundtrips here.
+const L2_READ_TIMEOUT_MS = 250
+const L2_WRITE_TIMEOUT_MS = 1_000
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>
+  return Promise.race([p, new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error('kv_timeout')), ms) })]).finally(() => clearTimeout(timer))
+}
+
+export function kvConfiguredForCurrentPrice(): boolean {
+  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+}
+
+export const vercelKvCurrentPriceL2: CurrentPriceL2Store = {
+  async mget(keys) {
+    if (keys.length === 0) return []
+    if (getKvCircuitBreakerState().state === 'open') throw new Error('kv_circuit_open')
+    return await withTimeout(vercelKv.mget<unknown[]>(...keys), L2_READ_TIMEOUT_MS)
+  },
+  async set(key, value, ttlSeconds) {
+    if (getKvCircuitBreakerState().state === 'open') throw new Error('kv_circuit_open')
+    await withTimeout(vercelKv.set(key, value, { ex: ttlSeconds }), L2_WRITE_TIMEOUT_MS)
+  },
+}
+
 export function defaultCurrentPriceDeps(): CurrentPriceResolverDeps {
-  return { dexscreener: dexscreenerSource, geckoterminal: geckoTerminalSource, onchain: onchainPoolSource, ethUsd: ethUsdSource }
+  return {
+    l2: kvConfiguredForCurrentPrice() ? vercelKvCurrentPriceL2 : null,
+    dexscreener: dexscreenerSource, geckoterminal: geckoTerminalSource, onchain: onchainPoolSource, ethUsd: ethUsdSource,
+  }
 }

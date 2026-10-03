@@ -8,6 +8,8 @@ import {
   selectGeckoTerminalPool,
   readCurrentPriceCache,
   recordCurrentPrice,
+  currentPriceCacheKey,
+  parsePersistedCurrentPrice,
   __resetCurrentPriceCacheForTest,
   CURRENT_PRICE_TTL_LIQUID_MS,
   V4_NATIVE_CURRENCY,
@@ -444,5 +446,181 @@ describe('on-chain pool reader (fake RPC client)', () => {
   it('no RPC configured → no pools, never a throw', async () => {
     const src = createOnchainPoolSource(() => null, async () => 18)
     assert.deepEqual(await src.listPools(BASE, T, [WETH]), [])
+  })
+})
+
+describe('source precedence is enforced by the resolver itself', () => {
+  it('canonical USDC + provider 0.9987 → provider 0.9987', async () => {
+    const r = createCurrentPriceResolver(deps())
+    const res = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: USDC, providerPriceUsd: 0.9987 })
+    assert.equal(res.evidence.source, 'provider')
+    assert.equal(res.evidence.priceUsd, 0.9987)
+  })
+
+  it('canonical USDC without a provider price → $1 canonical_stable', async () => {
+    const r = createCurrentPriceResolver(deps())
+    const res = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: USDC, providerPriceUsd: null })
+    assert.equal(res.evidence.source, 'canonical_stable')
+    assert.equal(res.evidence.priceUsd, 1)
+  })
+
+  it('an invalid provider price (0 / NaN / negative) never wins', async () => {
+    const r = createCurrentPriceResolver(deps())
+    for (const bad of [0, Number.NaN, -1]) {
+      const res = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: USDC, providerPriceUsd: bad })
+      assert.equal(res.evidence.source, 'canonical_stable')
+    }
+  })
+
+  it('Wallet Scanner result is unchanged: a provider-priced canonical USDC keeps its provider price', async () => {
+    const out = await priceHoldings([{ chainId: BASE, tokenAddress: USDC, symbol: 'USDC', decimals: 6, quantity: '100', lastActivityAt: null, classification: 'stable', providerPriceUsd: 0.9987, providerValueUsd: 99.87 }], async () => null)
+    assert.equal(out.pricedHoldings[0].priceUsd, 0.9987)
+    assert.equal(out.pricedHoldings[0].valueUsd, 99.87)
+  })
+})
+
+describe('L2 shared cache (cross-instance)', () => {
+  // In-memory stand-in for KV, shared by every resolver instance in a test — the "other server".
+  function fakeKv() {
+    const store = new Map<string, unknown>()
+    const stats = { mgets: 0, sets: 0 }
+    let failReads = false
+    let failWrites = false
+    const l2 = {
+      mget: async (keys: string[]) => { stats.mgets += 1; if (failReads) throw new Error('kv_timeout'); return keys.map((k) => store.get(k) ?? null) },
+      set: async (key: string, value: unknown) => { stats.sets += 1; if (failWrites) throw new Error('kv_down'); store.set(key, value) },
+    }
+    return { store, stats, l2, outage: (r: boolean, w: boolean) => { failReads = r; failWrites = w } }
+  }
+  const dsPriced = (calls: Calls, price = 2.5) => async () => { calls.ds += 1; return { priceUsd: price, reason: null, pairAddress: '0xpair', liquidityUsd: 400_000 } }
+
+  it('keys are versioned and chain-strict: current-price:v1:{chainId}:{token}', () => {
+    assert.equal(currentPriceCacheKey(BASE, T.toUpperCase().replace('0X', '0x')), `current-price:v1:${BASE}:${T}`)
+    assert.notEqual(currentPriceCacheKey(1, T), currentPriceCacheKey(BASE, T))
+  })
+
+  it('L1 hit avoids both L2 and the network', async () => {
+    const kv = fakeKv()
+    const calls: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const r = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(calls) }, calls), l2: kv.l2 })
+    await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })
+    await r.flushL2Writes()
+    const readsBefore = kv.stats.mgets
+    const hit = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })
+    assert.equal(hit.attempts.cacheLayer, 'l1')
+    assert.equal(kv.stats.mgets, readsBefore, 'no L2 read on an L1 hit')
+    assert.equal(calls.ds, 1)
+    assert.equal(r.counters.l1Hits, 1)
+  })
+
+  it('cold process: an L2 hit avoids the network and keeps source / route / confidence / observedAt', async () => {
+    const kv = fakeKv()
+    const first: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const a = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(first), now: () => 1_000_000 }, first), l2: kv.l2 })
+    const original = (await a.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })).evidence
+    await a.flushL2Writes()
+    assert.equal(kv.store.size, 1)
+    __resetCurrentPriceCacheForTest() // a different server instance: empty L1
+
+    const second: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const b = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(second, 99), now: () => 1_030_000 }, second), l2: kv.l2 })
+    const hit = await b.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })
+    assert.equal(second.ds, 0, 'no network call')
+    assert.equal(hit.attempts.cacheLayer, 'l2')
+    assert.equal(hit.evidence.source, 'shared_cache')
+    assert.equal(hit.evidence.originalSource, 'dexscreener')
+    assert.equal(hit.evidence.priceUsd, 2.5)
+    assert.equal(hit.evidence.observedAt, original.observedAt, 'never relabeled as newly observed')
+    assert.deepEqual(hit.evidence.route, original.route)
+    assert.equal(hit.evidence.confidence, original.confidence)
+    assert.equal(hit.evidence.poolAddress, '0xpair')
+    assert.equal(b.counters.l2Hits, 1)
+    assert.equal(b.counters.networkAvoidedByCache, 1)
+  })
+
+  it('two Wallet Scanner runs on different instances reuse the same persisted price (batched read)', async () => {
+    const kv = fakeKv()
+    const holdings = [{ chainId: BASE, tokenAddress: T, symbol: 'T', decimals: 18, quantity: '10', lastActivityAt: null, classification: 'other' as const, providerValueUsd: 5 }]
+    let ds = 0
+    const priceFn = async () => { ds += 1; return 2.5 }
+    const quiet = async <X,>(fn: () => Promise<X>) => { const w = console.warn; console.warn = () => {}; try { return await fn() } finally { console.warn = w } }
+    await quiet(() => priceHoldings(holdings, priceFn, { resolverDeps: { l2: kv.l2 } }))
+    await new Promise((res) => setTimeout(res, 5)) // let the fire-and-forget L2 write settle
+    __resetCurrentPriceCacheForTest()
+    const out = await quiet(() => priceHoldings(holdings, priceFn, { resolverDeps: { l2: kv.l2 } }))
+    assert.equal(ds, 1, 'the second instance priced from L2')
+    assert.equal(out.pricedHoldings[0].priceUsd, 2.5)
+    assert.equal(out.fallbackAudit!.cache.l2Hits, 1)
+    assert.equal(out.fallbackAudit!.rows[0].priceSource, 'shared_cache')
+    assert.equal(out.fallbackAudit!.rows[0].pricing!.originalSource, 'dexscreener')
+  })
+
+  it('an expired L2 entry is rejected and the network is used', async () => {
+    const kv = fakeKv()
+    kv.store.set(currentPriceCacheKey(BASE, T), { v: 'v1', chainId: BASE, tokenAddress: T, priceUsd: 7, originalSource: 'dexscreener', route: [T, 'USD'], poolAddress: null, liquidityUsd: 1e6, observedAt: 0, confidence: 'high', expiresAt: 1_000 })
+    const calls: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const r = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(calls), now: () => 2_000 }, calls), l2: kv.l2 })
+    const res = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T }, { dexscreener: true, geckoterminal: false, onchain: false })
+    assert.equal(res.evidence.priceUsd, 2.5)
+    assert.equal(calls.ds, 1)
+    assert.equal(r.counters.l2Misses, 1)
+  })
+
+  it('a wrong-chain or wrong-token value can never be served (key + payload checks)', async () => {
+    const kv = fakeKv()
+    // A chain-1 entry exists; the Base lookup uses a different key.
+    kv.store.set(currentPriceCacheKey(1, T), { v: 'v1', chainId: 1, tokenAddress: T, priceUsd: 7, originalSource: 'dexscreener', route: [T, 'USD'], poolAddress: null, liquidityUsd: 1e6, observedAt: 0, confidence: 'high', expiresAt: 9e15 })
+    // Even a tampered value under the Base key that claims chain 1 is rejected.
+    const tampered = { v: 'v1', chainId: 1, tokenAddress: B, priceUsd: 7, originalSource: 'dexscreener', route: [B, 'USD'], poolAddress: null, liquidityUsd: 1e6, observedAt: 0, confidence: 'high', expiresAt: 9e15 }
+    kv.store.set(currentPriceCacheKey(BASE, B), tampered)
+    const calls: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const r = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(calls) }, calls), l2: kv.l2 })
+    assert.equal((await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T }, { dexscreener: true, geckoterminal: false, onchain: false })).evidence.priceUsd, 2.5)
+    assert.equal((await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: B }, { dexscreener: true, geckoterminal: false, onchain: false })).evidence.priceUsd, 2.5)
+    assert.equal(calls.ds, 2)
+    assert.equal(parsePersistedCurrentPrice(tampered, BASE, B, 0).state, 'invalid')
+  })
+
+  it('negatives stay L1-only, expire quickly, and never reach another instance', async () => {
+    const kv = fakeKv()
+    let t = 10_000_000
+    let price: number | null = null
+    const r = createCurrentPriceResolver({ ...deps({ now: () => t, geckoterminal: null, onchain: null, dexscreener: async () => ({ priceUsd: price, reason: price ? null : 'no_matching_pair' }) }), l2: kv.l2 })
+    assert.equal((await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })).evidence.status, 'unavailable')
+    await r.flushL2Writes()
+    assert.equal(kv.store.size, 0, 'a failure is never persisted')
+    price = 3
+    t += 16_000
+    assert.equal((await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T })).evidence.priceUsd, 3)
+  })
+
+  it('canonical and provider prices cost no L2 roundtrip and are not persisted', async () => {
+    const kv = fakeKv()
+    const r = createCurrentPriceResolver({ ...deps(), l2: kv.l2 })
+    await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: USDC })
+    await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T, providerPriceUsd: 1.1 })
+    await r.flushL2Writes()
+    assert.deepEqual(kv.stats, { mgets: 0, sets: 0 })
+  })
+
+  it('a KV outage falls through to the network safely and is counted', async () => {
+    const kv = fakeKv()
+    kv.outage(true, true)
+    const calls: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const r = createCurrentPriceResolver({ ...deps({ dexscreener: dsPriced(calls) }, calls), l2: kv.l2 })
+    const res = await r.resolveCurrentTokenPrice({ chainId: BASE, tokenAddress: T }, { dexscreener: true, geckoterminal: false, onchain: false })
+    await r.flushL2Writes()
+    assert.equal(res.evidence.priceUsd, 2.5)
+    assert.equal(calls.ds, 1)
+    assert.equal(r.counters.l2ReadFailures, 1)
+    assert.equal(r.counters.l2WriteFailures, 1)
+  })
+
+  it('request singleflight still coalesces concurrent lookups for the same token', async () => {
+    const calls: Calls = { ds: 0, gt: 0, pools: [], eth: 0 }
+    const r = createCurrentPriceResolver({ ...deps({ dexscreener: async () => { calls.ds += 1; await new Promise((res) => setTimeout(res, 5)); return { priceUsd: 2, reason: null } } }, calls), l2: fakeKv().l2 })
+    const allow = { dexscreener: true, geckoterminal: false, onchain: false }
+    await Promise.all([r.resolveExpensive({ chainId: BASE, tokenAddress: T }, allow), r.resolveExpensive({ chainId: BASE, tokenAddress: T }, allow)])
+    assert.equal(calls.ds, 1)
   })
 })

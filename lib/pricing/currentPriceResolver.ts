@@ -18,7 +18,8 @@
 //             (lib/pricing/onchainPoolSource.ts), this ladder, multihop routing and the shared cache.
 //             No existing CURRENT pool reader existed: basedex.ts is block-pinned, Base-only, historical.
 //
-// LADDER: A canonical stable / native / WETH → B provider price → C shared cache → D DexScreener →
+// LADDER: B provider price → A canonical stable / native / WETH → C shared cache (L1 process → L2 KV) →
+// D DexScreener →
 // E GeckoTerminal → F direct on-chain pool (V2 / V3 / V4) → G bounded multihop (≤ 2 DEX hops, ≤ 3 assets
 // before USD). A–C are CHEAP (no per-token network call); D–G are EXPENSIVE and only run when the caller
 // allows them (Wallet Scanner gates them behind its fallback budget). NEVER FABRICATES: every miss is an
@@ -59,6 +60,8 @@ export type SourceAttempt = { attempted: boolean; ok: boolean; reason: string | 
 
 export type CurrentPriceAttempts = {
   cache: 'hit' | 'miss' | 'stale' | 'negative' | null
+  /** Which cache layer answered a hit. */
+  cacheLayer?: 'l1' | 'l2' | null
   dexscreener: SourceAttempt | null
   geckoterminal: SourceAttempt | null
   onchain: (SourceAttempt & { poolsInspected: number }) | null
@@ -113,7 +116,33 @@ export type OnchainPoolLookup = {
 }
 export type EthUsdLookup = (chainId: number) => Promise<{ priceUsd: number; observedAt: number; source: string } | null>
 
+/**
+ * L2 (cross-instance) store for current prices. Implementations THROW on failure (timeout, outage) so the
+ * resolver can count it and fall through; a missing key resolves to null.
+ */
+export type CurrentPriceL2Store = {
+  mget: (keys: string[]) => Promise<Array<unknown | null>>
+  set: (key: string, value: PersistedCurrentPrice, ttlSeconds: number) => Promise<void>
+}
+
+/** The only evidence persisted to L2 — enough to reuse, never enough to look newly observed. */
+export type PersistedCurrentPrice = {
+  v: typeof CURRENT_PRICE_CACHE_VERSION
+  chainId: number
+  tokenAddress: string
+  priceUsd: number
+  originalSource: CurrentPriceSource
+  route: string[]
+  poolAddress: string | null
+  liquidityUsd: number | null
+  observedAt: number
+  confidence: 'high' | 'medium'
+  expiresAt: number
+}
+
 export type CurrentPriceResolverDeps = {
+  /** L2 shared cache (production: Vercel KV). null/undefined = L1 only. */
+  l2?: CurrentPriceL2Store | null
   dexscreener?: DexscreenerLookup | null
   geckoterminal?: GeckoTerminalLookup | null
   onchain?: OnchainPoolLookup | null
@@ -138,8 +167,11 @@ const ETH_NATIVE_CHAIN_IDS = new Set([1, 8453, 42161])
 
 const lc = (a: string) => a.toLowerCase()
 
+export const CURRENT_PRICE_CACHE_VERSION = 'v1'
+
+/** Exact chain + token key (L1 and L2). A different chain is a different key — never a fallback. */
 export function currentPriceCacheKey(chainId: number, tokenAddress: string): string {
-  return `current-price:${chainId}:${lc(tokenAddress)}`
+  return `current-price:${CURRENT_PRICE_CACHE_VERSION}:${chainId}:${lc(tokenAddress)}`
 }
 
 // ─── anchors (address-verified only — never a symbol) ─────────────────────────────────────────────────
@@ -198,6 +230,43 @@ export function readCurrentPriceCache(chainId: number, tokenAddress: string, now
   return { state: entry.evidence.status === 'verified' ? 'hit' : 'negative', evidence: entry.evidence }
 }
 
+/** Sources worth sharing across instances: the network-expensive ones. Provider / canonical prices are
+ *  free to recompute on every scan, so they never cost an L2 roundtrip. */
+const L2_PERSISTED_SOURCES = new Set<CurrentPriceSource>(['dexscreener', 'geckoterminal', 'onchain_v2', 'onchain_v3', 'onchain_v4', 'multihop'])
+
+export function toPersistedCurrentPrice(chainId: number, tokenAddress: string, e: CurrentPriceEvidence, now: number): PersistedCurrentPrice | null {
+  if (e.status !== 'verified' || e.source == null || !L2_PERSISTED_SOURCES.has(e.source)) return null
+  if (!finitePositive(e.priceUsd) || (e.confidence !== 'high' && e.confidence !== 'medium')) return null
+  return {
+    v: CURRENT_PRICE_CACHE_VERSION, chainId, tokenAddress: lc(tokenAddress), priceUsd: e.priceUsd, originalSource: e.source,
+    route: e.route, poolAddress: e.poolAddress, liquidityUsd: e.liquidityUsd, observedAt: e.observedAt ?? now, confidence: e.confidence,
+    expiresAt: now + ttlFor(e),
+  }
+}
+
+/**
+ * Validates an L2 value for (chainId, token) at `now`. Anything malformed, for another chain/token, or
+ * expired is rejected — a stale entry is never served.
+ */
+export function parsePersistedCurrentPrice(raw: unknown, chainId: number, tokenAddress: string, now: number): { state: 'valid' | 'stale' | 'invalid'; value: PersistedCurrentPrice | null } {
+  const r = raw as Partial<PersistedCurrentPrice> | null
+  if (!r || typeof r !== 'object' || r.v !== CURRENT_PRICE_CACHE_VERSION) return { state: 'invalid', value: null }
+  if (r.chainId !== chainId || typeof r.tokenAddress !== 'string' || lc(r.tokenAddress) !== lc(tokenAddress)) return { state: 'invalid', value: null }
+  if (!finitePositive(r.priceUsd) || (r.confidence !== 'high' && r.confidence !== 'medium') || !r.originalSource || !L2_PERSISTED_SOURCES.has(r.originalSource)) return { state: 'invalid', value: null }
+  if (typeof r.expiresAt !== 'number' || typeof r.observedAt !== 'number' || !Array.isArray(r.route)) return { state: 'invalid', value: null }
+  if (now >= r.expiresAt) return { state: 'stale', value: null }
+  return { state: 'valid', value: r as PersistedCurrentPrice }
+}
+
+function fromPersisted(p: PersistedCurrentPrice): CurrentPriceEvidence {
+  // Original source + original observedAt: a cached value is never relabeled as newly observed.
+  return { priceUsd: p.priceUsd, status: 'verified', source: p.originalSource, route: p.route, poolAddress: p.poolAddress, liquidityUsd: p.liquidityUsd, observedAt: p.observedAt, confidence: p.confidence, reason: null }
+}
+
+function seedL1FromPersisted(p: PersistedCurrentPrice): void {
+  sharedCache.set(currentPriceCacheKey(p.chainId, p.tokenAddress), { evidence: fromPersisted(p), expiresAt: p.expiresAt })
+}
+
 // ─── evidence helpers ─────────────────────────────────────────────────────────────────────────────────
 function unavailable(reason: string): CurrentPriceEvidence {
   return { priceUsd: null, status: 'unavailable', source: null, route: [], poolAddress: null, liquidityUsd: null, observedAt: null, confidence: null, reason }
@@ -227,7 +296,66 @@ export function createCurrentPriceResolver(deps: CurrentPriceResolverDeps, ancho
   const now = () => (deps.now ?? Date.now)()
   // Request-scoped ETH/USD memo (one anchor lookup per chain per resolver instance).
   const ethUsdMemo = new Map<number, Promise<{ priceUsd: number; observedAt: number; source: string } | null>>()
-  const counters = { anchorCalls: 0, dexscreenerCalls: 0, geckoterminalCalls: 0, onchainTokenAttempts: 0, onchainPoolReads: 0 }
+  const counters = {
+    anchorCalls: 0, dexscreenerCalls: 0, geckoterminalCalls: 0, onchainTokenAttempts: 0, onchainPoolReads: 0,
+    l1Hits: 0, l2Hits: 0, l2Misses: 0, l2ReadFailures: 0, l2WriteFailures: 0, networkAvoidedByCache: 0,
+  }
+  const pendingL2Writes = new Set<Promise<void>>()
+  // Keys already looked up in L2 by this resolver (a prefetch miss is not re-read per token).
+  const l2Checked = new Set<string>()
+  // Keys this resolver seeded into L1 from L2 (so a later L1 read is attributed to L2).
+  const l2SeededKeys = new Set<string>()
+
+  /** Batched L2 read (one roundtrip) for keys that L1 does not already answer; seeds L1 on a hit. */
+  async function prefetchShared(items: ReadonlyArray<{ chainId: number; tokenAddress: string }>): Promise<void> {
+    if (!deps.l2) return
+    const t = now()
+    const todo = new Map<string, { chainId: number; tokenAddress: string }>()
+    for (const it of items) {
+      const key = currentPriceCacheKey(it.chainId, it.tokenAddress)
+      if (l2Checked.has(key) || todo.has(key)) continue
+      if (readCurrentPriceCache(it.chainId, it.tokenAddress, t).state === 'hit') continue // L1 answers it
+      todo.set(key, it)
+    }
+    if (todo.size === 0) return
+    const keys = [...todo.keys()]
+    keys.forEach((k) => l2Checked.add(k))
+    let values: Array<unknown | null>
+    try {
+      values = await deps.l2.mget(keys)
+    } catch {
+      counters.l2ReadFailures += keys.length
+      return // non-fatal: falls through to the network
+    }
+    keys.forEach((key, i) => {
+      const it = todo.get(key)!
+      const parsed = parsePersistedCurrentPrice(values[i] ?? null, it.chainId, it.tokenAddress, t)
+      if (parsed.state === 'valid' && parsed.value) {
+        seedL1FromPersisted(parsed.value)
+        l2SeededKeys.add(key)
+        counters.l2Hits += 1
+      } else {
+        counters.l2Misses += 1
+      }
+    })
+  }
+
+  function persistL2(chainId: number, token: string, evidence: CurrentPriceEvidence): void {
+    if (!deps.l2) return
+    const t = now()
+    const value = toPersistedCurrentPrice(chainId, token, evidence, t)
+    if (!value) return
+    const ttlSeconds = Math.max(1, Math.ceil((value.expiresAt - t) / 1000))
+    const w = deps.l2.set(currentPriceCacheKey(chainId, token), value, ttlSeconds)
+      .catch(() => { counters.l2WriteFailures += 1 })
+      .finally(() => { pendingL2Writes.delete(w) })
+    pendingL2Writes.add(w)
+  }
+
+  /** Await in-flight L2 writes (tests / graceful shutdown). Writes never block resolution. */
+  async function flushL2Writes(): Promise<void> {
+    await Promise.all([...pendingL2Writes])
+  }
   // GeckoTerminal pools per token (request-scoped): a later on-chain phase reuses them as multihop
   // intermediates without a second GeckoTerminal call.
   const gtPoolsMemo = new Map<string, GeckoTerminalPool[]>()
@@ -250,11 +378,21 @@ export function createCurrentPriceResolver(deps: CurrentPriceResolverDeps, ancho
     return null
   }
 
-  /** A–C. No per-token network call (the ETH/USD anchor is one memoized lookup per chain). */
+  /** Provider → canonical → cache. No per-token market call: the ETH/USD anchor is one memoized lookup per
+   *  chain, and L2 is one batched KV read when the caller prefetched (else one read per L1 miss). */
   async function resolveCheap(input: ResolveCurrentPriceInput): Promise<CurrentPriceResult> {
     const attempts = emptyAttempts()
     const token = lc(input.tokenAddress)
     const t = now()
+    // PRECEDENCE (self-contained — never relies on a caller pre-filtering): a valid provider price is
+    // this exact holding's own market evidence and wins; the canonical registry is the fallback when no
+    // provider price exists (e.g. a canonical USDC the provider returned 0.9987 for stays 0.9987).
+    // B. provider price.
+    if (finitePositive(input.providerPriceUsd)) {
+      const evidence = verified({ priceUsd: input.providerPriceUsd, source: 'provider', route: [token, 'USD'], poolAddress: null, liquidityUsd: null, observedAt: t, confidence: 'high' })
+      recordCurrentPrice(input.chainId, token, evidence, t)
+      return { evidence, attempts }
+    }
     // A. canonical stable / native / WETH — exact address only.
     if (isCanonicalStable(input.chainId, token)) {
       return { evidence: verified({ priceUsd: 1, source: 'canonical_stable', route: [token, 'USD'], poolAddress: null, liquidityUsd: null, observedAt: t, confidence: 'high' }), attempts }
@@ -263,16 +401,25 @@ export function createCurrentPriceResolver(deps: CurrentPriceResolverDeps, ancho
       const eth = await ethUsd(input.chainId)
       if (eth) return { evidence: verified({ priceUsd: eth.priceUsd, source: 'canonical_native', route: [token, `ETH/USD:${eth.source}`, 'USD'], poolAddress: null, liquidityUsd: null, observedAt: eth.observedAt, confidence: 'high' }), attempts }
     }
-    // B. provider price.
-    if (finitePositive(input.providerPriceUsd)) {
-      const evidence = verified({ priceUsd: input.providerPriceUsd, source: 'provider', route: [token, 'USD'], poolAddress: null, liquidityUsd: null, observedAt: t, confidence: 'high' })
-      recordCurrentPrice(input.chainId, token, evidence, t)
-      return { evidence, attempts }
+    // C. shared cache: L1 (process) → L2 (KV, one batched read if the caller prefetched) → network.
+    // Chain-strict keys, TTL-bounded; a stale entry is discarded, never served.
+    let cached = readCurrentPriceCache(input.chainId, token, t)
+    let layer: 'l1' | 'l2' | null = cached.state === 'hit' ? 'l1' : null
+    if (cached.state !== 'hit' && cached.state !== 'negative' && deps.l2) {
+      const before = counters.l2Hits
+      await prefetchShared([{ chainId: input.chainId, tokenAddress: token }])
+      if (counters.l2Hits > before) {
+        cached = readCurrentPriceCache(input.chainId, token, now())
+        if (cached.state === 'hit') layer = 'l2'
+      }
+    } else if (layer === 'l1' && l2SeededKeys.has(currentPriceCacheKey(input.chainId, token))) {
+      layer = 'l2' // seeded by this resolver's batched prefetch
     }
-    // C. shared cache (chain-strict, TTL-bounded; a stale entry is discarded, never served).
-    const cached = readCurrentPriceCache(input.chainId, token, t)
     attempts.cache = cached.state
+    attempts.cacheLayer = layer
     if (cached.state === 'hit' && cached.evidence) {
+      if (layer === 'l1') counters.l1Hits += 1
+      counters.networkAvoidedByCache += 1
       return { evidence: { ...cached.evidence, source: 'shared_cache', originalSource: cached.evidence.source }, attempts }
     }
     return { evidence: unavailable(cached.state === 'negative' ? 'negative_cache' : 'no_cheap_price'), attempts }
@@ -449,6 +596,9 @@ export function createCurrentPriceResolver(deps: CurrentPriceResolverDeps, ancho
       const attempts = emptyAttempts()
       const finish = (evidence: CurrentPriceEvidence): CurrentPriceResult => {
         if (evidence.status === 'verified' || recordNegative) recordCurrentPrice(input.chainId, token, evidence, now())
+        // L2: verified expensive-source evidence only. Negatives stay L1-only (15s), so a failure on one
+        // instance can never suppress valid evidence on another.
+        if (evidence.status === 'verified') persistL2(input.chainId, token, evidence)
         return { evidence, attempts }
       }
       if (allow.dexscreener) {
@@ -493,7 +643,7 @@ export function createCurrentPriceResolver(deps: CurrentPriceResolverDeps, ancho
     return { evidence: expensive.evidence, attempts: { ...expensive.attempts, cache: cheap.attempts.cache } }
   }
 
-  return { resolveCheap, resolveExpensive, resolveCurrentTokenPrice, counters }
+  return { resolveCheap, resolveExpensive, resolveCurrentTokenPrice, prefetchShared, flushL2Writes, counters }
 }
 
 /**
