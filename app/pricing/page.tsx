@@ -309,8 +309,8 @@ export default function PricingPage() {
         .pf-footer-link:hover{color:#cbd5e1}
 
         /* Background helpers — same brand arcs/blobs, lower opacity so cards read as the focus */
-        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.10;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
-        .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.08;background:radial-gradient(circle at 25% 50%,rgba(56,189,248,.28),transparent 65%)}
+        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.05;background:repeating-linear-gradient(135deg,rgba(148,163,184,.40) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
+        .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.06;background:radial-gradient(circle at 25% 50%,rgba(45,212,191,.24),transparent 65%)}
 
         /* Layout — wrap before overlapping; never a cramped 3-up squeeze */
         .hero{display:flex;flex-direction:column;gap:28px}
@@ -351,17 +351,18 @@ export default function PricingPage() {
       <div className='energy-left' />
       {/* Upper radial blobs — softened, DISCLOSED (pricing polish task): lower opacity so the
           cards read as the focal point instead of competing with the background. */}
-      <div style={{ position:'absolute', inset:0, background:'radial-gradient(circle at 18% 22%,rgba(34,211,238,.12),transparent 35%),radial-gradient(circle at 84% 20%,rgba(217,70,239,.10),transparent 34%),radial-gradient(circle at 60% 8%,rgba(129,140,248,.08),transparent 38%)', pointerEvents:'none' }} />
+      {/* Premium polish: neutral depth with one faint teal wash — no magenta/violet haze. */}
+      <div style={{ position:'absolute', inset:0, background:'radial-gradient(circle at 18% 22%,rgba(45,212,191,.06),transparent 36%),radial-gradient(circle at 80% 14%,rgba(100,116,139,.07),transparent 40%)', pointerEvents:'none' }} />
       {/* Deep navy bottom fill */}
       <div style={{ position:'absolute', inset:'auto -28% -320px -28%', height:620, background:'radial-gradient(ellipse at 50% 10%,rgba(11,25,56,.96) 0%,rgba(7,14,33,.92) 38%,rgba(4,8,19,.55) 63%,rgba(3,6,15,.08) 86%,transparent 100%)', pointerEvents:'none' }} />
       {/* Cyan arc horizon */}
-      <div style={{ position:'absolute', left:'-28%', right:'-28%', bottom:-255, height:520, borderTop:'1px solid rgba(56,189,248,.42)', borderRadius:'58% 58% 0 0 / 100% 100% 0 0', boxShadow:'0 -14px 52px rgba(34,211,238,.22)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-28%', right:'-28%', bottom:-255, height:520, borderTop:'1px solid rgba(45,212,191,.20)', borderRadius:'58% 58% 0 0 / 100% 100% 0 0', boxShadow:'0 -14px 52px rgba(45,212,191,.07)', pointerEvents:'none' }} />
       {/* Purple arc */}
-      <div style={{ position:'absolute', left:'-20%', right:'-20%', bottom:-276, height:520, borderTop:'1px solid rgba(217,70,239,.24)', borderRadius:'54% 54% 0 0 / 100% 100% 0 0', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-20%', right:'-20%', bottom:-276, height:520, borderTop:'1px solid rgba(148,163,184,.10)', borderRadius:'54% 54% 0 0 / 100% 100% 0 0', pointerEvents:'none' }} />
       {/* Gold glow — Elite side, restrained */}
       <div style={{ position:'absolute', right:'-10%', bottom:0, width:'45%', height:400, background:'radial-gradient(ellipse at 90% 80%,rgba(212,160,23,.07) 0%,transparent 58%)', pointerEvents:'none' }} />
       {/* Center glow behind cards */}
-      <div style={{ position:'absolute', left:'-14%', right:'-14%', bottom:-240, height:400, background:'radial-gradient(ellipse at 50% 0%,rgba(34,211,238,.08),rgba(147,197,253,.06) 28%,rgba(217,70,239,.05) 48%,transparent 78%)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-14%', right:'-14%', bottom:-240, height:400, background:'radial-gradient(ellipse at 50% 0%,rgba(45,212,191,.05),rgba(100,116,139,.04) 32%,transparent 72%)', pointerEvents:'none' }} />
       {/* Subtle dot grid */}
       <div style={{ position:'absolute', inset:0, backgroundImage:'radial-gradient(circle,rgba(148,163,184,.038) 1px,transparent 1px)', backgroundSize:'28px 28px', pointerEvents:'none' }} />
 
@@ -378,18 +379,21 @@ export default function PricingPage() {
               "One price. Worldwide." headline starts at the same vertical line as the cards
               instead of floating slightly above them. */}
           <div className='intro' style={{ padding:'10px 4px 8px' }}>
-            <div style={{ color:'#67e8f9', fontSize:11, letterSpacing:'.2em', marginBottom:10 }}>• PRICING</div>
-            <div style={{ fontSize:'clamp(36px,3.2vw,60px)', lineHeight:.95, fontWeight:900 }}>
+            {/* Premium polish: same restrained palette as the cards — one teal accent, no rainbow. */}
+            <div style={{ color:'#5fbdb2', fontSize:11, fontWeight:600, letterSpacing:'.18em', marginBottom:12 }}>PRICING</div>
+            <div style={{ fontSize:'clamp(36px,3.2vw,60px)', lineHeight:.98, fontWeight:800, letterSpacing:'-0.03em', color:'#f8fafc' }}>
               ONE PRICE.<br />
-              <span style={{ background:'linear-gradient(90deg,#22d3ee,#a855f7,#ec4899)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>WORLDWIDE.</span>
+              <span style={{ color:'#2cc1b2' }}>WORLDWIDE.</span>
             </div>
-            <p style={{ marginTop:11, color:'#94a3b8', lineHeight:1.5, fontSize:14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:11 }}>
+            <p style={{ marginTop:14, color:'#94a3b8', lineHeight:1.55, fontSize:15 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:14 }}>
               {['Built for Base', 'Secure checkout', 'Auto activation'].map((chip) => (
-                <span key={chip} style={{ borderRadius:999, border:'1px solid rgba(148,163,184,.20)', padding:'6px 10px', fontSize:11, color:'#cbd5e1', background:'rgba(15,23,42,.45)' }}>{chip}</span>
+                <span key={chip} style={{ display:'inline-flex', alignItems:'center', gap:6, borderRadius:6, border:'1px solid rgba(148,163,184,.16)', padding:'5px 10px', fontSize:12, fontWeight:500, color:'#a8b4c4', background:'rgba(255,255,255,.02)' }}>
+                  <span aria-hidden='true' style={{ color:'#2cc1b2', fontSize:10 }}>✓</span>{chip}
+                </span>
               ))}
             </div>
-            <div style={{ marginTop:10, fontSize:12, color:'#94a3b8' }}>Powered by <span style={{ color:'#e2e8f0', fontWeight:700 }}>BASE</span></div>
+            <div style={{ marginTop:12, fontSize:12, color:'#64748b' }}>Powered by <span style={{ color:'#cbd5e1', fontWeight:600 }}>BASE</span></div>
           </div>
 
           {/* Pricing cards */}
