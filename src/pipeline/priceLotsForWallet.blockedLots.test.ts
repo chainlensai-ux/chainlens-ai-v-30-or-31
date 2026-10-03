@@ -200,7 +200,7 @@ describe('classifyReceiptQuoteEvidence — fail-closed rules', () => {
     ]
     const r = classifyReceiptQuoteEvidence({ ...entryBase, tx: tx(logs, { valueWei: ONE_ETH.toString() }) })
     assert.equal(r.classification, 'unrelated_outputs_in_tx')
-    assert.deepEqual(r.forensics?.unrelatedOutputs, [{ address: ROUTER, token: OTHER, netRaw: '9' }])
+    assert.deepEqual(r.forensics?.unrelatedOutputs.map((o) => ({ address: o.address, token: o.token, netRaw: o.netRaw })), [{ address: ROUTER, token: OTHER, netRaw: '9' }])
   })
   it('a token entering the path from an outside address is rejected', () => {
     const logs = [...buyLogs(ONE_ETH), transfer(WETH, OUTSIDER, ROUTER, BigInt(3)), transfer(WETH, ROUTER, POOL, BigInt(3))]
@@ -258,5 +258,82 @@ describe('internal-transfer trace parsing', () => {
       ],
       next_page_params: null,
     }), [{ from: '0xr', to: WALLET, valueWei: '7' }])
+  })
+})
+
+describe('path-attribution forensics (production audit) — precise reasons, no loosening', () => {
+  const topic = (a: string) => `0x${'0'.repeat(24)}${a.slice(2)}`
+  const word = (v: bigint) => `0x${v.toString(16).padStart(64, '0')}`
+  const WETH = '0x4200000000000000000000000000000000000006'
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const POOL = `0x${'5'.repeat(40)}`
+  const ROUTER = `0x${'7'.repeat(40)}`
+  const FEE = `0x${'8'.repeat(40)}`
+  const VIRTUALISH = `0x${'1'.repeat(40)}` // a non-canonical pair token
+  const SWAP = Object.keys(SWAP_TOPIC0S)[0]
+  const raw = BigInt(10) ** BigInt(21)
+  const transfer = (token: string, from: string, to: string, v: bigint) => ({ address: token, topics: [TRANSFER_TOPIC0, topic(from), topic(to)], data: word(v) })
+  const okTx = (logs: Array<{ address: string; topics: string[]; data: string }>, valueWei = '0'): ReceiptQuoteTx => ({ status: 'ok', from: WALLET, to: ROUTER, valueWei, input: '0x3593564c00', logs, internalTransfers: null })
+  const entry = { chain: 'base' as const, walletAddress: WALLET, targetToken: CLAW, side: 'entry' as const, targetAmount: 1000, targetDecimals: 18 }
+
+  it('paying with a non-canonical token is a token-to-token swap (still rejected), with the exact triggering leg', () => {
+    const r = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
+      transfer(VIRTUALISH, WALLET, POOL, BigInt(5) * BigInt(10) ** BigInt(18)),
+      { address: POOL, topics: [SWAP], data: '0x' },
+      transfer(CLAW, POOL, WALLET, raw),
+    ]) })
+    assert.equal(r.classification, 'token_to_token_swap_no_canonical_quote')
+    assert.equal(r.quote, null)
+    assert.equal(r.forensics?.unrelatedWalletLegs[0].token, VIRTUALISH)
+    assert.match(r.forensics!.unrelatedWalletLegs[0].reason, /^non_canonical_input_asset/)
+  })
+
+  it('a canonical quote refund/change is identified precisely but still rejected (not proven safe yet)', () => {
+    const r = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
+      transfer(USDC, WALLET, ROUTER, BigInt(100_000_000)),
+      transfer(USDC, ROUTER, POOL, BigInt(98_000_000)),
+      { address: POOL, topics: [SWAP], data: '0x' },
+      transfer(CLAW, POOL, WALLET, raw),
+      transfer(USDC, ROUTER, WALLET, BigInt(2_000_000)),
+    ]) })
+    assert.equal(r.classification, 'multicall_unrelated_wallet_assets')
+    assert.match(r.forensics!.unrelatedWalletLegs[0].reason, /^canonical_quote_asset_in_opposite_direction/)
+  })
+
+  it('a retained router fee is reported with its exact rule, still rejected', () => {
+    const one = BigInt(10) ** BigInt(18)
+    const r = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
+      { address: WETH, topics: ['0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c', topic(ROUTER)], data: word(one) },
+      transfer(WETH, ROUTER, POOL, one - BigInt(1000)),
+      transfer(WETH, ROUTER, FEE, BigInt(1000)),
+      { address: POOL, topics: [SWAP], data: '0x' },
+      transfer(CLAW, POOL, WALLET, raw),
+    ], one.toString()) })
+    assert.equal(r.classification, 'unrelated_outputs_in_tx')
+    assert.deepEqual(r.forensics?.unrelatedOutputs.map((o) => [o.address, o.token, o.netRaw]), [[FEE, WETH, '1000']])
+    assert.match(r.forensics!.unrelatedOutputs[0].rule, /^non_pool_intermediary_keeps_non_target_token/)
+  })
+
+  it('the dump carries every field the audit needs, as plain JSON (no nested object collapse)', () => {
+    const r = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
+      transfer(VIRTUALISH, WALLET, POOL, BigInt(7)),
+      { address: POOL, topics: [SWAP], data: '0x' },
+      transfer(CLAW, POOL, WALLET, raw),
+    ]) })
+    const f = JSON.parse(JSON.stringify(r.forensics))
+    for (const key of ['side', 'targetToken', 'targetAmountExpected', 'targetAmountReproduced', 'txFrom', 'txTo', 'inputSelector', 'nativeValueWei',
+      'swapEmitters', 'walletLegsDetailed', 'nonWalletTransfers', 'wethEvents', 'unrelatedWalletLegs', 'unrelatedOutputs',
+      'reachedPathNodes', 'unreachableSwapEmitters', 'outsideInputFlows']) assert.ok(key in f, key)
+    assert.equal(f.targetAmountReproduced, 1000)
+    assert.deepEqual(f.swapEmitters, [{ address: POOL, venue: 'uniswap_v2' }])
+    assert.equal(f.walletLegsDetailed.length, 2)
+  })
+
+  it('fixture outcomes are unchanged (the multicall exit is still multicall_unrelated_wallet_assets)', async () => {
+    const run = await runBlockedLotFixture({ receiptLane: true, sellTraces: 'proven_to_wallet' })
+    assert.equal(run.verifiedLots, 9)
+    assert.equal(run.lookups.receiptQuoteRecoveryAudit.sides.find((s) => s.txHash === '0xclawsell7')!.classification, 'multicall_unrelated_wallet_assets')
+    const lines = run.warnings.filter((w) => w.tag === '[receipt-quote-forensics]')
+    assert.ok(lines.length > 0 && lines.every((w) => typeof w.payload === 'string'), 'forensics are logged as flat JSON strings')
   })
 })

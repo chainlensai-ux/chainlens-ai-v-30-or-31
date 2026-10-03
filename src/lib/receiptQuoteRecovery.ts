@@ -80,6 +80,9 @@ export type ReceiptQuoteClassification =
   | 'ambiguous_wrap_and_unwrap'
   | 'unwrap_not_backed_by_swap_output'
   | 'multicall_unrelated_wallet_assets'
+  // The wallet's only other asset is a single NON-canonical token on the quote side (e.g. paid with
+  // or received a non-WETH/non-stable token): a token-to-token swap with no USD quote in the tx.
+  | 'token_to_token_swap_no_canonical_quote'
   | 'swap_without_reconstructable_quote_leg'
   | 'non_swap_contract_interaction'
 
@@ -104,7 +107,22 @@ export type ReceiptQuoteForensics = {
   // Target-path attribution audit.
   distinctPoolEmitters: string[]
   pathAttribution: 'not_evaluated' | 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'
-  unrelatedOutputs: Array<{ address: string; token: string; netRaw: string }>
+  unrelatedOutputs: Array<{ address: string; token: string; netRaw: string; rule: string }>
+  // Full deterministic dump (path-attribution audit). Every amount is a raw integer string.
+  side: 'entry' | 'exit'
+  targetToken: string
+  targetAmountExpected: number
+  targetAmountReproduced: number
+  txFrom: string
+  txTo: string | null
+  swapEmitters: Array<{ address: string; venue: string }>
+  walletLegsDetailed: Array<{ token: string; from: string; to: string; raw: string; normalized: number; direction: 'in' | 'out' }>
+  nonWalletTransfers: Array<{ token: string; from: string; to: string; raw: string }>
+  wethEvents: Array<{ type: 'deposit' | 'withdrawal'; account: string; raw: string }>
+  unrelatedWalletLegs: Array<{ token: string; direction: 'in' | 'out'; raw: string; reason: string }>
+  reachedPathNodes: string[]
+  unreachableSwapEmitters: string[]
+  outsideInputFlows: Array<{ token: string; from: string; to: string; raw: string }>
   // Native payout proof (sell via unwrap only).
   traceSource: InternalTraceSource | null
   walletNativeReceivedWei: string | null
@@ -161,15 +179,22 @@ export function classifyReceiptQuoteEvidence(params: {
   const wethInByAddress = new Map<string, bigint>()
   const swapEvents: string[] = []
   let liquidityEvents = 0
+  const walletLegsDetailed: ReceiptQuoteForensics['walletLegsDetailed'] = []
+  const nonWalletTransfers: ReceiptQuoteForensics['nonWalletTransfers'] = []
+  const wethEvents: ReceiptQuoteForensics['wethEvents'] = []
   for (const log of tx.logs) {
     const address = lower(log.address)
     const topic0 = lower(log.topics[0])
     if (SWAP_TOPIC0S[topic0]) swapEvents.push(SWAP_TOPIC0S[topic0])
     if (LIQUIDITY_TOPIC0S.has(topic0)) liquidityEvents += 1
-    if (isCanonicalWethAddress(chain, address) && topic0 === WETH_DEPOSIT_TOPIC0) depositWei += dataWord(log.data)
+    if (isCanonicalWethAddress(chain, address) && topic0 === WETH_DEPOSIT_TOPIC0) {
+      depositWei += dataWord(log.data)
+      wethEvents.push({ type: 'deposit', account: topicAddress(log.topics[1]), raw: dataWord(log.data).toString() })
+    }
     if (isCanonicalWethAddress(chain, address) && topic0 === WETH_WITHDRAWAL_TOPIC0) {
       withdrawalWei += dataWord(log.data)
       withdrawalSources.add(topicAddress(log.topics[1]))
+      wethEvents.push({ type: 'withdrawal', account: topicAddress(log.topics[1]), raw: dataWord(log.data).toString() })
     }
     if (topic0 !== TRANSFER_TOPIC0 || log.topics.length < 3) continue
     tokenAddresses.add(address)
@@ -177,9 +202,17 @@ export function classifyReceiptQuoteEvidence(params: {
     const to = topicAddress(log.topics[2])
     const raw = dataWord(log.data)
     if (isCanonicalWethAddress(chain, address)) wethInByAddress.set(to, (wethInByAddress.get(to) ?? ZERO) + raw)
-    if (from === wallet) walletTouchingLegs.push({ token: address, direction: 'out', raw: raw.toString() })
-    else if (to === wallet) walletTouchingLegs.push({ token: address, direction: 'in', raw: raw.toString() })
-    else poolRouterOnlyLegs += 1
+    const normalized = toUnits(raw, address === target ? params.targetDecimals : resolveTokenDecimals({ chain, token: address }).decimals)
+    if (from === wallet) {
+      walletTouchingLegs.push({ token: address, direction: 'out', raw: raw.toString() })
+      walletLegsDetailed.push({ token: address, from, to, raw: raw.toString(), normalized, direction: 'out' })
+    } else if (to === wallet) {
+      walletTouchingLegs.push({ token: address, direction: 'in', raw: raw.toString() })
+      walletLegsDetailed.push({ token: address, from, to, raw: raw.toString(), normalized, direction: 'in' })
+    } else {
+      poolRouterOnlyLegs += 1
+      nonWalletTransfers.push({ token: address, from, to, raw: raw.toString() })
+    }
   }
   const forensics: ReceiptQuoteForensics = {
     logCount: tx.logs.length,
@@ -199,6 +232,20 @@ export function classifyReceiptQuoteEvidence(params: {
     traceSource: tx.traceSource ?? null,
     walletNativeReceivedWei: null,
     unwrapperNativeOutWei: null,
+    side,
+    targetToken: target,
+    targetAmountExpected: params.targetAmount,
+    targetAmountReproduced: 0,
+    txFrom: lower(tx.from),
+    txTo: tx.to ? lower(tx.to) : null,
+    swapEmitters: tx.logs.filter((l) => SWAP_TOPIC0S[lower(l.topics[0])]).map((l) => ({ address: lower(l.address), venue: SWAP_TOPIC0S[lower(l.topics[0])] })),
+    walletLegsDetailed,
+    nonWalletTransfers,
+    wethEvents,
+    unrelatedWalletLegs: [],
+    reachedPathNodes: [],
+    unreachableSwapEmitters: [],
+    outsideInputFlows: [],
   }
   const result = (classification: ReceiptQuoteClassification, quote: ReceiptQuoteResult['quote'] = null): ReceiptQuoteResult => ({ classification, quote, forensics })
 
@@ -209,6 +256,7 @@ export function classifyReceiptQuoteEvidence(params: {
     .filter((leg) => leg.token === target && leg.direction === targetDirection)
     .reduce((sum, leg) => sum + BigInt(leg.raw), ZERO)
   const targetFromReceipt = toUnits(targetRaw, params.targetDecimals)
+  forensics.targetAmountReproduced = targetFromReceipt
   const tolerance = Math.max(1e-12, Math.abs(params.targetAmount) * 1e-9)
   if (targetRaw === ZERO || Math.abs(targetFromReceipt - params.targetAmount) > tolerance) return result('target_leg_not_reproduced_by_receipt')
   const otherWalletLegs = walletTouchingLegs.filter((leg) => leg.token !== target)
@@ -225,22 +273,45 @@ export function classifyReceiptQuoteEvidence(params: {
   const walletQuoteLegs = otherWalletLegs.filter((leg) =>
     leg.direction === quoteDirection && (isCanonicalWethAddress(chain, leg.token) || isVerifiedStablecoinAddress(chain, leg.token)))
   const unrelatedWalletLegs = otherWalletLegs.filter((leg) => !walletQuoteLegs.includes(leg))
-
-  if (swapEvents.length === 0) return result('non_swap_contract_interaction')
-  if (unrelatedWalletLegs.length > 0) return result('multicall_unrelated_wallet_assets')
+  // Every non-quote wallet leg carries the exact reason it is not attributable to the target swap.
+  forensics.unrelatedWalletLegs = unrelatedWalletLegs.map((leg) => {
+    const canonical = isCanonicalWethAddress(chain, leg.token) || isVerifiedStablecoinAddress(chain, leg.token)
+    const reason = canonical
+      ? 'canonical_quote_asset_in_opposite_direction (refund/change or a second action)'
+      : leg.direction === quoteDirection
+        ? side === 'entry' ? 'non_canonical_input_asset (wallet paid a non-WETH/non-stable token)' : 'non_canonical_output_asset (wallet received a non-WETH/non-stable token)'
+        : side === 'entry' ? 'unrelated_asset_sent_by_wallet' : 'unrelated_asset_received_by_wallet'
+    return { token: leg.token, direction: leg.direction, raw: leg.raw, reason }
+  })
 
   // TARGET-PATH ATTRIBUTION: the quote must belong to the target's own swap path. Starting from the
   // target outflow (exit), the wallet's quote outflow, or the tx.value wrap (entry), every pool that
   // emitted a Swap must be reachable through this tx's token flows; no token may enter the path from
   // an outside address; and no non-pool intermediary may keep an output (only the target token may
   // land with a third party — transfer tax). Otherwise the same receipt funds or pays out more than
-  // one economic action and the quote cannot be attributed.
+  // one economic action and the quote cannot be attributed. Always evaluated so the forensic dump is
+  // complete, even when an earlier rule rejects the candidate.
   const attribution = attributeTargetPath({
     chain, wallet, target, logs: tx.logs,
     startNodes: side === 'exit' || walletQuoteLegs.length > 0 ? [wallet] : depositDestinations(chain, tx.logs),
   })
   forensics.pathAttribution = attribution.status
   forensics.unrelatedOutputs = attribution.unrelatedOutputs
+  forensics.reachedPathNodes = attribution.reachedPathNodes
+  forensics.unreachableSwapEmitters = attribution.unreachableSwapEmitters
+  forensics.outsideInputFlows = attribution.outsideInputFlows
+
+  if (swapEvents.length === 0) return result('non_swap_contract_interaction')
+  if (unrelatedWalletLegs.length > 0) {
+    // Same rejection as before, named precisely: a single non-canonical token on the quote side with
+    // no other quote evidence is a token-to-token swap (no USD quote exists in this tx), not a
+    // multicall. Anything else stays multicall_unrelated_wallet_assets.
+    const singleNonCanonicalQuoteSide = unrelatedWalletLegs.length > 0
+      && new Set(unrelatedWalletLegs.map((leg) => leg.token)).size === 1
+      && unrelatedWalletLegs.every((leg) => leg.direction === quoteDirection && !isCanonicalWethAddress(chain, leg.token) && !isVerifiedStablecoinAddress(chain, leg.token))
+      && walletQuoteLegs.length === 0 && valueWei === ZERO && depositWei === ZERO && withdrawalWei === ZERO
+    return result(singleNonCanonicalQuoteSide ? 'token_to_token_swap_no_canonical_quote' : 'multicall_unrelated_wallet_assets')
+  }
   if (attribution.status === 'unrelated_swap_path') return result('unrelated_swap_path_in_tx')
   if (attribution.status === 'unrelated_token_flow') return result('unrelated_token_flow_in_tx')
   if (attribution.status === 'unrelated_outputs') return result('unrelated_outputs_in_tx')
@@ -310,7 +381,13 @@ export function attributeTargetPath(params: {
   target: string
   logs: readonly ReceiptQuoteLog[]
   startNodes: readonly string[]
-}): { status: 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'; unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs'] } {
+}): {
+  status: 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'
+  unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs']
+  reachedPathNodes: string[]
+  unreachableSwapEmitters: string[]
+  outsideInputFlows: ReceiptQuoteForensics['outsideInputFlows']
+} {
   const { chain, wallet, target, logs } = params
   const transfers = logs
     .filter((l) => lower(l.topics[0]) === TRANSFER_TOPIC0 && l.topics.length >= 3)
@@ -328,8 +405,11 @@ export function attributeTargetPath(params: {
       }
     }
   }
-  if ([...emitters].some((pool) => !reached.has(pool))) return { status: 'unrelated_swap_path', unrelatedOutputs: [] }
-  if (transfers.some((t) => !reached.has(t.from) && t.from !== wallet && t.from !== ZERO_ADDRESS)) return { status: 'unrelated_token_flow', unrelatedOutputs: [] }
+  const unreachableSwapEmitters = [...emitters].filter((pool) => !reached.has(pool)).sort()
+  const outsideInputFlows = transfers
+    .filter((t) => !reached.has(t.from) && t.from !== wallet && t.from !== ZERO_ADDRESS)
+    .map((t) => ({ token: t.token, from: t.from, to: t.to, raw: t.raw.toString() }))
+  const detail = { reachedPathNodes: [...reached].sort(), unreachableSwapEmitters, outsideInputFlows }
   // Net per (address, token): WETH deposits credit the wrapper, withdrawals debit the unwrapper.
   const nets = new Map<string, bigint>()
   const add = (address: string, token: string, delta: bigint) => nets.set(`${address}|${token}`, (nets.get(`${address}|${token}`) ?? ZERO) + delta)
@@ -350,10 +430,18 @@ export function attributeTargetPath(params: {
     if (net === ZERO || address === wallet || address === ZERO_ADDRESS || emitters.has(address)) continue
     if (isCanonicalWethAddress(chain, address)) continue
     if (token === target && net > ZERO) continue // transfer tax on the target token itself
-    unrelatedOutputs.push({ address, token, netRaw: net.toString() })
+    unrelatedOutputs.push({
+      address, token, netRaw: net.toString(),
+      rule: net > ZERO
+        ? 'non_pool_intermediary_keeps_non_target_token (net inflow not forwarded along the target path)'
+        : 'non_pool_intermediary_spends_more_than_it_received (unbacked outflow)',
+    })
   }
-  if (unrelatedOutputs.length > 0) return { status: 'unrelated_outputs', unrelatedOutputs }
-  return { status: 'single_target_path', unrelatedOutputs }
+  // Same precedence as before: unreachable swap path, then outside inputs, then retained outputs.
+  if (unreachableSwapEmitters.length > 0) return { status: 'unrelated_swap_path', unrelatedOutputs, ...detail }
+  if (outsideInputFlows.length > 0) return { status: 'unrelated_token_flow', unrelatedOutputs, ...detail }
+  if (unrelatedOutputs.length > 0) return { status: 'unrelated_outputs', unrelatedOutputs, ...detail }
+  return { status: 'single_target_path', unrelatedOutputs, ...detail }
 }
 
 

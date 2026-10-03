@@ -2582,6 +2582,16 @@ export async function priceLotsForWallet(params: {
     }
 
     if (config) sourceAudit.totalRecoveryMs = Math.round(performance.now() - laneStartedAt)
+    // PATH-ATTRIBUTION FORENSICS: one line per fetched-but-not-applied side, serialized to a single
+    // JSON string so log pipelines never collapse nested arrays into `[Object]`/`[Array]`.
+    for (const row of audit.sides) {
+      if (!row.fetched || row.applied || !row.forensics) continue
+      console.warn('[receipt-quote-forensics]', JSON.stringify({
+        txHash: row.txHash, class: row.class, lotIds: row.lotIds,
+        finalClassification: row.classification, rejectionReason: row.rejectionReason,
+        ...row.forensics,
+      }))
+    }
     for (const lot of structuralMatchedLots) {
       const before = classBefore.get(lot)
       if (!before || !lotComplete(lot)) continue
