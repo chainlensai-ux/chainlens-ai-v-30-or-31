@@ -8,7 +8,7 @@ import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFA
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 import { attachRadarTrackReceipts } from '@/lib/server/radarTrackReceipt'
-import { RADAR_LAST_VERIFIED_MAX_AGE_MS, chooseRadarRecoveryProbe, classifyRadarSourceFailure, decideRadarDelivery, decodeRadarBackoff, dexPairsToRadarPools, mergeRadarFallbackAddresses, radarDiscoveryBudget, radarPublicDiscoveryMessage, radarRetryAfterMs, v4InitializeTokenAddresses, type RadarBackoffRecord, type RadarSourceFailureClass } from '@/lib/radarDiscoveryResilience'
+import { RADAR_LAST_VERIFIED_MAX_AGE_MS, chooseRadarRecoveryProbe, classifyRadarSourceFailure, decideRadarDelivery, decodeRadarBackoff, dexPairsToRadarPools, mergeRadarFallbackAddresses, radarDiscoveryBudget, radarPublicDiscoveryMessage, radarRetryAfterMs, v4InitializeTokenAddresses, type DexPairMappingAudit, type RadarBackoffRecord, type RadarSourceFailureClass } from '@/lib/radarDiscoveryResilience'
 import { getBlockscoutAddressLogs } from '@/lib/server/robinhoodBlockscoutEvidence'
 import { ROBINHOOD_V4_POOL_MANAGER } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
@@ -712,7 +712,7 @@ async function fetchDexScreenerBaseFallbackDiscovery(signal: AbortSignal): Promi
     const json = await res.json().catch(() => null)
     const pairs: Record<string, unknown>[] = Array.isArray(json?.pairs) ? json.pairs : []
     // Same mapping (and same strict chainId filter) the Robinhood fallback uses — lib/radarDiscoveryResilience.
-    const { data: pools, included } = dexPairsToRadarPools(pairs, 'base')
+    const { data: pools, included } = dexPairsToRadarPools(pairs, 'base', addresses)
     return { data: pools, included, error: pools.length === 0 ? 'DexScreener returned no Base-chain pairs for the discovered token addresses.' : null }
   } catch (err) {
     const name = err instanceof Error ? err.name : 'unknown_error'
@@ -1379,6 +1379,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     seeds: { lastVerified: 0, dexscreenerListings: 0, v4Initialize: 0 }, addressesQueried: 0,
     blockscoutStatus: null as string | null, blockscoutCacheHit: false, dexscreenerStatus: null as number | null,
     pairsReturned: 0, poolsOnRequestedChain: 0, error: null as string | null,
+    pairMapping: null as DexPairMappingAudit | null,
     calls: { blockscout: 0, dexscreener: 0 }, durationMs: 0,
   }
   if (requestedChain === 'robinhood' && (sourcesSucceeded === 0 || (sourcesFailedCount > 0 && sourcePayloads.length === 0))) {
@@ -1408,7 +1409,8 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
             const json = await res.json().catch(() => null)
             const pairs: Record<string, unknown>[] = Array.isArray(json?.pairs) ? json.pairs : []
             robinhoodFallbackAudit.pairsReturned = pairs.length
-            const mapped = dexPairsToRadarPools(pairs, 'robinhood', 'rhfallback')
+            const mapped = dexPairsToRadarPools(pairs, 'robinhood', addresses, 'rhfallback')
+            robinhoodFallbackAudit.pairMapping = mapped.audit
             robinhoodFallbackAudit.poolsOnRequestedChain = mapped.data.length
             if (mapped.data.length > 0) {
               sourcePayloads.push({ data: mapped.data, included: mapped.included, __radarSourceKey: `${requestedChain}_dexscreener_fallback` })

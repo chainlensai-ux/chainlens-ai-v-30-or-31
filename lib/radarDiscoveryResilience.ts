@@ -169,22 +169,73 @@ export function v4InitializeTokenAddresses(logs: Array<{ topics?: (string | null
   return out.slice(0, max)
 }
 
-/** DexScreener pairs → the GeckoTerminal-shaped pool records the Radar pipeline already gates. Wrong-chain pairs are dropped. */
-export function dexPairsToRadarPools(pairs: Record<string, unknown>[], chain: RadarChainSlug, idPrefix = 'dexfallback'): { data: Record<string, unknown>[]; included: Record<string, unknown>[] } {
+export type DexPairMappingAudit = {
+  accepted: number
+  rejected: { wrongChain: number; malformed: number; notRequested: number; quoteSideUnpriced: number; duplicate: number }
+}
+
+const EVM_ADDRESS = /^0x[\da-fA-F]{40}$/
+
+function pairLiquidityUsd(pair: Record<string, unknown>): number {
+  const v = Number((pair.liquidity as { usd?: unknown } | undefined)?.usd)
+  return Number.isFinite(v) && v > 0 ? v : 0
+}
+
+/**
+ * DexScreener pairs → the GeckoTerminal-shaped pool records the Radar pipeline already gates.
+ *
+ * EXACT-TOKEN IDENTITY (follow-up to ff2069cb): every candidate must be one of the exact addresses sent
+ * to the DexScreener lookup. `/latest/dex/tokens/{addresses}` returns pairs where a requested token is
+ * EITHER the base or the quote, and on a pair `priceUsd`, `fdv` and `marketCap` always describe the BASE
+ * token — the same contract ChainLens already enforces in src/modules/pricingAtTimeEngine/sources/
+ * dexscreener.ts and clarkMarketDataProviders' dexScreenerPairIsRequestedPricedToken. So:
+ *   - base is requested            → that base is the candidate, priced by this pair;
+ *   - only the quote is requested  → rejected as quote_side_unpriced: the pair carries no USD price,
+ *     FDV or market cap for the requested token, and the unrelated base token is never promoted. No
+ *     reciprocal price is derived. The token can still qualify through a pair where it IS the base;
+ *   - both sides requested         → the base is the candidate; the quote gets nothing from this pair;
+ *   - several pairs for one token  → one record: highest liquidity, then lowest pair address.
+ */
+export function dexPairsToRadarPools(
+  pairs: Record<string, unknown>[],
+  chain: RadarChainSlug,
+  requestedAddresses: Iterable<string>,
+  idPrefix = 'dexfallback',
+): { data: Record<string, unknown>[]; included: Record<string, unknown>[]; audit: DexPairMappingAudit } {
+  const requested = new Set<string>()
+  for (const a of requestedAddresses) if (typeof a === 'string' && EVM_ADDRESS.test(a)) requested.add(a.toLowerCase())
+  const audit: DexPairMappingAudit = { accepted: 0, rejected: { wrongChain: 0, malformed: 0, notRequested: 0, quoteSideUnpriced: 0, duplicate: 0 } }
+  const best = new Map<string, Record<string, unknown>>()
+  for (const pair of pairs) {
+    if (!pair || typeof pair !== 'object') { audit.rejected.malformed++; continue }
+    if (pair.chainId !== chain) { audit.rejected.wrongChain++; continue }
+    const baseAddr = (pair.baseToken as { address?: unknown } | undefined)?.address
+    const quoteAddr = (pair.quoteToken as { address?: unknown } | undefined)?.address
+    const pairAddr = pair.pairAddress
+    const base = typeof baseAddr === 'string' && EVM_ADDRESS.test(baseAddr) ? baseAddr.toLowerCase() : null
+    const quote = typeof quoteAddr === 'string' && EVM_ADDRESS.test(quoteAddr) ? quoteAddr.toLowerCase() : null
+    if (!base || typeof pairAddr !== 'string' || !pairAddr) { audit.rejected.malformed++; continue }
+    if (!requested.has(base)) {
+      if (quote && requested.has(quote)) audit.rejected.quoteSideUnpriced++
+      else audit.rejected.notRequested++
+      continue
+    }
+    const current = best.get(base)
+    if (current) {
+      audit.rejected.duplicate++
+      const better = pairLiquidityUsd(pair) > pairLiquidityUsd(current)
+        || (pairLiquidityUsd(pair) === pairLiquidityUsd(current) && pairAddr.toLowerCase() < String(current.pairAddress).toLowerCase())
+      if (!better) continue
+    }
+    best.set(base, pair)
+  }
   const pools: Record<string, unknown>[] = []
   const included: Record<string, unknown>[] = []
-  const seenTokenIds = new Set<string>()
-  for (const pair of pairs) {
-    if (!pair || pair.chainId !== chain) continue
-    const baseToken = pair.baseToken as { address?: string; symbol?: string; name?: string } | undefined
-    const addr = typeof baseToken?.address === 'string' ? baseToken.address : null
-    const pairAddr = typeof pair.pairAddress === 'string' ? pair.pairAddress : null
-    if (!addr || !pairAddr) continue
-    const tokenId = `${idPrefix}_token_${addr.toLowerCase()}`
-    if (!seenTokenIds.has(tokenId)) {
-      seenTokenIds.add(tokenId)
-      included.push({ type: 'token', id: tokenId, attributes: { name: baseToken?.name ?? 'Unknown', symbol: baseToken?.symbol ?? '?', address: addr } })
-    }
+  for (const [addr, pair] of [...best.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const baseToken = pair.baseToken as { symbol?: string; name?: string; address: string }
+    const pairAddr = String(pair.pairAddress)
+    const tokenId = `${idPrefix}_token_${addr}`
+    included.push({ type: 'token', id: tokenId, attributes: { name: baseToken?.name ?? 'Unknown', symbol: baseToken?.symbol ?? '?', address: baseToken.address } })
     const priceChange = pair.priceChange as { h24?: number; h6?: number; h1?: number } | undefined
     const liquidity = pair.liquidity as { usd?: number } | undefined
     const volume = pair.volume as { h24?: number } | undefined
@@ -194,6 +245,7 @@ export function dexPairsToRadarPools(pairs: Record<string, unknown>[], chain: Ra
       relationships: { base_token: { data: { id: tokenId } }, dex: { data: { id: typeof pair.dexId === 'string' ? pair.dexId : 'unknown' } } },
       attributes: {
         address: pairAddr,
+        // Base-side values only: the candidate IS this pair's base token, so these are its own figures.
         base_token_price_usd: pair.priceUsd ?? null,
         reserve_in_usd: liquidity?.usd ?? null,
         fdv_usd: pair.fdv ?? null,
@@ -203,6 +255,7 @@ export function dexPairsToRadarPools(pairs: Record<string, unknown>[], chain: Ra
         price_change_percentage: { h24: priceChange?.h24 ?? null, h6: priceChange?.h6 ?? null, h1: priceChange?.h1 ?? null },
       },
     })
+    audit.accepted++
   }
-  return { data: pools, included }
+  return { data: pools, included, audit }
 }

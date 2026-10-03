@@ -18,15 +18,18 @@ const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).joi
 // Auto-retry must trigger ONLY on a genuine provider outage with zero tokens — never on an honest
 // empty-after-filtering result (that's a real answer, not a failure, and retrying it would just
 // hammer the backend for the same result).
+// Robinhood outage fix: a degraded cycle served from the last verified feed (servedFromStaleCache — only
+// ever set for a degraded zero-token cycle) also schedules the bounded retry.
 assert.match(
   pageCode,
-  /if \(rd\.finalState === 'providerUnavailable' && rd\.tokens\.length === 0 && autoRetryCountRef\.current < 2\) \{/,
-  'auto-retry must only fire for a genuine providerUnavailable outage with zero tokens, never for an honest empty result',
+  /const discoveryDelayed = \(rd\.finalState === 'providerUnavailable' && rd\.tokens\.length === 0\) \|\| rd\.servedFromStaleCache === true\s*\n\s*if \(discoveryDelayed && autoRetryCountRef\.current < 2\) \{/,
+  'auto-retry must only fire for a genuine outage (providerUnavailable with zero tokens, or a degraded cycle served from the last verified feed), never for an honest empty result',
 )
 // Bounded — must not retry forever (a real, longer outage still falls through to the normal 120s
 // poll instead of hammering the backend indefinitely).
 assert.match(pageCode, /autoRetryCountRef\.current < 2/, 'auto-retry must be bounded, not infinite')
-assert.match(pageCode, /const delayMs = autoRetryCountRef\.current === 0 \? 8_000 : 20_000/, 'auto-retry must back off between attempts, not fire back-to-back')
+assert.match(pageCode, /const baseDelayMs = autoRetryCountRef\.current === 0 \? 8_000 : 20_000/, 'auto-retry must back off between attempts, not fire back-to-back')
+assert.match(pageCode, /const delayMs = Math\.max\(baseDelayMs, typeof rd\.retryAfterMs === 'number' \? rd\.retryAfterMs \+ 750 : 0\)/, 'auto-retry must wait out the server-reported source cooldown so it never lands in a guaranteed backoff_skip')
 // A real result (tokens present) or an honest empty state must reset the counter so a LATER
 // genuine outage still gets its own retries.
 assert.match(pageCode, /autoRetryCountRef\.current = 0/, 'a successful or honestly-empty result must reset the retry counter')
