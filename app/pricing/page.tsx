@@ -277,26 +277,32 @@ export default function PricingPage() {
            a toned-down Elite treatment (dark glass + a restrained gold accent, not a bright yellow
            gradient button) — same three plans/prices/CTAs/payment routes, purely visual. */
         .glass{background:linear-gradient(170deg,rgba(9,13,24,.90),rgba(5,8,17,.86));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.14);border-radius:16px}
-        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:12px 14px;font-weight:700;font-size:13px;letter-spacing:.06em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none;font-family:var(--font-inter, Inter, sans-serif)}
-        .cta-free{border:1px solid rgba(148,163,184,.22) !important;color:#e2e8f0;background:rgba(255,255,255,.03)}
-        .cta-free:hover{border-color:rgba(103,232,249,.38) !important;background:rgba(103,232,249,.05) !important;transform:translateY(-1px)}
-        .cta-pro{color:#fff;background:linear-gradient(98deg,#6d28d9,#8b5cf6,#0891b2);box-shadow:0 8px 22px rgba(139,92,246,.28)}
-        .cta-pro:hover:not(:disabled){box-shadow:0 10px 26px rgba(139,92,246,.38) !important;transform:translateY(-1px)}
-        .cta-elite{color:#0c0700;background:linear-gradient(100deg,#d4a017,#e8c15c);box-shadow:0 8px 20px rgba(212,160,23,.22)}
-        .cta-elite:hover:not(:disabled){box-shadow:0 10px 24px rgba(212,160,23,.30) !important;transform:translateY(-1px)}
+        /* CTA SYSTEM (premium polish): exactly three restrained styles, identical size/shape on every
+           card — Free = dark outline secondary, Pro = solid single teal accent, Elite = solid muted
+           gold. No multi-color gradients, no glow; a subtle top highlight + a quiet drop shadow only. */
+        .cta{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;box-sizing:border-box;text-align:center;border-radius:8px;padding:12px 16px;font-weight:600;font-size:14px;letter-spacing:.005em;text-decoration:none;transition:background-color .16s ease,border-color .16s ease,color .16s ease,opacity .16s ease;cursor:pointer;border:1px solid transparent;font-family:var(--font-inter, Inter, sans-serif);font-feature-settings:'ss01'}
+        .cta:focus-visible{outline:2px solid rgba(148,163,184,.55);outline-offset:2px}
+        .cta:disabled{cursor:not-allowed}
+        .cta-free{color:#e2e8f0;background:transparent;border-color:rgba(148,163,184,.26) !important}
+        .cta-free:hover:not(:disabled){background:rgba(255,255,255,.04) !important;border-color:rgba(148,163,184,.42) !important}
+        .cta-pro{color:#04211e;background:#2cc1b2;border-color:#2cc1b2;box-shadow:inset 0 1px 0 rgba(255,255,255,.22),0 1px 2px rgba(0,0,0,.45)}
+        .cta-pro:hover:not(:disabled){background:#3bcfc0 !important;border-color:#3bcfc0 !important}
+        .cta-elite{color:#1c1405;background:#c9a65e;border-color:#c9a65e;box-shadow:inset 0 1px 0 rgba(255,255,255,.20),0 1px 2px rgba(0,0,0,.45)}
+        .cta-elite:hover:not(:disabled){background:#d4b36d !important;border-color:#d4b36d !important}
 
         /* Pricing card hover — a small static lift only, no glow pulse */
         .pricing-card{transition:transform .18s ease,border-color .18s ease}
         .pricing-card:hover{transform:translateY(-2px) !important}
-        .pricing-card-free:hover{border-color:rgba(103,232,249,.30) !important}
-        .pricing-card-pro:hover{border-color:rgba(167,139,250,.44) !important}
-        .pricing-card-elite:hover{border-color:rgba(212,160,23,.42) !important}
+        .pricing-card-free:hover{border-color:rgba(148,163,184,.30) !important}
+        .pricing-card-pro:hover{border-color:rgba(45,212,191,.42) !important}
+        .pricing-card-elite:hover{border-color:rgba(201,166,94,.42) !important}
 
         /* Tier badge capsule — small, inline, near the header (replaces the old floating ribbon) */
-        .plan-badge{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:800;letter-spacing:.08em;white-space:nowrap}
-        .plan-badge-free{color:rgba(103,232,249,.85);background:rgba(103,232,249,.07);border:1px solid rgba(103,232,249,.20)}
-        .plan-badge-pro{color:rgba(196,181,253,.90);background:rgba(139,92,246,.09);border:1px solid rgba(139,92,246,.24)}
-        .plan-badge-elite{color:#e8c874;background:rgba(212,160,23,.08);border:1px solid rgba(212,160,23,.26)}
+        /* Small, calm label — secondary to the plan name and price, never a competing accent */
+        .plan-badge{display:inline-flex;align-items:center;border-radius:4px;padding:2px 7px;font-size:9.5px;font-weight:600;letter-spacing:.1em;white-space:nowrap;line-height:1.5}
+        .plan-badge-free{color:#8a9aae;background:rgba(148,163,184,.06);border:1px solid rgba(148,163,184,.16)}
+        .plan-badge-pro{color:#7fd8cd;background:rgba(45,212,191,.06);border:1px solid rgba(45,212,191,.20)}
+        .plan-badge-elite{color:#cdb57c;background:rgba(201,166,94,.06);border:1px solid rgba(201,166,94,.20)}
 
         /* Footer link hover */
         .pf-footer-link{color:#475569;font-size:13px;text-decoration:none;transition:color .18s ease;display:block;margin-bottom:11px}
@@ -396,16 +402,16 @@ export default function PricingPage() {
               // CALMER CARD TREATMENT, DISCLOSED (pricing polish task): static borders/shadows only
               // (no glow pulse), Elite reads as dark glass + a restrained gold accent instead of a
               // bright yellow-bordered card — "expensive and exclusive", not arcade.
+              // Pro's accent is the same single teal as its CTA (was violet); shadows are neutral depth,
+              // not colored glow.
               const borderColor = plan.id === 'pro'
-                ? 'rgba(139,92,246,.34)'
+                ? 'rgba(45,212,191,.30)'
                 : plan.id === 'elite'
-                  ? 'rgba(212,160,23,.30)'
+                  ? 'rgba(201,166,94,.28)'
                   : 'rgba(148,163,184,.16)'
-              const boxShadow = plan.id === 'pro'
-                ? '0 8px 32px rgba(139,92,246,.14)'
-                : plan.id === 'elite'
-                  ? '0 8px 32px rgba(212,160,23,.10)'
-                  : 'none'
+              const boxShadow = plan.id === 'free'
+                ? 'none'
+                : 'inset 0 1px 0 rgba(255,255,255,.04), 0 12px 32px rgba(0,0,0,.32)'
               const cardBg = plan.id === 'elite'
                 ? 'linear-gradient(170deg,rgba(14,11,4,.94),rgba(7,6,2,.90))'
                 : undefined
@@ -428,15 +434,15 @@ export default function PricingPage() {
                 >
                   {/* Plan header — badge now sits inline next to the label, not a floating ribbon */}
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
-                    <div style={{ fontSize:12, letterSpacing:'.18em', color: plan.id === 'elite' ? '#e8c874' : plan.id === 'pro' ? '#c4b5fd' : '#94a3b8', fontWeight:700 }}>{plan.label}</div>
+                    <div style={{ fontSize:12, letterSpacing:'.16em', color: plan.id === 'elite' ? '#d9c18a' : plan.id === 'pro' ? '#7fd8cd' : '#94a3b8', fontWeight:600 }}>{plan.label}</div>
                     {plan.badge && (
                       <span className={`plan-badge plan-badge-${plan.id}`}>{plan.badge}</span>
                     )}
                   </div>
-                  <div style={{ fontSize:40, fontWeight:800, marginTop:8, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>${plan.priceMonthly}</div>
+                  <div style={{ fontSize:42, fontWeight:700, marginTop:10, color: plan.id === 'elite' ? '#efe2bf' : '#f8fafc', lineHeight:1, letterSpacing:'-0.025em', fontVariantNumeric:'tabular-nums' }}>${plan.priceMonthly}</div>
                   <div style={{ color:'#94a3b8', marginTop:3, fontSize:13 }}>{plan.subtext}</div>
                   {plan.note && <div style={{ marginTop:6, fontSize:11.5, color:'#64748b', lineHeight:1.4 }}>{plan.note}</div>}
-                  <div style={{ marginTop:12, paddingTop:9, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
+                  <div style={{ marginTop:12, paddingTop:9, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#9c8550' : plan.id === 'pro' ? '#4f9d94' : '#5b7284', letterSpacing:'.14em', fontWeight:600 }}>{plan.sectionTitle}</div>
 
                   {/* Features — grouped included vs. unavailable (Free only has both kinds), and
                       spaced by count so a shorter list (Free) fills the shared card height evenly
@@ -450,7 +456,7 @@ export default function PricingPage() {
                     const row = (f: string, no: boolean) => (
                       <div key={f} style={{ display:'flex', gap: no ? 7 : 9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize: 14, lineHeight: 1.5 }}>
                         <span style={{
-                          color: no ? '#3a4452' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
+                          color: no ? '#3a4452' : plan.id === 'elite' ? '#c2a462' : plan.id === 'pro' ? '#2cc1b2' : '#7d8ea3',
                           flexShrink:0, fontSize:11, marginTop:1,
                         }}>{no ? '–' : '✓'}</span>
                         <span>{f}</span>
@@ -474,7 +480,7 @@ export default function PricingPage() {
                   })()}
 
                   {plan.id === 'elite' && (
-                    <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'8px 10px', fontSize:11.5, lineHeight:1.4, marginTop:10 }}>
+                    <div style={{ border:'1px solid rgba(201,166,94,.18)', background:'rgba(201,166,94,.04)', color:'#cdb886', borderRadius:8, padding:'8px 10px', fontSize:11.5, lineHeight:1.4, marginTop:10 }}>
                       Everything in Pro, plus the highest Clark and scan limits.
                     </div>
                   )}
@@ -482,7 +488,7 @@ export default function PricingPage() {
                   {/* CTA block — a top divider ties the payment options to the feature list above
                       them (paid plans only), so Crypto/PayPal read as "how to unlock what's above"
                       rather than a separate, detached block. DISCLOSED (final pricing polish task). */}
-                  <div style={{ marginTop:10, paddingTop: isPaid ? 10 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
+                  <div style={{ marginTop:10, paddingTop:10, borderTop:'1px solid rgba(148,163,184,.08)' }}>
                     {plan.id === 'free' ? (
                       <button
                         type='button'
@@ -508,10 +514,13 @@ export default function PricingPage() {
                       </button>
                     )}
 
-                    {planReady && isPaid && !isCurrent && (
+                    {planReady && isPaid && !isCurrent ? (
                       <p style={{ margin:'8px 0 0', fontSize:10, color:'#334155', lineHeight:1.4, textAlign:'center' }}>
                         Choose crypto or card in secure checkout
                       </p>
+                    ) : (
+                      // Same footprint on every card so the three CTAs sit on one baseline.
+                      <p aria-hidden='true' style={{ margin:'8px 0 0', fontSize:10, lineHeight:1.4, visibility:'hidden' }}>&nbsp;</p>
                     )}
                   </div>
                 </div>
