@@ -43,6 +43,13 @@ const cardSinceScanHint = (row: TrackedOutcome) => {
   if (row.price_change_pct != null) return `${row.outcome_confidence[0].toUpperCase()}${row.outcome_confidence.slice(1)} confidence`
   return validPriceOrNull(row.current_price_usd) != null ? 'Live price tracked · original scan price unverified' : 'Waiting for the first live price'
 }
+/** Chain identity key for the card's accent (aliases folded; unknown chains fall back to neutral). */
+const CHAIN_ACCENTS = new Set(['base', 'eth', 'bnb', 'solana', 'robinhood'])
+const chainKey = (chain: string) => {
+  const c = chain.toLowerCase()
+  const k = c === 'ethereum' ? 'eth' : c === 'bsc' ? 'bnb' : c
+  return CHAIN_ACCENTS.has(k) ? k : 'other'
+}
 const direction = (n: number | null) => n == null ? 'neutral' : n > 0 ? 'up' : n < 0 ? 'down' : 'flat'
 function liveStatusLabel(checkedAt: string | null, now: number, failed: boolean, updating: boolean): string {
   return outcomeFreshnessLabel(checkedAt, now, failed, updating)
@@ -65,7 +72,7 @@ export function OutcomeCard({ row, onOpen, onDelete, nowMs, updating = false, re
   const name = snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'
   const subname = snapshot.tokenSymbol && snapshot.tokenName && snapshot.tokenName !== snapshot.tokenSymbol ? snapshot.tokenName : null
   const dir = direction(row.price_change_pct)
-  return <article className={styles.card} data-state={state.key} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
+  return <article className={styles.card} data-state={state.key} data-chain={chainKey(row.chain)} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
     <header className={styles.cardHead}>
       <span className={styles.chain}>{row.chain}</span>
       <span className={styles.status} data-status={state.key}><span className={styles.statusDot} aria-hidden="true" />{state.label}</span>

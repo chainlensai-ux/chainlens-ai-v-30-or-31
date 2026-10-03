@@ -10,8 +10,22 @@
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:16px; }
 
 /* ── Outcome card: an evidence record — header / identity / metrics / footer ── */
-.card { display:flex; flex-direction:column; border:1px solid #1f2a37; border-radius:14px; background:linear-gradient(180deg,#0c1320 0%,#0a101a 100%); padding:20px 20px 16px; text-align:left; color:inherit; min-width:0; cursor:pointer; transition:border-color .16s ease, background-color .16s ease; box-shadow:inset 0 1px 0 rgba(255,255,255,.03); }
-.card:hover { border-color:#33475a; }
+/* Three independent colour channels, never mixed:
+     chain identity  → --chain-rgb: chain chip, a faint top accent line, a very light corner tint, hover/focus;
+     current status  → the status chip only;
+     outcome quality → the "Since scan" value and its block (teal +, soft red −, neutral otherwise). */
+.card { --chain-rgb:148,163,184; position:relative; overflow:hidden; display:flex; flex-direction:column; border:1px solid #1f2a37; border-radius:14px; background:radial-gradient(120% 70% at 0% 0%,rgba(var(--chain-rgb),.055),transparent 55%),linear-gradient(180deg,#0c1320 0%,#0a101a 100%); padding:20px 20px 16px; text-align:left; color:inherit; min-width:0; cursor:pointer; transition:border-color .16s ease, box-shadow .16s ease; box-shadow:inset 0 1px 0 rgba(255,255,255,.03); }
+.card::before { content:''; position:absolute; left:0; right:0; top:0; height:2px; background:linear-gradient(90deg,rgba(var(--chain-rgb),.70) 0%,rgba(var(--chain-rgb),.18) 45%,rgba(var(--chain-rgb),0) 80%); pointer-events:none; }
+.card:hover { border-color:rgba(var(--chain-rgb),.32); box-shadow:inset 0 1px 0 rgba(255,255,255,.03),0 10px 28px rgba(0,0,0,.30),0 0 0 1px rgba(var(--chain-rgb),.06); }
+.card:focus-visible { outline:2px solid rgba(var(--chain-rgb),.65) !important; outline-offset:3px; }
+/* Restrained chain palette */
+.card[data-chain=base] { --chain-rgb:84,136,240; }
+.card[data-chain=solana] { --chain-rgb:153,118,240; }
+.card[data-chain=robinhood] { --chain-rgb:128,206,72; }
+.card[data-chain=bnb] { --chain-rgb:222,182,76; }
+.card[data-chain=eth] { --chain-rgb:148,163,184; }
+.card .chain { color:rgb(var(--chain-rgb)); border-color:rgba(var(--chain-rgb),.30); background:rgba(var(--chain-rgb),.08); }
+.card .chain::before { content:''; width:6px; height:6px; border-radius:2px; background:rgb(var(--chain-rgb)); opacity:.9; }
 .card:focus-visible,.button:focus-visible,.close:focus-visible,.delete:focus-visible,.copy:focus-visible { outline:2px solid #5fbdb2; outline-offset:3px; }
 .cardHead { display:flex; justify-content:space-between; align-items:center; gap:10px; min-width:0; }
 .identity { margin:16px 0 0; min-width:0; }
@@ -26,8 +40,9 @@
 .status[data-status=pumped] { color:#4fd1b0; border-color:#1f4a42; background:#0e1f1c; }
 .status[data-status=dumped] { color:#e8a66f; border-color:#4d3824; background:#1c140d; }
 .status[data-status=rugged] { color:#ee8a8a; border-color:#5a2e33; background:#1e1014; }
-.status[data-status=watching] { color:#8fb8d9; border-color:#27394c; background:#0f1824; }
-.status[data-status=unavailable],.status[data-status=no_comparison] { color:#9aa8b9; border-color:#2a3646; background:#111a26; }
+.status[data-status=watching] { color:#cbd5e1; border-color:#334155; background:#131b27; }
+.status[data-status=unavailable],.status[data-status=no_comparison] { color:#8a97a8; border-color:#283342; background:#0f1620; }
+.status[data-status=no_comparison] .statusDot { opacity:.55; }
 .status[data-status=pending] { color:#9aa8b9; border-style:dashed; background:transparent; }
 .status[data-status=pending] .statusDot { background:transparent; border:1px solid currentColor; }
 
