@@ -148,6 +148,12 @@ export function isNativePseudoAddress(contract: string): boolean {
   return contract.toLowerCase() === NATIVE_ASSET_ADDRESS
 }
 
+// Additive (current-price resolver): the canonical quote assets of a chain, for on-chain pool discovery.
+// Same registries as the predicates above — never a second list.
+export function canonicalQuoteAssetAddresses(chain: SupportedChain): { weth: string[]; stables: string[] } {
+  return { weth: [...(CANONICAL_WETH_ADDRESSES[chain] ?? [])], stables: Object.keys(STABLECOIN_ADDRESSES[chain] ?? {}) }
+}
+
 export function isCanonicalWethAddress(chain: SupportedChain, contract: string): boolean {
   const set = CANONICAL_WETH_ADDRESSES[chain]
   return set ? set.has(contract.toLowerCase()) : false

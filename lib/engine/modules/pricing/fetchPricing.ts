@@ -32,6 +32,16 @@ import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding, PricingEngineOutput } from './types'
 import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
 import { isVerifiedStablecoinAddress, isCanonicalWethAddress, isNativePseudoAddress } from '@/src/modules/quoteLegPricing/index'
+import {
+  createCurrentPriceResolver,
+  recordCurrentPrice,
+  type CurrentPriceAttempts,
+  type CurrentPriceResolverDeps,
+  type CurrentPriceSource,
+  type CurrentPriceResult,
+  type DexscreenerLookup,
+} from '@/lib/pricing/currentPriceResolver'
+import { defaultCurrentPriceDeps } from '@/lib/pricing/currentPriceSources'
 
 // CANONICAL-ADDRESS STABLECOIN CHECK, DISCLOSED (holdings-fallback-spam follow-up task — confirmed
 // production evidence: a symbol-spoofed token reporting itself as "USDC" at a non-canonical address
@@ -646,8 +656,23 @@ export type HoldingFallbackAuditRow = {
   selectedForFallback: boolean
   priceUsd: number | null
   valueUsd: number | null
-  priceSource: 'provider' | 'dexscreener_fallback' | 'unpriced'
+  /** Final source: the canonical resolver's evidence source, or 'unpriced'. */
+  priceSource: CurrentPriceSource | 'unpriced'
   skipReason: FallbackSkipReason | null
+  /** Canonical resolver debug (null for provider-priced and gated holdings). */
+  pricing: {
+    cache: CurrentPriceAttempts['cache']
+    dexscreener: CurrentPriceAttempts['dexscreener']
+    geckoterminal: CurrentPriceAttempts['geckoterminal']
+    onchain: CurrentPriceAttempts['onchain']
+    multihop: CurrentPriceAttempts['multihop']
+    route: string[]
+    poolAddress: string | null
+    liquidityUsd: number | null
+    confidence: 'high' | 'medium' | null
+    originalSource: CurrentPriceSource | null
+    failureReason: string | null
+  } | null
 }
 
 const HOLDING_AUDIT_MAX_ROWS = 150
@@ -673,6 +698,20 @@ export type HoldingsFallbackAudit = {
   decimalsUnverified: number
   pricedCount: number
   unpricedCount: number
+  sourceCounts: { provider: number; canonical: number; cache: number; dexscreener: number; geckoterminal: number; onchain: number; multihop: number; unresolved: number }
+  expensive: {
+    used: ExpensiveBudget
+    caps: ExpensiveBudget
+    remaining: ExpensiveBudget
+    /** DexScreener + GeckoTerminal calls + on-chain multicall reads. */
+    callsUsed: number
+    onchainPoolReads: number
+    /** ETH/USD anchor lookups (≤ 1 per chain per scan). */
+    anchorCalls: number
+  }
+  avoidedExpensiveLookups: number
+  cheapResolved: number
+  negativeCacheSkips: number
   rows: HoldingFallbackAuditRow[]
   rowsTruncated: boolean
 }
@@ -685,6 +724,7 @@ export function buildHoldingFallbackAudit(params: {
   keyOf: (h: ChainHolding) => string
   decimalsUnverifiedKeys?: ReadonlySet<string>
   onchainDecimalsByKey?: ReadonlyMap<string, number>
+  priceResultByKey?: ReadonlyMap<string, CurrentPriceResult>
 }): HoldingFallbackAuditRow[] {
   const { holdings, pricedHoldings, keyOf } = params
   const ctx = { rankByKey: new Map(params.rankedFallbackKeys.map((k, i) => [k, i])), budgeted: new Set(params.budgetedFallbackKeys), decimalsUnverifiedKeys: params.decimalsUnverifiedKeys }
@@ -738,8 +778,20 @@ export function buildHoldingFallbackAudit(params: {
       selectedForFallback: c.selected,
       priceUsd: p?.priceUsd ?? null,
       valueUsd: p?.valueUsd ?? null,
-      priceSource: providerPriced ? 'provider' : priced ? 'dexscreener_fallback' : 'unpriced',
+      priceSource: providerPriced ? 'provider' : priced ? (params.priceResultByKey?.get(key)?.evidence.source ?? 'dexscreener') : 'unpriced',
       skipReason: priced ? null : c.skipReason,
+      pricing: (() => {
+        const r = providerPriced ? undefined : params.priceResultByKey?.get(key)
+        if (!r) return null
+        const e = r.evidence
+        return {
+          cache: r.attempts.cache, dexscreener: r.attempts.dexscreener, geckoterminal: r.attempts.geckoterminal,
+          onchain: r.attempts.onchain, multihop: r.attempts.multihop,
+          route: e.route, poolAddress: e.poolAddress, liquidityUsd: e.liquidityUsd, confidence: e.confidence,
+          originalSource: e.originalSource ?? null,
+          failureReason: priced ? null : (params.decimalsUnverifiedKeys?.has(key) ? 'decimals_unverified' : e.reason),
+        }
+      })(),
     }
   })
 }
@@ -776,7 +828,23 @@ export type PriceHoldingsOptions = {
   allowExploratorySpamLookup?: boolean
   /** On-chain decimals() reader (testing seam). Default: RPC-verified, permanently cached. */
   decimalsFn?: (chainId: number, tokenAddress: string) => Promise<number | null>
+  /**
+   * Canonical current-price resolver sources (lib/pricing/currentPriceResolver.ts). Default: the production
+   * sources when `priceFn` is the real default; with an injected `priceFn` (test seam) only that function
+   * (as the DexScreener step) is used unless sources are passed here — no hidden network calls in tests.
+   */
+  resolverDeps?: CurrentPriceResolverDeps
+  /** Expensive per-scan caps (token attempts per source). */
+  expensiveBudget?: Partial<ExpensiveBudget>
 }
+
+// EXPENSIVE BUDGET (canonical resolver integration): the lane selector still picks at most
+// MAX_FALLBACK_TOKENS tokens (= the DexScreener cap, unchanged). Of those that DexScreener cannot price,
+// GeckoTerminal is tried for the strongest-ranked few, then direct on-chain pools (incl. bounded multihop)
+// for fewer still. Cheap resolution (canonical registries, provider price, shared cache) costs nothing and
+// never touches these caps.
+export type ExpensiveBudget = { dexscreener: number; geckoterminal: number; onchain: number }
+export const DEFAULT_EXPENSIVE_BUDGET: ExpensiveBudget = { dexscreener: MAX_FALLBACK_TOKENS, geckoterminal: 10, onchain: 5 }
 
 export async function priceHoldings(
   holdings: ChainHolding[],
@@ -785,6 +853,16 @@ export async function priceHoldings(
 ): Promise<PricingEngineOutput> {
   const allowExploratorySpamLookup = options.allowExploratorySpamLookup ?? exploratorySpamLookupEnabledByDefault()
   const decimalsFn = options.decimalsFn ?? verifyOnchainDecimals
+  const budgetCaps: ExpensiveBudget = { ...DEFAULT_EXPENSIVE_BUDGET, ...(options.expensiveBudget ?? {}) }
+  const productionSources = priceFn === fetchTokenPriceUsd
+  const injectedDs: DexscreenerLookup = async (chainId, token) => {
+    const price = await priceFn(chainId, token)
+    return { priceUsd: price, reason: price == null ? 'no_price' : null }
+  }
+  const resolverDeps: CurrentPriceResolverDeps = productionSources
+    ? { ...defaultCurrentPriceDeps(), ...(options.resolverDeps ?? {}) }
+    : { dexscreener: injectedDs, geckoterminal: null, onchain: null, ethUsd: null, ...(options.resolverDeps ?? {}) }
+  const resolver = createCurrentPriceResolver(resolverDeps)
   // Only holdings genuinely eligible for the fallback (no free provider price, not dust) ever reach
   // priceFn — see fallbackGateReason.
   const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
@@ -793,21 +871,47 @@ export async function priceHoldings(
   const knownUnderDollarSkipped = holdings.filter((_, i) => gateByIndex[i] === 'known_negligible_provider_value')
   const quantityDustSkipped = holdings.filter((_, i) => gateByIndex[i] === 'zero_or_malformed_quantity')
   const eligibleHoldings = holdings.filter((_, i) => gateByIndex[i] === null)
-  const distinctFallbackKeys = Array.from(new Set(eligibleHoldings.map(fallbackKeyOf)))
+  const allEligibleKeys = Array.from(new Set(eligibleHoldings.map(fallbackKeyOf)))
+
+  // Provider prices are free evidence — shared with later scans through the current-price cache.
+  for (const h of providerPriced) {
+    recordCurrentPrice(h.chainId, h.tokenAddress, {
+      priceUsd: h.providerPriceUsd!, status: 'verified', source: 'provider', route: [h.tokenAddress.toLowerCase(), 'USD'],
+      poolAddress: null, liquidityUsd: null, observedAt: Date.now(), confidence: 'high', reason: null,
+    })
+  }
+
+  // CHEAP PASS (no per-token network call, no budget): canonical stable / native / WETH, provider price,
+  // shared cache — for EVERY eligible holding, BEFORE any expensive candidate is selected. A very short
+  // negative-cache entry also skips the expensive lanes (its sources were just tried).
+  const priceResultByKey = new Map<string, CurrentPriceResult>()
+  const negativeCachedKeys = new Set<string>()
+  const firstHoldingByKey = new Map<string, ChainHolding>()
+  for (const h of eligibleHoldings) if (!firstHoldingByKey.has(fallbackKeyOf(h))) firstHoldingByKey.set(fallbackKeyOf(h), h)
+  await mapWithConcurrencyLimit(allEligibleKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    const h = firstHoldingByKey.get(key)!
+    const r = await resolver.resolveCheap({ chainId: h.chainId, tokenAddress: h.tokenAddress, providerPriceUsd: h.providerPriceUsd, providerValueUsd: h.providerValueUsd, balanceRaw: h.amountRaw ?? null, decimals: decimalsKnown(h) ? h.decimals : null })
+    priceResultByKey.set(key, r)
+    if (r.evidence.status !== 'verified' && r.attempts.cache === 'negative') negativeCachedKeys.add(key)
+  })
+  const cheapResolvedKeys = new Set(allEligibleKeys.filter((k) => priceResultByKey.get(k)?.evidence.status === 'verified'))
+  // The lane selector only ever sees still-unresolved holdings.
+  const distinctFallbackKeys = allEligibleKeys.filter((k) => !cheapResolvedKeys.has(k) && !negativeCachedKeys.has(k))
+  const laneHoldings = eligibleHoldings.filter((h) => distinctFallbackKeys.includes(fallbackKeyOf(h)))
 
   // DUPLICATES: holdings sharing (chainId, tokenAddress) are ONE fallback candidate — the strongest lane
   // and score among them wins. The same address on two chains is two distinct tokens (chainId is in the key).
   const laneByKey = new Map<string, FallbackLane>()
   const spoofedKeys = new Set<string>()
   const bestScoreByKey = new Map<string, number[]>()
-  for (const h of eligibleHoldings) {
+  for (const h of laneHoldings) {
     const key = fallbackKeyOf(h)
     if (isSpoofStableSymbol(h) || isSpoofBlueChipSymbol(h)) spoofedKeys.add(key)
     const lane = fallbackLaneOf(h)
     const existingLane = laneByKey.get(key)
     if (existingLane === undefined || LANE_ORDER[lane] < LANE_ORDER[existingLane]) laneByKey.set(key, lane)
   }
-  for (const h of eligibleHoldings) {
+  for (const h of laneHoldings) {
     const key = fallbackKeyOf(h)
     const lane = laneByKey.get(key)!
     if (fallbackLaneOf(h) !== lane) continue // scored only within the key's strongest lane
@@ -876,14 +980,47 @@ export async function priceHoldings(
     allowExploratorySpamLookup,
     timestamp: Date.now(),
   })
-  const fallbackPriceByKey = new Map<string, number | null>()
-  const resolvedPrices = await mapWithConcurrencyLimit(budgetedFallbackKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
-    const [chainIdStr, tokenAddress] = key.split(':')
-    const price = await priceFn(Number(chainIdStr), tokenAddress)
-    // A non-positive or non-finite price is never a price.
-    return typeof price === 'number' && Number.isFinite(price) && price > 0 ? price : null
+  // EXPENSIVE PHASES (bounded, deterministic by rank): D DexScreener for every selected key (≤ the
+  // unchanged 30); E GeckoTerminal for the first `geckoterminal` DexScreener misses in rank order; F/G
+  // on-chain pools + bounded multihop for the first `onchain` misses after that. Each phase only records
+  // a negative cache entry on a key's LAST phase.
+  const inputOf = (key: string) => {
+    const h = firstHoldingByKey.get(key)!
+    return { chainId: h.chainId, tokenAddress: h.tokenAddress, balanceRaw: h.amountRaw ?? null, decimals: decimalsKnown(h) ? h.decimals : null }
+  }
+  const mergeAttempts = (key: string, r: CurrentPriceResult) => {
+    const prev = priceResultByKey.get(key)?.attempts
+    const merged: CurrentPriceAttempts = {
+      cache: prev?.cache ?? r.attempts.cache,
+      dexscreener: r.attempts.dexscreener ?? prev?.dexscreener ?? null,
+      geckoterminal: r.attempts.geckoterminal ?? prev?.geckoterminal ?? null,
+      onchain: r.attempts.onchain ?? prev?.onchain ?? null,
+      multihop: r.attempts.multihop ?? prev?.multihop ?? null,
+    }
+    priceResultByKey.set(key, { evidence: r.evidence, attempts: merged })
+  }
+  const dsKeys = budgetedFallbackKeys.slice(0, Math.max(0, budgetCaps.dexscreener))
+  const gtWanted = resolverDeps.geckoterminal ? Math.max(0, budgetCaps.geckoterminal) : 0
+  const ocWanted = resolverDeps.onchain ? Math.max(0, budgetCaps.onchain) : 0
+  await mapWithConcurrencyLimit(dsKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    mergeAttempts(key, await resolver.resolveExpensive(inputOf(key), { dexscreener: true, geckoterminal: false, onchain: false }, { recordNegative: gtWanted === 0 && ocWanted === 0 }))
   })
-  budgetedFallbackKeys.forEach((key, i) => fallbackPriceByKey.set(key, resolvedPrices[i]))
+  // Escalation (GeckoTerminal, on-chain) only for the strongest remaining candidates: junk-flagged
+  // exploratory rows get their one DexScreener look, never the costlier sources.
+  const unpricedInRank = () => dsKeys.filter((k) => priceResultByKey.get(k)?.evidence.status !== 'verified' && !suspiciousExploratoryKeys.has(k))
+  const gtKeys = unpricedInRank().slice(0, gtWanted)
+  await mapWithConcurrencyLimit(gtKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    mergeAttempts(key, await resolver.resolveExpensive(inputOf(key), { dexscreener: false, geckoterminal: true, onchain: false }, { recordNegative: ocWanted === 0 }))
+  })
+  const ocKeys = unpricedInRank().slice(0, ocWanted)
+  await mapWithConcurrencyLimit(ocKeys, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
+    mergeAttempts(key, await resolver.resolveExpensive(inputOf(key), { dexscreener: false, geckoterminal: false, onchain: true }))
+  })
+  // Resolved price per key: cheap + expensive. Only verified (high/medium confidence) prices count.
+  const fallbackPriceByKey = new Map<string, number | null>()
+  for (const [key, r] of priceResultByKey) {
+    fallbackPriceByKey.set(key, r.evidence.status === 'verified' && r.evidence.priceUsd != null && r.evidence.priceUsd > 0 ? r.evidence.priceUsd : null)
+  }
 
   // ASSUMED DECIMALS ARE NEVER VALUED: a fallback-priced holding whose decimals were only assumed (an
   // Alchemy-only row) gets its real decimals() read on-chain — bounded by the same budget (only keys that
@@ -1258,8 +1395,22 @@ export async function priceHoldings(
 
   // PER-HOLDING FALLBACK AUDIT: every current holding (capped for payload size), plus the lane counts.
   const holdingAuditRows = buildHoldingFallbackAudit({
-    holdings, pricedHoldings, rankedFallbackKeys, budgetedFallbackKeys, keyOf: fallbackKeyOf, decimalsUnverifiedKeys, onchainDecimalsByKey,
+    holdings, pricedHoldings, rankedFallbackKeys, budgetedFallbackKeys, keyOf: fallbackKeyOf, decimalsUnverifiedKeys, onchainDecimalsByKey, priceResultByKey,
   })
+  // PER-SCAN SOURCE SUMMARY (distinct priced holdings by final source) + expensive usage.
+  const sourceCounts = { provider: 0, canonical: 0, cache: 0, dexscreener: 0, geckoterminal: 0, onchain: 0, multihop: 0, unresolved: 0 }
+  for (const row of holdingAuditRows) {
+    const src = row.priceSource
+    if (src === 'unpriced') sourceCounts.unresolved += 1
+    else if (src === 'provider') sourceCounts.provider += 1
+    else if (src === 'canonical_stable' || src === 'canonical_native') sourceCounts.canonical += 1
+    else if (src === 'shared_cache') sourceCounts.cache += 1
+    else if (src === 'dexscreener') sourceCounts.dexscreener += 1
+    else if (src === 'geckoterminal') sourceCounts.geckoterminal += 1
+    else if (src === 'multihop') sourceCounts.multihop += 1
+    else sourceCounts.onchain += 1
+  }
+  const expensiveUsed = { dexscreener: resolver.counters.dexscreenerCalls, geckoterminal: resolver.counters.geckoterminalCalls, onchain: resolver.counters.onchainTokenAttempts }
   const fallbackAudit: HoldingsFallbackAudit = {
     holdingsTotal: holdings.length,
     providerPriced: providerPriced.length,
@@ -1280,6 +1431,23 @@ export async function priceHoldings(
     decimalsUnverified: decimalsUnverifiedKeys.size,
     pricedCount,
     unpricedCount: pricedHoldings.length - pricedCount,
+    sourceCounts,
+    expensive: {
+      used: expensiveUsed,
+      caps: budgetCaps,
+      remaining: {
+        dexscreener: Math.max(0, budgetCaps.dexscreener - expensiveUsed.dexscreener),
+        geckoterminal: Math.max(0, budgetCaps.geckoterminal - expensiveUsed.geckoterminal),
+        onchain: Math.max(0, budgetCaps.onchain - expensiveUsed.onchain),
+      },
+      callsUsed: expensiveUsed.dexscreener + expensiveUsed.geckoterminal + resolver.counters.onchainPoolReads,
+      onchainPoolReads: resolver.counters.onchainPoolReads,
+      anchorCalls: resolver.counters.anchorCalls,
+    },
+    // Cheap resolution avoided an expensive lookup for each of these (and negative-cache skips).
+    avoidedExpensiveLookups: cheapResolvedKeys.size + negativeCachedKeys.size,
+    cheapResolved: cheapResolvedKeys.size,
+    negativeCacheSkips: negativeCachedKeys.size,
     rows: holdingAuditRows.slice(0, HOLDING_AUDIT_MAX_ROWS),
     rowsTruncated: holdingAuditRows.length > HOLDING_AUDIT_MAX_ROWS,
   }

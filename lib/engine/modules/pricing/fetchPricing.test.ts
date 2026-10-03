@@ -12,7 +12,7 @@
 // a controlled fake price resolver — real production callers never pass this argument and get the
 // real `fetchTokenPriceUsd`/`resolvePrices` path unchanged.
 
-import { describe, it } from 'node:test'
+import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +21,10 @@ import type { ChainHolding } from '../holdings/types'
 import { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } from '@/src/lib/dexscreenerRequestCache'
 import { __resetRpcDecimalsCacheForTest } from './rpcDecimals'
 import type { PricedHolding } from './types'
+import { __resetCurrentPriceCacheForTest } from '@/lib/pricing/currentPriceResolver'
+
+// The canonical current-price cache is process-wide; each test starts from an empty cache.
+beforeEach(() => __resetCurrentPriceCacheForTest())
 
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
   return {

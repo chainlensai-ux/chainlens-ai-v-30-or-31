@@ -108,3 +108,18 @@ export function portfolioValueText(e: PortfolioEvidence | null | undefined, fmt:
   if (v == null) return PORTFOLIO_VALUE_UNAVAILABLE_TEXT
   return e?.status === 'partial' ? `${fmt(v)} · ${PORTFOLIO_VALUE_PARTIAL_LABEL}` : fmt(v)
 }
+
+/** Pricing coverage by holding count (truthful: priced / all held assets in the evidence). */
+export function portfolioCoverage(e: PortfolioEvidence | null | undefined): { priced: number; total: number; pct: number } | null {
+  if (!e) return null
+  const total = e.pricedHoldings + e.unpricedHoldings
+  if (total <= 0) return null
+  return { priced: e.pricedHoldings, total, pct: Math.round((e.pricedHoldings / total) * 100) }
+}
+
+/** The second line under a Partial value, e.g. "43/50 holdings priced"; null when not partial. */
+export function portfolioCoverageText(e: PortfolioEvidence | null | undefined): string | null {
+  if (!e || e.status !== 'partial') return null
+  const c = portfolioCoverage(e)
+  return c ? `${c.priced}/${c.total} holdings priced` : null
+}

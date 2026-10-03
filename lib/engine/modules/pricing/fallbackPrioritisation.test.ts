@@ -14,7 +14,7 @@
 // Run with:
 //   npx tsx --test lib/engine/modules/pricing/fallbackPrioritisation.test.ts
 
-import { describe, it } from 'node:test'
+import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   priceHoldings,
@@ -25,6 +25,10 @@ import {
 } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding } from './types'
+import { __resetCurrentPriceCacheForTest } from '@/lib/pricing/currentPriceResolver'
+
+// The canonical current-price cache is process-wide; each test starts from an empty cache.
+beforeEach(() => __resetCurrentPriceCacheForTest())
 
 // Real, canonical Base USDC/DAI/WETH addresses (src/modules/quoteLegPricing/index.ts's own verified
 // registry) — used whenever a test needs a GENUINE, address-verified stablecoin/native-wrapper, as
@@ -90,7 +94,7 @@ describe('fallback prioritisation — likely USD materiality, not raw unit count
 })
 
 describe('fallback prioritisation — native / wrapped-native / stablecoin assets receive priority', () => {
-  it('stablecoins rank above blue-chip; a no-signal unclassified token only gets an exploratory slot after them', async () => {
+  it('canonical stablecoins never spend a fallback lookup (cheap $1 pass); WETH ranks material ahead of a no-signal token', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -101,7 +105,10 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       ],
       fn,
     )
-    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_WETH.toLowerCase(), '0xother'], 'verified assets first (stable before blue-chip); the no-signal token only via the reserved exploratory slice')
+    // Canonical resolver: the address-verified USDC is priced at $1 in the cheap pass (no lookup). In this
+    // test seam there is no ETH/USD anchor, so WETH still goes through the material lane, ahead of the
+    // no-signal token's reserved exploratory slot.
+    assert.deepEqual(order, [CANONICAL_BASE_WETH.toLowerCase(), '0xother'])
   })
 
   it('an address-verified blue-chip alone (no exploratory mode) is looked up even with no other candidates present', async () => {
@@ -125,7 +132,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
     assert.deepEqual(order, ['0xreal'], 'the spoofed blue-chip must never be selected by default — only the real, provider-value-backed position is looked up')
   })
 
-  it('stablecoins are ordered among themselves by their real ~$1/unit materiality estimate', async () => {
+  it('canonical stablecoins are priced at $1 in the cheap pass and never consume fallback lookups', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -134,7 +141,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       ],
       fn,
     )
-    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_DAI.toLowerCase()])
+    assert.deepEqual(order, [])
   })
 
   it('HARD ASSERTION (required regression): a symbol-spoofed "USDC" at a non-canonical address never receives stablecoin-tier priority or its unit-count materiality boost', async () => {
@@ -277,6 +284,7 @@ describe('fallback prioritisation — deterministic ordering', () => {
     const first = recordingPriceFn()
     await priceHoldings([a, b], first.fn)
     const second = recordingPriceFn()
+    __resetCurrentPriceCacheForTest() // selection determinism, not cache reuse, is under test
     await priceHoldings([b, a], second.fn)
 
     assert.deepEqual(first.order, second.order, 'tied holdings must always resolve to the same deterministic order')
@@ -289,6 +297,7 @@ describe('fallback prioritisation — deterministic ordering', () => {
     const first = recordingPriceFn()
     await priceHoldings(holdings, first.fn)
     const second = recordingPriceFn()
+    __resetCurrentPriceCacheForTest()
     await priceHoldings([...holdings].reverse(), second.fn)
 
     assert.deepEqual([...first.order].sort(), [...second.order].sort(), 'the selected budget set must not depend on provider response ordering')

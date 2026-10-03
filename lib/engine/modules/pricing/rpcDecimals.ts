@@ -75,6 +75,11 @@ function resolveEnvKey(names: string[]): string {
 
 const clientCache = new Map<number, PublicClient | null>()
 
+// Exported (current-price resolver's on-chain pool reader reuses the same RPC config — no second client).
+export function getRpcClientForChain(chainId: number): PublicClient | null {
+  return getClient(chainId)
+}
+
 function getClient(chainId: number): PublicClient | null {
   if (clientCache.has(chainId)) return clientCache.get(chainId) ?? null
   const config = RPC_CHAINS[chainId]

@@ -21,6 +21,7 @@
 // module's DefaultFallbackPricingService uses to select which client to call.
 
 import type { SupportedChain } from '../providerFetchWindow/types'
+import { selectGeckoTerminalPool } from '@/lib/pricing/currentPriceResolver'
 
 // Same real network-slug map as providers/geckoTerminalPriceSource.ts (kept independent — no
 // cross-import — so this new, additive module has no runtime coupling to that existing file).
@@ -32,18 +33,84 @@ const GECKOTERMINAL_NETWORK_IDS: Partial<Record<SupportedChain, string>> = {
 
 export type GeckoTerminalPriceResult = { priceUsd: number | null; reason: string | null }
 
-type PoolsResponse = {
-  data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string; base_token_price_usd?: string } }>
-}
-
 function safeParsedUsdPrice(value: unknown): number | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   const n = Number(value)
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+export function geckoTerminalNetworkId(chain: SupportedChain): string | null {
+  return GECKOTERMINAL_NETWORK_IDS[chain] ?? null
+}
+
+/** One pool from /tokens/{address}/pools with its exact token identities (relationships), unranked. */
+export type GeckoTerminalTokenPool = {
+  poolAddress: string
+  dexId: string | null
+  network: string
+  baseTokenAddress: string
+  quoteTokenAddress: string
+  basePriceUsd: number | null
+  quotePriceUsd: number | null
+  reserveUsd: number | null
+  volume24hUsd: number | null
+}
+
+type PoolsResponseDetailed = {
+  data?: Array<{
+    id?: string
+    attributes?: { address?: string; reserve_in_usd?: string; base_token_price_usd?: string; quote_token_price_usd?: string; volume_usd?: { h24?: string } }
+    relationships?: { base_token?: { data?: { id?: string } }; quote_token?: { data?: { id?: string } }; dex?: { data?: { id?: string } } }
+  }>
+}
+
+// GeckoTerminal ids are `${network}_${address}` — split strictly; anything else is not usable identity.
+function splitGtId(id: unknown): { network: string; address: string } | null {
+  if (typeof id !== 'string') return null
+  const i = id.indexOf('_0x')
+  if (i <= 0) return null
+  return { network: id.slice(0, i), address: id.slice(i + 1).toLowerCase() }
+}
+
 export class GeckoTerminalClient {
   constructor(private readonly chain: SupportedChain) {}
+
+  /**
+   * Every pool GeckoTerminal lists for this exact token address, with base/quote token identity from the
+   * response's own relationships. Selection (side, network, liquidity) is the caller's job — see
+   * lib/pricing/currentPriceResolver.ts selectGeckoTerminalPool. Never throws.
+   */
+  async getTokenPools(tokenAddress: string): Promise<{ network: string | null; pools: GeckoTerminalTokenPool[]; reason: string | null }> {
+    const network = GECKOTERMINAL_NETWORK_IDS[this.chain] ?? null
+    if (!network) return { network: null, pools: [], reason: 'unverified_network_for_geckoterminal' }
+    try {
+      const res = await fetch(`https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/pools`, { signal: AbortSignal.timeout(8_000) })
+      if (!res.ok) return { network, pools: [], reason: `http_${res.status}` }
+      const data = (await res.json()) as PoolsResponseDetailed
+      const pools: GeckoTerminalTokenPool[] = []
+      for (const p of data.data ?? []) {
+        const id = splitGtId(p.id)
+        const base = splitGtId(p.relationships?.base_token?.data?.id)
+        const quote = splitGtId(p.relationships?.quote_token?.data?.id)
+        if (!id || !base || !quote) continue
+        pools.push({
+          poolAddress: (p.attributes?.address ?? id.address).toLowerCase(),
+          dexId: p.relationships?.dex?.data?.id ?? null,
+          // The pool's network must match for BOTH tokens, or it is not this chain's market.
+          network: id.network === base.network && id.network === quote.network ? id.network : `${id.network}|mismatch`,
+          baseTokenAddress: base.address,
+          quoteTokenAddress: quote.address,
+          basePriceUsd: safeParsedUsdPrice(p.attributes?.base_token_price_usd),
+          quotePriceUsd: safeParsedUsdPrice(p.attributes?.quote_token_price_usd),
+          reserveUsd: safeParsedUsdPrice(p.attributes?.reserve_in_usd),
+          volume24hUsd: safeParsedUsdPrice(p.attributes?.volume_usd?.h24),
+        })
+      }
+      return { network, pools, reason: pools.length === 0 ? 'no_pool_found' : null }
+    } catch (err) {
+      return { network, pools: [], reason: err instanceof Error ? err.message : 'unknown_error' }
+    }
+  }
 
   async getTokenPriceUsd(tokenAddress: string): Promise<number | null> {
     const result = await this.getTokenPriceUsdDetailed(tokenAddress)
@@ -51,32 +118,14 @@ export class GeckoTerminalClient {
   }
 
   // Detailed variant — exposed for tests/observability that want the real failure reason.
+  // SIDE FIX (current-price resolver task): previously read `base_token_price_usd` from the most liquid
+  // pool even when the requested token was that pool's QUOTE token — i.e. the OTHER token's price. Now
+  // uses the same identity-checked selection as the canonical resolver (exact network, the token's own
+  // side, positive price, reserve floor, strongest market).
   async getTokenPriceUsdDetailed(tokenAddress: string): Promise<GeckoTerminalPriceResult> {
-    const network = GECKOTERMINAL_NETWORK_IDS[this.chain]
-    if (!network) return { priceUsd: null, reason: 'unverified_network_for_geckoterminal' }
-
-    try {
-      const res = await fetch(
-        `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${tokenAddress}/pools`,
-        { signal: AbortSignal.timeout(8_000) },
-      )
-      if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
-
-      const data = (await res.json()) as PoolsResponse
-      // Highest-liquidity pool first — same tie-break as providers/geckoTerminalPriceSource.ts's
-      // resolveTopPoolAddress, applied here directly since price is read from this same response.
-      const pools = (data.data ?? [])
-        .map((p) => ({
-          priceUsd: safeParsedUsdPrice(p.attributes?.base_token_price_usd),
-          liquidityUsd: safeParsedUsdPrice(p.attributes?.reserve_in_usd) ?? 0,
-        }))
-        .filter((p) => p.priceUsd !== null)
-        .sort((a, b) => b.liquidityUsd - a.liquidityUsd)
-
-      if (pools.length === 0) return { priceUsd: null, reason: 'no_pool_found' }
-      return { priceUsd: pools[0].priceUsd, reason: null }
-    } catch (err) {
-      return { priceUsd: null, reason: err instanceof Error ? err.message : 'unknown_error' }
-    }
+    const r = await this.getTokenPools(tokenAddress)
+    if (r.reason && r.pools.length === 0) return { priceUsd: null, reason: r.reason }
+    const pick = selectGeckoTerminalPool(r.pools, tokenAddress, r.network)
+    return pick.pool ? { priceUsd: pick.priceUsd, reason: null } : { priceUsd: null, reason: pick.reason }
   }
 }

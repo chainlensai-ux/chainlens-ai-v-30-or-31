@@ -31,7 +31,7 @@
 import type { RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
 import { ROBINHOOD_CHAIN_META } from '@/lib/walletScan/canonicalWalletSelectors'
-import { evidenceFromHoldings, mergePortfolioEvidence, portfolioDisplayValueUsd, portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
+import { evidenceFromHoldings, mergePortfolioEvidence, portfolioDisplayValueUsd, portfolioValueText, portfolioCoverage, portfolioCoverageText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 
 export type RobinhoodInclusion = {
   // True only when Robinhood Chain was actually, successfully scanned this session AND produced a
@@ -137,6 +137,16 @@ export function robinhoodLaneEvidence(robinhoodResult: RobinhoodWalletScanRespon
 export function mergedTotalText(merged: Pick<MergedTotal, 'totalValueUsd' | 'evidence'>, fmt: (usd: number) => string): string {
   if (merged.evidence) return portfolioValueText(merged.evidence, fmt)
   return merged.totalValueUsd != null ? fmt(merged.totalValueUsd) : PORTFOLIO_VALUE_UNAVAILABLE_TEXT
+}
+
+/** "43/50 holdings priced" under a Partial total (null otherwise) — from the canonical evidence only. */
+export function mergedCoverageText(merged: Pick<MergedTotal, 'evidence'>): string | null {
+  return portfolioCoverageText(merged.evidence)
+}
+
+/** Pricing coverage by holding count, from the canonical evidence (null when there is none). */
+export function mergedCoverage(merged: Pick<MergedTotal, 'evidence'>): { priced: number; total: number; pct: number } | null {
+  return portfolioCoverage(merged.evidence)
 }
 
 /** The EVM lane's evidence published by the worker (report.evmPortfolioEvidence), when present. */

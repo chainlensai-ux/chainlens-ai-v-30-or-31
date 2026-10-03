@@ -30,7 +30,7 @@ import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, mergedTotalText, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, mergedTotalText, mergedCoverageText, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
@@ -348,6 +348,12 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
         </span>
       </div>
+      {/* Partial totals say how much of the wallet they cover (canonical PortfolioEvidence counts). */}
+      {mergedCoverageText(merged) && (
+        <div style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(251,191,36,0.85)', marginTop: '2px' }}>
+          {mergedCoverageText(merged)}
+        </div>
+      )}
       {/* COVERAGE DISCLOSURE, UPDATED DISCLOSURE (split-Wallet-Scanner-results fix task): Robinhood
           Chain scanning now genuinely exists in this codebase (lib/server/robinhoodWalletScanner.ts,
           wired into this page's own handleRobinhoodScan()) — the old comment/copy here claiming "no

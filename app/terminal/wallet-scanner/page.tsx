@@ -1363,6 +1363,18 @@ export default function WalletScannerPage() {
             </div>
           )}
 
+          {/* CURRENT-PRICE RESOLVER AUDIT (debug only): per-scan source summary + per-holding evidence. */}
+          {debugMode && (result as { evmHoldingsPricingAudit?: unknown } | null)?.evmHoldingsPricingAudit != null && (
+            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
+              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#475569' }}>
+                Current-Price Resolver Audit
+              </div>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '480px', overflow: 'auto' }}>
+                {JSON.stringify((result as { evmHoldingsPricingAudit?: unknown }).evmHoldingsPricingAudit, null, 2)}
+              </pre>
+            </div>
+          )}
+
           {robinhoodResult && (!result || debugMode) && !partialSnapshot && (
             <div className="ws-card" style={{ marginBottom: '16px' }}>
               <RobinhoodChainSection

@@ -30,6 +30,10 @@ import {
   BASE_USDC,
   BASE_CHAIN_ID,
 } from './fixtures/alchemyOnly108Holdings'
+import { __resetCurrentPriceCacheForTest } from '@/lib/pricing/currentPriceResolver'
+
+// The canonical current-price cache is process-wide; each test starts from an empty cache.
+beforeEach(() => __resetCurrentPriceCacheForTest())
 
 const BUDGET = 30
 const fmt = (v: number) => `$${v.toFixed(2)}`
@@ -79,19 +83,21 @@ describe('108-holding Alchemy-only fixture (the production shape)', () => {
     const row = out.fallbackAudit!.rows.find((r) => r.tokenAddress === t.address)!
     assert.equal(row.fallbackLane, 'exploratory')
     assert.equal(row.selectedForFallback, true)
-    assert.equal(row.priceSource, 'dexscreener_fallback')
+    assert.equal(row.priceSource, 'dexscreener')
     assert.equal(row.decimalsSource, 'onchain_verified')
     assert.ok((row.valueUsd ?? 0) > 3000)
   })
 
-  it('a canonical stablecoin with no provider price (Alchemy, assumed decimals) is selected as material — never dropped as dust', async () => {
-    const out = await silence(() => priceHoldings(buildAlchemyOnly108Holdings(), fixturePriceFn(), { decimalsFn: fixtureDecimalsFn }))
+  it('a canonical stablecoin with no provider price (Alchemy, assumed decimals) is priced in the cheap pass — never dropped as dust, never a lookup', async () => {
+    const calls: string[] = []
+    const out = await silence(() => priceHoldings(buildAlchemyOnly108Holdings(), fixturePriceFn(calls), { decimalsFn: fixtureDecimalsFn }))
     const row = out.fallbackAudit!.rows.find((r) => r.tokenAddress === BASE_USDC)!
     assert.equal(row.assetClass, 'verified_stablecoin')
-    assert.equal(row.fallbackLane, 'material')
-    assert.equal(row.selectedForFallback, true)
-    assert.equal(row.uiBalance, '1250')
-    assert.ok(Math.abs((row.valueUsd ?? 0) - 1250.125) < 1e-6)
+    assert.equal(row.priceSource, 'canonical_stable')
+    assert.equal(row.selectedForFallback, false, 'resolved before the lane selector — no budget used')
+    assert.ok(!calls.includes(`${BASE_CHAIN_ID}:${BASE_USDC}`))
+    assert.equal(row.uiBalance, '1250', 'still valued from on-chain-verified decimals')
+    assert.equal(row.valueUsd, 1250)
   })
 
   it('every current holding carries the full debug record', async () => {
@@ -171,6 +177,7 @@ describe('lane selection inside the fixed budget', () => {
     const first: string[] = []
     const second: string[] = []
     await silence(() => priceHoldings(holdings, fixturePriceFn(first), { decimalsFn: fixtureDecimalsFn }))
+    __resetCurrentPriceCacheForTest() // selection determinism, not cache reuse, is under test
     await silence(() => priceHoldings([...holdings].reverse(), fixturePriceFn(second), { decimalsFn: fixtureDecimalsFn }))
     assert.deepEqual([...first].sort(), [...second].sort())
   })
@@ -344,7 +351,9 @@ describe('DexScreener fallback pair identity', () => {
 
 describe('portfolio semantics are preserved (unknown is never $0)', () => {
   it('all fallback failures → "Value unavailable", never $0.00', async () => {
-    const out = await silence(() => priceHoldings(buildAlchemyOnly108Holdings(), async () => null, { decimalsFn: fixtureDecimalsFn }))
+    // Without the two canonical stablecoins (which the cheap pass prices at $1 from the registry alone).
+    const holdings = buildAlchemyOnly108Holdings().filter((h) => !['0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca'].includes(h.tokenAddress))
+    const out = await silence(() => priceHoldings(holdings, async () => null, { decimalsFn: fixtureDecimalsFn }))
     assert.equal(out.fallbackAudit!.pricedCount, 0)
     for (const complete of [false, true]) {
       const e = evidenceOf(out, complete)
@@ -357,8 +366,8 @@ describe('portfolio semantics are preserved (unknown is never $0)', () => {
     const t = REAL_FALLBACK_TOKENS[2]
     const only = async (chainId: number, addr: string) => (chainId === BASE_CHAIN_ID && addr.toLowerCase() === t.address ? t.priceUsd : null)
     const out = await silence(() => priceHoldings(buildAlchemyOnly108Holdings(), only, { decimalsFn: fixtureDecimalsFn }))
-    assert.equal(out.fallbackAudit!.pricedCount, 1)
-    const expected = (Number(t.raw) / 1e18) * t.priceUsd
+    assert.equal(out.fallbackAudit!.pricedCount, 3, 'the fallback-priced token + the 2 canonical stablecoins')
+    const expected = (Number(t.raw) / 1e18) * t.priceUsd + 1250 + 310.5
     // Alchemy-only (GoldRush failed): incomplete holdings → partial.
     const e = evidenceOf(out, false)
     assert.equal(e.status, 'partial')
