@@ -511,9 +511,11 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
     // top-to-bottom gradient (instead of a flat single color) plus a hairline-thinner border gives
     // this middle tier of the hierarchy (below the hero header, above MetricCard/ProofTile/
     // VerdictTile's own lighter treatment) a touch of depth without changing spacing/content.
-    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.09)' : `${accent}26`}`, background: 'linear-gradient(180deg, rgba(17,26,42,0.44), rgba(13,20,33,0.36))', borderRadius: '16px', padding: '13px 14px', marginBottom: '9px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
-        <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
+    // RECEIPT POLISH: no outline — depth comes from a faint surface + inner highlight; the section's
+    // accent is a single short tick beside the title (accent used for meaning, not decoration).
+    <section style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.022), rgba(255,255,255,0.008))', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.035)', borderRadius: '14px', padding: '16px 18px', marginBottom: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '14px' }}>
+        <h3 style={{ margin: 0, color: '#cbd5e1', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '9px' }}><span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: accent, opacity: 0.85 }} />{title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
       </div>
       {loading ? <SkeletonRows /> : children}
@@ -538,8 +540,8 @@ function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state
         style={{ all: 'unset', boxSizing: 'border-box', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '10px' }}
       >
         <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' }}>
-          <span style={{ color: accent, fontSize: '12px', flexShrink: 0 }}>◆</span>
-          <span style={{ color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>{title}</span>
+          <span aria-hidden style={{ width: 3, height: 12, borderRadius: 2, background: accent, opacity: 0.85, flexShrink: 0 }} />
+          <span style={{ color: '#cbd5e1', fontSize: '10.5px', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{title}</span>
           {badge}
           {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
         </span>
@@ -566,16 +568,25 @@ function MetricCard({ label, value, sublabel, chip, tone = 'mint', size = 'lg' }
   const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'neutral' ? '#94a3b8' : '#2dd4bf'
   const isWarning = tone === 'risk' || tone === 'amber'
   const compact = size === 'sm'
-  return <div style={{ minWidth: 0, border: isWarning ? `1px solid ${color}40` : compact ? '1px solid rgba(148,163,184,0.08)' : '1px solid rgba(148,163,184,0.12)', background: isWarning ? `linear-gradient(180deg, ${color}12, rgba(15,23,42,0.58))` : compact ? 'rgba(15,23,42,0.22)' : 'rgba(15,23,42,0.42)', borderRadius: compact ? '12px' : '14px', padding: compact ? '10px 11px' : '12px' }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: compact ? 6 : 8 }}><span style={{ color: '#7c93a8', fontSize: compact ? 9 : 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 800 }}>{label}</span>{chip ? <Chip label={chip} tone={tone} /> : null}</div>
-    <div style={{ color: isWarning ? color : compact ? '#cbd5e1' : '#f8fafc', fontSize: compact ? 15 : 22, lineHeight: 1, fontWeight: compact ? 750 : 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
-    {sublabel ? <div style={{ marginTop: compact ? 5 : 7, color: '#7c93a8', fontSize: compact ? 10 : 11, lineHeight: 1.35 }}>{sublabel}</div> : null}
+  // TELEMETRY CELL (receipt polish): no per-card border — cells sit in one hairline grid (see Market
+  // Snapshot). Warnings keep a faint tint + left tick; everything else stays neutral.
+  return <div style={{ minWidth: 0, position: 'relative', background: isWarning ? `linear-gradient(180deg, ${color}0f, rgba(9,14,25,0.96))` : 'rgba(9,14,25,0.96)', padding: compact ? '11px 14px 12px' : '14px 16px 15px' }}>
+    {isWarning ? <span aria-hidden style={{ position: 'absolute', left: 0, top: 12, bottom: 12, width: 2, borderRadius: 2, background: color, opacity: 0.7 }} /> : null}
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: compact ? 6 : 9 }}><span style={{ color: '#5b7186', fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{label}</span>{chip ? <StatusTag label={chip} tone={tone} /> : null}</div>
+    <div style={{ color: isWarning ? color : compact ? '#dbe3ec' : '#f8fafc', fontSize: compact ? 15 : 24, lineHeight: 1.05, fontWeight: compact ? 650 : 700, letterSpacing: '-.025em', fontVariantNumeric: 'tabular-nums', overflowWrap: 'anywhere' }}>{value}</div>
+    {sublabel ? <div style={{ marginTop: compact ? 5 : 7, color: '#64748b', fontSize: compact ? 10.5 : 11, lineHeight: 1.4 }}>{sublabel}</div> : null}
   </div>
 }
 
 function Chip({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
   const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#94a3b8'
-  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 8px', borderRadius: 999, border: `1px solid ${color}33`, background: `${color}12`, color, fontSize: 9, fontWeight: 850, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ width: 5, height: 5, borderRadius: 999, background: color }} />{label}</span>
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6, border: `1px solid ${color}2b`, background: `${color}0e`, color, fontSize: 9, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ width: 5, height: 5, borderRadius: 999, background: color }} />{label}</span>
+}
+
+/** Quiet status tag for telemetry cells — text + dot, no pill. */
+function StatusTag({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
+  const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#94a3b8'
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color, opacity: 0.85, fontSize: 8.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}><span style={{ width: 4, height: 4, borderRadius: 999, background: color }} />{label}</span>
 }
 
 function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
@@ -590,12 +601,15 @@ function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: R
 // FINAL-POLISH, DISCLOSED (Radar full report final polish task — "sharpen Primary Risk / Main
 // Positive / Next Check copy spacing"): tighter eyebrow-to-value gap and line-height so the tile
 // reads as one crisp unit instead of two loosely-related lines — same content/props, spacing only.
-function VerdictTile({ eyebrow, value, tone = 'neutral', accent }: { eyebrow: string; value: React.ReactNode; tone?: 'mint' | 'risk' | 'neutral'; accent: string }) {
+// UNIFIED VERDICT COLUMN (receipt polish): one column of a single verdict surface (no box per tile) —
+// a short accent bar on top, a quiet eyebrow, and the statement. `emphasis` makes the main risk the
+// strongest line in the section.
+function VerdictTile({ eyebrow, value, tone = 'neutral', accent, emphasis = false }: { eyebrow: string; value: React.ReactNode; tone?: 'mint' | 'risk' | 'neutral'; accent: string; emphasis?: boolean }) {
   return (
-    <div style={{ position: 'relative', overflow: 'hidden', border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.46)', borderRadius: 13, padding: '10px 12px 11px' }}>
-      <div aria-hidden style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2.5, background: accent }} />
-      <div style={{ color: '#5b7186', fontSize: 9.5, fontWeight: 850, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 4.5 }}>{eyebrow}</div>
-      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#a7f3d0' : '#e2e8f0', fontSize: 12.5, fontWeight: 650, lineHeight: 1.35 }}>{value}</div>
+    <div className="receipt-verdict-col" style={{ minWidth: 0, padding: '2px 18px 4px' }}>
+      <div aria-hidden style={{ width: 22, height: 2, borderRadius: 2, background: accent, marginBottom: 10, opacity: 0.9 }} />
+      <div style={{ color: '#5b7186', fontSize: 9, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', marginBottom: 6, fontFamily: 'var(--font-plex-mono)' }}>{eyebrow}</div>
+      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#b7f0e4' : '#dbe3ec', fontSize: emphasis ? 15 : 13, fontWeight: emphasis ? 650 : 550, lineHeight: 1.4, letterSpacing: emphasis ? '-0.01em' : 0 }}>{value}</div>
     </div>
   )
 }
@@ -668,6 +682,8 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
 
 export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate, tracking, onTrackToggle, mode = 'side' }: DrawerProps) {
   const isFull = mode === 'full'
+  // UI-only: brief "Copied" confirmation for the tertiary Copy CA action (copy behaviour unchanged).
+  const [caCopied, setCaCopied] = useState(false)
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
@@ -1045,7 +1061,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }`}</style>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-verdict-col + .receipt-verdict-col { border-left: 1px solid rgba(255,255,255,0.06); } @media (max-width: 640px) { .receipt-verdict { grid-template-columns: 1fr !important; row-gap: 14px; } .receipt-verdict-col + .receipt-verdict-col { border-left: 0; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 14px !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #3bcfc0 !important; border-color: #3bcfc0 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; }`}</style>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(2,6,23,0.78)' : 'rgba(2,6,23,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
       {/* FULL-REPORT-MODE, DISCLOSED: see the DrawerProps.mode comment above — only this element's
           own style object branches on mode; everything rendered inside (all children below) is
@@ -1086,38 +1102,44 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             so CJK/other wide-script names don't get the same negative Latin tracking that looks
             cramped on those glyphs. Same chips, same summary line, same actions — nothing removed
             or restructured. */}
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 12px', padding: '11px 18px 9px', background: 'linear-gradient(180deg, rgba(3,10,20,0.96), rgba(2,6,23,0.90))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.14)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 16px', padding: '16px 18px 14px', background: 'linear-gradient(180deg, rgba(5,9,18,0.97), rgba(4,8,16,0.93))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.10)' }}>
+          {/* RECEIPT HEADER (receipt polish): identity is the focal point; chain / age / score / risk are one
+              quiet metadata row; the address is secondary; the top-right holds only a subtle close button.
+              Same values as before (CHAIN_LABEL, fmtAge, effectiveScore, publicStatus(severityLabel),
+              shortAddr, cortexSevereLine) — presentation only. */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <p style={{ margin: '0 0 2px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
-              <h2 style={{ margin: 0, fontSize: 21, fontWeight: 800, color: '#f8fafc', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.03em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.15 }}>{token.name} <span style={{ color: '#7c93a8', fontWeight: 600, fontSize: '0.72em', letterSpacing: 'normal' }}>/{token.symbol}</span></h2>
+              <p style={{ margin: '0 0 6px', color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 10px', fontSize: 24, fontWeight: 700, color: '#f8fafc', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.025em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.15 }}>
+                <span>{token.name}</span>
+                <span style={{ color: '#7c8da1', fontWeight: 600, fontSize: 13, letterSpacing: '.04em', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+              </h2>
             </div>
-            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 14, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
+            <button onClick={onClose} aria-label="Close project overview" className="receipt-close" style={{ flex: '0 0 auto', border: 0, background: 'transparent', color: '#64748b', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 18, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
-            {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): this was a two-way
-                `base ? 'Base' : 'ETH'` check, so every Robinhood token was labeled "ETH" — actively
-                misidentifying which chain a contract lives on, the single most misleading thing this
-                header can get wrong. Driven off the real chain key now. */}
-            <Chip label={CHAIN_LABEL[chain]} tone="mint" />
-            <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: 'rgba(45,212,191,.11)', border: '1px solid rgba(45,212,191,.32)' }}>
-              <span style={{ color: '#5eead4', fontSize: 9, fontWeight: 900, letterSpacing: '.10em', textTransform: 'uppercase' }}>Radar</span>
-              <span style={{ color: '#fff', fontSize: 15, fontWeight: 900 }}>{effectiveScore}</span>
-              <span style={{ color: '#5b7186', fontSize: 10 }}>/100</span>
-            </div>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: `${verdictColor}1c`, border: `1px solid ${verdictColor}48`, color: verdictColor, fontSize: 10.5, fontWeight: 900, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
-            <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+            {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): driven off the real chain key. */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#cbd5e1', fontSize: 11.5, fontWeight: 600 }}><span aria-hidden style={{ width: 6, height: 6, borderRadius: 2, background: '#2dd4bf' }} />{CHAIN_LABEL[chain]}</span>
+            <span aria-hidden style={{ color: '#334155' }}>·</span>
+            <span style={{ color: '#a5a0d6', fontSize: 11.5, fontFamily: 'var(--font-plex-mono)' }}>{fmtAge(token.ageMinutes)}</span>
+            <span aria-hidden style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.08)', margin: '0 2px' }} />
+            {/* Mini score block */}
+            <span title={`Radar score ${effectiveScore}/100`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 10px 4px 9px', borderRadius: 8, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)' }}>
+              <span style={{ color: '#64748b', fontSize: 8.5, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Radar</span>
+              <span style={{ color: '#f1f5f9', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-plex-mono)' }}>{effectiveScore}<span style={{ color: '#475569', fontSize: 10, fontWeight: 500 }}>/100</span></span>
+              <span aria-hidden style={{ width: 34, height: 3, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, Number(effectiveScore) || 0))}%`, background: verdictColor, opacity: 0.85 }} /></span>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 6, background: `${verdictColor}12`, border: `1px solid ${verdictColor}33`, color: verdictColor, fontSize: 9.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span aria-hidden style={{ width: 5, height: 5, borderRadius: 999, background: verdictColor }} />{publicStatus(severityLabel)}</span>
+            <span title={token.contract} style={{ color: '#475569', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
-          <p style={{ margin: '8px 0 0', color: '#9fb3c4', fontSize: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
-          {/* DEEP-SCAN-REMOVED, DISCLOSED (explicitly requested: "get rid of that deep scan button
-              on the base radar panel for robinhood and base"). Copy CA is now the primary/filled
-              action since it's the most common next step once a candidate's evidence is reviewed
-              here — Open Explorer and Watchlist remain secondary, unchanged otherwise. */}
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
-            <button onClick={() => copyText(token.contract)} style={primaryButtonStyle}>Copy CA</button>
-            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
-            {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}
+          <p style={{ margin: '10px 0 0', color: '#94a3b8', fontSize: 12.5, lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
+          {/* ACTION HIERARCHY (receipt polish): primary = Add Watchlist (the only state-changing action here;
+              Deep/Scan Token was removed from this panel earlier), secondary = Open Explorer, tertiary =
+              Copy CA (quiet text action with a brief "Copied" confirmation). Same handlers as before. */}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
+            {onTrackToggle ? <button onClick={onTrackToggle} className={`receipt-btn ${tracking ? '' : 'receipt-btn-primary'}`} style={tracking ? activeButtonStyle : primaryButtonStyle}>{tracking ? '✓ Watching' : 'Add Watchlist'}</button> : null}
+            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" className="receipt-btn receipt-btn-secondary" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer ↗</a>
+            <button onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} className="receipt-btn receipt-btn-tertiary" style={tertiaryButtonStyle}>{caCopied ? 'Copied ✓' : 'Copy CA'}</button>
           </div>
         </header>
 
@@ -1130,14 +1152,15 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             now lives once, in the hero header above, instead of being repeated here too — removing
             that duplication is itself part of "too text-heavy and repetitive." */}
         <Section title="CORTEX Verdict" tone={verdictTone}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
             <Chip label={`Evidence: ${evidenceQualityLabel}`} tone={evidenceQualityTone} />
             {[...marketSignals, ...riskSignals].slice(0, 2).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-            <VerdictTile eyebrow="Primary Risk" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} accent={verdictColor} />
-            <VerdictTile eyebrow="Main Positive" value={verdictPositiveSignal ?? 'No confirmed strength yet'} tone={verdictPositiveSignal ? 'mint' : 'neutral'} accent={verdictPositiveSignal ? '#5eead4' : '#5b7186'} />
-            <VerdictTile eyebrow="Next Check" value={verdictNextCheck ?? 'Continue monitoring liquidity and holder activity.'} tone="neutral" accent="#94a3b8" />
+          <div className="receipt-verdict" style={{ display: 'grid', gridTemplateColumns: '1.25fr 1fr 1fr', padding: '14px 0 12px', borderRadius: 12, background: 'rgba(2,6,23,0.35)' }}>
+            {/* Risk = restrained red, Positive = teal, Next Check = slate (accent per meaning only). */}
+            <VerdictTile eyebrow="Primary Risk" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} accent="#f0868a" emphasis />
+            <VerdictTile eyebrow="Main Positive" value={verdictPositiveSignal ?? 'No confirmed strength yet'} tone={verdictPositiveSignal ? 'mint' : 'neutral'} accent={verdictPositiveSignal ? '#2dd4bf' : '#475569'} />
+            <VerdictTile eyebrow="Next Check" value={verdictNextCheck ?? 'Continue monitoring liquidity and holder activity.'} tone="neutral" accent="#64748b" />
           </div>
         </Section>
 
@@ -1153,15 +1176,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             de-prioritize the latter three without hiding or changing any of them. */}
         <Section title="Market Snapshot" tone="mint">
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 10 }}>
+          {/* Intelligence grid: one surface with hairline separators (1px gap over a divider colour). */}
+          <div className="receipt-telemetry" style={{ borderRadius: 12, overflow: 'hidden', background: 'rgba(9,14,25,0.96)', display: 'grid' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
             <MetricCard label="Liquidity" value={fmtUSD(liquidityUsd)} sublabel={excludedFromFeed ? 'Below $5K feed threshold' : 'Primary observed depth'} chip={excludedFromFeed ? 'Watch' : 'Depth'} tone={excludedFromFeed ? 'risk' : 'mint'} />
             <MetricCard label={displayModel?.valuation.label ?? (marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap')} value={marketValuationCard.value} sublabel={displayModel?.valuation.sublabel ?? (marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check')} chip={displayModel?.valuation.status === 'verified' ? 'Verified' : displayModel?.valuation.status === 'fdv_fallback' ? 'Fallback' : marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
             <MetricCard label="24h Volume" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} sublabel="Recent market activity" chip="24h" tone="purple" />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
-            <MetricCard size="sm" label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" tone="neutral" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+            <MetricCard size="sm" label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" chip="Time" tone="neutral" />
             <MetricCard size="sm" label="Momentum" value={publicStatus(token.momentum)} sublabel={`Radar ${effectiveScore}/100`} tone="neutral" />
             <MetricCard size="sm" label="Market Evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} sublabel={marketValuationCard.sublabel} tone={market?.marketConfidence?.toLowerCase().includes('open') ? 'amber' : 'neutral'} />
+          </div>
           </div>
         </Section>
 
@@ -1343,39 +1369,47 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   )
 }
 
-// ACTION-BAR HIERARCHY, DISCLOSED (task #3 — "make primary action visually clear"): buttonStyle is
-// now the calm secondary/ghost treatment (used for Copy CA, Open Explorer, Watchlist, and the
-// existing Market chart/Pool explorer/Open full LP Safety links); primaryButtonStyle is the one
-// filled action (Deep Scan); activeButtonStyle is only for a toggled-on state (Watchlist already
-// added). None of these change what a button does — only how the same actions are visually ranked.
+// BUTTON TIERS (receipt polish): primary = solid teal (one per surface), secondary = quiet outline,
+// tertiary = text-only, active = toggled-on Watchlist. buttonStyle (secondary) is still shared by the
+// Market chart / Pool explorer / Token Scanner links lower in the report.
 const buttonStyle: React.CSSProperties = {
-  border: '1px solid rgba(148,163,184,0.16)',
+  border: '1px solid rgba(148,163,184,0.22)',
   background: 'rgba(255,255,255,0.03)',
-  color: '#99f6e4',
-  borderRadius: '10px',
-  padding: '7px 11px',
+  color: '#cbd5e1',
+  borderRadius: '8px',
+  minHeight: '34px',
+  padding: '0 13px',
   cursor: 'pointer',
   fontSize: '10px',
-  fontWeight: 800,
-  letterSpacing: '0.08em',
+  fontWeight: 700,
+  letterSpacing: '0.07em',
   textTransform: 'uppercase',
   fontFamily: 'var(--font-plex-mono)',
-}
-
-const primaryButtonStyle: React.CSSProperties = {
-  ...buttonStyle,
-  border: '1px solid rgba(45,212,191,0.55)',
-  background: 'linear-gradient(135deg, rgba(45,212,191,0.90), rgba(20,184,166,0.90))',
-  color: '#02110f',
-  textDecoration: 'none',
   display: 'inline-flex',
   alignItems: 'center',
 }
 
+const primaryButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  border: '1px solid #2cc1b2',
+  background: '#2cc1b2',
+  color: '#04211e',
+  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(0,0,0,0.4)',
+  textDecoration: 'none',
+}
+
+const tertiaryButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  border: '1px solid transparent',
+  background: 'transparent',
+  color: '#7c8da1',
+  padding: '0 8px',
+}
+
 const activeButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  border: '1px solid rgba(45,212,191,0.40)',
-  background: 'rgba(45,212,191,0.14)',
+  border: '1px solid rgba(45,212,191,0.36)',
+  background: 'rgba(45,212,191,0.10)',
   color: '#5eead4',
 }
 
