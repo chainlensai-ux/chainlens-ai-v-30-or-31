@@ -74,6 +74,7 @@ import {
   isVerifiedQuoteLegAddress,
   isNativePseudoAddress,
   isCanonicalWethAddress,
+  isNativeOrCanonicalWeth,
   isVerifiedStablecoinAddress,
   resolveNativePricingToken,
   type QuoteLegPriceResult,
@@ -136,10 +137,11 @@ export type SameTxQuoteNormalizationAudit = {
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
 // signal than the canonical address every leg actually carries; see quoteLegPricing/index.ts's own
-// isNativePseudoAddress/isCanonicalWethAddress for the full trace). Symbol kept only as a fallback OR
-// for legs built without going through real provider synthesis.
+// isNativePseudoAddress/isCanonicalWethAddress for the full trace). ADDRESS-ONLY: the former symbol
+// fallback let any token named "ETH"/"WETH" be valued at the historical ETH price — a symbol is never
+// identity evidence, so it is no longer consulted.
 function isNativeOrWethLeg(chain: NormalizedEvent['chain'], leg: SwapLeg): boolean {
-  return isNativePseudoAddress(leg.contract) || isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'ETH' || leg.symbol === 'WETH'
+  return isNativeOrCanonicalWeth(chain, leg)
 }
 
 function isFinitePositiveAmount(amount: number): boolean {
@@ -347,7 +349,45 @@ export type WalletPriceLookups = {
   coinPaprikaHistoricalEvidence: CoinPaprikaHistoricalEvidence[]
   priceLotsCanonicalGapAudit: PriceLotsCanonicalGapAudit
   sameTxQuoteNormalizationAudit: SameTxQuoteNormalizationAudit[]
+  closedLotMissingPriceAudit: ClosedLotMissingPriceAudit
 }
+
+// PER-LOT MISSING-PRICE AUDIT (historical-price completion audit). One row per structural closed lot
+// still missing a numeric price on either side after every pricing stage, with the exact same-tx
+// quote evidence that was (or was not) available for each missing side. Plus where same-tx
+// recoveries actually landed, which answers "requirements resolved, zero lots completed".
+export type ClosedLotMissingPriceSide = {
+  txHash: string
+  status: 'priced_accepted_evidence' | 'priced_same_tx_quote' | 'priced_provider' | 'missing'
+  acceptedEvidenceRecordFound: boolean
+  sameTxAttempted: boolean
+  sameTxQuoteToken: string | null
+  sameTxQuoteQuantity: number | null
+  sameTxQuoteUsdPrice: number | null
+  sameTxQuoteValueUsd: number | null
+  sameTxDerivedPriceUsd: number | null
+  sameTxApplied: boolean
+  sameTxRejectionReason: string | null
+}
+export type ClosedLotMissingPriceAudit = {
+  closedLots: number
+  numericCompleteLots: number
+  blockedLots: number
+  sameTxSidesApplied: number
+  sameTxSidesCompletingAClosedLot: number
+  sameTxSidesOnClosedLotWithOtherSideMissing: number
+  sameTxSidesNotOnAnyClosedLot: number
+  missingSideReasonCounts: Record<string, number>
+  lots: Array<{
+    lotId: string
+    token: string
+    missingSide: 'entry' | 'exit' | 'both'
+    entry: ClosedLotMissingPriceSide
+    exit: ClosedLotMissingPriceSide
+    finalStatus: 'missing_price'
+  }>
+}
+const CLOSED_LOT_MISSING_PRICE_AUDIT_LIMIT = 25
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
 // exact point the described event happens, never estimated after the fact.
@@ -476,6 +516,12 @@ export type ManifestFastPathAudit = {
     memoMode: 'discovery_any_lot_version'
     /** Why this side did not provide coverage — the real first-failure reason. */
     rejectionReason: 'no_persisted_record_found' | 'non_positive_persisted_value' | 'allocation_floors_a_sibling_to_zero'
+    /** For `no_persisted_record_found` only: `never_accepted_lot` when no lot on this side has a record
+     *  for its OTHER side either (accepted evidence is only ever seeded for fully verified lots, so a
+     *  lot that was never verified has never had anything written — nothing was lost), or
+     *  `opposite_side_present` when a sibling side IS persisted (a genuine loss: expiry or a key
+     *  mismatch). Null for the other rejection reasons. */
+    evidenceHistory: 'never_accepted_lot' | 'opposite_side_present' | null
     firstFailureStage: 'accepted_evidence_fast_path'
   }>
 }
@@ -640,6 +686,7 @@ export async function priceLotsForWallet(params: {
   // would otherwise pass through (see the "ACCEPTED-EVIDENCE SKIP FILTER" note below).
   const manifestFastPathAudit = emptyManifestFastPathAudit()
   const presentMatchedLotSideKeys = new Set<string>()
+  const acceptedEvidenceRecordFoundKeys = new Set<string>() // `${chain}:${txHash.toLowerCase()}:${side}` with ANY record returned
   if (acceptedEvidenceKv) {
     manifestFastPathAudit.manifestLoadedBeforePricing = true
     const groups = new Map<string, MatchedLot[]>()
@@ -683,6 +730,7 @@ export async function priceLotsForWallet(params: {
       const timestamp = side === 'entry' ? representative.openedAt : representative.closedAt
       const evidenceKvKey = buildAcceptedEvidenceKey({ chain: representative.chain, token: representative.token, txHash, side, timestamp, lotIdentityVersion: '' })
       const evidence = batchResult.byKey.get(evidenceKvKey) ?? null
+      if (evidence !== null) acceptedEvidenceRecordFoundKeys.add(key)
       const canonicalPriceUsd = evidence?.priceUsd ?? null
       if (isCanonicalPositiveUsd(canonicalPriceUsd)) presentMatchedLotSideKeys.add(key)
       // COVERAGE ≠ PRESENCE, DISCLOSED (contaminated 81-lot fast-path lock): a verified_valid
@@ -719,15 +767,32 @@ export async function priceLotsForWallet(params: {
               : !isCanonicalPositiveUsd(canonicalPriceUsd)
                 ? 'non_positive_persisted_value'
                 : 'allocation_floors_a_sibling_to_zero',
+            evidenceHistory: null,
             firstFailureStage: 'accepted_evidence_fast_path',
           })
         }
       }
     }
+    // Classified only after every group's read is known, so the opposite side's presence is real.
+    const oppositeSideKey = (lot: MatchedLot, side: 'entry' | 'exit') => side === 'entry'
+      ? `${lot.chain}:${lot.closedTxHash.toLowerCase()}:exit`
+      : `${lot.chain}:${lot.openedTxHash.toLowerCase()}:entry`
+    for (const lost of manifestFastPathAudit.lostCoverageSides) {
+      if (lost.rejectionReason !== 'no_persisted_record_found') continue
+      const groupedLots = groups.get(`${lost.chain}:${lost.txHash.toLowerCase()}:${lost.side}`) ?? []
+      lost.evidenceHistory = groupedLots.some((lot) => acceptedEvidenceRecordFoundKeys.has(oppositeSideKey(lot, lost.side)))
+        ? 'opposite_side_present'
+        : 'never_accepted_lot'
+    }
     if (manifestFastPathAudit.lostCoverageSides.length > 0) {
       // eslint-disable-next-line no-console
       console.warn('[accepted-evidence-lost-coverage]', {
         sidesLosingCoverage: manifestFastPathAudit.lostCoverageSides.length,
+        // Most `no_persisted_record_found` sides belong to lots that were never verified: seeding only
+        // writes fully verified lots, so there was never a record to lose. Only `opposite_side_present`
+        // is a real loss worth chasing.
+        neverAcceptedLotSides: manifestFastPathAudit.lostCoverageSides.filter((s) => s.evidenceHistory === 'never_accepted_lot').length,
+        oppositeSidePresentSides: manifestFastPathAudit.lostCoverageSides.filter((s) => s.evidenceHistory === 'opposite_side_present').length,
         lotsAffected: manifestFastPathAudit.lostCoverageSides.reduce((sum, s) => sum + s.affectedLotCount, 0),
         examples: manifestFastPathAudit.lostCoverageSides,
       })
@@ -941,7 +1006,7 @@ export async function priceLotsForWallet(params: {
           tokenAddress: leg.contract,
           symbol: leg.symbol,
           direction: leg.direction,
-          classification: isNative || isWeth || leg.symbol === 'ETH' || leg.symbol === 'WETH' ? 'native_or_weth' : 'other',
+          classification: isNative || isWeth ? 'native_or_weth' : 'other',
           isNativePseudoAddress: isNative,
           isCanonicalWeth: isWeth,
           rejectionReason: !isFinitePositiveAmount(leg.amount) ? 'invalid_amount' : null,
@@ -1184,7 +1249,7 @@ export async function priceLotsForWallet(params: {
     const verifiedQuoteTxHashes = new Set<string>()
     for (const [groupKey, legs] of swapLegsByTx) {
       const [chainPart] = groupKey.split(':')
-      if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract, leg.symbol))) {
+      if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract))) {
         verifiedQuoteTxHashes.add(groupKey)
       }
     }
@@ -1611,7 +1676,7 @@ export async function priceLotsForWallet(params: {
     else if (legs.length === 2) legCountTwo += 1
     else legCountThreeOrMore += 1
     const [chainPart] = groupKey.split(':')
-    if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract, leg.symbol))) {
+    if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract))) {
       transactionsWithVerifiedQuoteAddress += 1
     }
     if (sampleTransactions.length < 10) {
@@ -1700,8 +1765,33 @@ export async function priceLotsForWallet(params: {
   let targetTransactionFoundInLookup = 0
   let targetTransactionMissingFromLookup = 0
 
+  // PER-SIDE ATTEMPT RECORD (completion audit): what the same-tx pass did for each (tx, side, token),
+  // read back by the per-lot missing-price audit below so every blocked closed lot shows its exact
+  // quote candidate, values and rejection reason instead of an aggregate count.
+  type SameTxAttempt = {
+    skippedExistingPrice: boolean
+    source: string | null
+    quoteToken: string | null
+    quoteQuantity: number | null
+    quoteUsdPrice: number | null
+    quoteValueUsd: number | null
+    derivedPriceUsd: number | null
+    applied: boolean
+    rejectionReason: string | null
+  }
+  const sameTxAttemptKey = (chain: string, txHash: string, side: 'entry' | 'exit', token: string) =>
+    `${chain}:${txHash.toLowerCase()}:${side}:${token.toLowerCase()}`
+  const sameTxAttemptBySide = new Map<string, SameTxAttempt>()
+
   function applySameTxQuoteLegGapFill(event: NormalizedEvent, targetDict: Record<string, number | null>, side: 'entry' | 'exit'): void {
-    if (targetDict[event.txHash] != null) return // an existing, stronger price already resolved — never reordered/overwritten
+    if (targetDict[event.txHash] != null) {
+      // an existing, stronger price already resolved — never reordered/overwritten
+      const key = sameTxAttemptKey(event.chain, event.txHash, side, event.contract)
+      if (!sameTxAttemptBySide.has(key)) {
+        sameTxAttemptBySide.set(key, { skippedExistingPrice: true, source: null, quoteToken: null, quoteQuantity: null, quoteUsdPrice: null, quoteValueUsd: null, derivedPriceUsd: null, applied: false, rejectionReason: null })
+      }
+      return
+    }
     const groupKey = swapLegGroupKey(event.chain, event.txHash)
     const legs = swapLegsByTx.get(groupKey) ?? []
     if (legs.length > 0) targetTransactionFoundInLookup += 1
@@ -1715,9 +1805,22 @@ export async function priceLotsForWallet(params: {
       // touches the wallet directly is honestly 'unknown', not the strict opposite of the target's own
       // inbound/outbound. Only requiring "not the same direction as the target" (rather than "exactly
       // the opposite of inbound/outbound") is what actually locates it.
-      const quoteLeg = legs.find(
-        (leg) => !leg.excludeReason && leg.direction !== event.direction && leg.contract.toLowerCase() !== event.contract.toLowerCase(),
-      )
+      // NATIVE LEG SELECTED BY IDENTITY, NOT BY LOG ORDER (completion audit fix): the native price used
+      // to be looked up only when the FIRST not-same-direction leg happened to be native/WETH. In a
+      // multi-hop route (TOKEN <-> HOP <-> WETH) the hop leg is often logged first, so the prefetched
+      // historical ETH/USD for this exact day was never handed to the derivation and the side failed
+      // `missing_verified_native_price`. The native leg is now chosen exactly the way
+      // deriveSameTransactionQuotePrice chooses it (largest amount, then log order).
+      const quoteLeg = legs
+        .filter(
+          (leg) =>
+            !leg.excludeReason &&
+            leg.direction !== event.direction &&
+            leg.contract.toLowerCase() !== event.contract.toLowerCase() &&
+            isNativeOrWethLeg(event.chain, leg) &&
+            isFinitePositiveAmount(leg.amount),
+        )
+        .sort((a, b) => b.amount - a.amount || a.logIndex - b.logIndex)[0]
       let historicalNativePrice: number | null = null
       // 'inbound'/'outbound' quote legs were themselves sent through resolvePricingAtTime as ordinary
       // buy/sell entries — their already-resolved USD value is reused directly, at zero additional
@@ -1725,9 +1828,17 @@ export async function priceLotsForWallet(params: {
       // ALSO a real pricing requirement — see the NATIVE/WETH QUOTE-LEG REQUIREMENTS block above,
       // which adds it under its own synthetic dictionary key (nativeQuoteRequirementKey) precisely so
       // it never collides with the target's own entry sharing the same real txHash.
-      if (quoteLeg && isNativeOrWethLeg(event.chain, quoteLeg) && quoteLeg.amount > 0) {
-        const quoteLegOwnUsd =
-          quoteLeg.direction === 'inbound'
+      if (quoteLeg) {
+        // A txHash-keyed dictionary slot is only this leg's own value when no other leg in the tx
+        // shares its direction — otherwise the slot may hold a different token's value, and dividing
+        // it by the native amount would not be an ETH price. Ambiguous slots fall through to the
+        // shared historical resolver below.
+        const slotIsUnambiguous =
+          quoteLeg.direction === 'unknown' ||
+          legs.filter((leg) => !leg.excludeReason && leg.direction === quoteLeg.direction).length === 1
+        const quoteLegOwnUsd = !slotIsUnambiguous
+          ? null
+          : quoteLeg.direction === 'inbound'
             ? atTradeTime.costUsd[event.txHash]
             : quoteLeg.direction === 'outbound'
               ? atTradeTime.proceedsUsd[event.txHash]
@@ -1782,6 +1893,18 @@ export async function priceLotsForWallet(params: {
       }
     }
     if (result.evidence.rejectionReason !== 'no_opposite_leg_in_transaction') requirementsWithValidOppositeLeg += 1
+    const derivedInBounds = result.priceUsd != null && isSanePrice(result.priceUsd)
+    sameTxAttemptBySide.set(sameTxAttemptKey(event.chain, event.txHash, side, event.contract), {
+      skippedExistingPrice: false,
+      source: result.source,
+      quoteToken: result.quoteToken ?? result.evidence.quoteToken,
+      quoteQuantity: result.quoteQuantity,
+      quoteUsdPrice: result.evidence.usdPrice,
+      quoteValueUsd: result.quoteValueUsd,
+      derivedPriceUsd: result.priceUsd,
+      applied: derivedInBounds,
+      rejectionReason: derivedInBounds ? null : (result.evidence.rejectionReason ?? 'derived_price_out_of_bounds'),
+    })
     // costUsd/proceedsUsd store the TOTAL resolved USD value of a leg (resolvePricingAtTime's own
     // usd = price * amount — see pricingAtTimeEngine/index.ts's priceAllEntries/multiplyAmount), not
     // a per-unit price. The quote leg's own quoteValueUsd already IS that total (a swap's paid USD
@@ -1808,8 +1931,10 @@ export async function priceLotsForWallet(params: {
           timestamp: event.timestamp,
         })
       }
-    } else if (result.evidence.rejectionReason) {
-      rejectionReasonCounts[result.evidence.rejectionReason] = (rejectionReasonCounts[result.evidence.rejectionReason] ?? 0) + 1
+    } else {
+      // A derived price that fails isSanePrice used to be dropped without being counted anywhere.
+      const reason = result.evidence.rejectionReason ?? 'derived_price_out_of_bounds'
+      rejectionReasonCounts[reason] = (rejectionReasonCounts[reason] ?? 0) + 1
     }
   }
 
@@ -2206,6 +2331,90 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[priceLotsCanonicalGapAudit]', priceLotsCanonicalGapAudit)
 
+  const closedLotMissingPriceAudit = buildClosedLotMissingPriceAudit()
+  console.warn('[closed-lot-missing-price-audit]', closedLotMissingPriceAudit)
+  function buildClosedLotMissingPriceAudit(): ClosedLotMissingPriceAudit {
+    const describeSide = (lot: MatchedLot, side: 'entry' | 'exit'): ClosedLotMissingPriceSide => {
+      const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
+      const price = side === 'entry' ? atTradeTime.costUsd[txHash] : atTradeTime.proceedsUsd[txHash]
+      const sideKey = `${lot.chain}:${txHash.toLowerCase()}:${side}`
+      const attempt = sameTxAttemptBySide.get(sameTxAttemptKey(lot.chain, txHash, side, lot.token))
+      const status: ClosedLotMissingPriceSide['status'] = price == null
+        ? 'missing'
+        : isSkippableByAcceptedEvidence(lot.chain, txHash, side)
+          ? 'priced_accepted_evidence'
+          : canonicalSameTxSideKeys.has(sideKey) ? 'priced_same_tx_quote' : 'priced_provider'
+      return {
+        txHash,
+        status,
+        acceptedEvidenceRecordFound: acceptedEvidenceRecordFoundKeys.has(sideKey),
+        sameTxAttempted: attempt != null && !attempt.skippedExistingPrice,
+        sameTxQuoteToken: attempt?.quoteToken ?? null,
+        sameTxQuoteQuantity: attempt?.quoteQuantity ?? null,
+        sameTxQuoteUsdPrice: attempt?.quoteUsdPrice ?? null,
+        sameTxQuoteValueUsd: attempt?.quoteValueUsd ?? null,
+        sameTxDerivedPriceUsd: attempt?.derivedPriceUsd ?? null,
+        sameTxApplied: attempt?.applied ?? false,
+        sameTxRejectionReason: status !== 'missing'
+          ? null
+          : attempt == null
+            ? 'not_a_pricing_requirement'
+            : attempt.rejectionReason ?? 'price_overwritten_or_cleared_after_same_tx',
+      }
+    }
+    const closedLotSideKeys = new Map<string, MatchedLot[]>()
+    for (const lot of structuralMatchedLots) {
+      for (const side of ['entry', 'exit'] as const) {
+        const key = sameTxAttemptKey(lot.chain, side === 'entry' ? lot.openedTxHash : lot.closedTxHash, side, lot.token)
+        closedLotSideKeys.set(key, [...(closedLotSideKeys.get(key) ?? []), lot])
+      }
+    }
+    const lotComplete = (lot: MatchedLot) => atTradeTime.costUsd[lot.openedTxHash] != null && atTradeTime.proceedsUsd[lot.closedTxHash] != null
+    let sameTxSidesApplied = 0
+    let completing = 0
+    let otherSideMissing = 0
+    let notOnLot = 0
+    for (const [key, attempt] of sameTxAttemptBySide) {
+      if (!attempt.applied) continue
+      sameTxSidesApplied += 1
+      const lots = closedLotSideKeys.get(key)
+      if (!lots) notOnLot += 1
+      else if (lots.some(lotComplete)) completing += 1
+      else otherSideMissing += 1
+    }
+    const missingSideReasonCounts: Record<string, number> = {}
+    const blocked: ClosedLotMissingPriceAudit['lots'] = []
+    for (const lot of structuralMatchedLots) {
+      if (lotComplete(lot)) continue
+      const entry = describeSide(lot, 'entry')
+      const exit = describeSide(lot, 'exit')
+      for (const sideAudit of [entry, exit]) {
+        if (sideAudit.status !== 'missing') continue
+        const reason = sideAudit.sameTxRejectionReason ?? 'unknown'
+        missingSideReasonCounts[reason] = (missingSideReasonCounts[reason] ?? 0) + 1
+      }
+      blocked.push({
+        lotId: lot.lotId,
+        token: lot.token,
+        missingSide: entry.status === 'missing' && exit.status === 'missing' ? 'both' : entry.status === 'missing' ? 'entry' : 'exit',
+        entry,
+        exit,
+        finalStatus: 'missing_price',
+      })
+    }
+    return {
+      closedLots: structuralMatchedLots.length,
+      numericCompleteLots: structuralMatchedLots.length - blocked.length,
+      blockedLots: blocked.length,
+      sameTxSidesApplied,
+      sameTxSidesCompletingAClosedLot: completing,
+      sameTxSidesOnClosedLotWithOtherSideMissing: otherSideMissing,
+      sameTxSidesNotOnAnyClosedLot: notOnLot,
+      missingSideReasonCounts,
+      lots: blocked.slice(0, CLOSED_LOT_MISSING_PRICE_AUDIT_LIMIT),
+    }
+  }
+
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
   // per-event dump). Splits every structural closed lot by exactly which side(s) resolved a real
   // price, so "fullyPricedClosedLots" (both) is never confused with "attributed" (present) or with a
@@ -2425,6 +2634,7 @@ export async function priceLotsForWallet(params: {
     coinPaprikaHistoricalEvidence,
     priceLotsCanonicalGapAudit,
     sameTxQuoteNormalizationAudit,
+    closedLotMissingPriceAudit,
     historicalPricingPerformanceSummary,
   }
 }

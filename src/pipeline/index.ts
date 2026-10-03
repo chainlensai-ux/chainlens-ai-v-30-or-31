@@ -1899,7 +1899,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         isKnownRouter: router.isKnownRouter,
         routerConfidence: router.routerConfidence,
         routerOrCounterpartyAddress,
-        hasVerifiedQuoteAddress: legs.some((l) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], l.contract, l.symbol)),
+        hasVerifiedQuoteAddress: legs.some((l) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], l.contract)),
         isExistingSwapCandidate: existingSwapCandidateTxHashes.has(groupKey),
         isBridgeCandidate: bridgeCandidateTxHashes.has(groupKey),
         // Real LP/staking/burn classification requires protocol-level pool metadata this pipeline

@@ -184,9 +184,10 @@ export function resolveNativePricingToken(chain: SupportedChain, contract: strin
   return firstCanonicalWethAddress(chain) ?? contract
 }
 
-function isNativeOrCanonicalWeth(chain: SupportedChain, leg: SwapLeg): boolean {
-  if (isNativePseudoAddress(leg.contract) || leg.symbol === 'ETH') return true
-  return isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'WETH'
+// ADDRESS-ONLY IDENTITY: a leg is native/WETH only by its exact native pseudo-address or a canonical
+// WETH contract. A symbol is never evidence — any token can be named "ETH" or "WETH".
+export function isNativeOrCanonicalWeth(chain: SupportedChain, leg: Pick<SwapLeg, 'contract'>): boolean {
+  return isNativePseudoAddress(leg.contract) || isCanonicalWethAddress(chain, leg.contract)
 }
 
 function quoteDecimalsFor(chain: SupportedChain, leg: SwapLeg | undefined): number | null {
@@ -401,11 +402,12 @@ export function swapLegGroupKey(chain: SupportedChain, txHash: string): string {
   return `${chain}:${txHash.toLowerCase()}`
 }
 
-// Diagnostic helper — true when `contract` is a verified stablecoin or canonical WETH address on
-// `chain`, or the native-asset symbol itself. Exported so callers can report "how many transactions
-// even contain a verified quote asset" without duplicating the address registries above.
-export function isVerifiedQuoteLegAddress(chain: SupportedChain, contract: string, symbol: string): boolean {
-  if (symbol === 'ETH') return true
+// Diagnostic helper — true when `contract` is a verified stablecoin, a canonical WETH address on
+// `chain`, or the native pseudo-address — address-only, a symbol is never trusted. Exported so
+// callers can report "how many transactions even contain a verified quote asset" without
+// duplicating the address registries above.
+export function isVerifiedQuoteLegAddress(chain: SupportedChain, contract: string): boolean {
+  if (isNativePseudoAddress(contract)) return true
   if (stablecoinSymbolFor(chain, contract) !== null) return true
   const set = CANONICAL_WETH_ADDRESSES[chain]
   return set ? set.has(contract.toLowerCase()) : false
