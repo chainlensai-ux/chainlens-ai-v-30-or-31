@@ -8,8 +8,10 @@ import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import styles from './outcomes.module.css'
 
 const PENDING_PRICE = 'Current price unavailable — Outcome pending'
-const CARD_PENDING_PRICE = 'Price unavailable'
-const CARD_COMPARISON_UNAVAILABLE = 'Comparison unavailable'
+// Card state language (Track polish): two intentional, non-error states for a card without a price change —
+// "Pending" (no live price yet) and "No comparison" (live price found, original scan price unverified).
+const CARD_PENDING_PRICE = 'Pending'
+const CARD_NO_COMPARISON = 'No comparison'
 const UNVERIFIED_BASELINE = 'Original scan price could not be verified. Live market data is available, but historical price performance cannot be calculated.'
 const pct = (n: number | null) => n == null ? 'Unavailable' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`
 const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
@@ -22,20 +24,26 @@ const date = (value: string | null) => value ? new Date(value).toLocaleString() 
 const shortDate = (value: string | null) => value ? new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown'
 const label = (value: string) => value.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ')
 const shortAddress = (address: string) => address.length < 12 ? address : `${address.slice(0, 6)}…${address.slice(-4)}`
-const statusLabel = (row: TrackedOutcome) => {
+type CardState = { key: TrackedOutcome['outcome_status'] | 'pending' | 'no_comparison'; label: string }
+/** Status chip: the stored outcome status, or one of the two no-change states. Semantics unchanged. */
+const cardState = (row: TrackedOutcome): CardState => {
   if (row.price_change_pct == null && row.outcome_status === 'unavailable') {
-    return validPriceOrNull(row.current_price_usd) != null ? 'comparison unavailable' : 'outcome pending'
+    return validPriceOrNull(row.current_price_usd) != null
+      ? { key: 'no_comparison', label: CARD_NO_COMPARISON }
+      : { key: 'pending', label: CARD_PENDING_PRICE }
   }
-  return row.outcome_status
+  const status = row.outcome_status
+  return { key: status, label: status.charAt(0).toUpperCase() + status.slice(1) }
 }
 const cardSinceScan = (row: TrackedOutcome) => {
   if (row.price_change_pct != null) return pct(row.price_change_pct)
-  return validPriceOrNull(row.current_price_usd) != null ? CARD_COMPARISON_UNAVAILABLE : CARD_PENDING_PRICE
+  return validPriceOrNull(row.current_price_usd) != null ? CARD_NO_COMPARISON : CARD_PENDING_PRICE
 }
 const cardSinceScanHint = (row: TrackedOutcome) => {
-  if (row.price_change_pct != null) return `${row.outcome_confidence} confidence`
-  return validPriceOrNull(row.current_price_usd) != null ? 'Comparison unavailable' : 'Outcome pending'
+  if (row.price_change_pct != null) return `${row.outcome_confidence[0].toUpperCase()}${row.outcome_confidence.slice(1)} confidence`
+  return validPriceOrNull(row.current_price_usd) != null ? 'Live price tracked · original scan price unverified' : 'Waiting for the first live price'
 }
+const direction = (n: number | null) => n == null ? 'neutral' : n > 0 ? 'up' : n < 0 ? 'down' : 'flat'
 function liveStatusLabel(checkedAt: string | null, now: number, failed: boolean, updating: boolean): string {
   return outcomeFreshnessLabel(checkedAt, now, failed, updating)
 }
@@ -52,14 +60,49 @@ export function OutcomeCard({ row, onOpen, onDelete, nowMs, updating = false, re
   nowMs: number; updating?: boolean; refreshFailed?: boolean
 }) {
   const snapshot = row.baseline_snapshot_json
-  const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score unavailable' : `${row.baseline_risk_score}/100`
-  return <article className={styles.card} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
-    <div className={styles.spread}><span className={styles.chain}>{row.chain}</span><span className={styles.status} data-status={row.outcome_status}>{statusLabel(row)}</span></div>
-    <h2>{snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'}</h2>
-    <p className={styles.muted}>{snapshot.tokenName}</p>
-    <p className={styles.address} title={row.token_address}>{row.token_address}</p>
-    <div className={styles.metrics}><div><span>Original risk</span><strong>{risk}</strong><p>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy Solana score direction was not versioned. Rescan for a canonical receipt.' : row.baseline_verdict}</p></div><div><span>Since scan</span><strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0} data-neutral={row.price_change_pct == null}>{cardSinceScan(row)}</strong><p>{cardSinceScanHint(row)}</p></div></div>
-    <footer className={styles.cardFooter}><div className={styles.cardMeta}><span className={styles.trackedAt}>Tracked {date(row.tracked_at)}</span><span className={styles.cardFreshness}><span className={`${styles.liveDot} ${updating ? styles.liveDotUpdating : ''}`} aria-hidden="true" />{outcomeFreshnessLabel(row.last_checked_at, nowMs, refreshFailed, updating)}</span></div><div className={styles.cardActions}><button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Delete this private outcome receipt?')) onDelete() }} aria-label="Delete outcome receipt">Delete</button><span className={styles.viewReceipt}>View receipt ↗</span></div></footer>
+  const legacyRisk = row.baseline_risk_semantics === 'legacy_unverified'
+  const state = cardState(row)
+  const name = snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'
+  const subname = snapshot.tokenSymbol && snapshot.tokenName && snapshot.tokenName !== snapshot.tokenSymbol ? snapshot.tokenName : null
+  const dir = direction(row.price_change_pct)
+  return <article className={styles.card} data-state={state.key} onClick={onOpen} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onOpen() }} role="button" tabIndex={0} aria-label={`Open outcome receipt for ${snapshot.tokenSymbol || snapshot.tokenName}`}>
+    <header className={styles.cardHead}>
+      <span className={styles.chain}>{row.chain}</span>
+      <span className={styles.status} data-status={state.key}><span className={styles.statusDot} aria-hidden="true" />{state.label}</span>
+    </header>
+    <div className={styles.identity}>
+      <h2>{name}</h2>
+      {subname && <p className={styles.subname}>{subname}</p>}
+      <p className={styles.address} title={row.token_address}>{shortAddress(row.token_address)}</p>
+    </div>
+    <div className={styles.metrics}>
+      <div className={styles.metric}>
+        <span>Original risk</span>
+        {legacyRisk
+          ? <strong className={styles.pendingPrice} data-neutral="true">Legacy score</strong>
+          : <strong>{row.baseline_risk_score}<small>/100</small></strong>}
+        <p>{legacyRisk ? 'Score direction not versioned — rescan for a canonical receipt.' : row.baseline_verdict}</p>
+      </div>
+      <div className={styles.metric} data-direction={dir}>
+        <span>Since scan</span>
+        <strong className={`${styles.change} ${row.price_change_pct == null ? styles.pendingPrice : ''}`} data-negative={(row.price_change_pct ?? 0) < 0} data-neutral={row.price_change_pct == null}>
+          {dir === 'up' && <span className={styles.arrow} aria-hidden="true">▲</span>}
+          {dir === 'down' && <span className={styles.arrow} aria-hidden="true">▼</span>}
+          {cardSinceScan(row)}
+        </strong>
+        <p className={styles.metricMeta}>{cardSinceScanHint(row)}</p>
+      </div>
+    </div>
+    <footer className={styles.cardFooter}>
+      <div className={styles.cardMeta}>
+        <span className={styles.trackedAt}>Tracked {shortDate(row.tracked_at)}</span>
+        <span className={styles.cardFreshness}><span className={`${styles.liveDot} ${updating ? styles.liveDotUpdating : ''}`} data-failed={refreshFailed} data-idle={!row.last_checked_at && !updating} aria-hidden="true" />{outcomeFreshnessLabel(row.last_checked_at, nowMs, refreshFailed, updating)}</span>
+      </div>
+      <div className={styles.cardActions}>
+        <button type="button" className={styles.delete} onClick={e => { e.stopPropagation(); if (confirm('Remove this outcome receipt? This cannot be undone.')) onDelete() }} onKeyDown={e => e.stopPropagation()} aria-label="Remove outcome receipt">Remove</button>
+        <span className={styles.viewReceipt} aria-hidden="true">Open receipt →</span>
+      </div>
+    </footer>
   </article>
 }
 export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = false, evidenceError = '' }: {

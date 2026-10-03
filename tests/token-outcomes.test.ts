@@ -204,11 +204,12 @@ test('share text uses frozen score and current math without exposing receipt, ac
 test('outcome UI renders compact card pending copy and keeps the full modal sentence', () => {
   const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
   const css = readFileSync(new URL('../components/outcomes/outcomes.module.css', import.meta.url), 'utf8')
-  assert.match(source, /const CARD_PENDING_PRICE = 'Price unavailable'/)
-  assert.match(source, /const CARD_COMPARISON_UNAVAILABLE = 'Comparison unavailable'/)
+  // Track card polish: the two no-change card states are named "Pending" and "No comparison".
+  assert.match(source, /const CARD_PENDING_PRICE = 'Pending'/)
+  assert.match(source, /const CARD_NO_COMPARISON = 'No comparison'/)
   assert.match(source, /const PENDING_PRICE = 'Current price unavailable — Outcome pending'/)
   assert.match(source, /cardSinceScan\(row\)/)
-  assert.match(source, /CARD_COMPARISON_UNAVAILABLE : CARD_PENDING_PRICE/)
+  assert.match(source, /CARD_NO_COMPARISON : CARD_PENDING_PRICE/)
   assert.match(source, /Original scan price could not be verified/)
   assert.match(source, /comparableOutcomeBaselinePrice/)
   assert.match(source, /Hypothetical performance unavailable/)
@@ -1550,8 +1551,8 @@ test('KAI-like contaminated baseline stays unavailable on card and receipt while
   assert.equal(next.card.baseline_price_usd, 2579.35)
   assert.deepEqual(next.receipt.baseline_snapshot_json, snapshot)
   const source = readFileSync(new URL('../components/outcomes/OutcomeCard.tsx', import.meta.url), 'utf8')
-  assert.match(source, /CARD_COMPARISON_UNAVAILABLE/)
-  assert.match(source, /comparison unavailable/)
+  assert.match(source, /CARD_NO_COMPARISON/)
+  assert.match(source, /key: 'no_comparison'/)
 })
 
 test('valid price change and market-cap change stay independent on both surfaces', () => {
