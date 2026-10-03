@@ -37,22 +37,32 @@ assert.match(
 )
 // Reshaped into GT's own shape so it flows through the SAME downstream pipeline — never a parallel
 // pipeline (hard rule: don't break Pump Alerts/Token Scanner/Clark/Wallet Scanner by duplicating logic).
-assert.match(routeCode, /relationships: \{ base_token: \{ data: \{ id: tokenId \} \}, dex: \{ data: \{ id: typeof pair\.dexId/, 'DexScreener fallback candidates must be reshaped into GeckoTerminal\'s own pool/token JSON:API-ish shape so they reuse the existing pipeline unchanged')
+// The reshaping now lives in lib/radarDiscoveryResilience.ts (shared with the Robinhood fallback).
+const resilienceCode = fs.readFileSync(new URL('../lib/radarDiscoveryResilience.ts', import.meta.url), 'utf8')
+assert.match(resilienceCode, /relationships: \{ base_token: \{ data: \{ id: tokenId \} \}, dex: \{ data: \{ id: typeof pair\.dexId/, 'DexScreener fallback candidates must be reshaped into GeckoTerminal\'s own pool/token JSON:API-ish shape so they reuse the existing pipeline unchanged')
+assert.match(routeCode, /dexPairsToRadarPools\(pairs, 'base', addresses\)/, 'the Base fallback must map only pairs whose base token is one of the exact addresses it queried')
 
 // ─── Required fix: no wrong-chain data (hard rule) ─────────────────────────────────────────────
-assert.match(routeCode, /if \(pair\.chainId !== 'base'\) continue/, 'a DexScreener pair from another chain must never be accepted into the Base discovery fallback')
+assert.match(resilienceCode, /if \(pair\.chainId !== chain\) \{ audit\.rejected\.wrongChain\+\+; continue \}/, 'a DexScreener pair from another chain must never be accepted into a discovery fallback')
 assert.match(routeCode, /if \(chainId === 'base' && tokenAddress\) addresses\.add\(tokenAddress\)/, 'only chainId===base entries from DexScreener\'s boost/profile lists may seed the fallback address set')
-// Robinhood never gets the DexScreener discovery fallback (DexScreener doesn't reliably index it —
-// same honest gap already established elsewhere in this codebase).
+// Robinhood never uses the Base discovery fallback. It has its own seed-bound fallback (last verified
+// tokens / DexScreener Robinhood listings / V4 Initialize tokens) that keeps only exact-seed, chainId
+// 'robinhood' pairs — see tests/radar-discovery-resilience.test.ts.
 assert.doesNotMatch(routeCode, /requestedChain === 'robinhood'.{0,40}fetchDexScreenerBaseFallbackDiscovery/s, 'the DexScreener discovery fallback must never run for Robinhood')
 
 // ─── Required fix 2: last-good cache renders during failure ────────────────────────────────────
-assert.match(routeCode, /if \(sourcesSucceeded === 0 && cachedPayload && cachedPayload\.payload\.tokens\.length > 0\) \{/, 'a total live-source failure must still serve the last-good cached payload when one exists')
+// Robinhood outage fix: the stale decision moved into decideRadarDelivery (lib/radarDiscoveryResilience.ts,
+// unit-tested there and end-to-end in tests/radar-discovery-resilience.test.ts). A total live-source
+// failure with a usable same-query cached payload still serves it, now also flagged liveDiscovery 'delayed'.
+assert.match(routeCode, /const stalePayload = cachedPayload && cachedPayload\.payload\.tokens\.length > 0/, 'a total live-source failure must still serve the last-good cached payload when one exists')
+assert.match(routeCode, /if \(delivery\.kind === 'stale' && stalePayload\) \{/, 'the stale payload is served only on the decideRadarDelivery stale decision')
 assert.match(routeCode, /servedFromStaleCache: true/, 'a stale-served response must carry a plain, non-debug-gated signal so the frontend can show it was cached data')
 assert.match(pageCode, /servedFromStaleCache\?: boolean/, 'RadarData must declare servedFromStaleCache')
 
 // ─── Required fix 3 + 4: exact provider error, not vague "Open check" / generic text ───────────
-assert.match(routeCode, /const providerErrors = \[/, 'baseRadarLoadAudit must expose the real per-provider error list')
+// Public list = source/status/failureClass; the raw messages live in providerErrorsDetail (debug only).
+assert.match(routeCode, /const providerErrorsDetail = \[/, 'the real per-provider error list must still be built (exposed in full under debug)')
+assert.match(routeCode, /const providerErrors = providerErrorsDetail\.map\(/, 'baseRadarLoadAudit must expose the per-provider error list (public shape)')
 assert.match(routeCode, /const userVisibleError = baseRadarFinalState === 'providerUnavailable'/, 'a literal user-facing error string must be computed server-side from the real failure, not left for the frontend to guess')
 assert.match(pageCode, /const headline = finalState === 'providerUnavailable'\s*\n\s*\? \(userVisibleError \?\? /, 'EmptyFeed must render the real userVisibleError string when a provider outage occurred, not a hardcoded generic sentence')
 assert.match(pageCode, /userVisibleError\?: string \| null/, 'EmptyFeed must accept userVisibleError as a prop')
@@ -71,12 +81,12 @@ for (const field of [
   assert.ok(routeCode.includes(`${field}:`) || routeCode.includes(`${field}?:`), `RadarToken/candidate must expose ${field}`)
 }
 // DexScreener mapping must include marketCap, fdv, liquidity.usd, volume.h24, priceChange.h24/h6/h1, pairCreatedAt.
-assert.match(routeCode, /market_cap_usd: pair\.marketCap \?\? null/, 'DexScreener fallback mapping must read marketCap')
-assert.match(routeCode, /fdv_usd: pair\.fdv \?\? null/, 'DexScreener fallback mapping must read fdv')
-assert.match(routeCode, /reserve_in_usd: liquidity\?\.usd \?\? null/, 'DexScreener fallback mapping must read liquidity.usd')
-assert.match(routeCode, /volume_usd: \{ h24: volume\?\.h24 \?\? null \}/, 'DexScreener fallback mapping must read volume.h24')
-assert.match(routeCode, /price_change_percentage: \{ h24: priceChange\?\.h24 \?\? null, h6: priceChange\?\.h6 \?\? null, h1: priceChange\?\.h1 \?\? null \}/, 'DexScreener fallback mapping must read priceChange.h24/h6/h1')
-assert.match(routeCode, /pool_created_at: pairCreatedAtMs != null \? new Date\(pairCreatedAtMs\)\.toISOString\(\) : null/, 'DexScreener fallback mapping must read pairCreatedAt')
+assert.match(resilienceCode, /market_cap_usd: pair\.marketCap \?\? null/, 'DexScreener fallback mapping must read marketCap')
+assert.match(resilienceCode, /fdv_usd: pair\.fdv \?\? null/, 'DexScreener fallback mapping must read fdv')
+assert.match(resilienceCode, /reserve_in_usd: liquidity\?\.usd \?\? null/, 'DexScreener fallback mapping must read liquidity.usd')
+assert.match(resilienceCode, /volume_usd: \{ h24: volume\?\.h24 \?\? null \}/, 'DexScreener fallback mapping must read volume.h24')
+assert.match(resilienceCode, /price_change_percentage: \{ h24: priceChange\?\.h24 \?\? null, h6: priceChange\?\.h6 \?\? null, h1: priceChange\?\.h1 \?\? null \}/, 'DexScreener fallback mapping must read priceChange.h24/h6/h1')
+assert.match(resilienceCode, /pool_created_at: pairCreatedAtMs != null \? new Date\(pairCreatedAtMs\)\.toISOString\(\) : null/, 'DexScreener fallback mapping must read pairCreatedAt')
 
 // ─── Required fix 7: missing holder/risk must not block card render ────────────────────────────
 // The frontend maps every returned token into display intel — it never filters candidates out for

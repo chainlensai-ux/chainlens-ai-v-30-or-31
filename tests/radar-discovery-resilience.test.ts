@@ -88,9 +88,77 @@ test('fallback helpers: real addresses only, exact chain only, bounded', () => {
     { address: { hash: PM }, topics: ['0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f', '0x' + 'cd'.repeat(32)] },
   ]
   assert.deepEqual(v4InitializeTokenAddresses(logs, PM), [tokenAddr(7)])
-  const mapped = dexPairsToRadarPools([dsPair(1, 'robinhood'), dsPair(2, 'base'), dsPair(3, 'ethereum')], 'robinhood')
+  const mapped = dexPairsToRadarPools([dsPair(1, 'robinhood'), dsPair(2, 'base'), dsPair(3, 'ethereum')], 'robinhood', [tokenAddr(1), tokenAddr(2), tokenAddr(3)])
   assert.equal(mapped.data.length, 1)
   assert.equal((mapped.included[0] as { attributes: { address: string } }).attributes.address, tokenAddr(1))
+})
+
+// ─── Exact-token identity of the DexScreener fallback mapper ────────────────────────────────────
+const candidateAddrs = (m: ReturnType<typeof dexPairsToRadarPools>) => m.included.map(t => String((t as { attributes: { address: string } }).attributes.address).toLowerCase())
+const baseTokenIdOf = (m: ReturnType<typeof dexPairsToRadarPools>, i: number) => ((m.data[i] as { relationships: { base_token: { data: { id: string } } } }).relationships.base_token.data.id)
+const quoteSide = (seed: number, other: number, over: Record<string, unknown> = {}) => dsPair(other, 'robinhood', { quoteToken: { address: tokenAddr(seed), symbol: `TK${seed}` }, ...over })
+
+test('identity: requested token as pair base → accepted, priced by that pair, relationship points at it', () => {
+  const m = dexPairsToRadarPools([dsPair(1, 'robinhood')], 'robinhood', [tokenAddr(1)])
+  assert.deepEqual(candidateAddrs(m), [tokenAddr(1)])
+  assert.equal(baseTokenIdOf(m, 0), `dexfallback_token_${tokenAddr(1)}`)
+  assert.equal((m.data[0] as { attributes: { base_token_price_usd: unknown } }).attributes.base_token_price_usd, '0.0015')
+  assert.equal(m.audit.accepted, 1)
+})
+
+test('identity: requested token only on the quote side → no candidate, unrelated base never promoted, no reciprocal price', () => {
+  const m = dexPairsToRadarPools([quoteSide(1, 2)], 'robinhood', [tokenAddr(1)])
+  assert.equal(m.data.length, 0)
+  assert.ok(!candidateAddrs(m).includes(tokenAddr(2)), 'TOKEN_B must never become a Radar token')
+  assert.equal(m.audit.rejected.quoteSideUnpriced, 1)
+})
+
+test('identity: requested quote-side token still qualifies through a pair where it is the base', () => {
+  const m = dexPairsToRadarPools([quoteSide(1, 2), dsPair(1, 'robinhood', { pairAddress: `0x${'e'.repeat(40)}` })], 'robinhood', [tokenAddr(1)])
+  assert.deepEqual(candidateAddrs(m), [tokenAddr(1)])
+  assert.equal((m.data[0] as { attributes: { address: string } }).attributes.address, `0x${'e'.repeat(40)}`)
+})
+
+test('identity: neither side requested → rejected; wrong chain → rejected', () => {
+  const m = dexPairsToRadarPools([dsPair(5, 'robinhood'), dsPair(1, 'base'), dsPair(1, 'ethereum')], 'robinhood', [tokenAddr(1)])
+  assert.equal(m.data.length, 0)
+  assert.equal(m.audit.rejected.notRequested, 1)
+  assert.equal(m.audit.rejected.wrongChain, 2)
+})
+
+test('identity: duplicate pairs for one requested token → one record, highest liquidity then lowest pair address', () => {
+  const low = dsPair(1, 'robinhood', { pairAddress: `0x${'1'.repeat(40)}`, liquidity: { usd: 90_000 } })
+  const high = dsPair(1, 'robinhood', { pairAddress: `0x${'9'.repeat(40)}`, liquidity: { usd: 200_000 } })
+  const tieA = dsPair(1, 'robinhood', { pairAddress: `0x${'2'.repeat(40)}`, liquidity: { usd: 200_000 } })
+  for (const order of [[low, high, tieA], [tieA, high, low], [high, low, tieA]]) {
+    const m = dexPairsToRadarPools(order, 'robinhood', [tokenAddr(1)])
+    assert.equal(m.data.length, 1)
+    assert.equal((m.data[0] as { attributes: { address: string } }).attributes.address, `0x${'2'.repeat(40)}`, 'deterministic regardless of response order')
+    assert.equal(m.audit.rejected.duplicate, 2)
+  }
+})
+
+test('identity: two requested tokens on opposite sides of one pair → only the base becomes a candidate, never double-counted', () => {
+  const both = dsPair(1, 'robinhood', { quoteToken: { address: tokenAddr(2), symbol: 'TK2' } })
+  const m = dexPairsToRadarPools([both, both], 'robinhood', [tokenAddr(1), tokenAddr(2)])
+  assert.deepEqual(candidateAddrs(m), [tokenAddr(1)])
+  assert.equal(m.data.length, 1)
+  const reversed = dsPair(2, 'robinhood', { quoteToken: { address: tokenAddr(1), symbol: 'TK1' }, pairAddress: `0x${'d'.repeat(40)}` })
+  const m2 = dexPairsToRadarPools([both, reversed], 'robinhood', [tokenAddr(1), tokenAddr(2)])
+  assert.deepEqual(candidateAddrs(m2).sort(), [tokenAddr(1), tokenAddr(2)].sort(), 'each token appears once, each priced by a pair where it is the base')
+})
+
+test('identity: malformed or missing token / pair addresses are rejected; malformed seeds are ignored', () => {
+  const pairs = [
+    dsPair(1, 'robinhood', { baseToken: { address: 'not-an-address', symbol: 'X' } }),
+    dsPair(1, 'robinhood', { baseToken: undefined }),
+    dsPair(1, 'robinhood', { pairAddress: null }),
+    null as unknown as Record<string, unknown>,
+  ]
+  const m = dexPairsToRadarPools(pairs, 'robinhood', [tokenAddr(1), 'garbage', '0x123'])
+  assert.equal(m.data.length, 0)
+  assert.equal(m.audit.rejected.malformed, 4)
+  assert.equal(dexPairsToRadarPools([dsPair(1, 'robinhood')], 'robinhood', ['garbage']).data.length, 0)
 })
 
 // ─── Real /api/radar handler, mocked providers ──────────────────────────────────────────────────
@@ -285,4 +353,45 @@ test('Base and Robinhood concurrent refresh: each chain only touches its own Gec
   assert.equal(base.length, 8)
   const route = readFileSync(new URL('../app/api/radar/route.ts', import.meta.url), 'utf8')
   assert.match(route, /await reserveGlobalDiscoveryWaveSlot\(DISCOVERY_WAVE_DELAY_MS\)/, 'shared Base/Robinhood wave pacing is still in the loop')
+})
+
+test('route: fallback seed on the quote side never turns its counter-token into a Robinhood Radar card', async () => {
+  const b = await run({
+    gt: { new_pools: 'r429', trending_pools: 'r429', pools: 'r429' },
+    dsLists: [{ chainId: 'robinhood', tokenAddress: tokenAddr(21) }],
+    dsPairs: [
+      // TOKEN_B (22) as base, requested TOKEN_A (21) as quote — B was never a seed.
+      dsPair(22, 'robinhood', { quoteToken: { address: tokenAddr(21), symbol: 'TK21' } }),
+    ],
+  })
+  const contracts = (b.tokens as Body[]).map(t => String(t.contract).toLowerCase())
+  assert.ok(!contracts.includes(tokenAddr(22)), 'unrelated base token must never enter the feed')
+  assert.equal(audit(b).fallback.pairMapping.rejected.quoteSideUnpriced, 1)
+  assert.equal(audit(b).fallback.poolsOnRequestedChain, 0)
+})
+
+test('route: every fallback card is one of the exact DexScreener seed addresses and passes the normal gates', async () => {
+  const b = await run({
+    gt: { new_pools: 'r429', trending_pools: 'r429', pools: 'r429' },
+    dsLists: [{ chainId: 'robinhood', tokenAddress: tokenAddr(31) }, { chainId: 'robinhood', tokenAddress: tokenAddr(32) }, { chainId: 'robinhood', tokenAddress: tokenAddr(33) }],
+    dsPairs: [
+      dsPair(31, 'robinhood'),
+      dsPair(32, 'robinhood', { liquidity: { usd: 200 } }),                     // liquidity gate
+      dsPair(33, 'robinhood', { marketCap: null, fdv: null }),                   // valuation gate
+      dsPair(34, 'robinhood', { quoteToken: { address: tokenAddr(31), symbol: 'TK31' } }), // counter-token of a seed
+    ],
+  })
+  const contracts = (b.tokens as Body[]).map(t => String(t.contract).toLowerCase())
+  assert.deepEqual(contracts, [tokenAddr(31)])
+  assert.ok(contracts.every(c => [tokenAddr(31), tokenAddr(32), tokenAddr(33)].includes(c)))
+  assert.equal(b._debug.filterFunnel.liquidity_below_minimum >= 1, true)
+  // Holder gate: the same fallback token with too few holders is hidden.
+  await reset(); resetCalls()
+  // (fresh token: the route caches holder counts per contract)
+  const few = await run({ holders: 5, gt: { new_pools: 'r429', trending_pools: 'r429', pools: 'r429' }, dsLists: [{ chainId: 'robinhood', tokenAddress: tokenAddr(41) }], dsPairs: [dsPair(41, 'robinhood')] })
+  assert.equal(few.tokens.length, 0, 'holder floor still applies to fallback candidates')
+  // Age window: a pool older than the Radar window is hidden.
+  await reset(); resetCalls()
+  const old = await run({ gt: { new_pools: 'r429', trending_pools: 'r429', pools: 'r429' }, dsLists: [{ chainId: 'robinhood', tokenAddress: tokenAddr(42) }], dsPairs: [dsPair(42, 'robinhood', { pairCreatedAt: Date.now() - 90 * 24 * 3600_000 })] })
+  assert.equal(old.tokens.length, 0, 'age window still applies to fallback candidates')
 })

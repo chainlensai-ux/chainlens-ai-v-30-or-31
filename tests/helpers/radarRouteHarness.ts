@@ -117,7 +117,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (u.pathname.includes('token-profiles') || u.pathname.includes('token-boosts')) return json(scenario.dsLists ?? [])
     if (u.pathname.includes('/latest/dex/tokens/') || u.pathname.startsWith('/tokens/v1/')) {
       const wanted = new Set(decodeURIComponent(u.pathname.split('/').pop() ?? '').toLowerCase().split(','))
-      const pairs = (scenario.dsPairs ?? []).filter(p => wanted.has(String((p.baseToken as { address: string }).address).toLowerCase()))
+      // Real DexScreener semantics: a requested token may sit on EITHER side of a returned pair.
+      const side = (t: unknown) => String((t as { address?: string } | undefined)?.address ?? '').toLowerCase()
+      const pairs = (scenario.dsPairs ?? []).filter(p => wanted.has(side(p.baseToken)) || wanted.has(side(p.quoteToken)))
       return u.pathname.startsWith('/tokens/v1/') ? json(pairs) : json({ pairs })
     }
     return json({ pairs: [] })
