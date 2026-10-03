@@ -68,6 +68,7 @@ export function OutcomeCard({ row, onOpen, onDelete, nowMs, updating = false, re
 }) {
   const snapshot = row.baseline_snapshot_json
   const legacyRisk = row.baseline_risk_semantics === 'legacy_unverified'
+  const radarReceipt = row.baseline_risk_semantics === 'radar_evidence'
   const state = cardState(row)
   const name = snapshot.tokenSymbol || snapshot.tokenName || 'Token outcome'
   const subname = snapshot.tokenSymbol && snapshot.tokenName && snapshot.tokenName !== snapshot.tokenSymbol ? snapshot.tokenName : null
@@ -84,11 +85,14 @@ export function OutcomeCard({ row, onOpen, onDelete, nowMs, updating = false, re
     </div>
     <div className={styles.metrics}>
       <div className={styles.metric}>
-        <span>Original risk</span>
+        {/* RADAR RECEIPT: Radar's score is higher-is-stronger, so it is labelled as a Radar score, never as risk. */}
+        <span>{radarReceipt ? 'Original radar' : 'Original risk'}</span>
         {legacyRisk
           ? <strong className={styles.pendingPrice} data-neutral="true">Legacy score</strong>
-          : <strong>{row.baseline_risk_score}<small>/100</small></strong>}
-        <p>{legacyRisk ? 'Score direction not versioned — rescan for a canonical receipt.' : row.baseline_verdict}</p>
+          : radarReceipt
+            ? <strong>{snapshot.radarScore ?? '—'}<small>/100</small></strong>
+            : <strong>{row.baseline_risk_score}<small>/100</small></strong>}
+        <p>{legacyRisk ? 'Score direction not versioned — rescan for a canonical receipt.' : radarReceipt ? `Base Radar · ${snapshot.radarLabel ?? 'Radar evidence'}` : row.baseline_verdict}</p>
       </div>
       <div className={styles.metric} data-direction={dir}>
         <span>Since scan</span>
@@ -204,7 +208,7 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
             <p className={styles.address} title={row.token_address}>{shortAddress(row.token_address)}</p>
             <button type="button" className={styles.copy} onClick={copyAddress} aria-label="Copy contract address">{copied ? 'Copied' : 'Copy'}</button>
           </div>
-          <p className={styles.receiptMeta}>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score unavailable · Rescan required' : `${snapshot.baselineRiskScore}/100 · ${snapshot.baselineVerdict}`} · Scanned {shortDate(snapshot.scannedAt)}</p>
+          <p className={styles.receiptMeta}>{row.baseline_risk_semantics === 'legacy_unverified' ? 'Legacy score unavailable · Rescan required' : row.baseline_risk_semantics === 'radar_evidence' ? `Base Radar ${snapshot.radarScore ?? '—'}/100 · ${snapshot.radarLabel ?? 'Radar evidence'}` : `${snapshot.baselineRiskScore}/100 · ${snapshot.baselineVerdict}`} · {row.baseline_risk_semantics === 'radar_evidence' ? 'Radar evidence' : 'Scanned'} {shortDate(snapshot.scannedAt)}</p>
         </div>
         <button autoFocus className={styles.close} onClick={onClose} aria-label="Close receipt">×</button>
       </header>
@@ -247,7 +251,7 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
           <small>Illustration only. Not an actual purchase or saving. Excludes fees, slippage and ability to sell.</small>
         </section>
         {loadingEvidence ? <p role="status">Loading frozen evidence…</p> : evidenceError ? <p role="alert">{evidenceError} Close and reopen this receipt to retry.</p> : <details className={styles.why}><summary>Original scan evidence</summary><h3>What ChainLens saw at scan time</h3>
-          <details><summary>Original risk reasons</summary><Evidence value={snapshot.baselineRiskReasons} /></details>
+          <details><summary>{row.baseline_risk_semantics === 'radar_evidence' ? 'Radar evidence gaps' : 'Original risk reasons'}</summary><Evidence value={snapshot.baselineRiskReasons} /></details>
           {groups.map(([name, evidence]) => <details key={name}><summary>{name}</summary><Evidence value={evidence} /></details>)}
         </details>}
         <section className={styles.after}><h3>What happened afterward</h3><ul>{row.outcome_reasons_json.map((reason, i) => <li key={i}>{reason}</li>)}</ul><p>Latest liquidity: {row.current_liquidity_usd == null ? 'Unavailable' : money(row.current_liquidity_usd)}</p><p className={styles.muted}>Liquidity change is withheld when pool and aggregate measurements may differ. Live market observations do not verify deployer activity or sellability.</p><p className={styles.muted}>Checked {date(row.last_checked_at)} · {row.market_source || 'Source unavailable'}</p></section>

@@ -6,6 +6,7 @@ import { OUTCOME_POLICY, adoptNewerOutcomeObservation, advanceTrackedOutcomeLive
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import { OutcomeCard, OutcomeReceipt } from '@/components/outcomes/OutcomeCard'
 import styles from '@/components/outcomes/outcomes.module.css'
+import { reportDestinationShell, startInteraction } from '@/lib/uiInteractionTiming'
 
 export default function TrackPage() {
   const [rows, setRows] = useState<TrackedOutcome[]>([])
@@ -40,6 +41,7 @@ export default function TrackPage() {
     })
   }
   useEffect(() => { selectedRef.current = selected }, [selected])
+  useEffect(() => { reportDestinationShell('track') }, [])
   function applyLiveObservations(updated: TrackedOutcome[]) {
     if (!updated.length) return
     const byId = new Map(updated.map(row => [row.id, row]))
@@ -238,9 +240,27 @@ export default function TrackPage() {
     return () => { disposed = true; listener.subscription.unsubscribe(); refreshAction.current = null }
   }, [])
   const active = rows.find(row => row.id === selected)
+  // OPTIMISTIC REMOVE (interaction pass): the card leaves immediately; a genuine DELETE failure puts it
+  // back at its original position (merged with any live tick it missed) and shows the error.
   async function deleteOutcome(id: string) {
-    try { await outcomeRequest('DELETE', undefined, id); writeRows(current => current.filter(row => row.id !== id)); visibleIds.current = visibleIds.current.filter(value => value !== id); if (selected === id) { setSelected(null); receiptRef.current = null; setReceipt(null) } }
-    catch (e) { setError(e instanceof Error ? e.message : 'Unable to delete outcome.') }
+    const index = rowsRef.current.findIndex(row => row.id === id)
+    const removed = index >= 0 ? rowsRef.current[index] : null
+    const timing = startInteraction('track.remove')
+    writeRows(current => current.filter(row => row.id !== id))
+    visibleIds.current = visibleIds.current.filter(value => value !== id)
+    if (selected === id) { setSelected(null); receiptRef.current = null; setReceipt(null) }
+    timing.ack()
+    try { await outcomeRequest('DELETE', undefined, id); timing.done({ ok: true }) }
+    catch (e) {
+      timing.done({ ok: false })
+      const status = e && typeof e === 'object' && 'status' in e ? (e as { status?: number }).status : undefined
+      // 404 = already gone on the server; keep it removed.
+      if (removed && status !== 404) {
+        writeRows(current => current.some(row => row.id === id) ? current : [...current.slice(0, index), removed, ...current.slice(index)])
+        visibleIds.current = [...new Set([...visibleIds.current, id])]
+      }
+      setError(e instanceof Error ? e.message : 'Unable to delete outcome.')
+    }
   }
   const receiptRow = receipt?.id === active?.id ? receipt : active
   return <main className={styles.page}>

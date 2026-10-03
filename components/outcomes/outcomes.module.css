@@ -79,6 +79,9 @@
 .copy { border:1px solid #354354; background:#121c29; color:#c6d1df; border-radius:8px; height:28px; padding:0 10px; cursor:pointer; font-size:11px; flex-shrink:0; }
 .button { display:inline-flex; align-items:center; justify-content:center; padding:11px 16px; border-radius:10px; border:1px solid #336559; color:#a6f6dd; background:#122820; cursor:pointer; text-decoration:none; font-size:13px; }
 .button:disabled { opacity:.55; cursor:wait; }
+/* Same press feedback as the terminal's .btn-instant primitive (120ms scale, no layout change). */
+.button,.delete,.copy { transition:color .15s ease, background-color .15s ease, border-color .15s ease, transform .12s ease; }
+.button:not(:disabled):active,.delete:active,.copy:active { transform:scale(.97); }
 .empty,.notice,.skeleton { padding:26px; border:1px solid #283547; border-radius:16px; background:#0b121d; margin:15px 0; }
 .notice { border-color:#69532f; color:#f2cd93; }
 .skeleton { min-height:260px; color:#8fa0b4; }

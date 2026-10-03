@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { OUTCOME_POLICY, liveOutcomeRequestIds } from '@/lib/tokenOutcomes'
 import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
-import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError, logTrackedOutcomeLiveBatch } from '@/lib/server/tokenOutcomeService'
+import { verifyRadarTrackReceipt } from '@/lib/server/radarTrackReceipt'
+import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError, logTrackedOutcomeLiveBatch, isRadarReceiptSchemaError } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 
 export const runtime = 'nodejs'
@@ -41,7 +42,7 @@ export async function POST(req: Request) {
   try {
     const bodyText = await req.text()
     if (bodyText.length > 182_000) return json({ error: 'Outcome receipt too large.' }, 413)
-    let body: { action?: string; receipt?: unknown; force?: unknown; ids?: unknown; id?: unknown; batchId?: unknown }
+    let body: { action?: string; receipt?: unknown; radarReceipt?: unknown; force?: unknown; ids?: unknown; id?: unknown; batchId?: unknown }
     try { body = JSON.parse(bodyText) } catch { return json({ error: 'Invalid request.' }, 400) }
     if (!body || typeof body !== 'object') return json({ error: 'Invalid request.' }, 400)
     if (body.action === 'live') {
@@ -70,10 +71,26 @@ export async function POST(req: Request) {
       const outcomes = await refreshOutcomes(user.userId, { force: body.force === true, ids })
       return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch, force: body.force === true, outcomes, limit: OUTCOME_POLICY.limits[user.plan] })
     }
-    const snapshot = verifyOutcomeReceipt(body.receipt, user.userId)
-    if (!snapshot) return json({ error: 'Valid signed scan with Risk Score ≥50 required. Rescan the token while signed in.' }, 400)
+    // RADAR → TRACK, ADDITIVE: a Base Radar receipt (signed by /api/radar for this user) goes through the
+    // same create_tracked_outcome RPC, plan limit and immutable-baseline trigger as a scanner receipt.
+    const radar = body.radarReceipt !== undefined
+    let snapshot
+    if (radar) {
+      const verified = verifyRadarTrackReceipt(body.radarReceipt, user.userId)
+      if (!verified.ok) return json({ error: verified.error, code: `radar_receipt_${verified.code}` }, verified.code === 'unconfigured' ? 503 : 400)
+      snapshot = verified.snapshot
+    } else {
+      snapshot = verifyOutcomeReceipt(body.receipt, user.userId)
+      if (!snapshot) return json({ error: 'Valid signed scan with Risk Score ≥50 required. Rescan the token while signed in.' }, 400)
+    }
     const { data, error } = await outcomeDb().rpc('create_tracked_outcome', { p_user: user.userId, p_snapshot: snapshot, p_limit: OUTCOME_POLICY.limits[user.plan] })
-    if (error) return json({ error: error.message.includes('plan limit') ? 'Your tracked outcome limit has been reached.' : 'Outcome could not be saved. Check storage configuration and migration.' }, error.message.includes('plan limit') ? 409 : 503)
+    if (error) {
+      if (error.message.includes('plan limit')) return json({ error: 'Your tracked outcome limit has been reached.' }, 409)
+      logOutcomeStorageError(radar ? 'create_radar' : 'create', error)
+      // A Radar receipt has no Risk Score; before the 20261003 migration the column constraint rejects it.
+      if (radar && isRadarReceiptSchemaError(error)) return json({ error: 'Radar tracking needs the latest Track storage migration.', code: 'storage_schema' }, 503)
+      return json({ error: 'Outcome could not be saved. Check storage configuration and migration.' }, 503)
+    }
     return json(data)
   } catch (error) {
     logOutcomeStorageError('POST', error)

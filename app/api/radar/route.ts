@@ -7,6 +7,7 @@ import { unauthorizedResponse } from '@/lib/server/requireAuth'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
+import { attachRadarTrackReceipts } from '@/lib/server/radarTrackReceipt'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
 import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID } from '@/lib/server/robinhoodChainConfig'
@@ -709,7 +710,27 @@ function isTrustedCronTrigger(req: NextRequest): boolean {
   return req.headers.get('x-base-radar-cron-secret') === secret
 }
 
+// RADAR → TRACK RECEIPTS: each response is signed per signed-in user AFTER the shared payload cache
+// (the cache never holds a per-user receipt), so Track can freeze exactly the evidence a card showed.
+// Pure HMAC over data already in the response — zero provider calls.
 export async function GET(req: NextRequest) {
+  const ctx: RadarRequestContext = { userId: null, chain: 'base' }
+  const res = await radarGet(req, ctx)
+  if (res.status !== 200 || !ctx.userId) return res
+  try {
+    const body = await res.clone().json()
+    if (!body || typeof body !== 'object' || !Array.isArray(body.tokens)) return res
+    const headers = new Headers(res.headers)
+    headers.delete('content-length')
+    return NextResponse.json(attachRadarTrackReceipts(body, ctx.userId, ctx.chain), { status: res.status, headers })
+  } catch {
+    return res
+  }
+}
+
+type RadarRequestContext = { userId: string | null; chain: 'base' | 'robinhood' }
+
+async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
@@ -724,7 +745,7 @@ export async function GET(req: NextRequest) {
   if (!token && !isCronTrigger) return unauthorizedResponse()
   let plan: 'free' | 'pro' | 'elite' = 'free'
   if (token) {
-    try { plan = (await getCurrentUserPlanFromBearerToken(token)).plan } catch { plan = 'free' }
+    try { const resolved = await getCurrentUserPlanFromBearerToken(token); plan = resolved.plan; ctx.userId = resolved.userId ?? null } catch { plan = 'free' }
   }
   if (plan === 'free' && !isCronTrigger) return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   const debug = req.nextUrl.searchParams.get('debug') === 'true'
@@ -753,6 +774,7 @@ export async function GET(req: NextRequest) {
   // disagree about whether Robinhood is live.
   const requestedChain: 'base' | 'robinhood' =
     req.nextUrl.searchParams.get('chain') === 'robinhood' && isRobinhoodChainAvailable() ? 'robinhood' : 'base'
+  ctx.chain = requestedChain
   const minValuationUsd = Number(req.nextUrl.searchParams.get('minValuationUsd')) || DEFAULT_RADAR_MIN_VALUATION_USD
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK

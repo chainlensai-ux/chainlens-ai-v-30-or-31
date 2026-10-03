@@ -21,9 +21,9 @@ const chainAlias = (c: string | null) => c === 'ethereum' ? 'eth' : c === 'bsc' 
 const chainIdBySlug: Record<string, number> = { base: 8453, eth: 1, bnb: 56, robinhood: 4663 }
 const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
 /** Compact list columns that exist since the original tracked_token_outcomes migration. */
-export const OUTCOME_LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
+export const OUTCOME_LIST_COLUMNS = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion,baseline_snapshot_json->source,baseline_snapshot_json->radarScore,baseline_snapshot_json->radarLabel'
 /** Optional identity-proof column from 20260918. Never required to list existing receipts. */
-export const OUTCOME_LIST_COLUMNS_WITH_OBSERVATION = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,market_observation_json,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion'
+export const OUTCOME_LIST_COLUMNS_WITH_OBSERVATION = 'id,chain,token_address,scan_id,tracked_at,baseline_price_usd,baseline_liquidity_usd,baseline_market_cap_usd,baseline_risk_score,baseline_verdict,current_price_usd,current_liquidity_usd,price_change_pct,liquidity_change_pct,outcome_status,outcome_confidence,outcome_reasons_json,last_checked_at,market_source,market_observation_json,after_evidence_json,baseline_snapshot_json->tokenSymbol,baseline_snapshot_json->tokenName,baseline_snapshot_json->scannedAt,baseline_snapshot_json->snapshotVersion,baseline_snapshot_json->source,baseline_snapshot_json->radarScore,baseline_snapshot_json->radarLabel'
 
 export type OutcomeStorageError = { code?: string | null; message?: string | null; details?: string | null; hint?: string | null }
 export function isMissingOutcomeColumnError(error: OutcomeStorageError | null | undefined, column = 'market_observation_json'): boolean {
@@ -38,6 +38,13 @@ export function isMissingOutcomeTableError(error: OutcomeStorageError | null | u
   const code = String(error.code ?? '')
   const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase()
   return code === '42P01' || code === 'PGRST205' || (text.includes('tracked_token_outcomes') && /does not exist|could not find the table|schema cache/.test(text))
+}
+/** not-null / check violation on the risk-score column: the Radar receipt migration is not applied yet. */
+export function isRadarReceiptSchemaError(error: OutcomeStorageError | null | undefined): boolean {
+  if (!error) return false
+  const code = String(error.code ?? '')
+  const text = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase()
+  return code === '23502' || code === '23514' || text.includes('baseline_risk_score')
 }
 export function sanitizeOutcomeStorageError(error: unknown): { code: string; message: string } {
   if (error && typeof error === 'object' && ('code' in error || 'message' in error)) {
@@ -262,6 +269,11 @@ export function hydrateTrackedOutcomeListRow(row: Record<string, unknown>, now =
       scannedAt: typeof row.scannedAt === 'string' ? row.scannedAt : row.tracked_at,
       snapshotVersion: row.snapshotVersion,
       baselineRiskScore: row.baseline_risk_score, baselineVerdict: row.baseline_verdict,
+      ...(row.source === 'base_radar' ? {
+        source: 'base_radar',
+        radarScore: typeof row.radarScore === 'number' ? row.radarScore : undefined,
+        radarLabel: typeof row.radarLabel === 'string' ? row.radarLabel : undefined,
+      } : {}),
     },
   } as unknown as TrackedOutcome, now)
 }

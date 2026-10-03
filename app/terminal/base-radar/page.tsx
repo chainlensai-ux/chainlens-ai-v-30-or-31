@@ -6,10 +6,13 @@ import Link from 'next/link'
 import ProjectOverviewDrawer, { EXPLORER } from './ProjectOverviewDrawer'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
-import { buildBaseRadarDisplayModel, type BaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
+import { type BaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
+import { buildRadarFeedDisplayModel, getRadarMomentum, resolveRadarCardStatus } from '@/lib/baseRadarFeedStatus'
 import { useDrawerPreload } from '@/lib/useDrawerPreload'
 import { radarErrorMessage, radarHasVisibleFeed, radarTimeoutMessage, radarVisibleErrorFromPayload, radarStatTileMode, type RadarStatTileMode } from '@/lib/radarFeedStatus'
+import { trackedTokenKey, type RadarTrackReceipt } from '@/lib/radarTrackEvidence'
+import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
+import { startInteraction } from '@/lib/uiInteractionTiming'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -48,6 +51,8 @@ interface RadarToken {
   // shown, but never implying a passed holder check. See getFlags for how these surface as badges.
   isEstablished?: boolean
   holderVerified?: boolean
+  // RADAR → TRACK: per-user signed evidence from /api/radar (null when signing is unavailable).
+  trackReceipt?: RadarTrackReceipt | null
 }
 
 interface RadarStats {
@@ -143,6 +148,8 @@ type SortMode = 'NEWEST' | 'HIGHEST_SCORE' | 'HIGHEST_LIQUIDITY' | 'HIGHEST_VOLU
 // app/api/radar/route.ts. Robinhood remains gated behind isRobinhoodChainAvailable() on BOTH the
 // selector and the API route.
 type RadarChain = 'base' | 'robinhood'
+type RadarTrackState = 'idle' | 'pending' | 'tracked' | 'unavailable'
+type TrackNotice = { key: string; kind: 'ok' | 'error'; text: string }
 
 type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Security Unknown'
 
@@ -346,13 +353,6 @@ function hasSuspiciousBranding(name: string, symbol: string): boolean {
   return SUSPICIOUS_BRANDING_WORDS.some(word => text.includes(word))
 }
 
-function getMomentum(volume24hUsd: number, liquidityUsd: number): { level: MomentumLevel; ratio: number } {
-  if (!liquidityUsd || !volume24hUsd || volume24hUsd <= 0) return { level: 'NONE', ratio: 0 }
-  const ratio = volume24hUsd / liquidityUsd
-  if (ratio >= 0.5) return { level: 'HIGH', ratio }
-  if (ratio >= 0.15) return { level: 'MEDIUM', ratio }
-  return { level: 'LOW', ratio }
-}
 
 function getBaseRadarScore(token: RadarToken): number {
   const liquidityUsd = Number.isFinite(token.liquidityUsd) ? token.liquidityUsd : 0
@@ -384,21 +384,6 @@ function getBaseRadarScore(token: RadarToken): number {
   return Math.max(0, Math.min(100, score))
 }
 
-function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): RadarStatus {
-  const hasEnoughMarketData = Number.isFinite(token.liquidityUsd) && Number.isFinite(token.volume24h) && token.liquidityUsd > 0
-  // HOLDER-EVIDENCE-CAPS-STATUS, DISCLOSED (explicitly requested: "Score should be capped or status
-  // should remain unverified/watch" when holder count couldn't be confirmed). A candidate never
-  // reaches HOT/EARLY/WATCH purely because everything else looks good if holder evidence is missing.
-  const insufficientData = !hasEnoughMarketData || token.simulationStatus !== 'passed' || token.holderVerified === false
-
-  if (insufficientData) return 'UNVERIFIED'
-  if (token.volume24h <= 0 && token.ageMinutes > 30) return 'DEAD'
-  if (score >= 80 && (momentum === 'HIGH' || momentum === 'MEDIUM')) return 'HOT'
-  if (token.ageMinutes <= 30 && score >= 50) return 'EARLY'
-  if (score >= 60) return 'WATCH'
-  if (score < 40) return 'RISKY'
-  return 'WATCH'
-}
 
 // STATUS-DISPLAY-LABEL, DISCLOSED (Robinhood Radar UI polish task, explicitly requested: "score
 // label like Watch / Unverified / Coverage Limited... never show SAFE if safety checks are
@@ -501,7 +486,7 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
 
 function enrichToken(token: RadarToken, chain: RadarChain): TokenIntel {
   const suspiciousBranding = hasSuspiciousBranding(token.name, token.symbol)
-  const { level: momentum, ratio: momentumRatio } = getMomentum(token.volume24h, token.liquidityUsd)
+  const { level: momentum, ratio: momentumRatio } = getRadarMomentum(token.volume24h, token.liquidityUsd)
   // TOKEN-SAVER: the feed list only carries the evidence the /api/radar scan already
   // produced (simulation/honeypot result). LP lock/burn, dev-wallet, and holder evidence
   // require the deep per-token scan from /api/base-radar/enrichment (fetched on-demand in
@@ -510,9 +495,7 @@ function enrichToken(token: RadarToken, chain: RadarChain): TokenIntel {
   // the drawer uses, so the scoring logs and caps reflect what is actually known per token.
   let displayModel: BaseRadarDisplayModel
   try {
-    displayModel = buildBaseRadarDisplayModel(token, {
-      security: { honeypot: token.honeypot ? { ...token.honeypot, simulationSuccess: token.simulationStatus === 'passed' } : null },
-    })
+    displayModel = buildRadarFeedDisplayModel(token)
   } catch (err) {
     console.error('[base-radar] scoring failed for', token.contract, err)
     displayModel = {
@@ -536,9 +519,7 @@ function enrichToken(token: RadarToken, chain: RadarChain): TokenIntel {
   // the Watchlist tab's radarScore>=60 filter — exactly the "silently promoted as verified" outcome
   // the backend's own scoreRisk() was built to prevent server-side. Applied uniformly here instead
   // of duplicating the check into both status functions.
-  const status = token.holderVerified === false
-    ? 'UNVERIFIED'
-    : displayModel.simulation.status !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
+  const status = resolveRadarCardStatus(token, displayModel, momentum)
 
   return {
     ...token,
@@ -645,6 +626,9 @@ function TokenCard({
   onTrackToggle,
   onPreload,
   tracking,
+  onTrackOutcome,
+  trackState,
+  trackNotice,
 }: {
   token: TokenIntel
   index: number
@@ -654,6 +638,9 @@ function TokenCard({
   onTrackToggle: () => void
   onPreload: () => void
   tracking: boolean
+  onTrackOutcome: () => void
+  trackState: RadarTrackState
+  trackNotice: TrackNotice | null
 }) {
   const { preload, registerPreloadTarget } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
   const accent = getPriorityAccent(token)
@@ -726,11 +713,30 @@ function TokenCard({
             {extraFlagCount > 0 && <span className='rc-chip-more'>+{extraFlagCount} more</span>}
           </div>
           <div className='token-card-actions' style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
-            <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
+            {/* ACTION HIERARCHY (Radar → Track task): Scan Token primary · Ask CORTEX secondary ·
+                Track utility · Watchlist tertiary. Track/Watchlist reserve their widths so the
+                optimistic state change never shifts the row. */}
+            <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} hint={tracking ? 'Remove from Watchlist' : 'Add to Watchlist'} className='rc-btn-fixed-watch' />
+            <ActionButton
+              label={trackState === 'idle' || trackState === 'unavailable' ? 'Track' : 'Tracked'}
+              variant='utility'
+              active={trackState === 'tracked' || trackState === 'pending'}
+              busy={trackState === 'pending'}
+              unavailable={trackState === 'unavailable'}
+              hint={trackState === 'tracked' ? 'Open in Track' : trackState === 'pending' ? 'Saving to Track…' : trackState === 'unavailable' ? 'Refresh Radar to track this token' : 'Freeze this Radar evidence and measure what happens next'}
+              onClick={onTrackOutcome}
+              className='rc-btn-fixed-track'
+            />
             <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
             <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
           </div>
         </div>
+        {trackNotice && (
+          <p className='rc-track-notice' data-kind={trackNotice.kind} role='status'>
+            {trackNotice.text}
+            {trackNotice.kind === 'ok' && <Link href='/terminal/track' onClick={e => e.stopPropagation()}>Open Track →</Link>}
+          </p>
+        )}
       </div>
 
       {/* Signal rail: score, verdict, score bar */}
@@ -752,32 +758,45 @@ function ActionButton({
   onClick,
   disabled,
   active,
+  busy,
+  unavailable,
   hint,
+  className: extraClassName,
   variant = 'secondary',
 }: {
   label: string
   onClick: () => void
   disabled?: boolean
   active?: boolean
+  busy?: boolean
+  unavailable?: boolean
   hint?: string
-  variant?: 'primary' | 'secondary' | 'ghost'
+  className?: string
+  variant?: 'primary' | 'secondary' | 'ghost' | 'utility'
 }) {
   // CTA HIERARCHY (Base Radar polish task): primary = solid teal (Scan Token), secondary = quiet outline
   // (Ask CORTEX), ghost = text-only (Watchlist; teal when active). Same labels and click behaviour;
   // the 44px tap target is kept.
   const isPrimary = variant === 'primary'
   const isGhost = variant === 'ghost'
-  const className = `rc-btn ${isPrimary ? 'rc-btn-primary' : isGhost ? 'rc-btn-ghost' : 'rc-btn-secondary'}${active ? ' rc-btn-active' : ''}`
+  const variantClass = isPrimary ? 'rc-btn-primary' : isGhost ? 'rc-btn-ghost' : variant === 'utility' ? 'rc-btn-utility' : 'rc-btn-secondary'
+  // btn-instant = the shared terminal press/focus/busy primitive (app/globals.css).
+  const className = `rc-btn btn-instant ${variantClass}${active ? ' rc-btn-active' : ''}${extraClassName ? ` ${extraClassName}` : ''}`
 
   return (
     <button
+      type='button'
       className={className}
       onClick={(e) => {
         e.stopPropagation()
-        if (!disabled) onClick()
+        if (!disabled && !unavailable) onClick()
       }}
       title={hint}
+      aria-label={hint && hint !== label ? `${label} — ${hint}` : undefined}
       disabled={disabled}
+      aria-disabled={unavailable || undefined}
+      aria-busy={busy || undefined}
+      data-unavailable={unavailable || undefined}
     >
       {active && <span aria-hidden='true' style={{ marginRight: '5px' }}>✓</span>}
       {label}
@@ -1087,8 +1106,8 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
         )}
       </div>
       <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
-        <Link href="/terminal/token-scanner" className='rr-btn rr-btn-primary' style={{ flex: 1 }}>Open Token Scanner</Link>
-        <button onClick={onRescan} className='rr-btn rr-btn-ghost'>Rescan</button>
+        <Link href="/terminal/token-scanner" className='rr-btn btn-instant rr-btn-primary' style={{ flex: 1 }}>Open Token Scanner</Link>
+        <button onClick={onRescan} className='rr-btn btn-instant rr-btn-ghost'>Rescan</button>
       </div>
     </div>
   )
@@ -1141,7 +1160,7 @@ function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: Watchli
       )}
 
       {tokens.length > 0 && (
-        <Link href="/terminal/watchlist" className='rr-btn rr-btn-ghost' style={{ width: '100%', marginTop: '12px', boxSizing: 'border-box' }}>
+        <Link href="/terminal/watchlist" className='rr-btn btn-instant rr-btn-ghost' style={{ width: '100%', marginTop: '12px', boxSizing: 'border-box' }}>
           View Full Watchlist →
         </Link>
       )}
@@ -1371,6 +1390,33 @@ function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarCh
   )
 }
 
+// COUNTDOWN ISOLATION (interaction pass): previously a page-level `countdown` state ticked every second,
+// re-rendering the whole Radar page — every token card, the summary strip and the right rail — 60 times a
+// minute while the user was hovering and clicking. The tick now lives here and re-renders one <span>.
+// Same behaviour: 120s, frozen while the tab is hidden, fires onElapsed at zero. The parent restarts it by
+// changing its `key` (a remount), so no effect has to reset state.
+const RADAR_REFRESH_SECONDS = 120
+function RefreshCountdown({ refreshing, hiddenRef, onElapsed }: { refreshing: boolean; hiddenRef: { current: boolean }; onElapsed: () => void }) {
+  const [remaining, setRemaining] = useState(RADAR_REFRESH_SECONDS)
+  const remainingRef = useRef(RADAR_REFRESH_SECONDS)
+  const onElapsedRef = useRef(onElapsed)
+  useEffect(() => { onElapsedRef.current = onElapsed }, [onElapsed])
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (hiddenRef.current) return
+      if (remainingRef.current <= 1) {
+        remainingRef.current = RADAR_REFRESH_SECONDS
+        onElapsedRef.current()
+      } else {
+        remainingRef.current -= 1
+      }
+      setRemaining(remainingRef.current)
+    }, 1000)
+    return () => clearInterval(id)
+  }, [hiddenRef])
+  return <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', minWidth: '13ch' }}>{refreshing ? 'Refreshing radar…' : `Refresh in ${remaining}s`}</span>
+}
+
 export default function BaseRadarPage() {
   const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const router = useRouter()
@@ -1378,7 +1424,9 @@ export default function BaseRadarPage() {
   const hasRadarDataRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [countdown, setCountdown] = useState(120)
+  // COUNTDOWN ISOLATION (interaction pass): the 120s countdown lives in <RefreshCountdown> so its 1s tick
+  // re-renders one <span>, not this page and every card. Bumping this restarts it at 120s.
+  const [countdownResetKey, setCountdownResetKey] = useState(0)
   const [refreshKey, setRefreshKey] = useState(0)
   // OVERLAPPING-FETCH FIX, DISCLOSED (Base Radar speed audit): fetchData() previously had no
   // AbortController and no in-flight guard. Two independent triggers — the 120s interval poll and
@@ -1460,14 +1508,16 @@ export default function BaseRadarPage() {
   // itself, only booleans. No RPC/provider call happens here or in that route; this only checks
   // config presence.
   const [robinhoodAvailable, setRobinhoodAvailable] = useState(false)
+  // ONE CHAIN-STATUS READ (interaction pass): availability is server config and never depends on the
+  // selected chain, so it is read once on mount instead of once per chain switch.
   useEffect(() => {
     let cancelled = false
-    fetch(`/api/base-radar/chain-status?selectedChain=${selectedRadarChain}`, { cache: 'no-store' })
+    fetch('/api/base-radar/chain-status?selectedChain=base', { cache: 'no-store' })
       .then(res => res.json())
       .then(json => { if (!cancelled) setRobinhoodAvailable(Boolean(json?.robinhood?.available)) })
       .catch(() => { if (!cancelled) setRobinhoodAvailable(false) })
     return () => { cancelled = true }
-  }, [selectedRadarChain])
+  }, [])
   // DEFENSIVE FALLBACK, DISCLOSED: derived in render (not an effect-triggered setState, which
   // causes cascading renders) — if Robinhood is somehow selected while it isn't actually available
   // (e.g. the availability check above hasn't resolved yet, or the flag flips off between checks),
@@ -1520,10 +1570,12 @@ export default function BaseRadarPage() {
 
     setLoading(true)
     setError(null)
+    const timing = startInteraction('radar.refresh')
     try {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
       const res = await fetch(`/api/radar?chain=${effectiveRadarChainRef.current}`, { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      timing.done({ status: res.status, chain: effectiveRadarChainRef.current })
       const json = await res.json().catch(() => null)
       if (!json || !res.ok || json.error) {
         setError(radarVisibleErrorFromPayload(json, res.status, hasRadarDataRef.current))
@@ -1837,25 +1889,13 @@ export default function BaseRadarPage() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (isHiddenRef.current) return
-      setCountdown(c => {
-        if (c <= 1) {
-          setRefreshKey(k => k + 1)
-          return 120
-        }
-        return c - 1
-      })
-    }, 1000)
-    return () => clearInterval(id)
-  }, [])
+  const handleCountdownElapsed = useCallback(() => { setRefreshKey(k => k + 1) }, [])
 
   useEffect(() => {
     if (refreshKey > 0 && canAccessFeature(effectivePlan, 'base-radar')) {
       queueMicrotask(() => {
         void fetchData()
-        setCountdown(120)
+        setCountdownResetKey(k => k + 1)
       })
     }
   }, [effectivePlan, refreshKey, fetchData])
@@ -1865,8 +1905,8 @@ export default function BaseRadarPage() {
     // correctly abort-and-supersede them, but skipping outright avoids the redundant backend work
     // that abort-after-the-fact can't prevent (the server has already started scoring by the time
     // an abort signal reaches it).
-    if (fetchInFlightRef.current) return
-    setCountdown(120)
+    if (fetchInFlightRef.current) { startInteraction('radar.refresh').duplicatePrevented(); return }
+    setCountdownResetKey(k => k + 1)
     if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
     autoRetryCountRef.current = 0
     fetchData()
@@ -1879,7 +1919,9 @@ export default function BaseRadarPage() {
   // the param entirely for Base so existing bookmarked/shared Base links are byte-for-byte unchanged.
   function openToken(contract: string, chain: RadarChain = effectiveRadarChainRef.current) {
     const chainQuery = chain === 'base' ? '' : `&chain=${chain}`
-    router.push(`/terminal/token-scanner?contract=${contract}${chainQuery}`)
+    const href = `/terminal/token-scanner?contract=${contract}${chainQuery}`
+    startInteraction('radar.scan-token').routeStart(href)
+    router.push(href)
   }
 
   const handleDrawerSimulationUpdate = useCallback((address: string, payload: DrawerSimulationPayload) => {
@@ -1945,6 +1987,7 @@ export default function BaseRadarPage() {
   // watchlist as a Base token — a wrong-chain record that would later resolve the contract against
   // the wrong network entirely. Uses the real active chain now.
   async function toggleTrack(token: { contract: string; symbol: string; name: string; status: string; radarScore: number }) {
+    const timing = startInteraction('radar.watchlist')
     const address = token.contract.toLowerCase()
     const wasWatched = isWatched(address)
     const tokenChain = effectiveRadarChainRef.current
@@ -1978,7 +2021,9 @@ export default function BaseRadarPage() {
             body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore, scoreType: 'radar_score' }),
           })
       if (!res.ok) setWatchlistTokens(previousTokens)
+      timing.done({ ok: res.ok, action: wasWatched ? 'remove' : 'add' })
     } catch {
+      timing.done({ ok: false })
       // ROLLBACK ON FAILURE, DISCLOSED: a real network/fetch error means the change never actually
       // persisted — revert the optimistic UI rather than leaving a watchlist star that lies.
       setWatchlistTokens(previousTokens)
@@ -2001,6 +2046,77 @@ export default function BaseRadarPage() {
         setWatchlistTokens(previousTokens)
       }
     })()
+  }
+
+  // RADAR → TRACK (canonical Track path): tracked state comes from the same /api/token-outcomes list the
+  // Track page reads (DB only, no provider calls). Keyed by chain + token so Base and Robinhood never mix.
+  const [trackStates, setTrackStates] = useState<Record<string, 'pending' | 'tracked'>>({})
+  const [trackNotice, setTrackNotice] = useState<TrackNotice | null>(null)
+  const trackInFlightRef = useRef(new Set<string>())
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token || cancelled) return
+      try {
+        const result = await outcomeRequest('GET')
+        if (cancelled || !Array.isArray(result?.outcomes)) return
+        const next: Record<string, 'tracked'> = {}
+        for (const row of result.outcomes as Array<{ chain?: string; token_address?: string }>) {
+          if (typeof row?.chain === 'string' && typeof row?.token_address === 'string') next[trackedTokenKey(row.chain, row.token_address)] = 'tracked'
+        }
+        // Optimistic clicks made while this list loaded win over the (older) list.
+        setTrackStates(prev => ({ ...next, ...prev }))
+      } catch {
+        // Track storage unavailable — buttons stay usable; a click reports the real error.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+  useEffect(() => {
+    if (!trackNotice) return
+    const id = window.setTimeout(() => setTrackNotice(null), trackNotice.kind === 'ok' ? 3_500 : 5_000)
+    return () => window.clearTimeout(id)
+  }, [trackNotice])
+
+  function trackStateFor(token: TokenIntel): RadarTrackState {
+    const state = trackStates[trackedTokenKey(token.chain, token.contract)]
+    if (state) return state
+    return token.trackReceipt ? 'idle' : 'unavailable'
+  }
+
+  async function trackOutcome(token: TokenIntel) {
+    const key = trackedTokenKey(token.chain, token.contract)
+    const timing = startInteraction('radar.track')
+    const state = trackStates[key]
+    if (state === 'tracked') {
+      timing.routeStart('/terminal/track')
+      router.push('/terminal/track')
+      return
+    }
+    if (state === 'pending' || trackInFlightRef.current.has(key)) { timing.duplicatePrevented(); return }
+    if (!token.trackReceipt) {
+      setTrackNotice({ key, kind: 'error', text: 'Tracking proof unavailable — sign in and refresh Radar.' })
+      return
+    }
+    trackInFlightRef.current.add(key)
+    // OPTIMISTIC: the button reads Tracked on this frame; persistence runs in the background.
+    setTrackStates(prev => ({ ...prev, [key]: 'pending' }))
+    setTrackNotice(null)
+    timing.ack()
+    try {
+      const result = await outcomeRequest('POST', { radarReceipt: token.trackReceipt })
+      setTrackStates(prev => ({ ...prev, [key]: 'tracked' }))
+      setTrackNotice({ key, kind: 'ok', text: result?.duplicate ? 'Already in Track.' : 'Added to Track.' })
+      timing.done({ ok: true, duplicate: Boolean(result?.duplicate) })
+    } catch (error) {
+      // ROLLBACK: only a genuine failure (auth, limit, expired evidence, storage) reverts the button.
+      setTrackStates(prev => { const next = { ...prev }; delete next[key]; return next })
+      setTrackNotice({ key, kind: 'error', text: error instanceof Error ? error.message : 'Could not add to Track.' })
+      timing.done({ ok: false })
+    } finally {
+      trackInFlightRef.current.delete(key)
+    }
   }
 
   function askCortex(token: TokenIntel) {
@@ -2035,7 +2151,9 @@ export default function BaseRadarPage() {
       `CORTEX Signal: ${token.clarkVerdict ?? token.clarkSignal}`,
     ].join('\n')
 
-    router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
+    const href = `/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`
+    startInteraction('radar.ask-cortex').routeStart('/terminal/clark-ai')
+    router.push(href)
   }
 
   const tokens = useMemo(() => data?.tokens ?? [], [data?.tokens])
@@ -2212,6 +2330,19 @@ export default function BaseRadarPage() {
         .rc-btn-ghost { min-height: 36px; background: transparent; color: #7c8da1; padding: 0 8px; }
         .rc-btn-ghost:hover:not(:disabled) { color: #cbd5e1; filter: none !important; }
         .rc-btn-active { color: #5eead4 !important; }
+        /* Track = utility: quieter than Ask CORTEX, louder than Watchlist. Teal once tracked. */
+        .rc-btn-utility { min-height: 36px; background: transparent; border-color: rgba(148,163,184,0.16); color: #94a3b8; }
+        .rc-btn-utility:hover:not(:disabled) { color: #e2e8f0; border-color: rgba(148,163,184,0.32); background: rgba(255,255,255,0.03); filter: none !important; }
+        .rc-btn-utility.rc-btn-active { border-color: rgba(45,212,191,0.30); background: rgba(45,212,191,0.07); }
+        .rc-btn[aria-busy="true"] { opacity: 0.8; }
+        .rc-btn[data-unavailable] { color: #475569 !important; cursor: not-allowed; }
+        /* Width reserved for both labels so optimistic state changes never shift the action row. */
+        .rc-btn-fixed-track { min-width: 86px; justify-content: center; }
+        .rc-btn-fixed-watch { min-width: 92px; justify-content: center; }
+        .rc-track-notice { margin: 8px 0 0; font-size: 10.5px; font-family: var(--font-plex-mono); letter-spacing: 0.02em; color: #5eead4; display: flex; gap: 10px; align-items: center; justify-content: flex-end; }
+        .rc-track-notice[data-kind="error"] { color: #fca5a5; }
+        .rc-track-notice a { color: #94a3b8; text-decoration: none; }
+        .rc-track-notice a:hover { color: #e2e8f0; }
         @media (pointer: coarse) { .rc-btn { min-height: 44px !important; } }
 
         /* ── Summary strip: live telemetry ── */
@@ -2240,7 +2371,7 @@ export default function BaseRadarPage() {
         .radar-chip { transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease; }
 
         /* Buttons — subtle brightness on hover, no lift/glow */
-        .radar-main button { transition: filter 0.15s ease, background 0.15s ease, border-color 0.15s ease; }
+        .radar-main button { transition: filter 0.15s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease; }
         .token-card-actions button:hover:not(:disabled),
         .radar-controls button:hover:not(:disabled) { filter: brightness(1.10); }
 
@@ -2327,7 +2458,7 @@ export default function BaseRadarPage() {
           <>
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{loading && tokens.length > 0 ? 'Refreshing radar…' : `Refresh in ${countdown}s`}</span>
+              <RefreshCountdown key={countdownResetKey} refreshing={loading && tokens.length > 0} hiddenRef={isHiddenRef} onElapsed={handleCountdownElapsed} />
               <button
                 onClick={handleManualRefresh}
                 disabled={loading}
@@ -2495,6 +2626,9 @@ export default function BaseRadarPage() {
                   onTrackToggle={() => void toggleTrack(token)}
                   onPreload={() => preloadProjectOverview(token)}
                   tracking={isWatched(token.contract)}
+                  onTrackOutcome={() => void trackOutcome(token)}
+                  trackState={trackStateFor(token)}
+                  trackNotice={trackNotice?.key === trackedTokenKey(token.chain, token.contract) ? trackNotice : null}
                 />
               ))}
             </div>

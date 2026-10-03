@@ -89,7 +89,7 @@ assert.match(pageCode, /const intelTokens = useMemo\(\(\) => tokens\.map\(t => e
 // (Already locked by test-base-radar-chain-strict.mjs — re-asserted here as part of this task's own
 // required test list so this file alone proves the full acceptance criteria.)
 assert.match(pageCode, /function openToken\(contract: string, chain: RadarChain = effectiveRadarChainRef\.current\) \{/, 'the Scan handoff must default to the row\'s own chain')
-assert.match(pageCode, /router\.push\(`\/terminal\/token-scanner\?contract=\$\{contract\}\$\{chainQuery\}`\)/, 'the Scan handoff must pass the token address and chain to Token Scanner')
+assert.match(pageCode, /const href = `\/terminal\/token-scanner\?contract=\$\{contract\}\$\{chainQuery\}`[\s\S]{0,200}router\.push\(href\)/, 'the Scan handoff must pass the token address and chain to Token Scanner')
 assert.match(pageCode, /`Chain: \$\{chainName\}`/, 'the Clark handoff prompt must state the real chain')
 assert.match(pageCode, /`Contract: \$\{token\.contract\}`/, 'the Clark handoff prompt must state the token address')
 

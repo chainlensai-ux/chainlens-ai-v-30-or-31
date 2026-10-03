@@ -670,12 +670,23 @@ button, [role="button"], a {
   .nav-outer { padding: 8px 10px !important; }
 }
 
-/* Smooth transitions for interactive elements */
+/* Smooth transitions for interactive elements.
+   TERMINAL INTERACTION STANDARD (Radar → Track interaction pass): the one shared button primitive —
+   hover 150ms, press 120ms (scale only, never layout), a visible keyboard focus ring, and a busy state
+   that keeps the button's width. Add the class instead of writing per-component hover/active CSS. */
 .btn-instant {
-  transition: transform 120ms ease, opacity 120ms ease, box-shadow 150ms ease;
+  transition: transform 120ms ease, opacity 120ms ease, box-shadow 150ms ease,
+    background-color 150ms ease, border-color 150ms ease, color 150ms ease;
 }
-.btn-instant:active {
-  transform: scale(0.98);
+.btn-instant:not(:disabled):not([aria-disabled="true"]):active {
+  transform: scale(0.97);
+}
+.btn-instant:focus-visible {
+  outline: 2px solid rgba(45, 212, 191, 0.75);
+  outline-offset: 2px;
+}
+.btn-instant[aria-busy="true"] {
+  cursor: progress;
 }
 .btn-instant:disabled {
   opacity: 0.45;

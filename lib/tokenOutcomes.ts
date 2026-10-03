@@ -37,18 +37,29 @@ export const OUTCOME_LOCK_COPY = 'Outcome tracking unlocks for higher-risk scans
 export type OutcomeStatus = 'watching' | 'pumped' | 'dumped' | 'rugged' | 'unavailable'
 export type Outcome = { status: OutcomeStatus; confidence: 'low' | 'medium' | 'high'; reasons: string[] }
 export type ScanSnapshot = {
-  snapshotVersion: 2; riskScoreDirection: 'higher_is_riskier';
+  /** 'none' only on Base Radar receipts, which carry no Risk Score (see radarScore). */
+  snapshotVersion: 2; riskScoreDirection: 'higher_is_riskier' | 'none';
   userId: string; chain: string; tokenAddress: string; tokenSymbol: string; tokenName: string;
   scanId: string; scannedAt: string; baselinePriceUsd: number | null; baselineLiquidityUsd: number | null;
-  baselineMarketCapUsd: number | null; baselineRiskScore: number; baselineVerdict: string; baselineConfidence: string | null;
+  /** Null only on Base Radar receipts. Token Scanner receipts always carry a canonical 50–100 risk score. */
+  baselineMarketCapUsd: number | null; baselineRiskScore: number | null; baselineVerdict: string; baselineConfidence: string | null;
   baselineRiskReasons: unknown; baselineSecuritySignals: unknown; baselineLpSignals: unknown;
   baselineHolderSignals: unknown; baselineDevSignals: unknown; baselineMarketQualitySignals: unknown;
   baselineOwnershipSignals: unknown;
+  /** Absent on every receipt created before Radar → Track; absent means 'token_scanner'. */
+  source?: OutcomeReceiptSource
+  /** Base Radar receipts only: the card's higher-is-stronger Radar score, label and status at track time. */
+  radarScore?: number; radarLabel?: string; radarStatus?: string
+  radarEvidence?: import('./radarTrackEvidence').RadarTrackEvidence
+}
+export type OutcomeReceiptSource = 'token_scanner' | 'base_radar'
+export function outcomeReceiptSource(snapshot: { source?: unknown } | null | undefined): OutcomeReceiptSource {
+  return snapshot?.source === 'base_radar' ? 'base_radar' : 'token_scanner'
 }
 export type TrackedOutcome = {
   id: string; user_id: string; chain: string; token_address: string; scan_id: string; tracked_at: string;
   baseline_price_usd: number | null; baseline_liquidity_usd: number | null; baseline_market_cap_usd: number | null;
-  baseline_risk_score: number; baseline_verdict: string; baseline_snapshot_json: ScanSnapshot;
+  baseline_risk_score: number | null; baseline_verdict: string; baseline_snapshot_json: ScanSnapshot;
   current_price_usd: number | null; current_liquidity_usd: number | null;
   current_market_cap_usd?: number | null;
   price_change_pct: number | null; liquidity_change_pct: number | null;
@@ -56,7 +67,7 @@ export type TrackedOutcome = {
   last_checked_at: string | null; market_source: string | null;
   after_evidence_json?: import('./tokenOutcomeProof').OutcomeProof | null;
   market_observation_json?: MarketObservationProof | null;
-  baseline_risk_semantics?: 'canonical' | 'legacy_unverified';
+  baseline_risk_semantics?: 'canonical' | 'legacy_unverified' | 'radar_evidence';
 }
 export type MarketObservationProof = {
   version: 1; chain: string; tokenAddress: string; provider: string; fetchedAt: string; priceUsd: number;
@@ -344,13 +355,14 @@ export function presentTrackedOutcome(row: TrackedOutcome, now = Date.now()): Tr
   const pendingBaseline = comparableBaseline == null && currentPrice != null && result.status === 'unavailable'
   const snapshotVersion = row.baseline_snapshot_json?.snapshotVersion
   const legacySolana = row.chain === 'solana' && snapshotVersion !== 2
+  const radarReceipt = outcomeReceiptSource(row.baseline_snapshot_json) === 'base_radar'
   return {
     ...row, baseline_price_usd: baselinePrice, current_price_usd: currentPrice,
     current_market_cap_usd: displayableCurrentMarketCap({ ...row, current_price_usd: currentPrice }, now),
     price_change_pct: percentChange(comparableBaseline, currentPrice),
     outcome_status: result.status, outcome_confidence: result.confidence,
     outcome_reasons_json: pendingCurrent ? pendingUnavailableReasons() : pendingBaseline ? incomparableBaselineReasons() : row.outcome_reasons_json,
-    baseline_risk_semantics: legacySolana ? 'legacy_unverified' : 'canonical',
+    baseline_risk_semantics: radarReceipt ? 'radar_evidence' : legacySolana ? 'legacy_unverified' : 'canonical',
   }
 }
 function copyFrozenSnapshot(preferred: TrackedOutcome, fallback: TrackedOutcome): TrackedOutcome {
@@ -424,6 +436,10 @@ export function shareOutcome(row: TrackedOutcome): string {
   const baseline = comparableOutcomeBaselinePrice(row)
   const h = hypothetical(baseline, current)
   const change = percentChange(baseline, current)
+  const radar = outcomeReceiptSource(s) === 'base_radar'
   const risk = row.baseline_risk_semantics === 'legacy_unverified' ? 'an unversioned legacy risk score (rescan required)' : `${s.baselineRiskScore}/100 risk`
-  return `ChainLens flagged ${s.tokenSymbol || 'this token'} at ${risk}.\nSince the scan: ${change == null || !h ? 'price comparison unavailable' : `${change.toFixed(1)}%`}.\n${h ? `$1,000 at scan would be worth $${h.value.toFixed(2)} at the latest observed price (hypothetical).` : 'Hypothetical value unavailable.'}\nchainlensai.app`
+  const lead = radar
+    ? `ChainLens Base Radar surfaced ${s.tokenSymbol || 'this token'} at Radar ${s.radarScore ?? '—'}/100${s.radarLabel ? ` (${s.radarLabel})` : ''}.`
+    : `ChainLens flagged ${s.tokenSymbol || 'this token'} at ${risk}.`
+  return `${lead}\nSince the scan: ${change == null || !h ? 'price comparison unavailable' : `${change.toFixed(1)}%`}.\n${h ? `$1,000 at scan would be worth $${h.value.toFixed(2)} at the latest observed price (hypothetical).` : 'Hypothetical value unavailable.'}\nchainlensai.app`
 }

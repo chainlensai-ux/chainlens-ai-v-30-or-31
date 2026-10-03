@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import TrackOutcomeButton from '@/components/outcomes/TrackOutcomeButton'
 import PriceChartPanel, { type FiveMinuteLoadResult, type HistoryLoadResult } from './PriceChartPanel'
 import { resolveChartMarketCapSupply } from '@/lib/chartMarketCap'
@@ -5298,14 +5299,19 @@ export default function TerminalTokenScanner() {
     // SOLANA-DEEPLINK FIX, DISCLOSED (audit: autoChain only ever recognized the four EVM chains, so
     // a `?chain=solana&contract=<mint>` deeplink silently fell through to Base and did nothing —
     // the mint isn't a 0x address, so it also failed the contract regex below and never scanned).
+    reportDestinationShell('token-scanner')
     if (chainParam === 'solana' && contract && isValidSolanaMintAddress(contract)) {
       setChain('solana')
+      setInput(contract)
       handleScan(contract, 'solana')
       return
     }
     const autoChain: 'base' | 'eth' | 'bnb' | 'robinhood' = chainParam === 'eth' || chainParam === 'bnb' || chainParam === 'robinhood' ? chainParam : 'base'
     if (autoChain !== 'base') setChain(autoChain)
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
+      // DEEP-LINK IDENTITY (interaction pass): show the known address in the input right away instead of
+      // an empty field while the (unchanged, single) scan runs.
+      setInput(contract)
       handleScan(contract, autoChain)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps

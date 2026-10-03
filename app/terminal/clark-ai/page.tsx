@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
+import { reportDestinationShell } from '@/lib/uiInteractionTiming'
 import { useAccount } from '@/lib/usePlan'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget, clearClarkMemory, saveClarkMemoryForChat, loadClarkMemoryForChat, deleteClarkMemoryForChat } from '@/lib/client/clarkMemory'
 import {
@@ -163,6 +164,8 @@ function ClarkAiContent() {
       setFolders(f); setChats(c); setSavedChatCount(chatCount); reportHistoryOk()
     } catch (err) { reportHistoryFailure(err) }
   }
+
+  useEffect(() => { reportDestinationShell('clark-ai') }, [])
 
   useEffect(() => {
     void refreshHistory()

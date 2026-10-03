@@ -38,7 +38,7 @@ assert.match(pageCode, /useEffect\(\(\) => \{ fetchDataRef\.current = \(\) => \{
 
 // Manual refresh and a chain switch must both clear any pending auto-retry and reset the counter
 // so they don't fight a stale timer or double-fire.
-assert.match(pageCode, /function handleManualRefresh\(\) \{\s*\n\s*if \(fetchInFlightRef\.current\) return\s*\n\s*setCountdown\(120\)\s*\n\s*if \(autoRetryTimeoutRef\.current\) clearTimeout\(autoRetryTimeoutRef\.current\)\s*\n\s*autoRetryCountRef\.current = 0/, 'a manual refresh must clear any pending auto-retry timer and reset the counter')
+assert.match(pageCode, /function handleManualRefresh\(\) \{[\s\S]*?if \(fetchInFlightRef\.current\) \{[^}]*return \}\s*\n\s*setCountdownResetKey\(k => k \+ 1\)\s*\n\s*if \(autoRetryTimeoutRef\.current\) clearTimeout\(autoRetryTimeoutRef\.current\)\s*\n\s*autoRetryCountRef\.current = 0/, 'a manual refresh must clear any pending auto-retry timer and reset the counter')
 assert.match(pageCode, /setLoadMoreExhausted\(false\)\s*\n\s*if \(autoRetryTimeoutRef\.current\) clearTimeout\(autoRetryTimeoutRef\.current\)\s*\n\s*autoRetryCountRef\.current = 0\s*\n\s*void fetchData\(\)/, 'a chain switch must clear any pending auto-retry timer before starting a fresh fetch for the new chain')
 
 // Unmount must clear the pending retry timer, same as the existing abort-on-unmount fix.

@@ -1137,9 +1137,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               Deep/Scan Token was removed from this panel earlier), secondary = Open Explorer, tertiary =
               Copy CA (quiet text action with a brief "Copied" confirmation). Same handlers as before. */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
-            {onTrackToggle ? <button onClick={onTrackToggle} className={`receipt-btn ${tracking ? '' : 'receipt-btn-primary'}`} style={tracking ? activeButtonStyle : primaryButtonStyle}>{tracking ? '✓ Watching' : 'Add Watchlist'}</button> : null}
-            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" className="receipt-btn receipt-btn-secondary" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer ↗</a>
-            <button onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} className="receipt-btn receipt-btn-tertiary" style={tertiaryButtonStyle}>{caCopied ? 'Copied ✓' : 'Copy CA'}</button>
+            {onTrackToggle ? <button onClick={onTrackToggle} className={`receipt-btn btn-instant ${tracking ? '' : 'receipt-btn-primary'}`} style={tracking ? activeButtonStyle : primaryButtonStyle}>{tracking ? '✓ Watching' : 'Add Watchlist'}</button> : null}
+            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" className="receipt-btn btn-instant receipt-btn-secondary" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer ↗</a>
+            <button onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} className="receipt-btn btn-instant receipt-btn-tertiary" style={tertiaryButtonStyle}>{caCopied ? 'Copied ✓' : 'Copy CA'}</button>
           </div>
         </header>
 

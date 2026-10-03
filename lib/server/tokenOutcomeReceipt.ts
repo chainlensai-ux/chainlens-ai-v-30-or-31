@@ -2,6 +2,8 @@ import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto'
 import { canTrackOutcome, freezeableBaselinePriceUsd, numberOrNull, type ScanSnapshot } from '../tokenOutcomes'
 
 function secret() { return process.env.TOKEN_OUTCOME_SIGNING_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY }
+/** Same key for every Track receipt kind (scanner and Base Radar). Server-only. */
+export function outcomeSigningSecret(): string | undefined { return secret() }
 export function snapshotFromScan(scan: Record<string, unknown>, userId: string): ScanSnapshot | null {
   if (scan.riskScoreType !== 'risk_score' || scan.riskScoreDirection !== 'higher_is_riskier' || !canTrackOutcome(scan.riskScore)) return null
   const chain = String(scan.chain ?? '')
