@@ -102,7 +102,7 @@ export function roiQuoteLegTxBackfillCacheKey(chain: SupportedChain, txHash: str
   return `v1:roi-quote-leg-tx-backfill:${chain}:${txHash.toLowerCase()}`
 }
 
-function receiptRpcUrl(chain: SupportedChain): string | null {
+export function receiptRpcUrl(chain: SupportedChain): string | null {
   if (chain === 'eth') {
     const explicit = process.env.ETH_RPC_URL
     if (explicit && /^https?:\/\//.test(explicit)) return explicit

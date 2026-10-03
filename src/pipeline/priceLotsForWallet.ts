@@ -99,6 +99,8 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
+import { classifyReceiptQuoteEvidence, RECOVERED_RECEIPT_CLASSIFICATIONS, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
+import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 
 export type PriceLotsCanonicalGapAudit = {
   structuralLots: number
@@ -350,7 +352,67 @@ export type WalletPriceLookups = {
   priceLotsCanonicalGapAudit: PriceLotsCanonicalGapAudit
   sameTxQuoteNormalizationAudit: SameTxQuoteNormalizationAudit[]
   closedLotMissingPriceAudit: ClosedLotMissingPriceAudit
+  receiptQuoteRecoveryAudit: ReceiptQuoteRecoveryAudit
+  blockedLotPlan: BlockedLotPlanEntry[]
 }
+
+// BLOCKED-LOT COMPLETION AUDIT (receipt quote recovery). `completion_ready` = exactly one side of the
+// lot is still unpriced (resolving it completes the lot); `missing_both` = both sides unpriced. The
+// receipt budget is spent on completion_ready sides first.
+export type BlockedLotPlanEntry = {
+  lotId: string
+  token: string
+  entryTx: string
+  exitTx: string
+  entryTimestamp: number
+  exitTimestamp: number
+  missingEntry: boolean
+  missingExit: boolean
+  otherSideAlreadyVerified: boolean
+}
+export type BlockedSideClass = 'completion_ready' | 'missing_both'
+export type ReceiptQuoteSideAudit = {
+  lotIds: string[]
+  token: string
+  txHash: string
+  side: 'entry' | 'exit'
+  class: BlockedSideClass
+  normalizedEventCount: number
+  normalizedTokenAddresses: string[]
+  fetched: boolean
+  classification: ReceiptQuoteClassification | 'not_fetched_budget' | 'lane_disabled'
+  forensics: ReceiptQuoteForensics | null
+  historicalMarketAttempts: string[]
+  quoteToken: string | null
+  quoteQuantity: number | null
+  quoteUsdPrice: number | null
+  quoteValueUsd: number | null
+  derivedPriceUsd: number | null
+  applied: boolean
+  rejectionReason: string | null
+}
+export type ReceiptQuoteRecoveryAudit = {
+  enabled: boolean
+  closedLots: number
+  completionReadyLotsBefore: number
+  missingBothSidesLotsBefore: number
+  completeLotsBefore: number
+  txsFetched: number
+  maxTxs: number
+  callsSpentByClass: Record<BlockedSideClass, number>
+  sidesRecoveredByClass: Record<BlockedSideClass, number>
+  lotsCompletedByClass: Record<BlockedSideClass, number>
+  lotsCompletedViaNativeQuote: number
+  lotsCompletedViaStableQuote: number
+  completeLotsAfter: number
+  classificationCounts: Record<string, number>
+  sides: ReceiptQuoteSideAudit[]
+}
+const RECEIPT_QUOTE_RECOVERY_DEFAULT_MAX_TXS = 12
+const RECEIPT_QUOTE_RECOVERY_AUDIT_LIMIT = 40
+// Max relative gap between a CoinPaprika daily sample and a same-day exact on-chain execution of the
+// same token for the daily sample to be accepted as corroborated evidence.
+const COINPAPRIKA_CORROBORATION_TOLERANCE = 0.05
 
 // PER-LOT MISSING-PRICE AUDIT (historical-price completion audit). One row per structural closed lot
 // still missing a numeric price on either side after every pricing stage, with the exact same-tx
@@ -358,7 +420,7 @@ export type WalletPriceLookups = {
 // recoveries actually landed, which answers "requirements resolved, zero lots completed".
 export type ClosedLotMissingPriceSide = {
   txHash: string
-  status: 'priced_accepted_evidence' | 'priced_same_tx_quote' | 'priced_provider' | 'missing'
+  status: 'priced_accepted_evidence' | 'priced_same_tx_quote' | 'priced_receipt_quote' | 'priced_corroborated_composite' | 'priced_provider' | 'missing'
   acceptedEvidenceRecordFound: boolean
   sameTxAttempted: boolean
   sameTxQuoteToken: string | null
@@ -614,6 +676,9 @@ export async function priceLotsForWallet(params: {
   skipUnheldOpenBuys?: boolean
   // Test seam only; production uses global fetch. It does not alter provider selection.
   coinPaprikaFetchImpl?: typeof fetch
+  // RECEIPT QUOTE RECOVERY (blocked-lot completion): bounded receipt + transaction reads for closed-
+  // lot sides still unpriced after every other source. Omitted = lane off (every existing caller).
+  receiptQuoteRecovery?: { walletAddress: string; fetchTx: ReceiptQuoteTxFetcher; maxTxs?: number }
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
   // historicalPricingPerformanceSummary's own construction near this function's return for the
@@ -801,6 +866,28 @@ export async function priceLotsForWallet(params: {
   function isSkippableByAcceptedEvidence(chain: NormalizedEvent['chain'], txHash: string, side: 'entry' | 'exit'): boolean {
     return skippableRequirementKeys.has(`${chain}:${txHash.toLowerCase()}:${side}`)
   }
+  // BLOCKED-LOT PLAN, BEFORE HISTORICAL PRICING: the deterministic list of closed lots that are not
+  // already fully covered by accepted evidence — the lots this scan's pricing must actually complete.
+  // Ordered single-missing-side first (resolving one side completes the lot).
+  const blockedLotPlan: BlockedLotPlanEntry[] = structuralMatchedLots
+    .map((lot) => {
+      const missingEntry = !isSkippableByAcceptedEvidence(lot.chain, lot.openedTxHash, 'entry')
+      const missingExit = !isSkippableByAcceptedEvidence(lot.chain, lot.closedTxHash, 'exit')
+      return {
+        lotId: lot.lotId, token: lot.token, entryTx: lot.openedTxHash, exitTx: lot.closedTxHash,
+        entryTimestamp: lot.openedAt, exitTimestamp: lot.closedAt, missingEntry, missingExit,
+        otherSideAlreadyVerified: missingEntry !== missingExit,
+      }
+    })
+    .filter((entry) => entry.missingEntry || entry.missingExit)
+    .sort((a, b) => Number(b.otherSideAlreadyVerified) - Number(a.otherSideAlreadyVerified) || a.exitTimestamp - b.exitTimestamp || a.lotId.localeCompare(b.lotId))
+  console.warn('[blocked-closed-lot-plan]', {
+    closedLots: structuralMatchedLots.length,
+    blockedLots: blockedLotPlan.length,
+    missingSingleSideLots: blockedLotPlan.filter((l) => l.otherSideAlreadyVerified).length,
+    missingBothSidesLots: blockedLotPlan.filter((l) => !l.otherSideAlreadyVerified).length,
+    lots: blockedLotPlan.slice(0, 25),
+  })
   // ACCEPTED-EVIDENCE SKIP FILTER, DISCLOSED (requirement #2): removes a requirement entirely from
   // the event lists this whole pass builds requirements from — GoldRush/Alchemy/GeckoTerminal/
   // DexScreener/native-quote recovery are all reached exclusively via `buys`/`sells`/`nativeQuoteEntries`
@@ -2206,6 +2293,184 @@ export async function priceLotsForWallet(params: {
     })
   }
 
+  // RECEIPT QUOTE RECOVERY, DISCLOSED (blocked-lot completion): every lane above prices from the
+  // normalized wallet-centric activity. A closed-lot side still null here had no usable opposite leg
+  // in that activity — typically a sell paid out as native ETH through a router unwrap (an internal
+  // transfer neither provider returns) or a buy paid with `tx.value` the event provider never
+  // synthesized. The receipt + transaction prove the exact quote amount (see receiptQuoteRecovery.ts
+  // for every fail-closed rule). Bounded to `maxTxs` distinct transactions per scan, spent on
+  // completion-ready sides (other side already priced) before sides of lots missing both.
+  const receiptQuoteSideKeys = new Set<string>()
+  const corroboratedCompositeSideKeys = new Set<string>()
+  const receiptQuoteRecoveryAudit = await runReceiptQuoteRecovery()
+  console.warn('[receipt-quote-recovery]', { ...receiptQuoteRecoveryAudit, sides: receiptQuoteRecoveryAudit.sides.slice(0, 15) })
+  async function runReceiptQuoteRecovery(): Promise<ReceiptQuoteRecoveryAudit> {
+    const config = params.receiptQuoteRecovery
+    const maxTxs = Math.max(0, config?.maxTxs ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_MAX_TXS)
+    const priced = (lot: MatchedLot, side: 'entry' | 'exit') => side === 'entry'
+      ? atTradeTime.costUsd[lot.openedTxHash] != null
+      : atTradeTime.proceedsUsd[lot.closedTxHash] != null
+    const lotComplete = (lot: MatchedLot) => priced(lot, 'entry') && priced(lot, 'exit')
+    const classOf = (lot: MatchedLot): BlockedSideClass | null =>
+      lotComplete(lot) ? null : priced(lot, 'entry') || priced(lot, 'exit') ? 'completion_ready' : 'missing_both'
+    const classBefore = new Map(structuralMatchedLots.map((lot) => [lot, classOf(lot)] as const))
+    const audit: ReceiptQuoteRecoveryAudit = {
+      enabled: Boolean(config),
+      closedLots: structuralMatchedLots.length,
+      completionReadyLotsBefore: [...classBefore.values()].filter((c) => c === 'completion_ready').length,
+      missingBothSidesLotsBefore: [...classBefore.values()].filter((c) => c === 'missing_both').length,
+      completeLotsBefore: [...classBefore.values()].filter((c) => c === null).length,
+      txsFetched: 0,
+      maxTxs,
+      callsSpentByClass: { completion_ready: 0, missing_both: 0 },
+      sidesRecoveredByClass: { completion_ready: 0, missing_both: 0 },
+      lotsCompletedByClass: { completion_ready: 0, missing_both: 0 },
+      lotsCompletedViaNativeQuote: 0,
+      lotsCompletedViaStableQuote: 0,
+      completeLotsAfter: 0,
+      classificationCounts: {},
+      sides: [],
+    }
+
+    // One requirement per (chain, tx, side, token); a shared side carries every lot it touches.
+    type Requirement = { key: string; chain: NormalizedEvent['chain']; token: string; txHash: string; side: 'entry' | 'exit'; lots: MatchedLot[]; cls: BlockedSideClass; timestamp: number }
+    const requirements = new Map<string, Requirement>()
+    for (const lot of structuralMatchedLots) {
+      const cls = classBefore.get(lot)
+      if (!cls) continue
+      for (const side of ['entry', 'exit'] as const) {
+        if (priced(lot, side)) continue
+        const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
+        const key = `${lot.chain}:${txHash.toLowerCase()}:${side}:${lot.token.toLowerCase()}`
+        const existing = requirements.get(key)
+        if (existing) {
+          existing.lots.push(lot)
+          if (cls === 'completion_ready') existing.cls = 'completion_ready'
+          continue
+        }
+        requirements.set(key, { key, chain: lot.chain, token: lot.token, txHash, side, lots: [lot], cls, timestamp: side === 'entry' ? lot.openedAt : lot.closedAt })
+      }
+    }
+    // completion_ready first (most lots completed per call), then missing_both grouped lot-by-lot so a
+    // lot's two sides are spent together; txHash breaks every remaining tie deterministically.
+    const firstLotOrder = (r: Requirement) => Math.min(...r.lots.map((l) => l.closedAt))
+    const ordered = [...requirements.values()].sort((a, b) =>
+      (a.cls === b.cls ? 0 : a.cls === 'completion_ready' ? -1 : 1)
+      || (a.cls === 'completion_ready' ? b.lots.length - a.lots.length : firstLotOrder(a) - firstLotOrder(b))
+      || a.lots[0].lotId.localeCompare(b.lots[0].lotId)
+      || (a.side === b.side ? 0 : a.side === 'entry' ? -1 : 1))
+
+    const routeRecords = pricingRouteLog.slice(routeLogSnapshotBefore)
+    const fetchedTxs = new Map<string, ReceiptQuoteTx>()
+    type Pending = { requirement: Requirement; row: ReceiptQuoteSideAudit; quote: { kind: 'native' | 'stable'; token: string; quantity: number }; targetAmount: number }
+    const pending: Pending[] = []
+    for (const requirement of ordered) {
+      const legs = merged.filter((e) => e.chain === requirement.chain && e.txHash.toLowerCase() === requirement.txHash.toLowerCase())
+      const targetDirection = requirement.side === 'entry' ? 'inbound' : 'outbound'
+      const targetEvents = legs.filter((e) => e.contract.toLowerCase() === requirement.token.toLowerCase() && e.direction === targetDirection)
+      const row: ReceiptQuoteSideAudit = {
+        lotIds: requirement.lots.map((l) => l.lotId),
+        token: requirement.token,
+        txHash: requirement.txHash,
+        side: requirement.side,
+        class: requirement.cls,
+        normalizedEventCount: legs.length,
+        normalizedTokenAddresses: [...new Set(legs.map((e) => e.contract.toLowerCase()))].sort(),
+        fetched: false,
+        classification: config ? 'not_fetched_budget' : 'lane_disabled',
+        forensics: null,
+        historicalMarketAttempts: routeRecords
+          .filter((r) => r.chain === requirement.chain && r.token.toLowerCase() === requirement.token.toLowerCase() && r.timestamp === requirement.timestamp)
+          .map((r) => r.route),
+        quoteToken: null, quoteQuantity: null, quoteUsdPrice: null, quoteValueUsd: null, derivedPriceUsd: null,
+        applied: false,
+        rejectionReason: null,
+      }
+      audit.sides.push(row)
+      if (!config) continue
+      const txKey = `${requirement.chain}:${requirement.txHash.toLowerCase()}`
+      let tx = fetchedTxs.get(txKey)
+      if (!tx) {
+        if (audit.txsFetched >= maxTxs) continue
+        audit.txsFetched += 1
+        audit.callsSpentByClass[requirement.cls] += 1
+        tx = await config.fetchTx(requirement.chain, requirement.txHash)
+        fetchedTxs.set(txKey, tx)
+      }
+      row.fetched = true
+      const targetAmount = targetEvents.reduce((sum, e) => sum + e.amount, 0)
+      const targetDecimals = resolveTokenDecimals({ chain: requirement.chain, token: requirement.token, providerDecimals: targetEvents[0]?.tokenDecimals }).decimals
+      const result = classifyReceiptQuoteEvidence({
+        chain: requirement.chain,
+        walletAddress: config.walletAddress,
+        targetToken: requirement.token,
+        side: requirement.side,
+        targetAmount,
+        targetDecimals,
+        tx,
+      })
+      row.classification = result.classification
+      row.forensics = result.forensics
+      if (!result.quote || !RECOVERED_RECEIPT_CLASSIFICATIONS.has(result.classification)) {
+        row.rejectionReason = result.classification
+        continue
+      }
+      row.quoteToken = result.quote.token
+      row.quoteQuantity = result.quote.quantity
+      pending.push({ requirement, row, quote: result.quote, targetAmount })
+    }
+
+    // Historical ETH/USD for exactly the days of the native quotes found (same shared resolver and
+    // cache as the same-tx lane — no current price, no symbol lookup).
+    const nativeRequirementsForReceipts = pending
+      .filter((p) => p.quote.kind === 'native' && isEthNativeChain(p.requirement.chain))
+      .map((p) => ({ chain: p.requirement.chain, timestamp: p.requirement.timestamp }))
+    const receiptNativePrices = nativeRequirementsForReceipts.length > 0
+      ? await prefetchNativeUsdPrices({ requirements: nativeRequirementsForReceipts })
+      : new Map()
+    for (const { requirement, row, quote, targetAmount } of pending) {
+      const usdPrice = quote.kind === 'stable'
+        ? 1
+        : isEthNativeChain(requirement.chain)
+          ? readPrefetchedNativeUsdPrice(receiptNativePrices, requirement.timestamp)?.priceUsd ?? null
+          : null
+      if (usdPrice == null) {
+        row.rejectionReason = 'missing_verified_native_price'
+        continue
+      }
+      const quoteValueUsd = quote.quantity * usdPrice
+      const derivedPriceUsd = targetAmount > 0 ? quoteValueUsd / targetAmount : null
+      row.quoteUsdPrice = usdPrice
+      row.quoteValueUsd = quoteValueUsd
+      row.derivedPriceUsd = derivedPriceUsd
+      if (derivedPriceUsd == null || !isSanePrice(derivedPriceUsd) || !(quoteValueUsd > 0)) {
+        row.rejectionReason = 'derived_price_out_of_bounds'
+        continue
+      }
+      const dict = requirement.side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
+      if (dict[requirement.txHash] != null) continue
+      dict[requirement.txHash] = quoteValueUsd
+      receiptQuoteSideKeys.add(`${requirement.chain}:${requirement.txHash.toLowerCase()}:${requirement.side}`)
+      row.applied = true
+      audit.sidesRecoveredByClass[requirement.cls] += 1
+    }
+
+    for (const lot of structuralMatchedLots) {
+      const before = classBefore.get(lot)
+      if (!before || !lotComplete(lot)) continue
+      audit.lotsCompletedByClass[before] += 1
+      const quoteKinds = audit.sides
+        .filter((row) => row.applied && row.lotIds.includes(lot.lotId))
+        .map((row) => (row.quoteToken === 'native' || (row.quoteToken && isCanonicalWethAddress(lot.chain, row.quoteToken)) ? 'native' : 'stable'))
+      if (quoteKinds.includes('native')) audit.lotsCompletedViaNativeQuote += 1
+      else if (quoteKinds.includes('stable')) audit.lotsCompletedViaStableQuote += 1
+    }
+    audit.completeLotsAfter = structuralMatchedLots.filter(lotComplete).length
+    for (const row of audit.sides) audit.classificationCounts[row.classification] = (audit.classificationCounts[row.classification] ?? 0) + 1
+    audit.sides = audit.sides.slice(0, RECEIPT_QUOTE_RECOVERY_AUDIT_LIMIT)
+    return audit
+  }
+
   // CoinPaprika is the final, per-requirement fallback in the canonical Wallet Scanner pricing
   // path. Previously it existed only in lib/server/walletSnapshot.ts's alternate evidence path, so
   // priceLotsForWallet could finish with unresolved closed-lot sides without ever invoking it.
@@ -2218,18 +2483,19 @@ export async function priceLotsForWallet(params: {
     const key = `${lot.chain}:${txHash.toLowerCase()}:${side}`
     const accepted = isSkippableByAcceptedEvidence(lot.chain, txHash, side)
     const sameTx = canonicalSameTxSideKeys.has(key)
+    const receiptQuote = receiptQuoteSideKeys.has(key) || corroboratedCompositeSideKeys.has(key)
     const numeric = typeof price === 'number' && Number.isFinite(price) && price > 0
-    const verified = numeric && (accepted || sameTx)
+    const verified = numeric && (accepted || sameTx || receiptQuote)
     return {
       price: numeric ? price : null,
       evidenceQuality: verified ? 'verified' : numeric ? 'partial' : 'unpriced',
-      sourceStatus: accepted ? 'accepted_evidence' : sameTx ? 'same_tx_verified_quote' : numeric ? 'unverified_source' : 'missing',
+      sourceStatus: accepted ? 'accepted_evidence' : sameTx ? 'same_tx_verified_quote' : receiptQuote ? 'receipt_verified_quote' : numeric ? 'unverified_source' : 'missing',
       canonicalVerified: verified,
       rejectionReason: verified ? null : numeric ? 'missing_canonical_verified_evidence' : 'missing_numeric_price',
     }
   }
 
-  const canonicalClassification = structuralMatchedLots.map((lot) => {
+  const classifyCanonicalLots = () => structuralMatchedLots.map((lot) => {
     const entry = canonicalSide(lot, 'entry')
     const exit = canonicalSide(lot, 'exit')
     const numericPriced = entry.price !== null && exit.price !== null
@@ -2243,6 +2509,7 @@ export async function priceLotsForWallet(params: {
     const canonicalVerified = isCanonicalVerifiedPublishedLot(candidate)
     return { lot, entry, exit, numericPriced, canonicalVerified, rejectionReason: canonicalVerifiedRejectionReason(candidate) }
   })
+  let canonicalClassification = classifyCanonicalLots()
 
   const coinPaprikaGroups = new Map<string, { requirement: CoinPaprikaRequirement; lots: MatchedLot[] }>()
   for (const lot of structuralMatchedLots) {
@@ -2297,9 +2564,94 @@ export async function priceLotsForWallet(params: {
     }
   }
   const coinPaprikaHistoricalAudit = coinPaprikaResult.audit
-  coinPaprikaHistoricalAudit.pricesApplied = 0
+  // CORROBORATED COMPOSITE LANE, DISCLOSED. A CoinPaprika daily ticker is a single sample for a whole
+  // UTC day: its identity proof is strong (exact platform + contract route), but for a thinly traded
+  // token one daily sample is not an execution price, so on its own it stays `partial_unverified`.
+  // It is promoted ONLY when an independent, exact-address on-chain EXECUTION of the same token on
+  // the same chain and the same UTC day (a same-tx or receipt-verified quote applied above) agrees
+  // within COINPAPRIKA_CORROBORATION_TOLERANCE. Never a symbol match, never a current price.
+  const coinPaprikaPartialAudit = applyCoinPaprikaCorroboration()
+  console.warn('[coinpaprika-partial-evidence-audit]', coinPaprikaPartialAudit)
+  function applyCoinPaprikaCorroboration() {
+    const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
+    const sideTargetAmount = (chain: string, txHash: string, token: string, side: 'entry' | 'exit') => merged
+      .filter((e) => e.chain === chain && e.txHash.toLowerCase() === txHash.toLowerCase() && e.contract.toLowerCase() === token.toLowerCase() && e.direction === (side === 'entry' ? 'inbound' : 'outbound'))
+      .reduce((sum, e) => sum + e.amount, 0)
+    // Exact executions: every side priced from verified same-tx or receipt quote evidence.
+    const executions: Array<{ chain: string; token: string; day: string; txHash: string; priceUsd: number }> = []
+    for (const [key, attempt] of sameTxAttemptBySide) {
+      if (!attempt.applied || attempt.derivedPriceUsd == null) continue
+      const [chain, txHash, , token] = key.split(':')
+      const event = merged.find((e) => e.chain === chain && e.txHash.toLowerCase() === txHash)
+      if (event) executions.push({ chain, token, day: event.timestamp.slice(0, 10), txHash, priceUsd: attempt.derivedPriceUsd })
+    }
+    for (const row of receiptQuoteRecoveryAudit.sides) {
+      if (!row.applied || row.derivedPriceUsd == null) continue
+      const event = merged.find((e) => e.txHash.toLowerCase() === row.txHash.toLowerCase())
+      if (event) executions.push({ chain: event.chain, token: row.token.toLowerCase(), day: event.timestamp.slice(0, 10), txHash: row.txHash.toLowerCase(), priceUsd: row.derivedPriceUsd })
+    }
+    const rows: Array<{
+      token: string; txHash: string; side: 'entry' | 'exit'; candleDay: string; coinPaprikaId: string
+      identityProof: string; interval: '1d'; deltaSecondsFromTrade: number; coinPaprikaPriceUsd: number
+      corroboratingExecutionPriceUsd: number | null; deviationPct: number | null
+      outcome: CorroborationOutcome
+    }> = []
+    type CorroborationOutcome = 'side_already_priced' | 'plain_transfer_not_a_trade' | 'no_same_day_exact_execution' | 'deviation_exceeds_tolerance' | 'corroborated_applied'
+    let applied = 0
+    for (const evidence of coinPaprikaHistoricalEvidence) {
+      for (const [groupKey, { requirement }] of coinPaprikaGroups) {
+        if (requirement.chainId !== evidence.identityProof.chainId || requirement.contractAddress.toLowerCase() !== evidence.identityProof.contractAddress) continue
+        if (requirement.timestamp.slice(0, 10) !== evidence.requestedTimestamp.slice(0, 10)) continue
+        const [chain, txHash, side] = groupKey.split(':') as [string, string, 'entry' | 'exit']
+        const day = requirement.timestamp.slice(0, 10)
+        const realTxHash = (side === 'entry' ? structuralMatchedLots.find((l) => l.openedTxHash.toLowerCase() === txHash)?.openedTxHash : structuralMatchedLots.find((l) => l.closedTxHash.toLowerCase() === txHash)?.closedTxHash) ?? txHash
+        const dict = side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
+        const token = requirement.contractAddress.toLowerCase()
+        const sameDay = executions.filter((x) => x.chain === chain && x.token === token && x.day === day && x.txHash !== txHash)
+        // Closest execution price to the candle decides; deterministic tie-break on txHash.
+        const best = sameDay
+          .map((x) => ({ x, deviation: Math.abs(evidence.priceUsd - x.priceUsd) / x.priceUsd }))
+          .sort((a, b) => a.deviation - b.deviation || a.x.txHash.localeCompare(b.x.txHash))[0]
+        const row = {
+          token, txHash: realTxHash, side, candleDay: dayOf(Date.parse(evidence.resolvedTimestamp)), coinPaprikaId: evidence.coinPaprikaId,
+          identityProof: evidence.identityProof.identityReason, interval: '1d' as const,
+          deltaSecondsFromTrade: evidence.deltaSeconds, coinPaprikaPriceUsd: evidence.priceUsd,
+          corroboratingExecutionPriceUsd: best?.x.priceUsd ?? null,
+          deviationPct: best ? Math.round(best.deviation * 10000) / 100 : null,
+          outcome: 'no_same_day_exact_execution' as CorroborationOutcome,
+        }
+        rows.push(row)
+        if (dict[realTxHash] != null) { row.outcome = 'side_already_priced'; continue }
+        // A receipt-proven plain transfer has no execution to value; a daily market sample would be
+        // an assumed cost, not trade evidence.
+        if (receiptQuoteRecoveryAudit.sides.some((r) => r.txHash.toLowerCase() === txHash && r.side === side && r.classification === 'true_plain_token_transfer')) {
+          row.outcome = 'plain_transfer_not_a_trade'
+          continue
+        }
+        if (!best) continue
+        if (best.deviation > COINPAPRIKA_CORROBORATION_TOLERANCE) { row.outcome = 'deviation_exceeds_tolerance'; continue }
+        const amount = sideTargetAmount(chain, realTxHash, token, side)
+        const value = evidence.priceUsd * amount
+        if (!(amount > 0) || !isSanePrice(evidence.priceUsd) || !(value > 0)) continue
+        dict[realTxHash] = value
+        corroboratedCompositeSideKeys.add(`${chain}:${txHash}:${side}`)
+        row.outcome = 'corroborated_applied'
+        applied += 1
+      }
+    }
+    return {
+      evidenceRows: rows.length,
+      partialReason: 'daily_ticker_single_sample_not_execution_price',
+      toleranceForCorroborationPct: COINPAPRIKA_CORROBORATION_TOLERANCE * 100,
+      corroboratedApplied: applied,
+      outcomeCounts: rows.reduce<Record<string, number>>((acc, r) => { acc[r.outcome] = (acc[r.outcome] ?? 0) + 1; return acc }, {}),
+      rows: rows.slice(0, 20),
+    }
+  }
+  if (corroboratedCompositeSideKeys.size > 0) canonicalClassification = classifyCanonicalLots()
+  coinPaprikaHistoricalAudit.pricesApplied = coinPaprikaPartialAudit.corroboratedApplied
   coinPaprikaHistoricalAudit.partialLotsAffected = affectedLotKeys.size
-  if (coinPaprikaHistoricalEvidence.length > 0 && !coinPaprikaHistoricalAudit.firstDropStage) {
+  if (coinPaprikaHistoricalEvidence.length > 0 && !coinPaprikaHistoricalAudit.firstDropStage && coinPaprikaPartialAudit.corroboratedApplied === 0) {
     coinPaprikaHistoricalAudit.firstDropStage = 'canonical_application'
     coinPaprikaHistoricalAudit.exactDropReason = 'daily_candle_partial_unverified_not_canonical'
   }
@@ -2343,7 +2695,11 @@ export async function priceLotsForWallet(params: {
         ? 'missing'
         : isSkippableByAcceptedEvidence(lot.chain, txHash, side)
           ? 'priced_accepted_evidence'
-          : canonicalSameTxSideKeys.has(sideKey) ? 'priced_same_tx_quote' : 'priced_provider'
+          : canonicalSameTxSideKeys.has(sideKey)
+            ? 'priced_same_tx_quote'
+            : receiptQuoteSideKeys.has(sideKey)
+              ? 'priced_receipt_quote'
+              : corroboratedCompositeSideKeys.has(sideKey) ? 'priced_corroborated_composite' : 'priced_provider'
       return {
         txHash,
         status,
@@ -2635,6 +2991,8 @@ export async function priceLotsForWallet(params: {
     priceLotsCanonicalGapAudit,
     sameTxQuoteNormalizationAudit,
     closedLotMissingPriceAudit,
+    receiptQuoteRecoveryAudit,
+    blockedLotPlan,
     historicalPricingPerformanceSummary,
   }
 }

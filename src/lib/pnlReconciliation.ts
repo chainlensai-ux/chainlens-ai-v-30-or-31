@@ -79,6 +79,17 @@ export type VerifiedSamplePerformanceAudit = {
   roiUnavailableReason: 'unresolved_quote_leg_identity' | null
   realizedRoiPnlUsd: number | null
   sampleCostBasisUsd: number | null
+  // COST-BASIS SCOPE RECONCILIATION: `realizedCostBasisUsd` is the ROI-eligible subset when ROI
+  // membership resolves, while `sampleCostBasisUsd` sums EVERY verified lot (including quote-cash
+  // stablecoin lots, whose cost basis is large but whose PnL is ~0). The split below must sum back to
+  // `sampleCostBasisUsd`; a different scope is not a disagreement between engines.
+  costBasisScopeReconciliation?: {
+    publishedCostBasisScope: 'roi_eligible_subset' | 'full_verified_sample'
+    roiEligibleCostBasisUsd: number
+    quoteCashLegCostBasisUsd: number
+    unresolvedQuoteLegCostBasisUsd: number
+    scopesSumToSampleCostBasis: boolean
+  }
 }
 
 export const EMPTY_VERIFIED_SAMPLE_PERFORMANCE: VerifiedSamplePerformance = {
@@ -1334,6 +1345,20 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     roiUnavailableReason,
     realizedRoiPnlUsd,
     sampleCostBasisUsd: sampleCostFinite ? sampleCostBasisUsd : null,
+  }
+  if (verifiedLotCount > 0) {
+    const costOf = (lots: readonly MatchedLot[]) => lots.reduce((sum, lot) => sum + (lot.costBasisUsd ?? 0), 0)
+    const roiEligibleCostBasisUsd = costOf(eligibility.verifiedSampleRoiEligibleLots)
+    const quoteCashLegCostBasisUsd = costOf(eligibility.quoteCashLegLots)
+    const unresolvedQuoteLegCostBasisUsd = costOf(eligibility.unresolvedLots)
+    verifiedSamplePerformanceAudit.costBasisScopeReconciliation = {
+      publishedCostBasisScope: roiMembershipResolved ? 'roi_eligible_subset' : 'full_verified_sample',
+      roiEligibleCostBasisUsd,
+      quoteCashLegCostBasisUsd,
+      unresolvedQuoteLegCostBasisUsd,
+      scopesSumToSampleCostBasis: sampleCostFinite
+        && Math.abs(roiEligibleCostBasisUsd + quoteCashLegCostBasisUsd + unresolvedQuoteLegCostBasisUsd - sampleCostBasisUsd!) <= 0.01,
+    }
   }
 
   return { verifiedSamplePerformance, fullHistoryPerformance, verifiedSamplePerformanceAudit }
@@ -2907,7 +2932,15 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       const invariantFailures: string[] = []
       if (finalVerifiedSet.size > earlyVerifiedSet.size) invariantFailures.push('final_verified_exceeds_early_verified')
-      if (canonicalSampleSelection?.manifestApplied === true && publicPnlGateAudit.excludedUnpricedLotCount > 0) {
+      // SCOPED TO MANIFEST LOTS (canonical-consistency fix): an applied manifest is a bounded verified
+      // SAMPLE — the bounded-sample gate above explicitly admits it alongside unpriced lots. The
+      // previous `excludedUnpricedLotCount > 0` test fired for ANY unpriced lot in the wallet (e.g. a
+      // 4-lot manifest beside 9 never-priced lots), forcing `canonical_consistency_failed` on every
+      // such scan. The invariant is only violated when a lot the manifest published as verified ends
+      // the reconciliation without a canonical price.
+      const manifestVerifiedLotKeys = new Set(canonicalSelectedLots.filter(isCanonicalVerifiedLotForPnl).map(lotKey))
+      const manifestLotsMissingFinalPrice = publishedFifoLots.filter((lot) => manifestVerifiedLotKeys.has(lotKey(lot)) && !isCanonicalVerifiedLotForPnl(lot))
+      if (canonicalSampleSelection?.manifestApplied === true && manifestLotsMissingFinalPrice.length > 0) {
         invariantFailures.push('manifest_all_verified_but_final_missing_price')
       }
       const pnlVerificationTransitionAudit = {

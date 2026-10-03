@@ -59,6 +59,24 @@ function withheld(l: MatchedLot): MatchedLot {
 }
 
 describe('pnlReconciliation — canonical sample selector (requirements #4/#5/#6)', () => {
+  it('an applied bounded manifest beside never-priced lots is canonically consistent (13 lots, 4 verified, 9 unpriced)', async () => {
+    const lots = Array.from({ length: 13 }, (_, i) => lot({
+      lotId: `lot-${i}`, token: `0xtok${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, openedAt: i, closedAt: 100 + i,
+      ...(i < 4
+        ? { costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2 }
+        : { costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' as const }),
+    }))
+    const summary = await createPnlReconciliation({ logger: quiet }).reconcile({
+      fifoEngineResult: fifo(lots), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null,
+      canonicalSampleSelector: async (reconciled) => ({ publishedLots: [...reconciled], forcePublicPnlUnavailable: false, manifestApplied: true }),
+    })
+    assert.equal(summary.publicPnlGateAudit.verifiedLotCount, 4)
+    assert.deepEqual(summary.pnlVerificationTransitionAudit?.invariantFailures, [],
+      'previously failed with manifest_all_verified_but_final_missing_price because 9 NON-manifest lots were unpriced')
+    assert.equal(summary.verifiedSamplePerformanceAudit.canonicalConsistencyPassed, true)
+    assert.notEqual(summary.verifiedSamplePerformanceAudit.samplePerformanceBlockedReason, 'canonical_consistency_failed')
+  })
+
   it('does not reclassify selected verified lots after candidate-only lots are withheld', async () => {
     const verified = Array.from({ length: 25 }, (_, i) => lot({
       lotId: `verified-${i}`, token: `0xverified${i < 22 ? i : i - 22}`,

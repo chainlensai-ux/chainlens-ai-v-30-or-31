@@ -36,6 +36,7 @@ import {
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
 import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
+import { fetchReceiptQuoteTx } from '../lib/receiptQuoteRecovery'
 import { maybeRepairExpiredAcceptedEvidenceFromManifest } from '../lib/acceptedEvidenceManifestRepair'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
@@ -2324,6 +2325,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       ? (token, chain) => params.unrealizedReconciliationDiagnostics!.canonicalCurrentPriceLookup!(token, chain) != null
       : undefined,
     canonicalHoldingKeys: params.canonicalHoldingKeys,
+    // RECEIPT QUOTE RECOVERY (blocked-lot completion): closed-lot sides with no usable opposite leg in
+    // provider activity (native ETH received via a router unwrap, `tx.value` buys) are proven from the
+    // tx receipt + transaction. Bounded per scan; RECEIPT_QUOTE_RECOVERY_ENABLED=false turns it off.
+    receiptQuoteRecovery: process.env.RECEIPT_QUOTE_RECOVERY_ENABLED === 'false'
+      ? undefined
+      : { walletAddress: params.walletAddress, fetchTx: fetchReceiptQuoteTx },
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's
