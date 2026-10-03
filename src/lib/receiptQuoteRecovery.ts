@@ -442,10 +442,17 @@ export function createReceiptQuoteTxFetcher(deps: { fetchImpl?: typeof fetch; rp
     const cacheKey = `${chain}:${txHash.toLowerCase()}`
     const cached = receiptQuoteTxCache.get(cacheKey)
     if (cached) return { ...cached, cacheHit: true }
+    if (signal?.aborted) return { status: 'unavailable' }
     const inFlight = receiptQuoteTxInFlight.get(cacheKey)
-    if (inFlight) return { ...(await inFlight), cacheHit: true }
+    if (inFlight) {
+      const joined = await raceCallerDeadline(inFlight, signal)
+      return joined ? { ...joined, cacheHit: true } : { status: 'unavailable' }
+    }
     const url = rpcUrlFor(chain)
     if (!url) return { status: 'unavailable' }
+    // SHARED WORK IS NOT TIED TO ANY CALLER: the provider request runs under its own strict timeout,
+    // never a scan's deadline signal. Each caller only stops WAITING at its own deadline, so one scan
+    // running out of time can never cancel an immutable read another concurrent scan still needs.
     const work = (async (): Promise<ReceiptQuoteTx> => {
       const response = await fetchJson(fetchImpl, url, {
         method: 'POST',
@@ -454,7 +461,7 @@ export function createReceiptQuoteTxFetcher(deps: { fetchImpl?: typeof fetch; rp
           { jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] },
           { jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] },
         ]),
-      }, timeoutMs, signal)
+      }, timeoutMs)
       if (response.kind !== 'ok' || !Array.isArray(response.json)) return { status: 'unavailable' }
       const rows = response.json as Array<{ id?: number; result?: Record<string, unknown> | null }>
       const receipt = rows.find((r) => r.id === 1)?.result
@@ -480,15 +487,30 @@ export function createReceiptQuoteTxFetcher(deps: { fetchImpl?: typeof fetch; rp
       return outcome
     })()
     receiptQuoteTxInFlight.set(cacheKey, work)
-    try {
-      return await work
-    } finally {
-      receiptQuoteTxInFlight.delete(cacheKey)
-    }
+    // Removed from the in-flight map when the WORK settles (not when this caller gives up). Only
+    // successful/reverted results are process-cached; unavailable/missing are never persisted.
+    work.finally(() => receiptQuoteTxInFlight.delete(cacheKey)).catch(() => undefined)
+    const own = await raceCallerDeadline(work, signal)
+    return own ?? { status: 'unavailable' }
   }
 }
 
 export const fetchReceiptQuoteTx: ReceiptQuoteTxFetcher = createReceiptQuoteTxFetcher()
+
+// Resolves with the shared promise's value, or null as soon as THIS caller's signal aborts. The
+// abort listener is always removed, so a long-lived shared promise never accumulates listeners.
+export function raceCallerDeadline<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T | null> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.resolve(null)
+  return new Promise<T | null>((resolve, reject) => {
+    const onAbort = () => resolve(null)
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
 
 // --------------------------------------------------------------------------- internal transfers ---
 

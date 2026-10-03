@@ -5,8 +5,11 @@
 
 import { beforeEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildBlockedLotFixture, runBlockedLotFixture } from './priceLotsForWallet.blockedLots.fixture.ts'
+import { buildBlockedLotFixture, runBlockedLotFixture, type RecoveryOverrides } from './priceLotsForWallet.blockedLots.fixture.ts'
+import { prefetchNativeUsdPrices } from '../modules/nativePriceResolver/index.ts'
 import { __resetReceiptQuoteTxCacheForTest, createInternalTransferTracer, createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery.ts'
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 type TraceMode = 'ok' | 'unsupported' | 'hang' | 'error' | 'timeout_first'
 type BlockscoutMode = 'ok' | 'hang' | 'paginated' | 'error'
@@ -55,7 +58,7 @@ function fakeNetwork(opts: { trace: TraceMode; blockscout: BlockscoutMode; delay
   return { fetchImpl, calls }
 }
 
-async function run(opts: { trace: TraceMode; blockscout: BlockscoutMode; delayMs?: number; deadlineMs?: number; concurrency?: number; traceTimeoutMs?: number; maxTxs?: number }) {
+async function run(opts: { trace: TraceMode; blockscout: BlockscoutMode; delayMs?: number; deadlineMs?: number; concurrency?: number; traceTimeoutMs?: number; maxTxs?: number; prefetchNativePrices?: RecoveryOverrides['prefetchNativePrices'] }) {
   const net = fakeNetwork(opts)
   const rpcUrlFor = () => 'https://rpc.test'
   const started = performance.now()
@@ -67,6 +70,7 @@ async function run(opts: { trace: TraceMode; blockscout: BlockscoutMode; delayMs
       fetchInternalTransfers: createInternalTransferTracer({ fetchImpl: net.fetchImpl, rpcUrlFor, blockscoutBaseFor: () => 'https://bs.test', traceTimeoutMs: opts.traceTimeoutMs ?? 2000, blockscoutTimeoutMs: 2000 }),
       deadlineMs: opts.deadlineMs ?? 5000,
       concurrency: opts.concurrency,
+      prefetchNativePrices: opts.prefetchNativePrices,
     },
   })
   const audit = result.lookups.receiptQuoteRecoveryAudit
@@ -165,5 +169,70 @@ describe('receipt quote recovery — latency and call budget', () => {
     assert.ok(worst.source.totalRecoveryMs < 1500)
     assert.equal(bothDown.result.verifiedLots, 4)
     assert.equal(happy.result.verifiedLots, 9)
+  })
+
+  it('a hanging historical ETH/USD lookup is inside the lane deadline and fails closed', async () => {
+    const { result, source, audit } = await run({ trace: 'ok', blockscout: 'ok', deadlineMs: 400, prefetchNativePrices: () => new Promise(() => undefined) })
+    assert.ok(source.totalRecoveryMs < 700, `lane took ${source.totalRecoveryMs}ms`)
+    assert.equal(result.verifiedLots, 4)
+    const sell = audit.sides.find((s) => s.txHash === '0xclawsell1')!
+    assert.equal(sell.classification, 'native_eth_received_via_router_unwrap_verified', 'evidence was proven…')
+    assert.equal(sell.rejectionReason, 'historical_native_price_deadline_exhausted', '…but no current ETH price is ever substituted')
+    assert.equal(sell.applied, false)
+  })
+
+  it('native pricing only gets what the receipt/trace phase left of the deadline', async () => {
+    const slowPrefetch: typeof prefetchNativeUsdPrices = async (params) => { await sleep(2000); return prefetchNativeUsdPrices(params) }
+    const { source } = await run({ trace: 'ok', blockscout: 'ok', delayMs: 100, deadlineMs: 900, prefetchNativePrices: slowPrefetch })
+    assert.ok(source.receiptTraceMs >= 300, `receipt/trace ${source.receiptTraceMs}ms`)
+    assert.ok(source.nativeHistoricalPricingMs <= 900 - source.receiptTraceMs + 100, `native ${source.nativeHistoricalPricingMs}ms`)
+    assert.ok(source.totalRecoveryMs < 1100, `total ${source.totalRecoveryMs}ms`)
+  })
+
+  it('cross-scan singleflight: scan A giving up does not cancel the shared read scan B still needs', async () => {
+    const net = fakeNetwork({ trace: 'ok', blockscout: 'ok', delayMs: 150 })
+    const fetchTx = createReceiptQuoteTxFetcher({ fetchImpl: net.fetchImpl, rpcUrlFor: () => 'https://rpc.test', timeoutMs: 2000 })
+    const scanA = new AbortController()
+    const scanB = new AbortController()
+    setTimeout(() => scanA.abort(), 20)
+    const [a, b] = await Promise.all([fetchTx('base', '0xclawsell1', scanA.signal), fetchTx('base', '0xclawsell1', scanB.signal)])
+    assert.equal(a.status, 'unavailable', 'A stops waiting at its own deadline')
+    assert.equal(b.status, 'ok', 'B still receives the shared immutable receipt')
+    assert.equal(net.calls.receipt, 1, 'one provider request for both scans')
+    const c = await fetchTx('base', '0xclawsell1', new AbortController().signal)
+    assert.equal(c.cacheHit, true, 'the successful receipt is process-cached')
+  })
+
+  it('when every caller gives up, the shared request still ends at its own strict timeout and nothing unavailable is cached', async () => {
+    let providerAbortedAfterMs: number | null = null
+    let requests = 0
+    const started = performance.now()
+    const hanging = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requests += 1
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          providerAbortedAfterMs = performance.now() - started
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        }, { once: true })
+      })
+    }) as typeof fetch
+    const fetchTx = createReceiptQuoteTxFetcher({ fetchImpl: hanging, rpcUrlFor: () => 'https://rpc.test', timeoutMs: 120 })
+    const a = new AbortController()
+    const b = new AbortController()
+    setTimeout(() => { a.abort(); b.abort() }, 10)
+    const results = await Promise.all([fetchTx('base', '0xtimeout', a.signal), fetchTx('base', '0xtimeout', b.signal)])
+    assert.deepEqual(results.map((r) => r.status), ['unavailable', 'unavailable'])
+    assert.equal(providerAbortedAfterMs, null, 'callers giving up does not abort the shared request')
+    await sleep(200)
+    assert.ok(providerAbortedAfterMs !== null && providerAbortedAfterMs >= 100 && providerAbortedAfterMs < 400, `provider request ended at ${providerAbortedAfterMs}ms`)
+    await fetchTx('base', '0xtimeout', AbortSignal.timeout(50))
+    assert.equal(requests, 2, 'the timed-out read was not cached; a later scan retries')
+  })
+
+  it('results and lot selection are unchanged by the deadline/singleflight changes', async () => {
+    const { result, audit } = await run({ trace: 'ok', blockscout: 'ok' })
+    assert.equal(result.verifiedLots, 9)
+    assert.deepEqual(audit.lotsCompletedByClass, { completion_ready: 3, missing_both: 2 })
+    assert.ok(audit.sourceAudit.totalRecoveryMs >= audit.sourceAudit.receiptTraceMs)
   })
 })

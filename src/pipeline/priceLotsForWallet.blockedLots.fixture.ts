@@ -8,7 +8,7 @@ import { priceLotsForWallet } from './priceLotsForWallet.ts'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import { isCanonicalVerifiedPublishedLot } from '../lib/canonicalVerifiedLot'
 import { lotIdentityVersion, buildAcceptedEvidenceEnvelope, writeAcceptedEvidence, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore.ts'
-import { __resetNativePriceResolverForTest, __seedAcceptedNativePriceForTest } from '../modules/nativePriceResolver/index.ts'
+import { __resetNativePriceResolverForTest, __seedAcceptedNativePriceForTest, type prefetchNativeUsdPrices } from '../modules/nativePriceResolver/index.ts'
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils.ts'
 import { TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type InternalNativeTransfer, type InternalTransferFetcher, type ReceiptQuoteLog, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery.ts'
 import type { NormalizedEvent } from '../modules/normalization/types'
@@ -156,7 +156,7 @@ function fakeKv(): AcceptedEvidenceKvLike {
   }
 }
 
-export type RecoveryOverrides = { fetchTx?: ReceiptQuoteTxFetcher; fetchInternalTransfers?: InternalTransferFetcher; deadlineMs?: number; concurrency?: number }
+export type RecoveryOverrides = { fetchTx?: ReceiptQuoteTxFetcher; fetchInternalTransfers?: InternalTransferFetcher; deadlineMs?: number; concurrency?: number; prefetchNativePrices?: typeof prefetchNativeUsdPrices }
 export async function runBlockedLotFixture(options: { receiptLane: boolean; maxTxs?: number; coinPaprikaFetchImpl?: typeof fetch; sellTraces?: SellTraceEvidence; recovery?: RecoveryOverrides } = { receiptLane: true }) {
   __resetNativePriceResolverForTest()
   __seedAcceptedNativePriceForTest(Date.parse(`${BUY_DAY}T12:00:00Z`), ETH_USD_BUY_DAY, 'coingecko_native_coin_history')

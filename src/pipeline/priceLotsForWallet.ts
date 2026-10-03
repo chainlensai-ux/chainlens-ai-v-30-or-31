@@ -99,7 +99,7 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
-import { classifyReceiptQuoteEvidence, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
+import { classifyReceiptQuoteEvidence, raceCallerDeadline, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 
 export type PriceLotsCanonicalGapAudit = {
@@ -411,6 +411,9 @@ export type ReceiptQuoteRecoveryAudit = {
     blockscoutTimeouts: number
     candidatesSkippedByDeadline: number
     deadlineMs: number
+    // receipt + trace phase, historical ETH/USD phase, and the whole lane (both, plus application).
+    receiptTraceMs: number
+    nativeHistoricalPricingMs: number
     concurrency: number
     totalRecoveryMs: number
   }
@@ -706,6 +709,8 @@ export async function priceLotsForWallet(params: {
     // Scan-wide wall-clock budget for the whole lane, and how many candidates run at once.
     deadlineMs?: number
     concurrency?: number
+    // Test seam; production uses the shared historical native-price resolver.
+    prefetchNativePrices?: typeof prefetchNativeUsdPrices
   }
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
@@ -2354,6 +2359,8 @@ export async function priceLotsForWallet(params: {
         receiptCalls: 0, receiptCacheHits: 0, traceCalls: 0, blockscoutCalls: 0,
         traceUnsupportedAfterFirstProbe: false, traceTimeouts: 0, blockscoutTimeouts: 0,
         candidatesSkippedByDeadline: 0,
+        receiptTraceMs: 0,
+        nativeHistoricalPricingMs: 0,
         deadlineMs: Math.max(0, config?.deadlineMs ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_DEADLINE_MS),
         concurrency: Math.max(1, Math.floor(config?.concurrency ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_CONCURRENCY)),
         totalRecoveryMs: 0,
@@ -2430,13 +2437,14 @@ export async function priceLotsForWallet(params: {
       }
     })
     const pending: Pending[] = []
+    // ONE lane deadline covering receipt -> trace/Blockscout -> historical ETH/USD -> application.
+    // It stops this scan from waiting (and aborts this scan's own trace requests); whatever is not
+    // finished stays unpriced (fail closed), never awaited past the budget.
+    const laneStartedAt = performance.now()
+    const sourceAudit = audit.sourceAudit
+    const deadline = new AbortController()
+    const deadlineTimer = config ? setTimeout(() => deadline.abort(), sourceAudit.deadlineMs) : null
     if (config) {
-      const startedAt = performance.now()
-      const sourceAudit = audit.sourceAudit
-      // Scan-wide deadline: aborts every in-flight request and stops new work; whatever has not
-      // finished stays unpriced (fail closed), never awaited past the budget.
-      const deadline = new AbortController()
-      const deadlineTimer = setTimeout(() => deadline.abort(), sourceAudit.deadlineMs)
       // Budget is counted in DISTINCT transactions, admitted strictly in completion-ready-first order
       // (before any concurrency), so the same candidates are chosen regardless of timing.
       const admittedTxKeys = new Set<string>()
@@ -2511,8 +2519,7 @@ export async function priceLotsForWallet(params: {
         }
       }
       await Promise.all(Array.from({ length: Math.min(sourceAudit.concurrency, Math.max(1, admitted.length)) }, worker))
-      clearTimeout(deadlineTimer)
-      sourceAudit.totalRecoveryMs = Math.round(performance.now() - startedAt)
+      sourceAudit.receiptTraceMs = Math.round(performance.now() - laneStartedAt)
       // Applied in the deterministic completion-ready-first order, independent of completion timing.
       admitted.forEach((item, index) => {
         const result = results[index]
@@ -2534,9 +2541,19 @@ export async function priceLotsForWallet(params: {
     const nativeRequirementsForReceipts = pending
       .filter((p) => p.quote.kind === 'native' && isEthNativeChain(p.requirement.chain))
       .map((p) => ({ chain: p.requirement.chain, timestamp: p.requirement.timestamp }))
-    const receiptNativePrices = nativeRequirementsForReceipts.length > 0
-      ? await prefetchNativeUsdPrices({ requirements: nativeRequirementsForReceipts })
-      : new Map()
+    // Historical ETH/USD gets only what is LEFT of the lane deadline. If the deadline wins, the
+    // native quotes fail closed — a current ETH price is never substituted.
+    const nativePricingStartedAt = performance.now()
+    let nativePricingDeadlineExhausted = false
+    let receiptNativePrices: Awaited<ReturnType<typeof prefetchNativeUsdPrices>> = new Map()
+    if (nativeRequirementsForReceipts.length > 0) {
+      const prefetch = (config?.prefetchNativePrices ?? prefetchNativeUsdPrices)({ requirements: nativeRequirementsForReceipts })
+      const raced = await raceCallerDeadline(prefetch, deadline.signal)
+      if (raced) receiptNativePrices = raced
+      else nativePricingDeadlineExhausted = true
+    }
+    sourceAudit.nativeHistoricalPricingMs = Math.round(performance.now() - nativePricingStartedAt)
+    if (deadlineTimer) clearTimeout(deadlineTimer)
     for (const { requirement, row, quote, targetAmount } of pending) {
       const usdPrice = quote.kind === 'stable'
         ? 1
@@ -2544,7 +2561,7 @@ export async function priceLotsForWallet(params: {
           ? readPrefetchedNativeUsdPrice(receiptNativePrices, requirement.timestamp)?.priceUsd ?? null
           : null
       if (usdPrice == null) {
-        row.rejectionReason = 'missing_verified_native_price'
+        row.rejectionReason = nativePricingDeadlineExhausted ? 'historical_native_price_deadline_exhausted' : 'missing_verified_native_price'
         continue
       }
       const quoteValueUsd = quote.quantity * usdPrice
@@ -2564,6 +2581,7 @@ export async function priceLotsForWallet(params: {
       audit.sidesRecoveredByClass[requirement.cls] += 1
     }
 
+    if (config) sourceAudit.totalRecoveryMs = Math.round(performance.now() - laneStartedAt)
     for (const lot of structuralMatchedLots) {
       const before = classBefore.get(lot)
       if (!before || !lotComplete(lot)) continue
