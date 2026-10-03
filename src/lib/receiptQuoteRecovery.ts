@@ -25,6 +25,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { isCanonicalWethAddress, isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 import { receiptRpcUrl } from './roiQuoteLegTxBackfill'
+import { decodeV4RouteQuote, NATIVE_CURRENCY, v4PoolIdsInLogs, type PathFee, type V4PoolCurrencies, type V4RouteHop } from './v4RouteQuote'
 
 export const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 export const WETH_DEPOSIT_TOPIC0 = '0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c'
@@ -73,7 +74,7 @@ export type ReceiptQuoteClassification =
   | 'native_payout_attribution_ambiguous'
   | 'unrelated_swap_path_in_tx'
   | 'unrelated_token_flow_in_tx'
-  | 'unrelated_outputs_in_tx'
+  | 'unrelated_second_economic_action'
   | 'quote_leg_omitted_from_provider_activity'
   | 'native_refund_unaccounted'
   | 'native_spend_on_exit_unaccounted'
@@ -83,6 +84,10 @@ export type ReceiptQuoteClassification =
   // The wallet's only other asset is a single NON-canonical token on the quote side (e.g. paid with
   // or received a non-WETH/non-stable token): a token-to-token swap with no USD quote in the tx.
   | 'token_to_token_swap_no_canonical_quote'
+  // Token-to-token swap whose quote was proven through a canonical intermediary on its exact V4 route.
+  | 'token_to_token_quote_via_v4_route'
+  // Same receipt proof; the quote token's USD value comes from exact-address historical evidence.
+  | 'token_to_token_quote_via_historical_price'
   | 'swap_without_reconstructable_quote_leg'
   | 'non_swap_contract_interaction'
 
@@ -90,6 +95,8 @@ export const RECOVERED_RECEIPT_CLASSIFICATIONS: ReadonlySet<ReceiptQuoteClassifi
   'native_eth_paid_via_tx_value',
   'native_eth_received_via_router_unwrap_verified',
   'quote_leg_omitted_from_provider_activity',
+  'token_to_token_quote_via_v4_route',
+  'token_to_token_quote_via_historical_price',
 ])
 
 export type ReceiptQuoteForensics = {
@@ -106,7 +113,11 @@ export type ReceiptQuoteForensics = {
   liquidityEvents: number
   // Target-path attribution audit.
   distinctPoolEmitters: string[]
-  pathAttribution: 'not_evaluated' | 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'
+  pathAttribution: 'not_evaluated' | 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_second_economic_action'
+  // Bounded retained balances on the target path, accepted as fees (never as quote value).
+  pathFees: Array<{ kind: 'protocol_fee_on_target_path'; address: string; token: string; raw: string }>
+  // Token-to-token V4 route decode, when attempted.
+  v4Route: { status: string; detail: string | null; hops: V4RouteHop[]; intermediary: { currency: string; kind: string; raw: string; quantity: number } | null; fees: PathFee[] } | null
   unrelatedOutputs: Array<{ address: string; token: string; netRaw: string; rule: string }>
   // Full deterministic dump (path-attribution audit). Every amount is a raw integer string.
   side: 'entry' | 'exit'
@@ -134,7 +145,13 @@ export type ReceiptQuoteResult = {
   // True only when every receipt check passed and the single missing piece is the native payout
   // recipient — the ONLY case the lane spends an internal-transfer trace request on.
   needsNativeRecipientProof?: boolean
-  quote: { kind: 'native' | 'stable'; token: string; quantity: number } | null
+  // Set for a token-to-token candidate that passed every receipt rule: the V4 PoolIds whose keys the
+  // lane must prove before the route can be decoded.
+  needsV4PoolKeys?: string[]
+  // The wallet's exact non-canonical quote-side amount, when the candidate passed every receipt and
+  // path rule — used only by the exact-address historical-price tier.
+  tokenToTokenQuote?: { token: string; quantity: number }
+  quote: { kind: 'native' | 'stable' | 'historical_usd'; token: string; quantity: number; usdPrice?: number } | null
   forensics: ReceiptQuoteForensics | null
 }
 
@@ -163,6 +180,8 @@ export function classifyReceiptQuoteEvidence(params: {
   targetAmount: number
   targetDecimals: number
   tx: ReceiptQuoteTx
+  // Proven V4 pool keys (by PoolId) for token-to-token route decoding; omitted = not yet resolved.
+  v4PoolKeys?: ReadonlyMap<string, V4PoolCurrencies>
 }): ReceiptQuoteResult {
   const { chain, side, tx } = params
   if (tx.status !== 'ok') return { classification: 'receipt_unavailable', quote: null, forensics: null }
@@ -229,6 +248,8 @@ export function classifyReceiptQuoteEvidence(params: {
     distinctPoolEmitters: [...new Set(tx.logs.filter((l) => SWAP_TOPIC0S[lower(l.topics[0])]).map((l) => lower(l.address)))].sort(),
     pathAttribution: 'not_evaluated',
     unrelatedOutputs: [],
+    pathFees: [],
+    v4Route: null,
     traceSource: tx.traceSource ?? null,
     walletNativeReceivedWei: null,
     unwrapperNativeOutWei: null,
@@ -293,10 +314,12 @@ export function classifyReceiptQuoteEvidence(params: {
   // complete, even when an earlier rule rejects the candidate.
   const attribution = attributeTargetPath({
     chain, wallet, target, logs: tx.logs,
-    startNodes: side === 'exit' || walletQuoteLegs.length > 0 ? [wallet] : depositDestinations(chain, tx.logs),
+    // The path starts at the wallet's own outflows, plus any tx.value wrap (a native-funded entry).
+    startNodes: [wallet, ...depositDestinations(chain, tx.logs)],
   })
   forensics.pathAttribution = attribution.status
   forensics.unrelatedOutputs = attribution.unrelatedOutputs
+  forensics.pathFees = attribution.pathFees
   forensics.reachedPathNodes = attribution.reachedPathNodes
   forensics.unreachableSwapEmitters = attribution.unreachableSwapEmitters
   forensics.outsideInputFlows = attribution.outsideInputFlows
@@ -310,11 +333,42 @@ export function classifyReceiptQuoteEvidence(params: {
       && new Set(unrelatedWalletLegs.map((leg) => leg.token)).size === 1
       && unrelatedWalletLegs.every((leg) => leg.direction === quoteDirection && !isCanonicalWethAddress(chain, leg.token) && !isVerifiedStablecoinAddress(chain, leg.token))
       && walletQuoteLegs.length === 0 && valueWei === ZERO && depositWei === ZERO && withdrawalWei === ZERO
-    return result(singleNonCanonicalQuoteSide ? 'token_to_token_swap_no_canonical_quote' : 'multicall_unrelated_wallet_assets')
+    if (!singleNonCanonicalQuoteSide) return result('multicall_unrelated_wallet_assets')
+    // TOKEN-TO-TOKEN LANE: the same receipt rules still apply (exact target, swap, no liquidity, one
+    // attributable path); the quote must then be proven through a canonical intermediary on the
+    // exact V4 route. Pool keys are proven by the lane (needsV4PoolKeys) and passed back in.
+    if (attribution.status !== 'single_target_path') {
+      return result(attribution.status === 'unrelated_swap_path' ? 'unrelated_swap_path_in_tx'
+        : attribution.status === 'unrelated_token_flow' ? 'unrelated_token_flow_in_tx' : 'unrelated_second_economic_action')
+    }
+    const quoteToken = unrelatedWalletLegs[0].token
+    const quoteRaw = unrelatedWalletLegs.reduce((sum, leg) => sum + BigInt(leg.raw), ZERO)
+    const poolIds = v4PoolIdsInLogs(chain, tx.logs)
+    const tokenToTokenQuote = { token: quoteToken, quantity: toUnits(quoteRaw, resolveTokenDecimals({ chain, token: quoteToken }).decimals) }
+    if (!params.v4PoolKeys) {
+      return { ...result('token_to_token_swap_no_canonical_quote'), needsV4PoolKeys: poolIds.length > 0 ? poolIds : undefined, tokenToTokenQuote }
+    }
+    const route = decodeV4RouteQuote({
+      chain, side, target, quoteToken,
+      walletInRaw: side === 'entry' ? quoteRaw : targetRaw,
+      walletOutRaw: side === 'entry' ? targetRaw : quoteRaw,
+      logs: tx.logs,
+      poolKeys: params.v4PoolKeys,
+      swapTopic0s: new Set(Object.keys(SWAP_TOPIC0S)),
+    })
+    forensics.v4Route = route.status === 'route_proven'
+      ? { status: route.status, detail: null, hops: route.hops, intermediary: route.intermediary, fees: route.fees }
+      : { status: route.status, detail: route.detail, hops: route.hops, intermediary: null, fees: [] }
+    if (route.status !== 'route_proven') return { ...result('token_to_token_swap_no_canonical_quote'), tokenToTokenQuote }
+    return result('token_to_token_quote_via_v4_route', {
+      kind: route.intermediary.kind,
+      token: route.intermediary.currency === NATIVE_CURRENCY ? 'native' : route.intermediary.currency,
+      quantity: route.intermediary.quantity,
+    })
   }
   if (attribution.status === 'unrelated_swap_path') return result('unrelated_swap_path_in_tx')
   if (attribution.status === 'unrelated_token_flow') return result('unrelated_token_flow_in_tx')
-  if (attribution.status === 'unrelated_outputs') return result('unrelated_outputs_in_tx')
+  if (attribution.status === 'unrelated_second_economic_action') return result('unrelated_second_economic_action')
 
   // A wallet-touching WETH/stable quote leg is in the receipt but was missing from provider activity.
   if (walletQuoteLegs.length > 0) {
@@ -382,8 +436,9 @@ export function attributeTargetPath(params: {
   logs: readonly ReceiptQuoteLog[]
   startNodes: readonly string[]
 }): {
-  status: 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_outputs'
+  status: 'single_target_path' | 'unrelated_swap_path' | 'unrelated_token_flow' | 'unrelated_second_economic_action'
   unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs']
+  pathFees: ReceiptQuoteForensics['pathFees']
   reachedPathNodes: string[]
   unreachableSwapEmitters: string[]
   outsideInputFlows: ReceiptQuoteForensics['outsideInputFlows']
@@ -425,23 +480,41 @@ export function attributeTargetPath(params: {
     if (topic0 === WETH_WITHDRAWAL_TOPIC0) add(topicAddress(l.topics[1]), address, -dataWord(l.data))
   }
   const unrelatedOutputs: ReceiptQuoteForensics['unrelatedOutputs'] = []
+  const pathFees: ReceiptQuoteForensics['pathFees'] = []
+  // Total flow of each token leaving the wallet or a reached path node (the path's own notional).
+  const pathFlow = new Map<string, bigint>()
+  for (const t of transfers) if (t.from === wallet || reached.has(t.from)) pathFlow.set(t.token, (pathFlow.get(t.token) ?? ZERO) + t.raw)
   for (const [key, net] of nets) {
     const [address, token] = key.split('|')
     if (net === ZERO || address === wallet || address === ZERO_ADDRESS || emitters.has(address)) continue
     if (isCanonicalWethAddress(chain, address)) continue
     if (token === target && net > ZERO) continue // transfer tax on the target token itself
+    // PROTOCOL FEE ON THE TARGET PATH: a retained balance is a fee only when it is downstream of the
+    // wallet's input (every inflow comes from the wallet or a reached path node), the holder spends
+    // nothing in this tx (so it cannot fund another swap), the token actually flows along the path,
+    // and it is a bounded fraction of that flow. Anything else is a second economic action.
+    if (net > ZERO) {
+      const inflows = transfers.filter((t) => t.to === address && t.token === token)
+      const spendsAnything = transfers.some((t) => t.from === address)
+      const flow = pathFlow.get(token) ?? ZERO
+      const fromPath = inflows.length > 0 && inflows.every((t) => t.from === wallet || reached.has(t.from))
+      if (fromPath && !spendsAnything && flow > ZERO && net * BigInt(100) <= flow) {
+        pathFees.push({ kind: 'protocol_fee_on_target_path', address, token, raw: net.toString() })
+        continue
+      }
+    }
     unrelatedOutputs.push({
       address, token, netRaw: net.toString(),
       rule: net > ZERO
-        ? 'non_pool_intermediary_keeps_non_target_token (net inflow not forwarded along the target path)'
+        ? 'non_pool_intermediary_keeps_non_target_token (not a bounded, unspent fee from the target path)'
         : 'non_pool_intermediary_spends_more_than_it_received (unbacked outflow)',
     })
   }
   // Same precedence as before: unreachable swap path, then outside inputs, then retained outputs.
-  if (unreachableSwapEmitters.length > 0) return { status: 'unrelated_swap_path', unrelatedOutputs, ...detail }
-  if (outsideInputFlows.length > 0) return { status: 'unrelated_token_flow', unrelatedOutputs, ...detail }
-  if (unrelatedOutputs.length > 0) return { status: 'unrelated_outputs', unrelatedOutputs, ...detail }
-  return { status: 'single_target_path', unrelatedOutputs, ...detail }
+  if (unreachableSwapEmitters.length > 0) return { status: 'unrelated_swap_path', unrelatedOutputs, pathFees, ...detail }
+  if (outsideInputFlows.length > 0) return { status: 'unrelated_token_flow', unrelatedOutputs, pathFees, ...detail }
+  if (unrelatedOutputs.length > 0) return { status: 'unrelated_second_economic_action', unrelatedOutputs, pathFees, ...detail }
+  return { status: 'single_target_path', unrelatedOutputs, pathFees, ...detail }
 }
 
 

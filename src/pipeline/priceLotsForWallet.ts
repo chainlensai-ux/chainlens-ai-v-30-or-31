@@ -32,7 +32,7 @@ import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
-import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
+import type { PriceableEntry, PriceSourceFn, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
 import {
@@ -99,6 +99,7 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
+import type { V4PoolKeyResolver } from '../lib/v4RouteQuote'
 import { classifyReceiptQuoteEvidence, raceCallerDeadline, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 
@@ -414,6 +415,8 @@ export type ReceiptQuoteRecoveryAudit = {
     // receipt + trace phase, historical ETH/USD phase, and the whole lane (both, plus application).
     receiptTraceMs: number
     nativeHistoricalPricingMs: number
+    v4PoolKeysResolved: number
+    quoteTokenPriceCalls: number
     concurrency: number
     totalRecoveryMs: number
   }
@@ -422,6 +425,8 @@ export type ReceiptQuoteRecoveryAudit = {
   lotsCompletedByClass: Record<BlockedSideClass, number>
   lotsCompletedViaNativeQuote: number
   lotsCompletedViaStableQuote: number
+  lotsCompletedViaV4RouteQuote: number
+  lotsCompletedViaQuoteTokenHistoricalPrice: number
   completeLotsAfter: number
   classificationCounts: Record<string, number>
   sides: ReceiptQuoteSideAudit[]
@@ -711,6 +716,10 @@ export async function priceLotsForWallet(params: {
     concurrency?: number
     // Test seam; production uses the shared historical native-price resolver.
     prefetchNativePrices?: typeof prefetchNativeUsdPrices
+    // Token-to-token quotes: V4 pool-key proof, then the exact-address historical price of the
+    // wallet's quote token at the trade timestamp (cache-backed provider). Omitted = tier off.
+    resolveV4PoolKeys?: V4PoolKeyResolver
+    quoteTokenHistoricalPrice?: PriceSourceFn
   }
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
@@ -2361,6 +2370,8 @@ export async function priceLotsForWallet(params: {
         candidatesSkippedByDeadline: 0,
         receiptTraceMs: 0,
         nativeHistoricalPricingMs: 0,
+        v4PoolKeysResolved: 0,
+        quoteTokenPriceCalls: 0,
         deadlineMs: Math.max(0, config?.deadlineMs ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_DEADLINE_MS),
         concurrency: Math.max(1, Math.floor(config?.concurrency ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_CONCURRENCY)),
         totalRecoveryMs: 0,
@@ -2370,6 +2381,8 @@ export async function priceLotsForWallet(params: {
       lotsCompletedByClass: { completion_ready: 0, missing_both: 0 },
       lotsCompletedViaNativeQuote: 0,
       lotsCompletedViaStableQuote: 0,
+      lotsCompletedViaV4RouteQuote: 0,
+      lotsCompletedViaQuoteTokenHistoricalPrice: 0,
       completeLotsAfter: 0,
       classificationCounts: {},
       sides: [],
@@ -2404,7 +2417,7 @@ export async function priceLotsForWallet(params: {
       || (a.side === b.side ? 0 : a.side === 'entry' ? -1 : 1))
 
     const routeRecords = pricingRouteLog.slice(routeLogSnapshotBefore)
-    type Pending = { requirement: Requirement; row: ReceiptQuoteSideAudit; quote: { kind: 'native' | 'stable'; token: string; quantity: number }; targetAmount: number }
+    type Pending = { requirement: Requirement; row: ReceiptQuoteSideAudit; quote: { kind: 'native' | 'stable' | 'historical_usd'; token: string; quantity: number; usdPrice?: number }; targetAmount: number }
     type Prepared = { requirement: Requirement; row: ReceiptQuoteSideAudit; targetAmount: number; targetDecimals: number }
     const prepared: Prepared[] = ordered.map((requirement) => {
       const legs = merged.filter((e) => e.chain === requirement.chain && e.txHash.toLowerCase() === requirement.txHash.toLowerCase())
@@ -2475,6 +2488,7 @@ export async function priceLotsForWallet(params: {
         return read
       }
       const results: Array<ReceiptQuoteResult | null> = new Array(admitted.length).fill(null)
+      const quoteTokenPrices = new Map<string, Promise<number | null>>()
       let next = 0
       const worker = async () => {
         while (next < admitted.length) {
@@ -2499,6 +2513,32 @@ export async function priceLotsForWallet(params: {
           // Receipt-only classification first; internal-transfer evidence is requested ONLY for a
           // candidate that passed every receipt check and lacks just the native payout recipient.
           let result = classify(tx)
+          // Token-to-token: prove the V4 pool keys (cached; once per pool), then decode the exact route.
+          if (result.needsV4PoolKeys && config.resolveV4PoolKeys && !deadline.signal.aborted && tx.status === 'ok') {
+            const keys = await config.resolveV4PoolKeys(item.requirement.chain, result.needsV4PoolKeys, deadline.signal)
+            sourceAudit.v4PoolKeysResolved += keys.size
+            const pending = result
+            result = classifyReceiptQuoteEvidence({
+              chain: item.requirement.chain, walletAddress: config.walletAddress, targetToken: item.requirement.token,
+              side: item.requirement.side, targetAmount: item.targetAmount, targetDecimals: item.targetDecimals, tx, v4PoolKeys: keys,
+            })
+            if (!result.tokenToTokenQuote && pending.tokenToTokenQuote && result.classification === 'token_to_token_swap_no_canonical_quote') result = { ...result, tokenToTokenQuote: pending.tokenToTokenQuote }
+          }
+          // Last tier: the quote token's own exact-address historical USD price at the trade time.
+          if (result.classification === 'token_to_token_swap_no_canonical_quote' && result.tokenToTokenQuote && config.quoteTokenHistoricalPrice && !deadline.signal.aborted) {
+            const quote = result.tokenToTokenQuote
+            const priceKey = `${item.requirement.chain}:${quote.token}:${item.requirement.timestamp}`
+            let pricing = quoteTokenPrices.get(priceKey)
+            if (!pricing) {
+              sourceAudit.quoteTokenPriceCalls += 1
+              pricing = raceCallerDeadline(Promise.resolve(config.quoteTokenHistoricalPrice(quote.token, item.requirement.chain, item.requirement.timestamp)).catch(() => null), deadline.signal)
+              quoteTokenPrices.set(priceKey, pricing)
+            }
+            const usdPrice = await pricing
+            if (typeof usdPrice === 'number' && Number.isFinite(usdPrice) && usdPrice > 0 && isSanePrice(usdPrice)) {
+              result = { ...result, classification: 'token_to_token_quote_via_historical_price', quote: { kind: 'historical_usd', token: quote.token, quantity: quote.quantity, usdPrice } }
+            }
+          }
           if (result.needsNativeRecipientProof && tx.status === 'ok') {
             let evidence: InternalTransferEvidence = { transfers: null, source: null, attempts: [] }
             if (config.fetchInternalTransfers && !deadline.signal.aborted) {
@@ -2557,6 +2597,8 @@ export async function priceLotsForWallet(params: {
     for (const { requirement, row, quote, targetAmount } of pending) {
       const usdPrice = quote.kind === 'stable'
         ? 1
+        : quote.kind === 'historical_usd'
+          ? quote.usdPrice ?? null
         : isEthNativeChain(requirement.chain)
           ? readPrefetchedNativeUsdPrice(receiptNativePrices, requirement.timestamp)?.priceUsd ?? null
           : null
@@ -2598,9 +2640,13 @@ export async function priceLotsForWallet(params: {
       audit.lotsCompletedByClass[before] += 1
       const quoteKinds = audit.sides
         .filter((row) => row.applied && row.lotIds.includes(lot.lotId))
+        .filter((row) => row.classification !== 'token_to_token_quote_via_historical_price')
         .map((row) => (row.quoteToken === 'native' || (row.quoteToken && isCanonicalWethAddress(lot.chain, row.quoteToken)) ? 'native' : 'stable'))
       if (quoteKinds.includes('native')) audit.lotsCompletedViaNativeQuote += 1
       else if (quoteKinds.includes('stable')) audit.lotsCompletedViaStableQuote += 1
+      const lotRows = audit.sides.filter((row) => row.applied && row.lotIds.includes(lot.lotId))
+      if (lotRows.some((row) => row.classification === 'token_to_token_quote_via_v4_route')) audit.lotsCompletedViaV4RouteQuote += 1
+      if (lotRows.some((row) => row.classification === 'token_to_token_quote_via_historical_price')) audit.lotsCompletedViaQuoteTokenHistoricalPrice += 1
     }
     audit.completeLotsAfter = structuralMatchedLots.filter(lotComplete).length
     for (const row of audit.sides) audit.classificationCounts[row.classification] = (audit.classificationCounts[row.classification] ?? 0) + 1

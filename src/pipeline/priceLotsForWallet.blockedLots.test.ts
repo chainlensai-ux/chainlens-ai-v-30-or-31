@@ -199,7 +199,7 @@ describe('classifyReceiptQuoteEvidence — fail-closed rules', () => {
       transfer(WETH, ROUTER, POOL2, half), swapLog(POOL2), transfer(OTHER, POOL2, ROUTER, BigInt(9)),
     ]
     const r = classifyReceiptQuoteEvidence({ ...entryBase, tx: tx(logs, { valueWei: ONE_ETH.toString() }) })
-    assert.equal(r.classification, 'unrelated_outputs_in_tx')
+    assert.equal(r.classification, 'unrelated_second_economic_action')
     assert.deepEqual(r.forensics?.unrelatedOutputs.map((o) => ({ address: o.address, token: o.token, netRaw: o.netRaw })), [{ address: ROUTER, token: OTHER, netRaw: '9' }])
   })
   it('a token entering the path from an outside address is rejected', () => {
@@ -208,7 +208,7 @@ describe('classifyReceiptQuoteEvidence — fail-closed rules', () => {
   })
   it('unwrap of WETH that never arrived in this tx is rejected (the router would end net-negative on WETH)', () => {
     const r = classifyReceiptQuoteEvidence({ ...exitBase, tx: tx(sellLogs(ONE_ETH, ONE_ETH / BigInt(2)), { internal: [payout(WALLET, ONE_ETH)] }) })
-    assert.equal(r.classification, 'unrelated_outputs_in_tx')
+    assert.equal(r.classification, 'unrelated_second_economic_action')
     assert.equal(r.quote, null)
   })
   it('a transaction the wallet did not send is rejected', () => {
@@ -300,7 +300,7 @@ describe('path-attribution forensics (production audit) — precise reasons, no 
     assert.match(r.forensics!.unrelatedWalletLegs[0].reason, /^canonical_quote_asset_in_opposite_direction/)
   })
 
-  it('a retained router fee is reported with its exact rule, still rejected', () => {
+  it('a bounded, unspent fee taken from the target path is protocol_fee_on_target_path (accepted, recorded)', () => {
     const one = BigInt(10) ** BigInt(18)
     const r = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
       { address: WETH, topics: ['0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c', topic(ROUTER)], data: word(one) },
@@ -309,9 +309,22 @@ describe('path-attribution forensics (production audit) — precise reasons, no 
       { address: POOL, topics: [SWAP], data: '0x' },
       transfer(CLAW, POOL, WALLET, raw),
     ], one.toString()) })
-    assert.equal(r.classification, 'unrelated_outputs_in_tx')
-    assert.deepEqual(r.forensics?.unrelatedOutputs.map((o) => [o.address, o.token, o.netRaw]), [[FEE, WETH, '1000']])
-    assert.match(r.forensics!.unrelatedOutputs[0].rule, /^non_pool_intermediary_keeps_non_target_token/)
+    assert.equal(r.classification, 'native_eth_paid_via_tx_value')
+    assert.equal(r.quote?.quantity, 1, 'cost basis is what the wallet paid, fee included')
+    assert.deepEqual(r.forensics?.pathFees, [{ kind: 'protocol_fee_on_target_path', address: FEE, token: WETH, raw: '1000' }])
+  })
+
+  it('a retained balance that is too large, or held by an address that spends, is a second economic action', () => {
+    const one = BigInt(10) ** BigInt(18)
+    const big = classifyReceiptQuoteEvidence({ ...entry, tx: okTx([
+      { address: WETH, topics: ['0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c', topic(ROUTER)], data: word(one) },
+      transfer(WETH, ROUTER, POOL, one / BigInt(2)),
+      transfer(WETH, ROUTER, FEE, one / BigInt(2)),
+      { address: POOL, topics: [SWAP], data: '0x' },
+      transfer(CLAW, POOL, WALLET, raw),
+    ], one.toString()) })
+    assert.equal(big.classification, 'unrelated_second_economic_action')
+    assert.match(big.forensics!.unrelatedOutputs[0].rule, /^non_pool_intermediary_keeps_non_target_token/)
   })
 
   it('the dump carries every field the audit needs, as plain JSON (no nested object collapse)', () => {

@@ -37,6 +37,7 @@ import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonC
 import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
 import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
 import { createInternalTransferTracer, fetchReceiptQuoteTx } from '../lib/receiptQuoteRecovery'
+import { createV4PoolKeyResolver } from '../lib/v4RouteQuote'
 import { maybeRepairExpiredAcceptedEvidenceFromManifest } from '../lib/acceptedEvidenceManifestRepair'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
@@ -2330,7 +2331,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // tx receipt + transaction. Bounded per scan; RECEIPT_QUOTE_RECOVERY_ENABLED=false turns it off.
     receiptQuoteRecovery: process.env.RECEIPT_QUOTE_RECOVERY_ENABLED === 'false'
       ? undefined
-      : { walletAddress: params.walletAddress, fetchTx: fetchReceiptQuoteTx, fetchInternalTransfers: createInternalTransferTracer() },
+      : {
+        walletAddress: params.walletAddress,
+        fetchTx: fetchReceiptQuoteTx,
+        fetchInternalTransfers: createInternalTransferTracer(),
+        // Token-to-token quotes: exact V4 route through a canonical intermediary first; otherwise the
+        // quote token's exact-address historical price through the same KV-cached historical source.
+        resolveV4PoolKeys: createV4PoolKeyResolver(),
+        quoteTokenHistoricalPrice: requestPriceSources.primary,
+      },
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's
