@@ -99,7 +99,7 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
-import { classifyReceiptQuoteEvidence, RECOVERED_RECEIPT_CLASSIFICATIONS, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
+import { classifyReceiptQuoteEvidence, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 
 export type PriceLotsCanonicalGapAudit = {
@@ -380,7 +380,8 @@ export type ReceiptQuoteSideAudit = {
   normalizedEventCount: number
   normalizedTokenAddresses: string[]
   fetched: boolean
-  classification: ReceiptQuoteClassification | 'not_fetched_budget' | 'lane_disabled'
+  classification: ReceiptQuoteClassification | 'not_fetched_budget' | 'lane_disabled' | 'trace_budget_exhausted'
+  traceAttempts: TraceAttempt[]
   forensics: ReceiptQuoteForensics | null
   historicalMarketAttempts: string[]
   quoteToken: string | null
@@ -399,6 +400,20 @@ export type ReceiptQuoteRecoveryAudit = {
   completeLotsBefore: number
   txsFetched: number
   maxTxs: number
+  // Source / latency audit.
+  sourceAudit: {
+    receiptCalls: number
+    receiptCacheHits: number
+    traceCalls: number
+    blockscoutCalls: number
+    traceUnsupportedAfterFirstProbe: boolean
+    traceTimeouts: number
+    blockscoutTimeouts: number
+    candidatesSkippedByDeadline: number
+    deadlineMs: number
+    concurrency: number
+    totalRecoveryMs: number
+  }
   callsSpentByClass: Record<BlockedSideClass, number>
   sidesRecoveredByClass: Record<BlockedSideClass, number>
   lotsCompletedByClass: Record<BlockedSideClass, number>
@@ -409,6 +424,10 @@ export type ReceiptQuoteRecoveryAudit = {
   sides: ReceiptQuoteSideAudit[]
 }
 const RECEIPT_QUOTE_RECOVERY_DEFAULT_MAX_TXS = 12
+// Wall-clock budget for the WHOLE lane (all receipts + traces), and candidates in flight at once.
+// A lane that runs out of time leaves its remaining sides unpriced; it never holds the scan.
+const RECEIPT_QUOTE_RECOVERY_DEFAULT_DEADLINE_MS = 8000
+const RECEIPT_QUOTE_RECOVERY_DEFAULT_CONCURRENCY = 3
 const RECEIPT_QUOTE_RECOVERY_AUDIT_LIMIT = 40
 // Max relative gap between a CoinPaprika daily sample and a same-day exact on-chain execution of the
 // same token for the daily sample to be accepted as corroborated evidence.
@@ -678,7 +697,16 @@ export async function priceLotsForWallet(params: {
   coinPaprikaFetchImpl?: typeof fetch
   // RECEIPT QUOTE RECOVERY (blocked-lot completion): bounded receipt + transaction reads for closed-
   // lot sides still unpriced after every other source. Omitted = lane off (every existing caller).
-  receiptQuoteRecovery?: { walletAddress: string; fetchTx: ReceiptQuoteTxFetcher; maxTxs?: number }
+  receiptQuoteRecovery?: {
+    walletAddress: string
+    fetchTx: ReceiptQuoteTxFetcher
+    // Internal-transfer evidence for unwrap payouts. Omitted = no trace source (fail closed).
+    fetchInternalTransfers?: InternalTransferFetcher
+    maxTxs?: number
+    // Scan-wide wall-clock budget for the whole lane, and how many candidates run at once.
+    deadlineMs?: number
+    concurrency?: number
+  }
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
   // historicalPricingPerformanceSummary's own construction near this function's return for the
@@ -2322,6 +2350,14 @@ export async function priceLotsForWallet(params: {
       completeLotsBefore: [...classBefore.values()].filter((c) => c === null).length,
       txsFetched: 0,
       maxTxs,
+      sourceAudit: {
+        receiptCalls: 0, receiptCacheHits: 0, traceCalls: 0, blockscoutCalls: 0,
+        traceUnsupportedAfterFirstProbe: false, traceTimeouts: 0, blockscoutTimeouts: 0,
+        candidatesSkippedByDeadline: 0,
+        deadlineMs: Math.max(0, config?.deadlineMs ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_DEADLINE_MS),
+        concurrency: Math.max(1, Math.floor(config?.concurrency ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_CONCURRENCY)),
+        totalRecoveryMs: 0,
+      },
       callsSpentByClass: { completion_ready: 0, missing_both: 0 },
       sidesRecoveredByClass: { completion_ready: 0, missing_both: 0 },
       lotsCompletedByClass: { completion_ready: 0, missing_both: 0 },
@@ -2361,10 +2397,9 @@ export async function priceLotsForWallet(params: {
       || (a.side === b.side ? 0 : a.side === 'entry' ? -1 : 1))
 
     const routeRecords = pricingRouteLog.slice(routeLogSnapshotBefore)
-    const fetchedTxs = new Map<string, ReceiptQuoteTx>()
     type Pending = { requirement: Requirement; row: ReceiptQuoteSideAudit; quote: { kind: 'native' | 'stable'; token: string; quantity: number }; targetAmount: number }
-    const pending: Pending[] = []
-    for (const requirement of ordered) {
+    type Prepared = { requirement: Requirement; row: ReceiptQuoteSideAudit; targetAmount: number; targetDecimals: number }
+    const prepared: Prepared[] = ordered.map((requirement) => {
       const legs = merged.filter((e) => e.chain === requirement.chain && e.txHash.toLowerCase() === requirement.txHash.toLowerCase())
       const targetDirection = requirement.side === 'entry' ? 'inbound' : 'outbound'
       const targetEvents = legs.filter((e) => e.contract.toLowerCase() === requirement.token.toLowerCase() && e.direction === targetDirection)
@@ -2378,6 +2413,7 @@ export async function priceLotsForWallet(params: {
         normalizedTokenAddresses: [...new Set(legs.map((e) => e.contract.toLowerCase()))].sort(),
         fetched: false,
         classification: config ? 'not_fetched_budget' : 'lane_disabled',
+        traceAttempts: [],
         forensics: null,
         historicalMarketAttempts: routeRecords
           .filter((r) => r.chain === requirement.chain && r.token.toLowerCase() === requirement.token.toLowerCase() && r.timestamp === requirement.timestamp)
@@ -2387,37 +2423,110 @@ export async function priceLotsForWallet(params: {
         rejectionReason: null,
       }
       audit.sides.push(row)
-      if (!config) continue
-      const txKey = `${requirement.chain}:${requirement.txHash.toLowerCase()}`
-      let tx = fetchedTxs.get(txKey)
-      if (!tx) {
-        if (audit.txsFetched >= maxTxs) continue
-        audit.txsFetched += 1
-        audit.callsSpentByClass[requirement.cls] += 1
-        tx = await config.fetchTx(requirement.chain, requirement.txHash)
-        fetchedTxs.set(txKey, tx)
+      return {
+        requirement, row,
+        targetAmount: targetEvents.reduce((sum, e) => sum + e.amount, 0),
+        targetDecimals: resolveTokenDecimals({ chain: requirement.chain, token: requirement.token, providerDecimals: targetEvents[0]?.tokenDecimals }).decimals,
       }
-      row.fetched = true
-      const targetAmount = targetEvents.reduce((sum, e) => sum + e.amount, 0)
-      const targetDecimals = resolveTokenDecimals({ chain: requirement.chain, token: requirement.token, providerDecimals: targetEvents[0]?.tokenDecimals }).decimals
-      const result = classifyReceiptQuoteEvidence({
-        chain: requirement.chain,
-        walletAddress: config.walletAddress,
-        targetToken: requirement.token,
-        side: requirement.side,
-        targetAmount,
-        targetDecimals,
-        tx,
+    })
+    const pending: Pending[] = []
+    if (config) {
+      const startedAt = performance.now()
+      const sourceAudit = audit.sourceAudit
+      // Scan-wide deadline: aborts every in-flight request and stops new work; whatever has not
+      // finished stays unpriced (fail closed), never awaited past the budget.
+      const deadline = new AbortController()
+      const deadlineTimer = setTimeout(() => deadline.abort(), sourceAudit.deadlineMs)
+      // Budget is counted in DISTINCT transactions, admitted strictly in completion-ready-first order
+      // (before any concurrency), so the same candidates are chosen regardless of timing.
+      const admittedTxKeys = new Set<string>()
+      const admitted: Prepared[] = []
+      for (const item of prepared) {
+        const txKey = `${item.requirement.chain}:${item.requirement.txHash.toLowerCase()}`
+        if (!admittedTxKeys.has(txKey)) {
+          if (admittedTxKeys.size >= maxTxs) continue
+          admittedTxKeys.add(txKey)
+          audit.callsSpentByClass[item.requirement.cls] += 1
+        }
+        admitted.push(item)
+      }
+      audit.txsFetched = admittedTxKeys.size
+      // One shared read per transaction, even when several sides/lots use it.
+      const txReads = new Map<string, Promise<ReceiptQuoteTx & { cacheHit?: boolean }>>()
+      const readTx = (item: Prepared) => {
+        const txKey = `${item.requirement.chain}:${item.requirement.txHash.toLowerCase()}`
+        let read = txReads.get(txKey)
+        if (!read) {
+          read = config.fetchTx(item.requirement.chain, item.requirement.txHash, deadline.signal).then((tx) => {
+            if (tx.cacheHit) sourceAudit.receiptCacheHits += 1
+            else sourceAudit.receiptCalls += 1
+            return tx
+          })
+          txReads.set(txKey, read)
+        }
+        return read
+      }
+      const results: Array<ReceiptQuoteResult | null> = new Array(admitted.length).fill(null)
+      let next = 0
+      const worker = async () => {
+        while (next < admitted.length) {
+          const index = next++
+          const item = admitted[index]
+          if (deadline.signal.aborted) {
+            item.row.classification = 'trace_budget_exhausted'
+            sourceAudit.candidatesSkippedByDeadline += 1
+            continue
+          }
+          let tx: ReceiptQuoteTx = await readTx(item)
+          if (deadline.signal.aborted && tx.status !== 'ok') {
+            item.row.classification = 'trace_budget_exhausted'
+            sourceAudit.candidatesSkippedByDeadline += 1
+            continue
+          }
+          item.row.fetched = true
+          const classify = (evidence: ReceiptQuoteTx) => classifyReceiptQuoteEvidence({
+            chain: item.requirement.chain, walletAddress: config.walletAddress, targetToken: item.requirement.token,
+            side: item.requirement.side, targetAmount: item.targetAmount, targetDecimals: item.targetDecimals, tx: evidence,
+          })
+          // Receipt-only classification first; internal-transfer evidence is requested ONLY for a
+          // candidate that passed every receipt check and lacks just the native payout recipient.
+          let result = classify(tx)
+          if (result.needsNativeRecipientProof && tx.status === 'ok') {
+            let evidence: InternalTransferEvidence = { transfers: null, source: null, attempts: [] }
+            if (config.fetchInternalTransfers && !deadline.signal.aborted) {
+              evidence = await config.fetchInternalTransfers(item.requirement.chain, item.requirement.txHash, deadline.signal)
+            }
+            item.row.traceAttempts = evidence.attempts
+            for (const attempt of evidence.attempts) {
+              if (attempt.source === 'debug_trace' && attempt.outcome !== 'skipped_unsupported' && attempt.outcome !== 'not_configured') sourceAudit.traceCalls += 1
+              if (attempt.source === 'blockscout' && attempt.outcome !== 'not_configured') sourceAudit.blockscoutCalls += 1
+              if (attempt.source === 'debug_trace' && attempt.outcome === 'timeout') sourceAudit.traceTimeouts += 1
+              if (attempt.source === 'blockscout' && attempt.outcome === 'timeout') sourceAudit.blockscoutTimeouts += 1
+              if (attempt.outcome === 'skipped_unsupported') sourceAudit.traceUnsupportedAfterFirstProbe = true
+            }
+            tx = { ...tx, internalTransfers: evidence.transfers, traceSource: evidence.source }
+            result = classify(tx)
+          }
+          results[index] = result
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(sourceAudit.concurrency, Math.max(1, admitted.length)) }, worker))
+      clearTimeout(deadlineTimer)
+      sourceAudit.totalRecoveryMs = Math.round(performance.now() - startedAt)
+      // Applied in the deterministic completion-ready-first order, independent of completion timing.
+      admitted.forEach((item, index) => {
+        const result = results[index]
+        if (!result) return
+        item.row.classification = result.classification
+        item.row.forensics = result.forensics
+        if (!result.quote || !RECOVERED_RECEIPT_CLASSIFICATIONS.has(result.classification)) {
+          item.row.rejectionReason = result.classification
+          return
+        }
+        item.row.quoteToken = result.quote.token
+        item.row.quoteQuantity = result.quote.quantity
+        pending.push({ requirement: item.requirement, row: item.row, quote: result.quote, targetAmount: item.targetAmount })
       })
-      row.classification = result.classification
-      row.forensics = result.forensics
-      if (!result.quote || !RECOVERED_RECEIPT_CLASSIFICATIONS.has(result.classification)) {
-        row.rejectionReason = result.classification
-        continue
-      }
-      row.quoteToken = result.quote.token
-      row.quoteQuantity = result.quote.quantity
-      pending.push({ requirement, row, quote: result.quote, targetAmount })
     }
 
     // Historical ETH/USD for exactly the days of the native quotes found (same shared resolver and

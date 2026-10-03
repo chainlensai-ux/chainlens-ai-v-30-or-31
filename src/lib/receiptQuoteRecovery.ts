@@ -56,7 +56,9 @@ export type ReceiptQuoteTx =
     traceSource?: InternalTraceSource | null
   }
   | { status: 'missing' | 'reverted' | 'unavailable' }
-export type ReceiptQuoteTxFetcher = (chain: SupportedChain, txHash: string) => Promise<ReceiptQuoteTx>
+// `cacheHit` reports a process-cache/singleflight hit (no new provider call). `signal` carries the
+// lane's scan-wide deadline.
+export type ReceiptQuoteTxFetcher = (chain: SupportedChain, txHash: string, signal?: AbortSignal) => Promise<ReceiptQuoteTx & { cacheHit?: boolean }>
 
 export type ReceiptQuoteClassification =
   | 'receipt_unavailable'
@@ -111,6 +113,9 @@ export type ReceiptQuoteForensics = {
 
 export type ReceiptQuoteResult = {
   classification: ReceiptQuoteClassification
+  // True only when every receipt check passed and the single missing piece is the native payout
+  // recipient — the ONLY case the lane spends an internal-transfer trace request on.
+  needsNativeRecipientProof?: boolean
   quote: { kind: 'native' | 'stable'; token: string; quantity: number } | null
   forensics: ReceiptQuoteForensics | null
 }
@@ -272,7 +277,8 @@ export function classifyReceiptQuoteEvidence(params: {
   // RECIPIENT PROOF. The receipt ends at the unwrap; only an internal-transfer trace shows where the
   // native ETH went. Router conventions are never treated as evidence.
   const internal = tx.internalTransfers
-  if (!internal) return result('native_unwrap_recipient_unverified')
+  if (internal === undefined) return { ...result('native_unwrap_recipient_unverified'), needsNativeRecipientProof: true }
+  if (internal === null) return result('native_unwrap_recipient_unverified')
   const unwrappers = withdrawalSources
   const positive = internal.filter((t) => /^[0-9]+$/.test(t.valueWei) && BigInt(t.valueWei) > ZERO)
   const toWallet = positive.filter((t) => lower(t.to) === wallet)
@@ -350,68 +356,6 @@ export function attributeTargetPath(params: {
   return { status: 'single_target_path', unrelatedOutputs }
 }
 
-// Mined transactions are immutable — a process-lifetime cache never serves stale data.
-const receiptQuoteTxCache = new Map<string, ReceiptQuoteTx>()
-export function __resetReceiptQuoteTxCacheForTest(): void {
-  receiptQuoteTxCache.clear()
-}
-
-// One JSON-RPC batch (eth_getTransactionReceipt + eth_getTransactionByHash). Never throws.
-export const fetchReceiptQuoteTx: ReceiptQuoteTxFetcher = async (chain, txHash) => {
-  const cacheKey = `${chain}:${txHash.toLowerCase()}`
-  const cached = receiptQuoteTxCache.get(cacheKey)
-  if (cached) return cached
-  const url = receiptRpcUrl(chain)
-  if (!url) return { status: 'unavailable' }
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 6000)
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify([
-        { jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] },
-        { jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] },
-      ]),
-    })
-    if (!res.ok) return { status: 'unavailable' }
-    const json = await res.json().catch(() => null) as Array<{ id?: number; result?: Record<string, unknown> | null }> | null
-    if (!Array.isArray(json)) return { status: 'unavailable' }
-    const receipt = json.find((r) => r.id === 1)?.result
-    const tx = json.find((r) => r.id === 2)?.result
-    if (!receipt || !tx) return { status: 'missing' }
-    if (receipt.status === '0x0') {
-      receiptQuoteTxCache.set(cacheKey, { status: 'reverted' })
-      return { status: 'reverted' }
-    }
-    const logs = Array.isArray(receipt.logs) ? (receipt.logs as Array<Record<string, unknown>>) : []
-    const value = typeof tx.value === 'string' && /^0x[0-9a-f]*$/i.test(tx.value) ? BigInt(tx.value === '0x' ? '0x0' : tx.value).toString() : '0'
-    const outcome: ReceiptQuoteTx = {
-      status: 'ok',
-      from: typeof tx.from === 'string' ? tx.from : '',
-      to: typeof tx.to === 'string' ? tx.to : null,
-      valueWei: value,
-      input: typeof tx.input === 'string' ? tx.input : '',
-      logs: logs
-        .filter((l) => l.removed !== true && typeof l.address === 'string' && Array.isArray(l.topics) && typeof l.data === 'string')
-        .map((l) => ({ address: l.address as string, topics: l.topics as string[], data: l.data as string })),
-    }
-    // Native recipient proof is needed only when the receipt shows a WETH unwrap.
-    if (outcome.status === 'ok' && outcome.logs.some((l) => lower(l.topics[0]) === WETH_WITHDRAWAL_TOPIC0)) {
-      const trace = await fetchInternalNativeTransfers(chain, txHash, url)
-      outcome.internalTransfers = trace?.transfers ?? null
-      outcome.traceSource = trace?.source ?? null
-    }
-    // A missing trace may be a transient provider failure: only fully evidenced results are cached.
-    if (outcome.status !== 'ok' || outcome.internalTransfers !== null) receiptQuoteTxCache.set(cacheKey, outcome)
-    return outcome
-  } catch {
-    return { status: 'unavailable' }
-  } finally {
-    clearTimeout(timeout)
-  }
-}
 
 type CallFrame = { type?: string; from?: string; to?: string; value?: string; error?: string; calls?: CallFrame[] }
 
@@ -454,33 +398,197 @@ export function internalTransfersFromBlockscout(json: unknown): InternalNativeTr
   return out
 }
 
-async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
+// ================================================================================================
+// FETCHING — bounded, deadline-aware, fail-closed.
+// ================================================================================================
+
+export type JsonFetch = { kind: 'ok'; status: number; json: unknown } | { kind: 'http_error'; status: number; json: unknown } | { kind: 'timeout' } | { kind: 'network_error' }
+
+const RECEIPT_REQUEST_TIMEOUT_MS = 5000
+const TRACE_REQUEST_TIMEOUT_MS = 4000
+
+function combinedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  return signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs)
+}
+
+async function fetchJson(fetchImpl: typeof fetch, url: string, init: RequestInit, timeoutMs: number, signal?: AbortSignal): Promise<JsonFetch> {
+  if (signal?.aborted) return { kind: 'timeout' }
   try {
-    const res = await fetch(url, { ...init, signal: controller.signal })
-    if (!res.ok) return null
-    return await res.json().catch(() => null)
-  } catch {
-    return null
-  } finally {
-    clearTimeout(timeout)
+    const res = await fetchImpl(url, { ...init, signal: combinedSignal(timeoutMs, signal) })
+    const json = await res.json().catch(() => null)
+    return res.ok ? { kind: 'ok', status: res.status, json } : { kind: 'http_error', status: res.status, json }
+  } catch (err) {
+    const name = err && typeof err === 'object' && 'name' in err ? String((err as { name?: unknown }).name) : ''
+    return name === 'AbortError' || name === 'TimeoutError' ? { kind: 'timeout' } : { kind: 'network_error' }
   }
 }
 
-// debug_traceTransaction (callTracer) on the configured RPC first; Blockscout's indexed internal
-// transactions second. Null when neither yields complete evidence.
-async function fetchInternalNativeTransfers(chain: SupportedChain, txHash: string, rpcUrl: string): Promise<{ transfers: InternalNativeTransfer[]; source: InternalTraceSource } | null> {
-  const traced = await fetchJson(rpcUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'debug_traceTransaction', params: [txHash, { tracer: 'callTracer' }] }),
-  }) as { result?: CallFrame } | null
-  if (traced?.result && typeof traced.result === 'object' && typeof traced.result.from === 'string') {
-    return { transfers: internalTransfersFromCallTrace(traced.result), source: 'debug_trace_call_tracer' }
+// Mined transactions are immutable — a process-lifetime cache never serves stale data. In-flight
+// reads are shared (singleflight) so two lots on the same tx, or two concurrent scans, fetch once.
+// (receiptSwapDecoder's permanent receipt cache and the ROI backfill KV hold receipt LOGS only — no
+// sender / tx.value / input — so they cannot satisfy this lane's evidence and are not reused.)
+const receiptQuoteTxCache = new Map<string, ReceiptQuoteTx>()
+const receiptQuoteTxInFlight = new Map<string, Promise<ReceiptQuoteTx>>()
+export function __resetReceiptQuoteTxCacheForTest(): void {
+  receiptQuoteTxCache.clear()
+  receiptQuoteTxInFlight.clear()
+}
+
+export function createReceiptQuoteTxFetcher(deps: { fetchImpl?: typeof fetch; rpcUrlFor?: (chain: SupportedChain) => string | null; timeoutMs?: number } = {}): ReceiptQuoteTxFetcher {
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const rpcUrlFor = deps.rpcUrlFor ?? receiptRpcUrl
+  const timeoutMs = deps.timeoutMs ?? RECEIPT_REQUEST_TIMEOUT_MS
+  return async (chain, txHash, signal) => {
+    const cacheKey = `${chain}:${txHash.toLowerCase()}`
+    const cached = receiptQuoteTxCache.get(cacheKey)
+    if (cached) return { ...cached, cacheHit: true }
+    const inFlight = receiptQuoteTxInFlight.get(cacheKey)
+    if (inFlight) return { ...(await inFlight), cacheHit: true }
+    const url = rpcUrlFor(chain)
+    if (!url) return { status: 'unavailable' }
+    const work = (async (): Promise<ReceiptQuoteTx> => {
+      const response = await fetchJson(fetchImpl, url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify([
+          { jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] },
+          { jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [txHash] },
+        ]),
+      }, timeoutMs, signal)
+      if (response.kind !== 'ok' || !Array.isArray(response.json)) return { status: 'unavailable' }
+      const rows = response.json as Array<{ id?: number; result?: Record<string, unknown> | null }>
+      const receipt = rows.find((r) => r.id === 1)?.result
+      const tx = rows.find((r) => r.id === 2)?.result
+      if (!receipt || !tx) return { status: 'missing' }
+      if (receipt.status === '0x0') {
+        receiptQuoteTxCache.set(cacheKey, { status: 'reverted' })
+        return { status: 'reverted' }
+      }
+      const logs = Array.isArray(receipt.logs) ? (receipt.logs as Array<Record<string, unknown>>) : []
+      const value = typeof tx.value === 'string' && /^0x[0-9a-f]*$/i.test(tx.value) ? BigInt(tx.value === '0x' ? '0x0' : tx.value).toString() : '0'
+      const outcome: ReceiptQuoteTx = {
+        status: 'ok',
+        from: typeof tx.from === 'string' ? tx.from : '',
+        to: typeof tx.to === 'string' ? tx.to : null,
+        valueWei: value,
+        input: typeof tx.input === 'string' ? tx.input : '',
+        logs: logs
+          .filter((l) => l.removed !== true && typeof l.address === 'string' && Array.isArray(l.topics) && typeof l.data === 'string')
+          .map((l) => ({ address: l.address as string, topics: l.topics as string[], data: l.data as string })),
+      }
+      receiptQuoteTxCache.set(cacheKey, outcome)
+      return outcome
+    })()
+    receiptQuoteTxInFlight.set(cacheKey, work)
+    try {
+      return await work
+    } finally {
+      receiptQuoteTxInFlight.delete(cacheKey)
+    }
   }
-  const base = BLOCKSCOUT_API[chain]
-  if (!base) return null
-  const indexed = internalTransfersFromBlockscout(await fetchJson(`${base}/api/v2/transactions/${txHash}/internal-transactions`, { headers: { accept: 'application/json' } }))
-  return indexed ? { transfers: indexed, source: 'blockscout_internal_transactions' } : null
+}
+
+export const fetchReceiptQuoteTx: ReceiptQuoteTxFetcher = createReceiptQuoteTxFetcher()
+
+// --------------------------------------------------------------------------- internal transfers ---
+
+export type TraceAttemptOutcome =
+  | 'ok' | 'ok_empty' | 'unsupported' | 'timeout' | 'provider_error' | 'incomplete' | 'malformed' | 'skipped_unsupported' | 'not_configured'
+export type TraceAttempt = { source: 'debug_trace' | 'blockscout'; outcome: TraceAttemptOutcome }
+export type InternalTransferEvidence = {
+  // null = no complete evidence (never guessed); [] = a valid trace with no internal value transfers.
+  transfers: InternalNativeTransfer[] | null
+  source: InternalTraceSource | null
+  attempts: TraceAttempt[]
+}
+export type InternalTransferFetcher = (chain: SupportedChain, txHash: string, signal?: AbortSignal) => Promise<InternalTransferEvidence>
+
+const UNSUPPORTED_TRACE_MESSAGE = /not supported|unsupported|not available|does not exist|not found|method not allowed|not enabled|upgrade|tracer/i
+
+// PURE. Classifies one debug_traceTransaction response. Only an explicit "this method/tracer is not
+// available" answer is `unsupported`; HTTP 5xx, rate limits and odd payloads are provider errors
+// (transient — they never disable tracing for the rest of the scan).
+export function classifyTraceResponse(response: JsonFetch): { outcome: TraceAttemptOutcome; transfers: InternalNativeTransfer[] | null } {
+  if (response.kind === 'timeout') return { outcome: 'timeout', transfers: null }
+  if (response.kind === 'network_error') return { outcome: 'provider_error', transfers: null }
+  const body = response.json as { result?: unknown; error?: { code?: number; message?: string } } | null
+  const error = body?.error
+  if (error && (error.code === -32601 || UNSUPPORTED_TRACE_MESSAGE.test(String(error.message ?? '')))) return { outcome: 'unsupported', transfers: null }
+  if (response.kind === 'http_error') {
+    return { outcome: response.status === 405 || response.status === 501 ? 'unsupported' : 'provider_error', transfers: null }
+  }
+  const root = body?.result as CallFrame | undefined
+  if (!root || typeof root !== 'object' || typeof root.from !== 'string') return { outcome: error ? 'provider_error' : 'malformed', transfers: null }
+  const transfers = internalTransfersFromCallTrace(root)
+  return { outcome: transfers.length > 0 ? 'ok' : 'ok_empty', transfers }
+}
+
+// One tracer per scan. debug_traceTransaction is probed first; once the configured RPC explicitly
+// reports the method/tracer as unsupported, later candidates in THIS scan go straight to Blockscout.
+// A timeout or provider error never disables tracing.
+export function createInternalTransferTracer(deps: {
+  fetchImpl?: typeof fetch
+  rpcUrlFor?: (chain: SupportedChain) => string | null
+  blockscoutBaseFor?: (chain: SupportedChain) => string | null
+  traceTimeoutMs?: number
+  blockscoutTimeoutMs?: number
+} = {}): InternalTransferFetcher & { traceUnsupported: (chain: SupportedChain) => boolean } {
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const rpcUrlFor = deps.rpcUrlFor ?? receiptRpcUrl
+  const blockscoutBaseFor = deps.blockscoutBaseFor ?? ((chain: SupportedChain) => BLOCKSCOUT_API[chain] ?? null)
+  const traceTimeoutMs = deps.traceTimeoutMs ?? TRACE_REQUEST_TIMEOUT_MS
+  const blockscoutTimeoutMs = deps.blockscoutTimeoutMs ?? TRACE_REQUEST_TIMEOUT_MS
+  // Per-chain support state for THIS scan. While support is unknown, only one probe is in flight:
+  // concurrent candidates wait for it instead of each probing an RPC that may not support tracing.
+  const support = new Map<SupportedChain, 'supported' | 'unsupported'>()
+  const probes = new Map<SupportedChain, Promise<unknown>>()
+  const tracer = async (chain: SupportedChain, txHash: string, signal?: AbortSignal): Promise<InternalTransferEvidence> => {
+    const attempts: TraceAttempt[] = []
+    const rpcUrl = rpcUrlFor(chain)
+    if (!support.has(chain) && probes.has(chain)) await probes.get(chain)
+    if (support.get(chain) === 'unsupported') attempts.push({ source: 'debug_trace', outcome: 'skipped_unsupported' })
+    else if (!rpcUrl) attempts.push({ source: 'debug_trace', outcome: 'not_configured' })
+    else {
+      const request = fetchJson(fetchImpl, rpcUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'debug_traceTransaction', params: [txHash, { tracer: 'callTracer' }] }),
+      }, traceTimeoutMs, signal).then(classifyTraceResponse)
+      const isProbe = !support.has(chain) && !probes.has(chain)
+      if (isProbe) probes.set(chain, request.catch(() => null))
+      const traced = await request
+      if (isProbe) probes.delete(chain)
+      attempts.push({ source: 'debug_trace', outcome: traced.outcome })
+      // Only an explicit "unsupported" answer changes the scan's state; a timeout or provider error
+      // leaves it unknown, so the next candidate probes again.
+      if (traced.outcome === 'unsupported') support.set(chain, 'unsupported')
+      if (traced.transfers) {
+        support.set(chain, 'supported')
+        return { transfers: traced.transfers, source: 'debug_trace_call_tracer', attempts }
+      }
+    }
+    const base = blockscoutBaseFor(chain)
+    if (!base) {
+      attempts.push({ source: 'blockscout', outcome: 'not_configured' })
+      return { transfers: null, source: null, attempts }
+    }
+    if (signal?.aborted) {
+      attempts.push({ source: 'blockscout', outcome: 'timeout' })
+      return { transfers: null, source: null, attempts }
+    }
+    const response = await fetchJson(fetchImpl, `${base}/api/v2/transactions/${txHash}/internal-transactions`, { headers: { accept: 'application/json' } }, blockscoutTimeoutMs, signal)
+    if (response.kind !== 'ok') {
+      attempts.push({ source: 'blockscout', outcome: response.kind === 'timeout' ? 'timeout' : 'provider_error' })
+      return { transfers: null, source: null, attempts }
+    }
+    const body = response.json as { next_page_params?: unknown } | null
+    const indexed = internalTransfersFromBlockscout(response.json)
+    if (!indexed) {
+      attempts.push({ source: 'blockscout', outcome: body && body.next_page_params != null ? 'incomplete' : 'malformed' })
+      return { transfers: null, source: null, attempts }
+    }
+    attempts.push({ source: 'blockscout', outcome: indexed.length > 0 ? 'ok' : 'ok_empty' })
+    return { transfers: indexed, source: 'blockscout_internal_transactions', attempts }
+  }
+  return Object.assign(tracer, { traceUnsupported: (chain: SupportedChain) => support.get(chain) === 'unsupported' })
 }

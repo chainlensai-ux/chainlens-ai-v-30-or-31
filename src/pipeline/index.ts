@@ -36,7 +36,7 @@ import {
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
 import { persistRoiQuoteLegProofs, sanitizeRoiQuoteLegProofs } from '../lib/verifiedSampleRoiEligibility'
 import { fetchRoiQuoteLegTxReceipt } from '../lib/roiQuoteLegTxBackfill'
-import { fetchReceiptQuoteTx } from '../lib/receiptQuoteRecovery'
+import { createInternalTransferTracer, fetchReceiptQuoteTx } from '../lib/receiptQuoteRecovery'
 import { maybeRepairExpiredAcceptedEvidenceFromManifest } from '../lib/acceptedEvidenceManifestRepair'
 import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildWalletScannerPipelineAudit } from '../lib/walletScannerPipelineAudit'
@@ -2330,7 +2330,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // tx receipt + transaction. Bounded per scan; RECEIPT_QUOTE_RECOVERY_ENABLED=false turns it off.
     receiptQuoteRecovery: process.env.RECEIPT_QUOTE_RECOVERY_ENABLED === 'false'
       ? undefined
-      : { walletAddress: params.walletAddress, fetchTx: fetchReceiptQuoteTx },
+      : { walletAddress: params.walletAddress, fetchTx: fetchReceiptQuoteTx, fetchInternalTransfers: createInternalTransferTracer() },
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's

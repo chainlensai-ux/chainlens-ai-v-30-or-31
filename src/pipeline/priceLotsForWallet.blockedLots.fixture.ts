@@ -10,7 +10,7 @@ import { isCanonicalVerifiedPublishedLot } from '../lib/canonicalVerifiedLot'
 import { lotIdentityVersion, buildAcceptedEvidenceEnvelope, writeAcceptedEvidence, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore.ts'
 import { __resetNativePriceResolverForTest, __seedAcceptedNativePriceForTest } from '../modules/nativePriceResolver/index.ts'
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils.ts'
-import { TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type ReceiptQuoteLog, type ReceiptQuoteTx } from '../lib/receiptQuoteRecovery.ts'
+import { TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type InternalNativeTransfer, type InternalTransferFetcher, type ReceiptQuoteLog, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery.ts'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 
@@ -41,17 +41,17 @@ const okTx = (from: string, valueWei: bigint, logs: ReceiptQuoteLog[]): ReceiptQ
 //   'unavailable'       — receipts only (what f9a98df1's fixture had): the unwrap recipient is unproven.
 //   'proven_to_wallet'  — a callTracer trace shows WETH -> router -> scanned wallet for the full amount.
 export type SellTraceEvidence = 'unavailable' | 'proven_to_wallet'
-let sellTraceEvidence: SellTraceEvidence = 'unavailable'
 
 // Router buy paid with native ETH via tx.value: wrap -> pool -> wallet receives CLAW.
 const nativeBuy = (eth: number, depositEth = eth) => okTx(WALLET, wei(eth), [deposit(ROUTER, wei(depositEth)), transfer(WETH, ROUTER, POOL, wei(depositEth)), swap(), transfer(CLAW, POOL, WALLET, CLAW_RAW)])
 // Router sell paid out as native ETH: wallet -> pool CLAW, pool -> router WETH, router unwraps.
-const nativeSell = (eth: number, extra: ReceiptQuoteLog[] = []): ReceiptQuoteTx => ({
-  ...okTx(WALLET, BigInt(0), [transfer(CLAW, WALLET, POOL, CLAW_RAW), swap(), transfer(WETH, POOL, ROUTER, wei(eth)), withdrawal(ROUTER, wei(eth)), ...extra]),
-  ...(sellTraceEvidence === 'proven_to_wallet'
-    ? { internalTransfers: [{ from: WETH, to: ROUTER, valueWei: wei(eth).toString() }, { from: ROUTER, to: WALLET, valueWei: wei(eth).toString() }], traceSource: 'debug_trace_call_tracer' as const }
-    : { internalTransfers: null, traceSource: null }),
-})
+const nativeSell = (eth: number, extra: ReceiptQuoteLog[] = []): ReceiptQuoteTx =>
+  okTx(WALLET, BigInt(0), [transfer(CLAW, WALLET, POOL, CLAW_RAW), swap(), transfer(WETH, POOL, ROUTER, wei(eth)), withdrawal(ROUTER, wei(eth)), ...extra])
+// The internal-transfer trace each unwrap sell would return (WETH -> router -> scanned wallet).
+const walletPayoutTrace = (eth: number): InternalNativeTransfer[] => [
+  { from: WETH, to: ROUTER, valueWei: wei(eth).toString() },
+  { from: ROUTER, to: WALLET, valueWei: wei(eth).toString() },
+]
 
 export type BlockedLotKind =
   | 'completion_ready_native_unwrap_exit'
@@ -78,10 +78,10 @@ function ev(o: Partial<NormalizedEvent>): NormalizedEvent {
   }
 }
 
-export function buildBlockedLotFixture(traces: SellTraceEvidence = 'unavailable') {
-  sellTraceEvidence = traces
+export function buildBlockedLotFixture() {
   const events: NormalizedEvent[] = []
   const receipts = new Map<string, ReceiptQuoteTx>()
+  const traces = new Map<string, InternalNativeTransfer[]>()
   const lots: Array<{ kind: BlockedLotKind; buyTx: string; sellTx: string }> = []
 
   // 4 lots already verified by accepted evidence (other tokens, prior scans).
@@ -109,22 +109,27 @@ export function buildBlockedLotFixture(traces: SellTraceEvidence = 'unavailable'
         // GoldRush synthesized this buy's tx.value leg, so the same-tx lane already prices the entry.
         events.push(ev({ txHash: buyTx, timestamp: `${BUY_DAY}T${hour}:00:00.000Z`, contract: NATIVE_ASSET_ADDRESS, symbol: 'ETH', amount: buyEth, amountRaw: wei(buyEth).toString(), direction: 'outbound', fromAddress: WALLET, toAddress: ROUTER }))
         receipts.set(sellTx, nativeSell(sellEth))
+        traces.set(sellTx, walletPayoutTrace(sellEth))
         break
       case 'missing_both_native_value_and_unwrap':
         receipts.set(buyTx, nativeBuy(buyEth))
         receipts.set(sellTx, nativeSell(sellEth))
+        traces.set(sellTx, walletPayoutTrace(sellEth))
         break
       case 'plain_transfer_in_entry':
         receipts.set(buyTx, { status: 'ok', from: FRIEND, to: CLAW, valueWei: '0', input: '0xa9059cbb', logs: [transfer(CLAW, FRIEND, WALLET, CLAW_RAW)] })
         receipts.set(sellTx, nativeSell(sellEth))
+        traces.set(sellTx, walletPayoutTrace(sellEth))
         break
       case 'multicall_exit':
         receipts.set(buyTx, nativeBuy(buyEth))
         receipts.set(sellTx, nativeSell(sellEth, [transfer(OTHER_TOKEN, POOL, WALLET, BigInt(5))]))
+        traces.set(sellTx, walletPayoutTrace(sellEth))
         break
       case 'refund_unaccounted_entry':
         receipts.set(buyTx, nativeBuy(0.2, 0.15))
         receipts.set(sellTx, nativeSell(sellEth))
+        traces.set(sellTx, walletPayoutTrace(sellEth))
         break
       case 'receipt_unavailable':
         break
@@ -140,7 +145,7 @@ export function buildBlockedLotFixture(traces: SellTraceEvidence = 'unavailable'
       ev({ txHash: tx, contract: NATIVE_ASSET_ADDRESS, symbol: 'ETH', amount: 0.05, amountRaw: wei(0.05).toString(), direction: 'outbound', fromAddress: WALLET, toAddress: ROUTER }),
     )
   }
-  return { events, receipts, lots }
+  return { events, receipts, traces, lots }
 }
 
 function fakeKv(): AcceptedEvidenceKvLike {
@@ -151,11 +156,12 @@ function fakeKv(): AcceptedEvidenceKvLike {
   }
 }
 
-export async function runBlockedLotFixture(options: { receiptLane: boolean; maxTxs?: number; coinPaprikaFetchImpl?: typeof fetch; sellTraces?: SellTraceEvidence } = { receiptLane: true }) {
+export type RecoveryOverrides = { fetchTx?: ReceiptQuoteTxFetcher; fetchInternalTransfers?: InternalTransferFetcher; deadlineMs?: number; concurrency?: number }
+export async function runBlockedLotFixture(options: { receiptLane: boolean; maxTxs?: number; coinPaprikaFetchImpl?: typeof fetch; sellTraces?: SellTraceEvidence; recovery?: RecoveryOverrides } = { receiptLane: true }) {
   __resetNativePriceResolverForTest()
   __seedAcceptedNativePriceForTest(Date.parse(`${BUY_DAY}T12:00:00Z`), ETH_USD_BUY_DAY, 'coingecko_native_coin_history')
   __seedAcceptedNativePriceForTest(Date.parse(`${SELL_DAY}T12:00:00Z`), ETH_USD_SELL_DAY, 'coingecko_native_coin_history')
-  const { events, receipts, lots } = buildBlockedLotFixture(options.sellTraces ?? 'unavailable')
+  const { events, receipts, traces, lots } = buildBlockedLotFixture()
   const kv = fakeKv()
   const now = Date.parse('2026-04-05T00:00:00Z')
   for (let i = 0; i < 4; i++) {
@@ -168,6 +174,7 @@ export async function runBlockedLotFixture(options: { receiptLane: boolean; maxT
     }
   }
   let receiptCalls = 0
+  let traceCalls = 0
   let historicalCalls = 0
   const nullSource: PriceSourceFn = () => { historicalCalls += 1; return null }
   const warnings: Array<{ tag: string; payload: unknown }> = []
@@ -185,7 +192,17 @@ export async function runBlockedLotFixture(options: { receiptLane: boolean; maxT
       now: () => now,
       coinPaprikaFetchImpl: options.coinPaprikaFetchImpl,
       receiptQuoteRecovery: options.receiptLane
-        ? { walletAddress: WALLET, maxTxs: options.maxTxs, fetchTx: async (_chain, txHash) => { receiptCalls += 1; return receipts.get(txHash) ?? { status: 'unavailable' } } }
+        ? {
+          walletAddress: WALLET,
+          maxTxs: options.maxTxs,
+          fetchTx: async (_chain, txHash) => { receiptCalls += 1; return receipts.get(txHash) ?? { status: 'unavailable' } },
+          fetchInternalTransfers: async (_chain, txHash) => {
+            traceCalls += 1
+            const transfers = (options.sellTraces ?? 'unavailable') === 'proven_to_wallet' ? traces.get(txHash) ?? null : null
+            return { transfers, source: transfers ? 'debug_trace_call_tracer' : null, attempts: [{ source: 'debug_trace', outcome: transfers ? 'ok' : 'unsupported' }] }
+          },
+          ...options.recovery,
+        }
         : undefined,
     })
   } finally {
@@ -205,6 +222,7 @@ export async function runBlockedLotFixture(options: { receiptLane: boolean; maxT
     verifiedClawLotTxs: new Set(verified.filter((l) => l.token.toLowerCase() === CLAW).map((l) => l.closedTxHash)),
     sameTxLotsCompleted: coverage?.actualLotsCompletedByQuote ?? null,
     receiptCalls,
+    traceCalls,
     historicalCalls,
   }
 }
