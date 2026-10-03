@@ -195,6 +195,106 @@ describe('lane selection inside the fixed budget', () => {
   })
 })
 
+describe('reserved exploratory slots — clean discovery floor, junk never displaces material (pure)', () => {
+  const keys = (p: string, n: number) => Array.from({ length: n }, (_, i) => `${p}${String(i).padStart(3, '0')}`)
+  const select = (material: string[], exploratory: string[], suspicious: string[] = [], activity: string[] = []) =>
+    selectFallbackKeys({
+      rankedKeysByLane: { material, activity, exploratory },
+      suspiciousExploratoryKeys: new Set(suspicious),
+      budget: BUDGET,
+      exploratoryReserved: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
+      allowExploratorySpamLookup: false,
+    })
+  const total = (r: ReturnType<typeof select>) => r.material.length + r.activity.length + r.exploratory.length
+
+  it('30 material + 0 exploratory → 30 material', () => {
+    const r = select(keys('m', 30), [])
+    assert.equal(r.material.length, 30)
+    assert.equal(r.exploratory.length, 0)
+  })
+
+  it('30 material + 3 clean exploratory → 27 material + 3 exploratory', () => {
+    const r = select(keys('m', 30), keys('c', 3))
+    assert.equal(r.material.length, 27)
+    assert.equal(r.exploratory.length, 3)
+  })
+
+  it('30 material + 100 clean exploratory → 22 material + the full 8-slot discovery floor', () => {
+    const r = select(keys('m', 30), keys('c', 100))
+    assert.equal(r.material.length, BUDGET - FALLBACK_EXPLORATORY_RESERVED_SLOTS)
+    assert.equal(r.exploratory.length, FALLBACK_EXPLORATORY_RESERVED_SLOTS)
+    assert.equal(total(r), BUDGET)
+  })
+
+  it('30 material + only suspicious junk → 30 material, junk displaces nothing', () => {
+    const junk = keys('j', 100)
+    const r = select(keys('m', 30), junk, junk)
+    assert.equal(r.material.length, 30)
+    assert.equal(r.exploratory.length, 0)
+  })
+
+  it('junk still gets discovery from capacity material left unused (bounded by the reserved size)', () => {
+    const junk = keys('j', 100)
+    const r = select(keys('m', 5), junk, junk)
+    assert.equal(r.material.length, 5)
+    assert.equal(r.exploratory.length, FALLBACK_EXPLORATORY_RESERVED_SLOTS)
+  })
+
+  it('clean unknowns are explored before junk; junk only fills what clean left', () => {
+    const clean = keys('c', 3)
+    const junk = keys('j', 50)
+    const r = select(keys('m', 40), [...clean, ...junk], junk)
+    assert.equal(r.material.length, 27, 'only the 3 clean unknowns hold slots ahead of material')
+    assert.deepEqual(r.exploratory, clean)
+  })
+
+  it('activity outranks exploratory when activity evidence exists; the global budget always holds', () => {
+    const r = select(keys('m', 10), keys('c', 100), [], keys('a', 30))
+    assert.equal(r.material.length, 10)
+    assert.equal(r.activity.length, 12)
+    assert.equal(r.exploratory.length, FALLBACK_EXPLORATORY_RESERVED_SLOTS)
+    assert.equal(total(r), BUDGET)
+  })
+
+  it('same input twice → identical selected keys', () => {
+    const run = () => select(keys('m', 25), [...keys('c', 4), ...keys('j', 20)], keys('j', 20))
+    assert.deepEqual(run(), run())
+  })
+
+  it('end-to-end: 30 material + 100 junk unknowns spends all 30 calls on material', async () => {
+    const calls: string[] = []
+    const material = Array.from({ length: 30 }, (_, i) => holding({ tokenAddress: `0xa${i.toString(16).padStart(39, '0')}`, providerValueUsd: 5 + i }))
+    const junk = Array.from({ length: 100 }, (_, i) => holding({ tokenAddress: `0xb${i.toString(16).padStart(39, '0')}`, symbol: '?', quantity: '1', amountRaw: '1000000000000000000', decimalsVerified: false }))
+    const out = await silence(() => priceHoldings([...junk, ...material], fixturePriceFn(calls)))
+    assert.equal(calls.length, BUDGET)
+    assert.equal(out.fallbackAudit!.selected.material, 30)
+    assert.deepEqual(out.fallbackAudit!.exploratoryCandidates, { clean: 0, suspicious: 100 })
+  })
+})
+
+describe('activity lane honesty', () => {
+  it('reports the activity lane as unavailable when no holding carries activity evidence (production today)', async () => {
+    const out = await silence(() => priceHoldings(buildAlchemyOnly108Holdings(), fixturePriceFn(), { decimalsFn: fixtureDecimalsFn }))
+    assert.deepEqual(out.fallbackAudit!.activityLane, { status: 'unavailable', reason: 'no_per_token_activity_evidence_at_pricing_time' })
+    assert.equal(out.fallbackAudit!.candidates.activity, 0)
+  })
+
+  it('reports it active only when real evidence is supplied — and an activity-backed holding then outranks exploratory', async () => {
+    const calls: string[] = []
+    const active = holding({ tokenAddress: '0xffff000000000000000000000000000000000002', quantity: '4.5', lastActivityAt: '2026-10-01T00:00:00Z' })
+    const unknown = Array.from({ length: 20 }, (_, i) => holding({ tokenAddress: `0x0${i.toString(16).padStart(39, '0')}`, quantity: String(7.1 + i) }))
+    const out = await silence(() => priceHoldings([...unknown, active], fixturePriceFn(calls)))
+    assert.equal(out.fallbackAudit!.activityLane.status, 'active')
+    assert.equal(calls[0], `${BASE_CHAIN_ID}:${active.tokenAddress}`)
+  })
+
+  it('the only production producer of ChainHolding.lastActivityAt sets null (no fabricated activity)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync('lib/engine/modules/holdings/fetchHoldings.ts', 'utf8')
+    assert.match(src, /lastActivityAt: null,/)
+  })
+})
+
 describe('DexScreener fallback pair identity', () => {
   const TOKEN = '0x7a1f3c09be3b5c1e0d8f2a4b6c9e1d3f5a7b9c01'
   const realFetch = globalThis.fetch

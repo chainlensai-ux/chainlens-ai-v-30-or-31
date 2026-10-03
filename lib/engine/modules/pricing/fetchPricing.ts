@@ -386,11 +386,17 @@ function compareFallbackPriority(a: number[], b: number[]): number {
 // "no price evidence" must never by itself mean "spam". The budget is now split into three lanes, filled
 // in order, all inside the SAME unchanged 30-lookup cap:
 //   1. material    — provider value, canonical (address-verified) stablecoin, native / canonical WETH;
-//   2. activity    — a real recent-transfer signal (lastActivityAt);
-//   3. exploratory — every other eligible holding, with a small RESERVED slice of the budget
-//      (FALLBACK_EXPLORATORY_RESERVED_SLOTS) that lanes 1–2 can never take. Unused reserved slots go back
-//      to lanes 1–2. The rest of the budget stays closed to exploratory holdings unless
-//      HOLDINGS_FALLBACK_EXPLORATORY_SPAM_LOOKUP_ENABLED opts in, so spam can never drain the budget.
+//   2. activity    — a real recent-transfer signal (lastActivityAt). CURRENTLY UNAVAILABLE IN PRODUCTION:
+//      fetchHoldings.ts sets lastActivityAt = null for every holding (no per-token activity index), and the
+//      only per-token transfer evidence (fetchParsedTrades) is fetched AFTER this pricing pass in
+//      workers/walletScanV2.ts, so no clean join exists yet. The lane is kept structurally so it engages the
+//      moment real evidence is supplied; the audit reports it as 'unavailable' until then.
+//   3. exploratory — every other eligible holding, split into CLEAN unknowns (no junk signal) and
+//      SUSPICIOUS ones (exploratorySuspicion). Only clean unknowns reserve slots ahead of lanes 1–2
+//      (up to FALLBACK_EXPLORATORY_RESERVED_SLOTS) — a discovery floor so unknown assets can't be starved.
+//      Suspicious rows never displace a material/activity candidate: they only use capacity lanes 1–2 left
+//      unused. Exploratory spend stays capped at the reserved size unless
+//      HOLDINGS_FALLBACK_EXPLORATORY_SPAM_LOOKUP_ENABLED opts in. Never more than the global budget.
 // Spoofed stable/blue-chip tickers (impersonation evidence) are never explored.
 export const FALLBACK_EXPLORATORY_RESERVED_SLOTS = 8
 
@@ -448,18 +454,29 @@ function exploratoryPriorityScore(h: ChainHolding): number[] {
 
 /** Deterministic lane-based selection inside the fixed budget. Pure, exported for tests. */
 export function selectFallbackKeys(params: {
+  /** Each lane already ranked; `exploratory` ranks clean unknowns ahead of suspicious ones. */
   rankedKeysByLane: Record<FallbackLane, string[]>
+  /** Exploratory keys carrying a junk signal (default: none). */
+  suspiciousExploratoryKeys?: ReadonlySet<string>
   budget: number
   exploratoryReserved: number
   allowExploratorySpamLookup: boolean
 }): { material: string[]; activity: string[]; exploratory: string[] } {
   const { rankedKeysByLane: lanes, budget } = params
-  const reserved = Math.min(Math.max(0, params.exploratoryReserved), lanes.exploratory.length, budget)
-  const primaryCap = budget - reserved
+  const suspicious = params.suspiciousExploratoryKeys ?? new Set<string>()
+  const clean = lanes.exploratory.filter((k) => !suspicious.has(k))
+  const junk = lanes.exploratory.filter((k) => suspicious.has(k))
+  const reservedSize = Math.min(Math.max(0, params.exploratoryReserved), budget)
+  // Discovery floor: only CLEAN unknowns hold slots ahead of material/activity.
+  const reservedForClean = Math.min(reservedSize, clean.length)
+  const primaryCap = budget - reservedForClean
   const material = lanes.material.slice(0, primaryCap)
   const activity = lanes.activity.slice(0, primaryCap - material.length)
-  const exploratoryCap = params.allowExploratorySpamLookup ? budget - material.length - activity.length : reserved
-  const exploratory = lanes.exploratory.slice(0, exploratoryCap)
+  const remaining = budget - material.length - activity.length
+  // Suspicious rows only get capacity material/activity left unused; exploratory spend stays capped at the
+  // reserved size unless explicitly opted in.
+  const exploratoryCap = params.allowExploratorySpamLookup ? remaining : Math.min(reservedSize, remaining)
+  const exploratory = [...clean, ...junk].slice(0, exploratoryCap)
   return { material, activity, exploratory }
 }
 
@@ -642,6 +659,13 @@ export type HoldingsFallbackAudit = {
   fallbackBudget: number
   exploratoryReservedSlots: number
   candidates: Record<FallbackLane, number>
+  exploratoryCandidates: { clean: number; suspicious: number }
+  exploratorySelected: { clean: number; suspicious: number }
+  /**
+   * 'unavailable' when no holding carries per-token activity evidence (today: always — see FALLBACK LANES).
+   * Never inferred from symbol, balance size or a fabricated timestamp.
+   */
+  activityLane: { status: 'active' | 'unavailable'; reason: string | null }
   selected: Record<FallbackLane, number>
   budgetedForLookup: number
   fallbackPriced: number
@@ -806,8 +830,15 @@ export async function priceHoldings(
     if (spoofedKeys.has(key) && laneByKey.get(key) === 'exploratory') continue // impersonation is never explored
     rankedKeysByLane[laneByKey.get(key)!].push(key)
   }
+  // Activity lane honesty: only 'active' when some holding actually carries per-token activity evidence.
+  const activityLane: HoldingsFallbackAudit['activityLane'] = holdings.some((h) => h.lastActivityAt != null)
+    ? { status: 'active', reason: null }
+    : { status: 'unavailable', reason: 'no_per_token_activity_evidence_at_pricing_time' }
+  // Exploratory scores lead with "no junk signal" (exploratoryPriorityScore[0]).
+  const suspiciousExploratoryKeys = new Set(rankedKeysByLane.exploratory.filter((k) => bestScoreByKey.get(k)![0] === 0))
   const selection = selectFallbackKeys({
     rankedKeysByLane,
+    suspiciousExploratoryKeys,
     budget: MAX_FALLBACK_TOKENS,
     exploratoryReserved: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
     allowExploratorySpamLookup,
@@ -832,6 +863,9 @@ export async function priceHoldings(
     overBudgetUnpriced: overBudgetKeys.length,
     materialFallbackCandidates: materialFallbackKeys.length,
     activityFallbackCandidates: rankedKeysByLane.activity.length,
+    activityLaneStatus: activityLane.status,
+    cleanExploratoryCandidates: rankedKeysByLane.exploratory.length - suspiciousExploratoryKeys.size,
+    suspiciousExploratoryCandidates: suspiciousExploratoryKeys.size,
     noSignalFallbackCandidates: noSignalFallbackKeys.length,
     spoofSuppressedCandidates: [...spoofedKeys].filter((k) => laneByKey.get(k) === 'exploratory').length,
     budgetedMaterialKeys: selection.material.length,
@@ -1234,6 +1268,12 @@ export async function priceHoldings(
     exploratoryReservedSlots: FALLBACK_EXPLORATORY_RESERVED_SLOTS,
     candidates: { material: rankedKeysByLane.material.length, activity: rankedKeysByLane.activity.length, exploratory: rankedKeysByLane.exploratory.length },
     selected: { material: selection.material.length, activity: selection.activity.length, exploratory: selection.exploratory.length },
+    exploratoryCandidates: { clean: rankedKeysByLane.exploratory.length - suspiciousExploratoryKeys.size, suspicious: suspiciousExploratoryKeys.size },
+    exploratorySelected: {
+      clean: selection.exploratory.filter((k) => !suspiciousExploratoryKeys.has(k)).length,
+      suspicious: selection.exploratory.filter((k) => suspiciousExploratoryKeys.has(k)).length,
+    },
+    activityLane,
     budgetedForLookup: budgetedFallbackKeys.length,
     fallbackPriced: budgetedFallbackKeys.filter((k) => fallbackPriceByKey.get(k) != null && !decimalsUnverifiedKeys.has(k)).length,
     decimalsVerifiedOnchain: onchainDecimalsByKey.size,
