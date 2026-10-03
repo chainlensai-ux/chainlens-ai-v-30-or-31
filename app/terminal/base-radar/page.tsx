@@ -665,6 +665,17 @@ function TokenCard({
   const visibleFlags = orderedFlags.slice(0, 2)
   const extraFlagCount = orderedFlags.length - visibleFlags.length
 
+  // PREMIUM CARD PASS (Base Radar polish task): same data, same click/preload/action behaviour, same
+  // copy. Structure: identity → stat row → interpretation → evidence chips + actions, with the score/
+  // verdict moved into a dedicated right-edge signal rail (score, verdict, score bar) instead of loose
+  // text. getPriorityAccent still decides the accent — it now tints the rail, not a thick left border.
+  const scorePct = Math.max(0, Math.min(100, token.radarScore))
+  const stats: Array<{ label: string; value: string; color?: string }> = [
+    { label: 'Liq', value: fmtUSD(token.liquidityUsd) },
+    { label: 'Vol 24h', value: fmtUSD(token.volume24h) },
+    { label: valuationDisplay.label, value: valuationDisplay.value },
+    { label: 'Mom', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, color: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
+  ]
   return (
     <div
       className='opportunity-card'
@@ -672,69 +683,62 @@ function TokenCard({
       ref={registerPreloadTarget}
       onMouseEnter={() => { preload(); onPreload() }}
       onFocus={() => { preload(); onPreload() }}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '8px',
-        background: 'rgba(255,255,255,0.025)',
-        borderTop: '1px solid rgba(255,255,255,0.09)',
-        borderRight: '1px solid rgba(255,255,255,0.09)',
-        borderBottom: '1px solid rgba(255,255,255,0.09)',
-        borderLeft: `3px solid ${accent.color}`,
-        borderRadius: '10px',
-        padding: '13px 15px',
-        cursor: 'pointer',
-      }}
+      style={{ ['--accent' as string]: accent.color, ['--accent-bg' as string]: accent.background, ['--accent-border' as string]: accent.border }}
     >
-      {/* MICRO-POLISH, DISCLOSED (task #1/#2 — breathing room, rank/avatar/name alignment, score
-          feeling integrated rather than a detached block): avatar centers against the FULL two-line
-          name block (unchanged), and the score/status block now sits against a subtle left divider
-          instead of floating with only whitespace separating it — same score/status values, just a
-          visual connection to the row it belongs to. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '11px' }}>
-        <div style={{ width: '30px', height: '30px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10.5px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-          {avatarText}
-        </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', minWidth: 0 }}>
-            <span style={{ fontSize: '13.5px', fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{identity.primary}</span>
-            <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
+      <div className='rc-body'>
+        {/* Identity: avatar · name + symbol · rank / address / age */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+          <div className='rc-avatar'>{avatarText}</div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', minWidth: 0 }}>
+              <span className='rc-name'>{identity.primary}</span>
+              <span className='rc-symbol'>{identity.symbol}</span>
+            </div>
+            <div className='rc-meta'>
+              <span className='rc-rank'>#{index + 1}</span>
+              <span>{shortAddr(token.contract)}</span>
+              <span className='rc-sep' aria-hidden='true'>·</span>
+              <span>{fmtAge(token.ageMinutes)}</span>
+            </div>
           </div>
-          <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            #{index + 1} · {shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}
-          </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '11px', flexShrink: 0 }}>
-          <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.09)' }} />
-          <div style={{ textAlign: 'right' }}>
-            <p style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
-            <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{getStatusDisplayLabel(token)}</p>
+
+        {/* Stat row: LIQ / VOL / MARKET CAP / MOM */}
+        <div className='rc-stats'>
+          {stats.map(stat => (
+            <div key={stat.label} className='rc-stat'>
+              <span className='rc-stat-label'>{stat.label}</span>
+              <span className='rc-stat-value' style={stat.color ? { color: stat.color } : undefined}>{stat.value}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Interpretation */}
+        <p className='rc-insight'>{insight}</p>
+
+        {/* Evidence chips + actions */}
+        <div className='rc-footer'>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 }}>
+            {visibleFlags.map(flag => {
+              const badge = getBadgeStyle(flag)
+              return <span key={flag} className='rc-chip' style={{ color: badge.color, background: badge.background, borderColor: badge.border }}>{flag}</span>
+            })}
+            {extraFlagCount > 0 && <span className='rc-chip-more'>+{extraFlagCount} more</span>}
+          </div>
+          <div className='token-card-actions' style={{ display: 'flex', gap: '6px', alignItems: 'center', flexShrink: 0 }}>
+            <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
+            <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
+            <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 16px', fontSize: '11px', color: '#7c93a8', fontFamily: 'var(--font-plex-mono)' }}>
-        <span>LIQ <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.liquidityUsd)}</b></span>
-        <span>VOL <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.volume24h)}</b></span>
-        <span>{valuationDisplay.label.toUpperCase()} <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{valuationDisplay.value}</b></span>
-        <span>MOM <b style={{ color: token.momentum === 'HIGH' ? '#99f6e4' : '#e2e8f0', fontWeight: 700 }}>{token.momentum === 'NONE' ? 'Open check' : token.momentum}</b></span>
-      </div>
-
-      <p style={{ margin: 0, fontSize: '11.5px', color: '#a3b4c4', lineHeight: 1.5 }}>{insight}</p>
-
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 }}>
-          {visibleFlags.map(flag => {
-            const badge = getBadgeStyle(flag)
-            return <span key={flag} style={{ padding: '3px 7px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.05em', color: badge.color, background: badge.background, border: `1px solid ${badge.border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{flag}</span>
-          })}
-          {extraFlagCount > 0 && <span style={{ fontSize: '9.5px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>+{extraFlagCount} more</span>}
-        </div>
-        <div className='token-card-actions' style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-          <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
-          <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
-          <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
-        </div>
+      {/* Signal rail: score, verdict, score bar */}
+      <div className='rc-rail' aria-label={`Radar score ${token.radarScore}, ${getStatusDisplayLabel(token)}`}>
+        <span className='rc-rail-label'>Score</span>
+        <span className='rc-rail-score'>{token.radarScore}</span>
+        <span className='rc-rail-bar' aria-hidden='true'><span style={{ width: `${scorePct}%` }} /></span>
+        <span className='rc-rail-verdict'>{getStatusDisplayLabel(token)}</span>
       </div>
     </div>
   )
@@ -758,36 +762,24 @@ function ActionButton({
   hint?: string
   variant?: 'primary' | 'secondary' | 'ghost'
 }) {
+  // CTA HIERARCHY (Base Radar polish task): primary = solid teal (Scan Token), secondary = quiet outline
+  // (Ask CORTEX), ghost = text-only (Watchlist; teal when active). Same labels and click behaviour;
+  // the 44px tap target is kept.
   const isPrimary = variant === 'primary'
   const isGhost = variant === 'ghost'
-  const border = active ? 'rgba(45,212,191,0.35)' : isPrimary ? 'rgba(45,212,191,0.40)' : isGhost ? 'rgba(148,163,184,0.14)' : 'rgba(96,165,250,0.20)'
-  const background = active ? 'rgba(45,212,191,0.14)' : isPrimary ? 'rgba(45,212,191,0.16)' : isGhost ? 'transparent' : 'rgba(255,255,255,0.03)'
-  const color = disabled ? '#475569' : active ? '#2DD4BF' : isPrimary ? '#5eead4' : isGhost ? '#94a3b8' : '#cbd5e1'
+  const className = `rc-btn ${isPrimary ? 'rc-btn-primary' : isGhost ? 'rc-btn-ghost' : 'rc-btn-secondary'}${active ? ' rc-btn-active' : ''}`
 
   return (
     <button
+      className={className}
       onClick={(e) => {
         e.stopPropagation()
         if (!disabled) onClick()
       }}
       title={hint}
       disabled={disabled}
-      style={{
-        minHeight: '44px',
-        padding: '5px 9px',
-        borderRadius: '8px',
-        fontSize: '9px',
-        fontWeight: 700,
-        letterSpacing: '0.06em',
-        textTransform: 'uppercase',
-        border: `1px solid ${border}`,
-        background,
-        color,
-        fontFamily: 'var(--font-plex-mono)',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        whiteSpace: 'nowrap',
-      }}
     >
+      {active && <span aria-hidden='true' style={{ marginRight: '5px' }}>✓</span>}
       {label}
     </button>
   )
@@ -801,9 +793,11 @@ function ActionButton({
 function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: string; value: string; caption: string; accent?: string }) {
   return (
     <div className="radar-strip-item">
-      <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-      <p title={value} style={{ margin: 0, fontSize: '13.5px', color: accent, fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</p>
-      <p style={{ margin: '3px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.25, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{caption}</p>
+      <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.14em', color: '#5b7186', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <span aria-hidden='true' style={{ width: '5px', height: '5px', borderRadius: '50%', background: accent, opacity: 0.85, flexShrink: 0 }} />{label}
+      </p>
+      <p title={value} style={{ margin: 0, fontSize: '16px', color: accent, fontWeight: 700, letterSpacing: '-0.015em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }}>{value}</p>
+      <p style={{ margin: '4px 0 0', fontSize: '10.5px', color: '#55687d', lineHeight: 1.3, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{caption}</p>
     </div>
   )
 }
@@ -1040,43 +1034,61 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
   // spacing/readability, keep warning content unchanged"): warning text/dots dimmed one more notch
   // (#c9a86a -> #a89268) and given more breathing room (gap/line-height up slightly) — the warning
   // strings themselves, and the signals above them, are byte-for-byte unchanged.
+  // RIGHT-RAIL POLISH (Base Radar polish task): same signals / Robinhood notes / cautions, regrouped into
+  // labelled sections. The first two cautions stay visible; the rest sit behind a native disclosure
+  // (still in the DOM, nothing removed). Primary CTA = Open Token Scanner, ghost = Rescan.
+  const visibleWarnings = warnings.slice(0, 2)
+  const moreWarnings = warnings.slice(2, 5)
   return (
-    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
-      <p style={{ margin: '0 0 3px', color: '#5eead4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
-      <p style={{ margin: '0 0 11px', color: '#64748b', fontSize: '10.5px', lineHeight: 1.4 }}>
+    <div className='rr-panel'>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
+        <p className='rr-title' style={{ color: '#5eead4', display: 'flex', alignItems: 'center', gap: '7px' }}>
+          <span aria-hidden='true' style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 0 3px rgba(45,212,191,0.12)' }} />
+          CORTEX Radar Read
+        </p>
+      </div>
+      <p style={{ margin: '0 0 14px', color: '#64748b', fontSize: '11px', lineHeight: 1.45 }}>
         {isRobinhood
           ? `${summary.newPools} token${summary.newPools === 1 ? '' : 's'} found. Market/liquidity data is live. Some safety simulations are unavailable for Robinhood Chain.`
           : 'Live interpretation of the visible feed. Not financial advice.'}
       </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '12px' }}>
+      <p className='rr-section'>Signals</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
         {signals.slice(0, 4).map(signal => (
-          <div key={signal} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#94a3b8', fontSize: '10.5px', lineHeight: 1.5 }}>
-            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, marginTop: '6px' }} />
-            <span>{signal}</span>
-          </div>
+          <div key={signal} className='rr-item' style={{ color: '#a9b7c6' }}><i style={{ background: '#2DD4BF' }} /><span>{signal}</span></div>
         ))}
       </div>
       {isRobinhood && (
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
-          {robinhoodNotes.map(note => (
-            <div key={note} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#7dd3fc', fontSize: '10.5px', lineHeight: 1.5 }}>
-              <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#22d3ee', flexShrink: 0, marginTop: '6px' }} />
-              <span>{note}</span>
-            </div>
+        <>
+          <p className='rr-section'>Chain coverage</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
+            {robinhoodNotes.map(note => (
+              <div key={note} className='rr-item' style={{ color: '#8fc9e6' }}><i style={{ background: '#22d3ee' }} /><span>{note}</span></div>
+            ))}
+          </div>
+        </>
+      )}
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+        <p className='rr-section'>Before you act</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+          {visibleWarnings.map(warning => (
+            <div key={warning} className='rr-item' style={{ color: '#a89268' }}><i style={{ background: '#a89268' }} /><span>{warning}</span></div>
           ))}
         </div>
-      )}
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
-        {warnings.slice(0, 5).map(warning => (
-          <div key={warning} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#a89268', fontSize: '10.5px', lineHeight: 1.5 }}>
-            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#a89268', flexShrink: 0, marginTop: '6px' }} />
-            <span>{warning}</span>
-          </div>
-        ))}
+        {moreWarnings.length > 0 && (
+          <details className='rr-more'>
+            <summary>+{moreWarnings.length} evidence notes</summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginTop: '8px' }}>
+              {moreWarnings.map(warning => (
+                <div key={warning} className='rr-item' style={{ color: '#8f8063', fontSize: '11px' }}><i style={{ background: '#8f8063' }} /><span>{warning}</span></div>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '12px' }}>
-        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', padding: '6px 9px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.24)', background: 'rgba(45,212,191,0.08)', color: '#5eead4', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Token Scanner</Link>
-        <button onClick={onRescan} style={{ padding: '6px 9px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.10)', background: 'transparent', color: '#94a3b8', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+        <Link href="/terminal/token-scanner" className='rr-btn rr-btn-primary' style={{ flex: 1 }}>Open Token Scanner</Link>
+        <button onClick={onRescan} className='rr-btn rr-btn-ghost'>Rescan</button>
       </div>
     </div>
   )
@@ -1089,35 +1101,37 @@ function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: Ra
 // token that isn't currently on radar). Remove calls the same real DELETE endpoint.
 function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: WatchlistTokenRow[]; loading: boolean; onOpen: (address: string) => void; onRemove: (address: string) => void }) {
   return (
-    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-        <p style={{ margin: 0, color: '#94a3b8', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Watchlist</p>
-        {tokens.length > 0 && <span style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>{tokens.length}</span>}
+    <div className='rr-panel'>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <p className='rr-title' style={{ color: '#cbd5e1' }}>Watchlist</p>
+        {tokens.length > 0 && <span style={{ fontSize: '10px', fontWeight: 700, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '2px 7px', borderRadius: '999px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>{tokens.length}</span>}
       </div>
 
       {loading ? (
-        <p style={{ margin: 0, fontSize: '10.5px', color: '#5b7186' }}>Loading…</p>
+        <p style={{ margin: 0, fontSize: '11px', color: '#5b7186' }}>Loading…</p>
       ) : tokens.length === 0 ? (
-        <p style={{ margin: 0, fontSize: '10.5px', color: '#5b7186', lineHeight: 1.5 }}>
-          No tokens watched yet. Click Watchlist on any token below to save it here.
-        </p>
+        <div style={{ padding: '14px 12px', borderRadius: '10px', border: '1px dashed rgba(148,163,184,0.18)', textAlign: 'center' }}>
+          <p style={{ margin: 0, fontSize: '11px', color: '#7c8da1', lineHeight: 1.5 }}>
+            No tokens watched yet. Click Watchlist on any token below to save it here.
+          </p>
+        </div>
       ) : (
         <div style={{ display: 'grid', gap: '6px' }}>
           {tokens.slice(0, 8).map(t => (
-            <div key={t.address} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div key={t.address} className='rr-watch-row'>
               <button
                 onClick={() => onOpen(t.address)}
-                style={{ all: 'unset', cursor: 'pointer', flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: '6px' }}
+                style={{ all: 'unset', cursor: 'pointer', flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
               >
-                <span style={{ fontSize: '11px', fontWeight: 800, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {t.symbol || shortAddr(t.address)}
                 </span>
-                {t.score != null && <span style={{ fontSize: '9.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>{t.score}</span>}
+                {t.score != null && <span style={{ fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, padding: '1px 6px', borderRadius: '5px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.18)' }}>{t.score}</span>}
               </button>
               <button
                 onClick={() => onRemove(t.address)}
                 aria-label={`Remove ${t.symbol ?? shortAddr(t.address)} from watchlist`}
-                style={{ all: 'unset', cursor: 'pointer', color: '#64748b', fontSize: '13px', lineHeight: 1, padding: '2px', flexShrink: 0 }}
+                style={{ all: 'unset', cursor: 'pointer', color: '#55687d', fontSize: '14px', lineHeight: 1, padding: '2px 2px 2px 4px', flexShrink: 0 }}
               >
                 ×
               </button>
@@ -1127,7 +1141,7 @@ function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: Watchli
       )}
 
       {tokens.length > 0 && (
-        <Link href="/terminal/watchlist" style={{ display: 'inline-block', marginTop: '10px', fontSize: '9.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+        <Link href="/terminal/watchlist" className='rr-btn rr-btn-ghost' style={{ width: '100%', marginTop: '12px', boxSizing: 'border-box' }}>
           View Full Watchlist →
         </Link>
       )}
@@ -1141,11 +1155,11 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
       {/* DECORATIVE RING REMOVED, DISCLOSED (task #7/#8 — "calmer", "less neon"): the spinning-
           look dashed ring + glow here carried no data, purely decorative "cyber-noise" per the
           task's own framing. Stat list below is unchanged. */}
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '13px' }}>
-        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+      <div className='rr-panel'>
+        <p className='rr-title' style={{ color: '#94a3b8', marginBottom: '12px' }}>
           Radar Stats
         </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 10px' }}>
           <Stat label='New pools / tokens' value={String(summary.newPools)} loading={loading} />
           <Stat label='Worth watching' value={String(summary.worthWatching)} loading={loading} />
           <Stat label='High momentum' value={String(summary.highMomentum)} loading={loading} />
@@ -1160,8 +1174,8 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
         </p>
       )}
 
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
-        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+      <div className='rr-panel'>
+        <p className='rr-title' style={{ color: '#94a3b8', marginBottom: '10px' }}>
           Evidence
         </p>
         {[
@@ -1176,10 +1190,10 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
       </div>
 
       {showUpsell && <div style={{
-        background: 'linear-gradient(180deg, rgba(168,85,247,0.10), rgba(45,212,191,0.08))',
-        border: '1px solid rgba(255,255,255,0.10)',
-        borderRadius: '12px',
-        padding: '12px 13px',
+        background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(45,212,191,0.015)), #080c16',
+        border: '1px solid rgba(45,212,191,0.18)',
+        borderRadius: '14px',
+        padding: '14px 15px',
       }}>
         <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.35, color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>
           Upgrade to Pro
@@ -1213,10 +1227,10 @@ function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: Rada
 function Stat({ label, value, loading }: { label: string; value: string; loading: boolean }) {
   return (
     <div>
-      <p style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 4px' }}>
+      <p style={{ fontSize: '8.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#55687d', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 4px' }}>
         {label}
       </p>
-      <p style={{ fontSize: '16px', fontWeight: 700, color: loading ? '#3a5268' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', margin: 0, transition: 'color 0.3s' }}>
+      <p style={{ fontSize: '16px', fontWeight: 700, color: loading ? '#3a5268' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums', margin: 0, transition: 'color 0.3s' }}>
         {value}
       </p>
     </div>
@@ -2153,15 +2167,74 @@ export default function BaseRadarPage() {
           outline: 2px solid rgba(45,212,191,0.55); outline-offset: 2px; border-radius: 8px;
         }
 
-        /* Feed cards — flat, simple hover lift only (no shine sweep, no blur, no glow) */
-        .opportunity-card { transition: border-color 0.15s ease, transform 0.15s ease; }
-        .opportunity-card:hover { border-color: rgba(255,255,255,0.16); transform: translateY(-1px); }
+        /* ── Feed cards (premium pass): layered surface, inner sections, right-edge signal rail ── */
+        .opportunity-card {
+          position: relative; display: grid; grid-template-columns: minmax(0,1fr) 96px; cursor: pointer;
+          border-radius: 14px; overflow: hidden;
+          background: linear-gradient(180deg, rgba(255,255,255,0.032) 0%, rgba(255,255,255,0.014) 100%), #080c16;
+          border: 1px solid rgba(255,255,255,0.075);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.35);
+          transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+        }
+        .opportunity-card:hover { border-color: rgba(255,255,255,0.14); transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 12px 32px rgba(0,0,0,0.38), 0 0 0 1px var(--accent-bg); }
         .opportunity-card:active { transform: translateY(0); }
+        .rc-body { padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+        .rc-avatar { width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: #e2e8f0; font-family: var(--font-plex-mono); background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)); border: 1px solid rgba(255,255,255,0.10); }
+        .rc-name { font-size: 15.5px; font-weight: 700; letter-spacing: -0.01em; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rc-symbol { font-size: 11px; font-weight: 600; color: #7c8da1; font-family: var(--font-plex-mono); white-space: nowrap; }
+        .rc-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 10.5px; color: #55687d; font-family: var(--font-plex-mono); white-space: nowrap; overflow: hidden; }
+        .rc-rank { color: #94a3b8; font-weight: 700; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); }
+        .rc-sep { color: #334155; }
+        .rc-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; background: rgba(255,255,255,0.018); }
+        .rc-stat { padding: 8px 12px; min-width: 0; }
+        .rc-stat:not(:first-child) { border-left: 1px solid rgba(255,255,255,0.055); }
+        .rc-stat-label { display: block; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #55687d; font-family: var(--font-plex-mono); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rc-stat-value { display: block; font-size: 13px; font-weight: 700; color: #e2e8f0; font-family: var(--font-plex-mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .rc-insight { margin: 0; font-size: 12.5px; line-height: 1.55; color: #b4c2d1; }
+        .rc-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.055); }
+        .rc-chip { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; border: 1px solid; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); white-space: nowrap; }
+        .rc-chip-more { font-size: 10px; color: #55687d; font-family: var(--font-plex-mono); }
+        /* Signal rail — accent comes from getPriorityAccent via CSS vars */
+        .rc-rail { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 14px 10px; border-left: 1px solid rgba(255,255,255,0.06); background: linear-gradient(180deg, var(--accent-bg), rgba(255,255,255,0.01) 75%); position: relative; }
+        .rc-rail::before { content: ''; position: absolute; left: -1px; top: 14px; bottom: 14px; width: 2px; border-radius: 2px; background: var(--accent); opacity: 0.55; }
+        .rc-rail-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: #64748b; font-family: var(--font-plex-mono); }
+        .rc-rail-score { font-size: 26px; font-weight: 700; line-height: 1; color: var(--accent); font-family: var(--font-plex-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+        .rc-rail-bar { width: 56px; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.07); overflow: hidden; }
+        .rc-rail-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--accent); opacity: 0.8; }
+        .rc-rail-verdict { max-width: 100%; text-align: center; padding: 3px 7px; border-radius: 5px; font-size: 8.5px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); font-family: var(--font-plex-mono); overflow-wrap: anywhere; line-height: 1.3; }
+        /* CTA hierarchy */
+        .rc-btn { min-height: 44px; padding: 0 12px; border-radius: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); white-space: nowrap; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; }
+        .rc-btn:disabled { color: #475569 !important; cursor: not-allowed; }
+        .rc-btn-primary { min-height: 36px; background: #2cc1b2; border-color: #2cc1b2; color: #04211e; box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(0,0,0,0.4); }
+        .rc-btn-primary:hover:not(:disabled) { background: #3bcfc0; border-color: #3bcfc0; filter: none !important; }
+        .rc-btn-secondary { min-height: 36px; background: rgba(255,255,255,0.03); border-color: rgba(148,163,184,0.22); color: #cbd5e1; }
+        .rc-btn-secondary:hover:not(:disabled) { background: rgba(255,255,255,0.06); border-color: rgba(148,163,184,0.38); filter: none !important; }
+        .rc-btn-ghost { min-height: 36px; background: transparent; color: #7c8da1; padding: 0 8px; }
+        .rc-btn-ghost:hover:not(:disabled) { color: #cbd5e1; filter: none !important; }
+        .rc-btn-active { color: #5eead4 !important; }
+        @media (pointer: coarse) { .rc-btn { min-height: 44px !important; } }
 
-        /* Compact summary strip */
-        .radar-strip { display: flex; flex-wrap: wrap; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(255,255,255,0.02); margin-bottom: 12px; overflow: hidden; }
-        .radar-strip-item { flex: 1 1 150px; padding: 9px 15px; min-width: 0; }
-        .radar-strip-item:not(:first-child) { border-left: 1px solid rgba(255,255,255,0.07); }
+        /* ── Summary strip: live telemetry ── */
+        .radar-strip { display: flex; flex-wrap: wrap; border: 1px solid rgba(255,255,255,0.075); border-radius: 14px; background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #080c16; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); margin-bottom: 14px; overflow: hidden; }
+        .radar-strip-item { flex: 1 1 150px; padding: 12px 18px 13px; min-width: 0; position: relative; }
+        .radar-strip-item:not(:first-child)::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 1px; background: rgba(255,255,255,0.07); }
+
+        /* ── Right rail panels ── */
+        .rr-panel { border-radius: 14px; border: 1px solid rgba(255,255,255,0.075); background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.012)), #080c16; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); padding: 15px; }
+        .rr-title { margin: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; font-family: var(--font-plex-mono); }
+        .rr-section { font-size: 9px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: #475569; font-family: var(--font-plex-mono); margin: 0 0 7px; }
+        .rr-item { display: flex; gap: 9px; align-items: flex-start; font-size: 11.5px; line-height: 1.5; }
+        .rr-item > i { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 7px; }
+        .rr-more summary { cursor: pointer; list-style: none; font-size: 10.5px; color: #64748b; font-family: var(--font-plex-mono); margin-top: 6px; }
+        .rr-more summary::-webkit-details-marker { display: none; }
+        .rr-more summary:hover { color: #94a3b8; }
+        .rr-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 0 12px; border-radius: 8px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--font-plex-mono); text-decoration: none; cursor: pointer; white-space: nowrap; }
+        .rr-btn-primary { background: rgba(45,212,191,0.12); border: 1px solid rgba(45,212,191,0.32); color: #7fe3d5; }
+        .rr-btn-primary:hover { background: rgba(45,212,191,0.18); }
+        .rr-btn-ghost { background: transparent; border: 1px solid rgba(148,163,184,0.18); color: #94a3b8; }
+        .rr-btn-ghost:hover { border-color: rgba(148,163,184,0.34); color: #cbd5e1; }
+        .rr-watch-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.055); transition: border-color 0.15s ease, background 0.15s ease; }
+        .rr-watch-row:hover { border-color: rgba(255,255,255,0.12); background: rgba(255,255,255,0.035); }
 
         /* Filter chips — simple hover feedback, no glow */
         .radar-chip { transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease; }
@@ -2173,7 +2246,18 @@ export default function BaseRadarPage() {
 
         @media (max-width: 768px) {
           .radar-main { padding: 18px 12px 120px !important; overflow-x: hidden !important; }
-          .opportunity-card { padding: 10px !important; }
+          .opportunity-card { grid-template-columns: minmax(0,1fr); }
+          .rc-body { padding: 13px 13px 12px; }
+          .rc-stats { grid-template-columns: repeat(2, minmax(0,1fr)); }
+          .rc-stat:nth-child(3) { border-left: none; }
+          .rc-stat:nth-child(n+3) { border-top: 1px solid rgba(255,255,255,0.055); }
+          /* Signal rail becomes a compact score band at the top of the card */
+          .rc-rail { order: -1; flex-direction: row; justify-content: flex-start; gap: 10px; padding: 9px 13px; border-left: none; border-bottom: 1px solid rgba(255,255,255,0.06); background: linear-gradient(90deg, var(--accent-bg), rgba(255,255,255,0.01) 70%); }
+          .rc-rail::before { left: 0; right: auto; top: 0; bottom: 0; width: 2px; border-radius: 0; }
+          .rc-rail-score { font-size: 20px; }
+          .rc-rail-verdict { margin-left: auto; }
+          .token-card-actions { width: 100%; }
+          .token-card-actions .rc-btn { flex: 1; justify-content: center; }
           .radar-grid { grid-template-columns: 1fr !important; }
           .radar-stats { position: static !important; }
           .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
@@ -2187,7 +2271,7 @@ export default function BaseRadarPage() {
         }
       `}</style>
 
-      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(34,211,238,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(168,85,247,0.12), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(45,212,191,0.07), transparent 50%), #05070f' }}>
+      <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(34,211,238,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(99,102,241,0.06), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(45,212,191,0.07), transparent 50%), #05070f' }}>
         {/* HEADER TIGHTENED, DISCLOSED (task #1): same title/LIVE badge/copy/refresh/sort — the
             gradient title no longer animates (static gradient text, calmer per task #8's "less
             neon"), and vertical spacing is tighter throughout. */}
@@ -2399,7 +2483,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {filteredAndSortedTokens.map((token, i) => (
                 <TokenCard
                   key={token.contract}
