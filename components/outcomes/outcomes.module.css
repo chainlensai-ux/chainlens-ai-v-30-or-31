@@ -118,6 +118,7 @@
 .evidenceFields dd { margin:4px 0 8px; }
 .evidenceList { padding-left:17px; font-size:12px; }
 .after { border-top:1px solid #293545; margin-top:8px; padding-bottom:16px; }
+.after > summary { cursor:pointer; padding:12px 0 0; font-size:12px; color:#9bb5b5; }
 .after ul { padding-left:18px; color:#bac6d4; font-size:13px; line-height:1.7; }
 .liveMarket { margin:0 0 16px; padding:16px; border:1px solid #293f4b; border-radius:14px; background:linear-gradient(180deg,#12241f 0%,#111e2a 42%); min-width:0; }
 .liveHead { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
@@ -140,17 +141,42 @@
   .receiptHead { padding:12px 14px 10px; }
   .receiptBody { padding:12px 14px 18px; }
 }
-.trackSection { border-top: 1px solid rgba(148,163,184,.14); padding: 16px 0; font-size: 13px; }
-.trackSection h3 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
-.trackSection ul { padding-left: 18px; line-height: 1.7; }
-.trackSection [data-tone="positive"] { color: #6ee7b7; }
-.trackSection [data-tone="negative"] { color: #fda4af; }
-.trackSection [data-tone="caution"] { color: #fcd34d; }
-.trackComparisons { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
-.trackComparisons > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.trackComparisons strong { font-size: 14px; }
-.trackTimeline { list-style: none; padding: 0; margin: 0; }
-.trackTimeline li { display: grid; grid-template-columns: 130px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(148,163,184,.08); overflow-wrap: anywhere; }
-.trackTimeline time { color: #94a3b8; font-size: 11px; }
-.trackTimeline small { display: block; margin-top: 4px; }
-@media (max-width: 480px) { .trackComparisons { grid-template-columns: 1fr; } .trackTimeline li { grid-template-columns: 1fr; gap: 4px; } }
+.trackDashboard { margin: 0 0 16px; color: #c8d4df; font-size: 12px; }
+.trackDashboard h3 { margin: 0; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; color: #91adaf; }
+.trackSummary { padding: 12px 14px; border: 1px solid #24403e; border-radius: 9px; background: #0b171b; }
+.trackSummaryHead { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.trackSummaryStatus { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #b9cbd0; }
+.trackDashboard .trackRiskNote { margin: 8px 0 4px; font-size: 12px; }
+.trackDashboard .trackFootnote { margin: 6px 0 0; color: #8494a8; font-size: 10px; line-height: 1.45; }
+.trackChanges { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 4px; }
+.trackChanges li { display: flex; gap: 8px; line-height: 1.5; }
+.trackDashboard [data-tone="positive"] { --track-accent: #83c9b0; }
+.trackDashboard [data-tone="negative"] { --track-accent: #e39aa3; }
+.trackDashboard [data-tone="caution"] { --track-accent: #dbbc7d; }
+.trackChanges li { color: var(--track-accent, #bcc8d7); }
+.trackSection { padding-top: 14px; }
+.trackComparisons { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin-top: 8px; }
+.trackMetric { min-width: 0; padding: 10px; background: #0a131d; border: 1px solid #24343e; border-top-color: var(--track-accent, #294943); border-radius: 7px; }
+.trackMetricLabel { display: block; color: #94a6b9; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 9px; }
+.trackValues { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.trackValues strong { font-size: 20px; line-height: 1.2; letter-spacing: -.03em; color: #e3edf4; }
+.trackOriginal { font-size: 11px; color: #93a1b3; }
+.trackArrow { font-size: 11px; color: #708c89; }
+.trackSeparator { border-left: 1px solid #35404c; height: 12px; align-self: center; }
+.trackMetricStatus { display: block; margin-top: 7px; color: #8d9daf; font-size: 10px; line-height: 1.45; }
+.trackMetricStatus span { display: block; }
+.trackDelta { display: block; margin-top: 7px; font-size: 11px; color: var(--track-accent, #98a7b8); }
+.trackActivity { display: block; font-size: 12px; font-weight: 500; line-height: 1.45; }
+.trackDashboard .trackEmpty { margin: 8px 0; color: #98a8ba; font-size: 12px; }
+.trackTimeline { list-style: none; padding: 0; margin: 10px 0 0 4px; }
+.trackTimeline li { position: relative; padding: 0 0 13px 17px; border-left: 1px solid #29413f; overflow-wrap: anywhere; }
+.trackTimeline li:last-child { padding-bottom: 2px; border-left-color: transparent; }
+.trackEventDot { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--track-accent, #6d9790); left: -3px; top: 5px; }
+.trackTimeline time { display: block; color: #93a4b7; font-size: 10px; margin-bottom: 3px; }
+.trackEventTitle { color: var(--track-accent, #cbd6e2); font-size: 12px; line-height: 1.4; }
+.trackEventSource { display: block; color: #8494a8; font-size: 10px; margin-top: 3px; }
+.trackTransaction { margin-top: 4px; font-size: 10px; color: #93a4b7; }
+.trackTransaction summary { cursor: pointer; }
+.trackTransaction span { display: block; padding-top: 4px; }
+@media (max-width: 600px) { .trackComparisons { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 340px) { .trackComparisons { grid-template-columns: 1fr; } }
