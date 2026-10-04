@@ -34,8 +34,11 @@ import {
   classifyPriceFailureReason,
   defaultLastVerifiedPriceStore,
   STALE_VERIFIED_PRICE_MAX_AGE_MS,
+  awaitLastVerifiedWrites,
+  type LastVerifiedPersistenceSummary,
   type LastVerifiedPrice,
   type LastVerifiedPriceStore,
+  type LastVerifiedWriteOutcome,
 } from '@/lib/pricing/lastVerifiedPrice'
 import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
 import { isVerifiedStablecoinAddress, isCanonicalWethAddress, isNativePseudoAddress } from '@/src/modules/quoteLegPricing/index'
@@ -490,11 +493,13 @@ export function decideStaleVerifiedReuse(input: {
         if (at?.attempted && !at.ok) reasons.push(at.reason ?? 'unknown')
       }
     }
-    if (reasons.length === 0) reasons.push('not_looked_up_budget')
+    if (reasons.length === 0) reasons.push('no_failure_evidence') // unknown → never reused
   }
   if (input.currentDecimals == null || input.currentDecimals !== prior.decimals) return { reuse: false, reason: 'decimals_identity_unverified', failureReasons: reasons }
   const age = input.now - prior.observedAt
   if (!(age >= 0) || age > STALE_VERIFIED_PRICE_MAX_AGE_MS) return { reuse: false, reason: 'prior_price_too_old', failureReasons: reasons }
+  // A budget skip is not failure evidence: no fresh lookup happened, so the prior price is not reused.
+  if (reasons.includes('not_looked_up_budget')) return { reuse: false, reason: 'not_looked_up_no_fresh_attempt', failureReasons: reasons }
   const blocking = reasons.find((r) => classifyPriceFailureReason(r) !== 'transient')
   if (blocking) return { reuse: false, reason: `failure_not_transient:${blocking}`, failureReasons: reasons }
   return { reuse: true, reason: 'transient_failure_recent_verified_price', failureReasons: reasons }
@@ -1676,6 +1681,8 @@ export async function priceHoldings(
   // LAST-VERIFIED MEMORY WRITE: only FRESH verified prices, with their ORIGINAL source + observedAt (a cache hit
   // keeps the original observation; the store ignores an observation that is not newer). Bounded to holdings
   // worth at least $1 — a lookup-priority memory, not a price index. A stale reuse is never written.
+  // This scan's OWN writes (never another scan's), awaited later by the worker before final publication.
+  const lastVerifiedWrites: Array<Promise<LastVerifiedWriteOutcome>> = []
   if (lastVerified) {
     const recorded = new Set<string>()
     for (let i = 0; i < pricedHoldings.length; i += 1) {
@@ -1686,7 +1693,7 @@ export async function priceHoldings(
       const confidence = p.priceSource === 'provider' ? 'high' : (priceResultByKey.get(key)?.evidence.confidence ?? null)
       if (confidence !== 'high' && confidence !== 'medium') continue
       recorded.add(key)
-      lastVerified.record({ chainId: p.chainId, tokenAddress: p.tokenAddress, priceUsd: p.priceUsd, source: p.priceSource, observedAt: p.priceObservedAt, confidence, decimals: p.decimals })
+      lastVerifiedWrites.push(lastVerified.record({ chainId: p.chainId, tokenAddress: p.tokenAddress, priceUsd: p.priceUsd, source: p.priceSource, observedAt: p.priceObservedAt, confidence, decimals: p.decimals }))
     }
   }
   if (priorMaterialValueByKey.size > 0 || staleByKey.size > 0 || Object.keys(staleRejections).length > 0) {
@@ -1699,5 +1706,6 @@ export async function priceHoldings(
     })
   }
 
-  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount, fallbackAudit, portfolioPricingEvidence }
+  const flushLastVerifiedWrites = (maxMs?: number): Promise<LastVerifiedPersistenceSummary> => awaitLastVerifiedWrites(lastVerifiedWrites, maxMs)
+  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount, fallbackAudit, portfolioPricingEvidence, flushLastVerifiedWrites }
 }

@@ -63,9 +63,34 @@ export type LastVerifiedPriceStore = {
   /** One batched L2 read for the keys L1 does not hold. Never throws. */
   prefetch: (items: ReadonlyArray<{ chainId: number; tokenAddress: string }>) => Promise<void>
   get: (chainId: number, tokenAddress: string) => LastVerifiedPrice | null
-  /** Keeps the record with the NEWER observedAt; an equal/older observation is a no-op (no re-stamp, no write). */
-  record: (entry: Omit<LastVerifiedPrice, 'v'>) => void
+  /**
+   * Keeps the record with the NEWER observedAt; an equal/older observation is a no-op (no re-stamp, no write).
+   * Returns THIS write's outcome (never rejects), so a caller can await exactly its own writes.
+   */
+  record: (entry: Omit<LastVerifiedPrice, 'v'>) => Promise<LastVerifiedWriteOutcome>
+  /** Awaits every pending write of this store (all callers). Prefer awaiting the promises `record` returned. */
   flush: () => Promise<void>
+}
+
+export type LastVerifiedWriteOutcome = 'persisted' | 'failed' | 'l1_only' | 'skipped'
+
+export type LastVerifiedPersistenceSummary = { queued: number; persisted: number; failed: number; pending: number }
+
+/** Upper bound on awaiting a scan's last-verified writes: the KV write timeout plus slack (never indefinite). */
+export const LAST_VERIFIED_FLUSH_MAX_MS = 1_250
+
+/**
+ * Awaits the given writes (one scan's own), bounded by `maxMs`. Never throws; a write still running at the bound
+ * is reported as `pending` and left to finish on its own (it already has its own KV timeout).
+ */
+export async function awaitLastVerifiedWrites(writes: ReadonlyArray<Promise<LastVerifiedWriteOutcome>>, maxMs = LAST_VERIFIED_FLUSH_MAX_MS): Promise<LastVerifiedPersistenceSummary> {
+  const settled: LastVerifiedWriteOutcome[] = []
+  const tracked = writes.map((w) => w.then((o) => { settled.push(o) }, () => { settled.push('failed') }))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([Promise.all(tracked), new Promise<void>((r) => { timer = setTimeout(r, Math.max(0, maxMs)) })])
+  if (timer) clearTimeout(timer)
+  const count = (o: LastVerifiedWriteOutcome) => settled.filter((x) => x === o).length
+  return { queued: writes.length, persisted: count('persisted'), failed: count('failed'), pending: writes.length - settled.length }
 }
 
 export function createLastVerifiedPriceStore(opts: { l2?: LastVerifiedPriceL2 | null; now?: () => number } = {}): LastVerifiedPriceStore {
@@ -108,20 +133,27 @@ export function createLastVerifiedPriceStore(opts: { l2?: LastVerifiedPriceL2 | 
     },
     record(entry) {
       const value: LastVerifiedPrice = { v: LAST_VERIFIED_PRICE_VERSION, ...entry, tokenAddress: lc(entry.tokenAddress) }
-      if (!parseLastVerifiedPrice(value, entry.chainId, entry.tokenAddress, now())) return
+      if (!parseLastVerifiedPrice(value, entry.chainId, entry.tokenAddress, now())) return Promise.resolve('skipped')
       const key = lastVerifiedPriceKey(entry.chainId, entry.tokenAddress)
       const existing = l1.get(key)
-      if (existing && existing.observedAt >= value.observedAt) return
+      if (existing && existing.observedAt >= value.observedAt) return Promise.resolve('skipped')
       l1.set(key, value)
       if (l1.size > MAX_ENTRIES) {
         const oldest = l1.keys().next().value
         if (oldest !== undefined) l1.delete(oldest)
       }
       const l2 = opts.l2
-      if (!l2) return
+      if (!l2) return Promise.resolve('l1_only')
       const ttlSeconds = Math.max(1, Math.ceil((value.observedAt + LAST_VERIFIED_PRICE_MEMORY_MS - now()) / 1000))
-      const w: Promise<void> = l2.set(key, value, ttlSeconds).catch(() => {}).finally(() => { pending.delete(w) })
-      pending.add(w)
+      let w: Promise<LastVerifiedWriteOutcome>
+      try {
+        w = l2.set(key, value, ttlSeconds).then((): LastVerifiedWriteOutcome => 'persisted', (): LastVerifiedWriteOutcome => 'failed')
+      } catch {
+        w = Promise.resolve('failed')
+      }
+      const tracked: Promise<void> = w.then(() => {}).finally(() => { pending.delete(tracked) })
+      pending.add(tracked)
+      return w
     },
     async flush() {
       await Promise.all([...pending])
@@ -164,7 +196,7 @@ export function defaultLastVerifiedPriceStore(): LastVerifiedPriceStore {
 // evidence about the market. PERMANENT: the source answered and says there is no usable market for this exact
 // token (no pair, wrong pair / identity mismatch, zero or too-thin liquidity, unparseable price, unverified
 // decimals). Anything unrecognised is treated as NOT transient (no reuse).
-export type PriceFailureKind = 'transient' | 'permanent' | 'unknown'
+export type PriceFailureKind = 'transient' | 'permanent' | 'not_attempted' | 'unknown'
 
 const PERMANENT_REASONS = new Set([
   'no_matching_pair', 'no_pair_meets_minimum_liquidity', 'zero_liquidity', 'liquidity_below_minimum', 'unparseable_price',
@@ -177,6 +209,9 @@ export function classifyPriceFailureReason(reason: string | null | undefined): P
   if (PERMANENT_REASONS.has(reason)) return 'permanent'
   if (/^http_(408|425|429|5\d\d)$/.test(reason)) return 'transient'
   if (/^(fetch_error|error)(:|$)/.test(reason)) return 'transient'
-  if (/timeout|budget_exhausted|^not_looked_up_budget$|^kv_/.test(reason)) return 'transient'
+  // A holding that was never looked up (`not_looked_up_budget`) has NO failure evidence at all — no fresh lookup
+  // happened — so it is never transient. A budget/timeout reason returned BY an attempted source path is.
+  if (reason === 'not_looked_up_budget') return 'not_attempted'
+  if (/timeout|budget_exhausted|^kv_/.test(reason)) return 'transient'
   return 'unknown'
 }

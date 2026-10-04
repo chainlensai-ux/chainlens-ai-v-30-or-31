@@ -62,4 +62,9 @@ export type PricingEngineOutput = {
   /** Per-holding fallback selection audit (lanes, ranks, skip reasons) — debug only. */
   fallbackAudit?: import('./fetchPricing').HoldingsFallbackAudit
   portfolioPricingEvidence?: PortfolioPricingEvidence
+  /**
+   * Awaits THIS pricing pass's last-verified KV writes, bounded (default LAST_VERIFIED_FLUSH_MAX_MS). Never throws,
+   * makes no provider request, never re-stamps observedAt. Not serialized (a function).
+   */
+  flushLastVerifiedWrites?: (maxMs?: number) => Promise<import('@/lib/pricing/lastVerifiedPrice').LastVerifiedPersistenceSummary>
 }

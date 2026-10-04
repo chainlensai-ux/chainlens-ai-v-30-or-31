@@ -20,6 +20,7 @@ import {
   classifyPriceFailureReason,
   createLastVerifiedPriceStore,
   STALE_VERIFIED_PRICE_MAX_AGE_MS,
+  awaitLastVerifiedWrites,
   type LastVerifiedPrice,
   type LastVerifiedPriceL2,
 } from '@/lib/pricing/lastVerifiedPrice'
@@ -83,7 +84,7 @@ function silence<T>(fn: () => Promise<T>): Promise<T> {
 
 type Clock = { t: number }
 
-async function scan(holdings: ChainHolding[], behaviour: ClawBehaviour, store: ReturnType<typeof createLastVerifiedPriceStore> | null, clock: Clock, extra: { allowExploratorySpamLookup?: boolean } = {}) {
+async function scan(holdings: ChainHolding[], behaviour: ClawBehaviour, store: ReturnType<typeof createLastVerifiedPriceStore> | null, clock: Clock, extra: { allowExploratorySpamLookup?: boolean; expensiveBudget?: { dexscreener?: number; geckoterminal?: number; onchain?: number } } = {}) {
   __resetCurrentPriceCacheForTest() // a later scan: the 30s current-price cache has expired
   const calls: string[] = []
   const out = await silence(() => priceHoldings(holdings, priceFnFor(behaviour, calls), {
@@ -219,6 +220,15 @@ describe('repeated-scan determinism', () => {
     assert.equal(decideStaleVerifiedReuse({ prior, now: at, currentDecimals: null, attempts: attempts('http_429'), lookedUp: true }).reuse, false)
     assert.equal(decideStaleVerifiedReuse({ prior, now: at, currentDecimals: 18, attempts: null, negativeCached: true, negativeCacheReason: 'no_matching_pair', lookedUp: false }).reuse, false)
     assert.equal(decideStaleVerifiedReuse({ prior, now: at, currentDecimals: 18, attempts: null, negativeCached: true, negativeCacheReason: 'http_503', lookedUp: false }).reuse, true)
+    // Real transient evidence from an ATTEMPTED path still allows reuse.
+    for (const transient of ['http_500', 'http_503', 'fetch_error:ETIMEDOUT', 'error:timeout', 'dexscreener_shared_historical_budget_exhausted']) {
+      assert.equal(decideStaleVerifiedReuse({ prior, now: at, currentDecimals: 18, attempts: attempts(transient), lookedUp: true }).reuse, true, transient)
+    }
+    // A budget skip is NOT failure evidence: nothing was looked up.
+    const skipped = decideStaleVerifiedReuse({ prior, now: at, currentDecimals: 18, attempts: null, lookedUp: false })
+    assert.equal(skipped.reuse, false)
+    assert.equal(skipped.reason, 'not_looked_up_no_fresh_attempt')
+    assert.equal(classifyPriceFailureReason('not_looked_up_budget'), 'not_attempted')
     assert.equal(classifyPriceFailureReason('some_new_reason'), 'unknown', 'unrecognised reasons are never treated as transient')
   })
 
@@ -412,5 +422,95 @@ describe('repeated jobs never share request-scoped DexScreener state', () => {
     await jobA
     assert.equal(aDiag!.dexUniqueTokens, 1)
     assert.equal(getDexscreenerRequestDiagnostics().dexUniqueTokens, 0, 'the process-level state is untouched by scoped jobs')
+  })
+})
+
+describe('hardening: budget skips and last-verified durability', () => {
+  it('recent prior verified price, same balance/decimals, NOT selected for lookup → unavailable, not stale_verified', async () => {
+    const clock = { t: T0 }
+    const store = createLastVerifiedPriceStore({ now: () => clock.t })
+    await scan(wallet(), 'ok', store, clock)
+    clock.t += 5 * 60_000
+    // Zero DexScreener budget this scan: ClawBank is ranked but never looked up.
+    const b = await scan(wallet(), 'ok', store, clock, { expensiveBudget: { dexscreener: 0 } })
+    assert.equal(b.calls.includes(CLAW), false, 'no fresh lookup happened')
+    assert.equal(b.claw?.priceStatus, 'unavailable')
+    assert.equal(b.claw?.valueStatus, 'unavailable')
+    assert.equal(b.claw?.staleVerifiedValueUsd, null)
+    assert.equal(b.claw?.priceFailureReason, 'not_looked_up_budget')
+    assert.equal(b.evidence.status, 'partial')
+    assert.equal(b.evidence.staleVerifiedHoldings, undefined)
+    near(b.evidence.pricedSubtotalUsd, 165)
+  })
+
+  it('record → flush → new store (empty L1) → L2 prefetch recovers the same original observedAt', async () => {
+    const clock = { t: T0 }
+    const l2 = memoryL2()
+    const store = createLastVerifiedPriceStore({ l2, now: () => clock.t })
+    const a = await scan(wallet(), 'ok', store, clock)
+    const summary = await a.out.flushLastVerifiedWrites!()
+    // ClawBank + the 30 provider-priced holdings (each ≥ $1).
+    assert.deepEqual(summary, { queued: 31, persisted: 31, failed: 0, pending: 0 })
+    clock.t += 20 * 60_000
+    const fresh = createLastVerifiedPriceStore({ l2, now: () => clock.t })
+    assert.equal(fresh.get(8453, CLAW), null, 'L1 empty')
+    await fresh.prefetch([{ chainId: 8453, tokenAddress: CLAW }])
+    assert.equal(fresh.get(8453, CLAW)?.observedAt, T0)
+    assert.equal(fresh.get(8453, CLAW)?.priceUsd, CLAW_PRICE)
+  })
+
+  it('a failed (or hanging) KV write does not fail the scan, and the flush is bounded', async () => {
+    const clock = { t: T0 }
+    const rejecting: LastVerifiedPriceL2 = { async mget(keys) { return keys.map(() => null) }, async set() { throw new Error('kv_timeout') } }
+    const a = await scan(wallet(), 'ok', createLastVerifiedPriceStore({ l2: rejecting, now: () => clock.t }), clock)
+    near(a.claw?.valueUsd, CLAW_VALUE)
+    assert.deepEqual(await a.out.flushLastVerifiedWrites!(), { queued: 31, persisted: 0, failed: 31, pending: 0 })
+
+    const throwingSync: LastVerifiedPriceL2 = { async mget() { throw new Error('kv_circuit_open') }, set() { throw new Error('kv_circuit_open') } }
+    __resetCurrentPriceCacheForTest()
+    const b = await scan(wallet(), 'ok', createLastVerifiedPriceStore({ l2: throwingSync, now: () => clock.t }), clock)
+    near(b.claw?.valueUsd, CLAW_VALUE)
+    assert.equal((await b.out.flushLastVerifiedWrites!()).failed, 31)
+
+    const hanging: LastVerifiedPriceL2 = { async mget(keys) { return keys.map(() => null) }, set: () => new Promise<void>(() => {}) }
+    const c = await scan(wallet(), 'ok', createLastVerifiedPriceStore({ l2: hanging, now: () => clock.t }), clock)
+    const started = Date.now()
+    const hung = await c.out.flushLastVerifiedWrites!(50)
+    assert.ok(Date.now() - started < 1_000, 'never blocks indefinitely')
+    assert.deepEqual(hung, { queued: 31, persisted: 0, failed: 0, pending: 31 })
+  })
+
+  it("a scan's flush awaits only its own writes, never another scan's", async () => {
+    const clock = { t: T0 }
+    let releaseOther!: () => void
+    const shared: LastVerifiedPriceL2 = {
+      async mget(keys) { return keys.map(() => null) },
+      set: (key) => (key.includes('0xdead') ? new Promise<void>((r) => { releaseOther = r }) : Promise.resolve()),
+    }
+    const store = createLastVerifiedPriceStore({ l2: shared, now: () => clock.t })
+    const otherScanWrite = store.record({ chainId: 8453, tokenAddress: '0xdead000000000000000000000000000000000000', priceUsd: 1, source: 'dexscreener', observedAt: T0, confidence: 'high', decimals: 18 })
+    const a = await scan(wallet(), 'ok', store, clock)
+    assert.deepEqual(await a.out.flushLastVerifiedWrites!(200), { queued: 31, persisted: 31, failed: 0, pending: 0 })
+    releaseOther()
+    assert.equal(await otherScanWrite, 'persisted')
+    assert.deepEqual(await awaitLastVerifiedWrites([]), { queued: 0, persisted: 0, failed: 0, pending: 0 })
+  })
+
+  it('an older or equal observation never replaces a newer record (L1 or via L2)', async () => {
+    const clock = { t: T0 + 10 * 60_000 }
+    const l2 = memoryL2()
+    const store = createLastVerifiedPriceStore({ l2, now: () => clock.t })
+    const base = { chainId: 8453, tokenAddress: CLAW, source: 'dexscreener', confidence: 'high' as const, decimals: 18 }
+    assert.equal(await store.record({ ...base, priceUsd: 2, observedAt: T0 + 5 * 60_000 }), 'persisted')
+    assert.equal(await store.record({ ...base, priceUsd: 1, observedAt: T0 }), 'skipped', 'older')
+    assert.equal(await store.record({ ...base, priceUsd: 3, observedAt: T0 + 5 * 60_000 }), 'skipped', 'equal')
+    assert.equal(store.get(8453, CLAW)?.priceUsd, 2)
+    assert.equal(l2.sets.length, 1)
+    // Another process: learns the newer record from L2, then refuses its own older observation.
+    const other = createLastVerifiedPriceStore({ l2, now: () => clock.t })
+    await other.prefetch([{ chainId: 8453, tokenAddress: CLAW }])
+    assert.equal(await other.record({ ...base, priceUsd: 1, observedAt: T0 + 60_000 }), 'skipped')
+    assert.equal(l2.sets.length, 1)
+    assert.equal(other.get(8453, CLAW)?.observedAt, T0 + 5 * 60_000)
   })
 })

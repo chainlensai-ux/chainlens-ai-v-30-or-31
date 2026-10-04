@@ -680,6 +680,17 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     } = await fastSnapshotPromise
+    // LAST-VERIFIED PERSISTENCE, AWAITED BEFORE FINAL PUBLICATION: this scan's own KV writes only (never another
+    // scan's), bounded by the KV write timeout (LAST_VERIFIED_FLUSH_MAX_MS), never throws, no provider request, no
+    // observedAt change. A KV failure is reported, never fatal.
+    try {
+      const lastVerifiedPersistence = await pricing.flushLastVerifiedWrites?.()
+      if (lastVerifiedPersistence && lastVerifiedPersistence.queued > 0) {
+        console.warn('[holdings-last-verified-persistence]', { jobId: jobId ?? null, ...lastVerifiedPersistence })
+      }
+    } catch {
+      // non-fatal by contract
+    }
     // DIAGNOSTIC, DISCLOSED (portfolio-intelligence $0 bug fix): real counts only — pricedTokens
     // here is the actual number of pricing.pricedHoldings with a non-null valueUsd (not
     // portfolioOutput.portfolio.topHoldings.length, which the frontend's PortfolioIntelligenceCard
