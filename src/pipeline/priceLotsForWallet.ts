@@ -100,7 +100,7 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
-import { buildTxSideEventPriceLookup, groupTxSides, multiEventTxSideKeys, txSideKey } from '../lib/txSideEventAllocation'
+import { buildTxSideEventPriceLookup, buildTxSideValueLookup, groupTxSides, multiEventTxSideKeys, txSideKey, type TxSideValueLookup } from '../lib/txSideEventAllocation'
 import type { V4PoolKeyResolver } from '../lib/v4RouteQuote'
 import { classifyReceiptQuoteEvidence, raceCallerDeadline, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
@@ -276,15 +276,21 @@ export function resolveEventPriceUsd(
 // entries into `needsPricing` (genuinely unresolved — send to providers as before) and `alreadyKnown`
 // (a txHash -> price map the caller backfills into its own result so display data never regresses).
 // Pure, no I/O, no change to priceUsdLookup itself or to what gets matched/published.
-export function partitionAlreadyPricedEntries<T extends { txHash: string }>(
+//
+// SIDE-LEVEL LOOKUP ONLY (regression fix for 5143d693): this helper knows a tx SIDE (chain, txHash,
+// direction, token), never a specific transfer event, so it uses the side-level `TxSideValueLookup`.
+// It previously cast `{ txHash, direction }` to a NormalizedEvent and called the FIFO event lookup,
+// which now allocates per event (and reads the event's contract/from/to) — that crashed the scan with
+// "Cannot read properties of undefined (reading 'toLowerCase')".
+export function partitionAlreadyPricedEntries<T extends { txHash: string; chain?: string; token?: string }>(
   entries: readonly T[],
   direction: 'inbound' | 'outbound',
-  priceUsdLookup: PriceUsdLookup,
+  txSideValueLookup: TxSideValueLookup,
 ): { needsPricing: T[]; alreadyKnown: Map<string, number> } {
   const needsPricing: T[] = []
   const alreadyKnown = new Map<string, number>()
   for (const entry of entries) {
-    const known = priceUsdLookup({ txHash: entry.txHash, direction } as NormalizedEvent)
+    const known = txSideValueLookup({ chain: entry.chain, txHash: entry.txHash, direction, token: entry.token })
     if (known !== null) alreadyKnown.set(entry.txHash, known)
     else needsPricing.push(entry)
   }
@@ -328,7 +334,10 @@ export type AerodromeAttribution = {
 }
 
 export type WalletPriceLookups = {
+  /** FIFO lookup — requires a full NormalizedEvent (allocates a tx-side value per transfer event). */
   priceUsdLookup: PriceUsdLookup
+  /** Side-level lookup (chain, txHash, direction, token) — for callers without a real transfer event. */
+  txSideValueLookup: TxSideValueLookup
   // TX-SIDE ALLOCATION CONTEXT (same-tx outbound overcount fix — src/lib/txSideEventAllocation.ts):
   // the at-trade-time side values the lookup allocates (USD for the COMPLETE same-token side of a tx),
   // the sides that carry more than one same-token transfer event, and the persisted accepted-evidence
@@ -3224,6 +3233,7 @@ export async function priceLotsForWallet(params: {
   }
   return {
     priceUsdLookup,
+    txSideValueLookup: buildTxSideValueLookup(atTradeTime.costUsd, atTradeTime.proceedsUsd),
     txSideAllocation: {
       costUsd: atTradeTime.costUsd,
       proceedsUsd: atTradeTime.proceedsUsd,

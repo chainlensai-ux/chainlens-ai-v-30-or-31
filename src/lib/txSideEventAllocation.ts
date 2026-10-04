@@ -126,8 +126,26 @@ export function allocateTxSideValues(
   return { shareByEventKey, groups }
 }
 
+/** Identity of one tx side, for callers that know only the side (never a specific transfer event). */
+export type TxSideIdentity = { chain?: string; txHash: string; direction: TxSideDirection; token?: string }
+
 /**
- * The FIFO price lookup: an event gets its allocated share of its side's value. An event FIFO sees
+ * Side-level lookup: the USD value of the COMPLETE side (what the writers stored), or null when that side
+ * is not priced. For callers that only need "is this side priced, and at what side value" — e.g. the
+ * display-pass dedupe — and must never fabricate a NormalizedEvent to call the event-level allocator.
+ * The dictionaries are keyed by txHash (chain/token are accepted for identity but do not narrow the key).
+ */
+export type TxSideValueLookup = (side: TxSideIdentity) => number | null
+
+export function buildTxSideValueLookup(costUsd: Record<string, number | null>, proceedsUsd: Record<string, number | null>): TxSideValueLookup {
+  return (side) => {
+    const value = (side.direction === 'inbound' ? costUsd : proceedsUsd)[side.txHash] ?? null
+    return value !== null && Number.isFinite(value) ? value : null
+  }
+}
+
+/**
+ * The FIFO price lookup (requires a FULL NormalizedEvent — it allocates per transfer event): an event gets its allocated share of its side's value. An event FIFO sees
  * that was not in the allocated event set (it cannot double count): its quantity-proportional share
  * of the same side value when the side is known, else the side value itself (a lone event).
  */

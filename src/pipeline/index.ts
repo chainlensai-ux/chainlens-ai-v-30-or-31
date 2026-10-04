@@ -2962,8 +2962,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // calls for anything already resolved. Never touches fifoEngine, the canonical sample, or
   // priceLotsForWallet's own official pricing pass — strictly a dedupe of this second pass against
   // the first.
-  const buyDedupe = partitionAlreadyPricedEntries(displayBuyEntries, 'inbound', walletPriceLookups.priceUsdLookup)
-  const sellDedupe = partitionAlreadyPricedEntries(sellTimelineV2.entries, 'outbound', walletPriceLookups.priceUsdLookup)
+  const buyDedupe = partitionAlreadyPricedEntries(displayBuyEntries, 'inbound', walletPriceLookups.txSideValueLookup)
+  const sellDedupe = partitionAlreadyPricedEntries(sellTimelineV2.entries, 'outbound', walletPriceLookups.txSideValueLookup)
   // eslint-disable-next-line no-console
   console.warn('[pipeline] display pricingAtTime pass — already-priced dedupe', {
     buyEntriesBeforeDedupe: displayBuyEntries.length,
