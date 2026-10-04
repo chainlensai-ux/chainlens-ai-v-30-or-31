@@ -2005,6 +2005,8 @@ export type AggregateSideAllocationAudit = {
   entryMismatched: boolean
   exitMismatched: boolean
   acceptedSideTotalConserved: boolean
+  /** The mismatch is exactly the same-tx allocation repair of the accepted side record (refresh-eligible). */
+  acceptedSideAllocationRepaired?: boolean
 }
 
 // PER-LOT TRANSITION AUDIT (canonical-sample-destroyed-after-pricing task): for every lot that
@@ -2711,10 +2713,21 @@ export async function replayManifest(params: {
   // must cover exactly the side's current sibling set. Only then is the disagreement an allocation-
   // method difference (stale, refresh-eligible). A changed accepted total, a sibling outside the
   // manifest, or a missing record keeps it a genuine `canonical_value_disagreement`.
-  const sideConservedUnderAcceptedTotal = (side: 'entry' | 'exit', evidenceKey: string): boolean => {
+  // Returns how the side's frozen values relate to its accepted evidence: conserved against the current
+  // accepted total ('conserved'); conserved against the total a same-tx allocation repair replaced
+  // ('repaired' — the manifest froze the pre-fix per-event overcount, see txSideEventAllocation.ts);
+  // or neither (a genuine value conflict).
+  const sideConservation = (side: 'entry' | 'exit', evidenceKey: string): 'conserved' | 'repaired' | 'conflict' => {
+    if (sideConservedUnderAcceptedTotal(side, evidenceKey, 'current')) return 'conserved'
+    if (sideConservedUnderAcceptedTotal(side, evidenceKey, 'repaired_from')) return 'repaired'
+    return 'conflict'
+  }
+  function sideConservedUnderAcceptedTotal(side: 'entry' | 'exit', evidenceKey: string, basis: 'current' | 'repaired_from'): boolean {
     const evidence = evidenceByKey.get(evidenceKey)
     const group = side === 'entry' ? entryGroupsByKey.get(evidenceKey) : exitGroupsByKey.get(evidenceKey)
     if (!evidence || !group || group.length === 0) return false
+    const repairedFrom = evidence.allocationRepairedFromUsd
+    if (basis === 'repaired_from' && !(typeof repairedFrom === 'number' && Number.isFinite(repairedFrom) && repairedFrom > 0)) return false
     const sideRecords = params.manifest.verifiedLotRecords.filter((r) => (side === 'entry' ? r.entryEvidenceKey : r.exitEvidenceKey) === evidenceKey)
     const covered = new Set<MatchedLot>()
     let frozenScaled = BigInt(0)
@@ -2733,17 +2746,39 @@ export async function replayManifest(params: {
     // (one unit per summed record, plus the accepted total's own) — never a value tolerance.
     const units = BigInt(sideRecords.length + 1)
     const within = (a: bigint, b: bigint) => (a > b ? a - b : b - a) <= units
+    if (basis === 'repaired_from') {
+      // The frozen values must reproduce EXACTLY the total the repair replaced, AND this scan's own live
+      // candidate values for the side's lots must independently sum to the repaired total — i.e. the
+      // only change is the documented allocation repair of this very record, backed by live evidence.
+      let liveScaled = BigInt(0)
+      for (const lot of group) {
+        const live = side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd
+        if (live === null || !Number.isFinite(live)) return false
+        liveScaled += toScaledValue(live)
+      }
+      const liveUnits = BigInt(group.length + 1)
+      const liveWithin = (liveScaled > acceptedScaled ? liveScaled - acceptedScaled : acceptedScaled - liveScaled) <= liveUnits
+      return liveWithin
+        && within(frozenScaled, toScaledValue(stablecoinNormalizedGroupTotal(group, repairedFrom as number)))
+        && within(currentScaled, acceptedScaled)
+    }
     return within(frozenScaled, acceptedScaled) && within(currentScaled, acceptedScaled)
   }
   const aggregateSideAllocationAudit: AggregateSideAllocationAudit[] = []
   for (const pending of pendingValueMismatches) {
-    const conserved = (pending.entryMismatched ? sideConservedUnderAcceptedTotal('entry', pending.record.entryEvidenceKey) : true)
-      && (pending.exitMismatched ? sideConservedUnderAcceptedTotal('exit', pending.record.exitEvidenceKey) : true)
+    const outcomes = [
+      ...(pending.entryMismatched ? [sideConservation('entry', pending.record.entryEvidenceKey)] : []),
+      ...(pending.exitMismatched ? [sideConservation('exit', pending.record.exitEvidenceKey)] : []),
+    ]
+    const conserved = outcomes.every((o) => o === 'conserved')
+    const repaired = !conserved && outcomes.every((o) => o === 'conserved' || o === 'repaired')
     if (aggregateSideAllocationAudit.length < MAX_VALUE_DISAGREEMENT_EXAMPLES) {
-      aggregateSideAllocationAudit.push({ lotKey: pending.key, entryMismatched: pending.entryMismatched, exitMismatched: pending.exitMismatched, acceptedSideTotalConserved: conserved })
+      aggregateSideAllocationAudit.push({ lotKey: pending.key, entryMismatched: pending.entryMismatched, exitMismatched: pending.exitMismatched, acceptedSideTotalConserved: conserved, acceptedSideAllocationRepaired: repaired })
     }
     if (conserved) {
       addClassifiedReason(staleReasonKeys, 'aggregate_side_evidence_fragment_allocation_changed', pending.key)
+    } else if (repaired) {
+      addClassifiedReason(staleReasonKeys, 'accepted_evidence_tx_side_allocation_repaired', pending.key)
     } else if (pending.stages.length > 0 && pending.stages.every((s) => s === 'group_membership_grew')) {
       addClassifiedReason(staleReasonKeys, 'candidate_evolution_group_membership_changed', pending.key)
     } else {

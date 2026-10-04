@@ -10,7 +10,10 @@ import {
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
   detectLegacyPerUnitTotalByLiveUpstreamProof, detectWrongDecimalScaleByLiveUpstreamProof,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceMigrationClassification,
+  acceptedEvidenceTrustedForMultiEventSide,
+  TX_SIDE_EVENT_ALLOCATION_METHOD,
 } from './acceptedEvidenceStore'
+import { txSideKey } from './txSideEventAllocation'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
@@ -178,6 +181,11 @@ type Config = {
   // hydration, no write-back). See src/lib/acceptedEvidenceStore.ts's own header for the full
   // fail-closed identity-matching rule.
   acceptedEvidenceKv?: AcceptedEvidenceKvLike
+  // SAME-TX OVERCOUNT FIX (src/lib/txSideEventAllocation.ts): `txSideKey` of every side carrying more
+  // than one same-token transfer event. On those sides an accepted record without the tx-side
+  // allocation marker was seeded from per-event-overcounted fragments: hydration ignores it and
+  // canonical seeding rewrites it (provenance preserved). Omitted → no side is treated as multi-event.
+  multiEventTxSideKeys?: ReadonlySet<string>
   now?: () => number
   // TARGETED ROI QUOTE-LEG TX BACKFILL, OPTIONAL: fetches only unproven stable lots' own
   // open/close receipts. Omitted → current live/persisted classification, no extra provider calls.
@@ -867,6 +875,10 @@ export type MissingEvidenceBreakdown = {
 // only — every field here is incremented at the exact point the described event happens, never
 // estimated after the fact. See recoverPrices'/hydrateFromAcceptedEvidence's own headers.
 export type AcceptedEvidenceAudit = {
+  /** Same-tx overcount fix: sibling sides whose pre-fix multi-event accepted record hydration ignored. */
+  legacyMultiEventEvidenceIgnored?: number
+  /** Same-tx overcount fix: pre-fix multi-event accepted records rewritten with the corrected side total. */
+  legacyMultiEventEvidenceRepaired?: number
   matchedLotSidesTotal: number
   persistedAcceptedSidesLoaded: number
   persistedAcceptedSidesApplied: number
@@ -1621,7 +1633,14 @@ export function createPnlReconciliation(config: Config = {}) {
       audit.acceptedSidesRequestedBeforePricing += group.lots.length
       const evidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
       const groupVersions = new Set(group.lots.map((l) => lotIdentityVersion(l)))
-      evidenceByGroupKey.set(key, evidence && groupVersions.has(evidence.lotIdentityVersion) ? evidence : null)
+      // SAME-TX OVERCOUNT FIX: on a side with more than one same-token transfer event, a record seeded
+      // before the tx-side allocation fix is not trusted (its total came from per-event overcounted
+      // fragments); the side keeps its live, correctly allocated values and is re-seeded below.
+      const legacyMultiEvent = evidence !== null
+        && (config.multiEventTxSideKeys?.has(txSideKey(group.chain, group.txHash, group.side === 'entry' ? 'inbound' : 'outbound', group.token)) ?? false)
+        && !acceptedEvidenceTrustedForMultiEventSide(evidence)
+      if (legacyMultiEvent) audit.legacyMultiEventEvidenceIgnored = (audit.legacyMultiEventEvidenceIgnored ?? 0) + group.lots.length
+      evidenceByGroupKey.set(key, evidence && !legacyMultiEvent && groupVersions.has(evidence.lotIdentityVersion) ? evidence : null)
     })
 
     // ALLOCATE EACH GROUP'S TOTAL ACROSS ITS SIBLINGS, ONCE, DISCLOSED: the exact same deterministic,
@@ -2261,7 +2280,12 @@ export function createPnlReconciliation(config: Config = {}) {
           oldScaled: oldScaled.toString(), newScaled: newScaled.toString(), deltaScaled: (newScaled - oldScaled).toString(),
         })
       }
-      if (existing && (compositionUnchanged || existingCoveredLotCount > group.lots.length)) {
+      // A pre-fix record on a multi-event side is rewritten even when its composition is unchanged —
+      // its total is the per-event overcount, not this side's value (old total kept on the record).
+      const legacyMultiEvent = existing !== null
+        && (config.multiEventTxSideKeys?.has(txSideKey(group.chain, group.txHash, group.side === 'entry' ? 'inbound' : 'outbound', group.token)) ?? false)
+        && !acceptedEvidenceTrustedForMultiEventSide(existing)
+      if (existing && !legacyMultiEvent && (compositionUnchanged || existingCoveredLotCount > group.lots.length)) {
         audit.verifiedSidesAlreadyPersisted += group.lots.length
         pushMutationAudit('skip_already_covers', true, 'none')
         // SLIDING EXPIRY ON PROVEN REUSE, DISCLOSED (28-lost-verified-lot regression — see
@@ -2296,8 +2320,12 @@ export function createPnlReconciliation(config: Config = {}) {
         identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd',
         coveredLotCount: group.lots.length, coverageFingerprint: liveFingerprint,
         source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
-        previousEnvelope: existing, writerReason: existing !== null ? 'reseed_coverage_growth' : 'initial_seed',
+        previousEnvelope: existing,
+        writerReason: legacyMultiEvent ? 'multi_event_tx_side_allocation_repair' : existing !== null ? 'reseed_coverage_growth' : 'initial_seed',
+        allocationMethod: TX_SIDE_EVENT_ALLOCATION_METHOD,
+        ...(legacyMultiEvent && existing ? { allocationRepairedFromUsd: existing.priceUsd } : {}),
       })
+      if (legacyMultiEvent) audit.legacyMultiEventEvidenceRepaired = (audit.legacyMultiEventEvidenceRepaired ?? 0) + 1
       audit.missingVerifiedEvidenceMetadata += group.lots.length
       const isCoverageReseed = existing !== null
       pushMutationAudit(isCoverageReseed ? 'reseed_coverage_growth' : 'initial_seed', false, isCoverageReseed ? 'occurrence_set_reconstruction' : 'none')

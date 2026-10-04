@@ -82,6 +82,7 @@ import {
 } from '../modules/quoteLegPricing/index'
 import {
   buildAcceptedEvidenceKey, readAcceptedEvidenceBatch, type AcceptedEvidenceKvLike, type AcceptedEvidenceBatchIdentity,
+  acceptedEvidenceTrustedForMultiEventSide,
 } from '../lib/acceptedEvidenceStore'
 import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage, getGoldrushLiveCallLatencyStats } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getWalletProviderCostAudit } from '../modules/providerCost/walletProviderCostLedger'
@@ -99,6 +100,7 @@ import {
 } from '../../lib/server/coinPaprikaHistorical'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from '../lib/canonicalVerifiedLot'
 import { acceptedEvidenceAllocationsAreCanonicalPositive } from '../lib/canonicalPnlSampleManifest'
+import { buildTxSideEventPriceLookup, groupTxSides, multiEventTxSideKeys, txSideKey } from '../lib/txSideEventAllocation'
 import type { V4PoolKeyResolver } from '../lib/v4RouteQuote'
 import { classifyReceiptQuoteEvidence, raceCallerDeadline, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
@@ -160,6 +162,19 @@ function isFinitePositiveAmount(amount: number): boolean {
 // real transaction hash.
 function nativeQuoteRequirementKey(chain: string, txHash: string): string {
   return `native-quote:${chain}:${txHash.toLowerCase()}`
+}
+
+/** Sums same (chain, txHash, token) entries into one, keeping the first entry's identity/rank. */
+export function collapseSameTxSideEntries(entries: readonly PriceableEntry[]): PriceableEntry[] {
+  const byKey = new Map<string, PriceableEntry>()
+  for (const entry of entries) {
+    const key = `${entry.chain}:${entry.txHash.toLowerCase()}:${entry.token.toLowerCase()}`
+    const existing = byKey.get(key)
+    if (!existing) { byKey.set(key, entry); continue }
+    const rank = existing.pairRank === undefined ? entry.pairRank : entry.pairRank === undefined ? existing.pairRank : Math.min(existing.pairRank, entry.pairRank)
+    byKey.set(key, { ...existing, amount: String(Number(existing.amount) + Number(entry.amount)), pairRank: rank })
+  }
+  return [...byKey.values()]
 }
 
 function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
@@ -314,6 +329,18 @@ export type AerodromeAttribution = {
 
 export type WalletPriceLookups = {
   priceUsdLookup: PriceUsdLookup
+  // TX-SIDE ALLOCATION CONTEXT (same-tx outbound overcount fix — src/lib/txSideEventAllocation.ts):
+  // the at-trade-time side values the lookup allocates (USD for the COMPLETE same-token side of a tx),
+  // the sides that carry more than one same-token transfer event, and the persisted accepted-evidence
+  // records this scan did not trust on such a side because they predate the allocation fix.
+  txSideAllocation?: {
+    costUsd: Record<string, number | null>
+    proceedsUsd: Record<string, number | null>
+    multiEventTxSideKeys: string[]
+    legacyMultiEventEvidenceDistrusted: string[]
+    /** The deduplicated event set the side values were allocated over (FIFO's own merge). */
+    allocationEvents: NormalizedEvent[]
+  }
   currentPriceUsdLookup: CurrentPriceUsdLookup
   // See AerodromeAttribution's own header above.
   aerodromeAttribution: AerodromeAttribution
@@ -736,6 +763,10 @@ export async function priceLotsForWallet(params: {
   const merged = mergeNormalizedEvents(params.normalizedEvents, params.recoveredEvents)
   const buys = merged.filter((e) => e.direction === 'inbound')
   const sells = merged.filter((e) => e.direction === 'outbound')
+  // Same-token transfer events per tx side (one side value is allocated across them, never per event).
+  const txSides = groupTxSides(merged)
+  const multiEventSides = multiEventTxSideKeys(merged)
+  const legacyMultiEventEvidenceDistrusted: string[] = []
 
   // PHASE A — STRUCTURAL (PRICE-FREE) FIFO PRE-PASS, DISCLOSED (confirmed bug fix: fullyPricedLots
   // stayed 0 even after the dense per-token cap was raised, because ALL buys were dispatched before
@@ -845,13 +876,23 @@ export async function priceLotsForWallet(params: {
       // structural sibling on this side. A $1 (or dust) total that floors any sibling to 0 is
       // exactly the 9 non-positive + 17 demoted-sibling regression — those lots must fall
       // through to live pricing/recovery. Manifest lots whose shares stay positive still skip.
-      if (isCanonicalPositiveUsd(canonicalPriceUsd)
+      // Same-tx overcount fix: a record seeded before the tx-side allocation fix, on a side carrying more
+      // than one same-token event, holds a total built from per-event-overcounted fragments — never
+      // trusted there (this side is re-priced live and re-seeded); single-event sides are unaffected.
+      const sideKey = txSideKey(representative.chain, txHash, side === 'entry' ? 'inbound' : 'outbound', representative.token)
+      const legacyMultiEvent = evidence !== null && multiEventSides.has(sideKey) && !acceptedEvidenceTrustedForMultiEventSide(evidence)
+      if (legacyMultiEvent) legacyMultiEventEvidenceDistrusted.push(evidenceKvKey)
+      if (!legacyMultiEvent && isCanonicalPositiveUsd(canonicalPriceUsd)
         && acceptedEvidenceAllocationsAreCanonicalPositive(groupedLots, canonicalPriceUsd)) {
         skippableRequirementKeys.add(key)
         acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip += groupedLots.length
         manifestFastPathAudit.manifestCoveredPricingRequirements += groupedLots.length
         const dict = side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd
-        dict.set(txHash, canonicalPriceUsd)
+        // The persisted total covers the side's MATCHED quantity; the dictionary carries the value of
+        // the COMPLETE side quantity (what the event allocation divides), at the same per-unit value.
+        const matchedQuantity = groupedLots.filter((l) => l.token.toLowerCase() === representative.token.toLowerCase()).reduce((sum, l) => sum + l.amount, 0)
+        const sideQuantity = txSides.get(sideKey)?.quantity ?? matchedQuantity
+        dict.set(txHash, matchedQuantity > 0 && sideQuantity > 0 ? canonicalPriceUsd * (sideQuantity / matchedQuantity) : canonicalPriceUsd)
       } else {
         acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length
         // LOST-COVERAGE FORENSICS, DISCLOSED — see ManifestFastPathAudit.lostCoverageSides. Reaching
@@ -1339,6 +1380,12 @@ export async function priceLotsForWallet(params: {
   // no quantity-based filtering anywhere in this pass.
   let buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
   let sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+  // ONE ENTRY PER TX SIDE (same-tx overcount fix — src/lib/txSideEventAllocation.ts): several same-token
+  // transfer events in one tx (swap + fee transfer) become ONE entry for their SUMMED quantity (no event
+  // or quantity is dropped). The engine keeps one value per txHash, so pricing each event separately
+  // left the side valued at whichever event wrote last; the dictionary now holds the complete side value.
+  buyRequirementEntries = collapseSameTxSideEntries(buyRequirementEntries)
+  sellRequirementEntries = collapseSameTxSideEntries(sellRequirementEntries)
 
   // COMPLETION-YIELD HISTORICAL-PRICING SCHEDULER, DISCLOSED — see completionYieldScheduler.ts's own
   // header. Production baseline: 219 structural lots, 11 verified (5.02%), ~500 total pricing
@@ -3065,7 +3112,10 @@ export async function priceLotsForWallet(params: {
   acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls += getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
   acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeNow
 
-  const priceUsdLookup: PriceUsdLookup = (event) => resolveEventPriceUsd(event, atTradeTime.costUsd, atTradeTime.proceedsUsd)
+  // ONE SIDE VALUE, ALLOCATED ACROSS ITS EVENTS (same-tx overcount fix — see txSideEventAllocation.ts):
+  // replaces the per-event `resolveEventPriceUsd`, which gave every same-token event of a tx side the
+  // whole side value. Identical to it for a side with a single event.
+  const { lookup: priceUsdLookup } = buildTxSideEventPriceLookup(merged, atTradeTime.costUsd, atTradeTime.proceedsUsd)
 
   const currentPriceUsdLookup: CurrentPriceUsdLookup = (token, chain) =>
     atNow.costUsd[`current:${chain}:${token.toLowerCase()}`] ?? null
@@ -3169,8 +3219,18 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[goldrush-historical-pricing-efficiency-audit]', goldRushHistoricalPricingEfficiencyAudit)
 
+  if (legacyMultiEventEvidenceDistrusted.length > 0 || multiEventSides.size > 0) {
+    console.warn('[same-tx-multi-event-sides]', { multiEventSides: multiEventSides.size, legacyMultiEventEvidenceDistrusted })
+  }
   return {
     priceUsdLookup,
+    txSideAllocation: {
+      costUsd: atTradeTime.costUsd,
+      proceedsUsd: atTradeTime.proceedsUsd,
+      multiEventTxSideKeys: [...multiEventSides].sort(),
+      legacyMultiEventEvidenceDistrusted,
+      allocationEvents: merged,
+    },
     currentPriceUsdLookup,
     aerodromeAttribution,
     sourceBreakdown: atTradeTime.sourceBreakdown,

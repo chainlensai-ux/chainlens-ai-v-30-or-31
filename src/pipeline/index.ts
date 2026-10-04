@@ -23,6 +23,8 @@ import {
   buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny,
   sortLotsByCanonicalIdentity, sumQuantizedUsd,
 } from '../lib/scanDeterminismAudit'
+import { buildSameTxMultiEventAudit } from '../lib/txSideEventAllocation'
+import { auditAndRecordRepeatScan, buildRepeatScanSnapshot, repeatScanScope, type RepeatScanKv } from '../lib/pnlRepeatScanDeterminism'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest, shouldRefreshPartiallyUnreproducibleManifest,
@@ -3211,6 +3213,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // cache already uses — a genuinely separate key namespace (`v1:accepted-evidence:...` vs
     // `v2:price:...`), same underlying Upstash instance.
     acceptedEvidenceKv: acceptedEvidenceRealKv,
+    // Same-tx overcount fix: sides with more than one same-token transfer event — a pre-fix accepted
+    // record there is not trusted by hydration and is re-seeded (see txSideEventAllocation.ts).
+    multiEventTxSideKeys: new Set(walletPriceLookups.txSideAllocation?.multiEventTxSideKeys ?? []),
     roiQuoteLegTxBackfill: {
       walletAddress: params.walletAddress,
       fetchTxReceipt: fetchRoiQuoteLegTxReceipt,
@@ -4200,6 +4205,39 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
   // eslint-disable-next-line no-console
   console.warn('[pipeline] scanDeterminismAudit', scanDeterminismAudit)
+  // SAME-TX MULTI-EVENT ALLOCATION AUDIT (same-tx outbound overcount fix): one row per tx side with more
+  // than one same-token transfer event — event amounts, the side value, what each event and each final
+  // fragment was assigned, and the conservation delta (0 = the side value was applied exactly once).
+  if (walletPriceLookups.txSideAllocation) {
+    const sameTxRows = buildSameTxMultiEventAudit({
+      events: walletPriceLookups.txSideAllocation.allocationEvents,
+      matchedLots: reconciledFifoAndPnl.matchedLots,
+      costUsd: walletPriceLookups.txSideAllocation.costUsd,
+      proceedsUsd: walletPriceLookups.txSideAllocation.proceedsUsd,
+    })
+    if (sameTxRows.length > 0) {
+      console.warn('[same-tx-multi-event-allocation-audit]', JSON.stringify({
+        sides: sameTxRows.length,
+        legacyMultiEventEvidenceDistrusted: walletPriceLookups.txSideAllocation.legacyMultiEventEvidenceDistrusted,
+        rows: sameTxRows.slice(0, 25),
+      }))
+    }
+  }
+  // REPEAT-SCAN DETERMINISM (Goal B): this scan's canonical sample vs the previous scan of the same
+  // wallet/chains/window — deterministic, or the first field that moved and why.
+  {
+    const repeatScope = repeatScanScope(params.walletAddress, preScan.sanitizedChains, PROVIDER_FETCH_WINDOW_DAYS_USED)
+    const repeatScanAudit = await auditAndRecordRepeatScan(acceptedEvidenceRealKv as unknown as RepeatScanKv, buildRepeatScanSnapshot(repeatScope, {
+      matchedLotFingerprint: scanDeterminismAudit.matchedLotFingerprint,
+      verifiedLotIdentityFingerprint: scanDeterminismAudit.verifiedLotIdentityFingerprint,
+      acceptedHistoricalPriceFingerprint: scanDeterminismAudit.acceptedHistoricalPriceFingerprint,
+      realizedPnlFingerprint: scanDeterminismAudit.realizedPnlFingerprint,
+      verifiedLotCount: reconciledFifoAndPnl.matchedLots.filter(isCanonicalVerifiedPublishedLot).length,
+      structuralLotCount: reconciledFifoAndPnl.matchedLots.length,
+      realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
+    }, Date.now()))
+    console.warn('[pnl-repeat-scan-determinism]', repeatScanAudit)
+  }
   const reconciledPnlSummaryV2: PnlSummaryResult = {
     ...adaptedPnlSummary,
     diagnosticOnly: true,

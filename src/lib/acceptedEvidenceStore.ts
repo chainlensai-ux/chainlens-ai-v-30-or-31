@@ -137,6 +137,14 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   // repair pass sets to its own honest writer identity (`canonical_manifest_reseed`).
   repairReason?: 'expired_accepted_evidence'
   repairedFromManifestSource?: string | null
+  // TX-SIDE EVENT ALLOCATION METHOD, DISCLOSED, ADDITIVE (same-tx outbound overcount fix — see
+  // src/lib/txSideEventAllocation.ts). Set by every canonical seeding write after that fix: the stored
+  // total was derived with ONE tx-side value allocated across all same-token transfer events. A record
+  // WITHOUT it on a side that has more than one same-token event was seeded from fragments valued with
+  // the side total once PER EVENT, so its total is not trusted on such a side (single-event sides are
+  // unaffected). `allocationRepairedFromUsd` keeps the replaced total when such a record is rewritten.
+  allocationMethod?: typeof TX_SIDE_EVENT_ALLOCATION_METHOD
+  allocationRepairedFromUsd?: number
 }
 
 export type AcceptedEvidenceMigrationHistoryEntry = {
@@ -342,6 +350,13 @@ export function lotIdentityVersion(lot: { chain: string; token: string; openedTx
 // `coveredLotCount` alone cannot provide.
 export function buildAcceptedEvidenceCoverageFingerprint(lots: readonly { chain: string; token: string; openedTxHash: string; closedTxHash: string; openedAt: number; closedAt: number; amount: number }[]): string {
   return lots.map((lot) => lotIdentityVersion(lot)).sort().join('|')
+}
+
+export const TX_SIDE_EVENT_ALLOCATION_METHOD = 'tx_side_event_quantity_v2' as const
+
+/** True when this record's total may be trusted on a side carrying more than one same-token event. */
+export function acceptedEvidenceTrustedForMultiEventSide(e: Pick<AcceptedEvidenceEnvelope, 'allocationMethod'>): boolean {
+  return e.allocationMethod === TX_SIDE_EVENT_ALLOCATION_METHOD
 }
 
 export function buildAcceptedEvidenceKey(identity: AcceptedEvidenceIdentity): string {
@@ -592,6 +607,8 @@ export function buildAcceptedEvidenceEnvelope(params: {
   // write; only acceptedEvidenceManifestRepair.ts's reseed pass ever sets these.
   repairReason?: 'expired_accepted_evidence'
   repairedFromManifestSource?: string | null
+  allocationMethod?: typeof TX_SIDE_EVENT_ALLOCATION_METHOD
+  allocationRepairedFromUsd?: number
 }): AcceptedEvidenceEnvelope {
   const prev = params.previousEnvelope ?? null
   const originWriter = prev?.originWriter ?? prev?.source ?? params.source
@@ -622,6 +639,8 @@ export function buildAcceptedEvidenceEnvelope(params: {
     migrationHistory,
     ...(params.repairReason !== undefined ? { repairReason: params.repairReason } : {}),
     ...(params.repairedFromManifestSource !== undefined ? { repairedFromManifestSource: params.repairedFromManifestSource } : {}),
+    ...(params.allocationMethod !== undefined ? { allocationMethod: params.allocationMethod } : {}),
+    ...(params.allocationRepairedFromUsd !== undefined ? { allocationRepairedFromUsd: params.allocationRepairedFromUsd } : {}),
   }
 }
 
