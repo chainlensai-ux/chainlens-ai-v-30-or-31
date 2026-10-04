@@ -1094,6 +1094,7 @@ export async function buildManifestFromCandidate(params: {
     exitShare: SideAllocationShare | null
     costBasisUsd: number | null
     proceedsUsd: number | null
+    frozeLive: boolean
   }
   const allocated: AllocatedLot[] = []
   const priorManifestKeySet = new Set(params.priorManifest?.verifiedLotIdentityKeys ?? [])
@@ -1110,13 +1111,21 @@ export async function buildManifestFromCandidate(params: {
     const additiveNewVerified = freezeLiveForAdditiveNew
       && !priorManifestKeySet.has(identity.key)
       && isCanonicalVerifiedPublishedLot(lot)
+    // SAME ALLOCATION METHOD AS REPLAY (canonical-sample-destroyed-after-pricing fix): an additive-new
+    // lot whose accepted tx-side evidence allocates a canonical-positive share on BOTH sides freezes
+    // that allocation — the exact quantity-proportional derivation every replay and hydration uses —
+    // never its live FIFO value, which can differ per fragment while summing to the same side total
+    // (see `sideConservedUnderAcceptedTotal` in replayManifest). Live values are still frozen only
+    // where the allocation is dust/non-positive or the evidence is absent (the original reason).
+    const shareCanonical = (share: SideAllocationShare | null) => share !== null && !share.dustBelowPrecision && isCanonicalPositiveUsd(share.allocatedValueUsd)
+    const frozeLive = additiveNewVerified && !(shareCanonical(entryShare) && shareCanonical(exitShare))
     // ADDITIVE-ONLY NEW LOTS, DISCLOSED (rebuild dropping 10 verified live candidates):
     // `canonicalPositiveAllocatedOrLive` still preferred ANY allocatedUsd > 0, including a
     // remainder-unit / dust-floor share of a poisoned USDC $1 sibling total. Self-validation
     // then reconstructed that ~0 share and dropped the lot even though the live canonical
     // candidate already passed `isCanonicalVerifiedPublishedLot`. Additive-new lots freeze
     // those live values. Existing prior-manifest lots keep accepted-evidence allocation.
-    const costBasisUsd = additiveNewVerified
+    const costBasisUsd = frozeLive
       ? lot.costBasisUsd
       : freezeLiveForAdditiveNew
         ? canonicalPositiveAllocatedOrLive(
@@ -1124,7 +1133,7 @@ export async function buildManifestFromCandidate(params: {
           lot.costBasisUsd,
         )
         : (entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd)
-    const proceedsUsd = additiveNewVerified
+    const proceedsUsd = frozeLive
       ? lot.proceedsUsd
       : freezeLiveForAdditiveNew
         ? canonicalPositiveAllocatedOrLive(
@@ -1140,7 +1149,7 @@ export async function buildManifestFromCandidate(params: {
         liveExit: lot.proceedsUsd,
         rebuildEntry: costBasisUsd,
         rebuildExit: proceedsUsd,
-        sourceChosen: additiveNewVerified ? 'live_canonical_candidate' : (entryShare || exitShare ? 'accepted_allocation' : 'dropped'),
+        sourceChosen: frozeLive ? 'live_canonical_candidate' : (entryShare || exitShare ? 'accepted_allocation' : 'dropped'),
         selfValidationPassed: false,
         emitted: false,
         dropReason: additiveNewVerified ? null : 'not_independently_canonical_verified',
@@ -1148,7 +1157,7 @@ export async function buildManifestFromCandidate(params: {
     }
     allocated.push({
       lot, identity, entryEvidenceKey, exitEvidenceKey, entryEvidence, exitEvidence, entryShare, exitShare,
-      costBasisUsd, proceedsUsd,
+      costBasisUsd, proceedsUsd, frozeLive,
     })
   }
 
@@ -1210,6 +1219,7 @@ export async function buildManifestFromCandidate(params: {
 
     const additiveNewVerifiedGroup = freezeLiveForAdditiveNew
       && members.every((m) => !priorManifestKeySet.has(m.identity.key) && isCanonicalVerifiedPublishedLot(m.lot))
+      && members.some((m) => m.frozeLive)
     // DETERMINISTIC RE-SPLIT, DISCLOSED: the group's total is immediately re-split across its own
     // occurrences with `splitGroupTotalAcrossOccurrences` — the exact function replay uses. Additive
     // new independently-verified lots skip this re-split and freeze the live candidate values that
@@ -1987,6 +1997,36 @@ export type ManifestLotIdentityAudit = {
   mismatchReason: string | null
 }
 
+// AGGREGATE-SIDE CONSERVATION AUDIT (canonical-sample-destroyed-after-pricing fix): one row per
+// value-mismatched manifest group — whether its mismatched side(s) still sum to the immutable
+// accepted tx-side total (allocation-method change, refresh-eligible) or not (genuine conflict).
+export type AggregateSideAllocationAudit = {
+  lotKey: string
+  entryMismatched: boolean
+  exitMismatched: boolean
+  acceptedSideTotalConserved: boolean
+}
+
+// PER-LOT TRANSITION AUDIT (canonical-sample-destroyed-after-pricing task): for every lot that
+// entered canonical selection canonically verified, where its values came from and the FIRST stage at
+// which it stopped being published as verified. `evidenceQualityBeforeSelection` is the quality of
+// the lot replay hands to canonical selection.
+export type CanonicalLotTransitionAudit = {
+  lotId: string
+  canonicalLotKey: string | null
+  evidenceQualityAfterPricing: MatchedLot['evidenceQuality']
+  evidenceQualityBeforeSelection: MatchedLot['evidenceQuality']
+  entryUsdAfterPricing: number | null
+  exitUsdAfterPricing: number | null
+  acceptedEntryRawUsd: number | null
+  acceptedExitRawUsd: number | null
+  manifestEntryUsd: number | null
+  manifestExitUsd: number | null
+  /** This fragment's quantity share of its accepted exit side (numerator / denominator), null when unallocated. */
+  fragmentAllocationFactor: number | null
+  firstDivergenceStage: string | null
+}
+
 export type ManifestReplayResult = {
   outcome: 'applied' | 'unavailable'
   // The ONE canonical array every downstream consumer publishes from (requirement #5/#10). Always
@@ -2026,6 +2066,8 @@ export type ManifestReplayResult = {
   // passes every per-group value/total check, yet still fails on `manifest_fingerprint_mismatch`
   // alone. See buildFingerprintMismatchDiagnostic's own header for what it isolates.
   fingerprintMismatchDiagnostic: FingerprintMismatchDiagnostic | null
+  aggregateSideAllocationAudit?: AggregateSideAllocationAudit[]
+  canonicalLotTransitionAudit?: CanonicalLotTransitionAudit[]
   // STALE-MANIFEST CANONICALIZATION MISMATCH, DISCLOSED, ADDITIVE (stale-manifest self-heal
   // follow-up task — confirmed production shape: a manifest written BEFORE 66adf73c's
   // create/replay canonicalization fix carries a raw, pre-allocation realizedPnlUsd/fingerprints;
@@ -2310,6 +2352,12 @@ export async function replayManifest(params: {
   }
 
   const recordMissingKeys = new Set<string>()
+  // AGGREGATE-SIDE CONSERVATION INPUTS (canonical-sample-destroyed-after-pricing fix). The current,
+  // evidence-derived group value of EVERY replayed record (matched or not), and the value
+  // mismatches whose classification is deferred until every record sharing their accepted tx side
+  // has been seen — see `sideConservedUnderAcceptedTotal` below.
+  const currentGroupValueByKey = new Map<string, { cost: number; proceeds: number; occurrences: readonly MatchedLot[] }>()
+  const pendingValueMismatches: Array<{ key: string; record: CanonicalManifestLotRecord; entryMismatched: boolean; exitMismatched: boolean; stages: Array<CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null> }> = []
   const traceMissing = (key: string, reason: ManifestReplayReason, occurrences: readonly MatchedLot[] | undefined, record: CanonicalManifestLotRecord | undefined, entryOk = false, exitOk = false) => {
     if (manifestLotsMissingCurrentEvidenceDetails.some((row) => row.canonicalLotKey === key)) return
     const current = occurrences?.[0]
@@ -2484,6 +2532,7 @@ export async function replayManifest(params: {
     }
     recordValueDisagreement('entry', record.groupCostBasisUsd, liveGroupCostBasisUsd)
     recordValueDisagreement('exit', record.groupProceedsUsd, liveGroupProceedsUsd)
+    currentGroupValueByKey.set(key, { cost: liveGroupCostBasisUsd, proceeds: liveGroupProceedsUsd, occurrences })
 
     // EXACT SCALED-INTEGER GROUP RECONCILIATION, DISCLOSED — see CanonicalManifestGroupReconciliation
     // Audit's own header for the full disclosure. Computed ONLY for a side that actually mismatches
@@ -2588,12 +2637,9 @@ export async function replayManifest(params: {
         const stages: Array<CanonicalManifestGroupReconciliationAudit['firstDivergenceStage'] | null> = []
         if (entryMismatched) stages.push(reconcileGroup('entry', record.entryEvidenceKey, record.entryGroupTotalUsd, record.groupCostBasisUsd, record.entryGroupFingerprint))
         if (exitMismatched) stages.push(reconcileGroup('exit', record.exitEvidenceKey, record.exitGroupTotalUsd, record.groupProceedsUsd, record.exitGroupFingerprint))
-        const allExplainedByMembershipGrowth = stages.length > 0 && stages.every((s) => s === 'group_membership_grew')
-        if (allExplainedByMembershipGrowth) {
-          addClassifiedReason(staleReasonKeys, 'candidate_evolution_group_membership_changed', key)
-        } else {
-          addClassifiedReason(structuralReasonKeys, 'canonical_value_disagreement', key)
-        }
+        // Classified after the loop: whether a mismatch is a real value conflict can only be decided
+        // once every record sharing the same accepted tx side has been replayed.
+        pendingValueMismatches.push({ key, record, entryMismatched, exitMismatched, stages })
       }
       continue
     }
@@ -2648,6 +2694,61 @@ export async function replayManifest(params: {
     reasonCounts.manifest_replay_success += rebuiltOccurrences.length
     selectedLotKeys.push(key)
     rebuiltOccurrences.forEach((rebuilt, i) => rebuiltByLot.set(occurrences[i], rebuilt))
+  }
+
+  // AGGREGATE TX-SIDE EVIDENCE vs PER-FRAGMENT VALUES (canonical-sample-destroyed-after-pricing fix).
+  // ROOT CAUSE THIS CLASSIFIES CORRECTLY: one accepted record holds the FULL transaction-side value and
+  // legitimately backs several FIFO fragments. A manifest record can freeze fragment values that are
+  // not quantity-proportional — e.g. additive growth froze LIVE values, and FIFO prorates a tx-level
+  // USD figure per SELL EVENT (`amountFromThisLot / sellAmount`), so a tx with two outbound events of
+  // the token (swap + fee transfer) yields fragments of 70/20/90 for 700/200/100 units — while every
+  // replay re-derives fragments by quantity from the same accepted total (126/36/18). The side total is
+  // identical (180 = 180, realized PnL unchanged), yet comparing one fragment's frozen value against
+  // its re-allocated share reported `manifest_exit_price_mismatch` and classified it as structural
+  // corruption, which blocks the self-heal refresh forever and withholds the whole verified sample.
+  // The comparison here is aggregate to aggregate, exactly scaled: the frozen fragment values of ALL
+  // manifest records on that side must sum to the immutable accepted side total, and those records
+  // must cover exactly the side's current sibling set. Only then is the disagreement an allocation-
+  // method difference (stale, refresh-eligible). A changed accepted total, a sibling outside the
+  // manifest, or a missing record keeps it a genuine `canonical_value_disagreement`.
+  const sideConservedUnderAcceptedTotal = (side: 'entry' | 'exit', evidenceKey: string): boolean => {
+    const evidence = evidenceByKey.get(evidenceKey)
+    const group = side === 'entry' ? entryGroupsByKey.get(evidenceKey) : exitGroupsByKey.get(evidenceKey)
+    if (!evidence || !group || group.length === 0) return false
+    const sideRecords = params.manifest.verifiedLotRecords.filter((r) => (side === 'entry' ? r.entryEvidenceKey : r.exitEvidenceKey) === evidenceKey)
+    const covered = new Set<MatchedLot>()
+    let frozenScaled = BigInt(0)
+    let currentScaled = BigInt(0)
+    for (const r of sideRecords) {
+      const current = currentGroupValueByKey.get(r.key)
+      const frozen = side === 'entry' ? r.groupCostBasisUsd : r.groupProceedsUsd
+      if (!current || frozen === null || !Number.isFinite(frozen)) return false
+      frozenScaled += toScaledValue(frozen)
+      currentScaled += toScaledValue(side === 'entry' ? current.cost : current.proceeds)
+      for (const lot of current.occurrences) covered.add(lot)
+    }
+    if (covered.size !== group.length || group.some((lot) => !covered.has(lot))) return false
+    const acceptedScaled = toScaledValue(stablecoinNormalizedGroupTotal(group, evidence.priceUsd))
+    // Exact scaled-integer conservation; the only slack is each stored value's own 1e-8 rounding
+    // (one unit per summed record, plus the accepted total's own) — never a value tolerance.
+    const units = BigInt(sideRecords.length + 1)
+    const within = (a: bigint, b: bigint) => (a > b ? a - b : b - a) <= units
+    return within(frozenScaled, acceptedScaled) && within(currentScaled, acceptedScaled)
+  }
+  const aggregateSideAllocationAudit: AggregateSideAllocationAudit[] = []
+  for (const pending of pendingValueMismatches) {
+    const conserved = (pending.entryMismatched ? sideConservedUnderAcceptedTotal('entry', pending.record.entryEvidenceKey) : true)
+      && (pending.exitMismatched ? sideConservedUnderAcceptedTotal('exit', pending.record.exitEvidenceKey) : true)
+    if (aggregateSideAllocationAudit.length < MAX_VALUE_DISAGREEMENT_EXAMPLES) {
+      aggregateSideAllocationAudit.push({ lotKey: pending.key, entryMismatched: pending.entryMismatched, exitMismatched: pending.exitMismatched, acceptedSideTotalConserved: conserved })
+    }
+    if (conserved) {
+      addClassifiedReason(staleReasonKeys, 'aggregate_side_evidence_fragment_allocation_changed', pending.key)
+    } else if (pending.stages.length > 0 && pending.stages.every((s) => s === 'group_membership_grew')) {
+      addClassifiedReason(staleReasonKeys, 'candidate_evolution_group_membership_changed', pending.key)
+    } else {
+      addClassifiedReason(structuralReasonKeys, 'canonical_value_disagreement', pending.key)
+    }
   }
 
   // Every missing key receives one bounded, exact diagnostic row even when the failure happened
@@ -2734,6 +2835,40 @@ export async function replayManifest(params: {
   const replayFailed = perLotFailed || derivationFailed
   const publishedLots = buildPublished(replayFailed)
 
+  const missingReasonByKey = new Map(manifestLotsMissingCurrentEvidenceDetails.map((row) => [row.canonicalLotKey, row.exactMissingReason]))
+  const canonicalLotTransitionAudit: CanonicalLotTransitionAudit[] = []
+  params.allCandidateLots.forEach((lot, index) => {
+    if (!isCanonicalVerifiedPublishedLot(lot)) return
+    const identityKey = identities.get(lot)?.key ?? null
+    const record = identityKey ? recordByKey.get(identityKey) ?? null : null
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    const exitShare = exitAllocationByKey.get(exitKey)?.get(lot) ?? null
+    const factorDenominator = exitShare ? Number(exitShare.denominator) : 0
+    const after = publishedLots[index]
+    const stillVerified = isCanonicalVerifiedPublishedLot(after)
+    const firstDivergenceStage = stillVerified
+      ? null
+      : !record
+        ? 'canonical_selection:candidate_not_in_manifest'
+        : missingReasonByKey.has(record.key)
+          ? `manifest_replay:${missingReasonByKey.get(record.key)}`
+          : 'manifest_replay:withheld_because_another_manifest_lot_failed'
+    canonicalLotTransitionAudit.push({
+      lotId: lot.lotId,
+      canonicalLotKey: identityKey,
+      evidenceQualityAfterPricing: lot.evidenceQuality,
+      evidenceQualityBeforeSelection: after.evidenceQuality,
+      entryUsdAfterPricing: lot.costBasisUsd,
+      exitUsdAfterPricing: lot.proceedsUsd,
+      acceptedEntryRawUsd: evidenceByKey.get(entryKey)?.priceUsd ?? null,
+      acceptedExitRawUsd: evidenceByKey.get(exitKey)?.priceUsd ?? null,
+      manifestEntryUsd: record?.costBasisUsd ?? null,
+      manifestExitUsd: record?.proceedsUsd ?? null,
+      fragmentAllocationFactor: exitShare && factorDenominator > 0 ? Number(exitShare.numerator) / factorDenominator : null,
+      firstDivergenceStage,
+    })
+  })
+
   // See ManifestReplayResult's own header for the full disclosure. Computed from the LOCAL
   // `recomputedFingerprints` (before the outward-facing null-on-failure below) — this is the one
   // signal the caller needs to safely distinguish "stale but self-consistent manifest, safe to
@@ -2790,6 +2925,8 @@ export async function replayManifest(params: {
     recomputedFingerprints: replayFailed ? null : recomputedFingerprints,
     manifestReplayedButNotCanonicalVerifiedLotKeys,
     fingerprintMismatchDiagnostic,
+    aggregateSideAllocationAudit,
+    canonicalLotTransitionAudit,
     staleManifestCanonicalizationMismatch,
   }
 }

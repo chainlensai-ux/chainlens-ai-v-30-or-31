@@ -3891,6 +3891,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       }
     }
     const replay = effectiveReplay
+    // PER-LOT TRANSITION AUDIT (canonical-sample-destroyed-after-pricing task): pricing-stage verified
+    // lots -> what replay handed canonical selection, with accepted tx-side totals, frozen manifest
+    // fragment values, this fragment's quantity share, and the first divergence stage. First replay
+    // shows where a lot was lost; the effective replay shows whether the self-heal restored it.
+    console.warn('[canonical-lot-transition-audit]', JSON.stringify({
+      manifestKey,
+      manifestRefreshApplied,
+      aggregateSideAllocationAudit: firstReplay.aggregateSideAllocationAudit ?? [],
+      firstReplay: firstReplay.canonicalLotTransitionAudit ?? [],
+      effectiveReplay: manifestRefreshApplied ? (replay.canonicalLotTransitionAudit ?? []) : null,
+    }))
 
     // CANONICAL PNL DIFF AUDIT, DISCLOSED (canonical-PnL-movement audit task) — DIAGNOSTIC ONLY.
     // Rebuilds this scan's OWN candidate manifest records purely in memory and diffs them against
