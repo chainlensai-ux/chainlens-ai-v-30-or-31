@@ -24,6 +24,7 @@ import {
   sortLotsByCanonicalIdentity, sumQuantizedUsd,
 } from '../lib/scanDeterminismAudit'
 import { buildSameTxMultiEventAudit } from '../lib/txSideEventAllocation'
+import { stabilizeChainHistory, type HistoricalEventKv } from '../lib/historicalEventSnapshot'
 import { auditAndRecordRepeatScan, buildRepeatScanSnapshot, repeatScanScope, type RepeatScanKv } from '../lib/pnlRepeatScanDeterminism'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
@@ -1548,8 +1549,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     scanTimer.stages.providerFetchWindow ?? null,
   )
 
+  // HISTORICAL EVENT STABILITY (repeated-scan structural determinism — src/lib/historicalEventSnapshot.ts):
+  // canonical events = this scan's fresh provider events ∪ previously provider-verified events still in
+  // the window. A GoldRush timeout (or any transient provider failure) can no longer delete a transfer an
+  // earlier scan proved; it only drops for leaving the window or failing identity validation. Fresh
+  // `providerResults` (and every provider diagnostic built from them) are unchanged, so a partial fetch
+  // stays disclosed; only the structural event set is stabilized.
+  const historicalStability = await Promise.all(providerResults.map((r) => stabilizeChainHistory(acceptedEvidenceRealKv as unknown as HistoricalEventKv, {
+    wallet: params.walletAddress,
+    chain: r.chain,
+    providerStatus: r.providerStatus,
+    freshEvents: r.rawEvents,
+    windowDays: r.providerFetchWindowDays ?? PROVIDER_FETCH_WINDOW_DAYS_USED,
+    now: Date.now(),
+  })))
+  for (const stability of historicalStability) {
+    if (stability.audit.restoredPersistedEventCount > 0 || stability.audit.eventsDropped.length > 0 || stability.audit.providerStatus !== 'ok') {
+      console.warn('[historical-event-stability-audit]', JSON.stringify(stability.audit))
+    }
+  }
+
   // 2. normalization — pure, zero provider calls.
-  const allRawEvents = providerResults.flatMap((r) => r.rawEvents)
+  const allRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)
   if (allRawEvents.length === 0) {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] NO RAW EVENTS FETCHED for this scan', { providerDiagnostics })

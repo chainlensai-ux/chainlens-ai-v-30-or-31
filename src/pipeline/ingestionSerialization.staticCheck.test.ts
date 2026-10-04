@@ -38,7 +38,9 @@ describe('providerFetchWindow KV write overlaps with unrelated CPU work (perf-sp
     // in the source (proving normalizeEvents no longer waits on it), and normalizeEvents' own real
     // input must still be providerResults, unchanged.
     const writeDeclIndex = src.indexOf('const providerFetchWindowKvWriteSettled = Promise.all(')
-    const allRawEventsIndex = src.indexOf('const allRawEvents = providerResults.flatMap((r) => r.rawEvents)')
+    // Normalization's input is now the stabilized canonical event set (fresh provider events ∪ persisted
+    // provider-verified history — src/lib/historicalEventSnapshot.ts), still never the KV write's result.
+    const allRawEventsIndex = src.indexOf('const allRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)')
     assert.notEqual(allRawEventsIndex, -1)
     assert.ok(writeDeclIndex < allRawEventsIndex, 'the write must be kicked off before normalization starts, so they run concurrently')
   })
