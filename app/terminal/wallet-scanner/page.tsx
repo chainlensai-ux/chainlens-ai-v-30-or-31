@@ -35,7 +35,7 @@ import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyC
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
 import { savePortfolioScanResult } from '@/app/frontend/lib/portfolioSharedCache'
-import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, computeRobinhoodDisplayState, mergedTotalText } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, computeRobinhoodDisplayState, mergedCoverageText, mergedTotalText } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
@@ -1281,6 +1281,9 @@ export default function WalletScannerPage() {
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
                   {mergedTotalText(merged, (v) => fmtUsd(v))}
                 </div>
+                {mergedCoverageText(merged) && (
+                  <div style={{ fontSize: '11px', color: '#fbbf24', marginBottom: '6px' }}>{mergedCoverageText(merged)}</div>
+                )}
                 <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.8)', marginBottom: '10px' }}>
                   Chains: {chainLabels.join(', ') || 'pending'} · {partialSnapshot.holdingsCount} holdings
                   {merged.robinhoodIncluded ? ' · includes Robinhood' : ''}

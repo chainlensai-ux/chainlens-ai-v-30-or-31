@@ -29,13 +29,21 @@
 import { fetchDexscreenerPriceShared } from '@/src/lib/dexscreenerRequestCache'
 import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
 import type { ChainHolding } from '../holdings/types'
-import type { PricedHolding, PricingEngineOutput } from './types'
+import type { HoldingPriceStatus, PricedHolding, PricingEngineOutput, PortfolioPricingEvidence } from './types'
+import {
+  classifyPriceFailureReason,
+  defaultLastVerifiedPriceStore,
+  STALE_VERIFIED_PRICE_MAX_AGE_MS,
+  type LastVerifiedPrice,
+  type LastVerifiedPriceStore,
+} from '@/lib/pricing/lastVerifiedPrice'
 import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
 import { isVerifiedStablecoinAddress, isCanonicalWethAddress, isNativePseudoAddress } from '@/src/modules/quoteLegPricing/index'
 import {
   createCurrentPriceResolver,
   isCanonicalEthAsset,
   isCanonicalStable,
+  readCurrentPriceCache,
   recordCurrentPrice,
   type CurrentPriceAttempts,
   type CurrentPriceResolverDeps,
@@ -425,6 +433,72 @@ function fallbackLaneOf(h: ChainHolding): FallbackLane {
 }
 
 const LANE_ORDER: Record<FallbackLane, number> = { material: 0, activity: 1, exploratory: 2 }
+
+/** Prior value (last verified price × current balance) at or above which a holding is "previously material". */
+export const PRIOR_MATERIAL_MIN_USD = 25
+
+/**
+ * The current balance in the prior price's units. Known decimals must EQUAL the prior's (identity); an
+ * assumed-decimals row uses its raw amount at the prior's decimals — for lookup ORDER only (a stale value
+ * additionally requires on-chain-verified decimals, see decideStaleVerifiedReuse).
+ */
+function priorQuantity(h: ChainHolding, prior: LastVerifiedPrice): number | null {
+  if (decimalsKnown(h)) {
+    const q = Number(h.quantity)
+    return h.decimals === prior.decimals && Number.isFinite(q) && q > 0 ? q : null
+  }
+  if (h.amountRaw == null || !/^\d+$/.test(h.amountRaw)) return null
+  const q = Number(h.amountRaw) / 10 ** prior.decimals
+  return Number.isFinite(q) && q > 0 ? q : null
+}
+
+const ATTEMPT_OF_SOURCE: Partial<Record<string, keyof CurrentPriceAttempts>> = {
+  dexscreener: 'dexscreener', geckoterminal: 'geckoterminal', onchain_v2: 'onchain', onchain_v3: 'onchain', onchain_v4: 'onchain', multihop: 'multihop',
+}
+
+export type StaleReuseDecision = { reuse: boolean; reason: string; failureReasons: string[] }
+
+/**
+ * Pure: may a last verified price stand in for a missing fresh one? Only when ALL of: exact identity (the
+ * caller keys by chain + address), the CURRENT decimals are known/verified and equal the prior's, the prior was
+ * observed no more than STALE_VERIFIED_PRICE_MAX_AGE_MS ago (original observedAt), and this scan's failure is
+ * TRANSIENT — the source that produced the prior price (when it was tried) or every source tried could not
+ * answer. A source that answered "no market / wrong pair / zero liquidity" forbids reuse.
+ */
+export function decideStaleVerifiedReuse(input: {
+  prior: LastVerifiedPrice
+  now: number
+  currentDecimals: number | null
+  attempts: CurrentPriceAttempts | null
+  /** Set when a short negative-cache entry answered instead of a lookup (its original reason). */
+  negativeCacheReason?: string | null
+  negativeCached?: boolean
+  lookedUp: boolean
+}): StaleReuseDecision {
+  const { prior } = input
+  const reasons: string[] = []
+  if (input.negativeCached) reasons.push(input.negativeCacheReason ?? 'negative_cache')
+  else if (!input.lookedUp) reasons.push('not_looked_up_budget')
+  else {
+    const a = input.attempts
+    const own = ATTEMPT_OF_SOURCE[prior.source]
+    const ownAttempt = own && a ? (a[own] as { attempted?: boolean; ok?: boolean; reason?: string | null } | null | undefined) : null
+    if (ownAttempt?.attempted && !ownAttempt.ok) reasons.push(ownAttempt.reason ?? 'unknown')
+    else if (a) {
+      for (const k of ['dexscreener', 'geckoterminal', 'onchain', 'multihop'] as const) {
+        const at = a[k] as { attempted?: boolean; ok?: boolean; reason?: string | null } | null | undefined
+        if (at?.attempted && !at.ok) reasons.push(at.reason ?? 'unknown')
+      }
+    }
+    if (reasons.length === 0) reasons.push('not_looked_up_budget')
+  }
+  if (input.currentDecimals == null || input.currentDecimals !== prior.decimals) return { reuse: false, reason: 'decimals_identity_unverified', failureReasons: reasons }
+  const age = input.now - prior.observedAt
+  if (!(age >= 0) || age > STALE_VERIFIED_PRICE_MAX_AGE_MS) return { reuse: false, reason: 'prior_price_too_old', failureReasons: reasons }
+  const blocking = reasons.find((r) => classifyPriceFailureReason(r) !== 'transient')
+  if (blocking) return { reuse: false, reason: `failure_not_transient:${blocking}`, failureReasons: reasons }
+  return { reuse: true, reason: 'transient_failure_recent_verified_price', failureReasons: reasons }
+}
 
 /**
  * Why an exploratory holding looks like junk — used ONLY to rank it lower, never to exclude it or to call
@@ -838,6 +912,13 @@ export type PriceHoldingsOptions = {
    * (as the DexScreener step) is used unless sources are passed here — no hidden network calls in tests.
    */
   resolverDeps?: CurrentPriceResolverDeps
+  /**
+   * Last-verified price memory (lib/pricing/lastVerifiedPrice.ts). Default: the production store (process L1 +
+   * KV) with production sources; NONE with an injected `priceFn` (tests opt in explicitly — no hidden memory).
+   */
+  lastVerifiedStore?: LastVerifiedPriceStore | null
+  /** Clock seam for stale-age checks. */
+  now?: () => number
   /** Expensive per-scan caps (token attempts per source). */
   expensiveBudget?: Partial<ExpensiveBudget>
 }
@@ -867,6 +948,8 @@ export async function priceHoldings(
     ? { ...defaultCurrentPriceDeps(), ...(options.resolverDeps ?? {}) }
     : { dexscreener: injectedDs, geckoterminal: null, onchain: null, ethUsd: null, ...(options.resolverDeps ?? {}) }
   const resolver = createCurrentPriceResolver(resolverDeps)
+  const lastVerified = options.lastVerifiedStore !== undefined ? options.lastVerifiedStore : (productionSources ? defaultLastVerifiedPriceStore() : null)
+  const nowMs = options.now ?? Date.now
   // Only holdings genuinely eligible for the fallback (no free provider price, not dust) ever reach
   // priceFn — see fallbackGateReason.
   const fallbackKeyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
@@ -890,6 +973,7 @@ export async function priceHoldings(
   // negative-cache entry also skips the expensive lanes (its sources were just tried).
   const priceResultByKey = new Map<string, CurrentPriceResult>()
   const negativeCachedKeys = new Set<string>()
+  const negativeReasonByKey = new Map<string, string | null>()
   const firstHoldingByKey = new Map<string, ChainHolding>()
   for (const h of eligibleHoldings) if (!firstHoldingByKey.has(fallbackKeyOf(h))) firstHoldingByKey.set(fallbackKeyOf(h), h)
   // One batched L2 (KV) read for the keys that need a cache at all — canonical registry assets resolve
@@ -901,12 +985,39 @@ export async function priceHoldings(
     const h = firstHoldingByKey.get(key)!
     const r = await resolver.resolveCheap({ chainId: h.chainId, tokenAddress: h.tokenAddress, providerPriceUsd: h.providerPriceUsd, providerValueUsd: h.providerValueUsd, balanceRaw: h.amountRaw ?? null, decimals: decimalsKnown(h) ? h.decimals : null })
     priceResultByKey.set(key, r)
-    if (r.evidence.status !== 'verified' && r.attempts.cache === 'negative') negativeCachedKeys.add(key)
+    if (r.evidence.status !== 'verified' && r.attempts.cache === 'negative') {
+      negativeCachedKeys.add(key)
+      // The negative entry's ORIGINAL reason (a cached http_429 stays transient; a cached no_matching_pair stays permanent).
+      negativeReasonByKey.set(key, readCurrentPriceCache(h.chainId, h.tokenAddress).evidence?.reason ?? null)
+    }
   })
   const cheapResolvedKeys = new Set(allEligibleKeys.filter((k) => priceResultByKey.get(k)?.evidence.status === 'verified'))
   // The lane selector only ever sees still-unresolved holdings.
   const distinctFallbackKeys = allEligibleKeys.filter((k) => !cheapResolvedKeys.has(k) && !negativeCachedKeys.has(k))
   const laneHoldings = eligibleHoldings.filter((h) => distinctFallbackKeys.includes(fallbackKeyOf(h)))
+
+  // PRIOR-MATERIAL MEMORY (repeated-scan portfolio-value audit). Root cause: a holding with no provider price
+  // and no activity signal (e.g. a ~$870 ClawBank balance) competed for the 8 exploratory slots on RAW UNIT
+  // COUNT, so whether it was even looked up depended on which other unknowns the holdings provider returned —
+  // and when it was looked up, one transient failure dropped it from the total with nothing remembered. The
+  // last verified price × the CURRENT balance (same decimals only) is a real prior-materiality signal: such a
+  // holding ranks in the MATERIAL lane, inside the same unchanged caps, so spam can never displace it. This is
+  // lookup ORDER only — never a value.
+  const priorByKey = new Map<string, LastVerifiedPrice>()
+  const priorMaterialValueByKey = new Map<string, number>()
+  if (lastVerified) {
+    await lastVerified.prefetch(allEligibleKeys.map((k) => firstHoldingByKey.get(k)!))
+    for (const key of allEligibleKeys) {
+      const h = firstHoldingByKey.get(key)!
+      const prior = lastVerified.get(h.chainId, h.tokenAddress)
+      if (!prior) continue
+      priorByKey.set(key, prior)
+      const quantity = priorQuantity(h, prior)
+      const priorValue = quantity != null ? quantity * prior.priceUsd : null
+      if (priorValue != null && priorValue >= PRIOR_MATERIAL_MIN_USD) priorMaterialValueByKey.set(key, priorValue)
+    }
+  }
+  const laneOf = (h: ChainHolding): FallbackLane => (priorMaterialValueByKey.has(fallbackKeyOf(h)) ? 'material' : fallbackLaneOf(h))
 
   // DUPLICATES: holdings sharing (chainId, tokenAddress) are ONE fallback candidate — the strongest lane
   // and score among them wins. The same address on two chains is two distinct tokens (chainId is in the key).
@@ -916,15 +1027,19 @@ export async function priceHoldings(
   for (const h of laneHoldings) {
     const key = fallbackKeyOf(h)
     if (isSpoofStableSymbol(h) || isSpoofBlueChipSymbol(h)) spoofedKeys.add(key)
-    const lane = fallbackLaneOf(h)
+    const lane = laneOf(h)
     const existingLane = laneByKey.get(key)
     if (existingLane === undefined || LANE_ORDER[lane] < LANE_ORDER[existingLane]) laneByKey.set(key, lane)
   }
   for (const h of laneHoldings) {
     const key = fallbackKeyOf(h)
     const lane = laneByKey.get(key)!
-    if (fallbackLaneOf(h) !== lane) continue // scored only within the key's strongest lane
-    const score = lane === 'exploratory' ? exploratoryPriorityScore(h) : fallbackPriorityScore(h)
+    if (laneOf(h) !== lane) continue // scored only within the key's strongest lane
+    const priorValue = priorMaterialValueByKey.get(key)
+    // A prior-material holding ranks by its prior value, alongside provider-valued holdings (same score shape).
+    const score = priorValue != null
+      ? [1, priorValue, 0, priorValue, isWellFormedSymbol(h.symbol) ? 1 : 0, 0]
+      : lane === 'exploratory' ? exploratoryPriorityScore(h) : fallbackPriorityScore(h)
     const existing = bestScoreByKey.get(key)
     if (!existing || compareFallbackPriority(score, existing) < 0) bestScoreByKey.set(key, score)
   }
@@ -1037,8 +1152,9 @@ export async function priceHoldings(
   // unpriced ('decimals_unverified') rather than being valued from a guessed quantity.
   const onchainDecimalsByKey = new Map<string, number>()
   const decimalsUnverifiedKeys = new Set<string>()
+  // Also a previously-material key with no fresh price: a stale reuse needs verified decimals (identity).
   const keysNeedingDecimals = Array.from(new Set(
-    holdings.filter((h) => !decimalsKnown(h) && fallbackPriceByKey.get(fallbackKeyOf(h)) != null).map(fallbackKeyOf),
+    holdings.filter((h) => !decimalsKnown(h) && (fallbackPriceByKey.get(fallbackKeyOf(h)) != null || priorMaterialValueByKey.has(fallbackKeyOf(h)))).map(fallbackKeyOf),
   ))
   const verifiedDecimals = await mapWithConcurrencyLimit(keysNeedingDecimals, FALLBACK_PRICE_CONCURRENCY_LIMIT, async (key) => {
     const [chainIdStr, tokenAddress] = key.split(':')
@@ -1052,7 +1168,37 @@ export async function priceHoldings(
   // Holdings whose key didn't make the cut stay honestly unpriced (priceUsd/valueUsd: null below) —
   // never hidden from pricedHoldings, never defaulted to zero.
 
-  const pricedHoldings: PricedHolding[] = holdings.map((h): PricedHolding => {
+  // STALE_VERIFIED REUSE (see decideStaleVerifiedReuse): per key with no fresh price but a last verified one.
+  // Never written back anywhere — a reuse cannot refresh any cache's observedAt.
+  const verifiedDecimalsOf = (h: ChainHolding): number | null => (decimalsKnown(h) ? h.decimals : onchainDecimalsByKey.get(fallbackKeyOf(h)) ?? null)
+  const failureReasonByKey = new Map<string, string>()
+  const staleByKey = new Map<string, LastVerifiedPrice>()
+  const staleRejections: Record<string, number> = {}
+  const decideNow = nowMs()
+  for (const key of allEligibleKeys) {
+    if (fallbackPriceByKey.get(key) != null && !decimalsUnverifiedKeys.has(key)) continue
+    const h = firstHoldingByKey.get(key)!
+    const attempts = priceResultByKey.get(key)?.attempts ?? null
+    const lookedUp = budgetedFallbackKeySet.has(key) && dsKeys.includes(key)
+    const prior = priorByKey.get(key)
+    const firstFailure = decimalsUnverifiedKeys.has(key)
+      ? 'decimals_unverified'
+      : negativeCachedKeys.has(key)
+        ? (negativeReasonByKey.get(key) ?? 'negative_cache')
+        : !lookedUp ? 'not_looked_up_budget' : (priceResultByKey.get(key)?.evidence.reason ?? 'unknown')
+    failureReasonByKey.set(key, firstFailure)
+    if (!prior || decimalsUnverifiedKeys.has(key)) continue
+    const d = decideStaleVerifiedReuse({
+      prior, now: decideNow, currentDecimals: verifiedDecimalsOf(h), attempts,
+      negativeCached: negativeCachedKeys.has(key), negativeCacheReason: negativeReasonByKey.get(key) ?? null, lookedUp,
+    })
+    failureReasonByKey.set(key, d.failureReasons[0] ?? firstFailure)
+    if (d.reuse) staleByKey.set(key, prior)
+    else staleRejections[d.reason] = (staleRejections[d.reason] ?? 0) + 1
+  }
+
+  const pricingObservedAt = nowMs()
+  const pricedHoldings: PricedHolding[] = holdings.map((h, holdingIndex): PricedHolding => {
     // Prefer the balances provider's own real, free price (see file header) — only fall through
     // to the weaker, capped, deduped DexScreener-only lookup when the provider genuinely didn't
     // supply one.
@@ -1103,6 +1249,23 @@ export async function priceHoldings(
         providerValueUsd: h.providerValueUsd, recomputedValueUsd, quantity: h.quantity, decimals: h.decimals, priceUsd,
       })
     }
+    // Per-holding evidence. Fresh = this scan's own provider/canonical/cache/market evidence.
+    const key = fallbackKeyOf(h)
+    const balanceVerified = decimalsKnown(h) || (onchainDecimalsByKey.has(key) && h.amountRaw != null && /^\d+$/.test(h.amountRaw))
+    const providerFresh = h.providerPriceUsd != null && h.providerPriceUsd > 0
+    const freshEvidence = providerFresh ? null : priceResultByKey.get(key)?.evidence ?? null
+    const stale = priceUsd == null ? staleByKey.get(key) : undefined
+    let staleVerifiedPriceUsd: number | null = null
+    let staleVerifiedValueUsd: number | null = null
+    if (stale) {
+      const d = verifiedDecimalsOf(h)
+      const q = decimalsKnown(h) ? Number(h.quantity) : (d != null && h.amountRaw != null ? Number(h.amountRaw) / 10 ** d : NaN)
+      if (Number.isFinite(q) && q > 0) {
+        staleVerifiedPriceUsd = stale.priceUsd
+        staleVerifiedValueUsd = q * stale.priceUsd
+      }
+    }
+    const holdingPriceStatus: HoldingPriceStatus = priceUsd != null ? 'verified' : staleVerifiedValueUsd != null ? 'stale_verified' : 'unavailable'
     return {
       chainId: h.chainId,
       tokenAddress: h.tokenAddress,
@@ -1112,6 +1275,18 @@ export async function priceHoldings(
       priceUsd,
       valueUsd,
       classification: h.classification,
+      balanceStatus: balanceVerified ? 'verified' : 'unavailable',
+      priceStatus: holdingPriceStatus,
+      valueStatus: valueUsd != null ? 'verified' : staleVerifiedValueUsd != null ? 'stale_verified' : 'unavailable',
+      priceSource: holdingPriceStatus === 'verified'
+        ? (providerFresh ? 'provider' : (freshEvidence?.originalSource ?? freshEvidence?.source ?? null))
+        : holdingPriceStatus === 'stale_verified' ? stale!.source : null,
+      priceObservedAt: holdingPriceStatus === 'verified'
+        ? (providerFresh ? pricingObservedAt : (freshEvidence?.observedAt ?? null))
+        : holdingPriceStatus === 'stale_verified' ? stale!.observedAt : null,
+      priceFailureReason: holdingPriceStatus === 'verified' ? null : (failureReasonByKey.get(key) ?? (gateByIndex[holdingIndex] ?? 'unknown')),
+      staleVerifiedPriceUsd,
+      staleVerifiedValueUsd,
     }
   })
 
@@ -1128,6 +1303,8 @@ export async function priceHoldings(
   const seenExactBalanceKeys = new Set<string>()
   const duplicateBalancesDropped: Array<{ chainId: number; tokenAddress: string; quantity: string; valueUsd: number | null }> = []
   let totalValueUsd = 0
+  // Stale-verified value is summed SEPARATELY (never into totalValueUsd / chainValueUsd, which stay fresh-only).
+  let staleSupportedSubtotalUsd = 0
   const chainValueUsd: Record<number, number> = {}
   for (const p of pricedHoldings) {
     const exactKey = `${p.chainId}:${p.tokenAddress.toLowerCase()}:${p.quantity}`
@@ -1137,6 +1314,7 @@ export async function priceHoldings(
     }
     seenExactBalanceKeys.add(exactKey)
     totalValueUsd += p.valueUsd ?? 0
+    staleSupportedSubtotalUsd += p.staleVerifiedValueUsd ?? 0
     chainValueUsd[p.chainId] = (chainValueUsd[p.chainId] ?? 0) + (p.valueUsd ?? 0)
   }
   if (duplicateBalancesDropped.length > 0) {
@@ -1193,9 +1371,16 @@ export async function priceHoldings(
   // peg) — PLUS any unpriced Alchemy-only row (no spam filter, no metadata, no price: genuinely unknown)
   // that shows no junk signal. Those keep the lane "Partial", never a silently complete total.
   const holdingByKey = new Map(holdings.map((h) => [fallbackKeyOf(h), h]))
+  // PLUS (repeated-scan audit) any holding that was previously material and has now lost its price with no
+  // stale_verified support — its value is genuinely unknown, so the lane can never read as a verified total.
+  // A stale_verified holding is not unpriced here (it is disclosed separately).
+  const staleKeys = new Set(pricedHoldings.filter((p) => p.priceStatus === 'stale_verified').map((p) => fallbackKeyOf(p as unknown as ChainHolding)))
   const estimatedPotentiallyMaterialUnpricedCount = unpricedDiagnostics.filter((d) => {
+    const key = `${d.chainId}:${d.tokenAddress.toLowerCase()}`
+    if (staleKeys.has(key)) return false
+    if (priorMaterialValueByKey.has(key)) return true
     if (d.estimatedMaterialitySignal != null && d.estimatedMaterialitySignal > DUST_VALUE_USD_THRESHOLD) return true
-    const h = holdingByKey.get(`${d.chainId}:${d.tokenAddress.toLowerCase()}`)
+    const h = holdingByKey.get(key)
     return h != null && d.fallbackEligible && !decimalsKnown(h) && exploratorySuspicion(h) == null && !isSpoofStableSymbol(h) && !isSpoofBlueChipSymbol(h)
   }).length
   const TOP_UNPRICED_CANDIDATES_LOGGED = 15
@@ -1471,5 +1656,48 @@ export async function priceHoldings(
   // eslint-disable-next-line no-console
   console.warn('[holdings-fallback-selection] lanes', { ...fallbackAudit, rows: undefined })
 
-  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount, fallbackAudit }
+  // PORTFOLIO PRICING EVIDENCE: what supports the value, by kind (counts over every held row, like the lane
+  // evidence; subtotals over the de-duplicated balances, like totalValueUsd).
+  let dominantUnpricedValuePreviouslyUsd: number | undefined
+  for (const p of pricedHoldings) {
+    if (p.priceStatus !== 'unavailable') continue
+    const prior = priorMaterialValueByKey.get(fallbackKeyOf(p as unknown as ChainHolding))
+    if (prior != null && (dominantUnpricedValuePreviouslyUsd == null || prior > dominantUnpricedValuePreviouslyUsd)) dominantUnpricedValuePreviouslyUsd = prior
+  }
+  const portfolioPricingEvidence: PortfolioPricingEvidence = {
+    freshPricedCount: pricedHoldings.filter((p) => p.valueUsd != null).length,
+    staleVerifiedPricedCount: pricedHoldings.filter((p) => p.valueUsd == null && p.priceStatus === 'stale_verified').length,
+    unpricedCount: pricedHoldings.filter((p) => p.valueUsd == null && p.priceStatus !== 'stale_verified').length,
+    freshSubtotalUsd: totalValueUsd,
+    staleSupportedSubtotalUsd,
+    ...(dominantUnpricedValuePreviouslyUsd != null ? { dominantUnpricedValuePreviouslyUsd } : {}),
+  }
+
+  // LAST-VERIFIED MEMORY WRITE: only FRESH verified prices, with their ORIGINAL source + observedAt (a cache hit
+  // keeps the original observation; the store ignores an observation that is not newer). Bounded to holdings
+  // worth at least $1 — a lookup-priority memory, not a price index. A stale reuse is never written.
+  if (lastVerified) {
+    const recorded = new Set<string>()
+    for (let i = 0; i < pricedHoldings.length; i += 1) {
+      const p = pricedHoldings[i]
+      const key = fallbackKeyOf(holdings[i])
+      if (recorded.has(key) || p.priceStatus !== 'verified' || p.balanceStatus !== 'verified' || p.priceUsd == null || (p.valueUsd ?? 0) < 1) continue
+      if (p.priceSource == null || p.priceObservedAt == null || p.priceSource.startsWith('canonical_') || p.priceSource === 'shared_cache') continue
+      const confidence = p.priceSource === 'provider' ? 'high' : (priceResultByKey.get(key)?.evidence.confidence ?? null)
+      if (confidence !== 'high' && confidence !== 'medium') continue
+      recorded.add(key)
+      lastVerified.record({ chainId: p.chainId, tokenAddress: p.tokenAddress, priceUsd: p.priceUsd, source: p.priceSource, observedAt: p.priceObservedAt, confidence, decimals: p.decimals })
+    }
+  }
+  if (priorMaterialValueByKey.size > 0 || staleByKey.size > 0 || Object.keys(staleRejections).length > 0) {
+    console.warn('[holdings-prior-material-audit]', {
+      priorMaterialCandidates: priorMaterialValueByKey.size,
+      priorMaterialSelected: [...priorMaterialValueByKey.keys()].filter((k) => budgetedFallbackKeySet.has(k)).length,
+      staleVerifiedReused: staleByKey.size,
+      staleReuseRejected: staleRejections,
+      portfolioPricingEvidence,
+    })
+  }
+
+  return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus, potentiallyMaterialUnpricedCount: estimatedPotentiallyMaterialUnpricedCount, fallbackAudit, portfolioPricingEvidence }
 }

@@ -24,6 +24,13 @@ export type PortfolioEvidence = {
   holdingsComplete: boolean
   /** Short machine reason when not verified (e.g. 'holdings_provider_unavailable', 'no_holdings_priced'). */
   reason: string | null
+  /**
+   * Holdings valued ONLY by a recent last-verified price after a transient lookup failure (never fresh). Present
+   * only when > 0. Their value is inside pricedSubtotalUsd (the status is then always 'partial'), and they are
+   * counted in neither pricedHoldings nor unpricedHoldings.
+   */
+  staleVerifiedHoldings?: number
+  staleVerifiedSubtotalUsd?: number
 }
 
 const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
@@ -39,11 +46,25 @@ export function evidenceFromHoldings(input: {
   values: ReadonlyArray<number | null>
   materialUnpriced?: number | null
   reason?: string | null
+  /** Values of holdings that are null in `values` but carry a stale_verified value (one entry per such holding). */
+  staleVerifiedValues?: ReadonlyArray<number>
 }): PortfolioEvidence {
   const priced = input.values.filter(finite)
-  const unpriced = input.values.length - priced.length
+  const staleValues = (input.staleVerifiedValues ?? []).filter(finite)
+  const staleCount = Math.min(staleValues.length, input.values.length - priced.length)
+  const staleSum = staleValues.slice(0, staleCount).reduce((s, v) => s + v, 0)
+  const unpriced = input.values.length - priced.length - staleCount
   const subtotal = priced.reduce((s, v) => s + v, 0)
   const base = { pricedHoldings: priced.length, unpricedHoldings: unpriced, holdingsComplete: input.holdingsComplete }
+  if (staleCount > 0) {
+    // A recent verified (not fresh) price supports part of the value: always Partial, disclosed separately.
+    const blocking = input.materialUnpriced != null ? Math.min(unpriced, Math.max(0, input.materialUnpriced)) : unpriced
+    return {
+      ...base, valueUsd: null, pricedSubtotalUsd: subtotal + staleSum, status: 'partial',
+      reason: input.reason ?? (blocking > 0 ? 'some_holdings_unpriced' : 'stale_verified_price_used'),
+      staleVerifiedHoldings: staleCount, staleVerifiedSubtotalUsd: staleSum,
+    }
+  }
   if (input.values.length === 0) {
     return input.holdingsComplete
       ? { ...base, valueUsd: 0, pricedSubtotalUsd: 0, status: 'verified_zero', reason: null }
@@ -79,10 +100,12 @@ export function mergePortfolioEvidence(lanes: ReadonlyArray<PortfolioEvidence | 
     const v = sumOf((l) => l.valueUsd)
     return { ...base, valueUsd: v, pricedSubtotalUsd: v, status: 'verified', reason: null }
   }
-  const known = ls.filter((l) => (l.status === 'verified' || l.status === 'partial') && l.pricedSubtotalUsd != null && l.pricedHoldings > 0)
+  const known = ls.filter((l) => (l.status === 'verified' || l.status === 'partial') && l.pricedSubtotalUsd != null && (l.pricedHoldings > 0 || (l.staleVerifiedHoldings ?? 0) > 0))
   if (known.length > 0) {
     const firstGap = ls.find((l) => l.status === 'partial' || l.status === 'unavailable')
-    return { ...base, valueUsd: null, pricedSubtotalUsd: known.reduce((s, l) => s + (l.pricedSubtotalUsd ?? 0), 0), status: 'partial', reason: firstGap?.reason ?? 'some_holdings_unpriced' }
+    const staleVerifiedHoldings = ls.reduce((s, l) => s + (l.staleVerifiedHoldings ?? 0), 0)
+    const stale = staleVerifiedHoldings > 0 ? { staleVerifiedHoldings, staleVerifiedSubtotalUsd: ls.reduce((s, l) => s + (l.staleVerifiedSubtotalUsd ?? 0), 0) } : {}
+    return { ...base, valueUsd: null, pricedSubtotalUsd: known.reduce((s, l) => s + (l.pricedSubtotalUsd ?? 0), 0), status: 'partial', reason: firstGap?.reason ?? 'some_holdings_unpriced', ...stale }
   }
   return { ...base, valueUsd: null, pricedSubtotalUsd: null, status: 'unavailable', reason: ls.find((l) => l.status === 'unavailable')?.reason ?? 'no_holdings_priced' }
 }
@@ -112,7 +135,7 @@ export function portfolioValueText(e: PortfolioEvidence | null | undefined, fmt:
 /** Pricing coverage by holding count (truthful: priced / all held assets in the evidence). */
 export function portfolioCoverage(e: PortfolioEvidence | null | undefined): { priced: number; total: number; pct: number } | null {
   if (!e) return null
-  const total = e.pricedHoldings + e.unpricedHoldings
+  const total = e.pricedHoldings + (e.staleVerifiedHoldings ?? 0) + e.unpricedHoldings
   if (total <= 0) return null
   return { priced: e.pricedHoldings, total, pct: Math.round((e.pricedHoldings / total) * 100) }
 }
@@ -120,6 +143,9 @@ export function portfolioCoverage(e: PortfolioEvidence | null | undefined): { pr
 /** The second line under a Partial value, e.g. "43/50 holdings priced"; null when not partial. */
 export function portfolioCoverageText(e: PortfolioEvidence | null | undefined): string | null {
   if (!e || e.status !== 'partial') return null
+  const stale = e.staleVerifiedHoldings ?? 0
+  // e.g. "30 fresh priced · 1 recent verified price · 470 unpriced" — a reused price is never shown as fresh.
+  if (stale > 0) return `${e.pricedHoldings} fresh priced · ${stale} recent verified price${stale === 1 ? '' : 's'} · ${e.unpricedHoldings} unpriced`
   const c = portfolioCoverage(e)
   return c ? `${c.priced}/${c.total} holdings priced` : null
 }

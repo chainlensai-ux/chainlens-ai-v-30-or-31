@@ -132,6 +132,14 @@ export type ScanWalletStatusUpdate = {
   partial?: {
     portfolioTotalValueUsd: number | null
     portfolioEvidence?: PortfolioEvidence | null
+    portfolioPricingEvidence?: {
+      freshPricedCount: number
+      staleVerifiedPricedCount: number
+      unpricedCount: number
+      freshSubtotalUsd: number
+      staleSupportedSubtotalUsd: number
+      dominantUnpricedValuePreviouslyUsd?: number
+    } | null
     holdingsCount: number
     topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
     activeChainIds: number[]

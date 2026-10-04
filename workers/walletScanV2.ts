@@ -21,6 +21,7 @@ import { fetchAllHoldings, resolveHoldingsAllowedChainIds, SUPPORTED_CHAIN_TO_CH
 import { fetchAllHoldingsWithEvidence } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { evidenceFromHoldings, mergePortfolioEvidence, portfolioDisplayValueUsd, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
+import { buildPortfolioValueDiscontinuityAudit, buildValuationSnapshot, defaultValuationSnapshotStore, type PortfolioValueDiscontinuity } from '@/lib/walletScan/valuationSnapshot'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
 import { computeChainActivity } from '@/lib/engine/modules/activity/computeChainActivity'
@@ -460,6 +461,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     logProviderCallsForStage('holdings', providerCallsBefore)
     const timeToFirstHoldingsMs = Date.now() - startTime
 
+    // Previous valuation of this wallet (for the discontinuity audit only — never a value source).
+    const previousValuationPromise = defaultValuationSnapshotStore().read(walletAddress).catch(() => null)
     reportProgress(jobId, 2, 'pricing')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting pricing')
@@ -502,12 +505,35 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       holdingsComplete: holdingsWithEvidence.complete,
       values: pricing.pricedHoldings.length > 0 ? pricing.pricedHoldings.map((p) => (typeof p.valueUsd === 'number' && Number.isFinite(p.valueUsd) ? p.valueUsd : null)) : chainHoldings.map(() => null),
       materialUnpriced: pricing.pricedHoldings.length > 0 ? (pricing.potentiallyMaterialUnpricedCount ?? null) : null,
+      // A recent verified price reused after a transient failure: counted separately, the lane is then Partial.
+      staleVerifiedValues: pricing.pricedHoldings
+        .filter((p) => p.valueUsd == null && p.priceStatus === 'stale_verified' && typeof p.staleVerifiedValueUsd === 'number')
+        .map((p) => p.staleVerifiedValueUsd as number),
       reason: holdingsWithEvidence.complete
         ? null
         : holdingsWithEvidence.chains.some((c) => c.providerStatus !== 'provider_unavailable' && c.nativeBalanceCovered === false)
           ? 'goldrush_unavailable_native_balance_unknown' // e.g. transient http_503: Alchemy is ERC-20 only
           : 'holdings_provider_unavailable',
     })
+
+    // PORTFOLIO-VALUE DISCONTINUITY AUDIT (repeated-scan audit): compares this pricing pass with the wallet's
+    // previous valuation; a ≥10% holding that lost its price on an unchanged balance is reported as
+    // `valuation_evidence_lost`, never as an asset drop. Then this scan's valuation is stored — monotonic by
+    // scan start, and only when holdings are complete and pricing produced rows (a degraded pass never
+    // replaces a good snapshot).
+    let portfolioValueDiscontinuities: PortfolioValueDiscontinuity[] = []
+    try {
+      const previousValuation = await previousValuationPromise
+      portfolioValueDiscontinuities = buildPortfolioValueDiscontinuityAudit(previousValuation, pricing.pricedHoldings, Date.now())
+      for (const d of portfolioValueDiscontinuities) {
+        console.warn('[portfolio-value-discontinuity-audit]', { jobId: jobId ?? null, wallet: walletAddress, ...d })
+      }
+      if (holdingsWithEvidence.complete && pricing.pricedHoldings.length > 0) {
+        void defaultValuationSnapshotStore().write(buildValuationSnapshot(walletAddress, startTime, pricing.pricedHoldings))
+      }
+    } catch {
+      // audit only — never affects the scan
+    }
 
     // PARTIAL PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): a real, small, display-
     // shaped snapshot — never the full holdings array, never a fabricated value — published to the
@@ -523,6 +549,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         await publishWalletScanPartialSnapshot(jobId, {
           portfolioTotalValueUsd: portfolioDisplayValueUsd(evmPortfolioEvidence),
           portfolioEvidence: evmPortfolioEvidence,
+          portfolioPricingEvidence: pricing.portfolioPricingEvidence ?? null,
           holdingsCount: chainHoldings.length,
           topHoldings: portfolioOutput.portfolio.topHoldings.slice(0, 10).map((h) => ({
             chainId: h.chainId, tokenAddress: h.tokenAddress, symbol: h.symbol, valueUsd: h.valueUsd,
@@ -557,6 +584,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
     return {
       chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence, holdingsProviderEvidence: holdingsWithEvidence.chains,
+      portfolioValueDiscontinuities,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     }
@@ -648,7 +676,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       console.warn('[fast-snapshot-audit] chainsScanned diverged from preflight-sanitized chains', { chainsScanned, sanitizedChains: sanitized.chains })
     }
     const {
-      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence, holdingsProviderEvidence,
+      chainHoldings, pricing, portfolioOutput, evmPortfolioEvidence, holdingsProviderEvidence, portfolioValueDiscontinuities,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
       partialSnapshotPublished, partialSnapshotBlockedReason,
     } = await fastSnapshotPromise
@@ -957,6 +985,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         portfolioV2: portfolioOutput.portfolio,
         portfolioStatus: portfolioOutput.portfolioStatus,
         evmPortfolioEvidence,
+        portfolioPricingEvidence: pricing.portfolioPricingEvidence ?? null,
+        portfolioValueDiscontinuities,
         // Debug: per-holding fallback selection (lanes, ranks, skip reasons) and per-chain provider status
         // (GoldRush failure kind: auth_config / billing / rate_limited / transient_provider …).
         evmHoldingsPricingAudit: pricing.fallbackAudit ?? null,

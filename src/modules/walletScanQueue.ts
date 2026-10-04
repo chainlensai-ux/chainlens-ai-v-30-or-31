@@ -36,6 +36,8 @@ export type WalletScanPartialSnapshot = {
   portfolioTotalValueUsd: number | null
   /** What is known about the EVM value (lib/walletScan/portfolioEvidence.ts) — distinguishes verified $0 from unknown. */
   portfolioEvidence?: import('../../lib/walletScan/portfolioEvidence').PortfolioEvidence | null
+  /** Fresh vs recent-verified vs unpriced support for the EVM value (lib/engine/modules/pricing/types.ts). */
+  portfolioPricingEvidence?: import('../../lib/engine/modules/pricing/types').PortfolioPricingEvidence | null
   holdingsCount: number
   topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
   activeChainIds: number[]
@@ -153,14 +155,51 @@ export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMet
 // transient failure is a silent no-op; there is nothing useful to update and the real scan must
 // never be slowed or blocked by an observability write.
 export async function updateWalletScanJobProgress(jobId: string, progress: WalletScanJobProgress): Promise<void> {
-  if (!walletScanRedisConfigured()) return
-  try {
-    const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
-    if (!job) return
-    await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() })
-  } catch (err) {
-    logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
+  if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
+  return trackJobRecordWrite(jobId, (async () => {
+    try {
+      const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+      if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
+      await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() })
+    } catch (err) {
+      logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
+    }
+  })())
+}
+
+// OVERWRITE ORDER GUARD (repeated-scan portfolio-value audit): progress and partial-snapshot writes are
+// read-modify-write and were fire-and-forget (`void updateWalletScanJobProgress(...)` for the 'finalizing'
+// stage right before publishFinal). One that read the job while it was still running and landed AFTER
+// publishFinal's terminal write restored `status: 'running'` plus the older partial snapshot over the final
+// record. Now: every such write is tracked per job; publishFinal first marks the job finalizing (later writes
+// are refused) and drains the in-flight ones before writing; a write that reads a terminal job is a no-op.
+const finalizingJobIds = new Set<string>()
+const pendingJobRecordWrites = new Map<string, Set<Promise<void>>>()
+const MAX_FINALIZING_TRACKED = 1_000
+
+function isTerminalJob(job: WalletScanJobMetadata): boolean {
+  return job.status === 'done' || job.status === 'failed'
+}
+
+function trackJobRecordWrite(jobId: string, write: Promise<void>): Promise<void> {
+  let set = pendingJobRecordWrites.get(jobId)
+  if (!set) { set = new Set(); pendingJobRecordWrites.set(jobId, set) }
+  set.add(write)
+  return write.finally(() => {
+    const s = pendingJobRecordWrites.get(jobId)
+    s?.delete(write)
+    if (s && s.size === 0) pendingJobRecordWrites.delete(jobId)
+  })
+}
+
+/** Called by publishFinal before its terminal writes: refuse further partial/progress writes, drain in-flight ones. */
+export async function beginWalletScanJobFinalization(jobId: string): Promise<void> {
+  finalizingJobIds.add(jobId)
+  if (finalizingJobIds.size > MAX_FINALIZING_TRACKED) {
+    const oldest = finalizingJobIds.values().next().value
+    if (oldest !== undefined && oldest !== jobId) finalizingJobIds.delete(oldest)
   }
+  await Promise.all([...(pendingJobRecordWrites.get(jobId) ?? [])])
 }
 
 // BEST-EFFORT PARTIAL-SNAPSHOT PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): same
@@ -172,14 +211,18 @@ export async function updateWalletScanJobProgress(jobId: string, progress: Walle
 // the scan completes, so `partial` — like `progress` — naturally disappears the moment a real final
 // result exists; there is no separate "clear partial" step to forget. Never throws.
 export async function publishWalletScanPartialSnapshot(jobId: string, partial: WalletScanPartialSnapshot): Promise<void> {
-  if (!walletScanRedisConfigured()) return
-  try {
-    const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
-    if (!job) return
-    await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() })
-  } catch (err) {
-    logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
-  }
+  if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
+  return trackJobRecordWrite(jobId, (async () => {
+    try {
+      const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+      if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
+      // Monotonic: an older partial snapshot never replaces a newer one already on the record.
+      if (job.partial && job.partial.publishedAtElapsedMs > partial.publishedAtElapsedMs) return
+      await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() })
+    } catch (err) {
+      logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
+    }
+  })())
 }
 
 export async function readWalletScanResult(jobId: string): Promise<unknown | null> {

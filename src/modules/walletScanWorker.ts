@@ -1,6 +1,7 @@
 import { kv } from '@/lib/server/kv'
 import {
   WALLET_SCAN_QUEUE_UNAVAILABLE,
+  beginWalletScanJobFinalization,
   WalletScanQueueUnavailableError,
   walletScanJobKey,
   walletScanResultKey,
@@ -192,6 +193,8 @@ export async function publishFinal(
   result: unknown,
   onTiming?: (resultWriteMs: number, jobStateWriteMs: number) => void,
 ): Promise<void> {
+  // Refuse/drain late progress and partial-snapshot writes first, so none can land over the terminal record.
+  await beginWalletScanJobFinalization(jobId)
   const t0 = Date.now()
   await kv.set(walletScanResultKey(jobId), result)
   const t1 = Date.now()
@@ -440,7 +443,10 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
     return Response.json({ jobId, status: 'not-found' }, { status: 404 })
   }
 
-  const { jobState, result } = await executeWalletScanJob(payload)
+  // JOB-SCOPED DEXSCREENER STATE: each job gets its own request cache (src/lib/dexscreenerRequestCache.ts), so
+  // overlapping jobs on a warm instance can neither reset nor reuse each other's cached (incl. failed) lookups.
+  const { runInDexscreenerRequestScope } = await import('@/src/lib/dexscreenerRequestCache')
+  const { jobState, result } = await runInDexscreenerRequestScope(() => executeWalletScanJob(payload))
 
   // FINAL PUBLICATION, HARDENED (confirmed stuck-running bug): publishFinal was previously awaited
   // bare — a throw anywhere in serialization or either KV write propagated straight out of this

@@ -30,6 +30,7 @@
 // identical rejection either way; every in-window timestamp gets DexScreener's identical "now"
 // answer either way), so coalescing is always safe, never a weakened gate.
 
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { fetchDexscreenerPriceDetailed, DEXSCREENER_FRESHNESS_TOLERANCE_MS } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import type { DexscreenerPriceResult } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
@@ -49,13 +50,32 @@ const HISTORICAL_DEXSCREENER_BUDGET_DEFAULT = 60
 
 type CacheEntry = Promise<DexscreenerPriceResult>
 
-const cache = new Map<string, CacheEntry>()
-const liveFetchesByCaller: Record<string, number> = {}
-const cacheHitsByCaller: Record<string, number> = {}
-const budgetCappedByCaller: Record<string, number> = {}
-const uniqueTokens = new Set<string>()
-let historicalBudget = HISTORICAL_DEXSCREENER_BUDGET_DEFAULT
-let historicalBudgetUsed = 0
+type RequestState = {
+  cache: Map<string, CacheEntry>
+  liveFetchesByCaller: Record<string, number>
+  cacheHitsByCaller: Record<string, number>
+  budgetCappedByCaller: Record<string, number>
+  uniqueTokens: Set<string>
+  historicalBudget: number
+  historicalBudgetUsed: number
+}
+
+function newRequestState(): RequestState {
+  return { cache: new Map(), liveFetchesByCaller: {}, cacheHitsByCaller: {}, budgetCappedByCaller: {}, uniqueTokens: new Set(), historicalBudget: HISTORICAL_DEXSCREENER_BUDGET_DEFAULT, historicalBudgetUsed: 0 }
+}
+
+// JOB SCOPE (repeated-scan portfolio-value audit): this state was module-global, so two scan jobs overlapping
+// on one warm instance shared it — job B's reset wiped job A's entries mid-scan, and a transient failure job A
+// cached AFTER that reset (e.g. an http_429 for a dominant holding) was then served to job B as its own answer.
+// A job run inside runInDexscreenerRequestScope gets its own state; outside any scope (tests, scripts) the
+// process-level state below is used exactly as before.
+const scopedState = new AsyncLocalStorage<RequestState>()
+const processState = newRequestState()
+const state = (): RequestState => scopedState.getStore() ?? processState
+
+export function runInDexscreenerRequestScope<T>(fn: () => Promise<T>): Promise<T> {
+  return scopedState.run(newRequestState(), fn)
+}
 
 function freshnessBucket(timestamp: number): 'current' | 'stale' {
   return Math.abs(Date.now() - timestamp) <= DEXSCREENER_FRESHNESS_TOLERANCE_MS ? 'current' : 'stale'
@@ -71,13 +91,14 @@ function cacheKey(chain: SupportedChain, token: string, timestamp: number): stri
 // serverless instance. `historicalBudgetOverride` lets a caller with a real, disclosed reason use a
 // different bound than the default — always still bounded, never unlimited.
 export function resetDexscreenerRequestCache(historicalBudgetOverride?: number): void {
-  cache.clear()
-  for (const k of Object.keys(liveFetchesByCaller)) delete liveFetchesByCaller[k]
-  for (const k of Object.keys(cacheHitsByCaller)) delete cacheHitsByCaller[k]
-  for (const k of Object.keys(budgetCappedByCaller)) delete budgetCappedByCaller[k]
-  uniqueTokens.clear()
-  historicalBudget = historicalBudgetOverride ?? HISTORICAL_DEXSCREENER_BUDGET_DEFAULT
-  historicalBudgetUsed = 0
+  const st = state()
+  st.cache.clear()
+  for (const k of Object.keys(st.liveFetchesByCaller)) delete st.liveFetchesByCaller[k]
+  for (const k of Object.keys(st.cacheHitsByCaller)) delete st.cacheHitsByCaller[k]
+  for (const k of Object.keys(st.budgetCappedByCaller)) delete st.budgetCappedByCaller[k]
+  st.uniqueTokens.clear()
+  st.historicalBudget = historicalBudgetOverride ?? HISTORICAL_DEXSCREENER_BUDGET_DEFAULT
+  st.historicalBudgetUsed = 0
 }
 
 export type DexscreenerRequestDiagnostics = {
@@ -88,11 +109,12 @@ export type DexscreenerRequestDiagnostics = {
 }
 
 export function getDexscreenerRequestDiagnostics(): DexscreenerRequestDiagnostics {
+  const st = state()
   return {
-    dexLiveFetchesByCaller: { ...liveFetchesByCaller },
-    dexCacheHitsByCaller: { ...cacheHitsByCaller },
-    dexUniqueTokens: uniqueTokens.size,
-    dexBudgetCappedByCaller: { ...budgetCappedByCaller },
+    dexLiveFetchesByCaller: { ...st.liveFetchesByCaller },
+    dexCacheHitsByCaller: { ...st.cacheHitsByCaller },
+    dexUniqueTokens: st.uniqueTokens.size,
+    dexBudgetCappedByCaller: { ...st.budgetCappedByCaller },
   }
 }
 
@@ -110,6 +132,8 @@ export async function fetchDexscreenerPriceShared(
   timestamp: number,
   caller: DexscreenerCaller,
 ): Promise<DexscreenerPriceResult> {
+  const st = state()
+  const { cache, liveFetchesByCaller, cacheHitsByCaller, budgetCappedByCaller, uniqueTokens } = st
   const key = cacheKey(chain, token, timestamp)
   uniqueTokens.add(`${chain}:${token.toLowerCase()}`)
 
@@ -122,11 +146,11 @@ export async function fetchDexscreenerPriceShared(
   if (caller !== 'holdings') {
     // Holdings keeps its own separate, already-enforced 30-token cap upstream — this gate only
     // ever applies to the historical/recovery lane, per this task's explicit requirement.
-    if (historicalBudgetUsed >= historicalBudget) {
+    if (st.historicalBudgetUsed >= st.historicalBudget) {
       budgetCappedByCaller[caller] = (budgetCappedByCaller[caller] ?? 0) + 1
       return { priceUsd: null, reason: 'dexscreener_shared_historical_budget_exhausted', pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null, baseTokenSymbol: null, alternatePairs: [], winnerReason: null }
     }
-    historicalBudgetUsed += 1
+    st.historicalBudgetUsed += 1
   }
 
   liveFetchesByCaller[caller] = (liveFetchesByCaller[caller] ?? 0) + 1
