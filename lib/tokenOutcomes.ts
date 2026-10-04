@@ -51,6 +51,8 @@ export type ScanSnapshot = {
   /** Base Radar receipts only: the card's higher-is-stronger Radar score, label and status at track time. */
   radarScore?: number; radarLabel?: string; radarStatus?: string
   radarEvidence?: import('./radarTrackEvidence').RadarTrackEvidence
+  /** Optional frozen measurement identities; legacy receipts intentionally remain unversioned. */
+  trackComparison?: { liquidityBasis?: string | null; holderBasis?: string | null; riskMethodologyVersion?: string | null }
 }
 export type OutcomeReceiptSource = 'token_scanner' | 'base_radar'
 export function outcomeReceiptSource(snapshot: { source?: unknown } | null | undefined): OutcomeReceiptSource {
@@ -74,6 +76,8 @@ export type MarketObservationProof = {
   identityMatched: true; selectedPoolAddress: string | null; selectedBaseTokenAddress: string; selectedQuoteTokenAddress: string | null;
   /** Provider market-cap field from the same identity-matched quote. Never FDV. */
   marketCapUsd?: number | null;
+  /** Additive V1 intelligence; stored with the existing mutable observation, never the receipt. */
+  trackIntelligence?: import('./trackIntelligence').TrackIntelligenceState;
 }
 export function numberOrNull(value: unknown): number | null {
   if (value == null || value === '' || typeof value === 'boolean') return null

@@ -6,6 +6,7 @@ import {
 } from '@/lib/tokenOutcomes'
 import { outcomeRequest } from '@/components/outcomes/TrackOutcomeButton'
 import styles from './outcomes.module.css'
+import { TrackIntelligence } from './TrackIntelligence'
 
 const PENDING_PRICE = 'Current price unavailable — Outcome pending'
 // Card state language (Track polish): two intentional, non-error states for a card without a price change —
@@ -226,6 +227,7 @@ export function OutcomeReceipt({ row, onClose, onLiveUpdate, loadingEvidence = f
           </div>
           <p className={styles.muted}>Original market cap {compactUsd(originalCap, 'unavailable')} · Frozen at scan, not rewritten by live ticks.</p>
         </section>
+        <TrackIntelligence row={row} />
         <section className={styles.outcomePanel}>
           <span className={styles.eyebrow}>Outcome</span>
           {priceChange == null ? (

@@ -140,3 +140,17 @@
   .receiptHead { padding:12px 14px 10px; }
   .receiptBody { padding:12px 14px 18px; }
 }
+.trackSection { border-top: 1px solid rgba(148,163,184,.14); padding: 16px 0; font-size: 13px; }
+.trackSection h3 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.trackSection ul { padding-left: 18px; line-height: 1.7; }
+.trackSection [data-tone="positive"] { color: #6ee7b7; }
+.trackSection [data-tone="negative"] { color: #fda4af; }
+.trackSection [data-tone="caution"] { color: #fcd34d; }
+.trackComparisons { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.trackComparisons > div { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.trackComparisons strong { font-size: 14px; }
+.trackTimeline { list-style: none; padding: 0; margin: 0; }
+.trackTimeline li { display: grid; grid-template-columns: 130px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(148,163,184,.08); overflow-wrap: anywhere; }
+.trackTimeline time { color: #94a3b8; font-size: 11px; }
+.trackTimeline small { display: block; margin-top: 4px; }
+@media (max-width: 480px) { .trackComparisons { grid-template-columns: 1fr; } .trackTimeline li { grid-template-columns: 1fr; gap: 4px; } }

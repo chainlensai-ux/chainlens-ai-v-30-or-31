@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { compareTrackReceipt, currentTrackSnapshot, enrichTrackSnapshot, mergeTrackEvents, originalTrackSnapshot } from '../trackIntelligence'
 import {
   OUTCOME_POLICY, classifyOutcome, comparableOutcomeBaselinePrice, displayableCurrentPrice, incomparableBaselineReasons, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
   percentChange, presentTrackedOutcome, validPriceOrNull, verifiedMarketCapOrNull, type TrackedOutcome,
@@ -302,7 +303,7 @@ function retainPreviousObservation(row: TrackedOutcome, now: number): number | n
   return displayableCurrentPrice(row, now)
 }
 
-export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarketQuote | null, proof: TrackedOutcome['after_evidence_json'], checkedAt = new Date().toISOString(), now = Date.parse(checkedAt) || Date.now()) {
+export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarketQuote | null, proof: TrackedOutcome['after_evidence_json'], checkedAt = new Date().toISOString(), now = Date.parse(checkedAt) || Date.now(), laterScan: Record<string, unknown> | null = null) {
   const observedPrice = usableQuote(quote, row.chain, row.token_address, now) ? validPriceOrNull(quote.priceUsd) : null
   const previousPrice = retainPreviousObservation(row, now)
   const price = observedPrice ?? previousPrice
@@ -326,6 +327,17 @@ export function buildOutcomeRefreshUpdate(row: TrackedOutcome, quote: ClarkMarke
   })
   const pendingCurrent = price == null && result.status === 'unavailable'
   const pendingBaseline = comparableBaseline == null && price != null && result.status === 'unavailable'
+  if (observedPrice != null && marketObservation) {
+    const nextRow: TrackedOutcome = { ...row, current_price_usd: price, current_liquidity_usd: liquidity,
+      current_market_cap_usd: marketObservation.marketCapUsd, last_checked_at: checkedAt,
+      market_source: marketObservation.provider, market_observation_json: {
+        ...marketObservation, trackIntelligence: row.market_observation_json?.trackIntelligence,
+      }, outcome_status: result.status, after_evidence_json: proof }
+    const snapshot = enrichTrackSnapshot(row, currentTrackSnapshot(nextRow), laterScan, now)
+    const comparison = compareTrackReceipt(originalTrackSnapshot(nextRow), snapshot)
+    marketObservation.trackIntelligence = { version: 1, snapshot,
+      events: mergeTrackEvents(row.market_observation_json?.trackIntelligence?.events ?? [], comparison.timelineEvents) }
+  }
   return {
     current_price_usd: price, current_liquidity_usd: liquidity,
     price_change_pct: percentChange(comparableBaseline, price), liquidity_change_pct: null,
@@ -442,7 +454,7 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     const laterScan = chainId ? await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(row.chain as EvmChainSlug, chainId, row.token_address)) : null
     const proof = afterScanProof(row, laterScan, now) ?? row.after_evidence_json ?? null
     const checkedAt = new Date(now).toISOString()
-    const update = buildOutcomeRefreshUpdate(row, quote, proof, checkedAt, now)
+    const update = buildOutcomeRefreshUpdate(row, quote, proof, checkedAt, now, laterScan)
     const written = await persistOutcomeRefreshUpdate(db, row.id, userId, claimedAt, update)
     const persisted = written.data?.[0] as { current_price_usd?: number | null; last_checked_at?: string | null; price_change_pct?: number | null } | undefined
     overlays.set(row.id, update)

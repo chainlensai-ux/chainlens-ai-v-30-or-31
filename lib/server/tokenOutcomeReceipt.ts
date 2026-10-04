@@ -29,6 +29,11 @@ export function snapshotFromScan(scan: Record<string, unknown>, userId: string):
     baselineLpSignals: { lpControl: scan.lpControl ?? null, model: scan.lpModelProof ?? null, proof: scan.lpProofStatus ?? null },
     baselineHolderSignals: scan.holderDistribution ?? null, baselineDevSignals: scan.devIntel ?? null,
     baselineOwnershipSignals: scan.contractFlags ?? null,
+    trackComparison: {
+      liquidityBasis: typeof scan.liquidityBasis === 'string' ? scan.liquidityBasis : null,
+      holderBasis: typeof (scan.holderDistribution as Record<string, unknown> | null)?.denominator === 'string' ? (scan.holderDistribution as Record<string, unknown>).denominator : null,
+      riskMethodologyVersion: typeof scan.riskMethodologyVersion === 'string' ? scan.riskMethodologyVersion : null,
+    },
     baselineMarketQualitySignals: { inputs: scan.riskInputsUsed ?? null, priceSource: scan.priceSource ?? null, marketCapSource: scan.marketCapSource ?? null },
   })) as ScanSnapshot
 }
