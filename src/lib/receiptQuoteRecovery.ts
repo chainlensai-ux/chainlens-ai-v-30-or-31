@@ -25,7 +25,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { isCanonicalWethAddress, isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 import { receiptRpcUrl } from './roiQuoteLegTxBackfill'
-import { decodeV4RouteQuote, NATIVE_CURRENCY, V4_POOL_MANAGERS, v4PoolIdsInLogs, type PathFee, type V4PoolCurrencies, type V4RouteHop } from './v4RouteQuote'
+import { decodeV4RouteQuote, NATIVE_CURRENCY, V4_POOL_MANAGERS, v4PoolIdsInLogs, type PathFee, type V4PathSelection, type V4PoolCurrencies, type V4RouteHop } from './v4RouteQuote'
 
 export const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 export const WETH_DEPOSIT_TOPIC0 = '0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c'
@@ -117,7 +117,7 @@ export type ReceiptQuoteForensics = {
   // Bounded retained balances on the target path, accepted as fees (never as quote value).
   pathFees: Array<{ kind: 'protocol_fee_on_target_path'; address: string; token: string; raw: string }>
   // Token-to-token V4 route decode, when attempted.
-  v4Route: { status: string; detail: string | null; hops: V4RouteHop[]; intermediary: { currency: string; kind: string; raw: string; quantity: number } | null; fees: PathFee[] } | null
+  v4Route: { status: string; detail: string | null; hops: V4RouteHop[]; intermediary: { currency: string; kind: string; raw: string; quantity: number } | null; fees: PathFee[]; selection: V4PathSelection } | null
   // Quote-lane control-flow diagnostics: which lane was tried, and the exact reason any was skipped.
   tokenToTokenCandidate: boolean
   quoteTokenAddress: string | null
@@ -353,7 +353,10 @@ export function classifyReceiptQuoteEvidence(params: {
   // input is never overridden.
   const poolIds = v4PoolIdsInLogs(chain, tx.logs)
   const allSwapsV4 = poolIds.length > 0 && forensics.swapEmitters.every((e) => e.venue === 'uniswap_v4' && e.address === V4_POOL_MANAGERS[chain])
-  const v4MayAttribute = allSwapsV4 && attribution.status === 'unrelated_second_economic_action'
+  // Outside inputs are deferred too: in a V4 receipt they typically settle ANOTHER swap in the same tx
+  // (e.g. a token's tax swap-back). The decoder then proves none of that capital funds the wallet's
+  // selected path (hop-to-hop conservation) before anything is accepted.
+  const v4MayAttribute = allSwapsV4 && (attribution.status === 'unrelated_second_economic_action' || attribution.status === 'unrelated_token_flow')
   const decodeRoute = (quoteToken: string, quoteRaw: bigint, quoteIsCanonical: boolean) => {
     forensics.v4RouteAttempted = true
     const route = decodeV4RouteQuote({
@@ -367,8 +370,8 @@ export function classifyReceiptQuoteEvidence(params: {
       wallet,
     })
     forensics.v4Route = route.status === 'route_proven'
-      ? { status: route.status, detail: null, hops: route.hops, intermediary: route.intermediary, fees: route.fees }
-      : { status: route.status, detail: route.detail, hops: route.hops, intermediary: null, fees: [] }
+      ? { status: route.status, detail: null, hops: route.hops, intermediary: route.intermediary, fees: route.fees, selection: route.selection }
+      : { status: route.status, detail: route.detail, hops: route.hops, intermediary: null, fees: [], selection: route.selection }
     if (route.status !== 'route_proven') forensics.v4RouteSkipReason = `${route.status}: ${route.detail}`
     return route
   }
@@ -393,7 +396,7 @@ export function classifyReceiptQuoteEvidence(params: {
     const quoteTokenAmount = toUnits(quoteRaw, resolveTokenDecimals({ chain, token: quoteToken }).decimals)
     forensics.quoteTokenAddress = quoteToken
     forensics.quoteTokenAmount = quoteTokenAmount
-    if (attribution.status === 'unrelated_swap_path' || attribution.status === 'unrelated_token_flow' || (attribution.status === 'unrelated_second_economic_action' && !allSwapsV4)) {
+    if (attribution.status === 'unrelated_swap_path' || ((attribution.status === 'unrelated_token_flow' || attribution.status === 'unrelated_second_economic_action') && !allSwapsV4)) {
       forensics.quoteLaneSkipReason = `path_not_attributed: ${attribution.status}${allSwapsV4 ? '' : ' (not an all-V4 route)'}`
       forensics.v4RouteSkipReason = allSwapsV4 ? 'path_not_attributed' : 'non_v4_swap_in_tx'
       forensics.historicalQuoteTokenPriceSkipReason = 'path_not_attributed'

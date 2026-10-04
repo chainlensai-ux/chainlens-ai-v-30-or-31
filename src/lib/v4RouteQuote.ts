@@ -42,10 +42,22 @@ export type V4RouteFailure =
   | 'pool_key_unproven'
   | 'malformed_swap_delta'
   | 'route_does_not_chain'
-  | 'route_direction_inconsistent'
   | 'unrelated_second_economic_action'
   | 'no_canonical_intermediary_on_route'
+  | 'ambiguous_route'
 
+// Connected-route extraction diagnostics (hop indexes are positions among the receipt's V4 swaps).
+export type V4PathSelection = {
+  v4SwapCount: number
+  candidatePathCount: number
+  ambiguousPathCount: number
+  selectedPathHopIndexes: number[]
+  selectedPathCurrencies: string[]
+  excludedV4HopIndexes: number[]
+  excludedV4HopReasons: string[]
+  selectedPathInputRaw: string | null
+  selectedPathOutputRaw: string | null
+}
 export type V4RouteHop = { poolId: string; inCurrency: string; outCurrency: string; inRaw: string; outRaw: string }
 export type PathFee = { kind: 'protocol_fee_on_target_path'; currency: string; raw: string; where: string }
 
@@ -56,8 +68,9 @@ export type V4RouteQuoteResult =
     // null when the caller's quote token is itself canonical (the route only proves attribution).
     intermediary: { currency: string; kind: 'native' | 'stable'; raw: string; quantity: number } | null
     fees: PathFee[]
+    selection: V4PathSelection
   }
-  | { status: V4RouteFailure; hops: V4RouteHop[]; detail: string }
+  | { status: V4RouteFailure; hops: V4RouteHop[]; detail: string; selection: V4PathSelection }
 
 const lower = (s: string | null | undefined) => (s ?? '').toLowerCase()
 function signedWord(data: string, index: number): bigint | null {
@@ -116,21 +129,26 @@ export function decodeV4RouteQuote(params: {
   const { chain, side, logs } = params
   const target = lower(params.target)
   const quoteToken = lower(params.quoteToken)
+  const wallet = lower(params.wallet)
   const manager = V4_POOL_MANAGERS[chain]
-  const fail = (status: V4RouteFailure, detail: string, hops: V4RouteHop[] = []): V4RouteQuoteResult => ({ status, hops, detail })
+  const selection: V4PathSelection = {
+    v4SwapCount: 0, candidatePathCount: 0, ambiguousPathCount: 0,
+    selectedPathHopIndexes: [], selectedPathCurrencies: [], excludedV4HopIndexes: [], excludedV4HopReasons: [],
+    selectedPathInputRaw: null, selectedPathOutputRaw: null,
+  }
+  const fail = (status: V4RouteFailure, detail: string, hops: V4RouteHop[] = []): V4RouteQuoteResult => ({ status, hops, detail, selection })
 
   const swapLogs = logs.filter((l) => params.swapTopic0s.has(lower(l.topics[0])))
   const v4Swaps = swapLogs.filter((l) => lower(l.topics[0]) === V4_SWAP_TOPIC0 && lower(l.address) === manager)
+  selection.v4SwapCount = v4Swaps.length
   if (v4Swaps.length === 0) return fail('no_v4_swap_in_tx', 'no Swap from the canonical PoolManager')
   if (v4Swaps.length !== swapLogs.length) return fail('non_v4_swap_in_tx', 'mixed venues are not route-decoded')
 
-  // Each hop: pool currencies (proven by Initialize) + signed deltas from the Swap event.
-  const raw = v4Swaps.map((log) => {
+  // Every V4 hop in the receipt: pool currencies (proven by Initialize) + signed deltas.
+  const raw = v4Swaps.map((log, index) => {
     const poolId = lower(log.topics[1])
     const key = params.poolKeys.get(poolId)
-    const a0 = signedWord(log.data, 0)
-    const a1 = signedWord(log.data, 1)
-    return { poolId, key, a0, a1 }
+    return { index, poolId, key, a0: signedWord(log.data, 0), a1: signedWord(log.data, 1) }
   })
   const unproven = raw.find((h) => !h.key)
   if (unproven) return fail('pool_key_unproven', unproven.poolId)
@@ -138,76 +156,135 @@ export function decodeV4RouteQuote(params: {
     return fail('malformed_swap_delta', 'each hop must have exactly one negative and one positive delta')
   }
 
-  // Chain the hops in log order from the wallet's input currency to its output currency. Direction is
-  // checked by sign consistency (every hop's input delta has the same sign as hop 1's), so the result
-  // does not depend on which side's perspective the deltas are reported from.
+  // CONNECTED ROUTE EXTRACTION. A receipt may contain V4 swaps besides the wallet's own route (a token
+  // tax swap-back, a hook action, another order in the same bundle). Every directed path from the
+  // wallet's input currency to its output currency is enumerated over hops in strictly increasing log
+  // order; each hop's direction comes from its signed deltas under ONE reporting convention per path
+  // (both conventions are tried, never mixed). A path stops at its first arrival at the output.
   const inputCurrency = side === 'entry' ? quoteToken : target
   const outputCurrency = side === 'entry' ? target : quoteToken
-  const hops: V4RouteHop[] = []
-  let current = inputCurrency
-  let inSign: boolean | null = null
-  const hopAmounts: Array<{ in: bigint; out: bigint }> = []
-  for (const h of raw) {
+  type DirectedHop = { index: number; poolId: string; inCurrency: string; outCurrency: string; in: bigint; out: bigint }
+  const MAX_CANDIDATE_PATHS = 64
+  const MAX_PATH_HOPS = 6
+  const candidates: DirectedHop[][] = []
+  for (const negativeIsInput of [true, false]) {
+    const directed: DirectedHop[] = raw.map((h) => {
+      const c0 = lower(h.key!.currency0)
+      const c1 = lower(h.key!.currency1)
+      const zeroIsIn = (h.a0! < BigInt(0)) === negativeIsInput
+      return {
+        index: h.index, poolId: h.poolId,
+        inCurrency: zeroIsIn ? c0 : c1, outCurrency: zeroIsIn ? c1 : c0,
+        in: abs(zeroIsIn ? h.a0! : h.a1!), out: abs(zeroIsIn ? h.a1! : h.a0!),
+      }
+    })
+    const walk = (current: string, after: number, path: DirectedHop[]) => {
+      if (candidates.length > MAX_CANDIDATE_PATHS || path.length >= MAX_PATH_HOPS) return
+      for (const h of directed) {
+        if (h.index <= after || h.inCurrency !== current) continue
+        const next = [...path, h]
+        if (h.outCurrency === outputCurrency) candidates.push(next)
+        else walk(h.outCurrency, h.index, next)
+      }
+    }
+    walk(inputCurrency, -1, [])
+  }
+  if (candidates.length > MAX_CANDIDATE_PATHS) return fail('ambiguous_route', `more than ${MAX_CANDIDATE_PATHS} candidate paths`)
+  if (candidates.length === 0) {
+    return fail('route_does_not_chain', `no connected V4 path from ${inputCurrency} to ${outputCurrency} among ${raw.length} swaps`)
+  }
+
+  // A candidate satisfies the wallet trade only if it reproduces the wallet's own amounts under the
+  // existing fee bound and conserves its own flow hop to hop (nothing from outside can top it up).
+  type Checked = { path: DirectedHop[]; fees: PathFee[] } | { path: DirectedHop[]; failure: string }
+  const check = (path: DirectedHop[]): Checked => {
+    const fees: PathFee[] = []
+    const inputLeft = params.walletInRaw - path[0].in
+    if (!withinFee(inputLeft, params.walletInRaw)) return { path, failure: `wallet input ${params.walletInRaw} vs path input ${path[0].in}` }
+    if (inputLeft > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: inputCurrency, raw: inputLeft.toString(), where: 'before_first_hop' })
+    for (let i = 0; i + 1 < path.length; i++) {
+      const left = path[i].out - path[i + 1].in
+      if (!withinFee(left, path[i].out)) return { path, failure: `hop #${path[i].index} output ${path[i].out} vs hop #${path[i + 1].index} input ${path[i + 1].in}` }
+      if (left > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: path[i].outCurrency, raw: left.toString(), where: `between_hop_${path[i].index}_and_${path[i + 1].index}` })
+    }
+    const last = path[path.length - 1]
+    const outputLeft = last.out - params.walletOutRaw
+    // The target leg may carry an arbitrary transfer tax; a non-target output is held to the fee bound.
+    if (outputLeft < BigInt(0) || (outputCurrency !== target && !withinFee(outputLeft, last.out))) {
+      return { path, failure: `path output ${last.out} vs wallet received ${params.walletOutRaw}` }
+    }
+    if (outputLeft > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: outputCurrency, raw: outputLeft.toString(), where: 'after_last_hop' })
+    return { path, fees }
+  }
+  const checked = candidates.map(check)
+  const satisfying = checked.filter((c): c is { path: DirectedHop[]; fees: PathFee[] } => 'fees' in c)
+  selection.candidatePathCount = satisfying.length
+  const toHops = (path: DirectedHop[]): V4RouteHop[] => path.map((h) => ({ poolId: h.poolId, inCurrency: h.inCurrency, outCurrency: h.outCurrency, inRaw: h.in.toString(), outRaw: h.out.toString() }))
+  if (satisfying.length === 0) {
+    const first = checked[0] as { path: DirectedHop[]; failure: string }
+    return fail('unrelated_second_economic_action', `no connected path reproduces the wallet trade: ${first.failure}`, toHops(first.path))
+  }
+  if (satisfying.length > 1) {
+    selection.ambiguousPathCount = satisfying.length
+    return fail('ambiguous_route', `${satisfying.length} connected paths satisfy the wallet trade`)
+  }
+  const { path, fees } = satisfying[0]
+  const hops = toHops(path)
+  const selected = new Set(path.map((h) => h.index))
+  selection.selectedPathHopIndexes = path.map((h) => h.index)
+  selection.selectedPathCurrencies = [inputCurrency, ...path.map((h) => h.outCurrency)]
+  selection.selectedPathInputRaw = path[0].in.toString()
+  selection.selectedPathOutputRaw = path[path.length - 1].out.toString()
+
+  // EXCLUDED HOPS. Every other V4 swap must be unable to change what the wallet paid or received:
+  //  - it cannot feed the selected path (the path's own hop-to-hop conservation above would fail);
+  //  - it must not produce the wallet's own output currency (it could be part of what the wallet got);
+  //  - it must not produce native ETH (a payout to the wallet would be an invisible internal transfer).
+  // An excluded hop that consumes what the selected path produced (e.g. a tax swap-back of the target)
+  // stays off-wallet by these rules, so it is a cost of the trade, never value returned to the wallet.
+  const pathProduced = new Set(path.map((h) => h.outCurrency))
+  // The selected path's reporting convention (which delta sign marks a hop's input).
+  const ref = raw[path[0].index]
+  const negativeIsInput = (ref.a0! < BigInt(0)) === (lower(ref.key!.currency0) === path[0].inCurrency)
+  const allHops = raw.map((h) => {
     const c0 = lower(h.key!.currency0)
     const c1 = lower(h.key!.currency1)
-    if (c0 !== current && c1 !== current) return fail('route_does_not_chain', `hop ${hops.length + 1} does not trade ${current}`, hops)
-    const inIs0 = c0 === current
-    const aIn = inIs0 ? h.a0! : h.a1!
-    const aOut = inIs0 ? h.a1! : h.a0!
-    const negIn = aIn < BigInt(0)
-    if (inSign == null) inSign = negIn
-    else if (inSign !== negIn) return fail('route_direction_inconsistent', `hop ${hops.length + 1}`, hops)
-    const outCurrency = inIs0 ? c1 : c0
-    hops.push({ poolId: h.poolId, inCurrency: current, outCurrency, inRaw: abs(aIn).toString(), outRaw: abs(aOut).toString() })
-    hopAmounts.push({ in: abs(aIn), out: abs(aOut) })
-    current = outCurrency
+    const zeroIsIn = (h.a0! < BigInt(0)) === negativeIsInput
+    return { index: h.index, c0, c1, consumed: zeroIsIn ? c0 : c1, produced: zeroIsIn ? c1 : c0, consumedRaw: abs(zeroIsIn ? h.a0! : h.a1!) }
+  })
+  for (const h of allHops) {
+    if (selected.has(h.index)) continue
+    selection.excludedV4HopIndexes.push(h.index)
+    if (h.produced === outputCurrency) {
+      selection.excludedV4HopReasons.push(`#${h.index}: produces the wallet output currency ${outputCurrency}`)
+      return fail('unrelated_second_economic_action', `excluded V4 hop #${h.index} also produces ${outputCurrency}`, hops)
+    }
+    if (h.produced === NATIVE_CURRENCY) {
+      selection.excludedV4HopReasons.push(`#${h.index}: produces native ETH (destination not provable from logs)`)
+      return fail('unrelated_second_economic_action', `excluded V4 hop #${h.index} produces native ETH`, hops)
+    }
+    selection.excludedV4HopReasons.push(pathProduced.has(h.consumed)
+      ? `#${h.index}: off-path swap of a currency the path produced (${h.consumed} -> ${h.produced}); output stays off-wallet`
+      : `#${h.index}: independent swap (${h.consumed} -> ${h.produced}); output stays off-wallet`)
   }
-  if (current !== outputCurrency) return fail('route_does_not_chain', `route ends in ${current}, wallet received ${outputCurrency}`, hops)
 
-  // Conservation along the path. Every leftover must be a bounded fee that never leaves the path.
-  const fees: PathFee[] = []
-  const first = hopAmounts[0]
-  const last = hopAmounts[hopAmounts.length - 1]
-  const inputLeft = params.walletInRaw - first.in
-  if (!withinFee(inputLeft, params.walletInRaw)) return fail('unrelated_second_economic_action', `wallet input ${params.walletInRaw} vs route input ${first.in}`, hops)
-  if (inputLeft > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: inputCurrency, raw: inputLeft.toString(), where: 'before_hop_1' })
-  for (let i = 0; i + 1 < hopAmounts.length; i++) {
-    const left = hopAmounts[i].out - hopAmounts[i + 1].in
-    if (!withinFee(left, hopAmounts[i].out)) return fail('unrelated_second_economic_action', `hop ${i + 1} output ${hopAmounts[i].out} vs hop ${i + 2} input ${hopAmounts[i + 1].in}`, hops)
-    if (left > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: hops[i].outCurrency, raw: left.toString(), where: `between_hop_${i + 1}_and_${i + 2}` })
-  }
-  const outputLeft = last.out - params.walletOutRaw
-  // The target leg may carry an arbitrary transfer tax; a non-target output is held to the fee bound.
-  if (outputLeft < BigInt(0) || (outputCurrency !== target && !withinFee(outputLeft, last.out))) {
-    return fail('unrelated_second_economic_action', `route output ${last.out} vs wallet received ${params.walletOutRaw}`, hops)
-  }
-  if (outputLeft > BigInt(0)) fees.push({ kind: 'protocol_fee_on_target_path', currency: outputCurrency, raw: outputLeft.toString(), where: 'after_last_hop' })
-
-  // No token may move in this tx that is not on the route.
-  const routeCurrencies = new Set([inputCurrency, ...hops.map((h) => h.outCurrency)])
-  const wethOnRoute = [...routeCurrencies].some((c) => c === NATIVE_CURRENCY || isCanonicalWethAddress(chain, c))
+  // No token may move in this tx that is not traded by some V4 hop in it.
+  const v4Currencies = new Set(allHops.flatMap((h) => [h.c0, h.c1]))
+  const nativeTraded = v4Currencies.has(NATIVE_CURRENCY)
   for (const log of logs) {
     if (lower(log.topics[0]) !== TRANSFER_TOPIC0 || log.topics.length < 3) continue
     const token = lower(log.address)
-    if (routeCurrencies.has(token)) continue
-    if (wethOnRoute && isCanonicalWethAddress(chain, token)) continue // native <-> WETH settlement of the same route currency
-    return fail('unrelated_second_economic_action', `transfer of ${token}, which is not on the route`, hops)
+    if (v4Currencies.has(token)) continue
+    if (nativeTraded && isCanonicalWethAddress(chain, token)) continue // native <-> WETH settlement
+    return fail('unrelated_second_economic_action', `transfer of ${token}, which no V4 hop in this tx trades`, hops)
   }
 
-  // RETAINED BALANCES. Outside the wallet and the PoolManager, a token kept by any address is a
-  // protocol fee on the target path only if everything that address sends in this tx settles this same
-  // route (into the PoolManager or to the wallet) and the amount is within the fee bound of the
-  // route's own flow of that token (target-token transfer tax excepted).
-  // Anything else could fund a separate action and is rejected.
-  const routeFlow = new Map<string, bigint>()
-  const bump = (token: string, v: bigint) => { if (v > (routeFlow.get(token) ?? BigInt(0))) routeFlow.set(token, v) }
-  bump(inputCurrency, params.walletInRaw)
-  bump(outputCurrency, params.walletOutRaw)
-  hops.forEach((h, i) => { bump(h.inCurrency, hopAmounts[i].in); bump(h.outCurrency, hopAmounts[i].out) })
-  if (routeFlow.has(NATIVE_CURRENCY)) for (const w of [...routeCurrencies].filter((c) => isCanonicalWethAddress(chain, c))) bump(w, routeFlow.get(NATIVE_CURRENCY)!)
+  // RETAINED BALANCES OF THE WALLET-SIDE QUOTE CURRENCY. Whoever keeps part of what the wallet paid
+  // (entry) or of what the wallet should have received (exit) is a protocol fee on the target path only
+  // if everything it sends settles this route (PoolManager / wallet) and it is within the fee bound.
+  const quoteCurrency = side === 'entry' ? inputCurrency : outputCurrency
+  const quoteFlow = side === 'entry' ? params.walletInRaw : path[path.length - 1].out
   const nets = new Map<string, bigint>()
-  // An address whose only outflows settle this route (into the PoolManager, or to the wallet) cannot
-  // be funding a separate action with what it spends.
   const spendsOutsideRoute = new Set<string>()
   for (const log of logs) {
     if (lower(log.topics[0]) !== TRANSFER_TOPIC0 || log.topics.length < 3) continue
@@ -216,28 +293,37 @@ export function decodeV4RouteQuote(params: {
     const to = `0x${log.topics[2].slice(-40)}`.toLowerCase()
     const hex = log.data.startsWith('0x') ? log.data.slice(2, 66) : log.data.slice(0, 64)
     const amount = /^[0-9a-f]{64}$/i.test(hex) ? BigInt(`0x${hex}`) : BigInt(0)
-    if (to !== manager && to !== lower(params.wallet)) spendsOutsideRoute.add(from)
-    nets.set(`${from}|${token}`, (nets.get(`${from}|${token}`) ?? BigInt(0)) - amount)
-    nets.set(`${to}|${token}`, (nets.get(`${to}|${token}`) ?? BigInt(0)) + amount)
+    if (to !== manager && to !== wallet) spendsOutsideRoute.add(from)
+    if (token !== quoteCurrency) continue
+    nets.set(from, (nets.get(from) ?? BigInt(0)) - amount)
+    nets.set(to, (nets.get(to) ?? BigInt(0)) + amount)
   }
-  const wallet = lower(params.wallet)
-  for (const [key, net] of nets) {
-    const [address, token] = key.split('|')
-    if (net === BigInt(0) || address === manager || address === wallet || address === NATIVE_CURRENCY || isCanonicalWethAddress(chain, address)) continue
-    if (token === target && net > BigInt(0)) continue
-    const flow = routeFlow.get(token) ?? BigInt(0)
-    if (net < BigInt(0)) return fail('unrelated_second_economic_action', `${address} spends ${-net} more ${token} than it received`, hops)
-    if (spendsOutsideRoute.has(address) || !withinFee(net, flow)) return fail('unrelated_second_economic_action', `${address} keeps ${net} ${token} (route flow ${flow})${spendsOutsideRoute.has(address) ? ' and sends tokens outside the route' : ''}`, hops)
-    fees.push({ kind: 'protocol_fee_on_target_path', currency: token, raw: net.toString(), where: `retained_by_${address}` })
+  // Quote currency supplied from outside the wallet may only settle EXCLUDED hops (never the path,
+  // which conservation already pins to the wallet's own amount): at most what they consume.
+  const excludedQuoteConsumption = allHops.filter((h) => !selected.has(h.index) && h.consumed === quoteCurrency).reduce((sum, h) => sum + h.consumedRaw, BigInt(0))
+  let outsideQuoteSupply = BigInt(0)
+  for (const [address, net] of nets) {
+    if (net < BigInt(0) && address !== manager && address !== wallet && address !== NATIVE_CURRENCY) outsideQuoteSupply += -net
   }
-  if (params.quoteIsCanonical) return { status: 'route_proven', hops, intermediary: null, fees }
+  if (outsideQuoteSupply > excludedQuoteConsumption) {
+    return fail('unrelated_second_economic_action', `${outsideQuoteSupply} ${quoteCurrency} supplied from outside the wallet exceeds what off-path swaps consume (${excludedQuoteConsumption})`, hops)
+  }
+  for (const [address, net] of nets) {
+    if (net === BigInt(0) || address === manager || address === wallet || address === NATIVE_CURRENCY) continue
+    if (net < BigInt(0)) continue
+    if (spendsOutsideRoute.has(address) || !withinFee(net, quoteFlow)) {
+      return fail('unrelated_second_economic_action', `${address} keeps ${net} ${quoteCurrency} (wallet flow ${quoteFlow})${spendsOutsideRoute.has(address) ? ' and sends tokens outside the route' : ''}`, hops)
+    }
+    fees.push({ kind: 'protocol_fee_on_target_path', currency: quoteCurrency, raw: net.toString(), where: `retained_by_${address}` })
+  }
+  if (params.quoteIsCanonical) return { status: 'route_proven', hops, intermediary: null, fees, selection }
 
-  // The canonical intermediary nearest the target side of the route carries the quote: for an entry
-  // the amount ENTERING the hop toward the target, for an exit the amount PRODUCED from the target.
-  const boundaries = hops.slice(0, -1).map((h, i) => ({ currency: h.outCurrency, entryRaw: hopAmounts[i + 1].in, exitRaw: hopAmounts[i].out }))
+  // The canonical intermediary nearest the target side of the selected path carries the quote: for an
+  // entry the amount ENTERING the hop toward the target, for an exit the amount PRODUCED from the target.
+  const boundaries = path.slice(0, -1).map((h, i) => ({ currency: h.outCurrency, entryRaw: path[i + 1].in, exitRaw: h.out }))
   const ordered = side === 'entry' ? [...boundaries].reverse() : boundaries
   const chosen = ordered.find((b) => canonicalKind(chain, b.currency) !== null)
-  if (!chosen) return fail('no_canonical_intermediary_on_route', `route ${[inputCurrency, ...hops.map((h) => h.outCurrency)].join(' -> ')}`, hops)
+  if (!chosen) return fail('no_canonical_intermediary_on_route', `route ${selection.selectedPathCurrencies.join(' -> ')}`, hops)
   const kind = canonicalKind(chain, chosen.currency)!
   const amountRaw = side === 'entry' ? chosen.entryRaw : chosen.exitRaw
   return {
@@ -245,6 +331,7 @@ export function decodeV4RouteQuote(params: {
     hops,
     intermediary: { currency: chosen.currency, kind, raw: amountRaw.toString(), quantity: toUnits(amountRaw, decimalsOf(chain, chosen.currency)) },
     fees,
+    selection,
   }
 }
 

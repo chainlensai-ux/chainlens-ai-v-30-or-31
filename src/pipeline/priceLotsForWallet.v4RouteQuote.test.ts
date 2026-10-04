@@ -59,16 +59,22 @@ const A99_TARGET = units('98746705.02925444')
 const A99_RECEIVED = units('98517952.49812987')
 const E61_USDBC = units('385.592909', 6)
 
-function dd4229(opts: { hookFeeOnEth?: bigint; flip?: boolean } = {}) {
+function dd4229(opts: { hookFeeOnEth?: bigint; flip?: boolean; postTargetSwap?: boolean } = {}) {
   const xIn = units('1250000')
   const ethOut = units('0.67')
   const fee = opts.hookFeeOnEth ?? BigInt(0)
   const h1 = hop(1, TOKEN_753F, xIn, NATIVE_CURRENCY, ethOut, opts.flip)
   const h2 = hop(2, NATIVE_CURRENCY, ethOut - fee, MID, units('5000'), opts.flip)
   const h3 = hop(3, MID, units('5000'), CLAW, DD_TARGET, opts.flip)
+  // Production shape: after the wallet's route completes, the token's tax holder swaps its CLAW back
+  // to WETH through V4 in the same tx (an off-path swap the decoder must exclude, not consume).
+  const swapBack = hop(4, CLAW, units('9000000'), WETH, units('0.011'), opts.flip)
+  const tail = opts.postTargetSwap
+    ? [transfer(CLAW, `0x${'6'.repeat(40)}`, PM, units('9000000')), swapBack.log, transfer(WETH, PM, FEE_RECIPIENT, units('0.011'))]
+    : []
   return {
-    tx: okTx([transfer(TOKEN_753F, WALLET, PM, xIn), h1.log, h2.log, h3.log, transfer(CLAW, PM, WALLET, DD_TARGET)]),
-    keys: new Map([h1.key, h2.key, h3.key]),
+    tx: okTx([transfer(TOKEN_753F, WALLET, PM, xIn), h1.log, h2.log, h3.log, transfer(CLAW, PM, WALLET, DD_TARGET), ...tail]),
+    keys: new Map(opts.postTargetSwap ? [h1.key, h2.key, h3.key, swapBack.key] : [h1.key, h2.key, h3.key]),
     ethToTarget: ethOut - fee,
   }
 }
@@ -174,13 +180,17 @@ describe('V4 route decoder — fail closed', () => {
     const { tx, keys } = dd4229({ hookFeeOnEth: units('0.3') })
     assert.equal(decode(tx, keys).status, 'unrelated_second_economic_action')
   })
-  it('a swap that does not chain into the route is rejected', () => {
+  it('an extra swap not on the wallet route is excluded with its reason; the selected path is unchanged', () => {
     const { tx, keys } = dd4229()
     if (tx.status !== 'ok') return
     const stray = hop(99, MID, units('1'), TOKEN_67A7, units('2'))
     keys.set(stray.key[0], stray.key[1])
     const logs = [...tx.logs.slice(0, 4), stray.log, ...tx.logs.slice(4)]
-    assert.equal(decode({ ...tx, logs }, keys).status, 'route_does_not_chain')
+    const r = decode({ ...tx, logs }, keys)
+    assert.equal(r.status, 'route_proven')
+    assert.deepEqual(r.selection.selectedPathHopIndexes, [0, 1, 2])
+    assert.deepEqual(r.selection.excludedV4HopIndexes, [3])
+    assert.match(r.selection.excludedV4HopReasons[0], /^#3: off-path swap of a currency the path produced/)
   })
   it('a token outside the route moving in the tx is a second economic action', () => {
     const { tx, keys } = dd4229()
@@ -222,10 +232,10 @@ describe('lane: 0xdd4229 entry shared by 5 lot fragments is hydrated once', () =
     provider: 'alchemy', chain: 'base', txHash: '0x', timestamp: BUY_TS, fromAddress: PM, toAddress: WALLET,
     contract: CLAW, symbol: '1clawAI', amount: 0, amountRaw: '0', tokenDecimals: 18, direction: 'inbound', ...o,
   })
-  it('one receipt read, 3 pool-key reads, 0 provider calls; all 5 lots complete', async () => {
+  it('6. production shape (with the post-target tax swap-back): one receipt read, 4 pool-key reads, 0 provider calls; all 5 lots complete', async () => {
     __resetNativePriceResolverForTest()
     __seedAcceptedNativePriceForTest(Date.parse(BUY_TS), ETH_USD, 'coingecko_native_coin_history')
-    const { tx, keys } = dd4229()
+    const { tx, keys } = dd4229({ postTargetSwap: true })
     const buyTx = '0xdd4229cccae1f56f4782ffd8de227b45b17b190a9b391f2e42661601fed435fa'
     const events: NormalizedEvent[] = [
       ev({ txHash: buyTx, amount: 565818131.2763674, amountRaw: DD_TARGET.toString() }),
@@ -270,7 +280,7 @@ describe('lane: 0xdd4229 entry shared by 5 lot fragments is hydrated once', () =
     assert.equal(clawLots.length, 5)
     assert.equal(clawLots.filter((l) => isCanonicalVerifiedPublishedLot(l)).length, 5)
     assert.equal(receiptCalls, 1)
-    assert.equal(keyCalls, 3)
+    assert.equal(keyCalls, 4)
     assert.equal(providerCalls, 0, 'the V4 route proved the quote; the provider tier was never needed')
     const a = lookups.receiptQuoteRecoveryAudit
     assert.equal(a.lotsCompletedViaV4RouteQuote, 5)
@@ -402,5 +412,133 @@ describe('control flow after 6f2d83c6: V4 token-to-token candidates reach the qu
     const row = a.sides.find((s) => s.txHash === buyTx)!
     assert.equal(row.classification, 'token_to_token_quote_via_v4_route')
     assert.equal(row.forensics?.quoteLaneAttempted, true)
+  })
+})
+
+describe('connected route extraction (production shapes after f3828c8f)', () => {
+  const TAX_HOLDER = `0x${'6'.repeat(40)}`
+  const OUTSIDER = `0x${'2'.repeat(40)}`
+  const OTHER = '0x4444444444444444444444444444444444444444'
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const classify = (side: 'entry' | 'exit', targetAmount: number, tx: ReceiptQuoteTx, keys: Map<string, V4PoolCurrencies>) =>
+    classifyReceiptQuoteEvidence({ ...base, side, targetAmount, tx, v4PoolKeys: keys })
+
+  // 0xdd4229: 0x753f -> WETH -> 1clawAI, then the token's tax swap-back 1clawAI -> WETH funded by its
+  // own tax holder, paid out to a fee recipient.
+  function dd4229WithPostTargetSwap(opts: { swapBackOutputToWallet?: boolean } = {}) {
+    const xIn = units('1250000')
+    const h1 = hop(71, TOKEN_753F, xIn, WETH, units('0.67'))
+    const h2 = hop(72, WETH, units('0.67'), CLAW, DD_TARGET)
+    const h3 = hop(73, CLAW, units('9000000'), WETH, units('0.011'))
+    return {
+      tx: okTx([
+        transfer(TOKEN_753F, WALLET, PM, xIn), h1.log, h2.log, transfer(CLAW, PM, WALLET, DD_TARGET),
+        transfer(CLAW, TAX_HOLDER, PM, units('9000000')), h3.log,
+        transfer(WETH, PM, opts.swapBackOutputToWallet ? WALLET : FEE_RECIPIENT, units('0.011')),
+      ]),
+      keys: new Map([h1.key, h2.key, h3.key]),
+    }
+  }
+
+  it('1. target reached before a later tax swap-back: path [0,1] selected, swap-back excluded with its reason', () => {
+    const { tx, keys } = dd4229WithPostTargetSwap()
+    const r = classify('entry', 565818131.2763674, tx, keys)
+    assert.equal(r.classification, 'token_to_token_quote_via_v4_route')
+    assert.deepEqual(r.quote, { kind: 'native', token: WETH, quantity: 0.67 })
+    const sel = r.forensics!.v4Route!.selection
+    assert.equal(sel.v4SwapCount, 3)
+    assert.equal(sel.candidatePathCount, 1)
+    assert.deepEqual(sel.selectedPathHopIndexes, [0, 1])
+    assert.deepEqual(sel.selectedPathCurrencies, [TOKEN_753F, WETH, CLAW])
+    assert.deepEqual(sel.excludedV4HopIndexes, [2])
+    assert.match(sel.excludedV4HopReasons[0], /^#2: off-path swap of a currency the path produced/)
+    assert.equal(sel.selectedPathInputRaw, units('1250000').toString())
+    assert.equal(sel.selectedPathOutputRaw, DD_TARGET.toString())
+  })
+
+  it('   …but if that later swap pays WETH to the wallet, value returns to the wallet: rejected', () => {
+    const { tx, keys } = dd4229WithPostTargetSwap({ swapBackOutputToWallet: true })
+    assert.notEqual(classify('entry', 565818131.2763674, tx, keys).classification, 'token_to_token_quote_via_v4_route')
+  })
+
+  it('2. an extra independent V4 swap after the target is excluded as independent', () => {
+    const xIn = units('1250000')
+    const h1 = hop(81, TOKEN_753F, xIn, WETH, units('0.67'))
+    const h2 = hop(82, WETH, units('0.67'), CLAW, DD_TARGET)
+    const h3 = hop(83, OTHER, units('50'), WETH, units('0.02'))
+    const tx = okTx([
+      transfer(TOKEN_753F, WALLET, PM, xIn), h1.log, h2.log, transfer(CLAW, PM, WALLET, DD_TARGET),
+      transfer(OTHER, OUTSIDER, PM, units('50')), h3.log, transfer(WETH, PM, OUTSIDER, units('0.02')),
+    ])
+    const r = classify('entry', 565818131.2763674, tx, new Map([h1.key, h2.key, h3.key]))
+    assert.equal(r.classification, 'token_to_token_quote_via_v4_route')
+    assert.match(r.forensics!.v4Route!.selection.excludedV4HopReasons[0], /^#2: independent swap/)
+  })
+
+  it('3. two connected paths that both satisfy the wallet trade are ambiguous: rejected', () => {
+    const xIn = units('1250000')
+    const a1 = hop(91, TOKEN_753F, xIn, WETH, units('0.67'))
+    const a2 = hop(92, WETH, units('0.67'), CLAW, DD_TARGET)
+    const b1 = hop(93, TOKEN_753F, xIn, WETH, units('0.67'))
+    const b2 = hop(94, WETH, units('0.67'), CLAW, DD_TARGET)
+    const tx = okTx([transfer(TOKEN_753F, WALLET, PM, xIn), a1.log, a2.log, b1.log, b2.log, transfer(CLAW, PM, WALLET, DD_TARGET)])
+    const r = classify('entry', 565818131.2763674, tx, new Map([a1.key, a2.key, b1.key, b2.key]))
+    assert.notEqual(r.classification, 'token_to_token_quote_via_v4_route')
+    assert.equal(r.forensics?.v4Route?.status, 'ambiguous_route')
+    assert.ok(r.forensics!.v4Route!.selection.ambiguousPathCount > 1)
+  })
+
+  it('4. outside capital funding the candidate route is rejected', () => {
+    const xIn = units('1250000')
+    const extra = units('200000')
+    const h1 = hop(101, TOKEN_753F, xIn + extra, WETH, units('0.78'))
+    const h2 = hop(102, WETH, units('0.78'), CLAW, DD_TARGET)
+    const tx = okTx([transfer(TOKEN_753F, WALLET, PM, xIn), transfer(TOKEN_753F, OUTSIDER, PM, extra), h1.log, h2.log, transfer(CLAW, PM, WALLET, DD_TARGET)])
+    const r = classify('entry', 565818131.2763674, tx, new Map([h1.key, h2.key]))
+    assert.equal(r.classification, 'unrelated_second_economic_action')
+    assert.match(r.forensics!.v4RouteSkipReason!, /no connected path reproduces the wallet trade/)
+  })
+
+  it('5. 0xe61a: USDbC -> USDC -> 1clawAI beside an unconnected swap; exact $385.592909 stable quote', () => {
+    const h1 = hop(111, USDBC, E61_USDBC, USDC, units('385.5', 6))
+    const hx = hop(112, OTHER, units('50'), WETH, units('0.02'))
+    const h2 = hop(113, USDC, units('385.5', 6), CLAW, A99_TARGET)
+    const tx = okTx([
+      transfer(USDBC, WALLET, PM, E61_USDBC), h1.log,
+      transfer(OTHER, OUTSIDER, PM, units('50')), hx.log, transfer(WETH, PM, OUTSIDER, units('0.02')),
+      h2.log, transfer(CLAW, PM, WALLET, A99_TARGET),
+    ])
+    const r = classify('entry', 98746705.02925444, tx, new Map([h1.key, hx.key, h2.key]))
+    assert.equal(r.classification, 'quote_leg_omitted_from_provider_activity')
+    assert.deepEqual(r.quote, { kind: 'stable', token: USDBC, quantity: 385.592909 })
+    assert.deepEqual(r.forensics!.v4Route!.selection.selectedPathHopIndexes, [0, 2])
+    assert.deepEqual(r.forensics!.v4Route!.selection.excludedV4HopIndexes, [1])
+  })
+
+  it('7. exit with an extra post-target swap: 1clawAI -> WETH -> 0x67a7 selected, later swap excluded', () => {
+    const h1 = hop(121, CLAW, A99_TARGET, WETH, units('0.11'))
+    const h2 = hop(122, WETH, units('0.11'), TOKEN_67A7, A99_RECEIVED)
+    const h3 = hop(123, TOKEN_67A7, units('1000'), WETH, units('0.0001'))
+    const tx = okTx([
+      transfer(CLAW, WALLET, PM, A99_TARGET), h1.log, h2.log, transfer(TOKEN_67A7, PM, WALLET, A99_RECEIVED),
+      transfer(TOKEN_67A7, OUTSIDER, PM, units('1000')), h3.log, transfer(WETH, PM, OUTSIDER, units('0.0001')),
+    ])
+    const r = classify('exit', 98746705.02925444, tx, new Map([h1.key, h2.key, h3.key]))
+    assert.equal(r.classification, 'token_to_token_quote_via_v4_route')
+    assert.deepEqual(r.quote, { kind: 'native', token: WETH, quantity: 0.11 })
+    assert.deepEqual(r.forensics!.v4Route!.selection.selectedPathHopIndexes, [0, 1])
+  })
+
+  it('   an excluded swap that produces the wallet output currency is rejected', () => {
+    const h1 = hop(131, CLAW, A99_TARGET, WETH, units('0.11'))
+    const h2 = hop(132, WETH, units('0.11'), TOKEN_67A7, A99_RECEIVED)
+    const h3 = hop(133, OTHER, units('5'), TOKEN_67A7, units('1000'))
+    const tx = okTx([
+      transfer(CLAW, WALLET, PM, A99_TARGET), h1.log, h2.log, transfer(TOKEN_67A7, PM, WALLET, A99_RECEIVED),
+      transfer(OTHER, OUTSIDER, PM, units('5')), h3.log, transfer(TOKEN_67A7, PM, OUTSIDER, units('1000')),
+    ])
+    const r = classify('exit', 98746705.02925444, tx, new Map([h1.key, h2.key, h3.key]))
+    assert.equal(r.classification, 'unrelated_second_economic_action')
+    assert.match(r.forensics!.v4Route!.selection.excludedV4HopReasons[0], /produces the wallet output currency/)
   })
 })
