@@ -53,7 +53,8 @@ export type V4RouteQuoteResult =
   | {
     status: 'route_proven'
     hops: V4RouteHop[]
-    intermediary: { currency: string; kind: 'native' | 'stable'; raw: string; quantity: number }
+    // null when the caller's quote token is itself canonical (the route only proves attribution).
+    intermediary: { currency: string; kind: 'native' | 'stable'; raw: string; quantity: number } | null
     fees: PathFee[]
   }
   | { status: V4RouteFailure; hops: V4RouteHop[]; detail: string }
@@ -107,6 +108,10 @@ export function decodeV4RouteQuote(params: {
   logs: readonly V4RouteLog[]
   poolKeys: ReadonlyMap<string, V4PoolCurrencies>
   swapTopic0s: ReadonlySet<string>
+  // The wallet's quote token is already a verified stable/WETH: prove attribution only.
+  quoteIsCanonical?: boolean
+  // The scanned wallet (its own balance changes are the trade, not retained balances).
+  wallet: string
 }): V4RouteQuoteResult {
   const { chain, side, logs } = params
   const target = lower(params.target)
@@ -188,6 +193,44 @@ export function decodeV4RouteQuote(params: {
     if (wethOnRoute && isCanonicalWethAddress(chain, token)) continue // native <-> WETH settlement of the same route currency
     return fail('unrelated_second_economic_action', `transfer of ${token}, which is not on the route`, hops)
   }
+
+  // RETAINED BALANCES. Outside the wallet and the PoolManager, a token kept by any address is a
+  // protocol fee on the target path only if everything that address sends in this tx settles this same
+  // route (into the PoolManager or to the wallet) and the amount is within the fee bound of the
+  // route's own flow of that token (target-token transfer tax excepted).
+  // Anything else could fund a separate action and is rejected.
+  const routeFlow = new Map<string, bigint>()
+  const bump = (token: string, v: bigint) => { if (v > (routeFlow.get(token) ?? BigInt(0))) routeFlow.set(token, v) }
+  bump(inputCurrency, params.walletInRaw)
+  bump(outputCurrency, params.walletOutRaw)
+  hops.forEach((h, i) => { bump(h.inCurrency, hopAmounts[i].in); bump(h.outCurrency, hopAmounts[i].out) })
+  if (routeFlow.has(NATIVE_CURRENCY)) for (const w of [...routeCurrencies].filter((c) => isCanonicalWethAddress(chain, c))) bump(w, routeFlow.get(NATIVE_CURRENCY)!)
+  const nets = new Map<string, bigint>()
+  // An address whose only outflows settle this route (into the PoolManager, or to the wallet) cannot
+  // be funding a separate action with what it spends.
+  const spendsOutsideRoute = new Set<string>()
+  for (const log of logs) {
+    if (lower(log.topics[0]) !== TRANSFER_TOPIC0 || log.topics.length < 3) continue
+    const token = lower(log.address)
+    const from = `0x${log.topics[1].slice(-40)}`.toLowerCase()
+    const to = `0x${log.topics[2].slice(-40)}`.toLowerCase()
+    const hex = log.data.startsWith('0x') ? log.data.slice(2, 66) : log.data.slice(0, 64)
+    const amount = /^[0-9a-f]{64}$/i.test(hex) ? BigInt(`0x${hex}`) : BigInt(0)
+    if (to !== manager && to !== lower(params.wallet)) spendsOutsideRoute.add(from)
+    nets.set(`${from}|${token}`, (nets.get(`${from}|${token}`) ?? BigInt(0)) - amount)
+    nets.set(`${to}|${token}`, (nets.get(`${to}|${token}`) ?? BigInt(0)) + amount)
+  }
+  const wallet = lower(params.wallet)
+  for (const [key, net] of nets) {
+    const [address, token] = key.split('|')
+    if (net === BigInt(0) || address === manager || address === wallet || address === NATIVE_CURRENCY || isCanonicalWethAddress(chain, address)) continue
+    if (token === target && net > BigInt(0)) continue
+    const flow = routeFlow.get(token) ?? BigInt(0)
+    if (net < BigInt(0)) return fail('unrelated_second_economic_action', `${address} spends ${-net} more ${token} than it received`, hops)
+    if (spendsOutsideRoute.has(address) || !withinFee(net, flow)) return fail('unrelated_second_economic_action', `${address} keeps ${net} ${token} (route flow ${flow})${spendsOutsideRoute.has(address) ? ' and sends tokens outside the route' : ''}`, hops)
+    fees.push({ kind: 'protocol_fee_on_target_path', currency: token, raw: net.toString(), where: `retained_by_${address}` })
+  }
+  if (params.quoteIsCanonical) return { status: 'route_proven', hops, intermediary: null, fees }
 
   // The canonical intermediary nearest the target side of the route carries the quote: for an entry
   // the amount ENTERING the hop toward the target, for an exit the amount PRODUCED from the target.

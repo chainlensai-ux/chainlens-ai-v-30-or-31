@@ -148,7 +148,7 @@ describe('V4 route decoder — fail closed', () => {
   const decode = (tx: ReceiptQuoteTx, keys: Map<string, V4PoolCurrencies>, extra: { side?: 'entry' | 'exit' } = {}) => {
     if (tx.status !== 'ok') throw new Error('fixture')
     return decodeV4RouteQuote({
-      chain: 'base', side: extra.side ?? 'entry', target: CLAW, quoteToken: TOKEN_753F,
+      chain: 'base', side: extra.side ?? 'entry', target: CLAW, wallet: WALLET, quoteToken: TOKEN_753F,
       walletInRaw: units('1250000'), walletOutRaw: DD_TARGET, logs: tx.logs, poolKeys: keys, swapTopic0s: new Set(Object.keys(SWAP_TOPIC0S)),
     })
   }
@@ -167,7 +167,7 @@ describe('V4 route decoder — fail closed', () => {
     const r = decode(tx, keys)
     assert.equal(r.status, 'route_proven')
     if (r.status !== 'route_proven') return
-    assert.equal(r.intermediary.raw, ethToTarget.toString())
+    assert.equal(r.intermediary!.raw, ethToTarget.toString())
     assert.deepEqual(r.fees.map((f) => [f.kind, f.currency, f.raw]), [['protocol_fee_on_target_path', NATIVE_CURRENCY, units('0.002').toString()]])
   })
   it('a large leftover between hops could fund another action: rejected', () => {
@@ -192,7 +192,7 @@ describe('V4 route decoder — fail closed', () => {
     const h2 = hop(42, MID, units('20'), CLAW, DD_TARGET)
     const tx = okTx([transfer(TOKEN_753F, WALLET, PM, units('10')), h1.log, h2.log, transfer(CLAW, PM, WALLET, DD_TARGET)])
     if (tx.status !== 'ok') return
-    const r = decodeV4RouteQuote({ chain: 'base', side: 'entry', target: CLAW, quoteToken: TOKEN_753F, walletInRaw: units('10'), walletOutRaw: DD_TARGET, logs: tx.logs, poolKeys: new Map([h1.key, h2.key]), swapTopic0s: new Set(Object.keys(SWAP_TOPIC0S)) })
+    const r = decodeV4RouteQuote({ chain: 'base', side: 'entry', target: CLAW, wallet: WALLET, quoteToken: TOKEN_753F, walletInRaw: units('10'), walletOutRaw: DD_TARGET, logs: tx.logs, poolKeys: new Map([h1.key, h2.key]), swapTopic0s: new Set(Object.keys(SWAP_TOPIC0S)) })
     assert.equal(r.status, 'no_canonical_intermediary_on_route')
   })
 })
@@ -280,5 +280,127 @@ describe('lane: 0xdd4229 entry shared by 5 lot fragments is hydrated once', () =
     // FIFO allocates the one hydrated entry total across the fragments.
     const totalCost = clawLots.reduce((sum, l) => sum + (l.costBasisUsd ?? 0), 0)
     assert.ok(Math.abs(totalCost - 0.67 * ETH_USD) < 1e-6, `allocated ${totalCost}`)
+  })
+})
+
+describe('control flow after 6f2d83c6: V4 token-to-token candidates reach the quote lanes', () => {
+  // Bot-router shape: the wallet pays the router, the router keeps a small fee and settles the rest
+  // into the PoolManager. The transfer-net model flags the router (it keeps a balance AND spends), which
+  // is exactly how production rejected these as unrelated_second_economic_action before the V4 lane ran.
+  function routerFeeEntry(feeBps: bigint) {
+    const xPaid = units('1250000')
+    const fee = (xPaid * feeBps) / BigInt(10_000)
+    const h1 = hop(51, TOKEN_753F, xPaid - fee, NATIVE_CURRENCY, units('0.67'))
+    const h2 = hop(52, NATIVE_CURRENCY, units('0.67'), MID, units('5000'))
+    const h3 = hop(53, MID, units('5000'), CLAW, DD_TARGET)
+    return {
+      tx: okTx([transfer(TOKEN_753F, WALLET, ROUTER, xPaid), transfer(TOKEN_753F, ROUTER, PM, xPaid - fee), h1.log, h2.log, h3.log, transfer(CLAW, PM, WALLET, DD_TARGET)]),
+      keys: new Map([h1.key, h2.key, h3.key]),
+    }
+  }
+
+  it('before pool keys: a token-to-token candidate asks for them instead of being rejected (the production bug)', () => {
+    const { tx } = routerFeeEntry(BigInt(50))
+    const r = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 565818131.2763674, tx })
+    assert.equal(r.forensics?.pathAttribution, 'unrelated_second_economic_action', 'the generic transfer model still flags the router')
+    assert.equal(r.classification, 'token_to_token_swap_no_canonical_quote')
+    assert.equal(r.needsV4PoolKeys?.length, 3)
+    assert.equal(r.forensics?.tokenToTokenCandidate, true)
+    assert.equal(r.forensics?.quoteTokenAddress, TOKEN_753F)
+    assert.equal(r.forensics?.quoteTokenAmount, 1250000)
+    assert.equal(r.forensics?.quoteLaneAttempted, true)
+    assert.equal(r.forensics?.v4RouteSkipReason, 'pool_keys_pending')
+  })
+
+  it('with pool keys: the V4 route proves the path; a 0.5% router fee is protocol_fee_on_target_path', () => {
+    const { tx, keys } = routerFeeEntry(BigInt(50))
+    const r = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 565818131.2763674, tx, v4PoolKeys: keys })
+    assert.equal(r.classification, 'token_to_token_quote_via_v4_route')
+    assert.deepEqual(r.quote, { kind: 'native', token: 'native', quantity: 0.67 })
+    assert.equal(r.forensics?.v4RouteAttempted, true)
+    assert.ok(r.forensics?.v4Route?.fees.some((f) => f.kind === 'protocol_fee_on_target_path' && f.currency === TOKEN_753F))
+  })
+
+  it('a 5% retained amount is still a genuine second economic action, with a precise skip reason', () => {
+    const { tx, keys } = routerFeeEntry(BigInt(500))
+    const r = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 565818131.2763674, tx, v4PoolKeys: keys })
+    assert.equal(r.classification, 'unrelated_second_economic_action')
+    assert.equal(r.quote, null)
+    assert.match(r.forensics!.v4RouteSkipReason!, /^unrelated_second_economic_action/)
+    assert.equal(r.forensics?.historicalQuoteTokenPriceSkipReason, 'path_not_attributed_by_transfers_or_v4_route')
+  })
+
+  it('a non-V4 token-to-token swap with a retained balance is not overridden (no global weakening)', () => {
+    const { tx } = routerFeeEntry(BigInt(50))
+    if (tx.status !== 'ok') return
+    // A V2-style Swap from a reachable path node: the route is not all-V4, so no override applies.
+    const v2Swap = { address: PM, topics: [Object.keys(SWAP_TOPIC0S)[0]], data: '0x' }
+    const r = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 565818131.2763674, tx: { ...tx, logs: [...tx.logs, v2Swap] } })
+    assert.equal(r.classification, 'unrelated_second_economic_action')
+    assert.match(r.forensics!.quoteLaneSkipReason!, /^path_not_attributed/)
+    assert.equal(r.forensics?.v4RouteSkipReason, 'non_v4_swap_in_tx')
+  })
+
+  it('0xe61a USDbC entry with a router-kept fee: V4 proves the exact wallet outflow funds the target swap -> $385.592909', () => {
+    const fee = units('0.963982', 6)
+    const settled = E61_USDBC - fee
+    const h1 = hop(61, USDBC, settled, NATIVE_CURRENCY, units('0.115'))
+    const h2 = hop(62, NATIVE_CURRENCY, units('0.115'), MID, units('810'))
+    const h3 = hop(63, MID, units('810'), CLAW, A99_TARGET)
+    const tx = okTx([transfer(USDBC, WALLET, ROUTER, E61_USDBC), transfer(USDBC, ROUTER, PM, settled), h1.log, h2.log, h3.log, transfer(CLAW, PM, WALLET, A99_TARGET)])
+    const pending = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 98746705.02925444, tx })
+    assert.equal(pending.forensics?.pathAttribution, 'unrelated_second_economic_action')
+    assert.equal(pending.needsV4PoolKeys?.length, 3)
+    const r = classifyReceiptQuoteEvidence({ ...base, side: 'entry', targetAmount: 98746705.02925444, tx, v4PoolKeys: new Map([h1.key, h2.key, h3.key]) })
+    assert.equal(r.classification, 'quote_leg_omitted_from_provider_activity')
+    assert.deepEqual(r.quote, { kind: 'stable', token: USDBC, quantity: 385.592909 })
+  })
+
+  it('USDbC is one exact-address stable for both holdings pricing and receipt recovery', async () => {
+    const { isCanonicalStable } = await import('../../lib/pricing/currentPriceResolver')
+    const { isVerifiedStablecoinAddress } = await import('../modules/quoteLegPricing/index')
+    assert.equal(isCanonicalStable(8453, USDBC), true)
+    assert.equal(isVerifiedStablecoinAddress('base', USDBC), true)
+    assert.equal(isVerifiedStablecoinAddress('base', USDBC.toUpperCase().replace('0X', '0x')), true)
+  })
+
+  it('lane: the token-to-token candidate resolves pool keys (v4PoolKeysResolved > 0)', async () => {
+    const { tx, keys } = routerFeeEntry(BigInt(50))
+    const lanes = await import('./priceLotsForWallet.ts')
+    const buyTx = '0xdd4229cccae1f56f4782ffd8de227b45b17b190a9b391f2e42661601fed435fa'
+    const ts = '2026-09-20T10:00:00.000Z'
+    __resetNativePriceResolverForTest()
+    __seedAcceptedNativePriceForTest(Date.parse(ts), 3300, 'coingecko_native_coin_history')
+    const ev = (o: Partial<NormalizedEvent>): NormalizedEvent => ({ provider: 'alchemy', chain: 'base', txHash: buyTx, timestamp: ts, fromAddress: PM, toAddress: WALLET, contract: CLAW, symbol: '1clawAI', amount: 565818131.2763674, amountRaw: DD_TARGET.toString(), tokenDecimals: 18, direction: 'inbound', ...o })
+    const events = [
+      ev({}),
+      ev({ txHash: '0xsellx', timestamp: '2026-09-21T10:00:00.000Z', direction: 'outbound', fromAddress: WALLET, toAddress: PM }),
+      ev({ txHash: '0xsellx', timestamp: '2026-09-21T10:00:00.000Z', contract: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', symbol: 'USDC', amount: 2500, amountRaw: '2500000000', tokenDecimals: 6, direction: 'unknown', fromAddress: PM, toAddress: ROUTER }),
+    ]
+    const prior = process.env.COINPAPRIKA_HISTORICAL_ENABLED
+    process.env.COINPAPRIKA_HISTORICAL_ENABLED = 'false'
+    const originalWarn = console.warn
+    console.warn = () => undefined
+    let result
+    try {
+      result = await lanes.priceLotsForWallet({
+        normalizedEvents: events, recoveredEvents: [], priceSources: { primary: () => null, fallback: () => null },
+        receiptQuoteRecovery: {
+          walletAddress: WALLET,
+          fetchTx: async () => tx,
+          resolveV4PoolKeys: async (_c, ids) => new Map(ids.map((id) => [id, keys.get(id)!])),
+          quoteTokenHistoricalPrice: () => null,
+        },
+      })
+    } finally {
+      console.warn = originalWarn
+      if (prior === undefined) delete process.env.COINPAPRIKA_HISTORICAL_ENABLED; else process.env.COINPAPRIKA_HISTORICAL_ENABLED = prior
+    }
+    const a = result.receiptQuoteRecoveryAudit
+    assert.equal(a.sourceAudit.v4PoolKeysResolved, 3)
+    assert.equal(a.lotsCompletedViaV4RouteQuote, 1)
+    const row = a.sides.find((s) => s.txHash === buyTx)!
+    assert.equal(row.classification, 'token_to_token_quote_via_v4_route')
+    assert.equal(row.forensics?.quoteLaneAttempted, true)
   })
 })

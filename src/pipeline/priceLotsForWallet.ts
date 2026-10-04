@@ -2514,6 +2514,9 @@ export async function priceLotsForWallet(params: {
           // candidate that passed every receipt check and lacks just the native payout recipient.
           let result = classify(tx)
           // Token-to-token: prove the V4 pool keys (cached; once per pool), then decode the exact route.
+          if (result.needsV4PoolKeys && result.forensics && (!config.resolveV4PoolKeys || deadline.signal.aborted)) {
+            result.forensics.v4RouteSkipReason = !config.resolveV4PoolKeys ? 'pool_key_resolver_not_configured' : 'lane_deadline_exhausted'
+          }
           if (result.needsV4PoolKeys && config.resolveV4PoolKeys && !deadline.signal.aborted && tx.status === 'ok') {
             const keys = await config.resolveV4PoolKeys(item.requirement.chain, result.needsV4PoolKeys, deadline.signal)
             sourceAudit.v4PoolKeysResolved += keys.size
@@ -2525,7 +2528,13 @@ export async function priceLotsForWallet(params: {
             if (!result.tokenToTokenQuote && pending.tokenToTokenQuote && result.classification === 'token_to_token_swap_no_canonical_quote') result = { ...result, tokenToTokenQuote: pending.tokenToTokenQuote }
           }
           // Last tier: the quote token's own exact-address historical USD price at the trade time.
+          if (result.classification === 'token_to_token_swap_no_canonical_quote' && result.forensics && !result.forensics.historicalQuoteTokenPriceSkipReason) {
+            result.forensics.historicalQuoteTokenPriceSkipReason = !result.tokenToTokenQuote ? 'path_not_attributed'
+              : !config.quoteTokenHistoricalPrice ? 'historical_price_source_not_configured'
+                : deadline.signal.aborted ? 'lane_deadline_exhausted' : null
+          }
           if (result.classification === 'token_to_token_swap_no_canonical_quote' && result.tokenToTokenQuote && config.quoteTokenHistoricalPrice && !deadline.signal.aborted) {
+            if (result.forensics) result.forensics.historicalQuoteTokenPriceAttempted = true
             const quote = result.tokenToTokenQuote
             const priceKey = `${item.requirement.chain}:${quote.token}:${item.requirement.timestamp}`
             let pricing = quoteTokenPrices.get(priceKey)
@@ -2537,6 +2546,8 @@ export async function priceLotsForWallet(params: {
             const usdPrice = await pricing
             if (typeof usdPrice === 'number' && Number.isFinite(usdPrice) && usdPrice > 0 && isSanePrice(usdPrice)) {
               result = { ...result, classification: 'token_to_token_quote_via_historical_price', quote: { kind: 'historical_usd', token: quote.token, quantity: quote.quantity, usdPrice } }
+            } else if (result.forensics) {
+              result.forensics.historicalQuoteTokenPriceSkipReason = usdPrice == null ? 'no_exact_address_historical_price' : 'historical_price_out_of_bounds'
             }
           }
           if (result.needsNativeRecipientProof && tx.status === 'ok') {

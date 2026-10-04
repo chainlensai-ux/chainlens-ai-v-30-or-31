@@ -25,7 +25,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { isCanonicalWethAddress, isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 import { receiptRpcUrl } from './roiQuoteLegTxBackfill'
-import { decodeV4RouteQuote, NATIVE_CURRENCY, v4PoolIdsInLogs, type PathFee, type V4PoolCurrencies, type V4RouteHop } from './v4RouteQuote'
+import { decodeV4RouteQuote, NATIVE_CURRENCY, V4_POOL_MANAGERS, v4PoolIdsInLogs, type PathFee, type V4PoolCurrencies, type V4RouteHop } from './v4RouteQuote'
 
 export const TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 export const WETH_DEPOSIT_TOPIC0 = '0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c'
@@ -118,6 +118,16 @@ export type ReceiptQuoteForensics = {
   pathFees: Array<{ kind: 'protocol_fee_on_target_path'; address: string; token: string; raw: string }>
   // Token-to-token V4 route decode, when attempted.
   v4Route: { status: string; detail: string | null; hops: V4RouteHop[]; intermediary: { currency: string; kind: string; raw: string; quantity: number } | null; fees: PathFee[] } | null
+  // Quote-lane control-flow diagnostics: which lane was tried, and the exact reason any was skipped.
+  tokenToTokenCandidate: boolean
+  quoteTokenAddress: string | null
+  quoteTokenAmount: number | null
+  quoteLaneAttempted: boolean
+  quoteLaneSkipReason: string | null
+  v4RouteAttempted: boolean
+  v4RouteSkipReason: string | null
+  historicalQuoteTokenPriceAttempted: boolean
+  historicalQuoteTokenPriceSkipReason: string | null
   unrelatedOutputs: Array<{ address: string; token: string; netRaw: string; rule: string }>
   // Full deterministic dump (path-attribution audit). Every amount is a raw integer string.
   side: 'entry' | 'exit'
@@ -250,6 +260,15 @@ export function classifyReceiptQuoteEvidence(params: {
     unrelatedOutputs: [],
     pathFees: [],
     v4Route: null,
+    tokenToTokenCandidate: false,
+    quoteTokenAddress: null,
+    quoteTokenAmount: null,
+    quoteLaneAttempted: false,
+    quoteLaneSkipReason: null,
+    v4RouteAttempted: false,
+    v4RouteSkipReason: null,
+    historicalQuoteTokenPriceAttempted: false,
+    historicalQuoteTokenPriceSkipReason: null,
     traceSource: tx.traceSource ?? null,
     walletNativeReceivedWei: null,
     unwrapperNativeOutWei: null,
@@ -325,50 +344,88 @@ export function classifyReceiptQuoteEvidence(params: {
   forensics.outsideInputFlows = attribution.outsideInputFlows
 
   if (swapEvents.length === 0) return result('non_swap_contract_interaction')
-  if (unrelatedWalletLegs.length > 0) {
-    // Same rejection as before, named precisely: a single non-canonical token on the quote side with
-    // no other quote evidence is a token-to-token swap (no USD quote exists in this tx), not a
-    // multicall. Anything else stays multicall_unrelated_wallet_assets.
-    const singleNonCanonicalQuoteSide = unrelatedWalletLegs.length > 0
-      && new Set(unrelatedWalletLegs.map((leg) => leg.token)).size === 1
-      && unrelatedWalletLegs.every((leg) => leg.direction === quoteDirection && !isCanonicalWethAddress(chain, leg.token) && !isVerifiedStablecoinAddress(chain, leg.token))
-      && walletQuoteLegs.length === 0 && valueWei === ZERO && depositWei === ZERO && withdrawalWei === ZERO
-    if (!singleNonCanonicalQuoteSide) return result('multicall_unrelated_wallet_assets')
-    // TOKEN-TO-TOKEN LANE: the same receipt rules still apply (exact target, swap, no liquidity, one
-    // attributable path); the quote must then be proven through a canonical intermediary on the
-    // exact V4 route. Pool keys are proven by the lane (needsV4PoolKeys) and passed back in.
-    if (attribution.status !== 'single_target_path') {
-      return result(attribution.status === 'unrelated_swap_path' ? 'unrelated_swap_path_in_tx'
-        : attribution.status === 'unrelated_token_flow' ? 'unrelated_token_flow_in_tx' : 'unrelated_second_economic_action')
-    }
-    const quoteToken = unrelatedWalletLegs[0].token
-    const quoteRaw = unrelatedWalletLegs.reduce((sum, leg) => sum + BigInt(leg.raw), ZERO)
-    const poolIds = v4PoolIdsInLogs(chain, tx.logs)
-    const tokenToTokenQuote = { token: quoteToken, quantity: toUnits(quoteRaw, resolveTokenDecimals({ chain, token: quoteToken }).decimals) }
-    if (!params.v4PoolKeys) {
-      return { ...result('token_to_token_swap_no_canonical_quote'), needsV4PoolKeys: poolIds.length > 0 ? poolIds : undefined, tokenToTokenQuote }
-    }
+
+  // V4 ROUTE AS ATTRIBUTION AUTHORITY. Uniswap V4 settles every hop inside the PoolManager, so the
+  // transfer-net model above can flag ordinary V4 settlement (router/hook balances) as a retained
+  // output. When EVERY swap in the tx is a V4 swap on the chain's canonical PoolManager and the only
+  // generic failure is a retained balance, the exact V4 route decode — hop chaining, conservation and
+  // its own bounded retained-balance rule — decides instead. An unreachable swap path or an outside
+  // input is never overridden.
+  const poolIds = v4PoolIdsInLogs(chain, tx.logs)
+  const allSwapsV4 = poolIds.length > 0 && forensics.swapEmitters.every((e) => e.venue === 'uniswap_v4' && e.address === V4_POOL_MANAGERS[chain])
+  const v4MayAttribute = allSwapsV4 && attribution.status === 'unrelated_second_economic_action'
+  const decodeRoute = (quoteToken: string, quoteRaw: bigint, quoteIsCanonical: boolean) => {
+    forensics.v4RouteAttempted = true
     const route = decodeV4RouteQuote({
       chain, side, target, quoteToken,
       walletInRaw: side === 'entry' ? quoteRaw : targetRaw,
       walletOutRaw: side === 'entry' ? targetRaw : quoteRaw,
       logs: tx.logs,
-      poolKeys: params.v4PoolKeys,
+      poolKeys: params.v4PoolKeys!,
       swapTopic0s: new Set(Object.keys(SWAP_TOPIC0S)),
+      quoteIsCanonical,
+      wallet,
     })
     forensics.v4Route = route.status === 'route_proven'
       ? { status: route.status, detail: null, hops: route.hops, intermediary: route.intermediary, fees: route.fees }
       : { status: route.status, detail: route.detail, hops: route.hops, intermediary: null, fees: [] }
-    if (route.status !== 'route_proven') return { ...result('token_to_token_swap_no_canonical_quote'), tokenToTokenQuote }
-    return result('token_to_token_quote_via_v4_route', {
-      kind: route.intermediary.kind,
-      token: route.intermediary.currency === NATIVE_CURRENCY ? 'native' : route.intermediary.currency,
-      quantity: route.intermediary.quantity,
-    })
+    if (route.status !== 'route_proven') forensics.v4RouteSkipReason = `${route.status}: ${route.detail}`
+    return route
   }
-  if (attribution.status === 'unrelated_swap_path') return result('unrelated_swap_path_in_tx')
-  if (attribution.status === 'unrelated_token_flow') return result('unrelated_token_flow_in_tx')
-  if (attribution.status === 'unrelated_second_economic_action') return result('unrelated_second_economic_action')
+  const genericRejection = () => result(attribution.status === 'unrelated_swap_path' ? 'unrelated_swap_path_in_tx'
+    : attribution.status === 'unrelated_token_flow' ? 'unrelated_token_flow_in_tx' : 'unrelated_second_economic_action')
+
+  if (unrelatedWalletLegs.length > 0) {
+    // A single non-canonical token on the quote side with no other quote evidence is a token-to-token
+    // swap (it needs a quote lane), not a multicall. Anything else stays multicall_unrelated_wallet_assets.
+    const singleToken = new Set(unrelatedWalletLegs.map((leg) => leg.token)).size === 1
+    const quoteSideOnly = unrelatedWalletLegs.every((leg) => leg.direction === quoteDirection && !isCanonicalWethAddress(chain, leg.token) && !isVerifiedStablecoinAddress(chain, leg.token))
+    const noOtherQuoteEvidence = walletQuoteLegs.length === 0 && valueWei === ZERO && depositWei === ZERO && withdrawalWei === ZERO
+    forensics.tokenToTokenCandidate = singleToken && quoteSideOnly && noOtherQuoteEvidence
+    if (!forensics.tokenToTokenCandidate) {
+      forensics.quoteLaneSkipReason = !singleToken ? 'more_than_one_other_wallet_asset'
+        : !quoteSideOnly ? 'other_wallet_asset_not_on_quote_side_or_canonical_opposite_direction'
+          : 'wallet_also_has_canonical_quote_or_native_value_or_wrap'
+      return result('multicall_unrelated_wallet_assets')
+    }
+    const quoteToken = unrelatedWalletLegs[0].token
+    const quoteRaw = unrelatedWalletLegs.reduce((sum, leg) => sum + BigInt(leg.raw), ZERO)
+    const quoteTokenAmount = toUnits(quoteRaw, resolveTokenDecimals({ chain, token: quoteToken }).decimals)
+    forensics.quoteTokenAddress = quoteToken
+    forensics.quoteTokenAmount = quoteTokenAmount
+    if (attribution.status === 'unrelated_swap_path' || attribution.status === 'unrelated_token_flow' || (attribution.status === 'unrelated_second_economic_action' && !allSwapsV4)) {
+      forensics.quoteLaneSkipReason = `path_not_attributed: ${attribution.status}${allSwapsV4 ? '' : ' (not an all-V4 route)'}`
+      forensics.v4RouteSkipReason = allSwapsV4 ? 'path_not_attributed' : 'non_v4_swap_in_tx'
+      forensics.historicalQuoteTokenPriceSkipReason = 'path_not_attributed'
+      return genericRejection()
+    }
+    forensics.quoteLaneAttempted = true
+    const tokenToTokenQuote = { token: quoteToken, quantity: quoteTokenAmount }
+    // The historical-price tier needs an attributed path: the transfer graph, or a V4 route whose
+    // conservation checks passed (it only lacked a canonical intermediary).
+    const pathAttributed = attribution.status === 'single_target_path'
+    if (!allSwapsV4) {
+      forensics.v4RouteSkipReason = 'non_v4_swap_in_tx'
+      return { ...result('token_to_token_swap_no_canonical_quote'), tokenToTokenQuote }
+    }
+    if (!params.v4PoolKeys) {
+      forensics.v4RouteSkipReason = 'pool_keys_pending'
+      return { ...result('token_to_token_swap_no_canonical_quote'), needsV4PoolKeys: poolIds, tokenToTokenQuote: pathAttributed ? tokenToTokenQuote : undefined }
+    }
+    const route = decodeRoute(quoteToken, quoteRaw, false)
+    if (route.status === 'route_proven' && route.intermediary) {
+      return result('token_to_token_quote_via_v4_route', {
+        kind: route.intermediary.kind,
+        token: route.intermediary.currency === NATIVE_CURRENCY ? 'native' : route.intermediary.currency,
+        quantity: route.intermediary.quantity,
+      })
+    }
+    if (pathAttributed || route.status === 'no_canonical_intermediary_on_route') {
+      return { ...result('token_to_token_swap_no_canonical_quote'), tokenToTokenQuote }
+    }
+    forensics.historicalQuoteTokenPriceSkipReason = 'path_not_attributed_by_transfers_or_v4_route'
+    return result(route.status === 'unrelated_second_economic_action' ? 'unrelated_second_economic_action' : 'token_to_token_swap_no_canonical_quote')
+  }
 
   // A wallet-touching WETH/stable quote leg is in the receipt but was missing from provider activity.
   if (walletQuoteLegs.length > 0) {
@@ -376,6 +433,16 @@ export function classifyReceiptQuoteEvidence(params: {
     if (tokens.size !== 1 || valueWei > ZERO) return result('multicall_unrelated_wallet_assets')
     const token = walletQuoteLegs[0].token
     const raw = walletQuoteLegs.reduce((sum, leg) => sum + BigInt(leg.raw), ZERO)
+    if (attribution.status !== 'single_target_path') {
+      if (!v4MayAttribute) return genericRejection()
+      // All-V4 route: the exact route must prove this wallet outflow funds the target swap.
+      if (!params.v4PoolKeys) {
+        forensics.v4RouteSkipReason = 'pool_keys_pending'
+        return { ...genericRejection(), needsV4PoolKeys: poolIds }
+      }
+      const route = decodeRoute(token, raw, true)
+      if (route.status !== 'route_proven') return genericRejection()
+    }
     const decimals = resolveTokenDecimals({ chain, token }).decimals
     return result('quote_leg_omitted_from_provider_activity', {
       kind: isCanonicalWethAddress(chain, token) ? 'native' : 'stable',
@@ -383,6 +450,7 @@ export function classifyReceiptQuoteEvidence(params: {
       quantity: toUnits(raw, decimals),
     })
   }
+  if (attribution.status !== 'single_target_path') return genericRejection()
 
   if (depositWei > ZERO && withdrawalWei > ZERO) return result('ambiguous_wrap_and_unwrap')
   if (side === 'entry') {
