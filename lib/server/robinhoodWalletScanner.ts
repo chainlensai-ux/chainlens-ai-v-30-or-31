@@ -213,6 +213,25 @@ export type RobinhoodWalletActivityResult = {
   blockscoutFallbackDecisionAudit: BlockscoutFallbackDecisionAudit
   reason: string | null
   fromCache: boolean
+  /** Where the structural activity came from. Absent on results built before this field existed. */
+  activityProvenance?: RobinhoodActivityProvenance
+}
+
+export type RobinhoodActivityProvenance = {
+  /** 'ok', or the primary (GoldRush transactions_v3) failure reason: rate_limited / timeout / http_error / no_data / no_api_key. */
+  primaryStatus: string
+  primaryRows: number
+  blockscoutConfigured: boolean
+  fallbackStatus: 'not_needed' | 'not_configured' | 'succeeded' | 'failed'
+  fallbackFailureReason: string | null
+  blockscoutTransactionRows: number | null
+  blockscoutTransferRows: number | null
+  structuralActivitySource: 'goldrush' | 'blockscout' | 'goldrush+blockscout' | 'none'
+}
+
+/** A primary failure that a later scan may not inherit: retry it instead of replaying it from cache. */
+export function isTransientRobinhoodActivityFailure(result: Pick<RobinhoodWalletActivityResult, 'status'> | null | undefined): boolean {
+  return result?.status === 'unavailable'
 }
 
 // Re-exported so callers of this module don't need a second import from robinhoodSwapDecoder.ts
@@ -999,7 +1018,9 @@ export type ResolveRobinhoodActivityDeps = {
 }
 
 export async function resolveRobinhoodWalletActivity(wallet: string, deps: ResolveRobinhoodActivityDeps): Promise<RobinhoodWalletActivityResult> {
-  if (deps.cached && deps.cached.blockscoutFallbackDecisionAudit && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
+  // A cached TRANSIENT failure (primary 429/timeout/5xx with no usable fallback) is never replayed: the
+  // next scan must try the primary and the Blockscout fallback again.
+  if (deps.cached && deps.cached.blockscoutFallbackDecisionAudit && !isTransientRobinhoodActivityFailure(deps.cached) && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
     logBlockscoutFallbackDecisionAudit(deps.cached.blockscoutFallbackDecisionAudit)
     return { ...deps.cached, fromCache: true }
   }
@@ -1016,7 +1037,18 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
   const blockscoutAudits: BlockscoutEvidenceAudit[] = []
   let blockscoutSkippedReason: string | null = null
   let { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
+  const primaryReason = txs ? null : (reason ?? 'no_data')
   const primaryRowsReturned = txs?.length ?? 0
+  const provenance: RobinhoodActivityProvenance = {
+    primaryStatus: primaryReason ?? 'ok',
+    primaryRows: primaryRowsReturned,
+    blockscoutConfigured: isRobinhoodBlockscoutConfigured(),
+    fallbackStatus: 'not_needed',
+    fallbackFailureReason: null,
+    blockscoutTransactionRows: null,
+    blockscoutTransferRows: null,
+    structuralActivitySource: txs && txs.length > 0 ? 'goldrush' : 'none',
+  }
   const primaryMissingFields = new Set<string>()
   const primaryTxHashesMissingLogs = new Set(
     (txs ?? []).filter((tx) => tx.tx_hash && (!Array.isArray(tx.log_events) || tx.log_events.length === 0)).map((tx) => tx.tx_hash!),
@@ -1035,10 +1067,16 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     blockscoutSkippedReason = 'Blockscout skipped — primary succeeded.'
   } else if (!isRobinhoodBlockscoutConfigured()) {
     blockscoutSkippedReason = 'BLOCKSCOUT_API_KEY not configured (or Robinhood Chain unavailable) — Blockscout fallback could not be attempted.'
+    provenance.fallbackStatus = 'not_configured'
+    provenance.fallbackFailureReason = 'blockscout_not_configured'
   } else {
     const fallback = await fetchRobinhoodTransactionsViaBlockscout(wallet, deps.fetchImpl)
     blockscoutAudits.push(...fallback.audits)
+    provenance.blockscoutTransactionRows = fallback.audits[0]?.itemCount ?? null
+    provenance.blockscoutTransferRows = fallback.audits[1]?.itemCount ?? null
     if (fallback.items && fallback.items.length > 0) {
+      provenance.fallbackStatus = 'succeeded'
+      provenance.structuralActivitySource = txs && txs.length > 0 ? 'goldrush+blockscout' : 'blockscout'
       const byHash = new Map((txs ?? []).filter((tx) => tx.tx_hash).map((tx) => [tx.tx_hash!, tx]))
       for (const fallbackTx of fallback.items) {
         if (!fallbackTx.tx_hash) continue
@@ -1051,6 +1089,12 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
       }
       txs = [...byHash.values()]
       reason = null
+    } else {
+      provenance.fallbackStatus = 'failed'
+      const failed = fallback.audits.find((a) => a.blockscoutError || a.blockscoutRejectedReason)
+      provenance.fallbackFailureReason = failed
+        ? (failed.blockscoutStatus === 'rate_limited' ? 'blockscout_internal_budget_exhausted' : (failed.blockscoutError ?? failed.blockscoutRejectedReason))
+        : 'blockscout_returned_no_rows'
     }
   }
   if (!txs) {
@@ -1067,12 +1111,16 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
         : (merged.blockscoutError || merged.blockscoutRejectedReason) ? 'fallback_unavailable'
           : 'fallback_returned_no_rows',
     }))
+    // EXACT BLOCKER: the primary reason first (kept verbatim), then why the fallback could not stand in.
+    const blocker = provenance.fallbackStatus === 'failed' || provenance.fallbackStatus === 'not_configured'
+      ? `${reason ?? 'no_data'}; Blockscout fallback ${provenance.fallbackStatus === 'failed' ? 'failed' : 'not configured'}: ${provenance.fallbackFailureReason}`
+      : (reason ?? 'no_data')
     return {
       status: reason === 'no_api_key' ? 'not_configured' : 'unavailable',
       wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0,
       blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
       blockscoutAudits, blockscoutSkippedReason, blockscoutFallbackDecisionAudit: decision,
-      reason: reason ?? 'no_data', fromCache: false,
+      reason: blocker, fromCache: false, activityProvenance: provenance,
     }
   }
   const resolvePoolCurrencies = deps.resolvePoolCurrencies ?? ((poolId: string) => resolvePoolCurrenciesViaRpc(poolId, deps.fetchImpl))
@@ -1200,13 +1248,19 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
           : (mergedBlockscout.blockscoutError || mergedBlockscout.blockscoutRejectedReason) ? 'fallback_unavailable'
             : 'fallback_returned_no_rows',
   }))
+  // A fallback that stood in for a failed primary is never reported as a fully 'ok' scan: the activity is
+  // real, but its provenance (primary failed, Blockscout supplied the rows) stays visible.
+  const primaryReplaced = primaryReason != null && provenance.fallbackStatus === 'succeeded'
   return {
-    status: items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
+    status: primaryReplaced ? 'partial' : items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
     wallet, chainSlug: 'robinhood', items, skippedSwapLogs, swapDecodeAudits, verifiedSwapCount,
     blockscoutEvidence: mergedBlockscout,
     blockscoutAudits, blockscoutSkippedReason, blockscoutFallbackDecisionAudit: decision,
-    reason: items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
+    reason: primaryReplaced
+      ? `${primaryReason} (GoldRush primary); activity from Blockscout fallback`
+      : items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
     fromCache: false,
+    activityProvenance: provenance,
   }
 }
 
@@ -1318,12 +1372,26 @@ export async function getCachedRobinhoodWalletActivity(
   swapDeps?: { resolvePoolCurrencies?: (poolId: string) => Promise<RobinhoodPoolCurrencies | null>; priceUsdLookupForToken?: (tokenAddress: string) => Promise<number | null> },
 ): Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }> {
   const key = robinhoodWalletCacheKey('activity', wallet)
-  const cached = await getTokenCache<RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }>(key).catch(() => null)
-  const wrongChainCacheRejected = rejectWrongChainRobinhoodCache(cached, { wallet })
-  const result = await resolveRobinhoodWalletActivity(wallet, { fetchImpl, cached: cached && !wrongChainCacheRejected ? cached : null, ...swapDeps })
-  if (!result.fromCache) await setTokenCache(key, result, CACHE_TTL_SECONDS).catch(() => {})
-  return { ...result, wrongChainCacheRejected }
+  // SINGLEFLIGHT: one user scan fires the POST cache-warm, the worker and the page's own route for the same
+  // wallet within seconds; in one process they share one primary + fallback attempt instead of three.
+  const inFlight = activityInFlight.get(key)
+  if (inFlight) return inFlight
+  const run = (async () => {
+    const cached = await getTokenCache<RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }>(key).catch(() => null)
+    const wrongChainCacheRejected = rejectWrongChainRobinhoodCache(cached, { wallet })
+    const result = await resolveRobinhoodWalletActivity(wallet, { fetchImpl, cached: cached && !wrongChainCacheRejected ? cached : null, ...swapDeps })
+    // Only real activity is cached. A transient provider failure is never stored as a reusable snapshot.
+    if (!result.fromCache && !isTransientRobinhoodActivityFailure(result)) await setTokenCache(key, result, CACHE_TTL_SECONDS).catch(() => {})
+    return { ...result, wrongChainCacheRejected }
+  })()
+  activityInFlight.set(key, run)
+  try {
+    return await run
+  } finally {
+    activityInFlight.delete(key)
+  }
 }
+const activityInFlight = new Map<string, Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }>>()
 
 // ── Shared scan sequence, DISCLOSED (Wallet Scanner unification task): the EXACT same
 // holdings → price lookup → pool-currency resolver → activity → pnl → audit call sequence that
@@ -1354,9 +1422,11 @@ export async function scanRobinhoodWallet(
     : (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
 
   const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies })
+  const v1Input = robinhoodPnlV1CandidatesFromActivity(activity)
+  console.warn('[robinhood-activity-fallback-audit]', buildRobinhoodActivityFallbackAudit(activity, v1Input))
   const robinhoodPnl = await computeRobinhoodPnlV1({
     wallet,
-    ...robinhoodPnlV1CandidatesFromActivity(activity),
+    ...v1Input,
     activityUnavailableReason: activity.status === 'unavailable' || activity.status === 'not_configured' ? (activity.reason ?? activity.status) : null,
     deps: v1Deps,
   })
@@ -1372,9 +1442,36 @@ export async function scanRobinhoodWallet(
   const pnlVerificationAudit = buildRobinhoodPnlVerificationAuditFromV1({ wallet, holdings, activity, pnl, robinhoodPnl })
   // REQUIRED LOG, DISCLOSED (this task): fires unconditionally on every real sidecar scan so a
   // log reader can prove Robinhood verified PnL came from Phase 3, not from V2 chain-call-audit.
-  console.log('[robinhoodPnlVerificationAudit]', pnlVerificationAudit)
+  // console.warn, not console.log: next.config's compiler.removeConsole strips log/info in production.
+  console.warn('[robinhoodPnlVerificationAudit]', pnlVerificationAudit)
 
   return { holdings, activity, pnl, audit, pnlVerificationAudit, robinhoodPnl }
+}
+
+export function buildRobinhoodActivityFallbackAudit(
+  activity: RobinhoodWalletActivityResult,
+  v1Input: { candidates: ReadonlyArray<{ txHash: string }>; transactionCount: number; transferCount: number },
+) {
+  const p = activity.activityProvenance
+  return {
+    primaryReason: p?.primaryStatus ?? null,
+    primaryRows: p?.primaryRows ?? null,
+    blockscoutConfigured: p?.blockscoutConfigured ?? null,
+    blockscoutAttempted: activity.blockscoutEvidence?.blockscoutAttempted ?? false,
+    blockscoutTransactionRows: p?.blockscoutTransactionRows ?? null,
+    blockscoutTransferRows: p?.blockscoutTransferRows ?? null,
+    fallbackSucceeded: p?.fallbackStatus === 'succeeded',
+    fallbackStatus: p?.fallbackStatus ?? null,
+    fallbackFailureReason: p?.fallbackFailureReason ?? null,
+    structuralActivitySource: p?.structuralActivitySource ?? null,
+    finalActivityStatus: activity.status,
+    finalActivityReason: activity.reason,
+    finalActivityItems: activity.items.length,
+    transactionCount: v1Input.transactionCount,
+    transferCount: v1Input.transferCount,
+    candidateTxCount: new Set(v1Input.candidates.map((c) => c.txHash.toLowerCase())).size,
+    fromCache: activity.fromCache,
+  }
 }
 
 // ── PnL V1 bridges ─────────────────────────────────────────────────────────────────────────────────

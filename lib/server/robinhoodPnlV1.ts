@@ -699,8 +699,9 @@ export async function computeRobinhoodPnlV1(params: {
   }
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
     m.robinhoodPnlMs = params.deps.now() - startedAt
+    // console.warn: production strips console.log (next.config removeConsole); this must log on every exit.
     const result: RobinhoodPnlV1 = { ...r, priceEvidence: r.priceEvidence ?? [], ingestionAudit: ingestion, metrics: m }
-    console.log('[robinhood-pnl-ingestion-audit]', { ...ingestion, status: result.status, exactReason: result.exactReason, metrics: m })
+    console.warn('[robinhood-pnl-ingestion-audit]', { ...ingestion, status: result.status, exactReason: result.exactReason, metrics: m })
     return result
   }
   const empty = { structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null, unmatchedSellCount: 0, swapsFound: 0, swapsVerified: 0, swapsBothLegsPriced: 0 }
@@ -724,7 +725,7 @@ export async function computeRobinhoodPnlV1(params: {
   const swapsFound = outcomes.filter((o) => o.v4SwapLogs > 0).length
 
   const evidence = swaps.length > 0 ? await priceRobinhoodSwaps(ctx, swaps) : []
-  for (const e of evidence) console.log('[robinhood-price-evidence-audit]', e)
+  for (const e of evidence) console.warn('[robinhood-price-evidence-audit]', e)
   const bothLegs = evidence.filter((e) => e.bothLegsVerified).length
   const { fifo, buyCount, sellCount } = buildRobinhoodPnlV1Fifo(wallet, swaps, evidence)
   ingestion.normalizedBuyCount = buyCount

@@ -56,22 +56,28 @@ const RATE_LIMIT_MAX_CALLS = 4
 // per-serverless-instance limitation already documented for lib/server/rpcDebug.ts's in-memory
 // buffer) — this is a soft, best-effort ceiling on THIS instance's own Blockscout usage, not a
 // distributed rate limiter. Exported reset hook for tests only.
-let rateLimitWindowStart = 0
-let rateLimitCount = 0
-
-export function __resetRobinhoodBlockscoutRateLimitForTest(): void {
-  rateLimitWindowStart = 0
-  rateLimitCount = 0
+// TWO LANES, same per-lane ceiling: the wallet-activity list endpoints (the fallback for a failed
+// primary) get their own window, so per-tx log / contract lookups — up to one per tx — can never use up
+// the budget a concurrent scan needs to reconstruct activity at all.
+export type BlockscoutBudgetLane = 'activity' | 'evidence'
+const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
+  activity: { windowStart: 0, count: 0 },
+  evidence: { windowStart: 0, count: 0 },
 }
 
-function checkBlockscoutRateLimit(): boolean {
+export function __resetRobinhoodBlockscoutRateLimitForTest(): void {
+  for (const lane of Object.values(rateLimitState)) { lane.windowStart = 0; lane.count = 0 }
+}
+
+function checkBlockscoutRateLimit(lane: BlockscoutBudgetLane): boolean {
+  const state = rateLimitState[lane]
   const now = Date.now()
-  if (now - rateLimitWindowStart > RATE_LIMIT_WINDOW_MS) {
-    rateLimitWindowStart = now
-    rateLimitCount = 0
+  if (now - state.windowStart > RATE_LIMIT_WINDOW_MS) {
+    state.windowStart = now
+    state.count = 0
   }
-  if (rateLimitCount >= RATE_LIMIT_MAX_CALLS) return false
-  rateLimitCount += 1
+  if (state.count >= RATE_LIMIT_MAX_CALLS) return false
+  state.count += 1
   return true
 }
 
@@ -176,6 +182,7 @@ async function fetchBlockscout<T>(
   cacheKey: string,
   ttlSeconds: number,
   fetchImpl: FetchImpl,
+  lane: BlockscoutBudgetLane = 'evidence',
 ): Promise<{ data: T | null; audit: BlockscoutEvidenceAudit }> {
   const audit = emptyBlockscoutEvidenceAudit()
   audit.blockscoutEndpoint = path
@@ -195,7 +202,7 @@ async function fetchBlockscout<T>(
     return { data: cached, audit }
   }
 
-  if (!checkBlockscoutRateLimit()) {
+  if (!checkBlockscoutRateLimit(lane)) {
     audit.blockscoutAttempted = true
     audit.blockscoutStatus = 'rate_limited'
     audit.blockscoutRejectedReason = 'internal Blockscout call budget for this instance was reached (rate-limited below Blockscout\'s own free-tier ceiling by design)'
@@ -264,6 +271,7 @@ export async function getBlockscoutAddressTransactions(address: string, fetchImp
     `robinhood:blockscout:txs:${address.toLowerCase()}`,
     30,
     fetchImpl,
+    'activity',
   )
 }
 
@@ -283,6 +291,7 @@ export async function getBlockscoutAddressTokenTransfers(address: string, fetchI
     `robinhood:blockscout:token-transfers:${address.toLowerCase()}`,
     30,
     fetchImpl,
+    'activity',
   )
 }
 

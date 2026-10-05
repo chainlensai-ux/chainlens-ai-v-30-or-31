@@ -28,7 +28,8 @@ export type BlockscoutFallbackDecisionAudit = {
 
 export function logBlockscoutFallbackDecisionAudit(audit: BlockscoutFallbackDecisionAudit): BlockscoutFallbackDecisionAudit {
   // Safe diagnostic: endpoint paths and counts only; no API key or response payload is logged.
-  console.log('[blockscoutFallbackDecisionAudit]', audit)
+  // console.warn: next.config's compiler.removeConsole strips console.log in production.
+  console.warn('[blockscoutFallbackDecisionAudit]', audit)
   return audit
 }
 
