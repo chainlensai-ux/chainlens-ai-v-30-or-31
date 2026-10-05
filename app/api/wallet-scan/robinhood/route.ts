@@ -3,7 +3,7 @@ import { isAddress } from 'viem'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
-import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from '@/lib/server/robinhoodWalletScanner'
+import { resolveRobinhoodRouteRequest } from '@/lib/server/robinhoodScanCoordinator'
 
 // ROBINHOOD WALLET SCANNER ROUTE, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
 // Phase 1+2). Deliberately its OWN route, not a branch inside app/api/wallet-scan/route.ts's
@@ -41,34 +41,12 @@ export async function GET(req: Request): Promise<Response> {
     return NextResponse.json({ error: { message: 'Wallet Scanner is not available on this plan.', category: 'plan' } }, { status: 403 })
   }
 
-  const fetchImpl: typeof fetch = fetch
-  // WALLET SCANNER UNIFICATION, DISCLOSED: the holdings → price lookup → pool-currency resolver →
-  // activity → pnl → audit call sequence now lives once in robinhoodWalletScanner.ts's own
-  // scanRobinhoodWallet() (also reused by the new canonical orchestrator) — this route calls that
-  // single real implementation instead of repeating the sequence inline. Output shape below is
-  // unchanged.
-  const { holdings, activity, pnl, audit, pnlVerificationAudit, robinhoodPnl } = await scanRobinhoodWallet(wallet, fetchImpl)
-
-  return NextResponse.json({
-    ok: true,
-    wallet,
-    chainSlug: 'robinhood',
-    chainId: audit.chainId,
-    holdings,
-    activity,
-    // HARD RULE, DISCLOSED: "Do NOT show verified Robinhood PnL until swaps + prices are proven" —
-    // this now reflects the real, per-scan pnlStatus (verified swaps + FIFO output, or a genuine
-    // zero-verified-evidence reason) rather than a single fixed Phase-2 message.
-    pnl: {
-      status: pnl.status,
-      message: formatRobinhoodPnlMessage(pnl.status),
-      realizedPnlUsd: pnl.realizedPnlUsd,
-      matchedLotsCount: pnl.matchedLotsCount,
-      verifiedSwapCount: pnl.verifiedSwapCount,
-      reason: pnl.reason,
-    },
-    robinhoodWalletScannerAudit: audit,
-    robinhoodPnlVerificationAudit: pnlVerificationAudit,
-    robinhoodPnl,
-  })
+  // ONE PROVIDER SCAN PER USER SCAN: this route no longer runs its own synchronous scanRobinhoodWallet().
+  // The queued Wallet Scanner job is the canonical owner (lib/server/robinhoodScanCoordinator.ts): with a
+  // `jobId` this serves / waits (bounded) for that job's Robinhood result and never scans; without one it
+  // serves a fresh result, joins a live scan, or runs one bounded standalone scan (direct navigation).
+  // `refresh=1` (the section's Rescan button) skips a fresh finished result but still joins a live scan.
+  const jobId = searchParams.get('jobId')
+  const outcome = await resolveRobinhoodRouteRequest(wallet, fetch, { jobId: jobId && /^[\w-]{1,64}$/.test(jobId) ? jobId : null, refresh: searchParams.get('refresh') === '1' })
+  return NextResponse.json(outcome.body, { status: outcome.status })
 }

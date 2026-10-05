@@ -73,7 +73,7 @@ test('page wiring: invalid address fires neither the main scan nor Robinhood, ne
   const rejectAt = scanFn.indexOf("if (check.action === 'reject') { setRobinhoodError(null); setError(check.message); return }")
   assert.ok(rejectAt > 0, 'handleScan rejects malformed input')
   assert.ok(scanFn.indexOf('const check = checkWalletScanInput(input)') < rejectAt)
-  for (const sideEffect of ['scanInFlightRef.current = true', 'setLoading(true)', 'void handleRobinhoodScan()', 'scanWalletV2(']) {
+  for (const sideEffect of ['scanInFlightRef.current = true', 'setLoading(true)', 'void handleRobinhoodScan({ jobId })', 'scanWalletV2(']) {
     const at = scanFn.indexOf(sideEffect)
     assert.ok(at > rejectAt, `${sideEffect} only after the guard`)
   }
@@ -82,7 +82,7 @@ test('page wiring: invalid address fires neither the main scan nor Robinhood, ne
   const rhFn = page.slice(page.indexOf('async function handleRobinhoodScan('), page.indexOf('async function handleRobinhoodScan(') + 2500)
   const rhReject = rhFn.indexOf("if (check.action === 'reject') { setRobinhoodError(null); setError(check.message); return }")
   assert.ok(rhReject > 0 && rhReject < rhFn.indexOf('setRobinhoodLoading(true)') && rhReject < rhFn.indexOf('await fetch('), 'Robinhood sidecar/rescan guarded before loading and fetch')
-  assert.match(page, /onRobinhoodRescan=\{\(\) => void handleRobinhoodScan\(\)\}/)
+  assert.match(page, /onRobinhoodRescan=\{\(\) => void handleRobinhoodScan\(\{ refresh: true \}\)\}/)
   // Banners go through the classifier; the old hard-coded wrappers are gone.
   assert.match(page, /\{walletScanErrorBanner\(error\)\}/)
   assert.match(page, /robinhoodScanErrorBanner\(robinhoodError\) != null && !result/)

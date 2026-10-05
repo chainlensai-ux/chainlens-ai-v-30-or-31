@@ -7,7 +7,7 @@ import { consumeDailyScan, snapshotDailyScan } from '@/lib/scanQuota'
 import { scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
-import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
+import { markRobinhoodScanQueued } from '@/lib/server/robinhoodScanCoordinator'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export const runtime = 'nodejs'
@@ -127,9 +127,8 @@ export async function POST(req: Request): Promise<Response> {
     // WORKER-LEVEL ROBINHOOD FIX, DISCLOSED: `includeRobinhoodRequested` (computed above from the
     // caller's original, unfiltered `chains`) now rides along with the job payload so the worker
     // (workers/walletScanV2.ts's runWalletScanV2Worker, via src/modules/walletScanWorker.ts) can
-    // itself run a real scanRobinhoodWallet() call as part of processing the queued deep-scan job —
-    // not just this route's own non-blocking cache-warm below, which only warms the shared cache and
-    // never becomes part of the job's own published result.
+    // run the one Robinhood provider scan for this job (lib/server/robinhoodScanCoordinator.ts) as part
+    // of processing the queued deep-scan job.
     await enqueueWalletScanJob(jobId, { jobId, userId: authUser.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
   } catch (err) {
     console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
@@ -151,21 +150,11 @@ export async function POST(req: Request): Promise<Response> {
   })
   console.log('[wallet-scan] walletChainSelectionAudit', walletChainSelectionAudit)
 
-  // ROBINHOOD CACHE-WARM, DISCLOSED: fires the SAME real scanRobinhoodWallet() call sequence the
-  // standalone GET /api/wallet-scan/robinhood route already uses, populating the SAME
-  // holdings/activity cache (lib/server/robinhoodWalletScanner.ts's getCachedRobinhoodWalletHoldings/
-  // getCachedRobinhoodWalletActivity, keyed by wallet) that route reads from — so the page's own
-  // parallel Robinhood fetch lands warm. This is what makes Robinhood part of the SAME deep-scan-
-  // triggering request rather than "only rendered as a UI tab or separate side path." Never
-  // awaited — the queued-job response must stay fast — and never silently swallowed: a failure is
-  // logged with the real error, not hidden.
+  // ONE PROVIDER SCAN PER USER SCAN: no cache-warm scan here any more (it was a second full Robinhood
+  // pipeline next to the worker's). The queued job owns the scan; this only records that it is coming so
+  // GET /api/wallet-scan/robinhood waits for it instead of starting another.
   if (includeRobinhoodRequested && robinhoodAvailable) {
-    void scanRobinhoodWallet(wallet, fetch).catch((err) => {
-      console.warn('[wallet-scan] robinhood cache-warm failed', {
-        wallet,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    })
+    await markRobinhoodScanQueued(wallet, jobId).catch(() => {})
   }
 
   return NextResponse.json({ jobId, wallet, status: 'queued', walletChainSelectionAudit, scanQuota: deepScanQuota })

@@ -33,7 +33,8 @@
 import { DEFAULT_CHAINS, runV2Scan } from '@/lib/server/v2Adapters'
 export { DEFAULT_CHAINS }
 import type { RunWalletScanV2Result } from '@/src/pipeline/runWalletScanV2'
-import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from '@/lib/server/robinhoodWalletScanner'
+import { formatRobinhoodPnlMessage } from '@/lib/server/robinhoodWalletScanner'
+import { runCanonicalRobinhoodScan, ROBINHOOD_SCAN_RESULT_FRESH_MS } from '@/lib/server/robinhoodScanCoordinator'
 import type { RobinhoodWalletScannerAudit } from '@/lib/server/robinhoodWalletScanner'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { enqueueWalletScanJob, readWalletScanJob, readWalletScanResult } from '@/src/modules/walletScanQueue'
@@ -257,7 +258,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   }
 
   const rhPromise = (includeRobinhood && robinhoodAvailable)
-    ? scanRobinhoodWallet(walletAddress, fetch).catch((err) => {
+    ? runCanonicalRobinhoodScan(walletAddress, fetch, { jobId: null, owner: 'orchestrator', reuseFreshMs: ROBINHOOD_SCAN_RESULT_FRESH_MS }).catch((err) => {
         console.warn('[walletScanOrchestrator] scanRobinhoodWallet failed', {
           walletAddress,
           error: err instanceof Error ? err.message : String(err),

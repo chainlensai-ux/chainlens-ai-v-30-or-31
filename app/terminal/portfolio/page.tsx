@@ -23,7 +23,7 @@ import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
 import { mapWalletScanReportToPortfolioViewModel, type WalletV2Report } from '@/app/frontend/lib/portfolioViewModelAdapter'
 import { readPortfolioScanResult, savePortfolioScanResult } from '@/app/frontend/lib/portfolioSharedCache'
 import { buildPortfolioPageAudit, type PortfolioViewModel, type PortfolioHolding } from '@/lib/portfolioViewModel'
-import type { RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
+import { toRobinhoodWalletScanResponse, type RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 
 type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
 type Point = { ts: number; value: number }
@@ -195,12 +195,9 @@ export default function PortfolioPage() {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
 
-      const [scanResponse, robinhoodResponse] = await Promise.all([
-        scanWalletV2(address, PORTFOLIO_SCAN_CHAINS, 'normal', undefined, token),
-        fetch(`/api/wallet-scan/robinhood?address=${encodeURIComponent(address)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })
-          .then((r) => r.json().catch(() => null))
-          .catch(() => null) as Promise<(RobinhoodWalletScanResponse & { error?: { message?: string } }) | null>,
-      ])
+      // ONE ROBINHOOD PROVIDER SCAN: the job (chains include 'robinhood') already runs the Robinhood scan, so
+      // its result is read from the job's report instead of a second, parallel GET /api/wallet-scan/robinhood.
+      const scanResponse = await scanWalletV2(address, PORTFOLIO_SCAN_CHAINS, 'normal', undefined, token)
 
       if (!scanResponse.success || !scanResponse.data) {
         setReport(null)
@@ -209,7 +206,8 @@ export default function PortfolioPage() {
         const freshReport = scanResponse.data as WalletV2Report
         setReport(freshReport)
         setFailureReason(null)
-        const rh = robinhoodResponse?.ok ? robinhoodResponse : null
+        const jobRobinhood = (freshReport as unknown as { robinhood?: Parameters<typeof toRobinhoodWalletScanResponse>[1] | null }).robinhood
+        const rh = jobRobinhood ? toRobinhoodWalletScanResponse(address, jobRobinhood) : null
         setRobinhoodResult(rh)
         savePortfolioScanResult(address, freshReport, rh)
       }

@@ -49,7 +49,7 @@ import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sourc
 // AllowedChainIds or any other part of the EVM holdings/pricing/FIFO/PnL chain above — see this
 // file's own inline disclosure at its call site below and lib/server/walletChainSelectionAudit.ts's
 // header for why SupportedChain (EVM-only) must never gain a 'robinhood' member.
-import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
+import { runCanonicalRobinhoodScan } from '@/lib/server/robinhoodScanCoordinator'
 import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID } from '@/lib/server/robinhoodChainConfig'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 
@@ -615,7 +615,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // failure as non-fatal to the EVM/FIFO scan either way, exactly like the orchestrator's own
   // scanRobinhoodWallet call site (lib/server/walletScanOrchestrator.ts).
   const robinhoodPromise = includeRobinhood
-    ? scanRobinhoodWallet(walletAddress, fetch).catch((err) => {
+    ? runCanonicalRobinhoodScan(walletAddress, fetch, { jobId: jobId ?? null, owner: 'worker' }).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[CU-TRACK] worker robinhood scan failed', { walletAddress, error: err instanceof Error ? err.message : String(err) })
       return null

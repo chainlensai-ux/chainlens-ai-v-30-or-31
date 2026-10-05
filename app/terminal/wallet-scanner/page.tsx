@@ -63,6 +63,7 @@ import {
   WalletScannerResultsV3,
 } from '@/app/frontend/components'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
+import { toRobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
@@ -355,6 +356,8 @@ function buildCortexReadV2(
 // can still upgrade the view to the full result; `scanGenerationRef` ensures a stale background
 // resolution (or one superseded by the user starting a fresh scan) can never clobber newer state.
 const PORTFOLIO_READY_GRACE_MS = 45_000
+// Job-backed Robinhood request: polls 202s every ~2.5s for at most ~2 minutes (the job's final report also settles it).
+const ROBINHOOD_JOB_POLL_MAX_ATTEMPTS = 48
 
 // walletScanStageState / walletScanLifecycleAudit, DISCLOSED: the task-specified shapes, derived
 // (never independently computed/guessed) from the same real signals this page already tracks —
@@ -536,6 +539,8 @@ export default function WalletScannerPage() {
   const [partialSnapshot, setPartialSnapshot] = useState<NonNullable<ScanWalletStatusUpdate['partial']> | null>(null)
   const uiFirstResultMsRef = useRef<number | null>(null)
   const robinhoodSidecarDurationMsRef = useRef<number | null>(null)
+  // The jobId whose Robinhood result is still being awaited (null once delivered or superseded).
+  const robinhoodJobRef = useRef<string | null>(null)
   // CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the real,
   // canonical requested/allowed/omitted chain decision (including Robinhood's numeric chain id,
   // 4663, when relevant) echoed back from the /api/wallet-scan POST response — captured here so
@@ -803,9 +808,10 @@ export default function WalletScannerPage() {
     // configured on this deployment, resolveRobinhoodWalletHoldings/Activity already degrade to a
     // clean "not_configured" status (see lib/server/robinhoodWalletScanner.ts), so this is always
     // safe to fire unconditionally, never a guessed/loosened gate.
-    void handleRobinhoodScan().finally(() => {
-      robinhoodSidecarDurationMsRef.current = Date.now() - scanStartedAt
-    })
+    // ONE ROBINHOOD PROVIDER SCAN PER USER SCAN: the Robinhood request now waits for this scan's jobId (below)
+    // and reads the queued worker's own Robinhood result — it no longer starts a second, synchronous
+    // provider scan of its own (which hit the route's 30s limit while the worker did the same work).
+    let robinhoodRequestedForJob = false
     // STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
     // previous total until canonical portfolio stage resolves" requirement): this previously
     // unconditionally cleared `result` to null the instant ANY scan (including a plain refresh of
@@ -862,6 +868,13 @@ export default function WalletScannerPage() {
         if (scanGenerationRef.current !== myGeneration) return
         scanJobId = jobId
         setCurrentJobId(jobId)
+        if (!robinhoodRequestedForJob && jobId) {
+          robinhoodRequestedForJob = true
+          robinhoodJobRef.current = jobId
+          void handleRobinhoodScan({ jobId }).finally(() => {
+            robinhoodSidecarDurationMsRef.current = Date.now() - scanStartedAt
+          })
+        }
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
         // REAL STAGE LABEL, DISCLOSED: only ever set from a real backend checkpoint (see
         // WalletScanStageProgress's own header) — never advanced by a client-side timer/guess, and
@@ -948,6 +961,11 @@ export default function WalletScannerPage() {
       // update — never merged field-by-field with the prior scan.
       const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
       setResultEnvelope(envelope)
+      // The job's own Robinhood result (same single provider scan) settles the Robinhood lane if the
+      // job-backed Robinhood request has not delivered it yet; that request then stops polling.
+      const jobRobinhood = (report as unknown as { robinhood?: Parameters<typeof toRobinhoodWalletScanResponse>[1] | null }).robinhood
+      if (jobRobinhood) setRobinhoodResult((prev) => prev ?? toRobinhoodWalletScanResponse(address, jobRobinhood))
+      if (robinhoodJobRef.current === scanJobId) robinhoodJobRef.current = null
       setPartialSnapshot(null)
       // PORTFOLIO-SHARED-CACHE, DISCLOSED (Portfolio-page-empty-data audit): hands this completed,
       // real scan result to the shared sessionStorage cache so /terminal/portfolio can use it
@@ -1031,7 +1049,7 @@ export default function WalletScannerPage() {
   // genuinely separate route (GET /api/wallet-scan/robinhood) — never touches scanWalletV2, never
   // touches resultEnvelope/loading/error above. Runs entirely independently of a Base/ETH scan; a
   // user can have both a Base/ETH result and a Robinhood result on screen at once.
-  async function handleRobinhoodScan() {
+  async function handleRobinhoodScan(opts: { jobId?: string; refresh?: boolean } = {}) {
     // Same guard for the Robinhood sidecar / rescan (it reads the input field too).
     const check = checkWalletScanInput(input)
     if (check.action === 'ignore') return
@@ -1042,10 +1060,28 @@ export default function WalletScannerPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
-      const res = await fetch(`/api/wallet-scan/robinhood?address=${encodeURIComponent(address)}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      const json = await res.json().catch(() => null) as (RobinhoodWalletScanResponse & { error?: { message?: string } }) | null
+      // JOB-BACKED, BOUNDED: with a jobId the route only serves/waits for that job's Robinhood result
+      // (HTTP 202 = still running); this polls it while the same job is current, never re-scanning.
+      const qs = new URLSearchParams({ address })
+      if (opts.jobId) qs.set('jobId', opts.jobId)
+      if (opts.refresh) qs.set('refresh', '1')
+      let res: Response | null = null
+      let json: (RobinhoodWalletScanResponse & { error?: { message?: string }; pending?: boolean; retryAfterMs?: number }) | null = null
+      for (let attempt = 0; attempt < ROBINHOOD_JOB_POLL_MAX_ATTEMPTS; attempt++) {
+        res = await fetch(`/api/wallet-scan/robinhood?${qs.toString()}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        json = await res.json().catch(() => null)
+        if (res.status !== 202) break
+        // Superseded scan, or the job's final report already supplied the Robinhood result.
+        if (opts.jobId && robinhoodJobRef.current !== opts.jobId) return
+        await new Promise((r) => globalThis.setTimeout(r, Math.min(Math.max(json?.retryAfterMs ?? 2_500, 1_000), 5_000)))
+      }
+      if (!res || res.status === 202) {
+        if (opts.jobId && robinhoodJobRef.current !== opts.jobId) return
+        setRobinhoodError('Robinhood Chain scan is still running — results will appear when the scan completes.')
+        return
+      }
       if (!res.ok || !json?.ok) {
         setRobinhoodResult(null)
         setRobinhoodError(json?.error?.message ?? 'Robinhood scan failed — try again later')
@@ -1382,7 +1418,7 @@ export default function WalletScannerPage() {
             <div className="ws-card" style={{ marginBottom: '16px' }}>
               <RobinhoodChainSection
                 result={robinhoodResult}
-                onRescan={() => void handleRobinhoodScan()}
+                onRescan={() => void handleRobinhoodScan({ refresh: true })}
                 rescanLoading={robinhoodLoading}
                 debugMode={debugMode}
               />
@@ -1430,7 +1466,7 @@ export default function WalletScannerPage() {
               scanDurationMs={scanDurationMs}
               moduleErrors={moduleErrors}
               robinhoodResult={robinhoodResult}
-              onRobinhoodRescan={() => void handleRobinhoodScan()}
+              onRobinhoodRescan={() => void handleRobinhoodScan({ refresh: true })}
               robinhoodRescanLoading={robinhoodLoading}
               debugMode={debugMode}
             />
