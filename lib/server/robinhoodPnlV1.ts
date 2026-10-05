@@ -30,6 +30,7 @@ import { ROBINHOOD_V4_POOL_MANAGER } from './uniswapV4RobinhoodRpc'
 import { getRobinhoodRpcUrl } from './robinhoodChainConfig'
 import { fetchCoingeckoEthUsdRange } from './coingeckoOnchainOhlcv'
 import { nearestPriceWithGap } from '../v4SwapCandles'
+import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
 export const ROBINHOOD_PNL_V1_LIMITS = {
@@ -157,6 +158,8 @@ export type RobinhoodPnlV1IngestionAudit = {
   rejectionReasons: Partial<Record<RhRejection, number>>
   normalizedBuyCount: number
   normalizedSellCount: number
+  /** Forensics only: A/B/C/D classification counts for receipts with canonical V4 swaps (acceptance unchanged). */
+  v4AttributionClasses?: Record<RhAttributionClass, number>
 }
 
 export type RobinhoodPnlV1 = {
@@ -253,7 +256,7 @@ export function __resetRobinhoodPnlV1CachesForTest(): void {
 
 // ── Receipt-level evidence ──────────────────────────────────────────────────────────────────────────
 type RhLog = { address: string; topics: string[]; data: string; logIndex: number; blockTimestamp: number | null }
-type RhReceipt = { status: number | null; from: string; blockNumber: number; gasUsed: bigint; effectiveGasPrice: bigint; logs: RhLog[] }
+export type RhReceipt = { status: number | null; from: string; to: string | null; blockNumber: number; gasUsed: bigint; effectiveGasPrice: bigint; logs: RhLog[] }
 
 function parseReceipt(raw: unknown): RhReceipt | null {
   const r = raw as Record<string, unknown> | null
@@ -274,6 +277,7 @@ function parseReceipt(raw: unknown): RhReceipt | null {
   return {
     status: hexToNum(r.status),
     from: lower(r.from),
+    to: typeof r.to === 'string' ? lower(r.to) : null,
     blockNumber,
     gasUsed: hexToBigInt(r.gasUsed) ?? ZERO,
     effectiveGasPrice: hexToBigInt(r.effectiveGasPrice) ?? ZERO,
@@ -472,7 +476,43 @@ export function verifyRobinhoodV4Route(input: RhRouteInput): RhRouteResult {
   }
 }
 
-type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: number; swap: RhVerifiedSwap | null; rejection: RhRejection | null; detail: string | null }
+type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: number; swap: RhVerifiedSwap | null; rejection: RhRejection | null; detail: string | null; forensics?: RobinhoodSwapForensics | null }
+
+/**
+ * Evidence for a receipt the preflight rejected (most often wallet_not_tx_sender): pool keys for its canonical
+ * V4 swaps (shared cache) and, only if a pool trades native ETH, the wallet's exact native change in that
+ * block — balance difference when the wallet sent nothing in the block (nonce unchanged), or balance
+ * difference plus gas when this was the wallet's one tx. Never feeds acceptance.
+ */
+async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt, rejection: RhRejection): Promise<RobinhoodSwapForensics> {
+  const timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
+  const poolIds = [...new Set(receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER && /^0x[0-9a-f]{64}$/.test(l.topics[1] ?? '')).map((l) => l.topics[1]))]
+  const poolKeys = new Map<string, RhPoolKey>()
+  if (poolIds.length > 0 && Date.now() < ctx.deadlineAt) {
+    for (const id of poolIds) {
+      const key = await resolveRobinhoodPoolKey(id, ctx.rpc, (n) => { ctx.m.rpcCalls += n }, () => { ctx.m.cacheHits += 1 })
+      if (key) poolKeys.set(id, { currency0: lower(key.currency0), currency1: lower(key.currency1) })
+    }
+  }
+  let walletNativeDelta: bigint | null = null
+  const nativeTouched = [...poolKeys.values()].some((k) => k.currency0 === RH_NATIVE || k.currency1 === RH_NATIVE)
+  const N = receipt.blockNumber
+  if (nativeTouched && N > 0 && Date.now() < ctx.deadlineAt) {
+    const hex = (n: number) => `0x${n.toString(16)}`
+    const [b0r, b1r, n0r, n1r] = await call(ctx, [
+      { method: 'eth_getBalance', params: [wallet, hex(N - 1)] },
+      { method: 'eth_getBalance', params: [wallet, hex(N)] },
+      { method: 'eth_getTransactionCount', params: [wallet, hex(N - 1)] },
+      { method: 'eth_getTransactionCount', params: [wallet, hex(N)] },
+    ])
+    const [b0, b1, n0, n1] = [hexToBigInt(b0r), hexToBigInt(b1r), hexToNum(n0r), hexToNum(n1r)]
+    if (b0 != null && b1 != null && n0 != null && n1 != null) {
+      if (n1 === n0) walletNativeDelta = b1 - b0
+      else if (n1 - n0 === 1 && receipt.from === lower(wallet)) walletNativeDelta = b1 - b0 + receipt.gasUsed * receipt.effectiveGasPrice
+    }
+  }
+  return buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta, rejectionReason: rejection })
+}
 
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
   const out = (o: Partial<CandidateOutcome>): CandidateOutcome => ({ txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: null, detail: null, ...o })
@@ -485,7 +525,12 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
   if (!receipt) return out({ rejection: 'receipt_unavailable' })
   const v4SwapLogs = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0).length
   const pre = robinhoodReceiptPreflight(wallet, receipt)
-  if (!pre.ok) return out({ receiptFetched: true, v4SwapLogs, rejection: pre.reason, detail: pre.detail })
+  if (!pre.ok) {
+    // FORENSICS ONLY (acceptance unchanged): for a rejected receipt that still carries canonical V4 swaps,
+    // gather the same evidence the route proof would use so it can be classified A/B/C/D in the log.
+    const forensics = await forensicsForRejectedReceipt(ctx, wallet, txHash, receipt, pre.reason).catch(() => null)
+    return out({ receiptFetched: true, v4SwapLogs, rejection: pre.reason, detail: pre.detail, forensics })
+  }
 
   const poolKeys = new Map<string, RhPoolKey>()
   for (const id of pre.poolIds) {
@@ -517,15 +562,17 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
     if (b0 != null && b1 != null && n0 != null && n1 != null && n1 - n0 === 1) nativeNet = b1 - b0 + receipt.gasUsed * receipt.effectiveGasPrice
   }
   const route = verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet })
-  if (!route.ok) return out({ receiptFetched: true, v4SwapLogs, rejection: route.reason, detail: route.detail })
-  if (timestampSec == null || timestampSec <= 0) return out({ receiptFetched: true, v4SwapLogs, rejection: 'timestamp_unavailable' })
+  const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta: nativeNet, rejectionReason: route.ok ? null : route.reason })
+  if (!route.ok) return out({ receiptFetched: true, v4SwapLogs, rejection: route.reason, detail: route.detail, forensics })
+  if (timestampSec == null || timestampSec <= 0) return out({ receiptFetched: true, v4SwapLogs, rejection: 'timestamp_unavailable', forensics })
   const [inputDecimals, outputDecimals, interDecimals] = await Promise.all([
     tokenDecimals(ctx, route.inputToken),
     tokenDecimals(ctx, route.outputToken),
     route.intermediary ? tokenDecimals(ctx, route.intermediary.currency) : Promise.resolve(0),
   ])
-  if (inputDecimals == null || outputDecimals == null || interDecimals == null) return out({ receiptFetched: true, v4SwapLogs, rejection: 'decimals_unavailable' })
+  if (inputDecimals == null || outputDecimals == null || interDecimals == null) return out({ receiptFetched: true, v4SwapLogs, rejection: 'decimals_unavailable', forensics })
   return out({
+    forensics,
     receiptFetched: true,
     v4SwapLogs,
     swap: {
@@ -721,6 +768,10 @@ export async function computeRobinhoodPnlV1(params: {
     if (o.rejection) ingestion.rejectionReasons[o.rejection] = (ingestion.rejectionReasons[o.rejection] ?? 0) + 1
   }
   ingestion.verifiedSwapTxCount = swaps.length
+  const forensicRows = outcomes.map((o) => o.forensics).filter((f): f is RobinhoodSwapForensics => f != null)
+  for (const f of forensicRows) console.warn('[robinhood-swap-verification-forensics]', f)
+  for (const o of outcomes) if (!o.forensics) console.warn('[robinhood-swap-verification-forensics]', { txHash: o.txHash, wallet, rejectionReason: o.rejection, receiptFetched: o.receiptFetched, attributionClass: null, attributionDetail: o.detail ?? 'no receipt evidence' })
+  ingestion.v4AttributionClasses = summarizeAttribution(forensicRows)
   m.swapsVerified = swaps.length
   const swapsFound = outcomes.filter((o) => o.v4SwapLogs > 0).length
 
