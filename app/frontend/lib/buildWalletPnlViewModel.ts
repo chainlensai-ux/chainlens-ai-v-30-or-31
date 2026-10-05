@@ -618,7 +618,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     reason: robinhoodBoxStatus === 'Verified'
       ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL.`
       : robinhoodBoxStatus === 'Not verified'
-        ? ROBINHOOD_PNL_NOT_VERIFIED_REASON
+        ? (robinhoodResult?.robinhoodPnl?.exactReason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON)
         : 'No Robinhood scan for this wallet.',
     proof: robinhoodProof,
   }

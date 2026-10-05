@@ -42,6 +42,7 @@
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
+import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
 import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
@@ -1334,19 +1335,32 @@ export async function getCachedRobinhoodWalletActivity(
 export async function scanRobinhoodWallet(
   wallet: string,
   fetchImpl: FetchImpl,
+  pnlV1Deps?: RobinhoodPnlV1Deps,
 ): Promise<{
   holdings: RobinhoodWalletHoldingsResult & { wrongChainCacheRejected: boolean }
   activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
   pnl: RobinhoodWalletPnlResult
   audit: RobinhoodWalletScannerAudit
   pnlVerificationAudit: RobinhoodPnlVerificationAudit
+  robinhoodPnl: RobinhoodPnlV1
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const priceUsdLookupForToken = buildRobinhoodPriceUsdLookup(holdings, fetchImpl)
-  const resolvePoolCurrencies = (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
+  const v1Deps = pnlV1Deps ?? defaultRobinhoodPnlV1Deps(fetchImpl)
+  // PnL V1: the activity decode no longer receives CURRENT prices (holdings / DexScreener spot) — a
+  // historical PnL must never be gated on them. Pool currencies come from the same cached, hash-proven
+  // resolver the V1 lane uses, instead of an unbounded Initialize log scan per Swap log.
+  const resolvePoolCurrencies = v1Deps.rpc
+    ? (poolId: string) => resolveRobinhoodPoolKey(poolId, v1Deps.rpc!)
+    : (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
 
-  const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies, priceUsdLookupForToken })
-  const pnl = await resolveRobinhoodWalletPnl(wallet, activity, { priceUsdLookupForToken, fetchImpl })
+  const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies })
+  const robinhoodPnl = await computeRobinhoodPnlV1({
+    wallet,
+    ...robinhoodPnlV1CandidatesFromActivity(activity),
+    activityUnavailableReason: activity.status === 'unavailable' || activity.status === 'not_configured' ? (activity.reason ?? activity.status) : null,
+    deps: v1Deps,
+  })
+  const pnl = robinhoodWalletPnlFromV1(robinhoodPnl)
 
   const audit = buildRobinhoodWalletScannerAudit({
     wallet,
@@ -1355,10 +1369,68 @@ export async function scanRobinhoodWallet(
     pnl,
     wrongChainCacheRejected: holdings.wrongChainCacheRejected || activity.wrongChainCacheRejected,
   })
-  const pnlVerificationAudit = buildRobinhoodPnlVerificationAudit({ wallet, holdings, activity, pnl })
+  const pnlVerificationAudit = buildRobinhoodPnlVerificationAuditFromV1({ wallet, holdings, activity, pnl, robinhoodPnl })
   // REQUIRED LOG, DISCLOSED (this task): fires unconditionally on every real sidecar scan so a
   // log reader can prove Robinhood verified PnL came from Phase 3, not from V2 chain-call-audit.
   console.log('[robinhoodPnlVerificationAudit]', pnlVerificationAudit)
 
-  return { holdings, activity, pnl, audit, pnlVerificationAudit }
+  return { holdings, activity, pnl, audit, pnlVerificationAudit, robinhoodPnl }
+}
+
+// ── PnL V1 bridges ─────────────────────────────────────────────────────────────────────────────────
+/** Every tx the sidecar saw the wallet move tokens in (or saw a Swap log in) is a candidate; V1 proves or rejects each. */
+export function robinhoodPnlV1CandidatesFromActivity(activity: RobinhoodWalletActivityResult): {
+  candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }>
+  transactionCount: number
+  transferCount: number
+} {
+  const candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }> = []
+  for (const item of activity.items) {
+    const t = item.blockTimestamp ? Date.parse(item.blockTimestamp) : NaN
+    candidates.push({ txHash: item.txHash, timestampMs: Number.isFinite(t) ? t : null, hasSwapLog: false })
+  }
+  for (const a of activity.swapDecodeAudits) {
+    if (a.swapLogsSeen > 0 && a.txHash) candidates.push({ txHash: a.txHash, timestampMs: null, hasSwapLog: true })
+  }
+  const transactionCount = new Set(candidates.map((c) => c.txHash.toLowerCase())).size
+  return { candidates, transactionCount, transferCount: activity.items.length }
+}
+
+/** The legacy pnl block, derived from V1 only (no current-price lane can produce it any more). */
+export function robinhoodWalletPnlFromV1(v1: RobinhoodPnlV1): RobinhoodWalletPnlResult {
+  const status: RobinhoodWalletPnlStatus = v1.status === 'verified_bounded_sample' ? 'verified' : v1.status === 'partial' ? 'partial' : 'disabled'
+  return {
+    status,
+    realizedPnlUsd: v1.verifiedClosedLots > 0 ? v1.realizedPnlUsd : null,
+    matchedLotsCount: v1.verifiedClosedLots,
+    verifiedSwapCount: v1.swapsBothLegsPriced,
+    reason: v1.exactReason,
+  }
+}
+
+export function buildRobinhoodPnlVerificationAuditFromV1(input: {
+  wallet: string
+  holdings: RobinhoodWalletHoldingsResult | null
+  activity: RobinhoodWalletActivityResult | null
+  pnl: RobinhoodWalletPnlResult
+  robinhoodPnl: RobinhoodPnlV1
+}): RobinhoodPnlVerificationAudit {
+  const base = buildRobinhoodPnlVerificationAudit({ wallet: input.wallet, holdings: input.holdings, activity: input.activity, pnl: input.pnl })
+  const v1 = input.robinhoodPnl
+  const verifiedSwapCount = v1.swapsBothLegsPriced
+  const countsProve = v1.status === 'verified_bounded_sample' && v1.realizedPnlUsd != null && verifiedSwapCount > 0 && v1.verifiedClosedLots > 0
+  return {
+    ...base,
+    status: countsProve ? 'verified' : input.pnl.status === 'verified' ? 'disabled' : input.pnl.status,
+    realizedPnlUsd: v1.verifiedClosedLots > 0 ? v1.realizedPnlUsd : null,
+    verifiedSwapCount,
+    decodedSwapCount: v1.swapsFound,
+    swapsFedToFifo: v1.swapsVerified,
+    fifoClosedLots: v1.verifiedClosedLots,
+    priceEvidenceBothLegsCount: v1.swapsBothLegsPriced,
+    missingPriceEvidenceCount: v1.swapsVerified - v1.swapsBothLegsPriced,
+    pnlEnabledReason: countsProve ? ROBINHOOD_PNL_ENABLED_REASON : null,
+    pnlDisabledReason: countsProve ? null : v1.exactReason,
+    rejectedReasonIfNotVerified: countsProve ? null : ROBINHOOD_PNL_NOT_VERIFIED_REASON,
+  }
 }

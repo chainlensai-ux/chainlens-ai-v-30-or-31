@@ -102,6 +102,49 @@ export type RobinhoodWalletScanResponse = {
   }
   robinhoodWalletScannerAudit: Record<string, unknown>
   robinhoodPnlVerificationAudit?: RobinhoodPnlVerificationAudit | null
+  /** Robinhood PnL V1 (lib/server/robinhoodPnlV1.ts). Absent on older responses. */
+  robinhoodPnl?: RobinhoodPnlSummary | null
+}
+
+/** Verified-only Robinhood PnL. `realizedPnlUsd` is null whenever no verified lot closed — $0 is a real break-even, never "unavailable". */
+export type RobinhoodPnlSummary = {
+  status: 'verified_bounded_sample' | 'partial' | 'not_verified' | 'unavailable'
+  structuralClosedLots: number
+  verifiedClosedLots: number
+  pricingCoverage: number | null
+  realizedPnlUsd: number | null
+  realizedRoiPct: number | null
+  unmatchedSellCount: number
+  exactReason: string
+  swapsFound: number
+  swapsVerified: number
+  swapsBothLegsPriced: number
+}
+
+/** What the Robinhood PnL card shows: the verified sample only when evidence exists, otherwise the exact blocker. */
+export type RobinhoodPnlCardView =
+  | { kind: 'sample'; title: 'ROBINHOOD PNL'; statusLabel: 'VERIFIED BOUNDED SAMPLE' | 'PARTIAL SAMPLE'; realized: string; roi: string | null; lotsLine: string; coverageLine: string | null }
+  | { kind: 'blocker'; title: 'ROBINHOOD PNL'; statusLabel: 'NOT VERIFIED' | 'UNAVAILABLE'; blocker: string }
+
+function signedUsd(v: number): string {
+  const sign = v > 0 ? '+' : v < 0 ? '-' : ''
+  return `${sign}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+export function robinhoodPnlCardView(pnl: RobinhoodPnlSummary | null | undefined): RobinhoodPnlCardView | null {
+  if (!pnl) return null
+  if ((pnl.status === 'verified_bounded_sample' || pnl.status === 'partial') && pnl.verifiedClosedLots > 0 && pnl.realizedPnlUsd != null) {
+    return {
+      kind: 'sample',
+      title: 'ROBINHOOD PNL',
+      statusLabel: pnl.status === 'verified_bounded_sample' ? 'VERIFIED BOUNDED SAMPLE' : 'PARTIAL SAMPLE',
+      realized: signedUsd(pnl.realizedPnlUsd),
+      roi: pnl.realizedRoiPct != null ? `${pnl.realizedRoiPct > 0 ? '+' : ''}${pnl.realizedRoiPct.toFixed(1)}% ROI` : null,
+      lotsLine: `${pnl.verifiedClosedLots}/${pnl.structuralClosedLots} closed lots verified`,
+      coverageLine: pnl.pricingCoverage != null ? `${pnl.pricingCoverage.toFixed(1)}% coverage` : null,
+    }
+  }
+  return { kind: 'blocker', title: 'ROBINHOOD PNL', statusLabel: pnl.status === 'unavailable' ? 'UNAVAILABLE' : 'NOT VERIFIED', blocker: pnl.exactReason }
 }
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
@@ -255,6 +298,7 @@ export function toRobinhoodWalletScanResponse(
     pnl: { status: 'disabled' | 'partial' | 'verified'; realizedPnlUsd: number | null; matchedLotsCount: number; verifiedSwapCount: number; reason: string | null }
     audit: Record<string, unknown> & { chainId?: number }
     pnlVerificationAudit: RobinhoodPnlVerificationAudit
+    robinhoodPnl?: RobinhoodPnlSummary | null
   },
 ): RobinhoodWalletScanResponse {
   return {
@@ -274,5 +318,6 @@ export function toRobinhoodWalletScanResponse(
     },
     robinhoodWalletScannerAudit: rh.audit,
     robinhoodPnlVerificationAudit: rh.pnlVerificationAudit,
+    robinhoodPnl: rh.robinhoodPnl ?? null,
   }
 }

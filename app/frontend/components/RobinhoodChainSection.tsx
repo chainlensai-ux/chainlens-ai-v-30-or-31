@@ -19,6 +19,7 @@ import { StatusBadge, type StatusTone } from './StatusBadge'
 import {
   ROBINHOOD_CHAIN_META as ROBINHOOD_CHAIN_META_SHARED,
   selectRobinhoodPnlLaneStatus as selectRobinhoodPnlLaneStatusShared,
+  robinhoodPnlCardView,
   type RobinhoodPnlLaneStatus as RobinhoodPnlLaneStatusShared,
   type RobinhoodPnlVerificationAudit as RobinhoodPnlVerificationAuditShared,
   type RobinhoodWalletScanResponse as RobinhoodWalletScanResponseShared,
@@ -63,6 +64,7 @@ export function RobinhoodChainSection({
   const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : 'Robinhood: Not verified'
   const pnlTone: StatusTone = robinhoodPnlVerified ? 'success' : 'neutral'
   const pnlAudit = result.robinhoodPnlVerificationAudit
+  const pnlCard = robinhoodPnlCardView(result.robinhoodPnl)
   const blockscout = activity.blockscoutEvidence
   const blockscoutDecision = activity.blockscoutFallbackDecisionAudit
   const blockscoutLabel = blockscoutDecision?.finalStatus === 'fallback_succeeded'
@@ -206,7 +208,17 @@ export function RobinhoodChainSection({
               <StatusBadge label={robinhoodPnlVerified ? 'Verified' : 'Not verified'} tone={pnlTone} />
               <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
             </div>
-            {robinhoodPnlVerified && pnlAudit ? (
+            {pnlCard?.kind === 'sample' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }} data-robinhood-pnl-v1="sample">
+                <span style={{ fontSize: '10px', letterSpacing: '0.08em', color: 'rgba(148,163,184,0.70)' }}>{pnlCard.title} / {pnlCard.statusLabel}</span>
+                <span style={{ fontSize: '20px', fontWeight: 800, color: pnl.realizedPnlUsd != null && pnl.realizedPnlUsd < 0 ? '#F87171' : '#2DD4BF' }}>{pnlCard.realized}</span>
+                <span style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)' }}>{[pnlCard.roi, pnlCard.lotsLine, pnlCard.coverageLine].filter(Boolean).join(' · ')}</span>
+              </div>
+            ) : pnlCard?.kind === 'blocker' ? (
+              <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.75)' }} data-robinhood-pnl-v1="blocker">
+                {pnlCard.title} / {pnlCard.statusLabel}: {pnlCard.blocker}
+              </div>
+            ) : robinhoodPnlVerified && pnlAudit ? (
               <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span>Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'}</span>
                 <span>Verified swaps: {pnlAudit.verifiedSwapCount}</span>

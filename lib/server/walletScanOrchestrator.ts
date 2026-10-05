@@ -382,6 +382,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
         },
         audit: rh.audit as unknown as Record<string, unknown> & { chainId?: number },
         pnlVerificationAudit: rh.pnlVerificationAudit,
+        robinhoodPnl: rh.robinhoodPnl,
       })
       if (robinhoodResponse.pnl.message === robinhoodResponse.pnl.reason || !robinhoodResponse.pnl.message) {
         robinhoodResponse.pnl.message = formatRobinhoodPnlMessage(rh.pnl.status)

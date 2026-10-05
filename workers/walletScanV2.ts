@@ -1320,7 +1320,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       ...body,
       data: {
         ...body.data,
-        robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit, pnlVerificationAudit: robinhood.pnlVerificationAudit } : null,
+        robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit, pnlVerificationAudit: robinhood.pnlVerificationAudit, robinhoodPnl: robinhood.robinhoodPnl } : null,
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
         workerChainPropagationAudit,
         finalCanonicalMergeAudit,
