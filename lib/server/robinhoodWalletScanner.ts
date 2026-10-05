@@ -1092,8 +1092,12 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     } else {
       provenance.fallbackStatus = 'failed'
       const failed = fallback.audits.find((a) => a.blockscoutError || a.blockscoutRejectedReason)
+      // Auth/host refusals carry their classification and the transports tried (host + auth mode, never the key).
+      const transports = failed?.transportAttempts.map((t) => `${t.requestHost}/${t.authMode}:${t.httpStatus ?? t.failureClass}`).join(', ')
       provenance.fallbackFailureReason = failed
-        ? (failed.blockscoutStatus === 'rate_limited' ? 'blockscout_internal_budget_exhausted' : (failed.blockscoutError ?? failed.blockscoutRejectedReason))
+        ? (failed.blockscoutStatus === 'rate_limited' ? 'blockscout_internal_budget_exhausted'
+          : failed.httpStatus === 401 || failed.httpStatus === 403 ? `${failed.blockscoutError} (${failed.failureClass}; tried ${transports})`
+            : (failed.blockscoutError ?? failed.blockscoutRejectedReason))
         : 'blockscout_returned_no_rows'
     }
   }
@@ -1463,6 +1467,8 @@ export function buildRobinhoodActivityFallbackAudit(
     fallbackSucceeded: p?.fallbackStatus === 'succeeded',
     fallbackStatus: p?.fallbackStatus ?? null,
     fallbackFailureReason: p?.fallbackFailureReason ?? null,
+    blockscoutTransports: (activity.blockscoutAudits ?? []).filter((a) => a.blockscoutEndpoint && !a.blockscoutEndpoint.includes('/logs'))
+      .flatMap((a) => (a.transportAttempts ?? []).map((t) => ({ ...t }))),
     structuralActivitySource: p?.structuralActivitySource ?? null,
     finalActivityStatus: activity.status,
     finalActivityReason: activity.reason,

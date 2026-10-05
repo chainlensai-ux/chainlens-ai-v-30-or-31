@@ -14,12 +14,9 @@
 // ENDPOINT BASE, DISCLOSED: reuses ROBINHOOD_CHAIN_EXPLORER_URL (robinhoodChainConfig.ts) — the same
 // https://robinhoodchain.blockscout.com already used, without a key, by lib/server/deployerResolver.ts
 // for contract-creation lookups. That confirms the real base URL and the real /api/v2/addresses/*
-// endpoint shape independently of this task. BLOCKSCOUT_API_KEY (newly available in Vercel) is
-// appended as a query param (`?apikey=`), the same convention this codebase already uses for
-// Etherscan/Basescan-family explorer keys in deployerResolver.ts — Blockscout's public REST API does
-// not require a key for reads, so a request with a wrong/absent key still degrades to the same public
-// response, never a hard failure; the key exists here to raise this deployment's own rate/credit
-// ceiling, not to unlock otherwise-inaccessible data.
+// endpoint shape independently of this task. BLOCKSCOUT_API_KEY is a Blockscout PRO API key, which is only
+// valid on the PRO gateway (api.blockscout.com/4663/...). It was previously appended as `?apikey=` to the
+// community host, which does not recognise it; it is now never sent there — see "Transport" below.
 //
 // GATING, DISCLOSED: isRobinhoodBlockscoutConfigured() requires the Robinhood Chain feature to be
 // enabled AND a real BLOCKSCOUT_API_KEY to be present. It deliberately does not require the primary
@@ -44,7 +41,7 @@
 // verified contract metadata).
 
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
-import { isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_EXPLORER_URL } from './robinhoodChainConfig'
+import { isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_EXPLORER_URL, ROBINHOOD_CHAIN_ID } from './robinhoodChainConfig'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -117,6 +114,12 @@ export type BlockscoutEvidenceAudit = {
   // guesses a count for a shape it doesn't itself type-check.
   httpStatus: number | null
   itemCount: number | null
+  // TRANSPORT DIAGNOSTICS (the final attempt; every attempt is in transportAttempts). Never the key or a body.
+  requestHost: string | null
+  authMode: BlockscoutAuthMode | null
+  contentType: string | null
+  failureClass: BlockscoutFailureClass | null
+  transportAttempts: BlockscoutTransportAttempt[]
 }
 
 export function emptyBlockscoutEvidenceAudit(): BlockscoutEvidenceAudit {
@@ -134,6 +137,11 @@ export function emptyBlockscoutEvidenceAudit(): BlockscoutEvidenceAudit {
     blockscoutVerifiedSwap: false,
     httpStatus: null,
     itemCount: null,
+    requestHost: null,
+    authMode: null,
+    contentType: null,
+    failureClass: null,
+    transportAttempts: [],
   }
 }
 
@@ -177,6 +185,80 @@ export function mergeBlockscoutEvidenceAudits(audits: BlockscoutEvidenceAudit[])
   return merged
 }
 
+// ── Transport, DISCLOSED (Blockscout 403 fix) ──────────────────────────────────────────────────────
+// Two documented request contracts exist (docs.blockscout.com robinhood-api / pro-api-responses-and-routes):
+//  - the community explorer host, robinhoodchain.blockscout.com/api/v2/... — the "previous per-instance
+//    route", public, where a key is optional. A PRO key means nothing to this host, so it is NEVER sent here.
+//  - the PRO API gateway, api.blockscout.com/4663/api/v2/... — a PRO key (proapi_...) is required, passed
+//    as `authorization: Bearer` (documented alternative to ?apikey=; keeps the key out of every URL).
+// Order: community without a key first; only on 401/403 (an auth/host-policy refusal) and only when a key
+// is configured, ONE gateway attempt. 429 / timeout / 5xx are never retried on the other transport.
+export const BLOCKSCOUT_PRO_API_BASE = 'https://api.blockscout.com'
+export type BlockscoutAuthMode = 'none' | 'query_apikey' | 'header' | 'gateway'
+export type BlockscoutFailureClass =
+  | 'forbidden_invalid_auth' | 'forbidden_host_policy' | 'cloudflare_forbidden' | 'unsupported_chain_gateway'
+  | 'rate_limited' | 'timeout' | 'network_error' | 'http_error' | 'invalid_json'
+export type BlockscoutTransportAttempt = {
+  requestHost: string
+  path: string
+  authMode: BlockscoutAuthMode
+  httpStatus: number | null
+  contentType: string | null
+  failureClass: BlockscoutFailureClass | null
+}
+
+/** Classifies a refusal from status + headers + the first bytes of the body. The body is read only here and never logged. */
+export function classifyBlockscoutFailure(status: number, headers: Headers, bodyHead: string, gateway: boolean): BlockscoutFailureClass {
+  if (status === 429) return 'rate_limited'
+  const body = bodyHead.toLowerCase()
+  const server = (headers.get('server') ?? '').toLowerCase()
+  const cloudflare = headers.get('cf-mitigated') != null
+    || /just a moment|attention required|cf-browser-verification|challenge-platform|error code: 10\d\d|cloudflare ray id/.test(body)
+    || (server.includes('cloudflare') && (headers.get('content-type') ?? '').includes('text/html'))
+  if (status === 401) return 'forbidden_invalid_auth'
+  if (status === 403) {
+    if (cloudflare) return 'cloudflare_forbidden'
+    if (/api[ _-]?key|apikey|unauthori[sz]ed|invalid key|authentication|credential|token/.test(body)) return 'forbidden_invalid_auth'
+    return 'forbidden_host_policy'
+  }
+  if (gateway && (status === 404 || status === 400) && /chain|network/.test(body) && /not (found|supported)|unsupported|unknown/.test(body)) return 'unsupported_chain_gateway'
+  return 'http_error'
+}
+
+type TransportResponse = { ok: boolean; status: number; json: unknown | null; attempt: BlockscoutTransportAttempt; headers: Headers | null }
+
+async function blockscoutRequest(path: string, fetchImpl: FetchImpl, mode: 'community' | 'gateway'): Promise<TransportResponse> {
+  const gateway = mode === 'gateway'
+  const base = gateway ? `${BLOCKSCOUT_PRO_API_BASE}/${ROBINHOOD_CHAIN_ID}` : ROBINHOOD_CHAIN_EXPLORER_URL
+  const attempt: BlockscoutTransportAttempt = {
+    requestHost: new URL(base).host,
+    path: path.split('?')[0],
+    authMode: gateway ? 'gateway' : 'none',
+    httpStatus: null,
+    contentType: null,
+    failureClass: null,
+  }
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (gateway) headers.authorization = `Bearer ${process.env.BLOCKSCOUT_API_KEY ?? ''}`
+  try {
+    const res = await fetchImpl(`${base}${path}`, { headers, signal: AbortSignal.timeout(BLOCKSCOUT_TIMEOUT_MS) })
+    attempt.httpStatus = res.status
+    attempt.contentType = res.headers.get('content-type')
+    if (!res.ok) {
+      const bodyHead = (await res.text().catch(() => '')).slice(0, 512)
+      attempt.failureClass = classifyBlockscoutFailure(res.status, res.headers, bodyHead, gateway)
+      return { ok: false, status: res.status, json: null, attempt, headers: res.headers }
+    }
+    const json = await res.json().catch(() => null)
+    if (json == null) attempt.failureClass = 'invalid_json'
+    return { ok: json != null, status: res.status, json, attempt, headers: res.headers }
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+    attempt.failureClass = timedOut ? 'timeout' : 'network_error'
+    return { ok: false, status: 0, json: null, attempt, headers: null }
+  }
+}
+
 async function fetchBlockscout<T>(
   path: string,
   cacheKey: string,
@@ -205,49 +287,45 @@ async function fetchBlockscout<T>(
   if (!checkBlockscoutRateLimit(lane)) {
     audit.blockscoutAttempted = true
     audit.blockscoutStatus = 'rate_limited'
+    audit.failureClass = 'rate_limited'
     audit.blockscoutRejectedReason = 'internal Blockscout call budget for this instance was reached (rate-limited below Blockscout\'s own free-tier ceiling by design)'
     return { data: null, audit }
   }
 
   audit.blockscoutAttempted = true
-  try {
-    const apiKey = process.env.BLOCKSCOUT_API_KEY ?? ''
-    const url = `${ROBINHOOD_CHAIN_EXPLORER_URL}${path}${path.includes('?') ? '&' : '?'}apikey=${encodeURIComponent(apiKey)}`
-    const res = await fetchImpl(url, { signal: AbortSignal.timeout(BLOCKSCOUT_TIMEOUT_MS) })
+  let res = await blockscoutRequest(path, fetchImpl, 'community')
+  audit.transportAttempts.push(res.attempt)
+  // ONE bounded alternate: only an auth/host refusal (401/403), only with a key, only within budget.
+  if (!res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY) && checkBlockscoutRateLimit(lane)) {
+    res = await blockscoutRequest(path, fetchImpl, 'gateway')
+    audit.transportAttempts.push(res.attempt)
+  }
+  audit.requestHost = res.attempt.requestHost
+  audit.authMode = res.attempt.authMode
+  audit.contentType = res.attempt.contentType
+  audit.failureClass = res.attempt.failureClass
 
-    // RATE-LIMIT/CREDIT HEADERS, DISCLOSED: read only if the response actually carries them — never
-    // fabricated when absent (Blockscout does not document a guaranteed header contract, so this is
-    // best-effort observability, not a relied-upon signal).
+  if (res.headers) {
+    // RATE-LIMIT/CREDIT HEADERS, DISCLOSED: read only when present (the PRO gateway documents them).
     const rateRemainingHeader = res.headers.get('x-ratelimit-remaining') ?? res.headers.get('ratelimit-remaining')
     const creditsRemainingHeader = res.headers.get('x-account-credits-remaining') ?? res.headers.get('x-credits-remaining')
     audit.blockscoutRateLimitRemaining = rateRemainingHeader != null && Number.isFinite(Number(rateRemainingHeader)) ? Number(rateRemainingHeader) : null
     audit.blockscoutCreditsRemaining = creditsRemainingHeader != null && Number.isFinite(Number(creditsRemainingHeader)) ? Number(creditsRemainingHeader) : null
-    // REAL HTTP STATUS, DISCLOSED: set here, on every response actually received — this is the
-    // literal proof a real HTTP round-trip happened, distinct from `blockscoutAttempted` (which is
-    // also true for a request that was sent but timed out/network-errored before any status arrived).
-    audit.httpStatus = res.status
+  }
+  audit.httpStatus = res.attempt.httpStatus
 
-    if (!res.ok) {
-      audit.blockscoutStatus = 'unavailable'
-      audit.blockscoutError = res.status === 429 ? 'rate_limited_by_blockscout' : `http_${res.status}`
-      return { data: null, audit }
-    }
-    const json = await res.json().catch(() => null) as T | null
-    if (json == null) {
-      audit.blockscoutStatus = 'unavailable'
-      audit.blockscoutError = 'invalid_json'
-      return { data: null, audit }
-    }
-    audit.blockscoutSucceeded = true
-    audit.blockscoutStatus = 'ok'
-    await setTokenCache(cacheKey, json, ttlSeconds).catch(() => {})
-    return { data: json, audit }
-  } catch (err) {
-    const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+  if (!res.ok) {
     audit.blockscoutStatus = 'unavailable'
-    audit.blockscoutError = timedOut ? 'timeout' : 'network_error'
+    const fc = res.attempt.failureClass
+    audit.blockscoutError = fc === 'timeout' || fc === 'network_error' || fc === 'invalid_json' ? fc
+      : res.status === 429 ? 'rate_limited_by_blockscout'
+        : `http_${res.status}`
     return { data: null, audit }
   }
+  audit.blockscoutSucceeded = true
+  audit.blockscoutStatus = 'ok'
+  await setTokenCache(cacheKey, res.json, ttlSeconds).catch(() => {})
+  return { data: res.json as T, audit }
 }
 
 // ── Typed endpoint shapes, DISCLOSED: only the fields this module actually reads are declared —
