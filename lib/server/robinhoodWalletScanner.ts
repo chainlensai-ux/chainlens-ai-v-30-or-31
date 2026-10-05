@@ -42,6 +42,7 @@
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
+import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
@@ -1417,7 +1418,7 @@ export async function scanRobinhoodWallet(
   robinhoodPnl: RobinhoodPnlV1
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const v1Deps = pnlV1Deps ?? defaultRobinhoodPnlV1Deps(fetchImpl)
+  const v1Deps = pnlV1Deps ?? { ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl) }
   // PnL V1: the activity decode no longer receives CURRENT prices (holdings / DexScreener spot) — a
   // historical PnL must never be gated on them. Pool currencies come from the same cached, hash-proven
   // resolver the V1 lane uses, instead of an unbounded Initialize log scan per Swap log.

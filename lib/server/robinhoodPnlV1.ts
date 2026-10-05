@@ -30,7 +30,7 @@ import { ROBINHOOD_V4_POOL_MANAGER } from './uniswapV4RobinhoodRpc'
 import { getRobinhoodRpcUrl } from './robinhoodChainConfig'
 import { fetchCoingeckoEthUsdRange } from './coingeckoOnchainOhlcv'
 import { nearestPriceWithGap } from '../v4SwapCandles'
-import { analyzeRobinhoodMixedRoute, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
+import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
@@ -92,6 +92,8 @@ export type RobinhoodPnlV1Deps = {
   /** Trusted historical provider, exact token + timestamp. Null when it has no answer. */
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
+  /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
+  nativeTransfersForTx?: (txHash: string) => Promise<RhNativeTransfer[] | null>
 }
 
 export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
@@ -502,7 +504,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
   const nativeTouched = [...poolKeys.values()].some((k) => k.currency0 === RH_NATIVE || k.currency1 === RH_NATIVE)
   const N = receipt.blockNumber
   const gasPaid = receipt.gasUsed * receipt.effectiveGasPrice
-  const native: RhNativeEvidence = { walletBalanceBefore: null, walletBalanceAfter: null, gasPaid: gasPaid.toString(), txValue: null, walletTxsInBlock: null, nativeNetExGas: null, status: 'not_needed' }
+  let native: RhNativeEvidence = { walletBalanceBefore: null, walletBalanceAfter: null, gasPaid: gasPaid.toString(), txValue: null, walletTxsInBlock: null, blockBalanceDeltaExGas: null, traceSource: null, traceNativeToWallet: null, traceNativeFromWallet: null, nativeNetExGas: null, status: 'not_needed' }
   let walletNativeDelta: bigint | null = null
   // A mixed route can end in native ETH (V3 WETH pool + unwrap) without any V4 pool trading native, so its
   // wallet-sent receipts always get the exact balance proof: after − before + gas, unique when the wallet's
@@ -517,14 +519,19 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
       { method: 'eth_getTransactionByHash', params: [txHash] },
     ])
     const [b0, b1, n0, n1] = [hexToBigInt(b0r), hexToBigInt(b1r), hexToNum(n0r), hexToNum(n1r)]
-    native.walletBalanceBefore = b0?.toString() ?? null
-    native.walletBalanceAfter = b1?.toString() ?? null
-    native.txValue = hexToBigInt((txr as Record<string, unknown> | null)?.value)?.toString() ?? null
-    native.walletTxsInBlock = n0 != null && n1 != null ? n1 - n0 : null
-    if (b0 == null || b1 == null || n0 == null || n1 == null) native.status = 'unavailable_no_balance_evidence'
-    else if (n1 === n0 && !isSender) { walletNativeDelta = b1 - b0; native.nativeNetExGas = walletNativeDelta; native.status = 'proven' }
-    else if (n1 - n0 === 1 && isSender) { walletNativeDelta = b1 - b0 + gasPaid; native.nativeNetExGas = walletNativeDelta; native.status = 'proven' }
-    else native.status = 'unavailable_multiple_wallet_txs_in_block'
+    // Existing swap forensics keep their block-delta reading (diagnostic, unchanged).
+    if (b0 != null && b1 != null && n0 != null && n1 != null) {
+      if (n1 === n0 && !isSender) walletNativeDelta = b1 - b0
+      else if (n1 - n0 === 1 && isSender) walletNativeDelta = b1 - b0 + gasPaid
+    }
+    // Mixed routes: native attribution only from the target tx's own trace (bounded: wallet-sent mixed receipts).
+    const trace = mixed && isSender && ctx.deps.nativeTransfersForTx && Date.now() < ctx.deadlineAt
+      ? await ctx.deps.nativeTransfersForTx(txHash).catch(() => null)
+      : null
+    native = deriveRhNativeEvidence({
+      wallet, isSender, gasPaid, txValue: hexToBigInt((txr as Record<string, unknown> | null)?.value),
+      balanceBefore: b0, balanceAfter: b1, nonceBefore: n0, nonceAfter: n1, trace,
+    })
   }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta, rejectionReason: rejection })
   const mixedRoute = mixed ? analyzeRobinhoodMixedRoute({ wallet, txHash, receipt, poolManager: POOL_MANAGER, v4PoolKeys: poolKeys, native }) : null
@@ -891,3 +898,4 @@ export function defaultRobinhoodPnlV1Deps(fetchImpl: FetchLike): RobinhoodPnlV1D
     now: Date.now,
   }
 }
+

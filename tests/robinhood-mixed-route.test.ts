@@ -64,8 +64,9 @@ class Rx {
   liquidity() { return this.push({ address: PM, topics: [MODIFY, t(ROUTER)], data: '0x' }) }
   receipt(from = WALLET): RhReceipt { return { status: 1, from, to: ROUTER, blockNumber: 500, gasUsed: BigInt(100_000), effectiveGasPrice: BigInt(1_000_000_000), logs: this.logs } }
 }
-const nativeProven = (net: bigint): RhNativeEvidence => ({ walletBalanceBefore: n(5).toString(), walletBalanceAfter: (n(5) + net - BigInt(100_000) * BigInt(1_000_000_000)).toString(), gasPaid: (BigInt(100_000) * BigInt(1_000_000_000)).toString(), txValue: '0', walletTxsInBlock: 1, nativeNetExGas: net, status: 'proven' })
-const nativeNone: RhNativeEvidence = { walletBalanceBefore: null, walletBalanceAfter: null, gasPaid: '0', txValue: null, walletTxsInBlock: null, nativeNetExGas: null, status: 'unavailable_no_balance_evidence' }
+/** Native leg proven by the target tx's own trace (the only evidence that may feed a route). */
+const nativeProven = (net: bigint): RhNativeEvidence => ({ walletBalanceBefore: n(5).toString(), walletBalanceAfter: (n(5) + net - BigInt(100_000) * BigInt(1_000_000_000)).toString(), gasPaid: (BigInt(100_000) * BigInt(1_000_000_000)).toString(), txValue: net < BigInt(0) ? (-net).toString() : '0', walletTxsInBlock: 1, blockBalanceDeltaExGas: net.toString(), traceSource: 'blockscout_internal_transactions', traceNativeToWallet: (net > BigInt(0) ? net : BigInt(0)).toString(), traceNativeFromWallet: '0', nativeNetExGas: net, status: 'proven_target_tx_native_transfer' })
+const nativeNone: RhNativeEvidence = { walletBalanceBefore: null, walletBalanceAfter: null, gasPaid: '0', txValue: null, walletTxsInBlock: null, blockBalanceDeltaExGas: null, traceSource: null, traceNativeToWallet: null, traceNativeFromWallet: null, nativeNetExGas: null, status: 'unavailable_no_balance_evidence' }
 const nativeZero = nativeProven(BigInt(0))
 const run = (rx: Rx, native: RhNativeEvidence, from = WALLET) => analyzeRobinhoodMixedRoute({ wallet: WALLET, txHash: '0xfeed', receipt: rx.receipt(from), poolManager: PM, v4PoolKeys: rx.keys, native })
 
@@ -130,7 +131,7 @@ test('7. no provable final wallet output (native unproven) -> ambiguous', () => 
 })
 
 test('8. native payout not uniquely attributable (another wallet tx in the block) -> ambiguous', () => {
-  const multi: RhNativeEvidence = { ...nativeProven(n(2)), walletTxsInBlock: 2, nativeNetExGas: null, status: 'unavailable_multiple_wallet_txs_in_block' }
+  const multi: RhNativeEvidence = { ...nativeProven(n(2)), walletTxsInBlock: 2, traceSource: null, traceNativeToWallet: null, nativeNetExGas: null, status: 'unavailable_multiple_wallet_txs_in_block' }
   const r = run(sellToEthViaV4V3(), multi)
   assert.equal(r.finalClassification, 'ambiguous')
   assert.equal(r.nativeAttributionStatus, 'unavailable_multiple_wallet_txs_in_block')
@@ -220,14 +221,15 @@ test('PnL V1 still rejects the mixed receipt (other_venue_swap_in_tx) and logs i
   console.warn = (tag: unknown, body: unknown) => { lines.push([String(tag), body]) }
   let r
   try {
-    r = await computeRobinhoodPnlV1({ wallet: WALLET, candidates: [{ txHash: hash, timestampMs: null, hasSwapLog: true }], transactionCount: 1, transferCount: 1, activityUnavailableReason: null, deps: { rpc, ethUsdRange: async () => null, tokenHistoricalUsd: async () => null, now: Date.now } })
+    r = await computeRobinhoodPnlV1({ wallet: WALLET, candidates: [{ txHash: hash, timestampMs: null, hasSwapLog: true }], transactionCount: 1, transferCount: 1, activityUnavailableReason: null, deps: { rpc, ethUsdRange: async () => null, tokenHistoricalUsd: async () => null, now: Date.now, nativeTransfersForTx: async (h) => (h === hash ? [{ from: ROUTER, to: WALLET, value: n(3), success: true }] : null) } })
   } finally { console.warn = w }
   assert.equal(r.swapsVerified, 0, 'acceptance unchanged in this commit')
   assert.deepEqual(r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 1 })
   assert.equal(r.ingestionAudit.mixedRouteClasses?.direct_mixed_route_proven, 1)
   const row = lines.find(([tag]) => tag === '[robinhood-mixed-route-forensics]')?.[1]
   assert.equal(row?.finalClassification, 'direct_mixed_route_proven')
-  assert.equal(row?.nativeAttributionStatus, 'proven')
+  assert.equal(row?.nativeAttributionStatus, 'proven_target_tx_native_transfer')
+  assert.equal(row?.nativeEvidence.traceNativeToWallet, n(3).toString())
   assert.equal(row?.walletNativeOutputRaw, n(3).toString())
   assert.equal(row?.nativeEvidence.walletTxsInBlock, 1)
 })

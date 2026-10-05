@@ -51,15 +51,80 @@ function word(data: string, i: number, signed: boolean): bigint | null {
 }
 const withinFee = (left: bigint, flow: bigint) => left >= ZERO && (left === ZERO || left * BigInt(10_000) <= flow * BigInt(Math.round(ROBINHOOD_ROUTE_MAX_FEE_FRACTION * 10_000)))
 
-/** Exact native evidence for a wallet-sent tx. `nativeNetExGas` = balanceAfter − balanceBefore + gasPaid (null when not uniquely attributable). */
+// NATIVE EVIDENCE HIERARCHY. A whole-block balance delta (after − before + gas) cannot attribute native ETH
+// to the target tx: a nonce delta of 1 proves the wallet SENT one tx in the block, not that no other tx in the
+// block PAID it. Only an execution trace of the target tx itself (its internal native transfers to the
+// wallet) is proof. A WETH Withdrawal in the receipt only shows WETH was unwrapped, not who got the ETH.
+//   proven_target_tx_native_transfer         the target tx's own trace; the only status that may feed a route
+//   block_balance_delta_only                 no trace; the block delta is kept as a diagnostic bound only
+//   unavailable_multiple_wallet_txs_in_block no trace, and the wallet sent more than one tx in the block
+//   unavailable_no_trace                     trace unavailable and no usable balance evidence
+//   unavailable_no_balance_evidence          nothing to go on
+export type RhNativeStatus =
+  | 'not_needed' | 'proven_target_tx_native_transfer' | 'block_balance_delta_only'
+  | 'unavailable_multiple_wallet_txs_in_block' | 'unavailable_no_trace' | 'unavailable_no_balance_evidence'
+export type RhNativeTransfer = { from: string; to: string; value: bigint; success: boolean }
 export type RhNativeEvidence = {
   walletBalanceBefore: string | null
   walletBalanceAfter: string | null
   gasPaid: string
   txValue: string | null
   walletTxsInBlock: number | null
+  /** after − before + gas: diagnostic bound only — never used as proof. */
+  blockBalanceDeltaExGas: string | null
+  traceSource: 'blockscout_internal_transactions' | null
+  /** Native ETH the target tx itself paid to / took from the wallet (successful internal transfers). */
+  traceNativeToWallet: string | null
+  traceNativeFromWallet: string | null
+  /** The wallet's exact native net for the TARGET tx (gas excluded) — set ONLY when status is proven_target_tx_native_transfer. */
   nativeNetExGas: bigint | null
-  status: 'not_needed' | 'proven' | 'unavailable_no_balance_evidence' | 'unavailable_multiple_wallet_txs_in_block'
+  status: RhNativeStatus
+}
+
+/** PURE. Builds native evidence; only the target tx's own trace can make it proven. */
+export function deriveRhNativeEvidence(input: {
+  wallet: string
+  isSender: boolean
+  gasPaid: bigint
+  txValue: bigint | null
+  balanceBefore: bigint | null
+  balanceAfter: bigint | null
+  nonceBefore: number | null
+  nonceAfter: number | null
+  /** The target tx's internal native transfers; null when no trace could be read. */
+  trace: ReadonlyArray<RhNativeTransfer> | null
+}): RhNativeEvidence {
+  const wallet = input.wallet.toLowerCase()
+  const haveBal = input.balanceBefore != null && input.balanceAfter != null
+  const txs = input.nonceBefore != null && input.nonceAfter != null ? input.nonceAfter - input.nonceBefore : null
+  const ev: RhNativeEvidence = {
+    walletBalanceBefore: input.balanceBefore?.toString() ?? null,
+    walletBalanceAfter: input.balanceAfter?.toString() ?? null,
+    gasPaid: input.gasPaid.toString(),
+    txValue: input.txValue?.toString() ?? null,
+    walletTxsInBlock: txs,
+    blockBalanceDeltaExGas: haveBal ? (input.balanceAfter! - input.balanceBefore! + (input.isSender ? input.gasPaid : ZERO)).toString() : null,
+    traceSource: input.trace ? 'blockscout_internal_transactions' : null,
+    traceNativeToWallet: null,
+    traceNativeFromWallet: null,
+    nativeNetExGas: null,
+    status: 'unavailable_no_balance_evidence',
+  }
+  // The target tx's own top-level value is part of it; a wallet-sent tx's value is known only from the tx.
+  if (input.trace && (!input.isSender || input.txValue != null)) {
+    const ok = input.trace.filter((t) => t.success && t.value > ZERO)
+    const toWallet = ok.filter((t) => t.to.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
+    const fromWallet = ok.filter((t) => t.from.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
+    ev.traceNativeToWallet = toWallet.toString()
+    ev.traceNativeFromWallet = fromWallet.toString()
+    ev.nativeNetExGas = toWallet - fromWallet - (input.isSender ? input.txValue! : ZERO)
+    ev.status = 'proven_target_tx_native_transfer'
+    return ev
+  }
+  ev.status = !haveBal || txs == null
+    ? (input.trace === null ? 'unavailable_no_trace' : 'unavailable_no_balance_evidence')
+    : txs === (input.isSender ? 1 : 0) ? 'block_balance_delta_only' : 'unavailable_multiple_wallet_txs_in_block'
+  return ev
 }
 
 export type RhMixedHop = { index: number; logIndex: number; venue: 'v2' | 'v3' | 'v4'; address: string; inToken: string | null; inRaw: string | null; outToken: string | null; outRaw: string | null; unresolved: string | null }
@@ -169,7 +234,8 @@ export function analyzeRobinhoodMixedRoute(input: {
     if (t.from === wallet) walletNet.set(norm(t.token), (walletNet.get(norm(t.token)) ?? ZERO) - t.amount)
     if (t.to === wallet) walletNet.set(norm(t.token), (walletNet.get(norm(t.token)) ?? ZERO) + t.amount)
   }
-  const nativeNet = input.native.nativeNetExGas
+  // Only the target tx's own trace may supply a native leg; a block balance delta is never used here.
+  const nativeNet = input.native.status === 'proven_target_tx_native_transfer' ? input.native.nativeNetExGas : null
   if (nativeNet != null && nativeNet !== ZERO) walletNet.set(NATIVE_ASSET, (walletNet.get(NATIVE_ASSET) ?? ZERO) + nativeNet)
   for (const [k, v] of walletNet) if (v === ZERO) walletNet.delete(k)
   const debits = [...walletNet].filter(([, v]) => v < ZERO)
@@ -209,7 +275,7 @@ export function analyzeRobinhoodMixedRoute(input: {
   if (credits.length > 1) return finish({ finalClassification: 'independent_second_action', reason: `wallet received ${credits.length} different assets`, unrelatedWalletFlows: credits.slice(1).map(([token, v]) => ({ token, direction: 'in', raw: v.toString() })) })
   if (debits.length === 0) return finish({ finalClassification: 'ambiguous', reason: 'no wallet input debit' })
   if (credits.length === 0) {
-    const nativeWhy = input.native.status === 'proven' ? 'the proven native balance change shows no credit' : `native output unprovable (${input.native.status})`
+    const nativeWhy = input.native.status === 'proven_target_tx_native_transfer' ? 'the target tx\'s trace paid the wallet no native ETH' : `native output not attributable to this tx (${input.native.status})`
     return finish({ finalClassification: 'ambiguous', reason: `no provable final wallet output: no ERC-20 credit and ${nativeWhy}` })
   }
   const [inToken, inNeg] = debits[0]

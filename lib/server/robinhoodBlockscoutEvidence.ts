@@ -414,6 +414,25 @@ export async function getBlockscoutAddressLogs(address: string, fetchImpl: Fetch
   )
 }
 
+export type BlockscoutInternalTransaction = {
+  from?: { hash?: string } | null
+  to?: { hash?: string } | null
+  value?: string | null
+  success?: boolean | null
+  type?: string | null
+}
+export type BlockscoutInternalTransactionsResponse = { items?: BlockscoutInternalTransaction[]; next_page_params?: unknown }
+
+/** The target tx's internal (trace) transfers — immutable once mined, so cached like its logs. */
+export async function getBlockscoutTransactionInternalTransactions(txHash: string, fetchImpl: FetchImpl) {
+  return fetchBlockscout<BlockscoutInternalTransactionsResponse>(
+    `/api/v2/transactions/${txHash}/internal-transactions`,
+    `robinhood:blockscout:tx-internal:${txHash.toLowerCase()}`,
+    300,
+    fetchImpl,
+  )
+}
+
 export type BlockscoutContractInfo = {
   is_verified?: boolean
   name?: string
