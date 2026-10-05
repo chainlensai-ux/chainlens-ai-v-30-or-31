@@ -77,7 +77,14 @@ const RECORD_TTL_SECONDS = 15 * 60
 const POLL_MS = 750
 
 const recordKey = (wallet: string) => `robinhood:scan-coord:v1:${wallet.toLowerCase()}`
-const inFlight = new Map<string, Promise<RobinhoodScanResult>>()
+// GENERATION-AWARE IN-FLIGHT: one entry per wallet, tagged with the job (generation) that owns it. A caller of
+// the same generation joins it; a caller for a DIFFERENT job (a newer Rescan) never adopts it as its own
+// result — it waits for that scan to settle, then runs its own (see runProviderScan). jobId null = a
+// standalone/orchestrator scan, which any jobless caller may join.
+type InFlightScan = { jobId: string | null; promise: Promise<RobinhoodScanResult> }
+const inFlight = new Map<string, InFlightScan>()
+/** A caller may adopt an in-flight scan only if it belongs to the same job; jobless callers may join any. */
+const mayJoin = (entry: InFlightScan, jobId: string | null) => jobId == null || entry.jobId === jobId
 let providerScanCount = 0
 
 export function getRobinhoodProviderScanCount(): number { return providerScanCount }
@@ -181,8 +188,12 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 /** Runs THE provider scan for this wallet (joining one already in flight in this process) and records it. */
 async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: string | null, owner: RobinhoodScanOwner, opts: Opts): Promise<{ result: RobinhoodScanResult; joined: boolean }> {
   const key = wallet.toLowerCase()
-  const existing = inFlight.get(key)
-  if (existing) return { result: await existing, joined: true }
+  // Same generation joins; an older generation is waited out (its result is never adopted), then re-checked.
+  for (let existing = inFlight.get(key); existing; existing = inFlight.get(key)) {
+    if (mayJoin(existing, jobId)) return { result: await existing.promise, joined: true }
+    await existing.promise.catch(() => {})
+    if (inFlight.get(key) === existing) inFlight.delete(key)
+  }
   const now = opts.now ?? Date.now
   const scan = opts.scan ?? scanRobinhoodWallet
   const run = (async () => {
@@ -203,11 +214,12 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
       throw err
     }
   })()
-  inFlight.set(key, run)
+  const entry: InFlightScan = { jobId, promise: run }
+  inFlight.set(key, entry)
   try {
     return { result: await run, joined: false }
   } finally {
-    inFlight.delete(key)
+    if (inFlight.get(key) === entry) inFlight.delete(key)
   }
 }
 
@@ -235,7 +247,8 @@ export async function runCanonicalRobinhoodScan(
 ): Promise<RobinhoodScanResult> {
   const now = params.now ?? Date.now
   const base = { wallet: wallet.toLowerCase(), canonicalJobId: params.jobId, standaloneRouteRequested: false, caller: params.owner } as const
-  if (inFlight.has(wallet.toLowerCase())) {
+  const live = inFlight.get(wallet.toLowerCase())
+  if (live && mayJoin(live, params.jobId)) {
     const { result } = await runProviderScan(wallet, fetchImpl, params.jobId, params.owner, params)
     logDedup({ ...base, reusedCanonicalResult: false, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: 0, outcome: 'served' })
     return result
@@ -245,11 +258,12 @@ export async function runCanonicalRobinhoodScan(
     logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: false, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (rec.completedAt ?? 0), outcome: 'served' })
     return robinhoodScanResultFromBody(rec.body)
   }
-  // Another instance is scanning this wallet right now (state running, not our own queued marker).
+  // Another instance is scanning this wallet right now (state running, not our own queued marker). Wait it
+  // out either way; only a jobless caller may adopt its result — a job runs its own generation's scan.
   if (rec && rec.state === 'running' && leaseLive(rec, now()) && rec.jobId !== params.jobId) {
     const started = rec.startedAt
     const done = await waitForRecord(wallet, (r) => r.startedAt === started, (rec.startedAt ?? now()) + ROBINHOOD_SCAN_LEASE_MS, params)
-    if (done?.state === 'done' && done.body) {
+    if (params.jobId == null && done?.state === 'done' && done.body) {
       logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (done.completedAt ?? now()), outcome: 'served' })
       return robinhoodScanResultFromBody(done.body)
     }
@@ -297,8 +311,9 @@ export async function resolveRobinhoodRouteRequest(
   }
   const joinLocal = async (): Promise<RobinhoodRouteOutcome | null> => {
     const local = inFlight.get(key)
-    if (!local) return null
-    const out = await raceDeadline(local)
+    // A job-backed request only ever reads its own job's scan, never an older generation's result.
+    if (!local || !mayJoin(local, jobId)) return null
+    const out = await raceDeadline(local.promise)
     if (out === 'timeout') return pending('running', { joinedInFlight: true })
     if ('e' in out) return { status: 502, body: { error: { message: `Robinhood scan failed: ${out.e instanceof Error ? out.e.message : String(out.e)}`, category: 'provider' } }, audit: audit({ joinedInFlight: true }, 'error') }
     return { status: 200, body: buildRobinhoodRouteBody(wallet, out.x), audit: audit({ joinedInFlight: true, reusedCanonicalResult: true, resultAgeMs: 0 }, 'served') }
