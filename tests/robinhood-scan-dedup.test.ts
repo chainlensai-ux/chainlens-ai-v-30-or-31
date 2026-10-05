@@ -146,7 +146,7 @@ test('6. no 30s synchronous route dependency in the normal Wallet Scanner flow',
   assert.match(route, /resolveRobinhoodRouteRequest\(/)
   const post = read('app/api/wallet-scan/route.ts')
   assert.doesNotMatch(post, /(await|void) scanRobinhoodWallet\(|import \{[^}]*scanRobinhoodWallet/, 'no cache-warm provider scan on POST')
-  assert.match(post, /markRobinhoodScanQueued\(wallet, jobId\)/)
+  assert.match(post, /markRobinhoodScanQueued\(wallet, jobId, robinhoodQueuedAt\)/)
   const worker = read('workers/walletScanV2.ts')
   assert.match(worker, /runCanonicalRobinhoodScan\(walletAddress, fetch, \{ jobId: jobId \?\? null, owner: 'worker' \}\)/)
   const page = read('app/terminal/wallet-scanner/page.tsx')

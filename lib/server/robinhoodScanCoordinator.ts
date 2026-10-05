@@ -82,7 +82,7 @@ let providerScanCount = 0
 
 export function getRobinhoodProviderScanCount(): number { return providerScanCount }
 /** Test hook. */
-export function __resetRobinhoodScanCoordinatorForTest(): void { providerScanCount = 0; inFlight.clear() }
+export function __resetRobinhoodScanCoordinatorForTest(): void { providerScanCount = 0; inFlight.clear(); transitionChains.clear() }
 
 export async function readRobinhoodScanRecord(wallet: string): Promise<RobinhoodScanRecord | null> {
   const r = await getTokenCache<RobinhoodScanRecord>(recordKey(wallet)).catch(() => null)
@@ -90,6 +90,56 @@ export async function readRobinhoodScanRecord(wallet: string): Promise<Robinhood
 }
 async function writeRecord(rec: RobinhoodScanRecord): Promise<void> {
   await setTokenCache(recordKey(rec.wallet), rec, RECORD_TTL_SECONDS).catch(() => {})
+}
+
+// ── Monotonic transitions ─────────────────────────────────────────────────────────────────────────
+// One scan's record only moves forward: queued → running → done | error, never backwards and never a
+// repeat. Another scan (a different job, or a different standalone run) may replace the record only as a
+// newer generation (`queuedAt`), and never while that other scan is live — except a strictly newer queued
+// marker (a newer user Rescan) superseding it. A running/done write from a different scan never replaces a
+// live queued marker: that marker's own worker is coming.
+//
+// CONCURRENCY LIMITS, DISCLOSED: tokenCache exposes only get/set (no SET NX / compare-and-set), so this is
+// read-decide-write. Transitions for a wallet are serialized within one process (a per-wallet promise
+// chain); across instances two writers can still interleave between read and write. The ordering at the
+// call sites removes the race this guards against in the normal flow: POST writes the queued marker
+// BEFORE enqueueing the job, so the job's worker cannot exist yet when the marker is written.
+const STATE_RANK: Record<RobinhoodScanRecord['state'], number> = { queued: 0, running: 1, done: 2, error: 2 }
+const sameScan = (a: RobinhoodScanRecord, b: RobinhoodScanRecord) =>
+  a.jobId != null ? a.jobId === b.jobId : b.jobId == null && a.startedAt != null && a.startedAt === b.startedAt
+
+export type RobinhoodScanTransition = { applied: boolean; reason: 'no_record' | 'forward' | 'newer_generation' | 'would_regress_or_repeat' | 'live_other_scan' | 'older_generation'; current: RobinhoodScanRecord | null }
+
+/** PURE. Whether `next` may replace `current`. */
+export function decideRobinhoodScanTransition(current: RobinhoodScanRecord | null, next: RobinhoodScanRecord, nowMs: number): Omit<RobinhoodScanTransition, 'current'> {
+  if (!current) return { applied: true, reason: 'no_record' }
+  if (sameScan(current, next)) return STATE_RANK[next.state] > STATE_RANK[current.state] ? { applied: true, reason: 'forward' } : { applied: false, reason: 'would_regress_or_repeat' }
+  if (leaseLive(current, nowMs)) {
+    return next.state === 'queued' && next.queuedAt > current.queuedAt
+      ? { applied: true, reason: 'newer_generation' }
+      : { applied: false, reason: 'live_other_scan' }
+  }
+  return next.queuedAt >= current.queuedAt ? { applied: true, reason: 'newer_generation' } : { applied: false, reason: 'older_generation' }
+}
+
+const transitionChains = new Map<string, Promise<unknown>>()
+/** Read-decide-write, serialized per wallet in this process. */
+export async function transitionRobinhoodScanRecord(next: RobinhoodScanRecord, nowMs: number = Date.now()): Promise<RobinhoodScanTransition> {
+  const key = next.wallet
+  const prev = transitionChains.get(key) ?? Promise.resolve()
+  const step = prev.catch(() => {}).then(async (): Promise<RobinhoodScanTransition> => {
+    const current = await readRobinhoodScanRecord(key)
+    const d = decideRobinhoodScanTransition(current, next, nowMs)
+    if (d.applied) await writeRecord(next)
+    else console.warn('[robinhood-scan-transition-rejected]', { wallet: key, jobId: next.jobId, next: next.state, current: current?.state ?? null, currentJobId: current?.jobId ?? null, reason: d.reason })
+    return { ...d, current }
+  })
+  transitionChains.set(key, step)
+  try {
+    return await step
+  } finally {
+    if (transitionChains.get(key) === step) transitionChains.delete(key)
+  }
 }
 
 export type RobinhoodScanDedupAudit = {
@@ -110,12 +160,20 @@ function logDedup(a: RobinhoodScanDedupAudit): RobinhoodScanDedupAudit {
   return a
 }
 
-/** POST /api/wallet-scan: the queued job will scan Robinhood — mark it so no other path starts a second scan. */
-export async function markRobinhoodScanQueued(wallet: string, jobId: string, now: number = Date.now()): Promise<void> {
-  await writeRecord({ v: 1, wallet: wallet.toLowerCase(), state: 'queued', jobId, owner: 'worker', queuedAt: now, startedAt: null, completedAt: null, body: null, error: null })
+const leaseLive = (r: RobinhoodScanRecord, now: number) => (r.state === 'queued' || r.state === 'running') && now - (r.startedAt ?? r.queuedAt) < ROBINHOOD_SCAN_LEASE_MS
+
+/**
+ * POST /api/wallet-scan, BEFORE enqueueing the job: the job will scan Robinhood — mark it so no other path
+ * starts a second scan. Never overwrites running/done/error of this job, nor a newer job's record.
+ */
+export async function markRobinhoodScanQueued(wallet: string, jobId: string, now: number = Date.now()): Promise<RobinhoodScanTransition> {
+  return transitionRobinhoodScanRecord({ v: 1, wallet: wallet.toLowerCase(), state: 'queued', jobId, owner: 'worker', queuedAt: now, startedAt: null, completedAt: null, body: null, error: null }, now)
 }
 
-const leaseLive = (r: RobinhoodScanRecord, now: number) => (r.state === 'queued' || r.state === 'running') && now - (r.startedAt ?? r.queuedAt) < ROBINHOOD_SCAN_LEASE_MS
+/** The job was never enqueued: close its queued marker (queued → error) so nothing waits on it. */
+export async function markRobinhoodScanEnqueueFailed(wallet: string, jobId: string, queuedAt: number, now: number = Date.now()): Promise<RobinhoodScanTransition> {
+  return transitionRobinhoodScanRecord({ v: 1, wallet: wallet.toLowerCase(), state: 'error', jobId, owner: 'worker', queuedAt, startedAt: null, completedAt: now, body: null, error: 'enqueue_failed' }, now)
+}
 
 type Opts = { scan?: RobinhoodScanFn; now?: () => number; sleep?: (ms: number) => Promise<void> }
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
@@ -130,13 +188,18 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
   const run = (async () => {
     providerScanCount += 1
     const startedAt = now()
-    await writeRecord({ v: 1, wallet: key, state: 'running', jobId, owner, queuedAt: startedAt, startedAt, completedAt: null, body: null, error: null })
+    // Keep this job's generation: its own queued marker's time when present, else now.
+    const marker = jobId != null ? await readRobinhoodScanRecord(key) : null
+    const queuedAt = marker && marker.jobId === jobId ? marker.queuedAt : startedAt
+    const rec = (state: RobinhoodScanRecord['state'], extra: Partial<RobinhoodScanRecord>): RobinhoodScanRecord =>
+      ({ v: 1, wallet: key, state, jobId, owner, queuedAt, startedAt, completedAt: null, body: null, error: null, ...extra })
+    await transitionRobinhoodScanRecord(rec('running', {}), now())
     try {
       const result = await scan(wallet, fetchImpl)
-      await writeRecord({ v: 1, wallet: key, state: 'done', jobId, owner, queuedAt: startedAt, startedAt, completedAt: now(), body: buildRobinhoodRouteBody(wallet, result), error: null })
+      await transitionRobinhoodScanRecord(rec('done', { completedAt: now(), body: buildRobinhoodRouteBody(wallet, result) }), now())
       return result
     } catch (err) {
-      await writeRecord({ v: 1, wallet: key, state: 'error', jobId, owner, queuedAt: startedAt, startedAt, completedAt: now(), body: null, error: err instanceof Error ? err.message : String(err) })
+      await transitionRobinhoodScanRecord(rec('error', { completedAt: now(), error: err instanceof Error ? err.message : String(err) }), now())
       throw err
     }
   })()

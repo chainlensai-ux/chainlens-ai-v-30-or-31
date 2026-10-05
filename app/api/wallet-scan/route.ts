@@ -7,7 +7,7 @@ import { consumeDailyScan, snapshotDailyScan } from '@/lib/scanQuota'
 import { scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
-import { markRobinhoodScanQueued } from '@/lib/server/robinhoodScanCoordinator'
+import { markRobinhoodScanQueued, markRobinhoodScanEnqueueFailed } from '@/lib/server/robinhoodScanCoordinator'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
 export const runtime = 'nodejs'
@@ -123,6 +123,15 @@ export async function POST(req: Request): Promise<Response> {
 
   const jobId = crypto.randomUUID()
 
+  // ONE PROVIDER SCAN PER USER SCAN: no cache-warm scan here (it was a second full Robinhood pipeline next
+  // to the worker's). The queued job owns the scan; this records that it is coming so GET
+  // /api/wallet-scan/robinhood waits for it instead of starting another. Written BEFORE the job is
+  // enqueued, so the job's worker cannot already have written running/done when this lands; a failed
+  // enqueue closes the marker (queued → error) so nothing waits on a job that will never run.
+  const robinhoodQueuedAt = Date.now()
+  const robinhoodMarked = includeRobinhoodRequested && robinhoodAvailable
+  if (robinhoodMarked) await markRobinhoodScanQueued(wallet, jobId, robinhoodQueuedAt).catch(() => {})
+
   try {
     // WORKER-LEVEL ROBINHOOD FIX, DISCLOSED: `includeRobinhoodRequested` (computed above from the
     // caller's original, unfiltered `chains`) now rides along with the job payload so the worker
@@ -132,6 +141,7 @@ export async function POST(req: Request): Promise<Response> {
     await enqueueWalletScanJob(jobId, { jobId, userId: authUser.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
   } catch (err) {
     console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
+    if (robinhoodMarked) await markRobinhoodScanEnqueueFailed(wallet, jobId, robinhoodQueuedAt).catch(() => {})
     if (err instanceof WalletScanQueueUnavailableError) {
       return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
     }
@@ -149,13 +159,6 @@ export async function POST(req: Request): Promise<Response> {
     finalChainsScanned: includeRobinhoodRequested && robinhoodAvailable ? [...chains, 'robinhood'] : [...chains],
   })
   console.log('[wallet-scan] walletChainSelectionAudit', walletChainSelectionAudit)
-
-  // ONE PROVIDER SCAN PER USER SCAN: no cache-warm scan here any more (it was a second full Robinhood
-  // pipeline next to the worker's). The queued job owns the scan; this only records that it is coming so
-  // GET /api/wallet-scan/robinhood waits for it instead of starting another.
-  if (includeRobinhoodRequested && robinhoodAvailable) {
-    await markRobinhoodScanQueued(wallet, jobId).catch(() => {})
-  }
 
   return NextResponse.json({ jobId, wallet, status: 'queued', walletChainSelectionAudit, scanQuota: deepScanQuota })
 }
