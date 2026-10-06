@@ -21,6 +21,16 @@ const base = (rpcLogs: (query: RhRpcLogQuery, deadlineAt: number) => Promise<RhR
     rpcLogs, rpc: blockRpc, knownHashes: new Set<string>(), ...extra,
   })
 
+test('RPC history keeps the expanded ceiling bounded without changing proof limits', () => {
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks, 10_000_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks, 40)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts, 60)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs, 10_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks, 1_000_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.initialChunkBlocks, 250_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxCandidates, 20)
+})
+
 test('exact token/topic2 query discovers known wallet inbound without treating it as a new acquisition', async () => {
   const known = [1, 2, 3, 4].map(hash)
   const queries: RhRpcLogQuery[] = []
@@ -104,8 +114,8 @@ test('bounded target and twenty unique candidates are hard ceilings', async () =
 test('production-shaped anchors reach all four distinct known blocks and one million blocks below the earliest', async () => {
   const sellBlock = 70_400_844
   const known = [
-    ['455896', 69_950_000], ['68a04c', 69_050_000],
-    ['48ed6d', 68_000_000], ['cc37ff', 66_800_000],
+    ['455896', 69_950_000], ['68a04c', 68_050_000],
+    ['48ed6d', 64_000_000], ['cc37ff', 62_309_618],
   ] as const
   const knownHashes = known.map(([prefix]) => `0x${prefix}${'0'.repeat(58)}`)
   const blocks = new Map(known.map(([prefix, block]) => [`0x${prefix}${'0'.repeat(58)}`, block]))
@@ -118,8 +128,8 @@ test('production-shaped anchors reach all four distinct known blocks and one mil
       ? [log(i + 1, { transactionHash: `0x${prefix}${'0'.repeat(58)}`, blockNumber: hex(block) })] : []) }
   }, { sellBlock, knownHashes: new Set(knownHashes), knownInboundHashesExpected: knownHashes, knownInboundBlocks: blocks })
   assert.equal(result.audit.coverageTarget, 'earliest_known_inbound_plus_margin')
-  assert.equal(result.audit.earliestKnownInboundBlock, 66_800_000)
-  assert.equal(result.audit.targetFromBlock, 65_800_000)
+  assert.equal(result.audit.earliestKnownInboundBlock, 62_309_618)
+  assert.equal(result.audit.targetFromBlock, 61_309_618)
   assert.equal(result.audit.stopReason, 'bounded_target_reached')
   assert.equal(result.audit.boundedLookbackComplete, true)
   assert.equal(result.audit.reachedEarliestKnownInbound, true)
@@ -128,34 +138,34 @@ test('production-shaped anchors reach all four distinct known blocks and one mil
   assert.equal(result.audit.knownInboundCoverageComplete, true)
   assert.equal(result.audit.newCandidatesFound, 0)
   assert.equal(result.audit.absoluteLookbackCapHit, false)
-  assert.ok(queries.length > 8)
-  assert.ok(result.audit.lowestScannedBlock! <= 65_800_000)
+  assert.ok(queries.length > 32)
+  assert.ok(result.audit.lowestScannedBlock! <= 61_309_618)
 })
 
-test('absolute 8M cap is explicit when an anchor lies beyond it', async () => {
+test('absolute 10M cap is explicit when an anchor lies beyond it', async () => {
   const knownHash = hash(100)
   const result = await base(async () => ({ status: 'ok', logs: [] }), {
     sellBlock: 70_400_844, knownHashes: new Set([knownHash]), knownInboundHashesExpected: [knownHash],
-    knownInboundBlocks: new Map([[knownHash, 60_000_000]]),
+    knownInboundBlocks: new Map([[knownHash, 59_000_000]]),
   })
-  assert.equal(result.audit.targetFromBlock, 62_400_844)
+  assert.equal(result.audit.targetFromBlock, 60_400_844)
   assert.equal(result.audit.absoluteLookbackCapHit, true)
   assert.equal(result.audit.boundedLookbackComplete, true)
   assert.equal(result.audit.reachedEarliestKnownInbound, false)
   assert.equal(result.audit.reachedHistoricalMargin, false)
   assert.equal(result.audit.knownInboundCoverageComplete, false)
-  assert.equal(result.audit.chunksSucceeded, 32)
+  assert.equal(result.audit.chunksSucceeded, 40)
   assert.equal(result.audit.stopReason, 'bounded_target_reached')
 })
 
 test('chunk cap and deadline report incomplete bounded coverage', async () => {
-  const anchored = { sellBlock: 70_400_844, knownInboundBlocks: new Map([[hash(1), 63_400_844]]),
+  const anchored = { sellBlock: 70_400_844, knownInboundBlocks: new Map([[hash(1), 61_400_844]]),
     knownInboundHashesExpected: [hash(1)] }
   let attempts = 0
   const capped = await base(async () => ({ status: ++attempts === 1 ? 'range_limit' : 'ok', logs: attempts === 1 ? null : [] } as RhRpcLogResult), anchored)
-  assert.equal(capped.audit.targetFromBlock, 62_400_844)
+  assert.equal(capped.audit.targetFromBlock, 60_400_844)
   assert.equal(capped.audit.rangeShrinks, 1)
-  assert.equal(capped.audit.chunksSucceeded, 32)
+  assert.equal(capped.audit.chunksSucceeded, 40)
   assert.equal(capped.audit.stopReason, 'chunk_cap')
   assert.equal(capped.audit.boundedLookbackComplete, false)
   const expired = await base(async () => ({ status: 'ok', logs: [] }), { ...anchored, deadlineAt: Date.now() - 1 })

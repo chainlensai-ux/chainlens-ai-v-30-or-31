@@ -437,7 +437,7 @@ test('RPC exact Transfer logs find four known distributions and prove only an ol
 })
 
 test('cached receipts anchor all four production-shaped inbound hashes and search a full margin beyond the earliest', async () => {
-  const blocks = [70_400_844, 69_950_000, 69_050_000, 68_000_000, 66_800_000]
+  const blocks = [70_400_844, 69_950_000, 68_050_000, 64_000_000, 62_309_618]
   const hashes = ['53353d', '455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix) => `0x${prefix}${'0'.repeat(58)}`)
   const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
   const logs = distributions.map((_, j) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(ZERO_ADDR), t(WALLET)],
@@ -449,8 +449,8 @@ test('cached receipts anchor all four production-shaped inbound hashes and searc
     Number(entry.blockNumber) >= Number(query.fromBlock) && Number(entry.blockNumber) <= Number(query.toBlock)) }) })
   assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
   const audit = r.deepAcquisition?.rpcHistory
-  assert.equal(audit?.earliestKnownInboundBlock, 66_800_000)
-  assert.equal(audit?.targetFromBlock, 65_800_000)
+  assert.equal(audit?.earliestKnownInboundBlock, 62_309_618)
+  assert.equal(audit?.targetFromBlock, 61_309_618)
   assert.deepEqual(audit?.knownInboundHashesExpected, hashes.slice(1).sort())
   assert.deepEqual(audit?.knownInboundHashesFound, hashes.slice(1).sort())
   assert.equal(audit?.knownInboundCoverageComplete, true)
@@ -464,7 +464,7 @@ test('cached receipts anchor all four production-shaped inbound hashes and searc
 })
 
 test('empty raw inbound array reuses four classified recovery rows and cached receipts as exact RPC anchors', async () => {
-  const blocks = [70_400_844, 69_950_000, 69_050_000, 68_000_000, 66_800_000]
+  const blocks = [70_400_844, 69_950_000, 68_050_000, 64_000_000, 62_309_618]
   const hashes = ['53353d', '455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix) => `0x${prefix}${'0'.repeat(58)}`)
   const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
   const logs = distributions.map((_, j) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(ZERO_ADDR), t(WALLET)],
@@ -483,8 +483,8 @@ test('empty raw inbound array reuses four classified recovery rows and cached re
   assert.deepEqual(audit?.unionAnchorHashes, hashes.slice(1).sort())
   assert.deepEqual(audit?.knownInboundHashesExpected, hashes.slice(1).sort())
   assert.deepEqual(audit?.cachedReceiptAnchorsResolved.map((entry) => entry.txHash), hashes.slice(1).sort())
-  assert.equal(audit?.earliestKnownInboundBlock, 66_800_000)
-  assert.equal(audit?.targetFromBlock, 65_800_000)
+  assert.equal(audit?.earliestKnownInboundBlock, 62_309_618)
+  assert.equal(audit?.targetFromBlock, 61_309_618)
   assert.equal(audit?.coverageTarget, 'earliest_known_inbound_plus_margin')
   assert.deepEqual(audit?.knownInboundHashesFound, hashes.slice(1).sort())
   assert.equal(audit?.knownInboundCoverageComplete, true)

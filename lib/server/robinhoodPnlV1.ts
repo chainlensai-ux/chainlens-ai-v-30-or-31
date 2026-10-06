@@ -58,9 +58,9 @@ export const ROBINHOOD_ACQUISITION_RECOVERY_LIMITS = { maxSellLanes: 1, maxCandi
 export const ROBINHOOD_DEEP_ACQUISITION_LIMITS = { maxSellLanes: 1, maxPages: 4, maxInboundCandidates: 20, maxReceiptProofs: 8, budgetMs: 8_000 } as const
 export const ROBINHOOD_RPC_ACQUISITION_LIMITS = {
   fixedFallbackLookbackBlocks: 2_000_000, historicalMarginBlocks: 1_000_000,
-  maxAbsoluteLookbackBlocks: 8_000_000, initialChunkBlocks: 250_000,
-  maxSuccessfulChunks: 32, maxAttempts: 48, maxLogsPerChunk: 1_000,
-  maxCandidates: 20, budgetMs: 8_000,
+  maxAbsoluteLookbackBlocks: 10_000_000, initialChunkBlocks: 250_000,
+  maxSuccessfulChunks: 40, maxAttempts: 60, maxLogsPerChunk: 1_000,
+  maxCandidates: 20, budgetMs: 10_000,
 } as const
 
 // ── Protocol constants ──────────────────────────────────────────────────────────────────────────────
