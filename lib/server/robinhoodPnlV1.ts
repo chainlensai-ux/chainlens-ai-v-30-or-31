@@ -114,6 +114,8 @@ export type RobinhoodPnlV1Deps = {
   nativeTransfersForTx?: (txHash: string) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
   historicalTokenInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhHistoricalInboundResult>
+  /** Token-centric Blockscout candidate index, used only after address history yields no new candidate. */
+  tokenHistoryInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhTokenHistoryResult>
 }
 
 export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
@@ -201,6 +203,10 @@ export type RhHistoricalInboundResult = {
   filteredPagesRequested?: number; fallbackPagesRequested?: number; fallbackActivated?: boolean; exactTokenRowsFound?: number
   historicalRangeStart: number | null; historicalRangeEnd: number | null; stopReason: string
 }
+export type RhTokenHistoryResult = {
+  rows: RhInboundTokenTransfer[]; pagesRequested: number; pagesSucceeded: number; rowsReturned: number
+  walletMatches: number; candidatesFound: number; stopReason: string
+}
 export type RhDeepAcquisitionSummary = {
   deepAcquisitionAttempted: boolean; sellTxHash: string; token: string; pagesRequested: number; pagesSucceeded: number
   filteredPagesRequested: number; fallbackPagesRequested: number; fallbackActivated: boolean; exactTokenRowsFound: number
@@ -208,6 +214,9 @@ export type RhDeepAcquisitionSummary = {
   olderInboundRowsFound: number; candidatesSelected: number; receiptsAttempted: number; verifiedBuysRecovered: number
   recoveredBuyRaw: string; unmatchedSellRawBefore: string; unmatchedSellRawAfter: string; closedLotsAdded: number
   stopReason: string; elapsedMs: number
+  tokenHistoryAttempted: boolean; tokenHistoryPagesRequested: number; tokenHistoryPagesSucceeded: number
+  tokenHistoryRowsReturned: number; tokenHistoryWalletMatches: number; tokenHistoryCandidatesFound: number
+  tokenHistoryStopReason: string | null; tokenHistoryExcludedCurrentSampleHashes: string[]
 }
 
 export type RhAcquisitionRecoverySummary = {
@@ -1236,27 +1245,58 @@ async function runDeepAcquisitionRecovery(
   const deadlineAt = Math.min(ctx.deadlineAt, startedAt + ROBINHOOD_DEEP_ACQUISITION_LIMITS.budgetMs)
   const history = await withinRecoveryDeadline(deadlineAt, () => ctx.deps.historicalTokenInbounds!(wallet, sell.token, sell.timestampSec, deadlineAt))
   const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
-  const candidates = (history?.rows ?? []).filter((r) => !excludedHashes.has(lower(r.txHash)))
+  const rowKey = (r: RhInboundTokenTransfer): string | null => r.rawAmount != null && /^\d+$/.test(r.rawAmount)
+    ? `${lower(r.txHash)}:${BigInt(r.rawAmount).toString()}` : null
+  const knownRowKeys = new Set(inbound.map(rowKey).filter((key): key is string => key != null))
+  const addressRows = history?.rows ?? []
+  for (const row of addressRows) { const key = rowKey(row); if (key) knownRowKeys.add(key) }
+  const addressCandidates = addressRows.filter((r) => !excludedHashes.has(lower(r.txHash)))
+  // A timed-out/empty filtered probe is unusable; known current-sample rows are not new candidates.
+  const tokenHistoryEligible = ctx.deps.tokenHistoryInbounds && addressCandidates.length === 0
+    && (!history || history.fallbackActivated || history.filteredPagesRequested === 0)
+  const tokenDeadlineAt = tokenHistoryEligible ? Date.now() + 6_000 : null
+  const tokenHistory = tokenDeadlineAt == null ? null : await withinRecoveryDeadline(tokenDeadlineAt, () => ctx.deps.tokenHistoryInbounds!(wallet, sell.token, sell.timestampSec, tokenDeadlineAt))
+  const excludedCurrentSampleHashes = new Set<string>()
+  const tokenRows = (tokenHistory?.rows ?? []).filter((r) => {
+    const key = rowKey(r)
+    if (key == null) return false
+    if (excludedHashes.has(lower(r.txHash))) excludedCurrentSampleHashes.add(lower(r.txHash))
+    if (knownRowKeys.has(key)) return false
+    knownRowKeys.add(key)
+    return true
+  })
+  const proofDeadlineAt = tokenDeadlineAt ?? deadlineAt
+  // Keep the parent lane's deadline intact. Only the token-history work gets its own bounded window.
+  const proofCtx = tokenDeadlineAt == null ? ctx : { ...ctx, deadlineAt: tokenDeadlineAt }
+  const candidates = (tokenDeadlineAt == null ? addressCandidates : tokenRows).filter((r) => !excludedHashes.has(lower(r.txHash)))
     .sort((a, b) => (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
     .slice(0, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates)
-  const { rows } = await recoverAcquisitionsForSell(ctx, deadlineAt, wallet, sell, candidates, outcomes, {
+  const { rows } = await recoverAcquisitionsForSell(proofCtx, proofDeadlineAt, wallet, sell, candidates, outcomes, {
     historicalOnly: true, excludedHashes, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs,
   })
   const recovered = rows.map((r) => r.swap).filter((s): s is RhVerifiedSwap => s != null)
-  const priced = recovered.length ? await withinRecoveryDeadline(deadlineAt, () => priceRobinhoodSwaps(ctx, recovered)) ?? [] : []
+  const priced = recovered.length ? await withinRecoveryDeadline(proofDeadlineAt, () => priceRobinhoodSwaps(proofCtx, recovered)) ?? [] : []
+  if (proofCtx !== ctx) ctx.priceSidesUsed = proofCtx.priceSidesUsed
   const after = robinhoodUnmatchedSellRaw([...swaps, ...recovered], isQuote).get(sell.txHash)?.unmatchedRaw ?? sell.unmatchedRaw
+  const candidateTimes = candidates.map((r) => r.timestampMs).filter((ts): ts is number => ts != null && Number.isFinite(ts))
   const summary: RhDeepAcquisitionSummary = {
     deepAcquisitionAttempted: true, sellTxHash: sell.txHash, token: sell.token,
     pagesRequested: history?.pagesRequested ?? 0, pagesSucceeded: history?.pagesSucceeded ?? 0,
     filteredPagesRequested: history?.filteredPagesRequested ?? 0, fallbackPagesRequested: history?.fallbackPagesRequested ?? 0,
     fallbackActivated: history?.fallbackActivated ?? false, exactTokenRowsFound: history?.exactTokenRowsFound ?? 0,
-    historicalRangeStart: history?.historicalRangeStart ?? null, historicalRangeEnd: history?.historicalRangeEnd ?? null,
+    historicalRangeStart: history?.historicalRangeStart ?? (candidateTimes.length ? Math.min(...candidateTimes) : null),
+    historicalRangeEnd: history?.historicalRangeEnd ?? (candidateTimes.length ? Math.max(...candidateTimes) : null),
     historicalCandidatesFound: candidates.length, olderInboundRowsFound: history?.olderInboundRowsFound ?? 0,
     candidatesSelected: Math.min(candidates.length, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs),
     receiptsAttempted: rows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length,
     verifiedBuysRecovered: recovered.length, recoveredBuyRaw: recovered.reduce((n, s) => n + s.outputRaw, ZERO).toString(),
     unmatchedSellRawBefore: sell.unmatchedRaw.toString(), unmatchedSellRawAfter: after.toString(), closedLotsAdded: 0,
-    stopReason: after === ZERO ? 'sell_covered' : Date.now() >= deadlineAt ? 'deadline' : history?.stopReason ?? 'history_unavailable', elapsedMs: Date.now() - startedAt,
+    stopReason: after === ZERO ? 'sell_covered' : Date.now() >= proofDeadlineAt ? 'deadline' : tokenHistoryEligible ? tokenHistory?.stopReason ?? 'token_history_unavailable' : history?.stopReason ?? 'history_unavailable', elapsedMs: Date.now() - startedAt,
+    tokenHistoryAttempted: Boolean(tokenHistoryEligible), tokenHistoryPagesRequested: tokenHistory?.pagesRequested ?? 0,
+    tokenHistoryPagesSucceeded: tokenHistory?.pagesSucceeded ?? 0, tokenHistoryRowsReturned: tokenHistory?.rowsReturned ?? 0,
+    tokenHistoryWalletMatches: tokenHistory?.walletMatches ?? 0, tokenHistoryCandidatesFound: tokenHistory?.candidatesFound ?? 0,
+    tokenHistoryStopReason: tokenHistoryEligible ? tokenHistory?.stopReason ?? 'deadline' : null,
+    tokenHistoryExcludedCurrentSampleHashes: [...excludedCurrentSampleHashes].sort(),
   }
   for (const row of rows) {
     const price = priced.find((p) => p.swapTxHash === row.candidateTxHash)

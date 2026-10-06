@@ -61,12 +61,13 @@ const RATE_LIMIT_MAX_CALLS = 4
 // unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
 export const NATIVE_TRACE_MAX_LOOKUPS = 3
-export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition'
+export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history'
 // One empty filtered probe may precede four unfiltered history pages; each is one logical lookup.
-const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5 }
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4 }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
   native_trace: { windowStart: 0, count: 0 },
   deep_acquisition: { windowStart: 0, count: 0 },
+  token_history: { windowStart: 0, count: 0 },
   activity: { windowStart: 0, count: 0 },
   evidence: { windowStart: 0, count: 0 },
 }
@@ -375,7 +376,7 @@ export type BlockscoutTokenTransfer = {
   from?: { hash?: string } | null
   to?: { hash?: string } | null
   total?: { value?: string; decimals?: string } | null
-  token?: { address?: string; address_hash?: string; symbol?: string } | null
+  token?: { address?: string; address_hash?: string; symbol?: string; type?: string } | null
 }
 export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[] }
 
@@ -494,7 +495,7 @@ export async function getBlockscoutHistoricalTokenInbounds(
       if (!txHashValid) audit.rejectedTxHash++
       if (!rawValid) audit.rejectedRawAmount++
       if (!directionValid || !tokenIdentityValid || !timestampValid || !txHashValid || !rawValid) continue
-      const key = `${txHash}:${raw}`
+      const key = `${txHash}:${BigInt(raw).toString()}`
       if (seenRows.has(key)) { audit.rejectedDuplicate++; continue }
       seenRows.add(key)
       audit.acceptedRowCount++
@@ -521,6 +522,103 @@ export async function getBlockscoutHistoricalTokenInbounds(
     audit.cursorRejectedReason = cursor.rejectedReason
     if (cursor.query && seenCursors.has(cursor.query)) audit.cursorRejectedReason = 'repeated_cursor'
     console.warn('[robinhood-deep-history-page-audit]', audit)
+    if (audit.cursorRejectedReason || !cursor.query) { out.stopReason = 'invalid_cursor'; return out }
+    seenCursors.add(cursor.query)
+    query = cursor.query
+  }
+  out.stopReason = 'page_cap'
+  return out
+}
+
+export type BlockscoutTokenHistoryResult = {
+  rows: BlockscoutHistoricalInbound[]
+  pagesRequested: number
+  pagesSucceeded: number
+  rowsReturned: number
+  walletMatches: number
+  candidatesFound: number
+  stopReason: string
+}
+
+/** Token-indexed candidate discovery only. Receipt classification remains the sole buy proof. */
+export async function getBlockscoutTokenHistoryInbounds(
+  wallet: string, token: string, beforeTimestampSec: number, fetchImpl: FetchImpl,
+  caps: { maxPages: number; maxCandidates: number; deadlineAt: number },
+): Promise<BlockscoutTokenHistoryResult> {
+  const out: BlockscoutTokenHistoryResult = { rows: [], pagesRequested: 0, pagesSucceeded: 0, rowsReturned: 0, walletMatches: 0, candidatesFound: 0, stopReason: 'not_configured' }
+  if (!isRobinhoodBlockscoutConfigured()) return out
+  if (!/^0x[0-9a-f]{40}$/i.test(wallet) || !/^0x[0-9a-f]{40}$/i.test(token) || !Number.isSafeInteger(beforeTimestampSec)) return { ...out, stopReason: 'invalid_target' }
+  const requestedWallet = wallet.toLowerCase()
+  const requestedToken = token.toLowerCase()
+  const base = `/api/v2/tokens/${token}/transfers`
+  const seenCursors = new Set<string>()
+  const seenRows = new Set<string>()
+  let query = ''
+  let gateway = false
+  for (let page = 1; page <= Math.min(4, caps.maxPages); page++) {
+    const remaining = caps.deadlineAt - Date.now()
+    if (remaining <= 0) { out.stopReason = 'deadline'; return out }
+    if (!checkBlockscoutRateLimit('token_history')) { out.stopReason = 'budget_exhausted'; return out }
+    out.pagesRequested++
+    const path = query ? `${base}?${query}` : base
+    let res = await blockscoutRequest(path, fetchImpl, gateway ? 'gateway' : 'community', Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
+    if (!gateway && !res.ok && (res.status === 401 || res.status === 403) && process.env.BLOCKSCOUT_API_KEY && Date.now() < caps.deadlineAt) {
+      gateway = true
+      res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, caps.deadlineAt - Date.now()))
+    }
+    const audit = { page, httpStatus: res.attempt.httpStatus, rawItemCount: null as number | null,
+      walletInboundMatches: 0, beforeSellMatches: 0, acceptedRowCount: 0, nextPagePresent: null as boolean | null,
+      cursorSerialized: null as string | null, cursorRejectedReason: null as DeepHistoryCursorRejectedReason | null }
+    if (!res.ok) { console.warn('[robinhood-token-history-page-audit]', audit); out.stopReason = res.attempt.failureClass ?? 'transport_failed'; return out }
+    const body = res.json as BlockscoutTokenTransfersResponse & { next_page_params?: unknown }
+    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) {
+      console.warn('[robinhood-token-history-page-audit]', audit)
+      out.stopReason = 'malformed_page'
+      return out
+    }
+    out.pagesSucceeded++
+    out.rowsReturned += body.items.length
+    audit.rawItemCount = body.items.length
+    audit.nextPagePresent = body.next_page_params != null
+    for (const item of body.items) {
+      const transfer = item && typeof item === 'object' ? item : {} as BlockscoutTokenTransfer
+      if (transfer.to?.hash?.toLowerCase() !== requestedWallet) continue
+      audit.walletInboundMatches++
+      out.walletMatches++
+      const ts = typeof transfer.timestamp === 'string' ? Date.parse(transfer.timestamp) : NaN
+      if (!Number.isFinite(ts) || ts >= beforeTimestampSec * 1000) continue
+      audit.beforeSellMatches++
+      const byAddress = transfer.token?.address
+      const byHash = transfer.token?.address_hash
+      const addresses = [byAddress, byHash].filter((v): v is string => v !== undefined)
+      if (addresses.some((v) => !/^0x[0-9a-f]{40}$/i.test(v) || v.toLowerCase() !== requestedToken)) continue
+      if (transfer.token?.type && transfer.token.type !== 'ERC-20') continue
+      const txHash = transfer.transaction_hash?.toLowerCase() ?? ''
+      const raw = transfer.total?.value
+      if (!/^0x[0-9a-f]{64}$/.test(txHash) || typeof raw !== 'string' || !/^\d+$/.test(raw) || BigInt(raw) <= BigInt(0)) continue
+      const key = `${txHash}:${BigInt(raw).toString()}`
+      if (seenRows.has(key)) continue
+      seenRows.add(key)
+      out.rows.push({ txHash, timestampMs: ts, token: requestedToken, rawAmount: raw })
+      audit.acceptedRowCount++
+      out.candidatesFound++
+      if (out.rows.length >= Math.min(20, caps.maxCandidates)) break
+    }
+    if (out.rows.length >= Math.min(20, caps.maxCandidates)) {
+      console.warn('[robinhood-token-history-page-audit]', audit)
+      out.stopReason = 'candidate_cap'
+      return out
+    }
+    if (body.next_page_params == null) {
+      console.warn('[robinhood-token-history-page-audit]', audit)
+      out.stopReason = 'history_exhausted'
+      return out
+    }
+    const cursor = serializeDeepHistoryCursor(body.next_page_params, 'token_history', requestedToken)
+    audit.cursorSerialized = cursor.serializedForAudit
+    audit.cursorRejectedReason = cursor.rejectedReason
+    if (cursor.query && seenCursors.has(cursor.query)) audit.cursorRejectedReason = 'repeated_cursor'
+    console.warn('[robinhood-token-history-page-audit]', audit)
     if (audit.cursorRejectedReason || !cursor.query) { out.stopReason = 'invalid_cursor'; return out }
     seenCursors.add(cursor.query)
     query = cursor.query
@@ -634,7 +732,7 @@ function cursorQuery(params: unknown): string | null {
 type DeepHistoryCursorRejectedReason = 'non_object' | 'array_cursor' | 'nested_value' | 'empty_cursor' | 'repeated_cursor' | 'reserved_key_conflict'
 
 /** Only Blockscout-returned flat scalars can advance deep history; fixed filters cannot be overwritten. */
-function serializeDeepHistoryCursor(params: unknown, mode: 'filtered_token' | 'unfiltered_address_fallback', token: string): {
+function serializeDeepHistoryCursor(params: unknown, mode: 'filtered_token' | 'unfiltered_address_fallback' | 'token_history', token: string): {
   keys: string[]; valueTypes: Record<string, string>; serializedForAudit: string | null
   query: string | null; rejectedReason: DeepHistoryCursorRejectedReason | null
 } {
@@ -669,7 +767,7 @@ function serializeDeepHistoryCursor(params: unknown, mode: 'filtered_token' | 'u
     if (reserved === 'token') {
       // The fallback has no token parameter. Null echoes absence; an exact sold-token echo is also
       // harmless when stripped. Any different token would change the requested history and fails closed.
-      if (!(mode === 'unfiltered_address_fallback' && value === null)
+      if (!((mode === 'unfiltered_address_fallback' || mode === 'token_history') && value === null)
         && !(typeof value === 'string' && value.toLowerCase() === token)) return fail('reserved_key_conflict', serializedForAudit)
       continue
     }

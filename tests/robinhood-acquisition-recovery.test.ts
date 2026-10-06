@@ -345,6 +345,70 @@ const historical = (...entries: Array<{ i: number; raw: bigint; ts?: number }>) 
   historicalRangeStart: (TS - 86_400) * 1000, historicalRangeEnd: (TS - 86_400) * 1000, stopReason: 'history_exhausted',
 })
 
+const exhaustedAddressHistory = async () => ({
+  rows: [], pagesRequested: 5, pagesSucceeded: 4, filteredPagesRequested: 1, fallbackPagesRequested: 4,
+  fallbackActivated: true, exactTokenRowsFound: 0, olderInboundRowsFound: 0,
+  historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'deadline',
+})
+const tokenHistory = (...entries: Array<{ i: number; raw: bigint; ts?: number }>) => async () => ({
+  rows: entries.map(({ i, raw, ts }) => ({ txHash: `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`, timestampMs: (ts ?? TS - 86_400) * 1000, token: A, rawAmount: raw.toString() })),
+  pagesRequested: 2, pagesSucceeded: 2, rowsReturned: entries.length, walletMatches: entries.length,
+  candidatesFound: entries.length, stopReason: 'history_exhausted',
+})
+
+test('token history excludes the four current-sample distributions before proof and verifies only a proven older buy', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const older = relayedBuy(n(1), n(1000), TS - 86_400)
+  const entries = distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10), ts: TS - (j + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions, older], {
+    inbound: entries.map(({ i, raw }) => ({ i, raw })),
+  }, { historicalTokenInbounds: exhaustedAddressHistory, tokenHistoryInbounds: tokenHistory(...entries, { i: 5, raw: n(1000) }) })
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, true)
+  assert.equal(r.deepAcquisition?.tokenHistoryCandidatesFound, 5)
+  assert.deepEqual(r.deepAcquisition?.tokenHistoryExcludedCurrentSampleHashes, [1, 2, 3, 4].map((i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`))
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 1)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
+  assert.equal(receiptCalls, 6)
+})
+
+test('token history still rejects plain older transfers and keeps the shared eight-proof cap', async () => {
+  const older = Array.from({ length: 10 }, (_, i) => relayed(new Tx().xfer(A, OTHER, WALLET, n(i + 1)), TS - (i + 1) * 3600))
+  const entries = older.map((_, i) => ({ i: i + 1, raw: n(i + 1), ts: TS - (i + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...older], {}, {
+    historicalTokenInbounds: exhaustedAddressHistory, tokenHistoryInbounds: tokenHistory(...entries),
+  })
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(r.realizedPnlUsd, null)
+  assert.equal(receiptCalls, 9)
+})
+
+test('token history is not queried when address history already found a new exact-token candidate', async () => {
+  let calls = 0
+  const { r } = await run([sellShape(n(1000), n(1.5)), relayedBuy(n(1), n(1000))], {}, {
+    historicalTokenInbounds: historical({ i: 1, raw: n(1000) }),
+    tokenHistoryInbounds: async () => { calls++; return tokenHistory()() },
+  })
+  assert.equal(calls, 0)
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, false)
+})
+
+test('token history receives a fresh bounded six-second deadline after address-history exhaustion', async () => {
+  let tokenDeadline = 0
+  const { r } = await run([sellShape(n(1000), n(1.5))], {}, {
+    historicalTokenInbounds: exhaustedAddressHistory,
+    tokenHistoryInbounds: async (_wallet, _token, _sellTs, deadlineAt) => {
+      tokenDeadline = deadlineAt - Date.now()
+      return tokenHistory()()
+    },
+  })
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, true)
+  assert.ok(tokenDeadline > 5_000 && tokenDeadline <= 6_000)
+  assert.equal(r.deepAcquisition?.tokenHistoryStopReason, 'history_exhausted')
+})
+
 test('deep history only upgrades an older receipt-proven relayed buy; partial quantity remains unmatched', async () => {
   const sell = sellShape(n(1000), n(1.5))
   const old = relayedBuy(n(0.4), n(400))

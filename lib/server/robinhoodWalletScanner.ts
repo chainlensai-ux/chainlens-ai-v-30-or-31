@@ -53,7 +53,7 @@ import {
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
 } from './robinhoodSwapDecoder'
 import {
-  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutHistoricalTokenInbounds,
+  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutHistoricalTokenInbounds, getBlockscoutTokenHistoryInbounds,
   getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
   buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
   type BlockscoutEvidenceAudit,
@@ -1454,6 +1454,10 @@ export async function scanRobinhoodWallet(
         historicalTokenInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutHistoricalTokenInbounds(
           targetWallet, token, beforeTimestampSec, fetchImpl,
           { maxPages: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxPages, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates, deadlineAt },
+        ),
+        tokenHistoryInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutTokenHistoryInbounds(
+          targetWallet, token, beforeTimestampSec, fetchImpl,
+          { maxPages: 4, maxCandidates: 20, deadlineAt },
         ),
         ethUsdAt: sharedHistoricalEthUsdAt, prefetchNativeEthDays: prefetchRobinhoodNativePriceDays,
         onNativePricePrefetchComplete,
