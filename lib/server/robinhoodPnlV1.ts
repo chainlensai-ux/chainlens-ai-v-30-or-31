@@ -103,6 +103,9 @@ export type RobinhoodPnlV1Deps = {
    * scan so this lane never imports the Base/ETH pricing stack. Null when it has no verified answer.
    */
   ethUsdAt?: (timestampSec: number) => Promise<RhEthUsdPoint | null>
+  /** Scan orchestration only: reserve verified native-leg UTC days before broad EVM pricing. */
+  prefetchNativeEthDays?: (swaps: readonly RhVerifiedSwap[]) => Promise<void>
+  onNativePricePrefetchComplete?: () => void
   /** Trusted historical provider, exact token + timestamp. Null when it has no answer. */
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
@@ -876,8 +879,12 @@ async function providerPrice(ctx: Ctx, token: string, timestampSec: number): Pro
   }, () => { ctx.m.cacheHits += 1 }, (v) => v != null)
 }
 
+function swapNeedsNativeEthPrice(s: RhVerifiedSwap): boolean {
+  return quoteKind(s.inputToken) === 'native' || quoteKind(s.outputToken) === 'native' || s.intermediary?.kind === 'native'
+}
+
 export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSwap[]): Promise<RhPriceEvidence[]> {
-  const needsEth = swaps.filter((s) => quoteKind(s.inputToken) === 'native' || quoteKind(s.outputToken) === 'native' || s.intermediary?.kind === 'native')
+  const needsEth = swaps.filter(swapNeedsNativeEthPrice)
   const ethAt = needsEth.length > 0 ? await resolveEthUsdForTimestamps(ctx, needsEth.map((s) => s.timestampSec)) : new Map<number, number>()
   const quoteUsd = (currency: string, raw: bigint, decimals: number, ts: number): { usd: number; source: string } | null => {
     const kind = quoteKind(currency)
@@ -926,6 +933,29 @@ export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSw
     })
   }
   return out
+}
+
+export const MAX_ROBINHOOD_NATIVE_PREFETCH_BUCKETS = 3
+
+// Reuses the exact native-leg predicate used by priceRobinhoodSwaps. This chooses only structurally
+// verified swaps; timestamps from activity rows or rejected candidate receipts never qualify.
+export function selectRobinhoodNativePriceDays(swaps: readonly RhVerifiedSwap[], nowMs = Date.now()): {
+  requestedBuckets: number[]; selectedTimestampsSec: number[]; skippedByCap: number
+} {
+  const byBucket = new Map<number, number>()
+  for (const swap of swaps) {
+    if (!swapNeedsNativeEthPrice(swap)) continue
+    if (!Number.isSafeInteger(swap.timestampSec) || swap.timestampSec <= 0) continue
+    const bucket = Math.floor((swap.timestampSec * 1000) / ETH_RESOLVER_MAX_GAP_MS) * ETH_RESOLVER_MAX_GAP_MS
+    if (bucket + ETH_RESOLVER_MAX_GAP_MS > nowMs) continue // no open/current UTC day reservation
+    if (!byBucket.has(bucket)) byBucket.set(bucket, swap.timestampSec)
+  }
+  const requestedBuckets = [...byBucket.keys()]
+  return {
+    requestedBuckets,
+    selectedTimestampsSec: requestedBuckets.slice(0, MAX_ROBINHOOD_NATIVE_PREFETCH_BUCKETS).map((bucket) => byBucket.get(bucket)!),
+    skippedByCap: Math.max(0, requestedBuckets.length - MAX_ROBINHOOD_NATIVE_PREFETCH_BUCKETS),
+  }
 }
 
 // ── FIFO (Robinhood-only identities) ────────────────────────────────────────────────────────────────
@@ -1202,12 +1232,19 @@ export async function computeRobinhoodPnlV1(params: {
   const wallet = lower(params.wallet)
   const m: RobinhoodPnlV1Metrics = { robinhoodPnlMs: 0, receiptCalls: 0, rpcCalls: 0, historicalPriceCalls: 0, cacheHits: 0, swapsVerified: 0, lotsBuilt: 0, deadlineHit: false, nativeTraceLookups: 0 }
   const { selected, dropped } = selectRobinhoodPnlV1Candidates(params.candidates)
+  let prefetchSignalled = false
+  const signalNativePrefetchComplete = () => {
+    if (prefetchSignalled) return
+    prefetchSignalled = true
+    params.deps.onNativePricePrefetchComplete?.()
+  }
   const ingestion: RobinhoodPnlV1IngestionAudit = {
     wallet, transactionCount: params.transactionCount, transferCount: params.transferCount,
     candidateSwapTxCount: selected.length, candidatesDroppedByCap: dropped, receiptsFetched: 0, v4SwapLogCount: 0,
     verifiedSwapTxCount: 0, rejectedSwapTxCount: 0, rejectionReasons: {}, normalizedBuyCount: 0, normalizedSellCount: 0,
   }
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
+    signalNativePrefetchComplete()
     m.robinhoodPnlMs = params.deps.now() - startedAt
     // console.warn: production strips console.log (next.config removeConsole); this must log on every exit.
     const result: RobinhoodPnlV1 = { ...r, priceEvidence: r.priceEvidence ?? [], ingestionAudit: ingestion, metrics: m }
@@ -1251,6 +1288,13 @@ export async function computeRobinhoodPnlV1(params: {
   m.swapsVerified = swaps.length
   const swapsFound = outcomes.filter((o) => o.v4SwapLogs > 0).length
 
+  try {
+    if (params.deps.prefetchNativeEthDays) await params.deps.prefetchNativeEthDays(swaps)
+  } catch (err) {
+    console.warn('[robinhood-native-price-prefetch-error]', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    signalNativePrefetchComplete()
+  }
   const evidence = swaps.length > 0 ? await priceRobinhoodSwaps(ctx, swaps) : []
   for (const e of evidence) console.warn('[robinhood-price-evidence-audit]', e)
   const bothLegs = evidence.filter((e) => e.bothLegsVerified).length

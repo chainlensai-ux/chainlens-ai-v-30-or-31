@@ -15,7 +15,7 @@ import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from './robinhoodWalletScanner'
 
 export type RobinhoodScanResult = Awaited<ReturnType<typeof scanRobinhoodWallet>>
-export type RobinhoodScanFn = (wallet: string, fetchImpl: typeof fetch) => Promise<RobinhoodScanResult>
+export type RobinhoodScanFn = (wallet: string, fetchImpl: typeof fetch, onNativePricePrefetchComplete?: () => void) => Promise<RobinhoodScanResult>
 
 /** The exact JSON body GET /api/wallet-scan/robinhood has always returned. */
 export function buildRobinhoodRouteBody(wallet: string, r: RobinhoodScanResult) {
@@ -182,7 +182,7 @@ export async function markRobinhoodScanEnqueueFailed(wallet: string, jobId: stri
   return transitionRobinhoodScanRecord({ v: 1, wallet: wallet.toLowerCase(), state: 'error', jobId, owner: 'worker', queuedAt, startedAt: null, completedAt: now, body: null, error: 'enqueue_failed' }, now)
 }
 
-type Opts = { scan?: RobinhoodScanFn; now?: () => number; sleep?: (ms: number) => Promise<void> }
+type Opts = { scan?: RobinhoodScanFn; now?: () => number; sleep?: (ms: number) => Promise<void>; onNativePricePrefetchComplete?: () => void }
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** Runs THE provider scan for this wallet (joining one already in flight in this process) and records it. */
@@ -195,7 +195,7 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
     if (inFlight.get(key) === existing) inFlight.delete(key)
   }
   const now = opts.now ?? Date.now
-  const scan = opts.scan ?? scanRobinhoodWallet
+  const scan: RobinhoodScanFn = opts.scan ?? ((scanWallet, scanFetch, onPrefetchComplete) => scanRobinhoodWallet(scanWallet, scanFetch, undefined, onPrefetchComplete))
   const run = (async () => {
     providerScanCount += 1
     const startedAt = now()
@@ -206,7 +206,7 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
       ({ v: 1, wallet: key, state, jobId, owner, queuedAt, startedAt, completedAt: null, body: null, error: null, ...extra })
     await transitionRobinhoodScanRecord(rec('running', {}), now())
     try {
-      const result = await scan(wallet, fetchImpl)
+      const result = await scan(wallet, fetchImpl, opts.onNativePricePrefetchComplete)
       await transitionRobinhoodScanRecord(rec('done', { completedAt: now(), body: buildRobinhoodRouteBody(wallet, result) }), now())
       return result
     } catch (err) {

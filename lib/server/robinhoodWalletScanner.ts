@@ -43,8 +43,8 @@
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
-import { resolveHistoricalNativeUsdPrice, NATIVE_PRICE_BUCKET_MS } from '../../src/modules/nativePriceResolver'
-import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
+import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
+import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
 import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
@@ -1399,6 +1399,33 @@ export async function getCachedRobinhoodWalletActivity(
 }
 const activityInFlight = new Map<string, Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }>>()
 
+/** Only receipt/route-verified swaps may reserve shared historical ETH provider capacity. */
+export async function prefetchRobinhoodNativePriceDays(swaps: readonly RhVerifiedSwap[]): Promise<void> {
+  const startedAt = Date.now()
+  const { requestedBuckets, selectedTimestampsSec, skippedByCap } = selectRobinhoodNativePriceDays(swaps)
+  const selectedBuckets = requestedBuckets.slice(0, selectedTimestampsSec.length)
+  const before = getNativePriceResolverDiagnostics()
+  let resolved = new Map<number, NativePriceResolution>()
+  try {
+    resolved = await prefetchNativeUsdPrices({ requirements: selectedTimestampsSec.map((timestampSec) => ({ chain: 'eth' as const, timestamp: timestampSec * 1000 })) })
+  } catch (err) {
+    console.warn('[robinhood-native-price-prefetch-error]', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    const after = getNativePriceResolverDiagnostics()
+    console.warn('[robinhood-native-price-prefetch-audit]', {
+      requestedBuckets,
+      persistentHits: [...resolved.values()].filter((price) => price.servedFromPersistentCache).length,
+      liveAttempts: after.liveBucketRequests - before.liveBucketRequests,
+      resolvedBuckets: selectedBuckets.filter((bucket) => resolved.has(bucket)),
+      unresolvedBuckets: selectedBuckets.filter((bucket) => !resolved.has(bucket)),
+      sourceByBucket: Object.fromEntries([...resolved].map(([bucket, price]) => [String(bucket), price.source])),
+      persistedWrites: after.persistentWritesSucceeded - before.persistentWritesSucceeded,
+      skippedByCap,
+      elapsedMs: Date.now() - startedAt,
+    })
+  }
+}
+
 // ── Shared scan sequence, DISCLOSED (Wallet Scanner unification task): the EXACT same
 // holdings → price lookup → pool-currency resolver → activity → pnl → audit call sequence that
 // used to live inline in app/api/wallet-scan/robinhood/route.ts's GET handler, extracted so both
@@ -1410,6 +1437,7 @@ export async function scanRobinhoodWallet(
   wallet: string,
   fetchImpl: FetchImpl,
   pnlV1Deps?: RobinhoodPnlV1Deps,
+  onNativePricePrefetchComplete?: () => void,
 ): Promise<{
   holdings: RobinhoodWalletHoldingsResult & { wrongChainCacheRejected: boolean }
   activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
@@ -1419,7 +1447,13 @@ export async function scanRobinhoodWallet(
   robinhoodPnl: RobinhoodPnlV1
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const v1Deps = pnlV1Deps ?? { ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), ethUsdAt: sharedHistoricalEthUsdAt }
+  const v1Deps: RobinhoodPnlV1Deps = pnlV1Deps
+    ? { ...pnlV1Deps, onNativePricePrefetchComplete: onNativePricePrefetchComplete ?? pnlV1Deps.onNativePricePrefetchComplete }
+    : {
+        ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl),
+        ethUsdAt: sharedHistoricalEthUsdAt, prefetchNativeEthDays: prefetchRobinhoodNativePriceDays,
+        onNativePricePrefetchComplete,
+      }
   // PnL V1: the activity decode no longer receives CURRENT prices (holdings / DexScreener spot) — a
   // historical PnL must never be gated on them. Pool currencies come from the same cached, hash-proven
   // resolver the V1 lane uses, instead of an unbounded Initialize log scan per Swap log.

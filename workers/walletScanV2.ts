@@ -590,43 +590,46 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     }
   }
 
-  // PARALLEL START, DISCLOSED: both the fast snapshot above and the core call below begin
-  // immediately, neither awaited yet — this is the actual parallelism this task asked for. If the
-  // core call turns out to reject the request downstream (invalid V2 shape / heavy-wallet fast-fail
-  // below), the fast snapshot's own result is simply discarded — a real, disclosed, bounded-cost
-  // tradeoff (one already-budget-capped Base+ETH holdings/pricing pass on the rare reject path),
-  // never a correctness issue.
-  const fastSnapshotPromise = computeFastSnapshot()
-  // UNHANDLED-REJECTION GUARD, DISCLOSED: an early return below (invalid V2 shape / heavy-wallet
-  // fast-fail) abandons `fastSnapshotPromise` without ever awaiting it. `computeFastSnapshot`'s own
-  // internals are already fully guarded (every real call goes through `runWithTimeoutAndRpcAudit`'s
-  // own try/catch, and the partial-publish call has its own try/catch), so this should never
-  // actually reject — this `.catch` is a pure defensive no-op against Node's unhandled-rejection
-  // warning, and never affects the real, later `await fastSnapshotPromise` below (a promise's
-  // resolution is independent of how many places observe it).
-  fastSnapshotPromise.catch(() => {})
-
-  // ROBINHOOD SCAN, WORKER-LEVEL, DISCLOSED (Wallet Scanner chain selection fix): started
-  // concurrently with the fast snapshot and the core call, same as those two — never on the
-  // critical path for the EVM/FIFO side. Reuses the EXACT existing scanRobinhoodWallet() (see this
+  // ROBINHOOD SCAN, WORKER-LEVEL: start structural receipt/route verification before either broad
+  // Base/ETH pricing lane. Once its at-most-three verified native days have been prefetched, the
+  // fast snapshot and core scan still run concurrently with the remainder of Robinhood PnL. Reuses
+  // the EXACT existing scanRobinhoodWallet() (see this
   // file's top-of-file import disclosure) — no new scan logic, no PnL recomputation, no widening of
   // the EVM-only fetchAllHoldings/SupportedChain pipeline above. `.catch` returns null on failure —
   // scanRobinhoodWallet never throws unhandled on its own, but this worker treats a Robinhood
   // failure as non-fatal to the EVM/FIFO scan either way, exactly like the orchestrator's own
   // scanRobinhoodWallet call site (lib/server/walletScanOrchestrator.ts).
+  let releaseNativePricePriority!: () => void
+  const nativePricePriorityReady = new Promise<void>((resolve) => { releaseNativePricePriority = resolve })
   const robinhoodPromise = includeRobinhood
-    ? runCanonicalRobinhoodScan(walletAddress, fetch, { jobId: jobId ?? null, owner: 'worker' }).catch((err) => {
+    ? runCanonicalRobinhoodScan(walletAddress, fetch, {
+      jobId: jobId ?? null, owner: 'worker', onNativePricePrefetchComplete: releaseNativePricePriority,
+    }).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[CU-TRACK] worker robinhood scan failed', { walletAddress, error: err instanceof Error ? err.message : String(err) })
       return null
     })
     : Promise.resolve(null)
-  // UNHANDLED-REJECTION GUARD, DISCLOSED: matches the exact same defensive pattern as
-  // fastSnapshotPromise.catch(() => {}) above — robinhoodPromise's own internal `.catch` already
+  // The core EVM scan may continue as soon as verified Robinhood native days have had first access
+  // to the shared historical resolver. A failed/reused sidecar also releases the gate; no unrelated
+  // pricing lane can be held indefinitely by a missing callback.
+  void robinhoodPromise.finally(releaseNativePricePriority)
+  // UNHANDLED-REJECTION GUARD, DISCLOSED: matches the fast-snapshot guard below. The
+  // robinhoodPromise's own internal `.catch` already
   // resolves to null on failure, so this is a pure no-op guard against Node's unhandled-rejection
   // warning on the (never-actually-taken) early-return paths below that abandon this promise.
   robinhoodPromise.catch(() => {})
-  const corePromise = withScanTimeout(router.runValidatedScanRequest(sanitized), WORKER_GLOBAL_TIMEOUT_MS)
+  try {
+    await withScanTimeout(nativePricePriorityReady, remainingWorkerMs(startTime))
+  } catch {
+    return timedOutPartialResult('robinhood_native_price_priority_timeout')
+  }
+  // Both broad EVM lanes start only after the reserved Robinhood native days have completed their
+  // cache/provider pass; neither can consume the shared historical quota or trip its breaker first.
+  const fastSnapshotPromise = computeFastSnapshot()
+  fastSnapshotPromise.catch(() => {})
+  const coreTimeoutMs = remainingWorkerMs(startTime)
+  const corePromise = withScanTimeout(router.runValidatedScanRequest(sanitized), coreTimeoutMs)
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
   // runWalletScanV2 failure are both caught and returned as a structured RouteResult) — the SAME is
@@ -636,7 +639,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   try {
     result = await corePromise
   } catch (err) {
-    if (err instanceof Error && err.message === `SCAN_TIMEOUT_${WORKER_GLOBAL_TIMEOUT_MS}ms`) {
+    if (err instanceof Error && err.message === `SCAN_TIMEOUT_${coreTimeoutMs}ms`) {
       return timedOutPartialResult()
     }
     throw err

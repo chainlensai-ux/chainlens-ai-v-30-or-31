@@ -145,6 +145,21 @@ test('Robinhood ETH history audit identifies persistent accepted evidence', asyn
   assert.equal(eth[0].rejectionReason, null)
 })
 
+test('native-day reservation receives only verified swaps and releases broad pricing before ETH pricing', async () => {
+  const order: string[] = []
+  const { r } = await run([shape53353(OUT_WEI), new Tx().xfer(A, OTHER, WALLET, n(10))], {
+    prefetchNativeEthDays: async (verified) => {
+      assert.equal(verified.length, 1)
+      assert.equal(verified[0].timestampSec, TS)
+      order.push('prefetch')
+    },
+    onNativePricePrefetchComplete: () => { order.push('release') },
+    ethUsdAt: async (ts) => { order.push('price'); return resolverAt(2600)(ts) },
+  })
+  assert.deepEqual(order.slice(0, 3), ['prefetch', 'release', 'price'])
+  assert.equal(r.priceEvidence[0].bothLegsVerified, true)
+})
+
 test('2. seconds -> ms conversion through the shared resolver is correct', async () => {
   __seedAcceptedNativePriceForTest(TS * 1000, 2600, 'goldrush_historical')
   const p = await sharedHistoricalEthUsdAt(TS)

@@ -234,6 +234,7 @@ const inFlightByBucket = new Map<number, Promise<NativePriceResolution | null>>(
 type ResolverDiagnostics = {
   bucketsRequested: number
   liveBucketRequests: number
+  persistentWritesSucceeded: number
   permanentCacheHits: number
   coalescedHits: number
   acceptedResolutions: number
@@ -279,6 +280,7 @@ function emptyDiagnostics(): ResolverDiagnostics {
   return {
     bucketsRequested: 0,
     liveBucketRequests: 0,
+    persistentWritesSucceeded: 0,
     permanentCacheHits: 0,
     coalescedHits: 0,
     acceptedResolutions: 0,
@@ -753,6 +755,7 @@ export async function resolveHistoricalNativeUsdPrice(params: {
         methodologyVersion: NATIVE_PRICE_METHODOLOGY_VERSION,
       }, nowMs)
       audit.writeSucceeded = write.succeeded
+      if (write.succeeded) diagnostics.persistentWritesSucceeded += 1
       audit.contradictionDetected = write.contradiction
       audit.rejectionReason = write.reason === 'record_already_exists' ? null : write.reason
       if (write.authoritative && !write.succeeded) accepted = {

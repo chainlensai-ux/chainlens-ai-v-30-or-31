@@ -44,6 +44,21 @@ const silence = async <T,>(fn: () => Promise<T>): Promise<T> => {
 
 beforeEach(() => { __resetRobinhoodScanCoordinatorForTest() })
 
+test('coordinator forwards the native-price priority signal before the sidecar scan finishes', async () => {
+  const wallet = nextWallet()
+  const order: string[] = []
+  await silence(() => runCanonicalRobinhoodScan(wallet, fetch, {
+    jobId: null, owner: 'worker',
+    onNativePricePrefetchComplete: () => { order.push('prefetch-complete') },
+    scan: async (scanWallet, _fetch, signal) => {
+      signal?.()
+      order.push('sidecar-finished')
+      return fixture(scanWallet)
+    },
+  }))
+  assert.deepEqual(order, ['prefetch-complete', 'sidecar-finished'])
+})
+
 test('1. main wallet scan + concurrent Robinhood frontend request -> exactly one provider scan', async () => {
   const wallet = nextWallet()
   const p = provider(40)
@@ -148,7 +163,7 @@ test('6. no 30s synchronous route dependency in the normal Wallet Scanner flow',
   assert.doesNotMatch(post, /(await|void) scanRobinhoodWallet\(|import \{[^}]*scanRobinhoodWallet/, 'no cache-warm provider scan on POST')
   assert.match(post, /markRobinhoodScanQueued\(wallet, jobId, robinhoodQueuedAt\)/)
   const worker = read('workers/walletScanV2.ts')
-  assert.match(worker, /runCanonicalRobinhoodScan\(walletAddress, fetch, \{ jobId: jobId \?\? null, owner: 'worker' \}\)/)
+  assert.match(worker, /runCanonicalRobinhoodScan\(walletAddress, fetch, \{\s*jobId: jobId \?\? null, owner: 'worker', onNativePricePrefetchComplete: releaseNativePricePriority,/)
   const page = read('app/terminal/wallet-scanner/page.tsx')
   const scanFn = page.slice(page.indexOf('async function handleScan('), page.indexOf('async function handleRobinhoodScan('))
   assert.doesNotMatch(scanFn, /void handleRobinhoodScan\(\)/, 'the page never fires an unscoped Robinhood scan at scan start')
