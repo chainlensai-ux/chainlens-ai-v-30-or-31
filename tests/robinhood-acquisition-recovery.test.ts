@@ -2,6 +2,7 @@
 // for earlier inbounds of the exact sold token. Only a wallet-funded, connected route is a buy.
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
 import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
 import { V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
@@ -47,6 +48,8 @@ class Tx {
   trace: RhNativeTransfer[] | null = []
   ts = TS
   sender = WALLET
+  /** Overrides the eth_getTransactionByHash response; THROW makes that RPC call fail. */
+  txResponse: unknown = undefined
   at(ts: number) { this.ts = ts; for (const l of this.logs as Array<{ blockTimestamp: string }>) l.blockTimestamp = hex(ts); return this }
   private i = 0
   private push(address: string, topics: string[], data: string) { this.logs.push({ address, topics, data, logIndex: hex(this.i++), blockTimestamp: hex(this.ts) }); return this }
@@ -102,7 +105,8 @@ const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
 const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
-async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }> } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
+const THROW = Symbol('throw')
+async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; onReceipt?: (hash: string) => void } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
   __resetRobinhoodPnlV1CachesForTest() // hashes repeat across runs; receipts are cached by hash
   const hashes = txs.map((_, i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
   const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: 1000 + i * 10 }]))
@@ -110,8 +114,12 @@ async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i
   let receiptCalls = 0
   const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
     const p = params as any[]
-    if (method === 'eth_getTransactionReceipt') { receiptCalls += 1; const e = byHash.get(p[0]); return e ? { status: '0x1', from: e.tx.sender, to: ROUTER, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
-    if (method === 'eth_getTransactionByHash') { const e = byHash.get(p[0]); return e ? { value: hex(e.tx.txValue) } : null }
+    if (method === 'eth_getTransactionReceipt') { receiptCalls += 1; opts.onReceipt?.(p[0]); const e = byHash.get(p[0]); return e ? { status: '0x1', from: e.tx.sender, to: ROUTER, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
+    if (method === 'eth_getTransactionByHash') {
+      const e = byHash.get(p[0])
+      if (e && e.tx.txResponse === THROW) throw new Error('rpc down')
+      return e ? (e.tx.txResponse !== undefined ? e.tx.txResponse : { hash: p[0], value: hex(e.tx.txValue) }) : null
+    }
     if (method === 'eth_getBalance') return hex(BigInt(10) * E18)
     if (method === 'eth_getTransactionCount') return byBlock.has(Number(p[1])) && byBlock.get(Number(p[1]))!.tx.sender === WALLET ? '0x2' : '0x1'
     if (method === 'eth_call' && p[0].to === RH_V4_POSITION_MANAGER) return [...POOLS.entries()].find(([id]) => id.slice(2, 52) === String(p[0].data).slice(10, 60))?.[1] ?? null
@@ -286,4 +294,92 @@ test('10. direct V4 and mixed-route acceptance are unchanged', async () => {
   assert.equal(none.r.acquisitionRecovery!.candidatesFound, 0)
   assert.equal(none.rec[0].rejectionReason, 'no_earlier_inbound_of_sold_token')
   assert.equal(none.r.structuralClosedLots, 0)
+})
+
+// ── tx.value fail-closed + recovery-local deadline ──────────────────────────────────────────────────
+const withTxResponse = (resp: unknown) => { const b = relayedBuy(n(1), n(1000)); b.txResponse = resp; return b }
+
+test('tx.value 1. relayed proven route + tx.value = 0 → may verify', async () => {
+  const { rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse({ value: '0x0' })], { inbound: [{ i: 1, raw: n(1000) }] })
+  assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueStatus, 'tx_value_zero_proven')
+})
+
+test('tx.value 2. same route + tx.value > 0 → rejected (competing_payer)', async () => {
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse({ value: '0x1' })], { inbound: [{ i: 1, raw: n(1000) }] })
+  assert.equal(rec[0].classification, 'ambiguous')
+  assert.equal(rec[0].txValueStatus, 'tx_value_nonzero')
+  assert.match(rec[0].rejectionReason, /^competing_payer: tx sender/)
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+})
+
+test('tx.value 3. same route + tx.value = null → rejected (competing_payer_unproven_tx_value)', async () => {
+  for (const resp of [{ value: null }, null]) {
+    const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(resp)], { inbound: [{ i: 1, raw: n(1000) }] })
+    assert.equal(rec[0].classification, 'ambiguous')
+    assert.equal(rec[0].txValueStatus, 'tx_value_unavailable')
+    assert.match(rec[0].rejectionReason, /^competing_payer_unproven_tx_value/)
+    assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+    assert.equal(r.structuralClosedLots, 0)
+  }
+})
+
+test('tx.value 4. malformed tx response → rejected', async () => {
+  for (const resp of [{ value: 'zz' }, { value: '0x' }, { value: 5 }, { value: '0xzz' }, {}, 'x', [1], { hash: `0x${'f'.repeat(64)}`, value: '0x0' }]) {
+    const { rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(resp)], { inbound: [{ i: 1, raw: n(1000) }] })
+    assert.equal(rec[0].classification, 'ambiguous', JSON.stringify(resp))
+    assert.match(rec[0].rejectionReason, /^competing_payer_unproven_tx_value/)
+  }
+})
+
+test('tx.value 5. eth_getTransactionByHash failure → rejected, never verified_buy', async () => {
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(THROW)], { inbound: [{ i: 1, raw: n(1000) }] })
+  assert.notEqual(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueStatus, 'tx_value_unavailable')
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  assert.equal(r.verifiedClosedLots, 0)
+})
+
+test('tx.value 6. wallet-sent acquisition path unchanged (no tx.value requirement from the relayed proof)', async () => {
+  const buy = directBuy(n(1), n(1000)).at(TS - 3600)
+  buy.txResponse = undefined
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), buy], { inbound: [{ i: 1, raw: n(1000) }] })
+  assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueStatus, null)
+  assert.equal(r.verifiedClosedLots, 1)
+  assert.equal(r.realizedPnlUsd, 1300)
+})
+
+test('tx.value 7. the 5s recovery budget is local: bounded from its own start, the shared deadline is never moved', async () => {
+  const src = readFileSync(new URL('../lib/server/robinhoodPnlV1.ts', import.meta.url), 'utf8')
+  assert.ok(!/ctx\.deadlineAt\s*=[^=]/.test(src), 'the shared PnL deadline must never be reassigned')
+  assert.equal(ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.budgetMs, 5_000)
+  // Fake clock: each recovery-candidate receipt takes 2s; the sell's own work takes no time.
+  const realNow = Date.now
+  let clock = realNow()
+  Date.now = () => clock
+  try {
+    const sell = sellShape(n(1000), n(1.5))
+    const inbounds = Array.from({ length: 8 }, (_, k) => relayed(new Tx().xfer(A, OTHER, WALLET, n(1)), TS - 1000 - k))
+    let sellHash = ''
+    const out = await run([sell, ...inbounds], {
+      inbound: inbounds.map((_, k) => ({ i: k + 1, raw: n(1) })),
+      onReceipt: (h) => { if (!sellHash) sellHash = h; if (h !== sellHash) clock += 2_000 },
+    })
+    const s = out.r.acquisitionRecovery!
+    assert.equal(s.acquisitionRecoveryAttempted, true)
+    assert.equal(s.candidatesFound, 8)
+    assert.equal(s.candidatesAttempted, 3) // t+0, t+2, t+4 start; t+6 is past the 5s budget
+    assert.equal(s.recoveryDeadlineHit, true)
+    assert.equal(out.rec.filter((x) => x.rejectionReason === 'not_attempted_recovery_deadline').length, 5)
+    assert.equal(out.receiptCalls, 1 + 3) // no receipt work after the budget
+  } finally { Date.now = realNow }
+})
+
+test('tx.value 8. plain inbound transfers remain non-buys (tx.value 0 proves nothing by itself)', async () => {
+  const plain = relayed(new Tx().xfer(A, OTHER, WALLET, n(10)))
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), plain], { inbound: [{ i: 1, raw: n(10) }] })
+  assert.equal(rec[0].classification, 'transfer_in')
+  assert.equal(rec[0].txValueStatus, 'tx_value_zero_proven')
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
 })
