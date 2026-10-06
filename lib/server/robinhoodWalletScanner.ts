@@ -47,6 +47,7 @@ import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePric
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
+import { CHAIN_ASSET_REGISTRY } from './chainAssetRegistry'
 import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
 import {
   decodeRobinhoodSwapLog, resolvePoolCurrenciesViaRpc, fetchTokenDecimalsViaRpc, buildRobinhoodMatchedLotsFromSwaps,
@@ -140,6 +141,9 @@ export type RobinhoodPriceDebug = {
   resolvedPriceUsd: number | null
   priceSource: 'goldrush' | 'dexscreener' | 'eth_usd_series' | null
   failureReason: string | null
+  /** Portfolio price-confidence gate: the price/value a provider offered before the gate rejected it (debug only). */
+  candidatePriceUsd?: number | null
+  candidateValueUsd?: number | null
 }
 
 export type RobinhoodHoldingsStatus = 'ok' | 'partial' | 'unavailable' | 'not_configured'
@@ -179,6 +183,7 @@ export type RobinhoodHoldingsIntegrationAudit = {
   balanceSourceCounts: Record<string, number>
   balanceCoverageComplete: boolean
   balanceRowsTruncated: number
+  priceConfidence?: RobinhoodPriceConfidenceSummary
   topHoldings: Array<{ tokenAddress: string; symbol: string | null; rawBalance: string; normalizedQuantity: number | null; balanceEvidenceSource: string | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null; reason: string | null }>
 }
 
@@ -833,6 +838,121 @@ async function priceToken(h: RobinhoodTokenHolding, goldrushQuoteRate: number | 
   return { ...h, priceUsd: ds.priceUsd, priceSource: 'dexscreener', valueUsd: valueOf(ds.priceUsd), pricingDebug: debug }
 }
 
+// ── Portfolio price-confidence gate ─────────────────────────────────────────────────────────────────
+// Runs after price resolution and before any valueUsd counts toward the supported portfolio value. A rejected
+// price makes the holding UNPRICED (priceUsd / valueUsd null, excludedFromValueReason set) — never $0, never a
+// clamped price — and the raw holding row is kept. Deterministic, no address special-cases:
+//   1. native-symbol impersonation: an ERC-20 whose symbol/name claims ETH / Ethereum / WETH / Wrapped Ether is
+//      never native ETH; only the registry's statically verified canonical wrapped native keeps those semantics.
+//   2. high-value DexScreener fallback: a position worth >= $10k on a DexScreener price alone needs an independent
+//      confirmation of the same contract's price, or pair liquidity >= max($50k, 25% of the position).
+//   3. diagnostics only: a unit price near native ETH/USD, or one asset dominating the candidate value.
+// Provider spam flags (GoldRush is_spam, Blockscout scam reputation) are applied before pricing (provider_spam_flag).
+export const ROBINHOOD_PRICE_CONFIDENCE = {
+  highValueFallbackUsd: 10_000,
+  minLiquidityUsd: 50_000,
+  minLiquidityToPosition: 0.25,
+  nearNativeEthBand: 0.1,
+  disproportionateShare: 0.5,
+} as const
+const NATIVE_SYMBOL_CLAIM = /^(w?eth|ethereum|wrapped ?ether)$/i
+const ROBINHOOD_CANONICAL_WRAPPED_NATIVE = CHAIN_ASSET_REGISTRY.robinhood.wrappedNative?.address.toLowerCase() ?? null
+
+export type RobinhoodPriceConfidence = 'verified_provider_quote' | 'dexscreener_below_high_value_threshold' | 'dexscreener_independently_confirmed'
+  | 'dexscreener_strong_liquidity' | 'rejected' | 'unpriced'
+export type RobinhoodPriceConfidenceAudit = {
+  tokenAddress: string; symbol: string | null; balance: number | null
+  candidatePriceUsd: number | null; candidateValueUsd: number | null; priceSource: string | null
+  liquidityUsd: number | null; volume24hUsd: number | null; independentPriceConfirmed: boolean
+  nativeSymbolImpersonation: boolean; portfolioPriceConfidence: RobinhoodPriceConfidence
+  includedInSupportedValue: boolean; rejectionReason: string | null
+  nearNativeEthPrice: boolean; disproportionateWalletValue: boolean
+}
+export type RobinhoodPriceConfidenceSummary = {
+  candidateSupportedValueUsd: number | null; acceptedSupportedValueUsd: number | null; rejectedValueUsd: number
+  highValueFallbackCount: number; highValueFallbackRejectedCount: number; nativeImpersonatorCount: number
+}
+
+export function isRobinhoodNativeSymbolImpersonation(h: Pick<RobinhoodTokenHolding, 'address' | 'symbol' | 'name'>): boolean {
+  if (ROBINHOOD_CANONICAL_WRAPPED_NATIVE && h.address.toLowerCase() === ROBINHOOD_CANONICAL_WRAPPED_NATIVE) return false
+  return [h.symbol, h.name].some((v) => typeof v === 'string' && NATIVE_SYMBOL_CLAIM.test(v.trim()))
+}
+
+/**
+ * PURE. Applies the confidence gate. `independentPriceUsd(address)` may supply another trusted current price for
+ * the exact contract (confirmation within 10% of the DexScreener price); `nativeEthUsd` is diagnostic only.
+ */
+export function applyRobinhoodPortfolioPriceConfidence(
+  holdings: ReadonlyArray<RobinhoodTokenHolding>,
+  opts: { nativeEthUsd?: number | null; independentPriceUsd?: (address: string) => number | null } = {},
+): { holdings: RobinhoodTokenHolding[]; audits: RobinhoodPriceConfidenceAudit[]; summary: RobinhoodPriceConfidenceSummary } {
+  const P = ROBINHOOD_PRICE_CONFIDENCE
+  const candidates = holdings.map((h) => h.valueUsd ?? h.pricingDebug?.candidateValueUsd ?? null)
+  const candidateTotal = candidates.reduce<number>((s, v) => s + (v != null && Number.isFinite(v) && v > 0 ? v : 0), 0)
+  const audits: RobinhoodPriceConfidenceAudit[] = []
+  const out = holdings.map((h, i) => {
+    const candidatePriceUsd = h.priceUsd ?? h.pricingDebug?.candidatePriceUsd ?? null
+    const candidateValueUsd = candidates[i]
+    const pair = h.pricingDebug?.selectedPair ?? null
+    const impersonation = isRobinhoodNativeSymbolImpersonation(h)
+    const independent = opts.independentPriceUsd?.(h.address) ?? null
+    const independentPriceConfirmed = h.priceSource === 'goldrush'
+      || (independent != null && candidatePriceUsd != null && independent > 0 && Math.abs(independent - candidatePriceUsd) / candidatePriceUsd <= 0.1)
+    let reason: string | null = null
+    let confidence: RobinhoodPriceConfidence = h.valueUsd == null ? 'unpriced' : h.priceSource === 'goldrush' ? 'verified_provider_quote' : 'dexscreener_below_high_value_threshold'
+    if (impersonation && !h.excludedFromValueReason) reason = 'native_symbol_impersonation'
+    else if (h.valueUsd != null && h.priceSource === 'dexscreener' && h.valueUsd >= P.highValueFallbackUsd) {
+      const liquidity = pair?.liquidityUsd ?? null
+      if (independentPriceConfirmed) confidence = 'dexscreener_independently_confirmed'
+      else if (liquidity != null && liquidity >= Math.max(P.minLiquidityUsd, h.valueUsd * P.minLiquidityToPosition)) confidence = 'dexscreener_strong_liquidity'
+      else reason = 'insufficient_portfolio_price_confidence'
+    }
+    const next: RobinhoodTokenHolding = reason == null ? h : {
+      ...h, priceUsd: null, priceSource: null, valueUsd: null, excludedFromValueReason: reason,
+      pricingDebug: {
+        goldrushQuoteRate: h.pricingDebug?.goldrushQuoteRate ?? null, dexscreenerPairsReturned: h.pricingDebug?.dexscreenerPairsReturned ?? null,
+        dexscreenerValidPairs: h.pricingDebug?.dexscreenerValidPairs ?? null, selectedPair: pair,
+        resolvedPriceUsd: null, priceSource: null, failureReason: reason, candidatePriceUsd, candidateValueUsd,
+      },
+    }
+    if (reason) confidence = 'rejected'
+    if (h.excludedFromValueReason && h.valueUsd == null) confidence = candidatePriceUsd != null ? 'rejected' : 'unpriced'
+    const nearNativeEthPrice = !!(opts.nativeEthUsd && candidatePriceUsd != null && h.address.toLowerCase() !== ROBINHOOD_CANONICAL_WRAPPED_NATIVE
+      && Math.abs(candidatePriceUsd - opts.nativeEthUsd) / opts.nativeEthUsd <= P.nearNativeEthBand)
+    audits.push({
+      tokenAddress: h.address, symbol: h.symbol, balance: h.uiBalance, candidatePriceUsd, candidateValueUsd,
+      priceSource: h.priceSource ?? h.pricingDebug?.priceSource ?? null, liquidityUsd: pair?.liquidityUsd ?? null, volume24hUsd: pair?.volume24hUsd ?? null,
+      independentPriceConfirmed, nativeSymbolImpersonation: impersonation, portfolioPriceConfidence: confidence,
+      includedInSupportedValue: next.valueUsd != null, rejectionReason: next.excludedFromValueReason ?? null,
+      nearNativeEthPrice, disproportionateWalletValue: candidateValueUsd != null && candidateTotal > 0 && candidateValueUsd / candidateTotal > P.disproportionateShare,
+    })
+    return next
+  })
+  // Counted from the final rows, so a cached row rejected on an earlier pass is still reported.
+  const accepted = out.filter((h) => h.valueUsd != null)
+  const candidatePriced = candidates.filter((v) => v != null)
+  const rejectedValueUsd = out.reduce((s, h, i) => s + (h.valueUsd == null && h.excludedFromValueReason && candidates[i] != null ? candidates[i]! : 0), 0)
+  const highValueFallbackRejectedCount = out.filter((h) => h.excludedFromValueReason === 'insufficient_portfolio_price_confidence').length
+  const highValueFallbackCount = highValueFallbackRejectedCount
+    + audits.filter((a) => a.portfolioPriceConfidence === 'dexscreener_independently_confirmed' || a.portfolioPriceConfidence === 'dexscreener_strong_liquidity').length
+  const nativeImpersonatorCount = audits.filter((a) => a.nativeSymbolImpersonation).length
+  return {
+    holdings: out, audits,
+    summary: {
+      candidateSupportedValueUsd: candidatePriced.length ? candidateTotal : null,
+      acceptedSupportedValueUsd: accepted.length ? accepted.reduce((s, h) => s + h.valueUsd!, 0) : null,
+      rejectedValueUsd, highValueFallbackCount, highValueFallbackRejectedCount, nativeImpersonatorCount,
+    },
+  }
+}
+
+function gateRobinhoodHoldings(holdings: ReadonlyArray<RobinhoodTokenHolding>, native: RobinhoodNativeBalance | null) {
+  const gate = applyRobinhoodPortfolioPriceConfidence(holdings, { nativeEthUsd: native?.priceUsd ?? null })
+  for (const a of gate.audits) if (a.candidatePriceUsd != null || a.nativeSymbolImpersonation) console.warn('[robinhood-holdings-price-confidence-audit]', a)
+  console.warn('[robinhood-holdings-price-confidence-audit]', { summary: gate.summary })
+  return gate
+}
+
 // CACHE SAFETY: holdings discovery is cached ~60s, but a cached UNPRICED holding must not suppress newly
 // available price evidence for that whole window. A cache hit re-attempts pricing for the unpriced assets
 // only (balances are not re-read), with a short per-asset retry window so repeated requests cannot hammer
@@ -862,6 +982,10 @@ async function repriceCachedHoldings(cached: RobinhoodWalletHoldingsResult, deps
       holdings.push(next)
     } else holdings.push(h)
   }
+  // The gate is idempotent; it also corrects rows cached before it existed.
+  const gate = gateRobinhoodHoldings(holdings, native)
+  if (gate.holdings.some((h, i) => h.valueUsd !== holdings[i].valueUsd)) changed = true
+  holdings.splice(0, holdings.length, ...gate.holdings)
   if (!changed) {
     if (cached.holdingsIntegrationAudit) console.warn('[robinhood-holdings-integration-audit]', cached.holdingsIntegrationAudit)
     return { ...cached, fromCache: true }
@@ -870,7 +994,7 @@ async function repriceCachedHoldings(cached: RobinhoodWalletHoldingsResult, deps
   const sum = summarizeRobinhoodHoldings(native, holdings, holdingsComplete, cached.reason)
   const status: RobinhoodHoldingsStatus = cached.status === 'unavailable' || cached.status === 'not_configured' ? cached.status : (sum.portfolioEvidence.status === 'verified' || sum.portfolioEvidence.status === 'verified_zero' ? 'ok' : 'partial')
   const prior = cached.holdingsIntegrationAudit
-  const integrationAudit = prior ? holdingsIntegrationAudit(holdings, native, prior) : undefined
+  const integrationAudit = prior ? { ...holdingsIntegrationAudit(holdings, native, prior), priceConfidence: gate.summary } : undefined
   if (integrationAudit) console.warn('[robinhood-holdings-integration-audit]', integrationAudit)
   return { ...cached, native, holdings, ...sum, holdingsIntegrationAudit: integrationAudit, pricingSummary: { ...sum.pricingSummary, repricedFromCache: true }, status, reason: status === 'ok' ? null : cached.reason, fromCache: true }
 }
@@ -924,11 +1048,20 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
       balanceEvidenceSource: source, excludedFromValueReason, priceUsd: null, priceSource: null, valueUsd: null,
     }, quoteRate })
   }
+  // Spam evidence from EITHER balance provider applies to the exact contract, whichever row survives dedupe.
+  const providerSpam = new Set<string>()
+  for (const item of balances.items ?? []) if (item.is_spam === true && evmAddress(item.contract_address)) providerSpam.add(item.contract_address.toLowerCase())
+  for (const item of blockscoutRows ?? []) {
+    const t = item?.token as (NonNullable<BlockscoutAddressTokenBalance['token']> & { reputation?: unknown; is_scam?: unknown }) | null | undefined
+    const a = t?.address_hash ?? t?.address
+    if (evmAddress(a) && (t?.is_scam === true || (typeof t?.reputation === 'string' && t.reputation.toLowerCase() === 'scam'))) providerSpam.add(a.toLowerCase())
+  }
+  const spamReason = (a: unknown) => (evmAddress(a) && providerSpam.has(a.toLowerCase()) ? 'provider_spam_flag' : null)
   for (const item of balances.items ?? []) {
     if (item.native_token) continue
     add(item.contract_address, item.balance, item.contract_decimals, item.contract_ticker_symbol, item.contract_name,
       'goldrush_balances_v2', typeof item.quote_rate === 'number' && Number.isFinite(item.quote_rate) && item.quote_rate > 0 ? item.quote_rate : null,
-      item.is_spam === true ? 'provider_spam_flag' : null)
+      spamReason(item.contract_address))
   }
   const balanceRowsTruncated = Math.max(0, (blockscoutRows?.length ?? 0) - FALLBACK_BALANCE_ROW_CAP)
   for (const item of (blockscoutRows ?? []).slice(0, FALLBACK_BALANCE_ROW_CAP)) {
@@ -937,10 +1070,10 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
       excludedInvalidToken++; continue
     }
     add(token.address_hash ?? token.address, item.value, token.decimals, token.symbol, token.name,
-      'blockscout_current_token_balances', null)
+      'blockscout_current_token_balances', null, spamReason(token.address_hash ?? token.address))
   }
   const entries = [...byToken.values()]
-  const holdings: RobinhoodTokenHolding[] = []
+  const pricedHoldings: RobinhoodTokenHolding[] = []
   let fallbackPriceLookups = 0
   for (let start = 0; start < entries.length; start += 8) {
     const batch = entries.slice(start, start + 8)
@@ -950,8 +1083,10 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
       }
       return priceToken(holding, quoteRate, deps)
     }))
-    holdings.push(...priced)
+    pricedHoldings.push(...priced)
   }
+  const gate = gateRobinhoodHoldings(pricedHoldings, native)
+  const holdings = gate.holdings
 
   // Complete holdings evidence = the native balance read AND the token balance list both answered.
   const holdingsComplete = nativeResult.rawBalance != null && (balances.items != null || blockscoutRows != null) && balanceRowsTruncated === 0
@@ -962,6 +1097,7 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
     normalizedRows, excludedZeroBalance, excludedInvalidToken, duplicateRowsRemoved, balanceRowsTruncated,
     balanceCoverageComplete: holdingsComplete,
   })
+  integrationAudit.priceConfidence = gate.summary
   console.warn('[robinhood-holdings-integration-audit]', integrationAudit)
   const status: RobinhoodHoldingsStatus = native == null && holdings.length === 0
     ? (balances.reason === 'no_api_key' ? 'not_configured' : 'unavailable')
