@@ -1,10 +1,10 @@
 // ROBINHOOD BLOCKSCOUT EVIDENCE, DISCLOSED.
 //
 // ROLE, DISCLOSED: this module is an EXPLORER/INDEXER PROOF LAYER for the Robinhood Wallet Scanner
-// only — never a replacement for GoldRush (balances/activity) or the Alchemy Robinhood RPC (native
-// balance, pool-currency/decimals lookups). It is consulted ONLY as a fallback/verification source:
-// when GoldRush's transactions_v3 fails entirely, or when a GoldRush-reported log is missing the raw
-// topics/data the swap decoder needs. It never runs for Solana (there is no Solana call site for
+// only — never a replacement for Alchemy Robinhood RPC native balance, pool-currency or decimals
+// lookups. Its current token-balance endpoint supplements GoldRush holdings, with its own capped
+// lane; the explorer's USD estimates are not consumed. Activity/log calls remain fallback-only:
+// GoldRush transactions_v3 failed, or a GoldRush log lacks raw topics/data. It never runs for Solana (there is no Solana call site for
 // this module anywhere in this codebase — see the isolation test in
 // scripts/test-robinhood-blockscout-evidence.mjs) and it never itself decides PnL — every log/tx it
 // supplies still goes through the SAME, unmodified robinhoodSwapDecoder.ts confidence gates
@@ -61,13 +61,14 @@ const RATE_LIMIT_MAX_CALLS = 4
 // unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
 export const NATIVE_TRACE_MAX_LOOKUPS = 3
-export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history'
+export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history' | 'holdings'
 // One empty filtered probe may precede four unfiltered history pages; each is one logical lookup.
-const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4 }
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4, holdings: 2 }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
   native_trace: { windowStart: 0, count: 0 },
   deep_acquisition: { windowStart: 0, count: 0 },
   token_history: { windowStart: 0, count: 0 },
+  holdings: { windowStart: 0, count: 0 },
   activity: { windowStart: 0, count: 0 },
   evidence: { windowStart: 0, count: 0 },
 }
@@ -379,6 +380,22 @@ export type BlockscoutTokenTransfer = {
   token?: { address?: string; address_hash?: string; symbol?: string; type?: string } | null
 }
 export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[] }
+
+/** Current balances, not transfer history. Explorer exchange_rate is deliberately not consumed. */
+export type BlockscoutAddressTokenBalance = {
+  value?: string
+  token?: { address?: string; address_hash?: string; decimals?: string | number; symbol?: string; name?: string; type?: string } | null
+}
+
+export async function getBlockscoutAddressTokenBalances(address: string, fetchImpl: FetchImpl) {
+  return fetchBlockscout<BlockscoutAddressTokenBalance[]>(
+    `/api/v2/addresses/${address}/token-balances`,
+    `robinhood:blockscout:balances:${address.toLowerCase()}`,
+    30,
+    fetchImpl,
+    'holdings',
+  )
+}
 
 export type BlockscoutHistoricalInbound = { txHash: string; timestampMs: number; token: string; rawAmount: string }
 export type BlockscoutHistoricalInboundResult = {
