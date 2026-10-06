@@ -57,8 +57,10 @@ const ETH_SERIES_MAX_WINDOW_SEC = 85 * 86_400
 export const ROBINHOOD_ACQUISITION_RECOVERY_LIMITS = { maxSellLanes: 1, maxCandidatesPerSell: 8, budgetMs: 5_000 } as const
 export const ROBINHOOD_DEEP_ACQUISITION_LIMITS = { maxSellLanes: 1, maxPages: 4, maxInboundCandidates: 20, maxReceiptProofs: 8, budgetMs: 8_000 } as const
 export const ROBINHOOD_RPC_ACQUISITION_LIMITS = {
-  lookbackBlocks: 2_000_000, initialChunkBlocks: 250_000, maxSuccessfulChunks: 8,
-  maxAttempts: 16, maxLogsPerChunk: 1_000, maxCandidates: 20, budgetMs: 6_000,
+  fixedFallbackLookbackBlocks: 2_000_000, historicalMarginBlocks: 1_000_000,
+  maxAbsoluteLookbackBlocks: 8_000_000, initialChunkBlocks: 250_000,
+  maxSuccessfulChunks: 32, maxAttempts: 48, maxLogsPerChunk: 1_000,
+  maxCandidates: 20, budgetMs: 8_000,
 } as const
 
 // ── Protocol constants ──────────────────────────────────────────────────────────────────────────────
@@ -235,6 +237,12 @@ export type RhRpcAcquisitionHistoryAudit = {
   verifiedBuysRecovered: number; recoveredBuyRaw: string; unmatchedSellRawAfter: string; closedLotsAdded: number
   stopReason: string; historyCoverage: 'bounded_block_lookback'; lookbackBlocks: number
   lowestScannedBlock: number | null; boundedLookbackComplete: boolean
+  coverageTarget: 'earliest_known_inbound_plus_margin' | 'fixed_fallback'
+  earliestKnownInboundBlock: number | null; targetFromBlock: number
+  reachedEarliestKnownInbound: boolean; reachedHistoricalMargin: boolean
+  knownInboundHashesExpected: string[]; knownInboundHashesFound: string[]
+  knownInboundCoverageComplete: boolean; absoluteLookbackCapHit: boolean
+  historicalMarginBlocks: number; maxAbsoluteLookbackBlocks: number
 }
 
 export type RhAcquisitionRecoverySummary = {
@@ -1246,11 +1254,34 @@ async function runAcquisitionRecovery(
   return { summary, swaps: recovered, evidence }
 }
 
+/** The activity row identifies a known inbound; only its already-fetched exact receipt supplies a block anchor. */
+async function knownInboundReceiptAnchors(
+  inbound: readonly RhInboundTokenTransfer[], token: string, wallet: string,
+  sellTxHash: string, sellBlock: number, sellTimestampSec: number,
+): Promise<{ expectedHashes: string[]; blockByHash: Map<string, number> }> {
+  const expectedHashes = [...new Set(inbound.filter((row) => lower(row.token) === token
+    && lower(row.txHash) !== sellTxHash && /^0x[0-9a-f]{64}$/.test(lower(row.txHash))
+    && (row.timestampMs == null || row.timestampMs < sellTimestampSec * 1000))
+    .map((row) => lower(row.txHash)))].sort()
+  const blockByHash = new Map<string, number>()
+  await Promise.all(expectedHashes.map(async (hash) => {
+    const cached = receiptCache.get(hash)
+    if (!cached) return
+    const receipt = await cached.catch(() => null)
+    if (receipt && Number.isSafeInteger(receipt.blockNumber) && receipt.blockNumber > 0
+      && receipt.blockNumber < sellBlock && walletReceivesToken(receipt, wallet, token)) {
+      blockByHash.set(hash, receipt.blockNumber)
+    }
+  }))
+  return { expectedHashes, blockByHash }
+}
+
 /** Exact RPC Transfer-log discovery. Logs index candidates; only the unchanged receipt classifier can prove buys. */
 export async function discoverRobinhoodRpcAcquisitionHistory(input: {
   sellTxHash: string; sellBlock: number; token: string; wallet: string; deadlineAt: number
   rpcLogs: (query: RhRpcLogQuery, deadlineAt: number) => Promise<RhRpcLogResult>
   rpc: RhRpc; knownHashes: ReadonlySet<string>
+  knownInboundHashesExpected?: readonly string[]; knownInboundBlocks?: ReadonlyMap<string, number>
   onCandidates?: (rows: RhInboundTokenTransfer[]) => Promise<'sell_covered' | 'proof_cap' | false>
   onRpcCalls?: (count: number) => void
 }): Promise<{ rows: RhInboundTokenTransfer[]; audit: RhRpcAcquisitionHistoryAudit }> {
@@ -1258,15 +1289,34 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
   const token = lower(input.token)
   const wallet = lower(input.wallet)
   const toBlock = sellBlock - 1
-  const fromBlock = Math.max(1, sellBlock - ROBINHOOD_RPC_ACQUISITION_LIMITS.lookbackBlocks)
+  const knownInboundHashesExpected = [...new Set(input.knownInboundHashesExpected?.map(lower) ?? [])]
+    .filter((hash) => /^0x[0-9a-f]{64}$/.test(hash)).sort()
+  const expectedSet = new Set(knownInboundHashesExpected)
+  const validKnownBlocks = [...(input.knownInboundBlocks?.entries() ?? [])]
+    .filter(([hash, block]) => expectedSet.has(lower(hash)) && Number.isSafeInteger(block) && block > 0 && block < sellBlock)
+    .map(([, block]) => block)
+  const earliestKnownInboundBlock = validKnownBlocks.length ? Math.min(...validKnownBlocks) : null
+  const coverageTarget = earliestKnownInboundBlock == null ? 'fixed_fallback' : 'earliest_known_inbound_plus_margin'
+  const desiredFromBlock = Math.max(1, earliestKnownInboundBlock == null
+    ? sellBlock - ROBINHOOD_RPC_ACQUISITION_LIMITS.fixedFallbackLookbackBlocks
+    : earliestKnownInboundBlock - ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks)
+  const absoluteFloor = Math.max(1, sellBlock - ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks)
+  const absoluteLookbackCapHit = desiredFromBlock < absoluteFloor
+  const fromBlock = Math.max(desiredFromBlock, absoluteFloor)
   const audit: RhRpcAcquisitionHistoryAudit = {
     sellTxHash, sellBlock, token, wallet, fromBlock, toBlock, chunksAttempted: 0, chunksSucceeded: 0,
     chunkRanges: [], rangeShrinks: 0, logsReturned: 0, exactInboundLogs: 0, uniqueTxCandidates: 0,
     knownCurrentSampleTxsFound: [], newCandidatesFound: 0, receiptsAttempted: 0,
     verifiedBuysRecovered: 0, recoveredBuyRaw: '0', unmatchedSellRawAfter: '0', closedLotsAdded: 0,
     stopReason: 'not_started', historyCoverage: 'bounded_block_lookback',
-    lookbackBlocks: ROBINHOOD_RPC_ACQUISITION_LIMITS.lookbackBlocks,
+    lookbackBlocks: sellBlock - fromBlock,
     lowestScannedBlock: null, boundedLookbackComplete: false,
+    coverageTarget, earliestKnownInboundBlock, targetFromBlock: fromBlock,
+    reachedEarliestKnownInbound: false, reachedHistoricalMargin: false,
+    knownInboundHashesExpected, knownInboundHashesFound: [], knownInboundCoverageComplete: false,
+    absoluteLookbackCapHit,
+    historicalMarginBlocks: ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks,
+    maxAbsoluteLookbackBlocks: ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks,
   }
   const rows: RhInboundTokenTransfer[] = []
   if (!rpcLogs || !Number.isSafeInteger(sellBlock) || sellBlock <= 1 || !/^0x[0-9a-f]{40}$/.test(token) || !/^0x[0-9a-f]{40}$/.test(wallet)) {
@@ -1276,6 +1326,8 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
   const seenLogs = new Set<string>()
   const seenTxs = new Set<string>()
   const knownFound = new Set<string>()
+  const expectedFound = new Set<string>()
+  let proofComplete = false
   let nextTo = toBlock
   let chunkBlocks: number = ROBINHOOD_RPC_ACQUISITION_LIMITS.initialChunkBlocks
   while (nextTo >= fromBlock && audit.chunksSucceeded < ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks
@@ -1326,6 +1378,7 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
       seenLogs.add(key)
       audit.exactInboundLogs++
       if (knownHashes.has(hash)) knownFound.add(hash)
+      if (expectedSet.has(hash)) expectedFound.add(hash)
       const prior = byTx.get(hash)
       if (prior && prior.block !== block) continue
       byTx.set(hash, { block, raw: (prior?.raw ?? ZERO) + raw })
@@ -1336,6 +1389,7 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
     for (const [hash] of novel) seenTxs.add(hash)
     audit.uniqueTxCandidates = seenTxs.size
     audit.knownCurrentSampleTxsFound = [...knownFound].sort()
+    audit.knownInboundHashesFound = [...expectedFound].sort()
     const fresh = novel.filter(([hash]) => !knownHashes.has(hash))
     const blocks = [...new Set(fresh.map(([, v]) => v.block))]
     if (blocks.length) input.onRpcCalls?.(blocks.length)
@@ -1354,15 +1408,23 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
     })
     rows.push(...chunkRows)
     audit.newCandidatesFound = rows.length
-    const provenStop = chunkRows.length ? await input.onCandidates?.(chunkRows) : false
-    if (provenStop) { audit.stopReason = provenStop; break }
-    if (seenTxs.size >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxCandidates) { audit.stopReason = 'candidate_cap'; break }
     nextTo = chunkFrom - 1
+    const provenStop = !proofComplete && chunkRows.length ? await input.onCandidates?.(chunkRows) : false
+    if (provenStop) proofComplete = true // Coverage continues; no further receipt proofs are spent.
+    if (seenTxs.size >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxCandidates) { audit.stopReason = 'candidate_cap'; break }
   }
-  if (audit.stopReason === 'not_started') audit.stopReason = Date.now() >= deadlineAt ? 'deadline'
+  if (nextTo < fromBlock) audit.stopReason = 'bounded_target_reached'
+  else if (audit.stopReason === 'not_started') audit.stopReason = Date.now() >= deadlineAt ? 'deadline'
     : audit.chunksSucceeded >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks ? 'chunk_cap'
-    : audit.chunksAttempted >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts ? 'attempt_cap' : 'bounded_lookback_exhausted'
+    : audit.chunksAttempted >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts ? 'attempt_cap' : 'incomplete_coverage'
   audit.boundedLookbackComplete = nextTo < fromBlock
+  audit.reachedEarliestKnownInbound = earliestKnownInboundBlock != null && audit.lowestScannedBlock != null
+    && audit.lowestScannedBlock <= earliestKnownInboundBlock
+  audit.reachedHistoricalMargin = earliestKnownInboundBlock != null && audit.lowestScannedBlock != null
+    && earliestKnownInboundBlock >= ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks
+    && audit.lowestScannedBlock <= earliestKnownInboundBlock - ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks
+  audit.knownInboundCoverageComplete = knownInboundHashesExpected.length > 0
+    && knownInboundHashesExpected.every((hash) => expectedFound.has(hash))
   return { rows, audit }
 }
 
@@ -1382,6 +1444,9 @@ async function runDeepAcquisitionRecovery(
   const startedAt = Date.now()
   const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
   const sellBlock = swaps.find((s) => s.txHash === sell.txHash)?.blockNumber
+  const knownInboundAnchors = sellBlock == null ? null : await knownInboundReceiptAnchors(
+    inbound, sell.token, wallet, sell.txHash, sellBlock, sell.timestampSec,
+  )
   const rpcDeadlineAt = Date.now() + ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs
   const rpcCtx = { ...ctx, deadlineAt: rpcDeadlineAt }
   const rpcProofRows: RecoveryRow[] = []
@@ -1390,6 +1455,8 @@ async function runDeepAcquisitionRecovery(
     ? await discoverRobinhoodRpcAcquisitionHistory({
       sellTxHash: sell.txHash, sellBlock, token: sell.token, wallet, deadlineAt: rpcDeadlineAt,
       rpcLogs: ctx.deps.rpcInboundTransferLogs, rpc: ctx.rpc, knownHashes: new Set(excludedHashes),
+      knownInboundHashesExpected: knownInboundAnchors?.expectedHashes,
+      knownInboundBlocks: knownInboundAnchors?.blockByHash,
       onRpcCalls: (count) => { ctx.m.rpcCalls += count },
       onCandidates: async (chunkRows) => {
         const remainingProofs = ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs - rpcProofRows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length

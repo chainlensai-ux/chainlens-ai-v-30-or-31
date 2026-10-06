@@ -102,9 +102,9 @@ const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
 const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
-async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[] } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
+async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[]; hashes?: string[] } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
   __resetRobinhoodPnlV1CachesForTest() // hashes repeat across runs; receipts are cached by hash
-  const hashes = txs.map((_, i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
+  const hashes = txs.map((_, i) => opts.hashes?.[i] ?? `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
   const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: opts.blocks?.[i] ?? 1000 + i * 10 }]))
   const byBlock = new Map([...byHash.values()].map((v) => [v.block, v]))
   let receiptCalls = 0
@@ -434,6 +434,33 @@ test('RPC exact Transfer logs find four known distributions and prove only an ol
   assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
   assert.equal(r.verifiedClosedLots, 1)
   assert.equal(receiptCalls, 6)
+})
+
+test('cached receipts anchor all four production-shaped inbound hashes and search a full margin beyond the earliest', async () => {
+  const blocks = [70_400_844, 69_950_000, 69_050_000, 68_000_000, 66_800_000]
+  const hashes = ['53353d', '455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix) => `0x${prefix}${'0'.repeat(58)}`)
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const logs = distributions.map((_, j) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(ZERO_ADDR), t(WALLET)],
+    transactionHash: hashes[j + 1], blockNumber: hex(blocks[j + 1]), logIndex: hex(j),
+    data: `0x${uint(n((j + 1) * 10))}`, removed: false }))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions], {
+    blocks, hashes, inbound: [1, 2, 3, 4].map((i) => ({ i, raw: n(i * 10) })),
+  }, { rpcInboundTransferLogs: async (query) => ({ status: 'ok', logs: logs.filter((entry) =>
+    Number(entry.blockNumber) >= Number(query.fromBlock) && Number(entry.blockNumber) <= Number(query.toBlock)) }) })
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  const audit = r.deepAcquisition?.rpcHistory
+  assert.equal(audit?.earliestKnownInboundBlock, 66_800_000)
+  assert.equal(audit?.targetFromBlock, 65_800_000)
+  assert.deepEqual(audit?.knownInboundHashesExpected, hashes.slice(1).sort())
+  assert.deepEqual(audit?.knownInboundHashesFound, hashes.slice(1).sort())
+  assert.equal(audit?.knownInboundCoverageComplete, true)
+  assert.equal(audit?.reachedHistoricalMargin, true)
+  assert.equal(audit?.boundedLookbackComplete, true)
+  assert.equal(audit?.stopReason, 'bounded_target_reached')
+  assert.equal(audit?.newCandidatesFound, 0)
+  assert.equal(audit?.receiptsAttempted, 0)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(receiptCalls, 5) // sell + four already-classified receipts; no re-proof
 })
 
 test('RPC-discovered plain transfer stays non-buy and falls back without duplicating receipt proof', async () => {

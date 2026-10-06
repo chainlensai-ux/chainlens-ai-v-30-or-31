@@ -31,7 +31,8 @@ test('exact token/topic2 query discovers known wallet inbound without treating i
   assert.equal(queries[0].address, token)
   assert.equal(Number.parseInt(queries[0].toBlock, 16), 1_999_999)
   assert.equal(result.audit.historyCoverage, 'bounded_block_lookback')
-  assert.equal(result.audit.lookbackBlocks, 2_000_000)
+  assert.equal(result.audit.coverageTarget, 'fixed_fallback')
+  assert.equal(result.audit.lookbackBlocks, 1_999_999)
   assert.equal(result.audit.exactInboundLogs, 4)
   assert.deepEqual(result.audit.knownCurrentSampleTxsFound, known)
   assert.equal(result.audit.newCandidatesFound, 0)
@@ -59,7 +60,7 @@ test('multiple inbound logs in one tx group deterministically before receipt cla
   assert.equal(audit.uniqueTxCandidates, 1)
   assert.deepEqual(rows.map((r) => r.rawAmount), ['5'])
   assert.deepEqual(seen[0], [{ txHash: hash(10), rawAmount: '5' }])
-  assert.equal(audit.stopReason, 'sell_covered')
+  assert.equal(audit.stopReason, 'bounded_target_reached')
 })
 
 test('provider range-limit errors shrink same newest chunk, then continue with returned range only', async () => {
@@ -69,10 +70,12 @@ test('provider range-limit errors shrink same newest chunk, then continue with r
     return queries.length === 1 ? { status: 'range_limit', logs: null } : { status: 'ok', logs: [] }
   }, { onCandidates: async () => 'sell_covered' })
   assert.equal(result.audit.rangeShrinks, 1)
+  assert.equal(result.audit.targetFromBlock, 1)
   assert.equal(Number.parseInt(queries[1].toBlock, 16), Number.parseInt(queries[0].toBlock, 16))
   assert.equal(Number.parseInt(queries[1].fromBlock, 16), Number.parseInt(queries[0].toBlock, 16) - ROBINHOOD_RPC_ACQUISITION_LIMITS.initialChunkBlocks / 2 + 1)
-  assert.equal(result.audit.chunksSucceeded, 8)
-  assert.equal(result.audit.stopReason, 'chunk_cap')
+  assert.equal(result.audit.chunksSucceeded, 16)
+  assert.equal(result.audit.stopReason, 'bounded_target_reached')
+  assert.equal(result.audit.boundedLookbackComplete, true)
 })
 
 test('real RPC adapter sends eth_getLogs and preserves provider range-limit classification', async () => {
@@ -86,12 +89,76 @@ test('real RPC adapter sends eth_getLogs and preserves provider range-limit clas
   assert.deepEqual(queries[0], { jsonrpc: '2.0', id: 1, method: 'eth_getLogs', params: [query] })
 })
 
-test('eight successful chunks and twenty unique candidates are hard ceilings', async () => {
+test('bounded target and twenty unique candidates are hard ceilings', async () => {
   const empty = await base(async () => ({ status: 'ok', logs: [] }))
   assert.equal(empty.audit.chunksSucceeded, 8)
+  assert.equal(empty.audit.stopReason, 'bounded_target_reached')
+  assert.equal(empty.audit.boundedLookbackComplete, true)
   const full = await base(async () => ({ status: 'ok', logs: Array.from({ length: 30 }, (_, i) => log(i + 1)) }))
   assert.equal(full.audit.uniqueTxCandidates, 20)
   assert.equal(full.audit.newCandidatesFound, 20)
   assert.equal(full.audit.stopReason, 'candidate_cap')
   assert.equal(full.audit.chunksSucceeded, 1)
+})
+
+test('production-shaped anchors reach all four distinct known blocks and one million blocks below the earliest', async () => {
+  const sellBlock = 70_400_844
+  const known = [
+    ['455896', 69_950_000], ['68a04c', 69_050_000],
+    ['48ed6d', 68_000_000], ['cc37ff', 66_800_000],
+  ] as const
+  const knownHashes = known.map(([prefix]) => `0x${prefix}${'0'.repeat(58)}`)
+  const blocks = new Map(known.map(([prefix, block]) => [`0x${prefix}${'0'.repeat(58)}`, block]))
+  const queries: RhRpcLogQuery[] = []
+  const result = await base(async (query) => {
+    queries.push(query)
+    const from = Number.parseInt(query.fromBlock, 16)
+    const to = Number.parseInt(query.toBlock, 16)
+    return { status: 'ok', logs: known.flatMap(([prefix, block], i) => block >= from && block <= to
+      ? [log(i + 1, { transactionHash: `0x${prefix}${'0'.repeat(58)}`, blockNumber: hex(block) })] : []) }
+  }, { sellBlock, knownHashes: new Set(knownHashes), knownInboundHashesExpected: knownHashes, knownInboundBlocks: blocks })
+  assert.equal(result.audit.coverageTarget, 'earliest_known_inbound_plus_margin')
+  assert.equal(result.audit.earliestKnownInboundBlock, 66_800_000)
+  assert.equal(result.audit.targetFromBlock, 65_800_000)
+  assert.equal(result.audit.stopReason, 'bounded_target_reached')
+  assert.equal(result.audit.boundedLookbackComplete, true)
+  assert.equal(result.audit.reachedEarliestKnownInbound, true)
+  assert.equal(result.audit.reachedHistoricalMargin, true)
+  assert.deepEqual(result.audit.knownInboundHashesFound, knownHashes.slice().sort())
+  assert.equal(result.audit.knownInboundCoverageComplete, true)
+  assert.equal(result.audit.newCandidatesFound, 0)
+  assert.equal(result.audit.absoluteLookbackCapHit, false)
+  assert.ok(queries.length > 8)
+  assert.ok(result.audit.lowestScannedBlock! <= 65_800_000)
+})
+
+test('absolute 8M cap is explicit when an anchor lies beyond it', async () => {
+  const knownHash = hash(100)
+  const result = await base(async () => ({ status: 'ok', logs: [] }), {
+    sellBlock: 70_400_844, knownHashes: new Set([knownHash]), knownInboundHashesExpected: [knownHash],
+    knownInboundBlocks: new Map([[knownHash, 60_000_000]]),
+  })
+  assert.equal(result.audit.targetFromBlock, 62_400_844)
+  assert.equal(result.audit.absoluteLookbackCapHit, true)
+  assert.equal(result.audit.boundedLookbackComplete, true)
+  assert.equal(result.audit.reachedEarliestKnownInbound, false)
+  assert.equal(result.audit.reachedHistoricalMargin, false)
+  assert.equal(result.audit.knownInboundCoverageComplete, false)
+  assert.equal(result.audit.chunksSucceeded, 32)
+  assert.equal(result.audit.stopReason, 'bounded_target_reached')
+})
+
+test('chunk cap and deadline report incomplete bounded coverage', async () => {
+  const anchored = { sellBlock: 70_400_844, knownInboundBlocks: new Map([[hash(1), 63_400_844]]),
+    knownInboundHashesExpected: [hash(1)] }
+  let attempts = 0
+  const capped = await base(async () => ({ status: ++attempts === 1 ? 'range_limit' : 'ok', logs: attempts === 1 ? null : [] } as RhRpcLogResult), anchored)
+  assert.equal(capped.audit.targetFromBlock, 62_400_844)
+  assert.equal(capped.audit.rangeShrinks, 1)
+  assert.equal(capped.audit.chunksSucceeded, 32)
+  assert.equal(capped.audit.stopReason, 'chunk_cap')
+  assert.equal(capped.audit.boundedLookbackComplete, false)
+  const expired = await base(async () => ({ status: 'ok', logs: [] }), { ...anchored, deadlineAt: Date.now() - 1 })
+  assert.equal(expired.audit.stopReason, 'deadline')
+  assert.equal(expired.audit.boundedLookbackComplete, false)
 })
