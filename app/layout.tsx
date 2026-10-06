@@ -3,7 +3,7 @@ import { Suspense } from 'react'
 import Script from 'next/script'
 import { headers } from 'next/headers'
 import { cookieToInitialState } from 'wagmi'
-import { Sora, Plus_Jakarta_Sans } from 'next/font/google'
+import localFont from 'next/font/local'
 import './globals.css'
 
 // SORA/JAKARTA, DISCLOSED: the Aurora Terminal homepage redesign was designed against Sora
@@ -11,8 +11,26 @@ import './globals.css'
 // but nothing in the app ever loaded either family, so the real page silently fell back to
 // system-ui and read visibly different from the approved mockup. Loaded here as CSS vars
 // (additive, doesn't touch the existing --font-inter default) so ReferenceHero/Navbar can opt in.
-const sora = Sora({ subsets: ['latin'], weight: ['600', '700', '800'], variable: '--font-sora' })
-const jakarta = Plus_Jakarta_Sans({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-jakarta' })
+// SELF-HOSTED: same families/weights/latin subset as the former next/font/google calls, served from
+// app/fonts (OFL, from @fontsource) so a Google Fonts download hiccup can never fail the Vercel build.
+const sora = localFont({
+  src: [
+    { path: './fonts/sora-latin-600-normal.woff2', weight: '600', style: 'normal' },
+    { path: './fonts/sora-latin-700-normal.woff2', weight: '700', style: 'normal' },
+    { path: './fonts/sora-latin-800-normal.woff2', weight: '800', style: 'normal' },
+  ],
+  variable: '--font-sora',
+  display: 'swap',
+})
+const jakarta = localFont({
+  src: [
+    { path: './fonts/plus-jakarta-sans-latin-400-normal.woff2', weight: '400', style: 'normal' },
+    { path: './fonts/plus-jakarta-sans-latin-500-normal.woff2', weight: '500', style: 'normal' },
+    { path: './fonts/plus-jakarta-sans-latin-600-normal.woff2', weight: '600', style: 'normal' },
+  ],
+  variable: '--font-jakarta',
+  display: 'swap',
+})
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
 import AffiliateRefCapture from '@/components/AffiliateRefCapture'
