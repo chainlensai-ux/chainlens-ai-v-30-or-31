@@ -22,10 +22,11 @@ const base = (rpcLogs: (query: RhRpcLogQuery, deadlineAt: number) => Promise<RhR
   })
 
 test('RPC history keeps the expanded ceiling bounded without changing proof limits', () => {
-  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks, 10_000_000)
-  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks, 40)
-  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts, 60)
-  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs, 10_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks, 16_000_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks, 64)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts, 96)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs, 12_000)
+  assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxLogsPerChunk, 1_000)
   assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks, 1_000_000)
   assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.initialChunkBlocks, 250_000)
   assert.equal(ROBINHOOD_RPC_ACQUISITION_LIMITS.maxCandidates, 20)
@@ -142,33 +143,78 @@ test('production-shaped anchors reach all four distinct known blocks and one mil
   assert.ok(result.audit.lowestScannedBlock! <= 61_309_618)
 })
 
-test('absolute 10M cap is explicit when an anchor lies beyond it', async () => {
+test('absolute 16M cap is explicit when an anchor lies beyond it', async () => {
   const knownHash = hash(100)
   const result = await base(async () => ({ status: 'ok', logs: [] }), {
     sellBlock: 70_400_844, knownHashes: new Set([knownHash]), knownInboundHashesExpected: [knownHash],
-    knownInboundBlocks: new Map([[knownHash, 59_000_000]]),
+    knownInboundBlocks: new Map([[knownHash, 53_000_000]]),
   })
-  assert.equal(result.audit.targetFromBlock, 60_400_844)
+  assert.equal(result.audit.desiredFromBlock, 52_000_000)
+  assert.equal(result.audit.absoluteFloor, 54_400_844)
+  assert.equal(result.audit.targetFromBlock, 54_400_844)
+  assert.equal(result.audit.requestedLookbackBlocks, 16_000_000)
+  assert.equal(result.audit.actualLookbackBlocks, 16_000_000)
   assert.equal(result.audit.absoluteLookbackCapHit, true)
   assert.equal(result.audit.boundedLookbackComplete, true)
   assert.equal(result.audit.reachedEarliestKnownInbound, false)
   assert.equal(result.audit.reachedHistoricalMargin, false)
   assert.equal(result.audit.knownInboundCoverageComplete, false)
-  assert.equal(result.audit.chunksSucceeded, 40)
+  assert.equal(result.audit.chunksSucceeded, 64)
   assert.equal(result.audit.stopReason, 'bounded_target_reached')
 })
 
 test('chunk cap and deadline report incomplete bounded coverage', async () => {
-  const anchored = { sellBlock: 70_400_844, knownInboundBlocks: new Map([[hash(1), 61_400_844]]),
+  const anchored = { sellBlock: 70_400_844, knownInboundBlocks: new Map([[hash(1), 55_400_844]]),
     knownInboundHashesExpected: [hash(1)] }
   let attempts = 0
   const capped = await base(async () => ({ status: ++attempts === 1 ? 'range_limit' : 'ok', logs: attempts === 1 ? null : [] } as RhRpcLogResult), anchored)
-  assert.equal(capped.audit.targetFromBlock, 60_400_844)
+  assert.equal(capped.audit.targetFromBlock, 54_400_844)
   assert.equal(capped.audit.rangeShrinks, 1)
-  assert.equal(capped.audit.chunksSucceeded, 40)
+  assert.equal(capped.audit.chunksSucceeded, 64)
   assert.equal(capped.audit.stopReason, 'chunk_cap')
   assert.equal(capped.audit.boundedLookbackComplete, false)
   const expired = await base(async () => ({ status: 'ok', logs: [] }), { ...anchored, deadlineAt: Date.now() - 1 })
   assert.equal(expired.audit.stopReason, 'deadline')
   assert.equal(expired.audit.boundedLookbackComplete, false)
+})
+
+test('production 0xf5f7… shape: evidence-anchored target 69,483,888 is reached inside the global bounded policy', async () => {
+  const sellBlock = 81_106_866
+  const earliest = hash(0xf5f7)
+  const later = hash(0xf5f8)
+  const blocks = new Map([[earliest, 70_483_888], [later, 78_000_000]])
+  const result = await base(async (query) => {
+    const from = Number.parseInt(query.fromBlock, 16)
+    const to = Number.parseInt(query.toBlock, 16)
+    return { status: 'ok', logs: [...blocks].flatMap(([h, b], i) => b >= from && b <= to ? [log(i + 1, { transactionHash: h, blockNumber: hex(b) })] : []) }
+  }, { sellBlock, knownHashes: new Set(blocks.keys()), knownInboundHashesExpected: [...blocks.keys()], knownInboundBlocks: blocks, deadlineAt: Date.now() + 12_000 })
+  const a = result.audit
+  assert.equal(a.earliestKnownInboundBlock, 70_483_888)
+  assert.equal(a.desiredFromBlock, 69_483_888)
+  assert.equal(a.absoluteFloor, 65_106_866)
+  assert.equal(a.targetFromBlock, 69_483_888)
+  assert.equal(a.requestedLookbackBlocks, 11_622_978)
+  assert.equal(a.absoluteLookbackCapHit, false)
+  assert.equal(a.reachedEarliestKnownInbound, true)
+  assert.equal(a.reachedHistoricalMargin, true)
+  assert.equal(a.boundedLookbackComplete, true)
+  assert.equal(a.stopReason, 'bounded_target_reached')
+  assert.equal(a.lowestScannedBlock, 69_483_888)
+  assert.equal(a.actualLookbackBlocks, 11_622_978)
+  assert.ok(a.chunksSucceeded <= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks)
+  assert.equal(a.knownInboundCoverageComplete, true)
+  assert.equal(a.newCandidatesFound, 0) // known inbounds are found, never re-proved, never buys by themselves
+  assert.equal(a.historyCoverage, 'bounded_block_lookback') // never claims complete wallet history
+})
+
+test('the bounded policy never scans to genesis, even for a near-genesis anchor', async () => {
+  const anchor = hash(7)
+  const result = await base(async () => ({ status: 'ok', logs: [] }), {
+    sellBlock: 81_106_866, knownInboundHashesExpected: [anchor], knownInboundBlocks: new Map([[anchor, 500_000]]), deadlineAt: Date.now() + 12_000,
+  })
+  assert.equal(result.audit.desiredFromBlock, 1)
+  assert.equal(result.audit.targetFromBlock, 65_106_866)
+  assert.equal(result.audit.absoluteLookbackCapHit, true)
+  assert.equal(result.audit.reachedEarliestKnownInbound, false)
+  assert.ok(result.audit.lowestScannedBlock! >= 65_106_866)
 })

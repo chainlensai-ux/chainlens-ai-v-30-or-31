@@ -56,11 +56,16 @@ const ETH_SERIES_MAX_WINDOW_SEC = 85 * 86_400
  */
 export const ROBINHOOD_ACQUISITION_RECOVERY_LIMITS = { maxSellLanes: 1, maxCandidatesPerSell: 8, budgetMs: 5_000 } as const
 export const ROBINHOOD_DEEP_ACQUISITION_LIMITS = { maxSellLanes: 1, maxPages: 4, maxInboundCandidates: 20, maxReceiptProofs: 8, budgetMs: 8_000 } as const
+/**
+ * RPC acquisition history: ONE global bounded policy, never per-wallet tuning. The target is evidence-anchored
+ * (earliest known inbound − margin); the absolute ceiling only bounds work (64 × 250k-block chunks = 16M blocks)
+ * and never implies complete wallet history. Genesis is never scanned.
+ */
 export const ROBINHOOD_RPC_ACQUISITION_LIMITS = {
   fixedFallbackLookbackBlocks: 2_000_000, historicalMarginBlocks: 1_000_000,
-  maxAbsoluteLookbackBlocks: 10_000_000, initialChunkBlocks: 250_000,
-  maxSuccessfulChunks: 40, maxAttempts: 60, maxLogsPerChunk: 1_000,
-  maxCandidates: 20, budgetMs: 10_000,
+  maxAbsoluteLookbackBlocks: 16_000_000, initialChunkBlocks: 250_000,
+  maxSuccessfulChunks: 64, maxAttempts: 96, maxLogsPerChunk: 1_000,
+  maxCandidates: 20, budgetMs: 12_000,
 } as const
 
 // ── Protocol constants ──────────────────────────────────────────────────────────────────────────────
@@ -239,6 +244,10 @@ export type RhRpcAcquisitionHistoryAudit = {
   lowestScannedBlock: number | null; boundedLookbackComplete: boolean
   coverageTarget: 'earliest_known_inbound_plus_margin' | 'fixed_fallback'
   earliestKnownInboundBlock: number | null; targetFromBlock: number
+  /** Evidence-anchored wish (earliest known inbound − margin, or the fixed fallback) before the absolute ceiling. */
+  desiredFromBlock: number; absoluteFloor: number
+  /** sellBlock − targetFromBlock (what the bounded policy asked for) vs sellBlock − lowestScannedBlock (what was scanned). */
+  requestedLookbackBlocks: number; actualLookbackBlocks: number
   reachedEarliestKnownInbound: boolean; reachedHistoricalMargin: boolean
   knownInboundHashesExpected: string[]; knownInboundHashesFound: string[]
   knownInboundCoverageComplete: boolean; absoluteLookbackCapHit: boolean
@@ -1340,6 +1349,7 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
     lookbackBlocks: sellBlock - fromBlock,
     lowestScannedBlock: null, boundedLookbackComplete: false,
     coverageTarget, earliestKnownInboundBlock, targetFromBlock: fromBlock,
+    desiredFromBlock, absoluteFloor, requestedLookbackBlocks: sellBlock - fromBlock, actualLookbackBlocks: 0,
     reachedEarliestKnownInbound: false, reachedHistoricalMargin: false,
     knownInboundHashesExpected, knownInboundHashesFound: [], knownInboundCoverageComplete: false,
     absoluteLookbackCapHit,
@@ -1452,6 +1462,7 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
     : audit.chunksSucceeded >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxSuccessfulChunks ? 'chunk_cap'
     : audit.chunksAttempted >= ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAttempts ? 'attempt_cap' : 'incomplete_coverage'
   audit.boundedLookbackComplete = nextTo < fromBlock
+  audit.actualLookbackBlocks = audit.lowestScannedBlock == null ? 0 : sellBlock - audit.lowestScannedBlock
   audit.reachedEarliestKnownInbound = earliestKnownInboundBlock != null && audit.lowestScannedBlock != null
     && audit.lowestScannedBlock <= earliestKnownInboundBlock
   audit.reachedHistoricalMargin = earliestKnownInboundBlock != null && audit.lowestScannedBlock != null
