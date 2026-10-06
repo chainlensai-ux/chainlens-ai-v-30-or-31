@@ -91,7 +91,12 @@ export type RhNativeTraceAudit = {
   paginationComplete: boolean
   paginationCap: { maxPages: number; maxItems: number; maxTotalMs: number } | null
   paginationCapHit: boolean
-  pageTransportAttempts: Array<{ page: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
+  pageTransportAttempts: Array<{ page: number; attempt?: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
+  /** Real HTTP requests (pages + gateway switches + same-page retries); pagesRequested stays logical pages. */
+  transportAttemptsTotal?: number
+  pageRetryCount?: number
+  pagesRetried?: number[]
+  transientFailureCounts?: { timeout: number; network_error: number; rate_limited: number; http_5xx: number }
   result: RhNativeTraceResultKind
 }
 /** transfers is non-null only for result proven / empty (a complete trace with explicit execution status). */

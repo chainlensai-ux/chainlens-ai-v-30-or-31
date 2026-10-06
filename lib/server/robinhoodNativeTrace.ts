@@ -81,6 +81,10 @@ function liveBlockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: stri
       paginationCap: t.paginationCap,
       paginationCapHit: t.paginationCapHit,
       pageTransportAttempts: t.pageTransportAttempts,
+      transportAttemptsTotal: t.transportAttemptsTotal,
+      pageRetryCount: t.pageRetryCount,
+      pagesRetried: t.pagesRetried,
+      transientFailureCounts: t.transientFailureCounts,
       result: 'transport_failed',
     }
     const done = (result: RhNativeTraceAudit['result'], transfers: RhNativeTransfer[] | null = null): RhNativeTraceResult => ({ transfers, audit: { ...audit, result } })

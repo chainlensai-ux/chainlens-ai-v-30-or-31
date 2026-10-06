@@ -713,12 +713,21 @@ export type BlockscoutInternalTransactionsResponse = { items?: BlockscoutInterna
 // cursor). The trace is complete only when a page returns next_page_params == null. Any failed page, any
 // malformed page, a non-scalar cursor value or a repeated cursor makes the whole trace unavailable — a partial
 // prefix is never returned. Hard caps per lookup: pages, items and total time.
-export const NATIVE_TRACE_PAGINATION = { maxPages: 4, maxItems: 200, maxTotalMs: 6_000 } as const
+// SAME-PAGE RETRY: a logical page gets at most one retry, only after a transient failure (timeout, network error,
+// HTTP 429, HTTP 5xx), on the exact same path / cursor and the same host + auth mode as the failed request (after a
+// community 401/403 → gateway switch, retries stay on the gateway). Every request, retry included, is bounded by the
+// time left in maxTotalMs; with no meaningful time left the lookup fails closed. Items of a page are only kept from
+// a successful response. Retries never take another native_trace budget slot.
+export const NATIVE_TRACE_PAGINATION = { maxPages: 4, maxItems: 200, maxTotalMs: 12_000 } as const
+export const NATIVE_TRACE_MAX_RETRIES_PER_PAGE = 1 // initial request + at most one retry
+const NATIVE_TRACE_MIN_REQUEST_MS = 250 // below this a request cannot meaningfully complete: fail closed
+const NATIVE_TRACE_RETRY_DELAY_MS = 150
+export type NativeTraceTransientFailure = 'timeout' | 'network_error' | 'rate_limited' | 'http_5xx'
 
 export type InternalTxTraceStatus =
   | 'complete' | 'not_configured' | 'budget_exhausted' | 'transport_failed' | 'malformed'
   | 'inconsistent_pagination' | 'pagination_cap_exhausted'
-export type InternalTxPageAttempt = { page: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
+export type InternalTxPageAttempt = { page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
 export type InternalTxTraceResult = {
   status: InternalTxTraceStatus
   /** Every internal tx of the target tx, deduplicated — only when status is 'complete'. */
@@ -730,7 +739,13 @@ export type InternalTxTraceResult = {
   paginationComplete: boolean
   paginationCap: typeof NATIVE_TRACE_PAGINATION
   paginationCapHit: boolean
+  /** Every real HTTP attempt (page, attempt number within the page, host, auth, status, failure class). */
   pageTransportAttempts: InternalTxPageAttempt[]
+  /** Real HTTP requests made (pages + gateway switches + retries); pagesRequested counts logical pages only. */
+  transportAttemptsTotal: number
+  pageRetryCount: number
+  pagesRetried: number[]
+  transientFailureCounts: Record<NativeTraceTransientFailure, number>
   /** The last request's outcome (host / auth / status / failure class). */
   last: { requestHost: string | null; authMode: BlockscoutAuthMode | null; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
 }
@@ -805,6 +820,7 @@ export async function getBlockscoutTransactionInternalTransactions(
   const result: InternalTxTraceResult = {
     status: 'transport_failed', items: null, cacheHit: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: 0,
     paginationComplete: false, paginationCap: NATIVE_TRACE_PAGINATION, paginationCapHit: false, pageTransportAttempts: [],
+    transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
     last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
   }
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
@@ -821,17 +837,44 @@ export async function getBlockscoutTransactionInternalTransactions(
   let useGateway = false // set once the community host refused this lookup (401/403): later pages go to the gateway
   for (let page = 1; ; page++) {
     if (page > caps.maxPages || Date.now() - startedAt >= caps.maxTotalMs) return { ...result, status: 'pagination_cap_exhausted', paginationCapHit: true }
-    const path = query ? `${base}?${query}` : base
-    const remaining = caps.maxTotalMs - (Date.now() - startedAt)
+    const path = query ? `${base}?${query}` : base // fixed for every attempt of this logical page
     result.pagesRequested += 1
-    let res = await blockscoutRequest(path, fetchImpl, useGateway ? 'gateway' : 'community', Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
-    result.pageTransportAttempts.push({ page, ...pick(res.attempt) })
+    let attempt = 0
+    // One real request for this page, bounded by the time left; null when no meaningful time remains.
+    const send = async (mode: 'community' | 'gateway'): Promise<TransportResponse | null> => {
+      const remaining = caps.maxTotalMs - (Date.now() - startedAt)
+      if (remaining < NATIVE_TRACE_MIN_REQUEST_MS) return null
+      attempt += 1
+      result.transportAttemptsTotal += 1
+      const r = await blockscoutRequest(path, fetchImpl, mode, Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
+      result.pageTransportAttempts.push({ page, attempt, ...pick(r.attempt) })
+      result.last = pick(r.attempt)
+      return r
+    }
+    const deadline = () => ({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const } })
+    let res = await send(useGateway ? 'gateway' : 'community')
+    if (!res) return deadline()
     if (!useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
       useGateway = true
-      res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, Math.max(1, caps.maxTotalMs - (Date.now() - startedAt))))
-      result.pageTransportAttempts.push({ page, ...pick(res.attempt) })
+      res = await send('gateway')
+      if (!res) return deadline()
     }
-    result.last = pick(res.attempt)
+    for (let retries = 0; !res.ok; retries++) {
+      const kind = nativeTraceTransientFailure(res)
+      if (!kind) break
+      result.transientFailureCounts[kind] += 1
+      if (retries >= NATIVE_TRACE_MAX_RETRIES_PER_PAGE) break
+      // Retry the same page: same path / cursor, same host + auth mode as the failed request; never back to community.
+      const mode = res.attempt.authMode === 'gateway' ? 'gateway' : 'community'
+      if (caps.maxTotalMs - (Date.now() - startedAt) - NATIVE_TRACE_RETRY_DELAY_MS >= NATIVE_TRACE_MIN_REQUEST_MS) {
+        await new Promise((r) => setTimeout(r, NATIVE_TRACE_RETRY_DELAY_MS))
+      }
+      const again = await send(mode)
+      if (!again) break // no meaningful time left: fail closed with the original failure
+      result.pageRetryCount += 1
+      if (!result.pagesRetried.includes(page)) result.pagesRetried.push(page)
+      res = again
+    }
     if (!res.ok) return { ...result, status: res.attempt.failureClass === 'invalid_json' ? 'malformed' : 'transport_failed' }
     const body = res.json as BlockscoutInternalTransactionsResponse
     if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) return { ...result, status: 'malformed' }
@@ -852,6 +895,15 @@ export async function getBlockscoutTransactionInternalTransactions(
   }
 }
 const pick = (a: BlockscoutTransportAttempt) => ({ requestHost: a.requestHost, authMode: a.authMode, httpStatus: a.httpStatus, failureClass: a.failureClass })
+/** Only these are retried; malformed JSON, auth / host-policy / unsupported-chain failures and cursor problems never are. */
+function nativeTraceTransientFailure(res: TransportResponse): NativeTraceTransientFailure | null {
+  if (res.ok) return null
+  if (res.attempt.failureClass === 'timeout') return 'timeout'
+  if (res.attempt.failureClass === 'network_error') return 'network_error'
+  if (res.status === 429) return 'rate_limited'
+  if (res.status >= 500 && res.status <= 599 && res.attempt.failureClass === 'http_error') return 'http_5xx'
+  return null
+}
 
 export type BlockscoutContractInfo = {
   is_verified?: boolean
