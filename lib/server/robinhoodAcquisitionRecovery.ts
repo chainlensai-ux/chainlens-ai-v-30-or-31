@@ -122,7 +122,12 @@ export function classifyRobinhoodAcquisition(input: {
   const funding = { walletFundingToken: fundingTransfer.token, walletFundingRaw: inRaw.toString(), walletCreditRaw }
   if (input.inboundRaw != null && credit !== input.inboundRaw) return out({ classification: 'ambiguous', ...funding, rejectionReason: `wallet_credit_mismatch: net ${credit} vs inbound ${input.inboundRaw}` })
   if (swapLogs.length === 0) return out({ classification: 'ambiguous', ...funding, rejectionReason: 'no_swap_route: wallet paid and received without any swap' })
-  if (!isSender && input.txValue != null && input.txValue > ZERO) return out({ classification: 'ambiguous', ...funding, rejectionReason: `competing_payer: tx sender ${receipt.from} attached ${input.txValue} native value` })
+  if (!isSender && input.txValue !== ZERO) return out({
+    classification: 'ambiguous', ...funding,
+    rejectionReason: input.txValue != null && input.txValue > ZERO
+      ? `competing_payer: tx sender ${receipt.from} attached ${input.txValue} native value`
+      : 'competing_payer_unproven_tx_value',
+  })
 
   // ── Hops (same evidence rules as the mixed-route analyzer) ─────────────────────────────────────────
   const venueAddresses = new Set(swapLogs.map((l) => l.address))

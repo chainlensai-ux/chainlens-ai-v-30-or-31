@@ -3,7 +3,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
-import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
+import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, robinhoodAcquisitionRecoveryDeadline, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
 import { V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
 
 const TS = 1790155166 // production 53353d… sell
@@ -102,22 +102,27 @@ const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
 const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
-async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }> } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
+async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void> } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
   __resetRobinhoodPnlV1CachesForTest() // hashes repeat across runs; receipts are cached by hash
   const hashes = txs.map((_, i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
   const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: 1000 + i * 10 }]))
   const byBlock = new Map([...byHash.values()].map((v) => [v.block, v]))
   let receiptCalls = 0
-  const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
+  const rpc: RhRpc = async (calls) => {
+    if (opts.onRelayedValueLookup && calls.some(({ method, params }) => method === 'eth_getTransactionByHash' && byHash.get(params[0] as string)?.tx.sender === RELAYER)) {
+      await opts.onRelayedValueLookup()
+    }
+    return calls.map(({ method, params }) => {
     const p = params as any[]
     if (method === 'eth_getTransactionReceipt') { receiptCalls += 1; const e = byHash.get(p[0]); return e ? { status: '0x1', from: e.tx.sender, to: ROUTER, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
-    if (method === 'eth_getTransactionByHash') { const e = byHash.get(p[0]); return e ? { value: hex(e.tx.txValue) } : null }
+    if (method === 'eth_getTransactionByHash') { const e = byHash.get(p[0]); return e ? opts.txResponse && e.tx.sender === RELAYER ? opts.txResponse(e.tx) : { value: hex(e.tx.txValue) } : null }
     if (method === 'eth_getBalance') return hex(BigInt(10) * E18)
     if (method === 'eth_getTransactionCount') return byBlock.has(Number(p[1])) && byBlock.get(Number(p[1]))!.tx.sender === WALLET ? '0x2' : '0x1'
     if (method === 'eth_call' && p[0].to === RH_V4_POSITION_MANAGER) return [...POOLS.entries()].find(([id]) => id.slice(2, 52) === String(p[0].data).slice(10, 60))?.[1] ?? null
     if (method === 'eth_call' && p[0].data === '0x313ce567') return hex(18)
     return null
-  })
+    })
+  }
   const cand = opts.candidates ?? [0]
   const lines: Array<[string, any]> = []
   const w = console.warn
@@ -180,6 +185,7 @@ test('3. a relayed swap with exact wallet funding and exact target output become
   const buy = relayedBuy(n(1), n(1000))
   const { r, rec } = await run([sell, buy], { inbound: [{ i: 1, raw: n(1000) }] })
   assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueEvidence, 'tx_value_zero_proven')
   assert.deepEqual([rec[0].walletFundingToken, rec[0].walletFundingRaw, rec[0].inboundRaw, rec[0].routeProven, rec[0].ownershipProven, rec[0].fifoIncluded, rec[0].priceEvidenceStatus], [RH_WETH, n(1).toString(), n(1000).toString(), true, true, true, 'both_legs_priced'])
   assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 1)
   assert.equal(r.acquisitionRecovery!.closedLotsAdded, 1)
@@ -200,6 +206,51 @@ test('4. a competing payer rejects (another address funds the input, or the rela
   valued.txValue = n(0.1)
   const v = await run([sell, valued], { inbound: [{ i: 1, raw: n(1000) }] })
   assert.match(v.rec[0].rejectionReason, /^competing_payer: tx sender/)
+  assert.equal(v.rec[0].txValueEvidence, 'tx_value_nonzero')
+})
+
+test('relayed route with unavailable tx.value fails closed for null, malformed and RPC failure', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const inbound = [{ i: 1, raw: n(1000) }]
+  for (const response of [null, { value: '0x' }, { value: 'invalid' }, { value: '0x00' }]) {
+    const { r, rec } = await run([sell, relayedBuy(n(1), n(1000))], { inbound, txResponse: () => response })
+    assert.equal(rec[0].classification, 'ambiguous')
+    assert.equal(rec[0].rejectionReason, 'competing_payer_unproven_tx_value')
+    assert.equal(rec[0].txValueEvidence, 'tx_value_unavailable')
+    assert.equal(rec[0].fifoIncluded, false)
+    assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  }
+  const failed = await run([sell, relayedBuy(n(1), n(1000))], { inbound, txResponse: () => { throw new Error('eth_getTransactionByHash failed') } })
+  assert.equal(failed.rec[0].classification, 'ambiguous')
+  assert.equal(failed.rec[0].rejectionReason, 'competing_payer_unproven_tx_value')
+  assert.equal(failed.rec[0].txValueEvidence, 'tx_value_unavailable')
+  assert.equal(failed.r.acquisitionRecovery!.recoveredBuyCount, 0)
+})
+
+test('wallet-sent acquisitions do not need relayer tx.value proof', async () => {
+  const buy = directBuy(n(1), n(1000)).at(TS - 3600)
+  const { rec, r } = await run([sellShape(n(1000), n(1.5)), buy], { inbound: [{ i: 1, raw: n(1000) }], txResponse: () => null })
+  assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueEvidence, null)
+  assert.equal(r.verifiedClosedLots, 1)
+})
+
+test('recovery deadline is capped by both the 5-second budget and the unchanged parent deadline', () => {
+  const now = 10_000
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now + 20_000, now), now + 5_000)
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now + 2_000, now), now + 2_000)
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now - 1, now), now - 1)
+})
+
+test('a stalled relayer value lookup cannot hold recovery past its five-second budget', async () => {
+  const started = Date.now()
+  const { rec, r } = await run([sellShape(n(1000), n(1.5)), relayedBuy(n(1), n(1000))],
+    { inbound: [{ i: 1, raw: n(1000) }], onRelayedValueLookup: () => new Promise<void>(() => {}) })
+  assert.equal(rec[0].classification, 'ambiguous')
+  assert.equal(rec[0].rejectionReason, 'not_attempted_recovery_deadline')
+  assert.equal(rec[0].fifoIncluded, false)
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  assert.ok(Date.now() - started < 6_500, 'the recovery lane must stop after its local five-second budget')
 })
 
 test('5. outside funding rejects', async () => {

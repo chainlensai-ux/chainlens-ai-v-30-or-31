@@ -966,7 +966,34 @@ type RecoveryRow = {
   routeProven: boolean
   ownershipProven: boolean
   rejectionReason: string | null
+  txValueEvidence: 'tx_value_zero_proven' | 'tx_value_nonzero' | 'tx_value_unavailable' | null
   swap: RhVerifiedSwap | null
+}
+
+/** The target transaction's native value must be an authoritative, parseable RPC quantity. */
+function recoveryTxValue(raw: unknown): bigint | null {
+  const value = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as Record<string, unknown>).value : null
+  return typeof value === 'string' && /^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(value) ? BigInt(value) : null
+}
+
+/** Recovery has its own five-second ceiling and cannot move the parent scan deadline. */
+export function robinhoodAcquisitionRecoveryDeadline(parentDeadlineAt: number, now: number): number {
+  return Math.min(parentDeadlineAt, now + ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.budgetMs)
+}
+
+/** A slow recovery dependency cannot hold the sidecar past this lane's absolute deadline. */
+async function withinRecoveryDeadline<T>(deadlineAt: number, work: () => Promise<T>): Promise<T | null> {
+  const remaining = deadlineAt - Date.now()
+  if (remaining <= 0) return null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work().catch(() => null),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), remaining) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 async function loadReceipt(ctx: Ctx, txHash: string): Promise<RhReceipt | null> {
@@ -989,6 +1016,7 @@ const walletReceivesToken = (r: RhReceipt, wallet: string, token: string) =>
  */
 async function recoverAcquisitionsForSell(
   ctx: Ctx,
+  recoveryDeadlineAt: number,
   wallet: string,
   sell: { txHash: string; token: string; timestampSec: number; unmatchedRaw: bigint },
   inbound: readonly RhInboundTokenTransfer[],
@@ -1024,31 +1052,40 @@ async function recoverAcquisitionsForSell(
     if (covered >= sell.unmatchedRaw) break
     const row: RecoveryRow = {
       candidateTxHash: c.txHash, candidateTimestamp: c.ts, inboundRaw: c.rows.length === 1 ? c.rows[0].toString() : null, classification: 'ambiguous',
-      walletFundingToken: null, walletFundingRaw: null, routeProven: false, ownershipProven: false, rejectionReason: null, swap: null,
+      walletFundingToken: null, walletFundingRaw: null, routeProven: false, ownershipProven: false, rejectionReason: null, txValueEvidence: null, swap: null,
     }
     rows.push(row)
-    if (Date.now() >= ctx.deadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
-    const receipt = await loadReceipt(ctx, c.txHash)
+    if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
+    const receipt = await withinRecoveryDeadline(recoveryDeadlineAt, () => loadReceipt(ctx, c.txHash))
+    if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
     if (!receipt) { row.rejectionReason = 'receipt_unavailable'; continue }
     const ts = receiptTimestamp(receipt) ?? c.ts
     row.candidateTimestamp = ts
     if (ts >= sell.timestampSec) { row.rejectionReason = 'not_before_sell'; continue }
     const poolKeys = new Map<string, RhPoolKey>()
     for (const id of new Set(receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER && /^0x[0-9a-f]{64}$/.test(l.topics[1] ?? '')).map((l) => l.topics[1]))) {
-      const key = await resolveRobinhoodPoolKey(id, ctx.rpc, (n) => { ctx.m.rpcCalls += n }, () => { ctx.m.cacheHits += 1 })
+      const key = await withinRecoveryDeadline(recoveryDeadlineAt, () => resolveRobinhoodPoolKey(id, ctx.rpc, (n) => { ctx.m.rpcCalls += n }, () => { ctx.m.cacheHits += 1 }))
       if (key) poolKeys.set(id, { currency0: lower(key.currency0), currency1: lower(key.currency1) })
     }
+    if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
     const isSender = receipt.from === wallet
     const hasSwap = receipt.logs.some((l) => l.topics[0] === V2_SWAP_TOPIC0 || l.topics[0] === V3_SWAP_TOPIC0 || l.topics[0] === V4_SWAP_TOPIC0)
-    const [txr] = !isSender && hasSwap ? await call(ctx, [{ method: 'eth_getTransactionByHash', params: [c.txHash] }]) : [null]
+    const txr = !isSender && hasSwap
+      ? (await withinRecoveryDeadline(recoveryDeadlineAt, () => call(ctx, [{ method: 'eth_getTransactionByHash', params: [c.txHash] }])))?.[0] ?? null
+      : null
+    if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
+    const txValue = !isSender && hasSwap ? recoveryTxValue(txr) : null
+    if (!isSender && hasSwap) row.txValueEvidence = txValue == null ? 'tx_value_unavailable' : txValue === ZERO ? 'tx_value_zero_proven' : 'tx_value_nonzero'
     const proof = classifyRobinhoodAcquisition({
       wallet, txHash: c.txHash, receipt, targetToken: token, inboundRaw: c.rows.length === 1 ? c.rows[0] : null,
-      poolManager: POOL_MANAGER, v4PoolKeys: poolKeys, txValue: hexToBigInt((txr as Record<string, unknown> | null)?.value),
+      poolManager: POOL_MANAGER, v4PoolKeys: poolKeys, txValue,
     })
     Object.assign(row, { classification: proof.classification, walletFundingToken: proof.walletFundingToken, walletFundingRaw: proof.walletFundingRaw, rejectionReason: proof.rejectionReason, inboundRaw: proof.walletCreditRaw ?? row.inboundRaw })
     if (isSender) {
       // The wallet's own tx: only the existing direct-V4 / mixed-route lanes may call it a swap.
-      const o = outcomes.find((x) => x.txHash === c.txHash) ?? await verifyCandidate(ctx, wallet, c.txHash)
+      const o = outcomes.find((x) => x.txHash === c.txHash)
+        ?? await withinRecoveryDeadline(recoveryDeadlineAt, () => verifyCandidate(ctx, wallet, c.txHash))
+      if (!o || Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
       if (o.swap && o.swap.outputToken === token) {
         Object.assign(row, { classification: 'verified_buy', walletFundingToken: o.swap.inputToken, walletFundingRaw: o.swap.inputRaw.toString(), inboundRaw: o.swap.outputRaw.toString(), routeProven: true, ownershipProven: true, rejectionReason: null, swap: o.swap })
         covered += o.swap.outputRaw
@@ -1059,7 +1096,9 @@ async function recoverAcquisitionsForSell(
     }
     if (proof.classification !== 'verified_buy') continue
     const inputToken = proof.walletFundingToken!
-    const [inputDecimals, outputDecimals] = await Promise.all([tokenDecimals(ctx, inputToken), tokenDecimals(ctx, token)])
+    const decimals = await withinRecoveryDeadline(recoveryDeadlineAt, () => Promise.all([tokenDecimals(ctx, inputToken), tokenDecimals(ctx, token)]))
+    if (!decimals || Date.now() >= recoveryDeadlineAt) { Object.assign(row, { classification: 'ambiguous', rejectionReason: 'not_attempted_recovery_deadline' }); continue }
+    const [inputDecimals, outputDecimals] = decimals
     if (inputDecimals == null || outputDecimals == null) { Object.assign(row, { classification: 'ambiguous', rejectionReason: 'decimals_unavailable' }); continue }
     const nativeThrough = proof.nativeThroughRaw ? BigInt(proof.nativeThroughRaw) : ZERO
     row.routeProven = proof.routeProven
@@ -1094,10 +1133,12 @@ async function runAcquisitionRecovery(
     .slice(0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxSellLanes)
   if (lanes.length === 0) return { summary, swaps: [], evidence: [] }
   const sell = lanes[0]
-  ctx.deadlineAt = Math.max(ctx.deadlineAt, Date.now() + ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.budgetMs)
-  const { found, rows } = await recoverAcquisitionsForSell(ctx, wallet, sell, inbound, outcomes)
+  const recoveryDeadlineAt = robinhoodAcquisitionRecoveryDeadline(ctx.deadlineAt, Date.now())
+  const { found, rows } = await recoverAcquisitionsForSell(ctx, recoveryDeadlineAt, wallet, sell, inbound, outcomes)
   const recovered = rows.map((r) => r.swap).filter((x): x is RhVerifiedSwap => x != null)
-  const evidence = recovered.length > 0 ? await priceRobinhoodSwaps(ctx, recovered) : []
+  const evidence = recovered.length > 0
+    ? await withinRecoveryDeadline(recoveryDeadlineAt, () => priceRobinhoodSwaps(ctx, recovered)) ?? []
+    : []
   const after = robinhoodUnmatchedSellRaw([...swaps, ...recovered], isQuote).get(sell.txHash)?.unmatchedRaw ?? sell.unmatchedRaw
   const attempted = rows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length
   Object.assign(summary, {
@@ -1110,7 +1151,7 @@ async function runAcquisitionRecovery(
   if (rows.length === 0) {
     console.warn('[robinhood-acquisition-recovery-audit]', {
       ...head, candidateTxHash: null, candidateTimestamp: null, inboundRaw: null, classification: null, walletFundingToken: null, walletFundingRaw: null,
-      routeProven: false, ownershipProven: false, priceEvidenceStatus: null, fifoIncluded: false, rejectionReason: 'no_earlier_inbound_of_sold_token',
+      routeProven: false, ownershipProven: false, txValueEvidence: null, priceEvidenceStatus: null, fifoIncluded: false, rejectionReason: 'no_earlier_inbound_of_sold_token',
     })
   }
   for (const r of rows) {
@@ -1118,7 +1159,7 @@ async function runAcquisitionRecovery(
     console.warn('[robinhood-acquisition-recovery-audit]', {
       ...head,
       candidateTxHash: r.candidateTxHash, candidateTimestamp: r.candidateTimestamp, inboundRaw: r.inboundRaw, classification: r.classification,
-      walletFundingToken: r.walletFundingToken, walletFundingRaw: r.walletFundingRaw, routeProven: r.routeProven, ownershipProven: r.ownershipProven,
+      walletFundingToken: r.walletFundingToken, walletFundingRaw: r.walletFundingRaw, routeProven: r.routeProven, ownershipProven: r.ownershipProven, txValueEvidence: r.txValueEvidence,
       priceEvidenceStatus: !r.swap ? null : e?.bothLegsVerified ? 'both_legs_priced' : (e?.rejectionReason ?? 'not_priced'),
       fifoIncluded: r.swap != null,
       rejectionReason: r.rejectionReason,
@@ -1329,4 +1370,3 @@ export function defaultRobinhoodPnlV1Deps(fetchImpl: FetchLike): RobinhoodPnlV1D
     now: Date.now,
   }
 }
-
