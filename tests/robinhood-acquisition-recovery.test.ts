@@ -3,7 +3,7 @@
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
-import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, robinhoodAcquisitionRecoveryDeadline, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
+import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, robinhoodAcquisitionRecoveryDeadline, selectRobinhoodPnlV1Candidates, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
 import { V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
 
 const TS = 1790155166 // production 53353d… sell
@@ -337,4 +337,69 @@ test('10. direct V4 and mixed-route acceptance are unchanged', async () => {
   assert.equal(none.r.acquisitionRecovery!.candidatesFound, 0)
   assert.equal(none.rec[0].rejectionReason, 'no_earlier_inbound_of_sold_token')
   assert.equal(none.r.structuralClosedLots, 0)
+})
+
+const historical = (...entries: Array<{ i: number; raw: bigint; ts?: number }>) => async () => ({
+  rows: entries.map(({ i, raw, ts }) => ({ txHash: `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`, timestampMs: (ts ?? TS - 86_400) * 1000, token: A, rawAmount: raw.toString() })),
+  pagesRequested: 2, pagesSucceeded: 2, olderInboundRowsFound: entries.length,
+  historicalRangeStart: (TS - 86_400) * 1000, historicalRangeEnd: (TS - 86_400) * 1000, stopReason: 'history_exhausted',
+})
+
+test('deep history only upgrades an older receipt-proven relayed buy; partial quantity remains unmatched', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const old = relayedBuy(n(0.4), n(400))
+  const { r } = await run([sell, old], {}, { historicalTokenInbounds: historical({ i: 1, raw: n(400) }) })
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  assert.equal(r.deepAcquisition?.pagesRequested, 2)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(r.deepAcquisition?.recoveredBuyRaw, n(400).toString())
+  assert.equal(r.deepAcquisition?.unmatchedSellRawAfter, n(600).toString())
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
+  assert.equal(r.verifiedClosedLots, 1)
+})
+
+test('deep history keeps plain transfers, competing payer, and unavailable tx.value as non-buys', async () => {
+  const cases = [
+    { tx: relayed(new Tx().xfer(A, OTHER, WALLET, n(1000))), response: undefined },
+    { tx: relayedBuy(n(1), n(1000)), response: { value: '0x1' } },
+    { tx: relayedBuy(n(1), n(1000)), response: null },
+  ]
+  for (const item of cases) {
+    const { r } = await run([sellShape(n(1000), n(1.5)), item.tx], { txResponse: () => item.response }, { historicalTokenInbounds: historical({ i: 1, raw: n(1000) }) })
+    assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+    assert.equal(r.deepAcquisition?.closedLotsAdded, 0)
+    assert.equal(r.realizedPnlUsd, null)
+  }
+})
+
+test('multiple deep buys enter FIFO chronologically and stop when inventory covers the sell', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const newer = relayedBuy(n(0.5), n(600), TS - 3600)
+  const older = relayedBuy(n(0.3), n(400), TS - 7200)
+  const unused = relayedBuy(n(0.1), n(100), TS - 10_800)
+  const { r, receiptCalls } = await run([sell, newer, older, unused], {}, {
+    historicalTokenInbounds: historical({ i: 1, raw: n(600), ts: TS - 3600 }, { i: 2, raw: n(400), ts: TS - 7200 }, { i: 3, raw: n(100), ts: TS - 10_800 }),
+  })
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 2)
+  assert.equal(r.deepAcquisition?.unmatchedSellRawAfter, '0')
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 2)
+  assert.equal(receiptCalls, 3) // sell plus the two needed buys; third older candidate is not proved
+})
+
+test('four current-sample distributions remain non-buys before deeper history is searched', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), ...distributions], {
+    inbound: distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10) })),
+  }, { historicalTokenInbounds: historical() })
+  assert.equal(rec.length, 4)
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'), JSON.stringify(rec))
+  assert.equal(r.acquisitionRecovery?.recoveredBuyCount, 0)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+})
+
+test('the global swap candidate cap remains twenty', () => {
+  const sample = Array.from({ length: 25 }, (_, i) => ({ txHash: `0x${(i + 1).toString(16).padStart(64, '0')}`, timestampMs: i, hasSwapLog: true }))
+  const selected = selectRobinhoodPnlV1Candidates(sample)
+  assert.equal(selected.selected.length, 20)
+  assert.equal(selected.dropped, 5)
 })

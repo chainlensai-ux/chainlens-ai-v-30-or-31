@@ -55,6 +55,7 @@ const ETH_SERIES_MAX_WINDOW_SEC = 85 * 86_400
  * earlier inbound txs of that exact token, with its own small time budget. The 20-receipt cap is untouched.
  */
 export const ROBINHOOD_ACQUISITION_RECOVERY_LIMITS = { maxSellLanes: 1, maxCandidatesPerSell: 8, budgetMs: 5_000 } as const
+export const ROBINHOOD_DEEP_ACQUISITION_LIMITS = { maxSellLanes: 1, maxPages: 4, maxInboundCandidates: 20, maxReceiptProofs: 8, budgetMs: 8_000 } as const
 
 // ── Protocol constants ──────────────────────────────────────────────────────────────────────────────
 export const RH_NATIVE = '0x0000000000000000000000000000000000000000'
@@ -111,6 +112,8 @@ export type RobinhoodPnlV1Deps = {
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
   nativeTransfersForTx?: (txHash: string) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
+  historicalTokenInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhHistoricalInboundResult>
 }
 
 export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
@@ -189,9 +192,21 @@ export type RobinhoodPnlV1IngestionAudit = {
   mixedRouteRejectedCount?: number
   mixedRouteRejectedReasons?: Record<string, number>
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
+  deepAcquisition?: RhDeepAcquisitionSummary | null
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
+export type RhHistoricalInboundResult = {
+  rows: RhInboundTokenTransfer[]; pagesRequested: number; pagesSucceeded: number; olderInboundRowsFound: number
+  historicalRangeStart: number | null; historicalRangeEnd: number | null; stopReason: string
+}
+export type RhDeepAcquisitionSummary = {
+  deepAcquisitionAttempted: boolean; sellTxHash: string; token: string; pagesRequested: number; pagesSucceeded: number
+  historicalRangeStart: number | null; historicalRangeEnd: number | null; historicalCandidatesFound: number
+  olderInboundRowsFound: number; candidatesSelected: number; receiptsAttempted: number; verifiedBuysRecovered: number
+  recoveredBuyRaw: string; unmatchedSellRawBefore: string; unmatchedSellRawAfter: string; closedLotsAdded: number
+  stopReason: string; elapsedMs: number
+}
 
 export type RhAcquisitionRecoverySummary = {
   acquisitionRecoveryAttempted: boolean
@@ -226,6 +241,7 @@ export type RobinhoodPnlV1 = {
   metrics: RobinhoodPnlV1Metrics
   /** Targeted acquisition recovery for a verified, FIFO-unmatched sell (null when the lane did not run). */
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
+  deepAcquisition?: RhDeepAcquisitionSummary | null
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -1053,19 +1069,20 @@ async function recoverAcquisitionsForSell(
   sell: { txHash: string; token: string; timestampSec: number; unmatchedRaw: bigint },
   inbound: readonly RhInboundTokenTransfer[],
   outcomes: readonly CandidateOutcome[],
+  options: { historicalOnly?: boolean; excludedHashes?: ReadonlySet<string>; maxCandidates?: number } = {},
 ): Promise<{ found: number; rows: RecoveryRow[] }> {
   const token = sell.token
   const verified = new Set(outcomes.filter((o) => o.swap).map((o) => o.txHash))
   const pool = new Map<string, { ts: number | null; rows: bigint[] }>()
   for (const r of inbound) {
     const h = lower(r.txHash)
-    if (lower(r.token) !== token || h === sell.txHash || verified.has(h) || !/^0x[0-9a-f]{64}$/.test(h)) continue
+    if (lower(r.token) !== token || h === sell.txHash || verified.has(h) || options.excludedHashes?.has(h) || !/^0x[0-9a-f]{64}$/.test(h)) continue
     const e = pool.get(h) ?? { ts: null, rows: [] }
     if (r.timestampMs != null && Number.isFinite(r.timestampMs)) e.ts = Math.floor(r.timestampMs / 1000)
     if (r.rawAmount != null && /^\d+$/.test(r.rawAmount)) e.rows.push(BigInt(r.rawAmount))
     pool.set(h, e)
   }
-  for (const o of outcomes) {
+  for (const o of options.historicalOnly ? [] : outcomes) {
     if (!o.receiptFetched || o.swap || o.txHash === sell.txHash) continue
     const rc = await receiptCache.get(o.txHash)?.catch(() => null)
     if (rc && walletReceivesToken(rc, wallet, token) && !pool.has(o.txHash)) pool.set(o.txHash, { ts: null, rows: [] })
@@ -1080,7 +1097,7 @@ async function recoverAcquisitionsForSell(
   listed.sort((a, b) => b.ts - a.ts || a.txHash.localeCompare(b.txHash))
   const rows: RecoveryRow[] = []
   let covered = ZERO
-  for (const c of listed.slice(0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)) {
+  for (const c of listed.slice(0, options.maxCandidates ?? ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)) {
     if (covered >= sell.unmatchedRaw) break
     const row: RecoveryRow = {
       candidateTxHash: c.txHash, candidateTimestamp: c.ts, inboundRaw: c.rows.length === 1 ? c.rows[0].toString() : null, classification: 'ambiguous',
@@ -1200,6 +1217,56 @@ async function runAcquisitionRecovery(
   return { summary, swaps: recovered, evidence }
 }
 
+/** One deeper lane, only after the current-sample lane found no buy for a priced unmatched sell. */
+async function runDeepAcquisitionRecovery(
+  ctx: Ctx, wallet: string, swaps: readonly RhVerifiedSwap[], evidence: readonly RhPriceEvidence[],
+  currentRecovery: RhAcquisitionRecoverySummary, inbound: readonly RhInboundTokenTransfer[], outcomes: readonly CandidateOutcome[],
+): Promise<{ summary: RhDeepAcquisitionSummary | null; swaps: RhVerifiedSwap[]; evidence: RhPriceEvidence[] }> {
+  const empty = { summary: null, swaps: [] as RhVerifiedSwap[], evidence: [] as RhPriceEvidence[] }
+  if (!ctx.deps.historicalTokenInbounds || currentRecovery.recoveredBuyCount !== 0) return empty
+  const isQuote = (t: string) => quoteKind(t) != null
+  const sell = [...robinhoodUnmatchedSellRaw(swaps, isQuote)]
+    .filter(([hash, v]) => v.unmatchedRaw > ZERO && evidence.some((e) => e.swapTxHash === hash && e.bothLegsVerified))
+    .map(([txHash, v]) => ({ txHash, ...v }))
+    .sort((a, b) => b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))[0]
+  if (!sell || currentRecovery.sellTxHash !== sell.txHash) return empty
+  const startedAt = Date.now()
+  const deadlineAt = Math.min(ctx.deadlineAt, startedAt + ROBINHOOD_DEEP_ACQUISITION_LIMITS.budgetMs)
+  const history = await withinRecoveryDeadline(deadlineAt, () => ctx.deps.historicalTokenInbounds!(wallet, sell.token, sell.timestampSec, deadlineAt))
+  const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
+  const candidates = (history?.rows ?? []).filter((r) => !excludedHashes.has(lower(r.txHash)))
+    .sort((a, b) => (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
+    .slice(0, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates)
+  const { rows } = await recoverAcquisitionsForSell(ctx, deadlineAt, wallet, sell, candidates, outcomes, {
+    historicalOnly: true, excludedHashes, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs,
+  })
+  const recovered = rows.map((r) => r.swap).filter((s): s is RhVerifiedSwap => s != null)
+  const priced = recovered.length ? await withinRecoveryDeadline(deadlineAt, () => priceRobinhoodSwaps(ctx, recovered)) ?? [] : []
+  const after = robinhoodUnmatchedSellRaw([...swaps, ...recovered], isQuote).get(sell.txHash)?.unmatchedRaw ?? sell.unmatchedRaw
+  const summary: RhDeepAcquisitionSummary = {
+    deepAcquisitionAttempted: true, sellTxHash: sell.txHash, token: sell.token,
+    pagesRequested: history?.pagesRequested ?? 0, pagesSucceeded: history?.pagesSucceeded ?? 0,
+    historicalRangeStart: history?.historicalRangeStart ?? null, historicalRangeEnd: history?.historicalRangeEnd ?? null,
+    historicalCandidatesFound: candidates.length, olderInboundRowsFound: history?.olderInboundRowsFound ?? 0,
+    candidatesSelected: Math.min(candidates.length, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs),
+    receiptsAttempted: rows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length,
+    verifiedBuysRecovered: recovered.length, recoveredBuyRaw: recovered.reduce((n, s) => n + s.outputRaw, ZERO).toString(),
+    unmatchedSellRawBefore: sell.unmatchedRaw.toString(), unmatchedSellRawAfter: after.toString(), closedLotsAdded: 0,
+    stopReason: after === ZERO ? 'sell_covered' : Date.now() >= deadlineAt ? 'deadline' : history?.stopReason ?? 'history_unavailable', elapsedMs: Date.now() - startedAt,
+  }
+  for (const row of rows) {
+    const price = priced.find((p) => p.swapTxHash === row.candidateTxHash)
+    console.warn('[robinhood-deep-acquisition-audit]', {
+      ...summary, candidateTxHash: row.candidateTxHash, candidateTimestamp: row.candidateTimestamp, inboundRaw: row.inboundRaw,
+      classification: row.classification, routeProven: row.routeProven, ownershipProven: row.ownershipProven,
+      txValueEvidence: row.txValueEvidence, priceEvidenceStatus: !row.swap ? null : price?.bothLegsVerified ? 'both_legs_priced' : (price?.rejectionReason ?? 'not_priced'),
+      fifoIncluded: row.swap != null, rejectionReason: row.rejectionReason,
+    })
+  }
+  if (!rows.length) console.warn('[robinhood-deep-acquisition-audit]', { ...summary, candidateTxHash: null, classification: null, rejectionReason: summary.stopReason })
+  return { summary, swaps: recovered, evidence: priced }
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────────────────────────────
 export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candidate[]): { selected: RobinhoodPnlV1Candidate[]; dropped: number } {
   const byHash = new Map<string, RobinhoodPnlV1Candidate>()
@@ -1301,11 +1368,20 @@ export async function computeRobinhoodPnlV1(params: {
   const first = buildRobinhoodPnlV1Fifo(wallet, swaps, evidence)
   // Recovery lane: only a verified sell the FIFO left unmatched; only proven acquisitions join the FIFO.
   const recovery = await runAcquisitionRecovery(ctx, wallet, swaps, first.fifo.unmatchedSells, outcomes, params.inboundTokenTransfers ?? [])
-  const { fifo, buyCount, sellCount } = recovery.swaps.length > 0
+  const intermediate = recovery.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence])
     : first
-  recovery.summary.closedLotsAdded = fifo.matchedLots.length - first.fifo.matchedLots.length
+  recovery.summary.closedLotsAdded = intermediate.fifo.matchedLots.length - first.fifo.matchedLots.length
   ingestion.acquisitionRecovery = recovery.summary
+  const deep = await runDeepAcquisitionRecovery(ctx, wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence], recovery.summary, params.inboundTokenTransfers ?? [], outcomes)
+  const { fifo, buyCount, sellCount } = deep.swaps.length > 0
+    ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
+    : intermediate
+  if (deep.summary) {
+    deep.summary.closedLotsAdded = fifo.matchedLots.length - intermediate.fifo.matchedLots.length
+    ingestion.deepAcquisition = deep.summary
+    console.warn('[robinhood-deep-acquisition-audit]', { ...deep.summary, candidateTxHash: null, classification: 'summary' })
+  }
   for (const o of outcomes) {
     if (!o.mixedRoute) continue
     const e = o.swap ? evidence.find((x) => x.swapTxHash === o.txHash) : undefined
@@ -1342,12 +1418,13 @@ export async function computeRobinhoodPnlV1(params: {
     swapsFound,
     swapsVerified: swaps.length,
     swapsBothLegsPriced: bothLegs,
-    priceEvidence: [...evidence, ...recovery.evidence],
+    priceEvidence: [...evidence, ...recovery.evidence, ...deep.evidence],
     acquisitionRecovery: recovery.summary,
+    deepAcquisition: deep.summary,
   }
   if (verifiedLots.length > 0) {
     const status: RobinhoodPnlV1Status = coverage != null && coverage >= ROBINHOOD_PNL_V1_MIN_COVERAGE_PCT ? 'verified_bounded_sample' : 'partial'
-    return finish({ ...base, status, exactReason: `${verifiedLots.length}/${structural} closed lots verified from ${swaps.length} proven V4 swaps${recovery.swaps.length > 0 ? ` + ${recovery.swaps.length} recovered acquisition${recovery.swaps.length === 1 ? '' : 's'}` : ''} (bounded sample of the ${selected.length} most recent candidate txs).` })
+    return finish({ ...base, status, exactReason: `${verifiedLots.length}/${structural} closed lots verified from ${swaps.length} proven V4 swaps${recovery.swaps.length + deep.swaps.length > 0 ? ` + ${recovery.swaps.length + deep.swaps.length} recovered acquisition${recovery.swaps.length + deep.swaps.length === 1 ? '' : 's'}` : ''} (bounded sample of the ${selected.length} most recent candidate txs).` })
   }
   const topRejection = Object.entries(ingestion.rejectionReasons).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]
   const exactReason = swaps.length === 0

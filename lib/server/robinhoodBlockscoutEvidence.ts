@@ -61,10 +61,11 @@ const RATE_LIMIT_MAX_CALLS = 4
 // unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
 export const NATIVE_TRACE_MAX_LOOKUPS = 3
-export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace'
-const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS }
+export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition'
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 4 }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
   native_trace: { windowStart: 0, count: 0 },
+  deep_acquisition: { windowStart: 0, count: 0 },
   activity: { windowStart: 0, count: 0 },
   evidence: { windowStart: 0, count: 0 },
 }
@@ -376,6 +377,72 @@ export type BlockscoutTokenTransfer = {
   token?: { address?: string; symbol?: string } | null
 }
 export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[] }
+
+export type BlockscoutHistoricalInbound = { txHash: string; timestampMs: number; token: string; rawAmount: string }
+export type BlockscoutHistoricalInboundResult = {
+  rows: BlockscoutHistoricalInbound[]
+  pagesRequested: number
+  pagesSucceeded: number
+  olderInboundRowsFound: number
+  historicalRangeStart: number | null
+  historicalRangeEnd: number | null
+  stopReason: string
+}
+
+/** Bounded address-history pagination, filtered to one exact inbound token before any receipt proof. */
+export async function getBlockscoutHistoricalTokenInbounds(
+  wallet: string, token: string, beforeTimestampSec: number, fetchImpl: FetchImpl,
+  caps: { maxPages: number; maxCandidates: number; deadlineAt: number },
+): Promise<BlockscoutHistoricalInboundResult> {
+  const out: BlockscoutHistoricalInboundResult = { rows: [], pagesRequested: 0, pagesSucceeded: 0, olderInboundRowsFound: 0, historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'not_configured' }
+  if (!isRobinhoodBlockscoutConfigured()) return out
+  if (!/^0x[0-9a-f]{40}$/i.test(wallet) || !/^0x[0-9a-f]{40}$/i.test(token) || !Number.isSafeInteger(beforeTimestampSec)) return { ...out, stopReason: 'invalid_target' }
+  // Blockscout v2 supports all three filters on this endpoint; still verify every returned row locally.
+  const base = `/api/v2/addresses/${wallet}/token-transfers?type=ERC-20&filter=to&token=${token}`
+  const seenCursors = new Set<string>()
+  const seenRows = new Set<string>()
+  let query = ''
+  let gateway = false
+  for (let page = 1; page <= Math.min(4, caps.maxPages); page++) {
+    const remaining = caps.deadlineAt - Date.now()
+    if (remaining <= 0) { out.stopReason = 'deadline'; return out }
+    if (!checkBlockscoutRateLimit('deep_acquisition')) { out.stopReason = 'budget_exhausted'; return out }
+    const path = query ? `${base}&${query}` : base
+    out.pagesRequested++
+    let res = await blockscoutRequest(path, fetchImpl, gateway ? 'gateway' : 'community', Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
+    if (!gateway && !res.ok && (res.status === 401 || res.status === 403) && process.env.BLOCKSCOUT_API_KEY && Date.now() < caps.deadlineAt) {
+      gateway = true
+      res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, caps.deadlineAt - Date.now()))
+    }
+    if (!res.ok) { out.stopReason = res.attempt.failureClass ?? 'transport_failed'; return out }
+    const body = res.json as BlockscoutTokenTransfersResponse & { next_page_params?: unknown }
+    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) { out.stopReason = 'malformed_page'; return out }
+    out.pagesSucceeded++
+    for (const item of body.items) {
+      const ts = typeof item.timestamp === 'string' ? Date.parse(item.timestamp) : NaN
+      const txHash = item.transaction_hash?.toLowerCase() ?? ''
+      const raw = item.total?.value
+      if (!Number.isFinite(ts) || ts >= beforeTimestampSec * 1000 || item.to?.hash?.toLowerCase() !== wallet.toLowerCase()
+        || item.token?.address?.toLowerCase() !== token.toLowerCase() || !/^0x[0-9a-f]{64}$/.test(txHash)
+        || typeof raw !== 'string' || !/^\d+$/.test(raw) || BigInt(raw) <= BigInt(0)) continue
+      const key = `${txHash}:${raw}`
+      if (seenRows.has(key)) continue
+      seenRows.add(key)
+      out.olderInboundRowsFound++
+      out.historicalRangeStart = out.historicalRangeStart == null ? ts : Math.min(out.historicalRangeStart, ts)
+      out.historicalRangeEnd = out.historicalRangeEnd == null ? ts : Math.max(out.historicalRangeEnd, ts)
+      if (out.rows.length < Math.min(20, caps.maxCandidates)) out.rows.push({ txHash, timestampMs: ts, token: token.toLowerCase(), rawAmount: raw })
+    }
+    if (out.rows.length >= Math.min(20, caps.maxCandidates)) { out.stopReason = 'candidate_cap'; return out }
+    if (body.next_page_params == null) { out.stopReason = 'history_exhausted'; return out }
+    const next = cursorQuery(body.next_page_params)
+    if (!next || seenCursors.has(next) || [...new URLSearchParams(next).keys()].some((key) => key === 'token' || key === 'type' || key === 'filter')) { out.stopReason = 'invalid_cursor'; return out }
+    seenCursors.add(next)
+    query = next
+  }
+  out.stopReason = 'page_cap'
+  return out
+}
 
 export async function getBlockscoutAddressTokenTransfers(address: string, fetchImpl: FetchImpl) {
   return fetchBlockscout<BlockscoutTokenTransfersResponse>(

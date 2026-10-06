@@ -44,7 +44,7 @@ import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureE
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
 import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
-import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
+import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
 import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
@@ -53,7 +53,7 @@ import {
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
 } from './robinhoodSwapDecoder'
 import {
-  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers,
+  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutHistoricalTokenInbounds,
   getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
   buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
   type BlockscoutEvidenceAudit,
@@ -1451,6 +1451,10 @@ export async function scanRobinhoodWallet(
     ? { ...pnlV1Deps, onNativePricePrefetchComplete: onNativePricePrefetchComplete ?? pnlV1Deps.onNativePricePrefetchComplete }
     : {
         ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl),
+        historicalTokenInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutHistoricalTokenInbounds(
+          targetWallet, token, beforeTimestampSec, fetchImpl,
+          { maxPages: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxPages, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates, deadlineAt },
+        ),
         ethUsdAt: sharedHistoricalEthUsdAt, prefetchNativeEthDays: prefetchRobinhoodNativePriceDays,
         onNativePricePrefetchComplete,
       }
