@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   resolveRobinhoodWalletHoldings, applyRobinhoodPortfolioPriceConfidence, isRobinhoodNativeSymbolImpersonation,
-  ROBINHOOD_PRICE_CONFIDENCE, type FetchImpl, type RobinhoodTokenHolding, type RobinhoodWalletHoldingsResult,
+  ROBINHOOD_PRICE_CONFIDENCE, resetRobinhoodPriceRetryState, type FetchImpl, type RobinhoodTokenHolding, type RobinhoodWalletHoldingsResult,
 } from '../lib/server/robinhoodWalletScanner.ts'
 import type { BlockscoutAddressTokenBalance } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import { CHAIN_ASSET_REGISTRY } from '../lib/server/chainAssetRegistry.ts'
@@ -176,4 +176,65 @@ test('a cached result priced before the gate existed is corrected on the cache p
     assert.ok(Math.abs(r.holdingsIntegrationAudit!.supportedValueUsd! - 3_640) < 1e-6)
     assert.equal(r.fromCache, true)
   } finally { console.warn = w }
+})
+
+// ── Cache policy: the confidence rejection is a re-evaluable market condition; other exclusions are permanent ──
+test('cache: a confidence rejection is re-evaluated after PRICE_RETRY_MS (and not before); spam / impersonation stay rejected', async () => {
+  resetRobinhoodPriceRetryState()
+  const BIG = '0x1000000000000000000000000000000000000006'
+  const SPAM = '0x1000000000000000000000000000000000000007'
+  const market = { liquidity: 20_000 }
+  const dsCalls: string[] = []
+  const fetchImpl: FetchImpl = async (url) => {
+    if (url === 'https://robinhood.example/rpc') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x0' }))
+    if (url.includes('/balances_v2/')) return new Response(JSON.stringify({ data: { items: [{ native_token: true, quote_rate: 2700 }, { contract_address: SPAM, balance: raw(10), contract_decimals: 18, is_spam: true, contract_ticker_symbol: 'SPAM' }] } }))
+    if (url.includes('api.dexscreener.com/latest/dex/tokens/')) {
+      const a = url.split('/').pop()!.toLowerCase()
+      dsCalls.push(a)
+      const price: Record<string, number> = { [BIG]: 100, [FAKE_ETH]: 2700, [SPAM]: 50_000 }
+      return new Response(JSON.stringify({ pairs: price[a] ? [pair(a, price[a], a === BIG ? market.liquidity : 5_000_000)] : [] }))
+    }
+    return new Response('missing', { status: 404 })
+  }
+  let clock = 1_000_000
+  const deps = { fetchImpl, now: () => clock, ethUsdLatest: async () => null }
+  const quiet = async <T>(fn: () => Promise<T>) => { const w = console.warn; console.warn = () => {}; try { return await fn() } finally { console.warn = w } }
+  const balances = [bs(BIG, 1_000, 'BIG', 'Big'), bs(FAKE_ETH, 51, 'ETH', 'Ethereum'), bs(SPAM, 10, 'SPAM', 'Spam')]
+  // 1. first scan: $100k position, liquidity $20k → rejected
+  let r = await quiet(() => resolveRobinhoodWalletHoldings(WALLET, { ...deps, blockscoutBalances: async () => balances }))
+  assert.equal(by(r, BIG).excludedFromValueReason, 'insufficient_portfolio_price_confidence')
+  assert.equal(by(r, BIG).valueUsd, null)
+  // cached repricing while the market is unchanged: re-queried once (due), rejected again, miss recorded
+  clock += 1_000
+  dsCalls.length = 0
+  r = await quiet(() => resolveRobinhoodWalletHoldings(WALLET, { ...deps, cached: r as never }))
+  assert.deepEqual(dsCalls, [BIG]) // spam and impersonation rows are never re-priced
+  assert.equal(by(r, BIG).excludedFromValueReason, 'insufficient_portfolio_price_confidence')
+  // 3. cached scan before the retry interval → no extra provider call, even if the market changed
+  market.liquidity = 60_000
+  clock += 5_000
+  dsCalls.length = 0
+  r = await quiet(() => resolveRobinhoodWalletHoldings(WALLET, { ...deps, cached: r as never }))
+  assert.deepEqual(dsCalls, [])
+  assert.equal(by(r, BIG).valueUsd, null)
+  // 2. cached scan after PRICE_RETRY_MS: liquidity $60k ≥ max($50k, 25% of $100k) → accepted under current policy
+  clock += 15_000
+  r = await quiet(() => resolveRobinhoodWalletHoldings(WALLET, { ...deps, cached: r as never }))
+  assert.deepEqual(dsCalls, [BIG])
+  assert.equal(by(r, BIG).excludedFromValueReason, null)
+  assert.equal(by(r, BIG).priceUsd, 100)
+  assert.equal(by(r, BIG).valueUsd, 100_000)
+  assert.equal(r.holdingsIntegrationAudit?.supportedValueUsd, 100_000)
+  // 4/5. permanent exclusions stay rejected on cache (never re-priced, never counted)
+  assert.equal(by(r, FAKE_ETH).excludedFromValueReason, 'native_symbol_impersonation')
+  assert.equal(by(r, FAKE_ETH).valueUsd, null)
+  assert.equal(by(r, SPAM).excludedFromValueReason, 'provider_spam_flag')
+  assert.equal(by(r, SPAM).valueUsd, null)
+  clock += 60_000
+  dsCalls.length = 0
+  r = await quiet(() => resolveRobinhoodWalletHoldings(WALLET, { ...deps, cached: r as never }))
+  assert.deepEqual(dsCalls, [])
+  assert.equal(by(r, FAKE_ETH).excludedFromValueReason, 'native_symbol_impersonation')
+  assert.equal(by(r, SPAM).excludedFromValueReason, 'provider_spam_flag')
+  resetRobinhoodPriceRetryState()
 })

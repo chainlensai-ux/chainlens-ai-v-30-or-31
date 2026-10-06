@@ -855,6 +855,8 @@ export const ROBINHOOD_PRICE_CONFIDENCE = {
   nearNativeEthBand: 0.1,
   disproportionateShare: 0.5,
 } as const
+/** The only gate reason that is a market condition (re-evaluated on cache repricing); every other exclusion is permanent. */
+export const REEVALUABLE_PRICE_CONFIDENCE_REASON = 'insufficient_portfolio_price_confidence'
 const NATIVE_SYMBOL_CLAIM = /^(w?eth|ethereum|wrapped ?ether)$/i
 const ROBINHOOD_CANONICAL_WRAPPED_NATIVE = CHAIN_ASSET_REGISTRY.robinhood.wrappedNative?.address.toLowerCase() ?? null
 
@@ -973,18 +975,22 @@ async function repriceCachedHoldings(cached: RobinhoodWalletHoldingsResult, deps
     native = next
   }
   const holdings: RobinhoodTokenHolding[] = []
-  for (const h of cached.holdings) {
-    const key = `token:${h.address.toLowerCase()}`
-    if (positiveRaw(h.rawBalance) && h.priceUsd == null && due(key)) {
-      const next = await priceToken(h, null, deps)
-      if (next.priceUsd != null) changed = true
-      else priceMissAt.set(key, now())
-      holdings.push(next)
+  const tokenKey = (h: RobinhoodTokenHolding) => `token:${h.address.toLowerCase()}`
+  const attempted = new Set<number>()
+  for (const [i, h] of cached.holdings.entries()) {
+    if (positiveRaw(h.rawBalance) && h.priceUsd == null && due(tokenKey(h))) {
+      // Only the confidence gate's market-condition rejection is re-evaluated (fresh price / pair / liquidity, then
+      // the gate again). Permanent exclusions — provider spam, native-symbol impersonation, structural — stay.
+      const base = h.excludedFromValueReason === REEVALUABLE_PRICE_CONFIDENCE_REASON ? { ...h, excludedFromValueReason: null } : h
+      holdings.push(await priceToken(base, null, deps))
+      attempted.add(i)
     } else holdings.push(h)
   }
   // The gate is idempotent; it also corrects rows cached before it existed.
   const gate = gateRobinhoodHoldings(holdings, native)
-  if (gate.holdings.some((h, i) => h.valueUsd !== holdings[i].valueUsd)) changed = true
+  // A miss is recorded only after the gate, so a re-queried row the gate rejects again still waits PRICE_RETRY_MS.
+  gate.holdings.forEach((h, i) => { if (attempted.has(i) && h.valueUsd == null) priceMissAt.set(tokenKey(h), now()) })
+  if (gate.holdings.some((h, i) => h.valueUsd !== cached.holdings[i].valueUsd || (h.excludedFromValueReason ?? null) !== (cached.holdings[i].excludedFromValueReason ?? null))) changed = true
   holdings.splice(0, holdings.length, ...gate.holdings)
   if (!changed) {
     if (cached.holdingsIntegrationAudit) console.warn('[robinhood-holdings-integration-audit]', cached.holdingsIntegrationAudit)
