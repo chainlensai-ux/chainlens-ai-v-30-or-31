@@ -1499,6 +1499,7 @@ export async function sharedHistoricalEthUsdAt(timestampSec: number): Promise<im
     pointMs: r.bucketStartMs,
     gapMs: r.timestampDistanceMs,
     maxAllowedGapMs: NATIVE_PRICE_BUCKET_MS,
+    persistentCacheHit: r.servedFromPersistentCache,
   }
 }
 

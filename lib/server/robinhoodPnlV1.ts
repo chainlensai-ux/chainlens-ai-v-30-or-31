@@ -87,7 +87,7 @@ const ROBINHOOD_FIFO_CHAIN = 'robinhood' as unknown as SupportedChain
 // ── Types ───────────────────────────────────────────────────────────────────────────────────────────
 export type RhRpcCall = { method: string; params: unknown[] }
 /** One verified historical ETH/USD answer for a swap timestamp. */
-export type RhEthUsdPoint = { priceUsd: number; provider: string; endpoint: string | null; pointMs: number; gapMs: number; maxAllowedGapMs: number }
+export type RhEthUsdPoint = { priceUsd: number; provider: string; endpoint: string | null; pointMs: number; gapMs: number; maxAllowedGapMs: number; persistentCacheHit?: boolean }
 /** One JSON-RPC batch; each slot is the call's result, or null when that call failed. Never throws. */
 export type RhRpc = (calls: RhRpcCall[]) => Promise<Array<unknown | null>>
 export type RhPoolKey = { currency0: string; currency1: string }
@@ -775,6 +775,7 @@ type EthHistoryAudit = {
   nearestGapMs: number | null
   maxAllowedGapMs: number | null
   priceUsd: number | null
+  persistentCacheHit: boolean
   rejectionReason: string | null
 }
 
@@ -789,7 +790,7 @@ async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Pr
   const sorted = [...new Set(timestampsSec)].sort((a, b) => a - b)
   const audits = new Map<number, EthHistoryAudit>(sorted.map((t) => [t, {
     requestedTimestampSec: t, requestedFromSec: null, requestedToSec: null, provider: null, endpoint: null, httpStatus: null, pointsReturned: null,
-    earliestPointMs: null, latestPointMs: null, nearestPointMs: null, nearestGapMs: null, maxAllowedGapMs: null, priceUsd: null, rejectionReason: null,
+    earliestPointMs: null, latestPointMs: null, nearestPointMs: null, nearestGapMs: null, maxAllowedGapMs: null, priceUsd: null, persistentCacheHit: false, rejectionReason: null,
   }]))
   const budgetLeft = () => ctx.priceSidesUsed < ROBINHOOD_PNL_V1_LIMITS.maxHistoricalPriceSides
   // 1) Shared verified resolver: one call per distinct UTC day (its own bucket), cached by the resolver.
@@ -808,6 +809,7 @@ async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Pr
       const hit = byDay.get(day) ?? null
       a.provider = hit?.provider ?? 'chainlens_native_price_resolver'
       a.endpoint = hit?.endpoint ?? null
+      a.persistentCacheHit = hit?.persistentCacheHit === true
       if (hit && Number.isFinite(hit.priceUsd) && hit.priceUsd > 0 && hit.gapMs <= hit.maxAllowedGapMs) {
         Object.assign(a, { nearestPointMs: hit.pointMs, nearestGapMs: hit.gapMs, maxAllowedGapMs: hit.maxAllowedGapMs, pointsReturned: 1, earliestPointMs: hit.pointMs, latestPointMs: hit.pointMs, priceUsd: hit.priceUsd, rejectionReason: null })
         out.set(t, hit.priceUsd)

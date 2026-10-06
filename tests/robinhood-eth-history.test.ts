@@ -131,6 +131,20 @@ test('1. ts 1790155166 with a resolver point inside its day bucket -> priced, au
   assert.equal(eth[0].nearestGapMs, TS * 1000 - DAY_START_MS)
 })
 
+test('Robinhood ETH history audit identifies persistent accepted evidence', async () => {
+  const { r, eth } = await run([shape53353(OUT_WEI)], {
+    ethUsdAt: async (ts) => ({
+      priceUsd: 2752.629093198004,
+      provider: 'chainlens_native_price_resolver:coingecko_native_coin_history',
+      endpoint: null, pointMs: DAY_START_MS, gapMs: ts * 1000 - DAY_START_MS,
+      maxAllowedGapMs: 86_400_000, persistentCacheHit: true,
+    }),
+  })
+  assert.equal(r.priceEvidence[0].outputPriceUsd, 2752.629093198004)
+  assert.equal(eth[0].persistentCacheHit, true)
+  assert.equal(eth[0].rejectionReason, null)
+})
+
 test('2. seconds -> ms conversion through the shared resolver is correct', async () => {
   __seedAcceptedNativePriceForTest(TS * 1000, 2600, 'goldrush_historical')
   const p = await sharedHistoricalEthUsdAt(TS)
