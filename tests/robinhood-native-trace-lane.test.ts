@@ -160,7 +160,7 @@ test('8. exactly 3 mixed txs trigger at most 3 trace lookups (<= 2 HTTP each via
   assert.deepEqual(four.audits.map((a) => a.result).sort(), ['budget_exhausted', 'proven', 'proven', 'proven'])
 })
 
-test('9. mixed routes stay rejected even when the trace proves the payout', async () => {
+test('9. unproven mixed routes stay rejected even when the trace proves a payout', async () => {
   const { r, audits } = await runMixed(3, { community: 'ok' })
   assert.ok(audits.every((a) => a.result === 'proven'))
   assert.equal(r.swapsVerified, 0)

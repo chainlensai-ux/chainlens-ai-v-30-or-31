@@ -145,7 +145,7 @@ test('6. ERC-20 <-> ERC-20 direct V4 swaps are unchanged (no native evidence fet
   assert.ok(!calls.includes('eth_getBalance'))
 })
 
-test('7. mixed-route acceptance stays off even with a proven trace payout', async () => {
+test('7. a mixed receipt whose route is not proven stays rejected even with a proven trace payout', async () => {
   const eth = E18
   const mixed = sellTx(eth)
   mixed.logs.push({ address: '0x4444444444444444444444444444444444444444', topics: [V3_SWAP, t(ROUTER), t(ROUTER)], data: `0x${int256(E18)}${int256(-E18)}${'0'.repeat(192)}`, logIndex: hex(9) })

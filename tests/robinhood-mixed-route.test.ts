@@ -199,10 +199,10 @@ test('10b. e78c-shaped: two V4 + five V2/V3 split route, token -> native', () =>
   assert.notEqual(run(diverted, nativeProven(n(3))).finalClassification, 'direct_mixed_route_proven')
 })
 
-// ── End-to-end: production-shaped receipt through PnL V1 — acceptance unchanged, forensics logged ──
+// ── End-to-end: production-shaped receipt through PnL V1 — direct_mixed_route_proven is accepted ──
 beforeEach(() => { __resetRobinhoodPnlV1CachesForTest() })
 
-test('PnL V1 still rejects the mixed receipt (other_venue_swap_in_tx) and logs it as direct_mixed_route_proven', async () => {
+test('PnL V1 accepts the trace-proven mixed receipt (direct_mixed_route_proven) and logs its forensics', async () => {
   const rx = shape53353()
   const hash = `0x${'53'.repeat(32)}`
   const rcpt = { status: '0x1', from: WALLET, to: ROUTER, blockNumber: '0x1f4', gasUsed: '0x186a0', effectiveGasPrice: '0x3b9aca00', logs: rx.logs.map((l) => ({ ...l, logIndex: `0x${l.logIndex.toString(16)}`, blockTimestamp: '0x68e7c000' })) }
@@ -214,6 +214,7 @@ test('PnL V1 still rejects the mixed receipt (other_venue_swap_in_tx) and logs i
     if (method === 'eth_getBalance') return `0x${(Number(p[1]) === 499 ? n(5) : n(5) + n(3) - gas).toString(16)}`
     if (method === 'eth_getTransactionCount') return Number(p[1]) === 499 ? '0x7' : '0x8'
     if (method === 'eth_getTransactionByHash') return { value: '0x0' }
+    if (method === 'eth_call' && p[0].data === '0x313ce567') return '0x12'
     return null
   })
   const lines: Array<[string, any]> = []
@@ -223,8 +224,9 @@ test('PnL V1 still rejects the mixed receipt (other_venue_swap_in_tx) and logs i
   try {
     r = await computeRobinhoodPnlV1({ wallet: WALLET, candidates: [{ txHash: hash, timestampMs: null, hasSwapLog: true }], transactionCount: 1, transferCount: 1, activityUnavailableReason: null, deps: { rpc, ethUsdRange: async () => null, tokenHistoricalUsd: async () => null, now: Date.now, nativeTransfersForTx: async (h) => (h === hash ? [{ from: ROUTER, to: WALLET, value: n(3), success: true }] : null) } })
   } finally { console.warn = w }
-  assert.equal(r.swapsVerified, 0, 'acceptance unchanged in this commit')
-  assert.deepEqual(r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 1 })
+  assert.equal(r.swapsVerified, 1)
+  assert.equal(r.ingestionAudit.mixedRouteVerifiedSwapCount, 1)
+  assert.deepEqual(r.ingestionAudit.rejectionReasons, {})
   assert.equal(r.ingestionAudit.mixedRouteClasses?.direct_mixed_route_proven, 1)
   const row = lines.find(([tag]) => tag === '[robinhood-mixed-route-forensics]')?.[1]
   assert.equal(row?.finalClassification, 'direct_mixed_route_proven')

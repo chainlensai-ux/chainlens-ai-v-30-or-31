@@ -30,7 +30,7 @@ import { ROBINHOOD_V4_POOL_MANAGER } from './uniswapV4RobinhoodRpc'
 import { getRobinhoodRpcUrl } from './robinhoodChainConfig'
 import { fetchCoingeckoEthUsdRange } from './coingeckoOnchainOhlcv'
 import { nearestPriceWithGap } from '../v4SwapCandles'
-import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
+import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
@@ -167,6 +167,10 @@ export type RobinhoodPnlV1IngestionAudit = {
   v4AttributionClasses?: Record<RhAttributionClass, number>
   /** Forensics only: mixed-venue (V4 + V2/V3) receipt classes (acceptance unchanged). */
   mixedRouteClasses?: Record<RhMixedClassification, number>
+  directV4VerifiedSwapCount?: number
+  mixedRouteVerifiedSwapCount?: number
+  mixedRouteRejectedCount?: number
+  mixedRouteRejectedReasons?: Record<string, number>
 }
 
 export type RobinhoodPnlV1 = {
@@ -483,7 +487,7 @@ export function verifyRobinhoodV4Route(input: RhRouteInput): RhRouteResult {
   }
 }
 
-type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: number; swap: RhVerifiedSwap | null; rejection: RhRejection | null; detail: string | null; forensics?: RobinhoodSwapForensics | null; mixedRoute?: RobinhoodMixedRouteForensics | null }
+type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: number; swap: RhVerifiedSwap | null; rejection: RhRejection | null; detail: string | null; forensics?: RobinhoodSwapForensics | null; mixedRoute?: RobinhoodMixedRouteForensics | null; acceptedVia?: 'direct_v4' | 'mixed_route'; mixedRejection?: string | null }
 
 /**
  * Evidence for a receipt the preflight rejected (most often wallet_not_tx_sender): pool keys for its canonical
@@ -571,6 +575,53 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
   return { forensics, mixedRoute }
 }
 
+const assetAddress = (asset: string) => (asset === NATIVE_ASSET ? RH_NATIVE : asset)
+
+/**
+ * A direct_mixed_route_proven route as the same RhVerifiedSwap a direct V4 swap produces: the wallet's exact
+ * route endpoints (a native endpoint only ever comes from the target tx's own trace — the analyzer never
+ * reads a block balance delta), the connected hops in log order, and the exact native amount the route
+ * passed through (for token↔token routes priced via ETH). Anything short of that stays rejected.
+ */
+async function promoteMixedRoute(ctx: Ctx, txHash: string, receipt: RhReceipt, m: RobinhoodMixedRouteForensics): Promise<{ swap: RhVerifiedSwap | null; reason: string }> {
+  if (m.finalClassification !== 'direct_mixed_route_proven') return { swap: null, reason: `${m.finalClassification}: ${m.reason}` }
+  if (!m.singleConnectedEconomicRoute || !m.amountConservationPassed || !m.ownershipProven) return { swap: null, reason: 'route proof incomplete' }
+  if (m.outsideFundingFlows.length > 0 || m.unrelatedWalletFlows.length > 0 || m.excludedSwapIndexes.length > 0) return { swap: null, reason: 'route has outside funding, unrelated wallet flows or excluded swaps' }
+  if (!m.walletInputToken || !m.walletInputRaw || !m.walletOutputToken || !m.walletOutputRaw) return { swap: null, reason: 'route endpoints missing' }
+  const nativeLeg = m.walletInputToken === NATIVE_ASSET || m.walletOutputToken === NATIVE_ASSET
+  if (nativeLeg && m.nativeAttributionStatus !== 'proven_target_tx_native_transfer') return { swap: null, reason: `native endpoint without target-tx trace proof (${m.nativeAttributionStatus})` }
+  const inputToken = assetAddress(m.walletInputToken)
+  const outputToken = assetAddress(m.walletOutputToken)
+  let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
+  if (timestampSec == null) {
+    const [blk] = await call(ctx, [{ method: 'eth_getBlockByNumber', params: [`0x${receipt.blockNumber.toString(16)}`, false] }])
+    timestampSec = hexToNum((blk as Record<string, unknown> | null)?.timestamp)
+  }
+  if (timestampSec == null || timestampSec <= 0) return { swap: null, reason: 'timestamp_unavailable' }
+  const [inputDecimals, outputDecimals] = await Promise.all([tokenDecimals(ctx, inputToken), tokenDecimals(ctx, outputToken)])
+  if (inputDecimals == null || outputDecimals == null) return { swap: null, reason: 'decimals_unavailable' }
+  const connected = m.hops.filter((h) => m.connectedSwapIndexes.includes(h.index))
+  // Native the route passed through (consumed by hops) — only meaningful when neither endpoint is a quote asset.
+  const nativeThrough = connected.filter((h) => h.inToken === NATIVE_ASSET).reduce((s, h) => s + BigInt(h.inRaw ?? '0'), ZERO)
+  return {
+    reason: 'accepted',
+    swap: {
+      txHash,
+      blockNumber: receipt.blockNumber,
+      firstLogIndex: Math.min(...connected.map((h) => h.logIndex)),
+      timestampSec,
+      inputToken,
+      outputToken,
+      inputRaw: BigInt(m.walletInputRaw),
+      outputRaw: BigInt(m.walletOutputRaw),
+      inputDecimals,
+      outputDecimals,
+      hops: connected.map((h) => ({ poolId: `${h.venue}:${h.address}`, inCurrency: assetAddress(h.inToken!), outCurrency: assetAddress(h.outToken!), inRaw: h.inRaw!, outRaw: h.outRaw! })),
+      intermediary: !nativeLeg && nativeThrough > ZERO ? { currency: RH_NATIVE, kind: 'native', raw: nativeThrough, decimals: 18 } : null,
+    },
+  }
+}
+
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
   const out = (o: Partial<CandidateOutcome>): CandidateOutcome => ({ txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: null, detail: null, ...o })
   if (Date.now() >= ctx.deadlineAt) return out({ rejection: 'deadline_exceeded' })
@@ -586,7 +637,15 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
     // FORENSICS ONLY (acceptance unchanged): for a rejected receipt that still carries canonical V4 swaps,
     // gather the same evidence the route proof would use so it can be classified A/B/C/D in the log.
     const ev = await forensicsForRejectedReceipt(ctx, wallet, txHash, receipt, pre.reason).catch(() => null)
-    return out({ receiptFetched: true, v4SwapLogs, rejection: pre.reason, detail: pre.detail, forensics: ev?.forensics ?? null, mixedRoute: ev?.mixedRoute ?? null })
+    const base = { receiptFetched: true, v4SwapLogs, forensics: ev?.forensics ?? null, mixedRoute: ev?.mixedRoute ?? null }
+    // MIXED-ROUTE ACCEPTANCE: only a wallet-sent V4 + V2/V3 receipt that the mixed-route proof classifies
+    // direct_mixed_route_proven is promoted; every other mixed receipt keeps its other_venue rejection.
+    if (pre.reason === 'other_venue_swap_in_tx' && ev?.mixedRoute) {
+      const promoted = await promoteMixedRoute(ctx, txHash, receipt, ev.mixedRoute)
+      if (promoted.swap) return out({ ...base, swap: promoted.swap, acceptedVia: 'mixed_route' })
+      return out({ ...base, rejection: pre.reason, detail: pre.detail, mixedRejection: promoted.reason })
+    }
+    return out({ ...base, rejection: pre.reason, detail: pre.detail })
   }
 
   const poolKeys = new Map<string, RhPoolKey>()
@@ -644,6 +703,7 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
   if (inputDecimals == null || outputDecimals == null || interDecimals == null) return out({ receiptFetched: true, v4SwapLogs, rejection: 'decimals_unavailable', forensics })
   return out({
     forensics,
+    acceptedVia: 'direct_v4',
     receiptFetched: true,
     v4SwapLogs,
     swap: {
@@ -847,6 +907,15 @@ export async function computeRobinhoodPnlV1(params: {
   for (const m of mixedRows) console.warn('[robinhood-mixed-route-forensics]', m)
   ingestion.mixedRouteClasses = { direct_mixed_route_proven: 0, independent_second_action: 0, ambiguous: 0 }
   for (const m of mixedRows) ingestion.mixedRouteClasses[m.finalClassification] += 1
+  ingestion.directV4VerifiedSwapCount = outcomes.filter((o) => o.swap && o.acceptedVia === 'direct_v4').length
+  ingestion.mixedRouteVerifiedSwapCount = outcomes.filter((o) => o.swap && o.acceptedVia === 'mixed_route').length
+  const mixedRejected = outcomes.filter((o) => o.mixedRoute && !o.swap)
+  ingestion.mixedRouteRejectedCount = mixedRejected.length
+  ingestion.mixedRouteRejectedReasons = {}
+  for (const o of mixedRejected) {
+    const k = o.mixedRoute!.finalClassification === 'direct_mixed_route_proven' ? (o.mixedRejection ?? 'promotion_failed') : o.mixedRoute!.finalClassification
+    ingestion.mixedRouteRejectedReasons[k] = (ingestion.mixedRouteRejectedReasons[k] ?? 0) + 1
+  }
   m.swapsVerified = swaps.length
   const swapsFound = outcomes.filter((o) => o.v4SwapLogs > 0).length
 
@@ -854,6 +923,24 @@ export async function computeRobinhoodPnlV1(params: {
   for (const e of evidence) console.warn('[robinhood-price-evidence-audit]', e)
   const bothLegs = evidence.filter((e) => e.bothLegsVerified).length
   const { fifo, buyCount, sellCount } = buildRobinhoodPnlV1Fifo(wallet, swaps, evidence)
+  for (const o of outcomes) {
+    if (!o.mixedRoute) continue
+    const e = o.swap ? evidence.find((x) => x.swapTxHash === o.txHash) : undefined
+    console.warn('[robinhood-mixed-route-acceptance-audit]', {
+      txHash: o.txHash,
+      classification: o.mixedRoute.finalClassification,
+      accepted: o.swap != null,
+      inputToken: o.swap?.inputToken ?? null,
+      inputRaw: o.swap?.inputRaw.toString() ?? null,
+      outputToken: o.swap?.outputToken ?? null,
+      outputRaw: o.swap?.outputRaw.toString() ?? null,
+      nativeProofStatus: o.mixedRoute.nativeAttributionStatus,
+      priceEvidenceStatus: !o.swap ? null : e?.bothLegsVerified ? 'both_legs_priced' : (e?.rejectionReason ?? 'not_priced'),
+      // Only token legs open/close lots; a swap with at least one non-quote leg reaches FIFO.
+      fifoIncluded: o.swap != null && !(quoteKind(o.swap.inputToken) && quoteKind(o.swap.outputToken)),
+      rejectionReason: o.swap ? null : (o.mixedRejection ?? o.rejection),
+    })
+  }
   ingestion.normalizedBuyCount = buyCount
   ingestion.normalizedSellCount = sellCount
   const structural = fifo.matchedLots.length

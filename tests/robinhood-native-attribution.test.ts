@@ -125,7 +125,7 @@ test('Blockscout trace parser: incomplete (paginated) or malformed traces are no
   assert.deepEqual([bad.transfers, bad.audit?.result, bad.audit?.malformed], [null, 'malformed', true])
 })
 
-// ── 6. Acceptance unchanged ─────────────────────────────────────────────────────────────────────
+// ── 6. Acceptance: only a trace-proven native payout lets a mixed route through ─────────────────
 beforeEach(() => { __resetRobinhoodPnlV1CachesForTest() })
 
 async function runE2E(trace: Array<{ from: string; to: string; value: bigint; success: boolean }> | null) {
@@ -139,6 +139,7 @@ async function runE2E(trace: Array<{ from: string; to: string; value: bigint; su
     if (method === 'eth_getBalance') return `0x${(Number(p[1]) === 499 ? n(5) : n(5) + n(2) - GAS).toString(16)}`
     if (method === 'eth_getTransactionCount') return Number(p[1]) === 499 ? '0x7' : '0x8'
     if (method === 'eth_getTransactionByHash') return { value: '0x0' }
+    if (method === 'eth_call' && p[0].data === '0x313ce567') return '0x12'
     return null
   })
   const lines: Array<[string, any]> = []
@@ -150,15 +151,17 @@ async function runE2E(trace: Array<{ from: string; to: string; value: bigint; su
   } finally { console.warn = w }
 }
 
-test('6. acceptance unchanged: mixed receipts are still rejected, with or without a trace proof', async () => {
+test('6. a trace-proven mixed route is accepted; the same route with only the block balance delta is rejected', async () => {
   const proven = await runE2E([{ from: ROUTER, to: WALLET, value: n(2), success: true }])
-  assert.equal(proven.r.swapsVerified, 0)
-  assert.deepEqual(proven.r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 1 })
+  assert.equal(proven.r.swapsVerified, 1)
+  assert.deepEqual(proven.r.ingestionAudit.rejectionReasons, {})
   assert.equal(proven.row?.finalClassification, 'direct_mixed_route_proven')
   assert.equal(proven.row?.nativeAttributionStatus, 'proven_target_tx_native_transfer')
 
+  __resetRobinhoodPnlV1CachesForTest()
   const deltaOnly = await runE2E(null)
   assert.equal(deltaOnly.r.swapsVerified, 0)
+  assert.deepEqual(deltaOnly.r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 1 })
   assert.equal(deltaOnly.row?.nativeAttributionStatus, 'block_balance_delta_only')
   assert.equal(deltaOnly.row?.nativeEvidence.blockBalanceDeltaExGas, n(2).toString())
   assert.equal(deltaOnly.row?.finalClassification, 'ambiguous')

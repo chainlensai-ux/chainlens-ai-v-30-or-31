@@ -169,7 +169,7 @@ test('9/10. three production-shaped mixed txs with multi-page traces: 3 logical 
   assert.equal(proven.length, NATIVE_TRACE_MAX_LOOKUPS, 'only 3 logical trace slots, however many pages each needed')
   assert.ok(proven.every((a) => a.pagesRequested === 3 && a.paginationComplete && a.nativeToWalletRaw === E18.toString()))
   assert.deepEqual(audits.filter((a) => a.result !== 'proven').map((a) => [a.result, a.attempted]), [['budget_exhausted', false]])
-  // 10. mixed-route acceptance stays off
+  // 10. these fixture routes are not proven (the wallet receives nothing the route produces), so they stay rejected
   assert.equal(r.swapsVerified, 0)
   assert.deepEqual(r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 4 })
 })
