@@ -139,7 +139,9 @@ export function resetEthUsdSeriesCache() {
 const ETH_RANGE_TTL_MS = 6 * 3_600_000
 const ETH_RANGE_FAIL_TTL_MS = 60_000
 const ETH_RANGE_CACHE_MAX = 200
-const ethUsdRangeCache = new Map<string, { expiresAt: number; points: Array<[number, number]> | null }>()
+/** Why a range read produced no points (diagnostic only; additive). */
+export type RangeFailure = 'unsupported_coin' | 'invalid_window' | 'not_configured' | 'rate_limited' | 'http_error' | 'malformed' | 'empty' | 'timeout' | 'network_error'
+const ethUsdRangeCache = new Map<string, { expiresAt: number; points: Array<[number, number]> | null; httpStatus?: number | null; failure?: RangeFailure | null }>()
 
 export async function fetchCoingeckoEthUsdRange(
   fromSec: number,
@@ -147,7 +149,7 @@ export async function fetchCoingeckoEthUsdRange(
   timeoutMs: number,
   fetchImpl?: CoingeckoFetchImpl,
   now: () => number = Date.now,
-): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }> {
+): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean; httpStatus?: number | null; failure?: RangeFailure | null }> {
   return fetchCoingeckoNativeUsdRange('ethereum', fromSec, toSec, timeoutMs, fetchImpl, now)
 }
 
@@ -159,35 +161,40 @@ export async function fetchCoingeckoNativeUsdRange(
   timeoutMs: number,
   fetchImpl: CoingeckoFetchImpl = (url, init) => fetch(url, { headers: init.headers, cache: 'no-store', signal: AbortSignal.timeout(Math.max(1, timeoutMs)) }),
   now: () => number = Date.now,
-): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean }> {
+): Promise<{ points: Array<[number, number]> | null; cacheHit: boolean; httpStatus?: number | null; failure?: RangeFailure | null }> {
   const from = Math.floor(fromSec / 3600) * 3600
   const to = Math.ceil(toSec / 3600) * 3600
-  if (!(NATIVE_USD_COIN_IDS as readonly string[]).includes(coinId)) return { points: null, cacheHit: false }
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return { points: null, cacheHit: false }
+  if (!(NATIVE_USD_COIN_IDS as readonly string[]).includes(coinId)) return { points: null, cacheHit: false, httpStatus: null, failure: 'unsupported_coin' }
+  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return { points: null, cacheHit: false, httpStatus: null, failure: 'invalid_window' }
   const key = `${coinId}:${from}:${to}`
   const hit = ethUsdRangeCache.get(key)
-  if (hit && hit.expiresAt > now()) return { points: hit.points, cacheHit: true }
+  if (hit && hit.expiresAt > now()) return { points: hit.points, cacheHit: true, httpStatus: hit.httpStatus ?? null, failure: hit.failure ?? null }
   const cfg = resolveCoingeckoRuntimeConfig()
   const apiKey = process.env.COINGECKO_API_KEY
-  if (!apiKey || !cfg.configurationValid) return { points: null, cacheHit: false }
+  if (!apiKey || !cfg.configurationValid) return { points: null, cacheHit: false, httpStatus: null, failure: 'not_configured' }
   let points: Array<[number, number]> | null = null
+  let httpStatus: number | null = null
+  let failure: RangeFailure | null = null
   try {
     const qs = new URLSearchParams({ vs_currency: 'usd', from: String(from), to: String(to) })
     const res = await fetchImpl(`${cfg.selectedBaseUrl}/coins/${coinId}/market_chart/range?${qs.toString()}`, {
       headers: { Accept: 'application/json', [cfg.selectedHeaderName]: apiKey },
     })
+    httpStatus = res.status
     const json = res.ok ? await res.json().catch(() => null) : null
     const raw = (json as { prices?: unknown } | null)?.prices
     const ok = Array.isArray(raw)
       ? raw.filter((p): p is [number, number] => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0).sort((a, b) => a[0] - b[0])
       : []
     points = ok.length > 0 ? ok : null
-  } catch {
+    failure = res.status === 429 ? 'rate_limited' : !res.ok ? 'http_error' : json == null || !Array.isArray(raw) ? 'malformed' : ok.length === 0 ? 'empty' : null
+  } catch (err) {
     points = null
+    failure = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError') ? 'timeout' : 'network_error'
   }
   if (ethUsdRangeCache.size >= ETH_RANGE_CACHE_MAX) ethUsdRangeCache.delete(ethUsdRangeCache.keys().next().value!)
-  ethUsdRangeCache.set(key, { expiresAt: now() + (points ? ETH_RANGE_TTL_MS : ETH_RANGE_FAIL_TTL_MS), points })
-  return { points, cacheHit: false }
+  ethUsdRangeCache.set(key, { expiresAt: now() + (points ? ETH_RANGE_TTL_MS : ETH_RANGE_FAIL_TTL_MS), points, httpStatus, failure })
+  return { points, cacheHit: false, httpStatus, failure }
 }
 
 /** Test hook. */

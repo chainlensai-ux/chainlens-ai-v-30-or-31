@@ -80,6 +80,8 @@ const ROBINHOOD_FIFO_CHAIN = 'robinhood' as unknown as SupportedChain
 
 // ── Types ───────────────────────────────────────────────────────────────────────────────────────────
 export type RhRpcCall = { method: string; params: unknown[] }
+/** One verified historical ETH/USD answer for a swap timestamp. */
+export type RhEthUsdPoint = { priceUsd: number; provider: string; endpoint: string | null; pointMs: number; gapMs: number; maxAllowedGapMs: number }
 /** One JSON-RPC batch; each slot is the call's result, or null when that call failed. Never throws. */
 export type RhRpc = (calls: RhRpcCall[]) => Promise<Array<unknown | null>>
 export type RhPoolKey = { currency0: string; currency1: string }
@@ -87,8 +89,14 @@ export type RhHistoricalTokenPrice = { priceUsd: number; source: string }
 
 export type RobinhoodPnlV1Deps = {
   rpc: RhRpc | null
-  /** Hour-aligned historical ETH/USD points ([ms, usd], ascending) for [fromSec, toSec]. */
-  ethUsdRange: (fromSec: number, toSec: number) => Promise<Array<[number, number]> | null>
+  /** Hour-aligned historical ETH/USD points ([ms, usd], ascending) for [fromSec, toSec] — the fallback source. */
+  ethUsdRange: (fromSec: number, toSec: number) => Promise<Array<[number, number]> | null | { points: Array<[number, number]> | null; httpStatus?: number | null; failure?: string | null; cacheHit?: boolean }>
+  /**
+   * Primary source: a verified historical ETH/USD for one swap timestamp (seconds) from the shared ChainLens
+   * historical-native resolver (UTC-day bucket, permanently cached, no current price). Injected by the sidecar
+   * scan so this lane never imports the Base/ETH pricing stack. Null when it has no verified answer.
+   */
+  ethUsdAt?: (timestampSec: number) => Promise<RhEthUsdPoint | null>
   /** Trusted historical provider, exact token + timestamp. Null when it has no answer. */
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
@@ -723,27 +731,109 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
 // A quote-anchored swap's token leg takes the exact execution value (one tx-side value, as on Base),
 // so the provider is only consulted for token↔token swaps with no canonical anchor on the route.
 
-type EthSeries = Array<[number, number]>
-async function loadEthSeries(ctx: Ctx, timestampsSec: number[]): Promise<{ series: EthSeries; windows: number }> {
+// ETH pricing has its own small time budget: by the time pricing runs, receipt / trace work may have used the
+// lane's overall deadline, and a skipped provider call must never be the reason a proven swap is unpriced.
+const ETH_PRICING_BUDGET_MS = 6_000
+const ETH_RESOLVER_MAX_GAP_MS = 86_400_000 // the shared resolver answers with the swap's own UTC-day bucket
+
+type EthHistoryAudit = {
+  requestedTimestampSec: number
+  requestedFromSec: number | null
+  requestedToSec: number | null
+  provider: string | null
+  endpoint: string | null
+  httpStatus: number | null
+  pointsReturned: number | null
+  earliestPointMs: number | null
+  latestPointMs: number | null
+  nearestPointMs: number | null
+  nearestGapMs: number | null
+  maxAllowedGapMs: number | null
+  priceUsd: number | null
+  rejectionReason: string | null
+}
+
+/**
+ * Historical ETH/USD per swap timestamp (seconds). Primary: the shared ChainLens historical-native resolver
+ * (ethUsdAt). Fallback: the hourly CoinGecko range series, nearest point within ROBINHOOD_ETH_USD_MAX_GAP_MS.
+ * Never a current price. Every timestamp logs one [robinhood-eth-history-audit] line, priced or not.
+ */
+async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>()
+  const pricingDeadline = Math.max(ctx.deadlineAt, Date.now() + ETH_PRICING_BUDGET_MS)
   const sorted = [...new Set(timestampsSec)].sort((a, b) => a - b)
+  const audits = new Map<number, EthHistoryAudit>(sorted.map((t) => [t, {
+    requestedTimestampSec: t, requestedFromSec: null, requestedToSec: null, provider: null, endpoint: null, httpStatus: null, pointsReturned: null,
+    earliestPointMs: null, latestPointMs: null, nearestPointMs: null, nearestGapMs: null, maxAllowedGapMs: null, priceUsd: null, rejectionReason: null,
+  }]))
+  const budgetLeft = () => ctx.priceSidesUsed < ROBINHOOD_PNL_V1_LIMITS.maxHistoricalPriceSides
+  // 1) Shared verified resolver: one call per distinct UTC day (its own bucket), cached by the resolver.
+  if (ctx.deps.ethUsdAt) {
+    const byDay = new Map<number, RhEthUsdPoint | null>()
+    for (const t of sorted) {
+      const a = audits.get(t)!
+      const day = Math.floor((t * 1000) / ETH_RESOLVER_MAX_GAP_MS)
+      if (!byDay.has(day)) {
+        if (Date.now() >= pricingDeadline) { a.rejectionReason = 'not_attempted_pricing_deadline'; continue }
+        if (!budgetLeft()) { a.rejectionReason = 'not_attempted_side_budget_exhausted'; continue }
+        ctx.priceSidesUsed += 1
+        ctx.m.historicalPriceCalls += 1
+        byDay.set(day, await ctx.deps.ethUsdAt(t).catch(() => null))
+      }
+      const hit = byDay.get(day) ?? null
+      a.provider = hit?.provider ?? 'chainlens_native_price_resolver'
+      a.endpoint = hit?.endpoint ?? null
+      if (hit && Number.isFinite(hit.priceUsd) && hit.priceUsd > 0 && hit.gapMs <= hit.maxAllowedGapMs) {
+        Object.assign(a, { nearestPointMs: hit.pointMs, nearestGapMs: hit.gapMs, maxAllowedGapMs: hit.maxAllowedGapMs, pointsReturned: 1, earliestPointMs: hit.pointMs, latestPointMs: hit.pointMs, priceUsd: hit.priceUsd, rejectionReason: null })
+        out.set(t, hit.priceUsd)
+      } else {
+        a.rejectionReason = hit ? 'resolver_point_outside_day' : 'resolver_no_verified_price'
+      }
+    }
+  }
+  // 2) Fallback: hourly range series for the timestamps the resolver could not answer.
+  const missing = sorted.filter((t) => !out.has(t))
   const windows: Array<[number, number]> = []
-  for (const t of sorted) {
+  for (const t of missing) {
     const last = windows[windows.length - 1]
     if (last && t - last[0] <= ETH_SERIES_MAX_WINDOW_SEC) last[1] = t
     else windows.push([t, t])
   }
-  const series: EthSeries = []
-  let used = 0
   for (const [from, to] of windows) {
-    if (ctx.priceSidesUsed >= ROBINHOOD_PNL_V1_LIMITS.maxHistoricalPriceSides || Date.now() >= ctx.deadlineAt) break
+    const members = missing.filter((t) => t >= from && t <= to)
+    const fromSec = from - 3_600
+    const toSec = to + 3_600
+    if (Date.now() >= pricingDeadline || !budgetLeft()) {
+      for (const t of members) audits.get(t)!.rejectionReason ??= Date.now() >= pricingDeadline ? 'not_attempted_pricing_deadline' : 'not_attempted_side_budget_exhausted'
+      continue
+    }
     ctx.priceSidesUsed += 1
     ctx.m.historicalPriceCalls += 1
-    used += 1
-    const pts = await ctx.deps.ethUsdRange(from - 3_600, to + 3_600).catch(() => null)
-    if (pts) series.push(...pts)
+    const raw = await ctx.deps.ethUsdRange(fromSec, toSec).catch(() => ({ points: null, httpStatus: null, failure: 'provider_threw' as string | null }))
+    const res = Array.isArray(raw) || raw == null ? { points: raw, httpStatus: null as number | null, failure: raw == null ? 'provider_failed_or_empty' : null as string | null } : { points: raw.points, httpStatus: raw.httpStatus ?? null, failure: raw.failure ?? null }
+    const series = [...(res.points ?? [])].filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0).sort((x, y) => x[0] - y[0])
+    for (const t of members) {
+      const a = audits.get(t)!
+      const prior = a.rejectionReason
+      Object.assign(a, {
+        requestedFromSec: fromSec, requestedToSec: toSec, provider: 'coingecko_market_chart_range',
+        endpoint: '/coins/ethereum/market_chart/range', httpStatus: res.httpStatus, pointsReturned: series.length,
+        earliestPointMs: series[0]?.[0] ?? null, latestPointMs: series[series.length - 1]?.[0] ?? null, maxAllowedGapMs: ROBINHOOD_ETH_USD_MAX_GAP_MS,
+      })
+      if (series.length === 0) { a.rejectionReason = `${prior ? `${prior}; ` : ''}range_${res.failure ?? 'empty'}`; continue }
+      const nearest = nearestPriceWithGap(series, t * 1000, Number.POSITIVE_INFINITY)
+      a.nearestPointMs = nearest ? series.find((p) => p[1] === nearest.price && Math.abs(p[0] - t * 1000) === nearest.gapMs)?.[0] ?? null : null
+      a.nearestGapMs = nearest?.gapMs ?? null
+      const within = nearestPriceWithGap(series, t * 1000, ROBINHOOD_ETH_USD_MAX_GAP_MS)
+      if (within) { out.set(t, within.price); a.priceUsd = within.price; a.rejectionReason = null }
+      else {
+        const covered = series[0][0] <= t * 1000 && t * 1000 <= series[series.length - 1][0]
+        a.rejectionReason = `${prior ? `${prior}; ` : ''}${covered ? 'range_nearest_point_outside_gap' : 'range_timestamp_not_covered'}`
+      }
+    }
   }
-  series.sort((a, b) => a[0] - b[0])
-  return { series, windows: used }
+  for (const a of audits.values()) console.warn('[robinhood-eth-history-audit]', a)
+  return out
 }
 
 async function providerPrice(ctx: Ctx, token: string, timestampSec: number): Promise<RhHistoricalTokenPrice | null> {
@@ -761,14 +851,14 @@ async function providerPrice(ctx: Ctx, token: string, timestampSec: number): Pro
 
 export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSwap[]): Promise<RhPriceEvidence[]> {
   const needsEth = swaps.filter((s) => quoteKind(s.inputToken) === 'native' || quoteKind(s.outputToken) === 'native' || s.intermediary?.kind === 'native')
-  const { series } = needsEth.length > 0 ? await loadEthSeries(ctx, needsEth.map((s) => s.timestampSec)) : { series: [] as EthSeries }
+  const ethAt = needsEth.length > 0 ? await resolveEthUsdForTimestamps(ctx, needsEth.map((s) => s.timestampSec)) : new Map<number, number>()
   const quoteUsd = (currency: string, raw: bigint, decimals: number, ts: number): { usd: number; source: string } | null => {
     const kind = quoteKind(currency)
     const qty = toUnits(raw, decimals)
     if (kind === 'stable') return { usd: qty, source: 'verified_stablecoin_exact_address' }
     if (kind === 'native') {
-      const hit = nearestPriceWithGap(series, ts * 1000, ROBINHOOD_ETH_USD_MAX_GAP_MS)
-      return hit ? { usd: qty * hit.price, source: currency === RH_WETH ? 'weth_historical_eth_usd' : 'native_historical_eth_usd' } : null
+      const price = ethAt.get(ts)
+      return price != null ? { usd: qty * price, source: currency === RH_WETH ? 'weth_historical_eth_usd' : 'native_historical_eth_usd' } : null
     }
     return null
   }
@@ -1027,7 +1117,7 @@ export function goldrushRobinhoodTokenHistoricalUsd(fetchImpl: FetchLike): Robin
 export function defaultRobinhoodPnlV1Deps(fetchImpl: FetchLike): RobinhoodPnlV1Deps {
   return {
     rpc: robinhoodRpcFromUrl(getRobinhoodRpcUrl(), fetchImpl),
-    ethUsdRange: async (fromSec, toSec) => (await fetchCoingeckoEthUsdRange(fromSec, toSec, ROBINHOOD_PNL_V1_LIMITS.providerTimeoutMs)).points,
+    ethUsdRange: async (fromSec, toSec) => fetchCoingeckoEthUsdRange(fromSec, toSec, ROBINHOOD_PNL_V1_LIMITS.providerTimeoutMs),
     tokenHistoricalUsd: goldrushRobinhoodTokenHistoricalUsd(fetchImpl),
     now: Date.now,
   }

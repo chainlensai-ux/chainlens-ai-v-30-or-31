@@ -43,6 +43,7 @@
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
+import { resolveHistoricalNativeUsdPrice, NATIVE_PRICE_BUCKET_MS } from '../../src/modules/nativePriceResolver'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
@@ -1418,7 +1419,7 @@ export async function scanRobinhoodWallet(
   robinhoodPnl: RobinhoodPnlV1
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const v1Deps = pnlV1Deps ?? { ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl) }
+  const v1Deps = pnlV1Deps ?? { ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), ethUsdAt: sharedHistoricalEthUsdAt }
   // PnL V1: the activity decode no longer receives CURRENT prices (holdings / DexScreener spot) — a
   // historical PnL must never be gated on them. Pool currencies come from the same cached, hash-proven
   // resolver the V1 lane uses, instead of an unbounded Initialize log scan per Swap log.
@@ -1478,6 +1479,26 @@ export function buildRobinhoodActivityFallbackAudit(
     transferCount: v1Input.transferCount,
     candidateTxCount: new Set(v1Input.candidates.map((c) => c.txHash.toLowerCase())).size,
     fromCache: activity.fromCache,
+  }
+}
+
+// ── Historical ETH/USD for Robinhood PnL ─────────────────────────────────────────────────────────────
+/**
+ * Robinhood's native asset is ETH, and ETH/USD at an instant is one global figure, so Robinhood swaps reuse the
+ * same verified historical-native resolver the Wallet Scanner's Base/ETH pricing uses (its UTC-day bucket,
+ * permanently cached; never a current price) instead of a second provider stack. Timestamps are seconds here
+ * and milliseconds in the resolver.
+ */
+export async function sharedHistoricalEthUsdAt(timestampSec: number): Promise<import('./robinhoodPnlV1').RhEthUsdPoint | null> {
+  const r = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: timestampSec * 1000 }).catch(() => null)
+  if (!r) return null
+  return {
+    priceUsd: r.priceUsd,
+    provider: `chainlens_native_price_resolver:${r.source}`,
+    endpoint: r.poolAddress ? `pool:${r.poolAddress}` : null,
+    pointMs: r.bucketStartMs,
+    gapMs: r.timestampDistanceMs,
+    maxAllowedGapMs: NATIVE_PRICE_BUCKET_MS,
   }
 }
 
