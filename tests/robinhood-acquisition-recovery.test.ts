@@ -2,9 +2,8 @@
 // for earlier inbounds of the exact sold token. Only a wallet-funded, connected route is a buy.
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
-import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
+import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS, robinhoodAcquisitionRecoveryDeadline, selectRobinhoodPnlV1Candidates, type RhRpc, type RobinhoodPnlV1Deps, type RhEthUsdPoint } from '../lib/server/robinhoodPnlV1.ts'
 import { V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, WETH_WITHDRAWAL_TOPIC0, type RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
 
 const TS = 1790155166 // production 53353d… sell
@@ -48,8 +47,6 @@ class Tx {
   trace: RhNativeTransfer[] | null = []
   ts = TS
   sender = WALLET
-  /** Overrides the eth_getTransactionByHash response; THROW makes that RPC call fail. */
-  txResponse: unknown = undefined
   at(ts: number) { this.ts = ts; for (const l of this.logs as Array<{ blockTimestamp: string }>) l.blockTimestamp = hex(ts); return this }
   private i = 0
   private push(address: string, topics: string[], data: string) { this.logs.push({ address, topics, data, logIndex: hex(this.i++), blockTimestamp: hex(this.ts) }); return this }
@@ -105,27 +102,28 @@ const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
 const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
-const THROW = Symbol('throw')
-async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; onReceipt?: (hash: string) => void } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
+async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[]; hashes?: string[]; receiptUnavailableFor?: number[] } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
   __resetRobinhoodPnlV1CachesForTest() // hashes repeat across runs; receipts are cached by hash
-  const hashes = txs.map((_, i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
-  const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: 1000 + i * 10 }]))
+  const hashes = txs.map((_, i) => opts.hashes?.[i] ?? `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
+  const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: opts.blocks?.[i] ?? 1000 + i * 10 }]))
   const byBlock = new Map([...byHash.values()].map((v) => [v.block, v]))
   let receiptCalls = 0
-  const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
-    const p = params as any[]
-    if (method === 'eth_getTransactionReceipt') { receiptCalls += 1; opts.onReceipt?.(p[0]); const e = byHash.get(p[0]); return e ? { status: '0x1', from: e.tx.sender, to: ROUTER, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
-    if (method === 'eth_getTransactionByHash') {
-      const e = byHash.get(p[0])
-      if (e && e.tx.txResponse === THROW) throw new Error('rpc down')
-      return e ? (e.tx.txResponse !== undefined ? e.tx.txResponse : { hash: p[0], value: hex(e.tx.txValue) }) : null
+  const rpc: RhRpc = async (calls) => {
+    if (opts.onRelayedValueLookup && calls.some(({ method, params }) => method === 'eth_getTransactionByHash' && byHash.get(params[0] as string)?.tx.sender === RELAYER)) {
+      await opts.onRelayedValueLookup()
     }
+    return calls.map(({ method, params }) => {
+    const p = params as any[]
+    if (method === 'eth_getTransactionReceipt') { receiptCalls += 1; const e = byHash.get(p[0]); return e && !opts.receiptUnavailableFor?.includes(hashes.indexOf(p[0])) ? { status: '0x1', from: e.tx.sender, to: ROUTER, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
+    if (method === 'eth_getTransactionByHash') { const e = byHash.get(p[0]); return e ? opts.txResponse && e.tx.sender === RELAYER ? opts.txResponse(e.tx) : { value: hex(e.tx.txValue) } : null }
+    if (method === 'eth_getBlockByNumber') { const e = byBlock.get(Number(p[0])); return e ? { timestamp: hex(e.tx.ts) } : null }
     if (method === 'eth_getBalance') return hex(BigInt(10) * E18)
     if (method === 'eth_getTransactionCount') return byBlock.has(Number(p[1])) && byBlock.get(Number(p[1]))!.tx.sender === WALLET ? '0x2' : '0x1'
     if (method === 'eth_call' && p[0].to === RH_V4_POSITION_MANAGER) return [...POOLS.entries()].find(([id]) => id.slice(2, 52) === String(p[0].data).slice(10, 60))?.[1] ?? null
     if (method === 'eth_call' && p[0].data === '0x313ce567') return hex(18)
     return null
-  })
+    })
+  }
   const cand = opts.candidates ?? [0]
   const lines: Array<[string, any]> = []
   const w = console.warn
@@ -188,6 +186,7 @@ test('3. a relayed swap with exact wallet funding and exact target output become
   const buy = relayedBuy(n(1), n(1000))
   const { r, rec } = await run([sell, buy], { inbound: [{ i: 1, raw: n(1000) }] })
   assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueEvidence, 'tx_value_zero_proven')
   assert.deepEqual([rec[0].walletFundingToken, rec[0].walletFundingRaw, rec[0].inboundRaw, rec[0].routeProven, rec[0].ownershipProven, rec[0].fifoIncluded, rec[0].priceEvidenceStatus], [RH_WETH, n(1).toString(), n(1000).toString(), true, true, true, 'both_legs_priced'])
   assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 1)
   assert.equal(r.acquisitionRecovery!.closedLotsAdded, 1)
@@ -208,6 +207,51 @@ test('4. a competing payer rejects (another address funds the input, or the rela
   valued.txValue = n(0.1)
   const v = await run([sell, valued], { inbound: [{ i: 1, raw: n(1000) }] })
   assert.match(v.rec[0].rejectionReason, /^competing_payer: tx sender/)
+  assert.equal(v.rec[0].txValueEvidence, 'tx_value_nonzero')
+})
+
+test('relayed route with unavailable tx.value fails closed for null, malformed and RPC failure', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const inbound = [{ i: 1, raw: n(1000) }]
+  for (const response of [null, { value: '0x' }, { value: 'invalid' }, { value: '0x00' }]) {
+    const { r, rec } = await run([sell, relayedBuy(n(1), n(1000))], { inbound, txResponse: () => response })
+    assert.equal(rec[0].classification, 'ambiguous')
+    assert.equal(rec[0].rejectionReason, 'competing_payer_unproven_tx_value')
+    assert.equal(rec[0].txValueEvidence, 'tx_value_unavailable')
+    assert.equal(rec[0].fifoIncluded, false)
+    assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  }
+  const failed = await run([sell, relayedBuy(n(1), n(1000))], { inbound, txResponse: () => { throw new Error('eth_getTransactionByHash failed') } })
+  assert.equal(failed.rec[0].classification, 'ambiguous')
+  assert.equal(failed.rec[0].rejectionReason, 'competing_payer_unproven_tx_value')
+  assert.equal(failed.rec[0].txValueEvidence, 'tx_value_unavailable')
+  assert.equal(failed.r.acquisitionRecovery!.recoveredBuyCount, 0)
+})
+
+test('wallet-sent acquisitions do not need relayer tx.value proof', async () => {
+  const buy = directBuy(n(1), n(1000)).at(TS - 3600)
+  const { rec, r } = await run([sellShape(n(1000), n(1.5)), buy], { inbound: [{ i: 1, raw: n(1000) }], txResponse: () => null })
+  assert.equal(rec[0].classification, 'verified_buy')
+  assert.equal(rec[0].txValueEvidence, null)
+  assert.equal(r.verifiedClosedLots, 1)
+})
+
+test('recovery deadline is capped by both the 5-second budget and the unchanged parent deadline', () => {
+  const now = 10_000
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now + 20_000, now), now + 5_000)
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now + 2_000, now), now + 2_000)
+  assert.equal(robinhoodAcquisitionRecoveryDeadline(now - 1, now), now - 1)
+})
+
+test('a stalled relayer value lookup cannot hold recovery past its five-second budget', async () => {
+  const started = Date.now()
+  const { rec, r } = await run([sellShape(n(1000), n(1.5)), relayedBuy(n(1), n(1000))],
+    { inbound: [{ i: 1, raw: n(1000) }], onRelayedValueLookup: () => new Promise<void>(() => {}) })
+  assert.equal(rec[0].classification, 'ambiguous')
+  assert.equal(rec[0].rejectionReason, 'not_attempted_recovery_deadline')
+  assert.equal(rec[0].fifoIncluded, false)
+  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  assert.ok(Date.now() - started < 6_500, 'the recovery lane must stop after its local five-second budget')
 })
 
 test('5. outside funding rejects', async () => {
@@ -296,90 +340,302 @@ test('10. direct V4 and mixed-route acceptance are unchanged', async () => {
   assert.equal(none.r.structuralClosedLots, 0)
 })
 
-// ── tx.value fail-closed + recovery-local deadline ──────────────────────────────────────────────────
-const withTxResponse = (resp: unknown) => { const b = relayedBuy(n(1), n(1000)); b.txResponse = resp; return b }
-
-test('tx.value 1. relayed proven route + tx.value = 0 → may verify', async () => {
-  const { rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse({ value: '0x0' })], { inbound: [{ i: 1, raw: n(1000) }] })
-  assert.equal(rec[0].classification, 'verified_buy')
-  assert.equal(rec[0].txValueStatus, 'tx_value_zero_proven')
+const historical = (...entries: Array<{ i: number; raw: bigint; ts?: number }>) => async () => ({
+  rows: entries.map(({ i, raw, ts }) => ({ txHash: `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`, timestampMs: (ts ?? TS - 86_400) * 1000, token: A, rawAmount: raw.toString() })),
+  pagesRequested: 2, pagesSucceeded: 2, olderInboundRowsFound: entries.length,
+  historicalRangeStart: (TS - 86_400) * 1000, historicalRangeEnd: (TS - 86_400) * 1000, stopReason: 'history_exhausted',
 })
 
-test('tx.value 2. same route + tx.value > 0 → rejected (competing_payer)', async () => {
-  const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse({ value: '0x1' })], { inbound: [{ i: 1, raw: n(1000) }] })
-  assert.equal(rec[0].classification, 'ambiguous')
-  assert.equal(rec[0].txValueStatus, 'tx_value_nonzero')
-  assert.match(rec[0].rejectionReason, /^competing_payer: tx sender/)
-  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+const exhaustedAddressHistory = async () => ({
+  rows: [], pagesRequested: 5, pagesSucceeded: 4, filteredPagesRequested: 1, fallbackPagesRequested: 4,
+  fallbackActivated: true, exactTokenRowsFound: 0, olderInboundRowsFound: 0,
+  historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'deadline',
+})
+const tokenHistory = (...entries: Array<{ i: number; raw: bigint; ts?: number }>) => async () => ({
+  rows: entries.map(({ i, raw, ts }) => ({ txHash: `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`, timestampMs: (ts ?? TS - 86_400) * 1000, token: A, rawAmount: raw.toString() })),
+  pagesRequested: 2, pagesSucceeded: 2, rowsReturned: entries.length, walletMatches: entries.length,
+  candidatesFound: entries.length, stopReason: 'history_exhausted',
 })
 
-test('tx.value 3. same route + tx.value = null → rejected (competing_payer_unproven_tx_value)', async () => {
-  for (const resp of [{ value: null }, null]) {
-    const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(resp)], { inbound: [{ i: 1, raw: n(1000) }] })
-    assert.equal(rec[0].classification, 'ambiguous')
-    assert.equal(rec[0].txValueStatus, 'tx_value_unavailable')
-    assert.match(rec[0].rejectionReason, /^competing_payer_unproven_tx_value/)
-    assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
-    assert.equal(r.structuralClosedLots, 0)
-  }
+test('token history excludes the four current-sample distributions before proof and verifies only a proven older buy', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const older = relayedBuy(n(1), n(1000), TS - 86_400)
+  const entries = distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10), ts: TS - (j + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions, older], {
+    inbound: entries.map(({ i, raw }) => ({ i, raw })),
+  }, { historicalTokenInbounds: exhaustedAddressHistory, tokenHistoryInbounds: tokenHistory(...entries, { i: 5, raw: n(1000) }) })
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, true)
+  assert.equal(r.deepAcquisition?.tokenHistoryCandidatesFound, 5)
+  assert.deepEqual(r.deepAcquisition?.tokenHistoryExcludedCurrentSampleHashes, [1, 2, 3, 4].map((i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`))
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 1)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
+  assert.equal(receiptCalls, 6)
 })
 
-test('tx.value 4. malformed tx response → rejected', async () => {
-  for (const resp of [{ value: 'zz' }, { value: '0x' }, { value: 5 }, { value: '0xzz' }, {}, 'x', [1], { hash: `0x${'f'.repeat(64)}`, value: '0x0' }]) {
-    const { rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(resp)], { inbound: [{ i: 1, raw: n(1000) }] })
-    assert.equal(rec[0].classification, 'ambiguous', JSON.stringify(resp))
-    assert.match(rec[0].rejectionReason, /^competing_payer_unproven_tx_value/)
-  }
+test('token history still rejects plain older transfers and keeps the shared eight-proof cap', async () => {
+  const older = Array.from({ length: 10 }, (_, i) => relayed(new Tx().xfer(A, OTHER, WALLET, n(i + 1)), TS - (i + 1) * 3600))
+  const entries = older.map((_, i) => ({ i: i + 1, raw: n(i + 1), ts: TS - (i + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...older], {}, {
+    historicalTokenInbounds: exhaustedAddressHistory, tokenHistoryInbounds: tokenHistory(...entries),
+  })
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(r.realizedPnlUsd, null)
+  assert.equal(receiptCalls, 9)
 })
 
-test('tx.value 5. eth_getTransactionByHash failure → rejected, never verified_buy', async () => {
-  const { r, rec } = await run([sellShape(n(1000), n(1.5)), withTxResponse(THROW)], { inbound: [{ i: 1, raw: n(1000) }] })
-  assert.notEqual(rec[0].classification, 'verified_buy')
-  assert.equal(rec[0].txValueStatus, 'tx_value_unavailable')
-  assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
-  assert.equal(r.verifiedClosedLots, 0)
+test('token history is not queried when address history already found a new exact-token candidate', async () => {
+  let calls = 0
+  const { r } = await run([sellShape(n(1000), n(1.5)), relayedBuy(n(1), n(1000))], {}, {
+    historicalTokenInbounds: historical({ i: 1, raw: n(1000) }),
+    tokenHistoryInbounds: async () => { calls++; return tokenHistory()() },
+  })
+  assert.equal(calls, 0)
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, false)
 })
 
-test('tx.value 6. wallet-sent acquisition path unchanged (no tx.value requirement from the relayed proof)', async () => {
-  const buy = directBuy(n(1), n(1000)).at(TS - 3600)
-  buy.txResponse = undefined
-  const { r, rec } = await run([sellShape(n(1000), n(1.5)), buy], { inbound: [{ i: 1, raw: n(1000) }] })
-  assert.equal(rec[0].classification, 'verified_buy')
-  assert.equal(rec[0].txValueStatus, null)
+test('token history receives a fresh bounded six-second deadline after address-history exhaustion', async () => {
+  let tokenDeadline = 0
+  const { r } = await run([sellShape(n(1000), n(1.5))], {}, {
+    historicalTokenInbounds: exhaustedAddressHistory,
+    tokenHistoryInbounds: async (_wallet, _token, _sellTs, deadlineAt) => {
+      tokenDeadline = deadlineAt - Date.now()
+      return tokenHistory()()
+    },
+  })
+  assert.equal(r.deepAcquisition?.tokenHistoryAttempted, true)
+  assert.ok(tokenDeadline > 5_000 && tokenDeadline <= 6_000)
+  assert.equal(r.deepAcquisition?.tokenHistoryStopReason, 'history_exhausted')
+})
+
+test('RPC exact Transfer logs find four known distributions and prove only an older wallet-funded swap', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const older = relayedBuy(n(1), n(1000), TS - 86_400)
+  const rpcLog = (i: number, raw: bigint, block: number) => ({
+    address: A, topics: [ERC20_TRANSFER_TOPIC0, t(OTHER), t(WALLET)],
+    transactionHash: `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`,
+    blockNumber: hex(block), logIndex: hex(i), data: `0x${uint(raw)}`, removed: false,
+  })
+  const logs = [1, 2, 3, 4].map((i) => rpcLog(i, n(i * 10), 1900 - i * 10))
+  logs.push(rpcLog(5, n(1000), 1200))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions, older], {
+    blocks: [2000, 1890, 1880, 1870, 1860, 1200],
+    inbound: [1, 2, 3, 4].map((i) => ({ i, raw: n(i * 10) })),
+  }, { rpcInboundTransferLogs: async () => ({ status: 'ok', logs }), historicalTokenInbounds: historical() })
+  assert.equal(rec.length, 4)
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  assert.deepEqual(r.deepAcquisition?.rpcHistory?.knownCurrentSampleTxsFound,
+    [1, 2, 3, 4].map((i) => `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`))
+  assert.equal(r.deepAcquisition?.rpcHistory?.newCandidatesFound, 1)
+  assert.equal(r.deepAcquisition?.rpcHistory?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
   assert.equal(r.verifiedClosedLots, 1)
-  assert.equal(r.realizedPnlUsd, 1300)
+  assert.equal(receiptCalls, 6)
 })
 
-test('tx.value 7. the 5s recovery budget is local: bounded from its own start, the shared deadline is never moved', async () => {
-  const src = readFileSync(new URL('../lib/server/robinhoodPnlV1.ts', import.meta.url), 'utf8')
-  assert.ok(!/ctx\.deadlineAt\s*=[^=]/.test(src), 'the shared PnL deadline must never be reassigned')
-  assert.equal(ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.budgetMs, 5_000)
-  // Fake clock: each recovery-candidate receipt takes 2s; the sell's own work takes no time.
-  const realNow = Date.now
-  let clock = realNow()
-  Date.now = () => clock
-  try {
-    const sell = sellShape(n(1000), n(1.5))
-    const inbounds = Array.from({ length: 8 }, (_, k) => relayed(new Tx().xfer(A, OTHER, WALLET, n(1)), TS - 1000 - k))
-    let sellHash = ''
-    const out = await run([sell, ...inbounds], {
-      inbound: inbounds.map((_, k) => ({ i: k + 1, raw: n(1) })),
-      onReceipt: (h) => { if (!sellHash) sellHash = h; if (h !== sellHash) clock += 2_000 },
-    })
-    const s = out.r.acquisitionRecovery!
-    assert.equal(s.acquisitionRecoveryAttempted, true)
-    assert.equal(s.candidatesFound, 8)
-    assert.equal(s.candidatesAttempted, 3) // t+0, t+2, t+4 start; t+6 is past the 5s budget
-    assert.equal(s.recoveryDeadlineHit, true)
-    assert.equal(out.rec.filter((x) => x.rejectionReason === 'not_attempted_recovery_deadline').length, 5)
-    assert.equal(out.receiptCalls, 1 + 3) // no receipt work after the budget
-  } finally { Date.now = realNow }
+test('cached receipts anchor all four production-shaped inbound hashes and search a full margin beyond the earliest', async () => {
+  const blocks = [70_400_844, 69_950_000, 68_050_000, 64_000_000, 62_309_618]
+  const hashes = ['53353d', '455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix) => `0x${prefix}${'0'.repeat(58)}`)
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const logs = distributions.map((_, j) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(ZERO_ADDR), t(WALLET)],
+    transactionHash: hashes[j + 1], blockNumber: hex(blocks[j + 1]), logIndex: hex(j),
+    data: `0x${uint(n((j + 1) * 10))}`, removed: false }))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions], {
+    blocks, hashes, inbound: [1, 2, 3, 4].map((i) => ({ i, raw: n(i * 10) })),
+  }, { rpcInboundTransferLogs: async (query) => ({ status: 'ok', logs: logs.filter((entry) =>
+    Number(entry.blockNumber) >= Number(query.fromBlock) && Number(entry.blockNumber) <= Number(query.toBlock)) }) })
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  const audit = r.deepAcquisition?.rpcHistory
+  assert.equal(audit?.earliestKnownInboundBlock, 62_309_618)
+  assert.equal(audit?.targetFromBlock, 61_309_618)
+  assert.deepEqual(audit?.knownInboundHashesExpected, hashes.slice(1).sort())
+  assert.deepEqual(audit?.knownInboundHashesFound, hashes.slice(1).sort())
+  assert.equal(audit?.knownInboundCoverageComplete, true)
+  assert.equal(audit?.reachedHistoricalMargin, true)
+  assert.equal(audit?.boundedLookbackComplete, true)
+  assert.equal(audit?.stopReason, 'bounded_target_reached')
+  assert.equal(audit?.newCandidatesFound, 0)
+  assert.equal(audit?.receiptsAttempted, 0)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(receiptCalls, 5) // sell + four already-classified receipts; no re-proof
 })
 
-test('tx.value 8. plain inbound transfers remain non-buys (tx.value 0 proves nothing by itself)', async () => {
-  const plain = relayed(new Tx().xfer(A, OTHER, WALLET, n(10)))
-  const { r, rec } = await run([sellShape(n(1000), n(1.5)), plain], { inbound: [{ i: 1, raw: n(10) }] })
-  assert.equal(rec[0].classification, 'transfer_in')
-  assert.equal(rec[0].txValueStatus, 'tx_value_zero_proven')
+test('empty raw inbound array reuses four classified recovery rows and cached receipts as exact RPC anchors', async () => {
+  const blocks = [70_400_844, 69_950_000, 68_050_000, 64_000_000, 62_309_618]
+  const hashes = ['53353d', '455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix) => `0x${prefix}${'0'.repeat(58)}`)
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const logs = distributions.map((_, j) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(ZERO_ADDR), t(WALLET)],
+    transactionHash: hashes[j + 1], blockNumber: hex(blocks[j + 1]), logIndex: hex(j),
+    data: `0x${uint(n((j + 1) * 10))}`, removed: false }))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions], {
+    blocks, hashes, candidates: [0, 1, 2, 3, 4], inbound: [],
+  }, { rpcInboundTransferLogs: async (query) => ({ status: 'ok', logs: logs.filter((entry) =>
+    Number(entry.blockNumber) >= Number(query.fromBlock) && Number(entry.blockNumber) <= Number(query.toBlock)) }) })
+  assert.equal(r.acquisitionRecovery?.candidatesFound, 4)
+  assert.deepEqual(r.acquisitionRecovery?.candidateTxHashes, hashes.slice(1).sort())
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  const audit = r.deepAcquisition?.rpcHistory
+  assert.deepEqual(audit?.rawInboundAnchorHashes, [])
+  assert.deepEqual(audit?.recoveryCandidateAnchorHashes, hashes.slice(1).sort())
+  assert.deepEqual(audit?.unionAnchorHashes, hashes.slice(1).sort())
+  assert.deepEqual(audit?.knownInboundHashesExpected, hashes.slice(1).sort())
+  assert.deepEqual(audit?.cachedReceiptAnchorsResolved.map((entry) => entry.txHash), hashes.slice(1).sort())
+  assert.equal(audit?.earliestKnownInboundBlock, 62_309_618)
+  assert.equal(audit?.targetFromBlock, 61_309_618)
+  assert.equal(audit?.coverageTarget, 'earliest_known_inbound_plus_margin')
+  assert.deepEqual(audit?.knownInboundHashesFound, hashes.slice(1).sort())
+  assert.equal(audit?.knownInboundCoverageComplete, true)
+  assert.equal(audit?.newCandidatesFound, 0)
+  assert.equal(audit?.receiptsAttempted, 0)
+  assert.equal(receiptCalls, 5) // Initial five receipts only; anchors never fetch again.
+})
+
+test('raw and recovery anchor hashes dedupe; invalid cached receipts fail closed with distinct reasons', async () => {
+  const credit = relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(10)), TS - 3600)
+  const wrongToken = relayed(new Tx().xfer(B, ZERO_ADDR, WALLET, n(20)), TS - 7200)
+  const postSellBlock = relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(30)), TS - 10_800)
+  const invalidBlock = relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(40)), TS - 14_400)
+  const missingReceipt = relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(50)), TS - 18_000)
+  const { r, hashes, receiptCalls } = await run([sellShape(n(1000), n(1.5)), credit, wrongToken, postSellBlock, invalidBlock, missingReceipt], {
+    candidates: [0, 1], blocks: [2000, 1200, 1300, 2100, 0, 1100], receiptUnavailableFor: [5],
+    inbound: [1, 2, 3, 4, 5].map((i) => ({ i, raw: n(i * 10) })),
+  }, { rpcInboundTransferLogs: async () => ({ status: 'ok', logs: [] }) })
+  const audit = r.deepAcquisition?.rpcHistory
+  assert.deepEqual(audit?.rawInboundAnchorHashes, hashes.slice(1).sort())
+  assert.ok(r.acquisitionRecovery?.candidateTxHashes.includes(hashes[5]))
+  assert.ok(audit?.recoveryCandidateAnchorHashes.includes(hashes[1]))
+  assert.ok(audit?.recoveryCandidateAnchorHashes.includes(hashes[5]))
+  assert.deepEqual(audit?.unionAnchorHashes, hashes.slice(1).sort())
+  assert.deepEqual(audit?.cachedReceiptAnchorsResolved, [{ txHash: hashes[1], blockNumber: 1200 }])
+  assert.deepEqual(audit?.cachedReceiptAnchorsMissing, [{ txHash: hashes[5], reason: 'missing_cached_receipt' }])
+  assert.deepEqual(audit?.cachedReceiptAnchorsRejected, [
+    { txHash: hashes[2], reason: 'receipt_missing_wallet_token_credit' },
+    { txHash: hashes[3], reason: 'post_sell_block' },
+    { txHash: hashes[4], reason: 'invalid_block' },
+  ])
+  assert.equal(audit?.earliestKnownInboundBlock, 1200)
+  assert.equal(receiptCalls, 6, 'sell + five current candidates only; anchoring adds no receipt call')
+})
+
+test('RPC-discovered plain transfer stays non-buy and falls back without duplicating receipt proof', async () => {
+  const older = relayed(new Tx().xfer(A, OTHER, WALLET, n(1000)), TS - 86_400)
+  const rpcLog = { address: A, topics: [ERC20_TRANSFER_TOPIC0, t(OTHER), t(WALLET)],
+    transactionHash: `0x${(0xacc1).toString(16).padStart(64, '0')}`,
+    blockNumber: hex(1200), logIndex: '0x1', data: `0x${uint(n(1000))}`, removed: false }
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), older], { blocks: [2000, 1200] }, {
+    rpcInboundTransferLogs: async () => ({ status: 'ok', logs: [rpcLog] }),
+    historicalTokenInbounds: historical({ i: 1, raw: n(1000) }),
+  })
+  assert.equal(r.deepAcquisition?.rpcHistory?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(r.realizedPnlUsd, null)
+  assert.equal(receiptCalls, 2)
+})
+
+test('RPC and Blockscout share the existing eight-receipt deep proof cap', async () => {
+  const older = Array.from({ length: 10 }, (_, i) => relayed(new Tx().xfer(A, OTHER, WALLET, n(i + 1)), TS - (i + 1) * 3600))
+  const blocks = [2000, ...older.map((_, i) => 1900 - i * 10)]
+  const logs = older.map((_, i) => ({ address: A, topics: [ERC20_TRANSFER_TOPIC0, t(OTHER), t(WALLET)],
+    transactionHash: `0x${(0xacc1 + i).toString(16).padStart(64, '0')}`,
+    blockNumber: hex(blocks[i + 1]), logIndex: hex(i), data: `0x${uint(n(i + 1))}`, removed: false }))
+  let blockscoutCalls = 0
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...older], { blocks }, {
+    rpcInboundTransferLogs: async () => ({ status: 'ok', logs }),
+    historicalTokenInbounds: async () => { blockscoutCalls++; return historical()() },
+  })
+  assert.equal(r.ingestionAudit.candidateSwapTxCount, 1)
+  assert.equal(r.deepAcquisition?.rpcHistory?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(blockscoutCalls, 0)
+  assert.equal(receiptCalls, 9)
+})
+
+test('deep history only upgrades an older receipt-proven relayed buy; partial quantity remains unmatched', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const old = relayedBuy(n(0.4), n(400))
+  const { r } = await run([sell, old], {}, { historicalTokenInbounds: historical({ i: 1, raw: n(400) }) })
   assert.equal(r.acquisitionRecovery!.recoveredBuyCount, 0)
+  assert.equal(r.deepAcquisition?.pagesRequested, 2)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(r.deepAcquisition?.recoveredBuyRaw, n(400).toString())
+  assert.equal(r.deepAcquisition?.unmatchedSellRawAfter, n(600).toString())
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 1)
+  assert.equal(r.verifiedClosedLots, 1)
+})
+
+test('deep history keeps plain transfers, competing payer, and unavailable tx.value as non-buys', async () => {
+  const cases = [
+    { tx: relayed(new Tx().xfer(A, OTHER, WALLET, n(1000))), response: undefined },
+    { tx: relayedBuy(n(1), n(1000)), response: { value: '0x1' } },
+    { tx: relayedBuy(n(1), n(1000)), response: null },
+  ]
+  for (const item of cases) {
+    const { r } = await run([sellShape(n(1000), n(1.5)), item.tx], { txResponse: () => item.response }, { historicalTokenInbounds: historical({ i: 1, raw: n(1000) }) })
+    assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+    assert.equal(r.deepAcquisition?.closedLotsAdded, 0)
+    assert.equal(r.realizedPnlUsd, null)
+  }
+})
+
+test('multiple deep buys enter FIFO chronologically and stop when inventory covers the sell', async () => {
+  const sell = sellShape(n(1000), n(1.5))
+  const newer = relayedBuy(n(0.5), n(600), TS - 3600)
+  const older = relayedBuy(n(0.3), n(400), TS - 7200)
+  const unused = relayedBuy(n(0.1), n(100), TS - 10_800)
+  const { r, receiptCalls } = await run([sell, newer, older, unused], {}, {
+    historicalTokenInbounds: historical({ i: 1, raw: n(600), ts: TS - 3600 }, { i: 2, raw: n(400), ts: TS - 7200 }, { i: 3, raw: n(100), ts: TS - 10_800 }),
+  })
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 2)
+  assert.equal(r.deepAcquisition?.unmatchedSellRawAfter, '0')
+  assert.equal(r.deepAcquisition?.closedLotsAdded, 2)
+  assert.equal(receiptCalls, 3) // sell plus the two needed buys; third older candidate is not proved
+})
+
+test('four current-sample distributions remain non-buys before deeper history is searched', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const { r, rec } = await run([sellShape(n(1000), n(1.5)), ...distributions], {
+    inbound: distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10) })),
+  }, { historicalTokenInbounds: historical() })
+  assert.equal(rec.length, 4)
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'), JSON.stringify(rec))
+  assert.equal(r.acquisitionRecovery?.recoveredBuyCount, 0)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+})
+
+test('four already-seen inbounds are counted by history but never re-proved; only a genuinely older row is checked', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const older = relayedBuy(n(1), n(1000), TS - 86_400)
+  const entries = distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10), ts: TS - (j + 1) * 3600 }))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions, older], {
+    inbound: entries.map(({ i, raw }) => ({ i, raw })),
+  }, { historicalTokenInbounds: historical(...entries, { i: 5, raw: n(1000), ts: TS - 86_400 }) })
+  assert.equal(rec.length, 4)
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  assert.equal(r.deepAcquisition?.olderInboundRowsFound, 5)
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 1)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(receiptCalls, 6) // sell + four current-sample receipts + one older receipt
+})
+
+test('the global swap candidate cap remains twenty', () => {
+  const sample = Array.from({ length: 25 }, (_, i) => ({ txHash: `0x${(i + 1).toString(16).padStart(64, '0')}`, timestampMs: i, hasSwapLog: true }))
+  const selected = selectRobinhoodPnlV1Candidates(sample)
+  assert.equal(selected.selected.length, 20)
+  assert.equal(selected.dropped, 5)
+})
+
+test('deep history keeps its eight-receipt proof cap without widening the normal sample', async () => {
+  const older = Array.from({ length: 10 }, (_, i) => relayed(new Tx().xfer(A, OTHER, WALLET, n(i + 1)), TS - (i + 1) * 3600))
+  const entries = older.map((_, i) => ({ i: i + 1, raw: n(i + 1), ts: TS - (i + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...older], {}, { historicalTokenInbounds: historical(...entries) })
+  assert.equal(r.ingestionAudit.candidateSwapTxCount, 1)
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 10)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(receiptCalls, 9) // sell plus eight bounded deep proofs
 })

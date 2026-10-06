@@ -257,8 +257,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     nextActions.push('Scan this wallet on Base, Ethereum, or Robinhood Chain instead.')
   }
 
+  let releaseNativePricePriority!: () => void
+  const nativePricePriorityReady = new Promise<void>((resolve) => { releaseNativePricePriority = resolve })
   const rhPromise = (includeRobinhood && robinhoodAvailable)
-    ? runCanonicalRobinhoodScan(walletAddress, fetch, { jobId: null, owner: 'orchestrator', reuseFreshMs: ROBINHOOD_SCAN_RESULT_FRESH_MS }).catch((err) => {
+    ? runCanonicalRobinhoodScan(walletAddress, fetch, {
+        jobId: null, owner: 'orchestrator', reuseFreshMs: ROBINHOOD_SCAN_RESULT_FRESH_MS,
+        onNativePricePrefetchComplete: releaseNativePricePriority,
+      }).catch((err) => {
         console.warn('[walletScanOrchestrator] scanRobinhoodWallet failed', {
           walletAddress,
           error: err instanceof Error ? err.message : String(err),
@@ -266,12 +271,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
         return null
       })
     : Promise.resolve(null)
+  void rhPromise.finally(releaseNativePricePriority)
 
   // Preview EVM always runs for holdings/total — same runV2Scan the Wallet Scanner's fast path
   // uses, with the SAME chain list the Wallet Scanner page requests (Base + ETH). Deep mode
   // ALSO enqueues the page's Deep Scan job (includeRobinhoodRequested) and overlays EVM PnL
   // if the job finishes before the Clark timeout window.
   if (evmChains.length > 0) {
+    await nativePricePriorityReady
     evmReport = await runV2Scan(walletAddress, `orchestrator_${params.scanDepth}:${params.source}`, evmChains)
     if (evmReport) {
       evidenceSources.push('v2_pipeline')

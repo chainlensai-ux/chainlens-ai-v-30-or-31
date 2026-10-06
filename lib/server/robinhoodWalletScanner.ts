@@ -43,8 +43,8 @@
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
-import { resolveHistoricalNativeUsdPrice, NATIVE_PRICE_BUCKET_MS } from '../../src/modules/nativePriceResolver'
-import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
+import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
+import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
 import { evidenceFromHoldings, type PortfolioEvidence } from '../walletScan/portfolioEvidence'
@@ -53,10 +53,10 @@ import {
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
 } from './robinhoodSwapDecoder'
 import {
-  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers,
+  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutAddressTokenBalances, getBlockscoutHistoricalTokenInbounds, getBlockscoutTokenHistoryInbounds,
   getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
   buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
-  type BlockscoutEvidenceAudit,
+  type BlockscoutEvidenceAudit, type BlockscoutAddressTokenBalance,
 } from './robinhoodBlockscoutEvidence'
 import {
   createBlockscoutFallbackDecisionAudit,
@@ -100,6 +100,11 @@ export function rejectWrongChainRobinhoodCache(
 
 export type RobinhoodTokenHolding = {
   address: string
+  chainId?: 4663
+  tokenAddress?: string
+  normalizedQuantity?: number | null
+  balanceEvidenceSource?: 'goldrush_balances_v2' | 'blockscout_current_token_balances'
+  excludedFromValueReason?: string | null
   symbol: string | null
   name: string | null
   decimals: number | null
@@ -154,6 +159,27 @@ export type RobinhoodWalletHoldingsResult = {
   portfolioEvidence?: PortfolioEvidence
   /** Counts for debug: held assets (non-zero balance), priced, unpriced, known subtotal, value status. */
   pricingSummary?: { holdingsCount: number; pricedCount: number; unpricedCount: number; knownSubtotalUsd: number | null; valueStatus: PortfolioEvidence['status']; repricedFromCache?: boolean }
+  holdingsIntegrationAudit?: RobinhoodHoldingsIntegrationAudit
+}
+
+export type RobinhoodHoldingsIntegrationAudit = {
+  providerRows: number
+  normalizedRows: number
+  uniqueTokenCount: number
+  nativeBalanceIncluded: boolean
+  erc20BalanceCount: number
+  pricedErc20Count: number
+  unpricedErc20Count: number
+  excludedZeroBalance: number
+  excludedInvalidToken: number
+  duplicateRowsRemoved: number
+  supportedValueUsd: number | null
+  unpricedTokenCount: number
+  pricingSourceCounts: Record<string, number>
+  balanceSourceCounts: Record<string, number>
+  balanceCoverageComplete: boolean
+  balanceRowsTruncated: number
+  topHoldings: Array<{ tokenAddress: string; symbol: string | null; rawBalance: string; normalizedQuantity: number | null; balanceEvidenceSource: string | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null; reason: string | null }>
 }
 
 export type RobinhoodTransferDirection = 'incoming' | 'outgoing'
@@ -607,6 +633,7 @@ type CovalentBalanceItem = {
   balance?: string
   quote_rate?: number | null
   native_token?: boolean
+  is_spam?: boolean
 }
 
 async function fetchCovalentBalances(wallet: string, fetchImpl: FetchImpl): Promise<{ items: CovalentBalanceItem[] | null; reason: string | null; chainPathUsed: string | null }> {
@@ -704,6 +731,8 @@ export const defaultEthUsdLatest: EthUsdLatest = async () => {
 
 export type RobinhoodHoldingsDeps = {
   fetchImpl: FetchImpl
+  /** Test seam; production uses the bounded Blockscout current-balance endpoint. */
+  blockscoutBalances?: (wallet: string) => Promise<BlockscoutAddressTokenBalance[] | null>
   cached?: (RobinhoodWalletHoldingsResult & { chainSlug: 'robinhood'; wallet: string }) | null
   /** Verified current ETH/USD (default: the shared CoinGecko series). */
   ethUsdLatest?: EthUsdLatest
@@ -711,6 +740,41 @@ export type RobinhoodHoldingsDeps = {
 }
 
 const positiveRaw = (raw: string | null | undefined): boolean => { try { return raw != null && BigInt(raw) > BigInt(0) } catch { return false } }
+const evmAddress = (value: unknown): value is string => typeof value === 'string' && /^0x[\da-fA-F]{40}$/.test(value)
+const rawUnsigned = (value: unknown): value is string => typeof value === 'string' && /^\d+$/.test(value)
+const tokenDecimals = (value: unknown): number | null => {
+  const n = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+  return typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= 255 ? n : null
+}
+const quantityFromRaw = (raw: string, decimals: number | null): number | null => {
+  if (decimals == null) return null
+  const quantity = Number(raw) / 10 ** decimals
+  return Number.isFinite(quantity) ? quantity : null
+}
+const FALLBACK_PRICE_LOOKUP_CAP = 50
+const FALLBACK_BALANCE_ROW_CAP = 200
+const FALLBACK_MIN_LIQUIDITY_USD = 10_000
+
+function holdingsIntegrationAudit(holdings: RobinhoodTokenHolding[], native: RobinhoodNativeBalance | null, counts: Pick<RobinhoodHoldingsIntegrationAudit, 'providerRows' | 'normalizedRows' | 'excludedZeroBalance' | 'excludedInvalidToken' | 'duplicateRowsRemoved' | 'balanceCoverageComplete' | 'balanceRowsTruncated'>): RobinhoodHoldingsIntegrationAudit {
+  const priced = holdings.filter((h) => h.valueUsd != null)
+  const sourceCounts: Record<string, number> = {}
+  const balanceSourceCounts: Record<string, number> = {}
+  for (const h of holdings) {
+    sourceCounts[h.priceSource ?? 'unpriced'] = (sourceCounts[h.priceSource ?? 'unpriced'] ?? 0) + 1
+    balanceSourceCounts[h.balanceEvidenceSource ?? 'legacy_unknown'] = (balanceSourceCounts[h.balanceEvidenceSource ?? 'legacy_unknown'] ?? 0) + 1
+  }
+  const ranked = [...holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1) || (b.uiBalance ?? -1) - (a.uiBalance ?? -1) || a.address.localeCompare(b.address))
+  return {
+    ...counts, uniqueTokenCount: holdings.length, nativeBalanceIncluded: native != null && positiveRaw(native.rawBalance),
+    erc20BalanceCount: holdings.length, pricedErc20Count: priced.length, unpricedErc20Count: holdings.length - priced.length,
+    supportedValueUsd: priced.length ? priced.reduce((sum, h) => sum + h.valueUsd!, 0) : null,
+    unpricedTokenCount: holdings.length - priced.length, pricingSourceCounts: sourceCounts, balanceSourceCounts,
+    topHoldings: ranked.slice(0, 10).map((h) => ({ tokenAddress: h.address, symbol: h.symbol, rawBalance: h.rawBalance,
+      normalizedQuantity: h.normalizedQuantity ?? h.uiBalance, balanceEvidenceSource: h.balanceEvidenceSource ?? null,
+      priceUsd: h.priceUsd, valueUsd: h.valueUsd, priceSource: h.priceSource,
+      reason: h.excludedFromValueReason ?? h.pricingDebug?.failureReason ?? null })),
+  }
+}
 
 /** Lane evidence + summary from (possibly re-priced) holdings. Held = non-zero balance; never values an unpriced asset. */
 export function summarizeRobinhoodHoldings(native: RobinhoodNativeBalance | null, holdings: ReadonlyArray<RobinhoodTokenHolding>, holdingsComplete: boolean, reason: string | null): { portfolioEvidence: PortfolioEvidence; pricingSummary: NonNullable<RobinhoodWalletHoldingsResult['pricingSummary']>; portfolioTotalUsd: number | null; unpricedTokenCount: number } {
@@ -725,7 +789,7 @@ export function summarizeRobinhoodHoldings(native: RobinhoodNativeBalance | null
     pricingSummary: { holdingsCount: held.length, pricedCount, unpricedCount: held.length - pricedCount, knownSubtotalUsd: portfolioEvidence.pricedSubtotalUsd, valueStatus: portfolioEvidence.status },
     // Back-compat field: the known priced subtotal (null when nothing is priced) — status is in portfolioEvidence.
     portfolioTotalUsd: pricedCount > 0 ? held.reduce((s, h) => s + (h.valueUsd ?? 0), 0) : null,
-    unpricedTokenCount: holdings.filter((h) => h.priceUsd == null).length,
+    unpricedTokenCount: holdings.filter((h) => h.valueUsd == null).length,
   }
 }
 
@@ -747,12 +811,23 @@ async function priceNative(native: RobinhoodNativeBalance, goldrushQuoteRate: nu
 }
 
 async function priceToken(h: RobinhoodTokenHolding, goldrushQuoteRate: number | null, deps: RobinhoodHoldingsDeps): Promise<RobinhoodTokenHolding> {
-  const valueOf = (p: number) => (h.uiBalance != null && Number.isFinite(h.uiBalance) ? h.uiBalance * p : null)
+  if (h.excludedFromValueReason) return { ...h, priceUsd: null, priceSource: null, valueUsd: null,
+    pricingDebug: { goldrushQuoteRate: null, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, resolvedPriceUsd: null, priceSource: null, failureReason: h.excludedFromValueReason } }
+  if (h.uiBalance == null) return { ...h, priceUsd: null, priceSource: null, valueUsd: null,
+    pricingDebug: { goldrushQuoteRate: null, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, resolvedPriceUsd: null, priceSource: null, failureReason: 'invalid_metadata_decimals_or_quantity' } }
+  const valueOf = (p: number) => {
+    const value = h.uiBalance != null && Number.isFinite(h.uiBalance) ? h.uiBalance * p : null
+    return value != null && Number.isFinite(value) ? value : null
+  }
   if (goldrushQuoteRate != null) {
     return { ...h, priceUsd: goldrushQuoteRate, priceSource: 'goldrush', valueUsd: valueOf(goldrushQuoteRate),
       pricingDebug: { goldrushQuoteRate, dexscreenerPairsReturned: null, dexscreenerValidPairs: null, selectedPair: null, resolvedPriceUsd: goldrushQuoteRate, priceSource: 'goldrush', failureReason: null } }
   }
   const ds = await resolveRobinhoodDexscreenerPrice(h.address, deps.fetchImpl)
+  if (h.balanceEvidenceSource === 'blockscout_current_token_balances' && ds.priceUsd != null && (ds.selected?.liquidityUsd ?? 0) < FALLBACK_MIN_LIQUIDITY_USD) {
+    return { ...h, priceUsd: null, priceSource: null, valueUsd: null,
+      pricingDebug: { goldrushQuoteRate: null, dexscreenerPairsReturned: ds.pairsReturned, dexscreenerValidPairs: ds.validPairs, selectedPair: ds.selected, resolvedPriceUsd: null, priceSource: null, failureReason: 'insufficient_verified_liquidity' } }
+  }
   const debug: RobinhoodPriceDebug = { goldrushQuoteRate: null, dexscreenerPairsReturned: ds.pairsReturned, dexscreenerValidPairs: ds.validPairs, selectedPair: ds.selected, resolvedPriceUsd: ds.priceUsd, priceSource: ds.priceUsd != null ? 'dexscreener' : null, failureReason: ds.priceUsd != null ? null : (h.uiBalance == null ? 'decimals_unknown' : ds.failureReason) }
   if (ds.priceUsd == null) return { ...h, priceUsd: null, priceSource: null, valueUsd: null, pricingDebug: debug }
   return { ...h, priceUsd: ds.priceUsd, priceSource: 'dexscreener', valueUsd: valueOf(ds.priceUsd), pricingDebug: debug }
@@ -787,11 +862,17 @@ async function repriceCachedHoldings(cached: RobinhoodWalletHoldingsResult, deps
       holdings.push(next)
     } else holdings.push(h)
   }
-  if (!changed) return { ...cached, fromCache: true }
+  if (!changed) {
+    if (cached.holdingsIntegrationAudit) console.warn('[robinhood-holdings-integration-audit]', cached.holdingsIntegrationAudit)
+    return { ...cached, fromCache: true }
+  }
   const holdingsComplete = cached.portfolioEvidence?.holdingsComplete ?? (cached.status === 'ok')
   const sum = summarizeRobinhoodHoldings(native, holdings, holdingsComplete, cached.reason)
   const status: RobinhoodHoldingsStatus = cached.status === 'unavailable' || cached.status === 'not_configured' ? cached.status : (sum.portfolioEvidence.status === 'verified' || sum.portfolioEvidence.status === 'verified_zero' ? 'ok' : 'partial')
-  return { ...cached, native, holdings, ...sum, pricingSummary: { ...sum.pricingSummary, repricedFromCache: true }, status, reason: status === 'ok' ? null : cached.reason, fromCache: true }
+  const prior = cached.holdingsIntegrationAudit
+  const integrationAudit = prior ? holdingsIntegrationAudit(holdings, native, prior) : undefined
+  if (integrationAudit) console.warn('[robinhood-holdings-integration-audit]', integrationAudit)
+  return { ...cached, native, holdings, ...sum, holdingsIntegrationAudit: integrationAudit, pricingSummary: { ...sum.pricingSummary, repricedFromCache: true }, status, reason: status === 'ok' ? null : cached.reason, fromCache: true }
 }
 
 export async function resolveRobinhoodWalletHoldings(wallet: string, deps: RobinhoodHoldingsDeps): Promise<RobinhoodWalletHoldingsResult> {
@@ -803,9 +884,11 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
   const rpcUrl = getRobinhoodRpcUrl()
   if (!rpcUrl) return notConfigured('Robinhood RPC URL is not configured.')
 
-  const [nativeResult, balances] = await Promise.all([
+  const [nativeResult, balances, blockscoutRows] = await Promise.all([
     fetchRobinhoodNativeBalance(wallet, deps.fetchImpl, rpcUrl),
     fetchCovalentBalances(wallet, deps.fetchImpl),
+    deps.blockscoutBalances ? deps.blockscoutBalances(wallet).catch(() => null)
+      : getBlockscoutAddressTokenBalances(wallet, deps.fetchImpl).then((response) => Array.isArray(response.data) ? response.data : null).catch(() => null),
   ])
 
   let native: RobinhoodNativeBalance | null = null
@@ -820,26 +903,66 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
     native = positiveRaw(nativeResult.rawBalance) || quoteRate != null ? await priceNative(unpriced, quoteRate, deps) : unpriced
   }
 
-  const holdings: RobinhoodTokenHolding[] = []
-  if (balances.items) {
-    for (const item of balances.items) {
-      if (item.native_token) continue
-      if (!item.contract_address || !item.balance) continue
-      const decimals = typeof item.contract_decimals === 'number' ? item.contract_decimals : null
-      const uiBalance = decimals != null ? Number(item.balance) / 10 ** decimals : null
-      const quoteRate = typeof item.quote_rate === 'number' && item.quote_rate > 0 ? item.quote_rate : null
-      const base: RobinhoodTokenHolding = {
-        address: item.contract_address, symbol: item.contract_ticker_symbol ?? null, name: item.contract_name ?? null, decimals,
-        rawBalance: item.balance, uiBalance: uiBalance != null && Number.isFinite(uiBalance) ? uiBalance : null, priceUsd: null, priceSource: null, valueUsd: null,
-      }
-      holdings.push(await priceToken(base, quoteRate, deps))
+  const byToken = new Map<string, { holding: RobinhoodTokenHolding; quoteRate: number | null }>()
+  let excludedZeroBalance = 0
+  let excludedInvalidToken = 0
+  let duplicateRowsRemoved = 0
+  let normalizedRows = 0
+  const add = (address: unknown, raw: unknown, decimalsValue: unknown, symbol: unknown, name: unknown,
+    source: RobinhoodTokenHolding['balanceEvidenceSource'], quoteRate: number | null, excludedFromValueReason: string | null = null) => {
+    if (!evmAddress(address) || !rawUnsigned(raw)) { excludedInvalidToken++; return }
+    if (!positiveRaw(raw)) { excludedZeroBalance++; return }
+    const decimals = tokenDecimals(decimalsValue)
+    const key = `${ROBINHOOD_CHAIN_ID}:${address.toLowerCase()}`
+    normalizedRows++
+    if (byToken.has(key)) { duplicateRowsRemoved++; return }
+    const quantity = quantityFromRaw(raw, decimals)
+    byToken.set(key, { holding: {
+      chainId: ROBINHOOD_CHAIN_ID, tokenAddress: address.toLowerCase(), address: address.toLowerCase(),
+      symbol: typeof symbol === 'string' ? symbol : null, name: typeof name === 'string' ? name : null,
+      decimals, rawBalance: raw, normalizedQuantity: quantity, uiBalance: quantity,
+      balanceEvidenceSource: source, excludedFromValueReason, priceUsd: null, priceSource: null, valueUsd: null,
+    }, quoteRate })
+  }
+  for (const item of balances.items ?? []) {
+    if (item.native_token) continue
+    add(item.contract_address, item.balance, item.contract_decimals, item.contract_ticker_symbol, item.contract_name,
+      'goldrush_balances_v2', typeof item.quote_rate === 'number' && Number.isFinite(item.quote_rate) && item.quote_rate > 0 ? item.quote_rate : null,
+      item.is_spam === true ? 'provider_spam_flag' : null)
+  }
+  const balanceRowsTruncated = Math.max(0, (blockscoutRows?.length ?? 0) - FALLBACK_BALANCE_ROW_CAP)
+  for (const item of (blockscoutRows ?? []).slice(0, FALLBACK_BALANCE_ROW_CAP)) {
+    const token = item?.token
+    if (token?.type !== 'ERC-20' || (evmAddress(token.address) && evmAddress(token.address_hash) && token.address.toLowerCase() !== token.address_hash.toLowerCase())) {
+      excludedInvalidToken++; continue
     }
+    add(token.address_hash ?? token.address, item.value, token.decimals, token.symbol, token.name,
+      'blockscout_current_token_balances', null)
+  }
+  const entries = [...byToken.values()]
+  const holdings: RobinhoodTokenHolding[] = []
+  let fallbackPriceLookups = 0
+  for (let start = 0; start < entries.length; start += 8) {
+    const batch = entries.slice(start, start + 8)
+    const priced = await Promise.all(batch.map(({ holding, quoteRate }) => {
+      if (holding.balanceEvidenceSource === 'blockscout_current_token_balances' && fallbackPriceLookups++ >= FALLBACK_PRICE_LOOKUP_CAP) {
+        return priceToken({ ...holding, excludedFromValueReason: 'fallback_pricing_budget' }, null, deps)
+      }
+      return priceToken(holding, quoteRate, deps)
+    }))
+    holdings.push(...priced)
   }
 
   // Complete holdings evidence = the native balance read AND the token balance list both answered.
-  const holdingsComplete = nativeResult.rawBalance != null && balances.items != null
-  const failure = balances.reason ?? nativeResult.reason ?? null
+  const holdingsComplete = nativeResult.rawBalance != null && (balances.items != null || blockscoutRows != null) && balanceRowsTruncated === 0
+  const failure = (balanceRowsTruncated > 0 ? 'balance_row_cap' : null) ?? (blockscoutRows == null ? balances.reason : null) ?? nativeResult.reason ?? null
   const sum = summarizeRobinhoodHoldings(native, holdings, holdingsComplete, failure)
+  const integrationAudit = holdingsIntegrationAudit(holdings, native, {
+    providerRows: (balances.items?.filter((item) => !item.native_token).length ?? 0) + (blockscoutRows?.length ?? 0),
+    normalizedRows, excludedZeroBalance, excludedInvalidToken, duplicateRowsRemoved, balanceRowsTruncated,
+    balanceCoverageComplete: holdingsComplete,
+  })
+  console.warn('[robinhood-holdings-integration-audit]', integrationAudit)
   const status: RobinhoodHoldingsStatus = native == null && holdings.length === 0
     ? (balances.reason === 'no_api_key' ? 'not_configured' : 'unavailable')
     : (sum.portfolioEvidence.status === 'verified' || sum.portfolioEvidence.status === 'verified_zero' ? 'ok' : 'partial')
@@ -857,6 +980,7 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: Robin
     fromCache: false,
     portfolioEvidence: sum.portfolioEvidence,
     pricingSummary: sum.pricingSummary,
+    holdingsIntegrationAudit: integrationAudit,
   }
 }
 
@@ -1399,6 +1523,33 @@ export async function getCachedRobinhoodWalletActivity(
 }
 const activityInFlight = new Map<string, Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }>>()
 
+/** Only receipt/route-verified swaps may reserve shared historical ETH provider capacity. */
+export async function prefetchRobinhoodNativePriceDays(swaps: readonly RhVerifiedSwap[]): Promise<void> {
+  const startedAt = Date.now()
+  const { requestedBuckets, selectedTimestampsSec, skippedByCap } = selectRobinhoodNativePriceDays(swaps)
+  const selectedBuckets = requestedBuckets.slice(0, selectedTimestampsSec.length)
+  const before = getNativePriceResolverDiagnostics()
+  let resolved = new Map<number, NativePriceResolution>()
+  try {
+    resolved = await prefetchNativeUsdPrices({ requirements: selectedTimestampsSec.map((timestampSec) => ({ chain: 'eth' as const, timestamp: timestampSec * 1000 })) })
+  } catch (err) {
+    console.warn('[robinhood-native-price-prefetch-error]', { error: err instanceof Error ? err.message : String(err) })
+  } finally {
+    const after = getNativePriceResolverDiagnostics()
+    console.warn('[robinhood-native-price-prefetch-audit]', {
+      requestedBuckets,
+      persistentHits: [...resolved.values()].filter((price) => price.servedFromPersistentCache).length,
+      liveAttempts: after.liveBucketRequests - before.liveBucketRequests,
+      resolvedBuckets: selectedBuckets.filter((bucket) => resolved.has(bucket)),
+      unresolvedBuckets: selectedBuckets.filter((bucket) => !resolved.has(bucket)),
+      sourceByBucket: Object.fromEntries([...resolved].map(([bucket, price]) => [String(bucket), price.source])),
+      persistedWrites: after.persistentWritesSucceeded - before.persistentWritesSucceeded,
+      skippedByCap,
+      elapsedMs: Date.now() - startedAt,
+    })
+  }
+}
+
 // ── Shared scan sequence, DISCLOSED (Wallet Scanner unification task): the EXACT same
 // holdings → price lookup → pool-currency resolver → activity → pnl → audit call sequence that
 // used to live inline in app/api/wallet-scan/robinhood/route.ts's GET handler, extracted so both
@@ -1410,6 +1561,7 @@ export async function scanRobinhoodWallet(
   wallet: string,
   fetchImpl: FetchImpl,
   pnlV1Deps?: RobinhoodPnlV1Deps,
+  onNativePricePrefetchComplete?: () => void,
 ): Promise<{
   holdings: RobinhoodWalletHoldingsResult & { wrongChainCacheRejected: boolean }
   activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
@@ -1419,7 +1571,21 @@ export async function scanRobinhoodWallet(
   robinhoodPnl: RobinhoodPnlV1
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const v1Deps = pnlV1Deps ?? { ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), ethUsdAt: sharedHistoricalEthUsdAt }
+  const v1Deps: RobinhoodPnlV1Deps = pnlV1Deps
+    ? { ...pnlV1Deps, onNativePricePrefetchComplete: onNativePricePrefetchComplete ?? pnlV1Deps.onNativePricePrefetchComplete }
+    : {
+        ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl),
+        historicalTokenInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutHistoricalTokenInbounds(
+          targetWallet, token, beforeTimestampSec, fetchImpl,
+          { maxPages: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxPages, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates, deadlineAt },
+        ),
+        tokenHistoryInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutTokenHistoryInbounds(
+          targetWallet, token, beforeTimestampSec, fetchImpl,
+          { maxPages: 4, maxCandidates: 20, deadlineAt },
+        ),
+        ethUsdAt: sharedHistoricalEthUsdAt, prefetchNativeEthDays: prefetchRobinhoodNativePriceDays,
+        onNativePricePrefetchComplete,
+      }
   // PnL V1: the activity decode no longer receives CURRENT prices (holdings / DexScreener spot) — a
   // historical PnL must never be gated on them. Pool currencies come from the same cached, hash-proven
   // resolver the V1 lane uses, instead of an unbounded Initialize log scan per Swap log.
@@ -1499,6 +1665,7 @@ export async function sharedHistoricalEthUsdAt(timestampSec: number): Promise<im
     pointMs: r.bucketStartMs,
     gapMs: r.timestampDistanceMs,
     maxAllowedGapMs: NATIVE_PRICE_BUCKET_MS,
+    persistentCacheHit: r.servedFromPersistentCache,
   }
 }
 

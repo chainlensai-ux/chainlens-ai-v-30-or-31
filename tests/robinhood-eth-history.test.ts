@@ -131,6 +131,35 @@ test('1. ts 1790155166 with a resolver point inside its day bucket -> priced, au
   assert.equal(eth[0].nearestGapMs, TS * 1000 - DAY_START_MS)
 })
 
+test('Robinhood ETH history audit identifies persistent accepted evidence', async () => {
+  const { r, eth } = await run([shape53353(OUT_WEI)], {
+    ethUsdAt: async (ts) => ({
+      priceUsd: 2752.629093198004,
+      provider: 'chainlens_native_price_resolver:coingecko_native_coin_history',
+      endpoint: null, pointMs: DAY_START_MS, gapMs: ts * 1000 - DAY_START_MS,
+      maxAllowedGapMs: 86_400_000, persistentCacheHit: true,
+    }),
+  })
+  assert.equal(r.priceEvidence[0].outputPriceUsd, 2752.629093198004)
+  assert.equal(eth[0].persistentCacheHit, true)
+  assert.equal(eth[0].rejectionReason, null)
+})
+
+test('native-day reservation receives only verified swaps and releases broad pricing before ETH pricing', async () => {
+  const order: string[] = []
+  const { r } = await run([shape53353(OUT_WEI), new Tx().xfer(A, OTHER, WALLET, n(10))], {
+    prefetchNativeEthDays: async (verified) => {
+      assert.equal(verified.length, 1)
+      assert.equal(verified[0].timestampSec, TS)
+      order.push('prefetch')
+    },
+    onNativePricePrefetchComplete: () => { order.push('release') },
+    ethUsdAt: async (ts) => { order.push('price'); return resolverAt(2600)(ts) },
+  })
+  assert.deepEqual(order.slice(0, 3), ['prefetch', 'release', 'price'])
+  assert.equal(r.priceEvidence[0].bothLegsVerified, true)
+})
+
 test('2. seconds -> ms conversion through the shared resolver is correct', async () => {
   __seedAcceptedNativePriceForTest(TS * 1000, 2600, 'goldrush_historical')
   const p = await sharedHistoricalEthUsdAt(TS)

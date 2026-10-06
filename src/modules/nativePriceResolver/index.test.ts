@@ -14,6 +14,14 @@ import {
   __seedAcceptedNativePriceForTest,
 } from './index'
 import { resetCoingeckoCircuitBreaker } from '../pricingAtTimeEngine/sources/coingecko'
+import {
+  __setNativePriceKvForTest,
+  NATIVE_PRICE_METHODOLOGY_VERSION,
+  nativePricePersistenceKey,
+  validateNativePriceRecord,
+  writeVerifiedNativePrice,
+  type VerifiedNativePriceRecord,
+} from './persistentEvidence'
 
 // A real past instant, used across every case. Mid-day so bucket-distance assertions are meaningful.
 const TRADE_MS = Date.UTC(2026, 4, 11, 13, 45, 0)
@@ -54,6 +62,7 @@ function mockCoingecko(handlers: { nativeHistory?: () => Response; contractRange
 
 beforeEach(() => {
   __resetNativePriceResolverForTest()
+  __setNativePriceKvForTest(null)
   // coingecko.ts keeps its own per-scan breaker and native-date cache; production clears both once
   // per scan via walletScanWorker, so the equivalent per-case reset belongs here.
   resetCoingeckoCircuitBreaker()
@@ -62,7 +71,125 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  __setNativePriceKvForTest(null)
   global.fetch = originalFetch
+})
+
+function mockPersistentKv() {
+  const records = new Map<string, unknown>()
+  let writes = 0
+  __setNativePriceKvForTest({
+    get: (async (key: string) => records.get(key) ?? null) as never,
+    set: (async (key: string, value: unknown, options?: { nx?: boolean }) => {
+      writes += 1
+      if (options?.nx && records.has(key)) return null
+      records.set(key, value)
+      return 'OK'
+    }) as never,
+  })
+  return { records, get writes() { return writes } }
+}
+
+function validRecord(bucketStartMs = nativePriceBucketStart(TRADE_MS)): VerifiedNativePriceRecord {
+  return {
+    version: 1, asset: 'ETH', bucketStartMs, priceUsd: 2752.629093198004,
+    source: 'coingecko_native_coin_history', confidence: 'verified',
+    poolAddress: null, candleTimestampMs: null, acceptedAt: NOW_MS,
+    methodologyVersion: NATIVE_PRICE_METHODOLOGY_VERSION,
+  }
+}
+
+test('production regression: verified 23 Sep ETH price survives cold worker and all providers failing with 429', async () => {
+  const kv = mockPersistentKv()
+  const timestamp = 1790155166 * 1000
+  const nowMs = Date.UTC(2026, 9, 6)
+  const price = 2752.629093198004
+  const calls = mockCoingecko({ nativeHistory: () => new Response(JSON.stringify({ market_data: { current_price: { usd: price } } }), { status: 200 }) })
+  const first = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp, nowMs })
+  assert.equal(first?.priceUsd, price)
+  assert.equal(first?.source, 'coingecko_native_coin_history')
+  assert.equal(kv.writes, 1)
+  assert.equal(kv.records.get(nativePricePersistenceKey(nativePriceBucketStart(timestamp))) !== undefined, true)
+
+  __resetNativePriceResolverForTest() // same KV, different process/module memory
+  resetCoingeckoCircuitBreaker()
+  const failedProviders = mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  const second = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp, nowMs })
+  assert.equal(second?.priceUsd, price)
+  assert.equal(second?.servedFromPersistentCache, true)
+  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
+  assert.deepEqual(failedProviders.calls, [])
+  assert.ok(calls.calls.includes('native_history'))
+})
+
+test('invalid persisted price, bucket and methodology fail closed and fall through to live evidence', async () => {
+  const kv = mockPersistentKv()
+  const bucket = nativePriceBucketStart(TRADE_MS)
+  for (const invalid of [
+    { ...validRecord(), priceUsd: -1 },
+    { ...validRecord(), bucketStartMs: bucket - NATIVE_PRICE_BUCKET_MS },
+    { ...validRecord(), methodologyVersion: 'obsolete' },
+  ]) {
+    kv.records.set(nativePricePersistenceKey(bucket), invalid)
+    __resetNativePriceResolverForTest()
+    registerIndependentNativePriceSource(async () => 3000)
+    const result = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: TRADE_MS, nowMs: NOW_MS })
+    assert.equal(result?.priceUsd, 3000) // live verified evidence remains usable
+    assert.equal(kv.records.get(nativePricePersistenceKey(bucket)), invalid)
+  }
+})
+
+test('unclosed current-day evidence is never persisted', async () => {
+  const kv = mockPersistentKv()
+  registerIndependentNativePriceSource(async () => 3000)
+  const currentTimestamp = NOW_MS + 3_600_000
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: currentTimestamp, nowMs: currentTimestamp })
+  assert.equal(result?.priceUsd, 3000)
+  assert.equal(kv.writes, 0)
+  assert.equal(validateNativePriceRecord(validRecord(nativePriceBucketStart(currentTimestamp)), nativePriceBucketStart(currentTimestamp), currentTimestamp), null)
+})
+
+test('later provider outage cannot erase persisted accepted evidence', async () => {
+  mockPersistentKv()
+  registerIndependentNativePriceSource(async () => 3000)
+  assert.equal((await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }))?.priceUsd, 3000)
+  __resetNativePriceResolverForTest()
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  assert.equal((await resolveHistoricalNativeUsdPrice({ chain: 'arbitrum', timestamp: TRADE_MS, nowMs: NOW_MS }))?.priceUsd, 3000)
+  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
+})
+
+test('prefetch hydrates persistent evidence before Gecko range priming', async () => {
+  const kv = mockPersistentKv()
+  kv.records.set(nativePricePersistenceKey(nativePriceBucketStart(TRADE_MS)), validRecord())
+  const calls = mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  const prefetched = await prefetchNativeUsdPrices({ requirements: [{ chain: 'eth', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  assert.equal(readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)?.priceUsd, 2752.629093198004)
+  assert.equal(readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)?.servedFromPersistentCache, true)
+  assert.deepEqual(calls.calls, [])
+  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
+})
+
+test('atomic SET NX preserves first accepted price under concurrent workers and audits contradiction', async () => {
+  const kv = mockPersistentKv()
+  const first = validRecord()
+  const conflicting = { ...first, priceUsd: first.priceUsd * 1.2, source: 'goldrush_historical' as const }
+  const warnings: unknown[][] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args) }
+  try {
+    const [a, b] = await Promise.all([
+      writeVerifiedNativePrice(first, NOW_MS),
+      writeVerifiedNativePrice(conflicting, NOW_MS),
+    ])
+    assert.equal([a, b].filter((r) => r.succeeded).length, 1)
+    assert.equal(kv.writes, 2)
+    const stored = kv.records.get(nativePricePersistenceKey(first.bucketStartMs)) as VerifiedNativePriceRecord
+    assert.equal(a.authoritative?.priceUsd, stored.priceUsd)
+    assert.equal(b.authoritative?.priceUsd, stored.priceUsd)
+    assert.equal([a, b].some((r) => r.contradiction), true)
+    assert.equal(warnings.some((entry) => entry[0] === '[native-price-contradiction-audit]'), true)
+  } finally { console.warn = originalWarn }
 })
 
 test('bucket is one UTC day and distance is reported honestly', () => {

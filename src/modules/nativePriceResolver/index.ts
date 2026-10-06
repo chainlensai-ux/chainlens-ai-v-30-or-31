@@ -81,6 +81,12 @@
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { PriceSourceFn } from '../pricingAtTimeEngine/types'
 import {
+  NATIVE_PRICE_METHODOLOGY_VERSION,
+  nativePricePersistenceConfigured,
+  readVerifiedNativePrice,
+  writeVerifiedNativePrice,
+} from './persistentEvidence'
+import {
   readGeckoTerminalEthUsdForUtcDay,
   primeGeckoTerminalRangeForBuckets,
   resetGeckoTerminalEthOhlcvForScan,
@@ -161,6 +167,7 @@ export type NativePriceResolution = {
   // module never returns any other confidence value: an answer it cannot stand behind is null.
   confidence: 'verified'
   servedFromPermanentCache: boolean
+  servedFromPersistentCache: boolean
   coalesced: boolean
   // PROVENANCE, DISCLOSED — populated when the accepted source is pool-derived (GeckoTerminal), so a
   // consumer or auditor can see exactly which allowlisted venue and which candle backed this price.
@@ -205,9 +212,11 @@ type AcceptedBucketPrice = {
   source: NativePriceSourceId
   poolAddress: string | null
   candleTimestampMs: number | null
+  fromPersistentEvidence?: boolean
 }
 
 const acceptedPriceByBucket = new Map<number, AcceptedBucketPrice>()
+const persistentLookupsThisScan = new Set<number>()
 
 // FAILURES ARE NOT CACHED PERMANENTLY, DISCLOSED: a miss is usually transient (a 429, a breaker
 // opened by an unrelated call, a timeout). Recording it for the process lifetime would convert a
@@ -225,6 +234,7 @@ const inFlightByBucket = new Map<number, Promise<NativePriceResolution | null>>(
 type ResolverDiagnostics = {
   bucketsRequested: number
   liveBucketRequests: number
+  persistentWritesSucceeded: number
   permanentCacheHits: number
   coalescedHits: number
   acceptedResolutions: number
@@ -270,6 +280,7 @@ function emptyDiagnostics(): ResolverDiagnostics {
   return {
     bucketsRequested: 0,
     liveBucketRequests: 0,
+    persistentWritesSucceeded: 0,
     permanentCacheHits: 0,
     coalescedHits: 0,
     acceptedResolutions: 0,
@@ -324,6 +335,7 @@ function isAcceptablePrice(value: number | null | undefined): value is number {
 // the entire point of this module.
 export function resetNativePriceResolverForScan(): void {
   failedBucketsThisScan.clear()
+  persistentLookupsThisScan.clear()
   diagnostics = emptyDiagnostics()
   liveBucketsThisScan = 0
   resetGeckoTerminalEthOhlcvForScan()
@@ -348,6 +360,7 @@ export function getNativePriceResolverDiagnostics(): ResolverDiagnostics & { per
 // (nothing should be able to discard a known-good immutable price mid-run). Tests need a clean slate.
 export function __resetNativePriceResolverForTest(): void {
   acceptedPriceByBucket.clear()
+  persistentLookupsThisScan.clear()
   failedBucketsThisScan.clear()
   inFlightByBucket.clear()
   diagnostics = emptyDiagnostics()
@@ -377,10 +390,62 @@ function buildResolution(
     timestampDistanceMs: timestampMs - bucketStartMs,
     confidence: 'verified',
     servedFromPermanentCache: flags.servedFromPermanentCache,
+    servedFromPersistentCache: accepted.fromPersistentEvidence === true,
     coalesced: flags.coalesced,
     poolAddress: accepted.poolAddress,
     candleTimestampMs: accepted.candleTimestampMs,
   }
+}
+
+type PersistenceAudit = {
+  bucketStartMs: number
+  requestedTimestampMs: number
+  memoryCacheHit: boolean
+  persistentLookupAttempted: boolean
+  persistentCacheHit: boolean
+  persistentRecordValid: boolean
+  hydratedMemoryCache: boolean
+  liveResolutionAttempted: boolean
+  acceptedSource: NativePriceSourceId | null
+  writeAttempted: boolean
+  writeSucceeded: boolean
+  contradictionDetected: boolean
+  rejectionReason: string | null
+}
+
+function persistenceAudit(bucketStartMs: number, requestedTimestampMs: number): PersistenceAudit {
+  return {
+    bucketStartMs, requestedTimestampMs, memoryCacheHit: false,
+    persistentLookupAttempted: false, persistentCacheHit: false, persistentRecordValid: false,
+    hydratedMemoryCache: false, liveResolutionAttempted: false, acceptedSource: null,
+    writeAttempted: false, writeSucceeded: false, contradictionDetected: false, rejectionReason: null,
+  }
+}
+
+function logPersistenceAudit(audit: PersistenceAudit): void {
+  console.warn('[native-price-persistence-audit]', audit)
+}
+
+async function hydratePersistentBucket(bucketStartMs: number, nowMs: number, audit: PersistenceAudit): Promise<AcceptedBucketPrice | null> {
+  if (!nativePricePersistenceConfigured() || persistentLookupsThisScan.has(bucketStartMs)) return null
+  persistentLookupsThisScan.add(bucketStartMs)
+  audit.persistentLookupAttempted = true
+  const lookup = await readVerifiedNativePrice(bucketStartMs, nowMs)
+  audit.persistentRecordValid = lookup.record !== null
+  if (!lookup.record) {
+    audit.rejectionReason = lookup.reason === 'record_absent' ? null : lookup.reason
+    return null
+  }
+  const accepted: AcceptedBucketPrice = {
+    priceUsd: lookup.record.priceUsd, source: lookup.record.source,
+    poolAddress: lookup.record.poolAddress, candleTimestampMs: lookup.record.candleTimestampMs,
+    fromPersistentEvidence: true,
+  }
+  acceptedPriceByBucket.set(bucketStartMs, accepted)
+  audit.persistentCacheHit = true
+  audit.hydratedMemoryCache = true
+  audit.acceptedSource = accepted.source
+  return accepted
 }
 
 function recordAttempt(attempt: NativePriceSourceAttempt): void {
@@ -613,15 +678,16 @@ export async function resolveHistoricalNativeUsdPrice(params: {
   }
 
   const bucketStartMs = nativePriceBucketStart(timestamp)
+  const audit = persistenceAudit(bucketStartMs, timestamp)
 
   const cached = acceptedPriceByBucket.get(bucketStartMs)
   if (cached) {
     diagnostics.permanentCacheHits += 1
+    audit.memoryCacheHit = true
+    audit.acceptedSource = cached.source
+    logPersistenceAudit(audit)
     return buildResolution(bucketStartMs, timestamp, cached, { servedFromPermanentCache: true, coalesced: false })
   }
-
-  // This scan already learned this bucket is unavailable — never spend a second chain of calls on it.
-  if (failedBucketsThisScan.has(bucketStartMs)) return null
 
   // COALESCE AROUND THE WHOLE SOURCE CHAIN, DISCLOSED: joining here means a second consumer receives
   // the FINAL outcome including whatever fallback ran — never a partial, first-source-only answer.
@@ -629,37 +695,87 @@ export async function resolveHistoricalNativeUsdPrice(params: {
   if (inFlight) {
     diagnostics.coalescedHits += 1
     const shared = await inFlight
-    if (!shared) return null
+    if (!shared) {
+      audit.rejectionReason = 'coalesced_resolution_failed'
+      logPersistenceAudit(audit)
+      return null
+    }
+    audit.acceptedSource = shared.source
+    audit.persistentCacheHit = shared.servedFromPersistentCache
+    audit.persistentRecordValid = shared.servedFromPersistentCache
+    logPersistenceAudit(audit)
     // Rebuilt against THIS caller's own timestamp so `timestampDistanceMs` stays honest per consumer;
     // the underlying price and source are the shared ones, unchanged.
     return buildResolution(
       bucketStartMs,
       timestamp,
-      { priceUsd: shared.priceUsd, source: shared.source, poolAddress: shared.poolAddress, candleTimestampMs: shared.candleTimestampMs },
+      { priceUsd: shared.priceUsd, source: shared.source, poolAddress: shared.poolAddress, candleTimestampMs: shared.candleTimestampMs, fromPersistentEvidence: shared.servedFromPersistentCache },
       { servedFromPermanentCache: false, coalesced: true },
     )
   }
-
-  if (liveBucketsThisScan >= MAX_NATIVE_PRICE_LIVE_BUCKETS_PER_SCAN) {
-    diagnostics.bucketsBlockedByCap += 1
-    return null
-  }
-
-  liveBucketsThisScan += 1
-  diagnostics.liveBucketRequests += 1
-
   const live = (async (): Promise<NativePriceResolution | null> => {
+    const persisted = await hydratePersistentBucket(bucketStartMs, nowMs, audit)
+    if (persisted) {
+      logPersistenceAudit(audit)
+      return buildResolution(bucketStartMs, timestamp, persisted, { servedFromPermanentCache: true, coalesced: false })
+    }
+    if (failedBucketsThisScan.has(bucketStartMs)) {
+      audit.rejectionReason ??= 'failed_earlier_this_scan'
+      logPersistenceAudit(audit)
+      return null
+    }
+    if (liveBucketsThisScan >= MAX_NATIVE_PRICE_LIVE_BUCKETS_PER_SCAN) {
+      diagnostics.bucketsBlockedByCap += 1
+      audit.rejectionReason ??= 'live_bucket_cap'
+      logPersistenceAudit(audit)
+      return null
+    }
+    liveBucketsThisScan += 1
+    diagnostics.liveBucketRequests += 1
+    audit.liveResolutionAttempted = true
     const resolved = await resolveLive(chain, timestamp, bucketStartMs)
     if (!resolved) {
       failedBucketsThisScan.add(bucketStartMs)
       diagnostics.failedResolutions += 1
       diagnostics.unresolvedBuckets.push(bucketDateUtc(bucketStartMs))
+      audit.rejectionReason ??= 'no_verified_historical_price'
+      logPersistenceAudit(audit)
       return null
     }
-    acceptedPriceByBucket.set(bucketStartMs, resolved)
+    let accepted = resolved
+    audit.acceptedSource = resolved.source
+    // The current UTC day is not a closed historical bucket. It may be resolved for an existing
+    // caller, but no current/spot-adjacent value can enter durable historical evidence.
+    if (bucketStartMs + NATIVE_PRICE_BUCKET_MS <= nowMs && nativePricePersistenceConfigured()) {
+      audit.writeAttempted = true
+      const write = await writeVerifiedNativePrice({
+        version: 1, asset: 'ETH', bucketStartMs, priceUsd: resolved.priceUsd,
+        source: resolved.source, confidence: 'verified', poolAddress: resolved.poolAddress,
+        candleTimestampMs: resolved.candleTimestampMs, acceptedAt: nowMs,
+        methodologyVersion: NATIVE_PRICE_METHODOLOGY_VERSION,
+      }, nowMs)
+      audit.writeSucceeded = write.succeeded
+      if (write.succeeded) diagnostics.persistentWritesSucceeded += 1
+      audit.contradictionDetected = write.contradiction
+      audit.rejectionReason = write.reason === 'record_already_exists' ? null : write.reason
+      if (write.authoritative && !write.succeeded) accepted = {
+        priceUsd: write.authoritative.priceUsd, source: write.authoritative.source,
+        poolAddress: write.authoritative.poolAddress, candleTimestampMs: write.authoritative.candleTimestampMs,
+        fromPersistentEvidence: true,
+      }
+      else if (!write.succeeded && write.reason !== 'persistent_write_failed' && write.reason !== 'invalid_persisted_record') {
+        // SET NX found an existing record that cannot be validated. Do not publish a potentially
+        // contradictory local answer as verified evidence.
+        logPersistenceAudit(audit)
+        return null
+      }
+    }
+    acceptedPriceByBucket.set(bucketStartMs, accepted)
     diagnostics.acceptedResolutions += 1
     diagnostics.acceptedBuckets.push(bucketDateUtc(bucketStartMs))
-    return buildResolution(bucketStartMs, timestamp, resolved, { servedFromPermanentCache: false, coalesced: false })
+    audit.acceptedSource = accepted.source
+    logPersistenceAudit(audit)
+    return buildResolution(bucketStartMs, timestamp, accepted, { servedFromPermanentCache: false, coalesced: false })
   })()
 
   inFlightByBucket.set(bucketStartMs, live)
@@ -694,8 +810,20 @@ export async function prefetchNativeUsdPrices(params: {
   // process-lifetime accepted cache are excluded, so a warm worker narrows the range instead of
   // re-fetching what it already knows. At most 2 sequential requests per scan; none at all when
   // nothing is missing.
-  const bucketsNeedingPrime = [...new Set(ordered.map((r) => nativePriceBucketStart(r.timestamp)))]
-    .filter((bucket) => !acceptedPriceByBucket.has(bucket))
+  const allBuckets = [...new Set(ordered.map((r) => nativePriceBucketStart(r.timestamp)))]
+  // Hydrate durable accepted evidence before any Gecko range request. A cold worker with a KV hit
+  // must not contact a live provider at all, including the prefetch-only range primer.
+  if (nativePricePersistenceConfigured()) {
+    for (let i = 0; i < allBuckets.length; i += 8) {
+      await Promise.all(allBuckets.slice(i, i + 8).map(async (bucket) => {
+        if (acceptedPriceByBucket.has(bucket)) return
+        const audit = persistenceAudit(bucket, ordered.find((r) => nativePriceBucketStart(r.timestamp) === bucket)!.timestamp)
+        await hydratePersistentBucket(bucket, params.nowMs ?? Date.now(), audit)
+        logPersistenceAudit(audit)
+      }))
+    }
+  }
+  const bucketsNeedingPrime = allBuckets.filter((bucket) => !acceptedPriceByBucket.has(bucket))
   if (bucketsNeedingPrime.length > 0) {
     await primeGeckoTerminalRangeForBuckets(bucketsNeedingPrime)
   }

@@ -14,12 +14,6 @@
 import { ROBINHOOD_ROUTE_MAX_FEE_FRACTION, ERC20_TRANSFER_TOPIC0, V4_SWAP_TOPIC0, RH_WETH, RH_NATIVE, type RhPoolKey, type RhReceipt } from './robinhoodPnlV1'
 import { V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, NATIVE_ASSET, type RhMixedHop } from './robinhoodMixedRouteForensics'
 
-/**
- * A relayed tx's own top-level native value: only an authoritative 0 rules out the relayer funding the route
- * with ETH. Unknown (fetch failed, missing, malformed) fails closed. null = not applicable (wallet-sent tx).
- */
-export type RhTxValueStatus = 'tx_value_zero_proven' | 'tx_value_nonzero' | 'tx_value_unavailable'
-
 export type RhAcquisitionClass = 'verified_buy' | 'transfer_in' | 'distribution_or_claim' | 'relayed_swap_candidate' | 'ambiguous'
 
 export type RhAcquisitionProof = {
@@ -37,21 +31,10 @@ export type RhAcquisitionProof = {
   firstLogIndex: number | null
   /** Native/WETH the route passed through, for token↔token routes priced via ETH (verified_buy only). */
   nativeThroughRaw: string | null
-  txValueStatus: RhTxValueStatus | null
   rejectionReason: string | null
 }
 
 const ZERO = BigInt(0)
-
-/** PURE. The value of an eth_getTransactionByHash response, or null when the response is missing / malformed / for another tx. */
-export function parseRobinhoodTxValue(raw: unknown, txHash: string): bigint | null {
-  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null
-  const r = raw as Record<string, unknown>
-  if (r.hash != null && (typeof r.hash !== 'string' || r.hash.toLowerCase() !== txHash.toLowerCase())) return null
-  const v = r.value
-  if (typeof v !== 'string' || !/^0x[0-9a-f]+$/i.test(v)) return null
-  return BigInt(v)
-}
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 const LIQUIDITY_TOPICS = new Set([
   '0xf208f4912782fd25c7f114ca3723a2d5dd6f3bcc3ac8db5af63baa85f711d5ec', // V4 ModifyLiquidity
@@ -82,7 +65,7 @@ export function classifyRobinhoodAcquisition(input: {
   inboundRaw: bigint | null
   poolManager: string
   v4PoolKeys: ReadonlyMap<string, RhPoolKey>
-  /** The tx's own top-level native value (null = unknown — a relayed swap then fails closed). */
+  /** The tx's own top-level native value (null = unknown). */
   txValue: bigint | null
 }): RhAcquisitionProof {
   const norm = (token: string) => (token === RH_WETH || token === RH_NATIVE ? NATIVE_ASSET : token)
@@ -92,11 +75,9 @@ export function classifyRobinhoodAcquisition(input: {
   const pm = input.poolManager.toLowerCase()
   const { receipt } = input
   const isSender = receipt.from === wallet
-  const txValueStatus: RhTxValueStatus | null = isSender ? null
-    : input.txValue == null ? 'tx_value_unavailable' : input.txValue > ZERO ? 'tx_value_nonzero' : 'tx_value_zero_proven'
   const out = (o: Partial<RhAcquisitionProof> & { classification: RhAcquisitionClass }): RhAcquisitionProof => ({
     txHash: input.txHash, walletFundingToken: null, walletFundingRaw: null, walletCreditRaw: null, routeProven: false, ownershipProven: false,
-    hops: [], firstLogIndex: null, nativeThroughRaw: null, txValueStatus, rejectionReason: null, ...o,
+    hops: [], firstLogIndex: null, nativeThroughRaw: null, rejectionReason: null, ...o,
   })
   if (receipt.status !== 1) return out({ classification: 'ambiguous', rejectionReason: 'tx_reverted' })
 
@@ -141,9 +122,12 @@ export function classifyRobinhoodAcquisition(input: {
   const funding = { walletFundingToken: fundingTransfer.token, walletFundingRaw: inRaw.toString(), walletCreditRaw }
   if (input.inboundRaw != null && credit !== input.inboundRaw) return out({ classification: 'ambiguous', ...funding, rejectionReason: `wallet_credit_mismatch: net ${credit} vs inbound ${input.inboundRaw}` })
   if (swapLogs.length === 0) return out({ classification: 'ambiguous', ...funding, rejectionReason: 'no_swap_route: wallet paid and received without any swap' })
-  // No relayer native funding must be PROVEN: only an authoritative tx.value of exactly 0 passes.
-  if (txValueStatus === 'tx_value_unavailable') return out({ classification: 'ambiguous', ...funding, rejectionReason: 'competing_payer_unproven_tx_value: the relayed tx\'s native value could not be read' })
-  if (txValueStatus === 'tx_value_nonzero') return out({ classification: 'ambiguous', ...funding, rejectionReason: `competing_payer: tx sender ${receipt.from} attached ${input.txValue} native value` })
+  if (!isSender && input.txValue !== ZERO) return out({
+    classification: 'ambiguous', ...funding,
+    rejectionReason: input.txValue != null && input.txValue > ZERO
+      ? `competing_payer: tx sender ${receipt.from} attached ${input.txValue} native value`
+      : 'competing_payer_unproven_tx_value',
+  })
 
   // ── Hops (same evidence rules as the mixed-route analyzer) ─────────────────────────────────────────
   const venueAddresses = new Set(swapLogs.map((l) => l.address))
