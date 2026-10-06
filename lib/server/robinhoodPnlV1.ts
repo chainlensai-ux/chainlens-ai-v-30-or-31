@@ -848,17 +848,28 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       || (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
   const replay = new Map<string, RhNativeTransfer[] | null>()
   const cacheHit = new Set<string>()
-  for (const r of eligible) {
-    const stored = ctx.deps.nativeTraceCached ? await ctx.deps.nativeTraceCached(r.txHash).catch(() => null) : null
-    if (stored?.transfers) { cacheHit.add(r.txHash); replay.set(r.txHash, logNativeTrace(wallet, r.txHash, stored)) }
-  }
+  // Stored proofs: bounded parallel reads (same concurrency as the receipt lane). Results are collected by index, so
+  // hits and live priority follow the deterministic eligible order, never completion order. A failed / timed-out
+  // read is a miss; nothing new starts once the PnL deadline has passed.
+  const readStored = ctx.deps.nativeTraceCached
+  const stored = readStored && Date.now() < ctx.deadlineAt
+    ? await mapLimit(eligible, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => Date.now() >= ctx.deadlineAt
+      ? Promise.resolve(null)
+      : Promise.resolve().then(() => readStored(r.txHash)).catch(() => null))
+    : eligible.map(() => null)
+  eligible.forEach((r, i) => {
+    const hit = stored[i]
+    if (hit?.transfers) { cacheHit.add(r.txHash); replay.set(r.txHash, logNativeTrace(wallet, r.txHash, hit)) }
+  })
   const live = eligible.filter((r) => !cacheHit.has(r.txHash))
-  const selected = live.slice(0, cap)
+  // Past the PnL deadline no live trace is started (requestNativeTrace also re-checks per request).
+  const deadlineReached = Date.now() >= ctx.deadlineAt
+  const selected = deadlineReached ? [] : live.slice(0, cap)
   const ordinal = new Map(selected.map((r, i) => [r.txHash, i + 1]))
   const results = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => requestNativeTrace(ctx, r.txHash))
   selected.forEach((r, i) => replay.set(r.txHash, logNativeTrace(wallet, r.txHash, results[i])))
   // Eligible but beyond the live cap: no request at all (the slot would not exist); said so explicitly.
-  for (const r of live.slice(cap)) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, 'budget_exhausted') })
+  for (const r of live.slice(selected.length)) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, deadlineReached ? 'not_attempted_deadline' : 'budget_exhausted') })
   for (const o of outcomes) {
     const r = requests.get(o.txHash)
     console.warn('[robinhood-native-trace-selection-audit]', {
@@ -872,7 +883,7 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       persistentOrMemoryHit: cacheHit.has(o.txHash),
       liveBudgetOrdinal: ordinal.get(o.txHash) ?? null,
       skippedReason: !r ? 'no_native_dependency' : !r.nativeProofCouldChangeOutcome ? 'terminal_without_native_trace'
-        : cacheHit.has(o.txHash) || ordinal.has(o.txHash) ? null : 'live_budget_exhausted',
+        : cacheHit.has(o.txHash) || ordinal.has(o.txHash) ? null : deadlineReached ? 'pnl_deadline_reached' : 'live_budget_exhausted',
     })
   }
   const summary: RhNativeTraceSelectionSummary = {
@@ -882,7 +893,7 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
     cacheSatisfied: cacheHit.size,
     selectedForLiveTrace: selected.length,
     liveBudgetCap: cap,
-    liveBudgetExhaustedEligibleCount: Math.max(0, live.length - cap),
+    liveBudgetExhaustedEligibleCount: deadlineReached ? 0 : Math.max(0, live.length - cap),
     tracesAvoidedByStructuralPrefilter: [...requests.values()].filter((r) => !r.nativeProofCouldChangeOutcome).length,
   }
   console.warn('[robinhood-native-trace-selection-audit]', { summary })

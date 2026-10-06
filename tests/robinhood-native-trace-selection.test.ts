@@ -221,3 +221,93 @@ test('with native evidence for every eligible receipt, results match the unprior
   const traced = await run([['A', candA()]], { nativeTraceLiveCap: 0 })
   assert.deepEqual(traced.r.ingestionAudit.rejectionReasons, { route_does_not_match_wallet_amounts: 1 })
 })
+
+// ── Stored-proof reads: bounded parallel (concurrency 3), deterministic, failure = miss, deadline-aware ──────────
+const nine = (): Array<[string, Tx]> => Array.from({ length: 9 }, (_, k) => [`D${k}`, candD().at(TS - 1_000 + k * 10)] as [string, Tx]) // D0 oldest
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+function storedReads(opts: { delay: (name: string) => number; hits?: string[]; fail?: Record<string, 'throw' | 'reject'> }) {
+  let inFlight = 0
+  let maxInFlight = 0
+  const started: string[] = []
+  let firstStart = 0
+  let lastEnd = 0
+  let nameOf: (h: string) => string = (h) => h
+  const fn = async (h: string) => {
+    const name = nameOf(h)
+    if (opts.fail?.[name] === 'throw') throw new Error('kv down')
+    started.push(name)
+    firstStart ||= Date.now()
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+    try {
+      await sleep(opts.delay(name))
+      if (opts.fail?.[name] === 'reject') throw new Error('kv timeout')
+      return opts.hits?.includes(name) ? { transfers: [{ from: ROUTER, to: WALLET, value: n(1), success: true }], audit: null } : null
+    } finally { inFlight--; lastEnd = Date.now() }
+  }
+  return { fn, started, bind: (m: Map<string, { name: string }>) => { nameOf = (h) => m.get(h)!.name }, stats: () => ({ maxInFlight, spanMs: lastEnd - firstStart }) }
+}
+async function runNine(reads: ReturnType<typeof storedReads>, extra: Partial<RobinhoodPnlV1Deps> = {}) {
+  const txs = nine()
+  const byHash = new Map(txs.map(([name], i) => [`0x${(0x5e83 + i).toString(16).padStart(64, '0')}`, { name }]))
+  reads.bind(byHash)
+  return run(txs, { nativeTraceLiveCap: 3, nativeTraceCached: reads.fn, ...extra })
+}
+
+test('stored-proof reads: 9 eligible, every KV read delayed — at most 3 in flight, and not serialized', async () => {
+  const reads = storedReads({ delay: () => 120 })
+  const { summary } = await runNine(reads)
+  const { maxInFlight, spanMs } = reads.stats()
+  assert.equal(summary.nativeTraceEligible, 9)
+  assert.equal(reads.started.length, 9)
+  assert.equal(maxInFlight, 3)
+  assert.ok(spanMs < 9 * 120 * 0.6, `reads took ${spanMs}ms (serial would be ~1080ms)`) // ~3 rounds of 120ms
+})
+
+test('mixed hits / misses give the same deterministic live selection whatever order the reads complete in', async () => {
+  const pick = async (delay: (name: string) => number) => {
+    const reads = storedReads({ delay, hits: ['D1', 'D4'] })
+    const { sel, traceCalls, summary, verified } = await runNine(reads)
+    return {
+      live: sel.filter((s) => s.selectedForLiveTrace).map((s) => [s.name, s.liveBudgetOrdinal]).sort(),
+      hits: sel.filter((s) => s.persistentOrMemoryHit).map((s) => s.name).sort(),
+      exhausted: sel.filter((s) => s.skippedReason === 'live_budget_exhausted').map((s) => s.name).sort(),
+      traceCalls: traceCalls.slice().sort(), summary, verified,
+    }
+  }
+  const forward = await pick((name) => 10 + Number(name.slice(1)) * 15) // earlier receipts finish first
+  const reverse = await pick((name) => 10 + (8 - Number(name.slice(1))) * 15) // later receipts finish first
+  assert.deepEqual(forward.live, [['D0', 1], ['D2', 2], ['D3', 3]])
+  assert.deepEqual(forward.hits, ['D1', 'D4'])
+  assert.deepEqual(forward.exhausted, ['D5', 'D6', 'D7', 'D8'])
+  assert.deepEqual(forward.traceCalls, ['D0', 'D2', 'D3']) // stored hits D1 / D4 consume zero live slots
+  assert.deepEqual(forward.verified, ['D0', 'D1', 'D2', 'D3', 'D4'])
+  assert.deepEqual(reverse, forward)
+  assert.equal(forward.summary.cacheSatisfied, 2)
+  assert.equal(forward.summary.selectedForLiveTrace, 3)
+})
+
+test('a KV read that throws or times out is a cache miss, not a verification failure', async () => {
+  const reads = storedReads({ delay: () => 5, hits: ['D2'], fail: { D0: 'throw', D1: 'reject' } })
+  const { sel, traceCalls, verified, r } = await runNine(reads)
+  assert.deepEqual(traceCalls.slice().sort(), ['D0', 'D1', 'D3']) // the failed reads fall through to live, in priority order
+  assert.equal(sel.find((s) => s.name === 'D2').persistentOrMemoryHit, true)
+  assert.deepEqual(verified, ['D0', 'D1', 'D2', 'D3'])
+  assert.equal(r.swapsVerified, 4)
+})
+
+test('past the PnL deadline no further stored-proof reads and no live traces are started', async () => {
+  const realNow = Date.now
+  let skew = 0
+  Date.now = () => realNow() + skew
+  try {
+    const reads = storedReads({ delay: () => 5 })
+    const fn = reads.fn
+    const jumping = async (h: string) => { skew += 60_000; return fn(h) } // the first read pushes past the 15s deadline
+    const { traceCalls, sel, summary } = await runNine(reads, { nativeTraceCached: jumping })
+    assert.ok(reads.started.length < 9, `reads started: ${reads.started.length}`)
+    assert.deepEqual(traceCalls, [])
+    assert.equal(summary.selectedForLiveTrace, 0)
+    assert.ok(sel.filter((s) => s.traceEligible).every((s) => s.skippedReason === 'pnl_deadline_reached'))
+  } finally { Date.now = realNow }
+})
