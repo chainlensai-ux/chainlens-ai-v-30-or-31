@@ -125,6 +125,13 @@ export type RobinhoodPnlV1Deps = {
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
   nativeTransfersForTx?: (txHash: string) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  /**
+   * Already-verified native traces (process memory / persistent positive proof) — never a live request, never a
+   * live budget slot. Null when none is stored for the tx.
+   */
+  nativeTraceCached?: (txHash: string) => Promise<RhNativeTraceResult | null>
+  /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 3). */
+  nativeTraceLiveCap?: number
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
   historicalTokenInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhHistoricalInboundResult>
   /** Token-centric Blockscout candidate index, used only after address history yields no new candidate. */
@@ -210,6 +217,7 @@ export type RobinhoodPnlV1IngestionAudit = {
   mixedRouteRejectedReasons?: Record<string, number>
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
   deepAcquisition?: RhDeepAcquisitionSummary | null
+  nativeTraceSelection?: RhNativeTraceSelectionSummary
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
@@ -406,6 +414,32 @@ type Ctx = {
   deadlineAt: number
   m: RobinhoodPnlV1Metrics
   priceSidesUsed: number
+  /**
+   * Native-trace selection. 'probe': record which receipts would need a trace (and whether proven native flow could
+   * change their outcome) without requesting one. 'replay': use only the traces resolved by the selection step.
+   * 'live' (default): request directly (acquisition recovery and other later lanes).
+   */
+  traceMode?: 'live' | 'probe' | 'replay'
+  traceRequests?: Map<string, RhNativeTraceRequest>
+  traceReplay?: Map<string, RhNativeTransfer[] | null>
+}
+
+/** Live native-trace slots per scan — the Blockscout native_trace lane cap (NATIVE_TRACE_MAX_LOOKUPS). Unchanged. */
+export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 3
+export type RhNativeTracePriorityClass = 'p2_single_hop_v4_one_erc20_side' | 'p3_native_dependent' | 'p4_complex_multi_hop'
+export type RhNativeTraceRequest = {
+  txHash: string
+  kind: 'direct_v4' | 'mixed_route'
+  /** What the receipt is without any native trace (never acceptance). */
+  preTraceClassification: string
+  /** Proven native flow could move the tx to accepted (or, for a mixed route, is required to confirm it). */
+  nativeProofCouldChangeOutcome: boolean
+  /** Terminal receipts: the structural failure that holds for every native amount the route implies. */
+  terminalReason?: RhRejection | null
+  terminalDetail?: string | null
+  priorityClass: RhNativeTracePriorityClass
+  timestampSec: number | null
+  blockNumber: number
 }
 async function call(ctx: Ctx, calls: RhRpcCall[]): Promise<Array<unknown | null>> {
   ctx.m.rpcCalls += calls.length
@@ -604,11 +638,19 @@ type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: n
  * trace says why. Returns transfers only for a complete trace with explicit execution status.
  */
 async function fetchNativeTrace(ctx: Ctx, wallet: string, txHash: string): Promise<RhNativeTransfer[] | null> {
-  const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => ({
-    txHash, attempted: false, cacheHit: false, budgetLane: 'native_trace', requestHost: null, authMode: null, httpStatus: null,
-    failureClass: null, transportAttempts: [], itemCount: null, paginated: false, malformed: false, missingSuccessStatus: false,
-    pagesRequested: 0, pagesSucceeded: 0, totalItemCount: null, paginationComplete: false, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result,
-  })
+  if (ctx.traceMode === 'probe') return null // the caller registers the request; selection decides
+  if (ctx.traceMode === 'replay') return ctx.traceReplay?.get(txHash) ?? null
+  return logNativeTrace(wallet, txHash, await requestNativeTrace(ctx, txHash))
+}
+
+const nativeTraceAuditBase = (txHash: string, result: RhNativeTraceAudit['result']): RhNativeTraceAudit => ({
+  txHash, attempted: false, cacheHit: false, budgetLane: 'native_trace', requestHost: null, authMode: null, httpStatus: null,
+  failureClass: null, transportAttempts: [], itemCount: null, paginated: false, malformed: false, missingSuccessStatus: false,
+  pagesRequested: 0, pagesSucceeded: 0, totalItemCount: null, paginationComplete: false, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result,
+})
+
+async function requestNativeTrace(ctx: Ctx, txHash: string): Promise<RhNativeTraceResult> {
+  const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => nativeTraceAuditBase(txHash, result)
   let res: RhNativeTraceResult
   if (!ctx.deps.nativeTransfersForTx) res = { transfers: null, audit: base('not_attempted_no_trace_source') }
   else if (Date.now() >= ctx.deadlineAt) res = { transfers: null, audit: base('not_attempted_deadline') }
@@ -620,6 +662,12 @@ async function fetchNativeTrace(ctx: Ctx, wallet: string, txHash: string): Promi
       ? { transfers: raw, audit: { ...base(raw == null ? 'transport_failed' : raw.length === 0 ? 'empty' : 'proven'), attempted: true, itemCount: raw?.length ?? null } }
       : raw
   }
+  return res
+}
+
+/** Exactly one [robinhood-native-trace-audit] line per resolved / skipped trace. */
+function logNativeTrace(wallet: string, txHash: string, res: RhNativeTraceResult): RhNativeTransfer[] | null {
+  const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => nativeTraceAuditBase(txHash, result)
   const audit = res.audit ?? base(res.transfers ? (res.transfers.length === 0 ? 'empty' : 'proven') : 'transport_failed')
   const ok = (res.transfers ?? []).filter((t) => t.success === true && t.value > BigInt(0))
   const w = lower(wallet)
@@ -667,7 +715,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
       else if (n1 - n0 === 1 && isSender) walletNativeDelta = b1 - b0 + gasPaid
     }
     // Mixed routes: native attribution only from the target tx's own trace (bounded: wallet-sent mixed receipts).
-    const trace = mixed && isSender ? await fetchNativeTrace(ctx, wallet, txHash) : null
+    const trace = mixed && isSender && ctx.traceMode !== 'probe' ? await fetchNativeTrace(ctx, wallet, txHash) : null
     native = deriveRhNativeEvidence({
       wallet, isSender, gasPaid, txValue: hexToBigInt((txr as Record<string, unknown> | null)?.value),
       balanceBefore: b0, balanceAfter: b1, nonceBefore: n0, nonceAfter: n1, trace,
@@ -675,6 +723,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
   }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta, rejectionReason: rejection })
   const mixedRoute = mixed ? analyzeRobinhoodMixedRoute({ wallet, txHash, receipt, poolManager: POOL_MANAGER, v4PoolKeys: poolKeys, native }) : null
+  if (ctx.traceMode === 'probe' && mixedRoute && isSender && native.status !== 'not_needed') registerMixedTraceProbe(ctx, txHash, receipt, mixedRoute, timestampSec)
   return { forensics, mixedRoute }
 }
 
@@ -723,6 +772,121 @@ async function promoteMixedRoute(ctx: Ctx, txHash: string, receipt: RhReceipt, m
       intermediary: !nativeLeg && nativeThrough > ZERO ? { currency: RH_NATIVE, kind: 'native', raw: nativeThrough, decimals: 18 } : null,
     },
   }
+}
+
+// ── Native-trace selection (structural prefilter + deterministic priority) ──────────────────────────────
+// Live native-trace slots are spent only where proven native flow can change the outcome. Before any trace, every
+// receipt is classified without one. A direct-V4 receipt is trace-eligible only when the unchanged route verifier
+// accepts it for SOME native amount the route itself implies (0, or ± an exact V4 native delta) — a token-side
+// mismatch, liquidity event, foreign sender, etc. is terminal and never takes a slot. This hypothesis only selects;
+// acceptance still requires the real trace through the unchanged classifier.
+function registerDirectTraceProbe(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt, poolKeys: ReadonlyMap<string, RhPoolKey>, timestampSec: number | null): void {
+  const swaps = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER)
+  const hypotheses = new Set<bigint>([ZERO])
+  for (const l of swaps) {
+    const key = poolKeys.get(l.topics[1])
+    if (!key) continue
+    const native = lower(key.currency0) === RH_NATIVE ? signedWord(l.data, 0) : lower(key.currency1) === RH_NATIVE ? signedWord(l.data, 1) : null
+    if (native != null && native !== ZERO) { hypotheses.add(abs(native)); hypotheses.add(-abs(native)) }
+  }
+  const failures: Array<{ reason: RhRejection; detail: string }> = []
+  let couldChange = false
+  for (const nativeNet of hypotheses) {
+    const r = verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet })
+    if (r.ok) { couldChange = true; break }
+    failures.push({ reason: r.reason, detail: r.detail })
+  }
+  // A wrong-sign hypothesis only produces a wallet side-count failure; prefer the structural one.
+  const terminal = failures.find((f) => f.reason !== 'no_wallet_input_or_output' && f.reason !== 'ambiguous_wallet_flows') ?? failures[0] ?? null
+  const firstFailure = terminal?.reason ?? null
+  const w = lower(wallet)
+  const erc20Sides = new Set(receipt.logs.filter((l) => l.topics[0] === ERC20_TRANSFER_TOPIC0 && l.topics.length === 3 && l.address !== RH_WETH
+    && (lower(`0x${l.topics[1].slice(-40)}`) === w || lower(`0x${l.topics[2].slice(-40)}`) === w)).map((l) => l.address)).size
+  ctx.traceRequests?.set(txHash, {
+    txHash, kind: 'direct_v4', blockNumber: receipt.blockNumber, timestampSec,
+    preTraceClassification: couldChange ? 'native_dependent_route_valid' : (firstFailure ?? 'native_flow_unprovable'),
+    nativeProofCouldChangeOutcome: couldChange,
+    terminalReason: couldChange ? null : terminal?.reason ?? null,
+    terminalDetail: couldChange ? null : terminal ? `${terminal.detail} (holds for every native amount this route implies; no native trace requested)` : null,
+    priorityClass: swaps.length === 1 && erc20Sides === 1 ? 'p2_single_hop_v4_one_erc20_side' : swaps.length === 1 ? 'p3_native_dependent' : 'p4_complex_multi_hop',
+  })
+}
+
+// A wallet-sent mixed route needs its own trace when exactly one wallet side is missing (only native can fill it),
+// or when it already proves without native (the trace must confirm no extra native flow). Anything else the
+// analyzer rejected without native evidence (liquidity, unresolved hops, two debits/credits, outside funding,
+// off-route swaps with both ERC-20 sides present) cannot be fixed by a native leg: terminal, no slot.
+function registerMixedTraceProbe(ctx: Ctx, txHash: string, receipt: RhReceipt, m: RobinhoodMixedRouteForensics, timestampSec: number | null): void {
+  const oneSideMissing = (m.walletInputToken == null) !== (m.walletOutputToken == null)
+  const nativeSideMissing = m.finalClassification === 'ambiguous' && oneSideMissing && /^(no wallet input debit|no provable final wallet output)/.test(m.reason)
+  const couldChange = m.finalClassification === 'direct_mixed_route_proven' || nativeSideMissing
+  ctx.traceRequests?.set(txHash, {
+    txHash, kind: 'mixed_route', blockNumber: receipt.blockNumber, timestampSec,
+    preTraceClassification: m.finalClassification === 'direct_mixed_route_proven' ? 'mixed_route_proven_pending_native_check'
+      : nativeSideMissing ? 'mixed_route_native_side_missing' : `${m.finalClassification}: ${m.reason}`,
+    nativeProofCouldChangeOutcome: couldChange,
+    priorityClass: 'p4_complex_multi_hop',
+  })
+}
+
+export type RhNativeTraceSelectionSummary = {
+  receiptCandidates: number; terminalRejectedBeforeTrace: number; nativeTraceEligible: number; cacheSatisfied: number
+  selectedForLiveTrace: number; liveBudgetCap: number; liveBudgetExhaustedEligibleCount: number; tracesAvoidedByStructuralPrefilter: number
+}
+const PRIORITY_RANK: Record<RhNativeTracePriorityClass, number> = { p2_single_hop_v4_one_erc20_side: 2, p3_native_dependent: 3, p4_complex_multi_hop: 4 }
+
+/**
+ * Resolves traces for the eligible receipts: stored proofs first (no live slot), then live lookups in deterministic
+ * priority order (class, then timestamp ASC, then txHash ASC) up to the live cap. Logs one selection line per
+ * receipt candidate plus a summary. Returns the traces to replay.
+ */
+async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly CandidateOutcome[]): Promise<{ replay: Map<string, RhNativeTransfer[] | null>; summary: RhNativeTraceSelectionSummary }> {
+  const requests = ctx.traceRequests ?? new Map<string, RhNativeTraceRequest>()
+  const cap = Math.max(0, ctx.deps.nativeTraceLiveCap ?? ROBINHOOD_NATIVE_TRACE_LIVE_CAP)
+  const eligible = [...requests.values()].filter((r) => r.nativeProofCouldChangeOutcome)
+    .sort((a, b) => PRIORITY_RANK[a.priorityClass] - PRIORITY_RANK[b.priorityClass]
+      || (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
+  const replay = new Map<string, RhNativeTransfer[] | null>()
+  const cacheHit = new Set<string>()
+  for (const r of eligible) {
+    const stored = ctx.deps.nativeTraceCached ? await ctx.deps.nativeTraceCached(r.txHash).catch(() => null) : null
+    if (stored?.transfers) { cacheHit.add(r.txHash); replay.set(r.txHash, logNativeTrace(wallet, r.txHash, stored)) }
+  }
+  const live = eligible.filter((r) => !cacheHit.has(r.txHash))
+  const selected = live.slice(0, cap)
+  const ordinal = new Map(selected.map((r, i) => [r.txHash, i + 1]))
+  const results = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => requestNativeTrace(ctx, r.txHash))
+  selected.forEach((r, i) => replay.set(r.txHash, logNativeTrace(wallet, r.txHash, results[i])))
+  // Eligible but beyond the live cap: no request at all (the slot would not exist); said so explicitly.
+  for (const r of live.slice(cap)) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, 'budget_exhausted') })
+  for (const o of outcomes) {
+    const r = requests.get(o.txHash)
+    console.warn('[robinhood-native-trace-selection-audit]', {
+      candidateTxHash: o.txHash,
+      preTraceClassification: r?.preTraceClassification ?? (o.swap ? 'accepted_without_native_trace' : o.rejection ?? 'no_native_dependency'),
+      terminalWithoutNativeTrace: !r?.nativeProofCouldChangeOutcome,
+      nativeProofCouldChangeOutcome: r?.nativeProofCouldChangeOutcome ?? false,
+      traceEligible: r?.nativeProofCouldChangeOutcome ?? false,
+      priorityClass: r?.nativeProofCouldChangeOutcome ? (cacheHit.has(o.txHash) ? 'p1_stored_proof' : r.priorityClass) : null,
+      selectedForLiveTrace: ordinal.has(o.txHash),
+      persistentOrMemoryHit: cacheHit.has(o.txHash),
+      liveBudgetOrdinal: ordinal.get(o.txHash) ?? null,
+      skippedReason: !r ? 'no_native_dependency' : !r.nativeProofCouldChangeOutcome ? 'terminal_without_native_trace'
+        : cacheHit.has(o.txHash) || ordinal.has(o.txHash) ? null : 'live_budget_exhausted',
+    })
+  }
+  const summary: RhNativeTraceSelectionSummary = {
+    receiptCandidates: outcomes.filter((o) => o.receiptFetched).length,
+    terminalRejectedBeforeTrace: outcomes.filter((o) => !o.swap && o.receiptFetched && !requests.get(o.txHash)?.nativeProofCouldChangeOutcome).length,
+    nativeTraceEligible: eligible.length,
+    cacheSatisfied: cacheHit.size,
+    selectedForLiveTrace: selected.length,
+    liveBudgetCap: cap,
+    liveBudgetExhaustedEligibleCount: Math.max(0, live.length - cap),
+    tracesAvoidedByStructuralPrefilter: [...requests.values()].filter((r) => !r.nativeProofCouldChangeOutcome).length,
+  }
+  console.warn('[robinhood-native-trace-selection-audit]', { summary })
+  return { replay, summary }
 }
 
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
@@ -782,7 +946,8 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
   let nativeNet: bigint | null = null
   let nativeEvidence: RhNativeEvidence | null = null
   if (nativeTouched && N > 0) {
-    const trace = await fetchNativeTrace(ctx, wallet, txHash)
+    const trace = ctx.traceMode === 'probe' ? null : await fetchNativeTrace(ctx, wallet, txHash)
+    if (ctx.traceMode === 'probe') registerDirectTraceProbe(ctx, wallet, txHash, receipt, poolKeys, timestampSec)
     nativeEvidence = deriveRhNativeEvidence({
       wallet, isSender: receipt.from === lower(wallet), gasPaid: receipt.gasUsed * receipt.effectiveGasPrice,
       txValue: hexToBigInt((res[i + 4] as Record<string, unknown> | null)?.value),
@@ -792,7 +957,12 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
     if (nativeEvidence.status === 'proven_target_tx_native_transfer') nativeNet = nativeEvidence.nativeNetExGas
   }
   const route = verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet })
-  if (!route.ok && route.reason === 'native_flow_unprovable' && nativeEvidence) {
+  // Terminal before any trace: report the structural reason, not the missing native proof it never needed.
+  const probe = ctx.traceMode === 'probe' ? ctx.traceRequests?.get(txHash) : undefined
+  if (!route.ok && route.reason === 'native_flow_unprovable' && probe && !probe.nativeProofCouldChangeOutcome && probe.terminalReason) {
+    route.reason = probe.terminalReason
+    route.detail = probe.terminalDetail ?? route.detail
+  } else if (!route.ok && route.reason === 'native_flow_unprovable' && nativeEvidence) {
     route.detail = `${route.detail} (native evidence: ${nativeEvidence.status}; block delta ex-gas ${nativeEvidence.blockBalanceDeltaExGas ?? 'n/a'} is diagnostic only)`
   }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta: nativeNet, rejectionReason: route.ok ? null : route.reason })
@@ -1665,7 +1835,23 @@ export async function computeRobinhoodPnlV1(params: {
   if (selected.length === 0) return finish({ ...empty, status: 'not_verified', exactReason: 'No Robinhood transactions with token movements were found for this wallet.' })
 
   const ctx: Ctx = { deps: params.deps, rpc: params.deps.rpc, deadlineAt: Date.now() + ROBINHOOD_PNL_V1_LIMITS.deadlineMs, m, priceSidesUsed: 0 }
-  const outcomes = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch((): CandidateOutcome => ({ txHash: c.txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: 'receipt_unavailable', detail: 'verification threw' })))
+  const threw = (txHash: string): CandidateOutcome => ({ txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: 'receipt_unavailable', detail: 'verification threw' })
+  // Phase 1: classify every receipt without any native trace (records which ones a trace could change).
+  ctx.traceMode = 'probe'
+  ctx.traceRequests = new Map()
+  const outcomes = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch(() => threw(c.txHash)))
+  // Phase 2: stored proofs, then bounded live traces in priority order. Phase 3: re-verify only the traced receipts
+  // through the unchanged classifier with their real trace.
+  ctx.traceMode = 'live'
+  const traceSelection = await selectNativeTraces(ctx, wallet, outcomes)
+  ctx.traceMode = 'replay'
+  ctx.traceReplay = traceSelection.replay
+  for (const txHash of traceSelection.replay.keys()) {
+    const i = outcomes.findIndex((o) => o.txHash === txHash)
+    if (i >= 0) outcomes[i] = await verifyCandidate(ctx, wallet, txHash).catch(() => threw(txHash))
+  }
+  ctx.traceMode = 'live'
+  ingestion.nativeTraceSelection = traceSelection.summary
   const swaps: RhVerifiedSwap[] = []
   for (const o of outcomes) {
     if (o.receiptFetched) ingestion.receiptsFetched += 1

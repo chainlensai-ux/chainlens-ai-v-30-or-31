@@ -16,6 +16,29 @@ import {
 
 const lower = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '')
 
+function nativeTraceFromRecord(txHash: string, record: RobinhoodNativeTraceRecord): RhNativeTraceResult {
+  return {
+    transfers: robinhoodNativeTraceTransfers(record),
+    audit: {
+      txHash, attempted: false, cacheHit: true, budgetLane: 'native_trace', requestHost: null, authMode: null, httpStatus: null,
+      failureClass: null, transportAttempts: [], itemCount: record.transfers.length, paginated: false, malformed: false,
+      missingSuccessStatus: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: record.transfers.length,
+      paginationComplete: true, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result: record.result,
+    },
+  }
+}
+
+/**
+ * Stored verified trace only (process memory → persistent positive proof). Never a live Blockscout request and
+ * never a native_trace budget slot; null when nothing verified is stored for this tx.
+ */
+export async function storedRobinhoodNativeTrace(txHash: string): Promise<RhNativeTraceResult | null> {
+  const mem = readRobinhoodNativeTraceMemory(txHash)
+  if (mem && mem.txHash === lower(txHash)) return nativeTraceFromRecord(txHash, mem)
+  const stored = await readPersistedRobinhoodNativeTrace(txHash)
+  return stored.record ? nativeTraceFromRecord(txHash, stored.record) : null
+}
+
 export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string) => Promise<RhNativeTraceResult> {
   const live = liveBlockscoutNativeTransfersForTx(fetchImpl)
   return async (txHash) => {
@@ -24,15 +47,7 @@ export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: s
       liveResult: null as string | null, persisted: false, persistenceWriteFailed: false, persistenceReason: null as string | null,
       transferCount: null as number | null, result: null as string | null,
     }
-    const fromRecord = (record: RobinhoodNativeTraceRecord): RhNativeTraceResult => ({
-      transfers: robinhoodNativeTraceTransfers(record),
-      audit: {
-        txHash, attempted: false, cacheHit: true, budgetLane: 'native_trace', requestHost: null, authMode: null, httpStatus: null,
-        failureClass: null, transportAttempts: [], itemCount: record.transfers.length, paginated: false, malformed: false,
-        missingSuccessStatus: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: record.transfers.length,
-        paginationComplete: true, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result: record.result,
-      },
-    })
+    const fromRecord = (record: RobinhoodNativeTraceRecord): RhNativeTraceResult => nativeTraceFromRecord(txHash, record)
     const done = (r: RhNativeTraceResult): RhNativeTraceResult => {
       audit.transferCount = r.transfers ? r.transfers.length : null
       audit.result = r.audit?.result ?? null

@@ -42,7 +42,7 @@
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
-import { blockscoutNativeTransfersForTx } from './robinhoodNativeTrace'
+import { blockscoutNativeTransfersForTx, storedRobinhoodNativeTrace } from './robinhoodNativeTrace'
 import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
@@ -1716,7 +1716,7 @@ export async function scanRobinhoodWallet(
   const v1Deps: RobinhoodPnlV1Deps = pnlV1Deps
     ? { ...pnlV1Deps, onNativePricePrefetchComplete: onNativePricePrefetchComplete ?? pnlV1Deps.onNativePricePrefetchComplete }
     : {
-        ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl),
+        ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), nativeTraceCached: storedRobinhoodNativeTrace,
         historicalTokenInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutHistoricalTokenInbounds(
           targetWallet, token, beforeTimestampSec, fetchImpl,
           { maxPages: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxPages, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates, deadlineAt },

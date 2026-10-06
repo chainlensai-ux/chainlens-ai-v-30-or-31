@@ -5,7 +5,8 @@ import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
 import { getBlockscoutTransactionLogs, blockscoutLaneRemaining, NATIVE_TRACE_MAX_LOOKUPS, __resetRobinhoodBlockscoutRateLimitForTest } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import { blockscoutNativeTransfersForTx } from '../lib/server/robinhoodNativeTrace.ts'
-import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, type RhRpc } from '../lib/server/robinhoodPnlV1.ts'
+import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_WETH, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, type RhRpc } from '../lib/server/robinhoodPnlV1.ts'
+import { WETH_WITHDRAWAL_TOPIC0 } from '../lib/server/robinhoodMixedRouteForensics.ts'
 
 process.env.ENABLE_ROBINHOOD_CHAIN = 'true'
 process.env.BLOCKSCOUT_API_KEY = 'proapi_SECRET_trace_key'
@@ -119,7 +120,11 @@ function mixedReceipt(block: number) {
       { address: TOKEN_A, topics: [ERC20_TRANSFER_TOPIC0, tp(WALLET), tp(PM)], data: `0x${pad(E18.toString(16))}`, logIndex: '0x0', blockTimestamp: '0x68e7c000' },
       { address: PM, topics: [V4_SWAP_TOPIC0, key.id, tp(ROUTER)], data: `0x${int256(d[key.c0])}${int256(d[key.c1])}${'0'.repeat(256)}`, logIndex: '0x1', blockTimestamp: '0x68e7c000' },
       { address: TOKEN_B, topics: [ERC20_TRANSFER_TOPIC0, tp(PM), tp(V3_POOL)], data: `0x${pad(E18.toString(16))}`, logIndex: '0x2', blockTimestamp: '0x68e7c000' },
-      { address: V3_POOL, topics: [V3_SWAP, tp(ROUTER), tp(ROUTER)], data: `0x${int256(E18)}${int256(-E18)}${'0'.repeat(192)}`, logIndex: '0x3', blockTimestamp: '0x68e7c000' },
+      // B -> V3 -> WETH (2 ETH) -> unwrapped by the router: the wallet's native proceeds need the target-tx trace
+      // (so these receipts are trace-eligible); the trace pays the wallet only 1 ETH, so the route still fails.
+      { address: V3_POOL, topics: [V3_SWAP, tp(ROUTER), tp(ROUTER)], data: `0x${int256(E18)}${int256(-E18 * BigInt(2))}${'0'.repeat(192)}`, logIndex: '0x3', blockTimestamp: '0x68e7c000' },
+      { address: RH_WETH, topics: [ERC20_TRANSFER_TOPIC0, tp(V3_POOL), tp(ROUTER)], data: `0x${pad((E18 * BigInt(2)).toString(16))}`, logIndex: '0x4', blockTimestamp: '0x68e7c000' },
+      { address: RH_WETH, topics: [WETH_WITHDRAWAL_TOPIC0, tp(ROUTER)], data: `0x${pad((E18 * BigInt(2)).toString(16))}`, logIndex: '0x5', blockTimestamp: '0x68e7c000' },
     ],
   }
 }
