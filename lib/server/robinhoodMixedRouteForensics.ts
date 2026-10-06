@@ -68,7 +68,7 @@ export type RhNativeTransfer = { from: string; to: string; value: bigint; succes
 /** Outcome of one target-tx trace lookup. Never contains the API key or a response body. */
 export type RhNativeTraceResultKind =
   | 'proven' | 'empty' | 'budget_exhausted' | 'transport_failed' | 'malformed' | 'unknown_execution_status'
-  | 'paginated' | 'not_attempted_deadline' | 'not_attempted_no_trace_source'
+  | 'pagination_cap_exhausted' | 'not_attempted_deadline' | 'not_attempted_no_trace_source'
 export type RhNativeTraceAudit = {
   txHash: string
   attempted: boolean
@@ -78,11 +78,20 @@ export type RhNativeTraceAudit = {
   authMode: string | null
   httpStatus: number | null
   failureClass: string | null
-  transportAttempts: Array<{ requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
+  /** Every HTTP attempt of this lookup, across all pages (page number, host, auth mode, status, class). */
+  transportAttempts: Array<{ page?: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
   itemCount: number | null
+  /** Kept for log continuity: true when the trace ended with more pages than were fetched (i.e. incomplete). */
   paginated: boolean
   malformed: boolean
   missingSuccessStatus: boolean
+  pagesRequested: number
+  pagesSucceeded: number
+  totalItemCount: number | null
+  paginationComplete: boolean
+  paginationCap: { maxPages: number; maxItems: number; maxTotalMs: number } | null
+  paginationCapHit: boolean
+  pageTransportAttempts: Array<{ page: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
   result: RhNativeTraceResultKind
 }
 /** transfers is non-null only for result proven / empty (a complete trace with explicit execution status). */

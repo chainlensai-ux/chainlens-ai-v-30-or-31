@@ -241,7 +241,7 @@ export function classifyBlockscoutFailure(status: number, headers: Headers, body
 
 type TransportResponse = { ok: boolean; status: number; json: unknown | null; attempt: BlockscoutTransportAttempt; headers: Headers | null }
 
-async function blockscoutRequest(path: string, fetchImpl: FetchImpl, mode: 'community' | 'gateway'): Promise<TransportResponse> {
+async function blockscoutRequest(path: string, fetchImpl: FetchImpl, mode: 'community' | 'gateway', timeoutMs: number = BLOCKSCOUT_TIMEOUT_MS): Promise<TransportResponse> {
   const gateway = mode === 'gateway'
   const base = gateway ? `${BLOCKSCOUT_PRO_API_BASE}/${ROBINHOOD_CHAIN_ID}` : ROBINHOOD_CHAIN_EXPLORER_URL
   const attempt: BlockscoutTransportAttempt = {
@@ -255,7 +255,7 @@ async function blockscoutRequest(path: string, fetchImpl: FetchImpl, mode: 'comm
   const headers: Record<string, string> = { accept: 'application/json' }
   if (gateway) headers.authorization = `Bearer ${process.env.BLOCKSCOUT_API_KEY ?? ''}`
   try {
-    const res = await fetchImpl(`${base}${path}`, { headers, signal: AbortSignal.timeout(BLOCKSCOUT_TIMEOUT_MS) })
+    const res = await fetchImpl(`${base}${path}`, { headers, signal: AbortSignal.timeout(Math.max(1, timeoutMs)) })
     attempt.httpStatus = res.status
     attempt.contentType = res.headers.get('content-type')
     if (!res.ok) {
@@ -429,6 +429,9 @@ export async function getBlockscoutAddressLogs(address: string, fetchImpl: Fetch
 }
 
 export type BlockscoutInternalTransaction = {
+  index?: number | null
+  block_index?: number | null
+  transaction_hash?: string | null
   from?: { hash?: string } | null
   to?: { hash?: string } | null
   value?: string | null
@@ -437,16 +440,103 @@ export type BlockscoutInternalTransaction = {
 }
 export type BlockscoutInternalTransactionsResponse = { items?: BlockscoutInternalTransaction[]; next_page_params?: unknown }
 
-/** The target tx's internal (trace) transfers — immutable once mined, so cached like its logs. */
-export async function getBlockscoutTransactionInternalTransactions(txHash: string, fetchImpl: FetchImpl) {
-  return fetchBlockscout<BlockscoutInternalTransactionsResponse>(
-    `/api/v2/transactions/${txHash}/internal-transactions`,
-    `robinhood:blockscout:tx-internal:${txHash.toLowerCase()}`,
-    300,
-    fetchImpl,
-    'native_trace',
-  )
+// ── Target-tx internal transactions, ALL pages (native_trace lane) ─────────────────────────────────────
+// One logical lookup = one native_trace budget slot, however many pages it needs. Pages follow ONLY the
+// `next_page_params` Blockscout returned (each key/value passed through as-is, in order; never an invented
+// cursor). The trace is complete only when a page returns next_page_params == null. Any failed page, any
+// malformed page, a non-scalar cursor value or a repeated cursor makes the whole trace unavailable — a partial
+// prefix is never returned. Hard caps per lookup: pages, items and total time.
+export const NATIVE_TRACE_PAGINATION = { maxPages: 4, maxItems: 200, maxTotalMs: 6_000 } as const
+
+export type InternalTxTraceStatus =
+  | 'complete' | 'not_configured' | 'budget_exhausted' | 'transport_failed' | 'malformed'
+  | 'inconsistent_pagination' | 'pagination_cap_exhausted'
+export type InternalTxPageAttempt = { page: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
+export type InternalTxTraceResult = {
+  status: InternalTxTraceStatus
+  /** Every internal tx of the target tx, deduplicated — only when status is 'complete'. */
+  items: BlockscoutInternalTransaction[] | null
+  cacheHit: boolean
+  pagesRequested: number
+  pagesSucceeded: number
+  totalItemCount: number
+  paginationComplete: boolean
+  paginationCap: typeof NATIVE_TRACE_PAGINATION
+  paginationCapHit: boolean
+  pageTransportAttempts: InternalTxPageAttempt[]
+  /** The last request's outcome (host / auth / status / failure class). */
+  last: { requestHost: string | null; authMode: BlockscoutAuthMode | null; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
 }
+
+/** Query string built only from the returned cursor; null when the cursor is not a flat object of scalars. */
+function cursorQuery(params: unknown): string | null {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return null
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(params as Record<string, unknown>)) {
+    if (v === null) q.append(k, 'null')
+    else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') q.append(k, String(v))
+    else return null
+  }
+  return q.toString()
+}
+const itemKey = (it: BlockscoutInternalTransaction & { index?: unknown; block_index?: unknown; transaction_hash?: unknown }) =>
+  JSON.stringify([it.transaction_hash ?? null, it.index ?? null, it.block_index ?? null, it.from?.hash ?? null, it.to?.hash ?? null, it.value ?? null, it.type ?? null, it.success ?? null])
+
+export async function getBlockscoutTransactionInternalTransactions(
+  txHash: string,
+  fetchImpl: FetchImpl,
+  caps: { maxPages: number; maxItems: number; maxTotalMs: number } = NATIVE_TRACE_PAGINATION,
+): Promise<InternalTxTraceResult> {
+  const result: InternalTxTraceResult = {
+    status: 'transport_failed', items: null, cacheHit: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: 0,
+    paginationComplete: false, paginationCap: NATIVE_TRACE_PAGINATION, paginationCapHit: false, pageTransportAttempts: [],
+    last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
+  }
+  if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
+  const cacheKey = `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
+  const cached = await getTokenCache<BlockscoutInternalTransaction[]>(cacheKey).catch(() => null)
+  if (Array.isArray(cached)) return { ...result, status: 'complete', items: cached, cacheHit: true, paginationComplete: true, totalItemCount: cached.length }
+  if (!checkBlockscoutRateLimit('native_trace')) return { ...result, status: 'budget_exhausted', last: { ...result.last, failureClass: 'rate_limited' } }
+
+  const startedAt = Date.now()
+  const base = `/api/v2/transactions/${txHash}/internal-transactions`
+  const seen = new Map<string, BlockscoutInternalTransaction>()
+  const seenCursors = new Set<string>()
+  let query = ''
+  let useGateway = false // set once the community host refused this lookup (401/403): later pages go to the gateway
+  for (let page = 1; ; page++) {
+    if (page > caps.maxPages || Date.now() - startedAt >= caps.maxTotalMs) return { ...result, status: 'pagination_cap_exhausted', paginationCapHit: true }
+    const path = query ? `${base}?${query}` : base
+    const remaining = caps.maxTotalMs - (Date.now() - startedAt)
+    result.pagesRequested += 1
+    let res = await blockscoutRequest(path, fetchImpl, useGateway ? 'gateway' : 'community', Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
+    result.pageTransportAttempts.push({ page, ...pick(res.attempt) })
+    if (!useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
+      useGateway = true
+      res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, Math.max(1, caps.maxTotalMs - (Date.now() - startedAt))))
+      result.pageTransportAttempts.push({ page, ...pick(res.attempt) })
+    }
+    result.last = pick(res.attempt)
+    if (!res.ok) return { ...result, status: res.attempt.failureClass === 'invalid_json' ? 'malformed' : 'transport_failed' }
+    const body = res.json as BlockscoutInternalTransactionsResponse
+    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) return { ...result, status: 'malformed' }
+    result.pagesSucceeded += 1
+    for (const it of body.items) seen.set(itemKey(it as never), it)
+    result.totalItemCount = seen.size
+    const next = body.next_page_params
+    if (next == null) {
+      const items = [...seen.values()]
+      await setTokenCache(cacheKey, items, 300).catch(() => {})
+      return { ...result, status: 'complete', items, paginationComplete: true }
+    }
+    if (seen.size >= caps.maxItems) return { ...result, status: 'pagination_cap_exhausted', paginationCapHit: true }
+    const q = cursorQuery(next)
+    if (q == null || q === '' || seenCursors.has(q)) return { ...result, status: 'inconsistent_pagination' }
+    seenCursors.add(q)
+    query = q
+  }
+}
+const pick = (a: BlockscoutTransportAttempt) => ({ requestHost: a.requestHost, authMode: a.authMode, httpStatus: a.httpStatus, failureClass: a.failureClass })
 
 export type BlockscoutContractInfo = {
   is_verified?: boolean

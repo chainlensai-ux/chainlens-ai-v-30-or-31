@@ -119,7 +119,8 @@ test('Blockscout trace parser: incomplete (paginated) or malformed traces are no
   const ok = (await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: '2000', success: true }], next_page_params: null }))(`0x${'a1'.repeat(32)}`)).transfers
   assert.deepEqual(ok, [{ from: ROUTER, to: WALLET, value: BigInt(2000), success: true }])
   const paged = await blockscoutNativeTransfersForTx(fetchOf({ items: [], next_page_params: { index: 1 } }))(`0x${'a2'.repeat(32)}`)
-  assert.deepEqual([paged.transfers, paged.audit?.result, paged.audit?.paginated], [null, 'paginated', true])
+  // The fake returns the same cursor on every page: inconsistent pagination fails closed (never a partial prefix).
+  assert.deepEqual([paged.transfers, paged.audit?.result, paged.audit?.paginationComplete], [null, 'malformed', false])
   const bad = await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: 'not-a-number', success: true }] }))(`0x${'a3'.repeat(32)}`)
   assert.deepEqual([bad.transfers, bad.audit?.result, bad.audit?.malformed], [null, 'malformed', true])
 })

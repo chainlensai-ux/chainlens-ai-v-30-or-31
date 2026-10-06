@@ -499,7 +499,8 @@ type CandidateOutcome = { txHash: string; receiptFetched: boolean; v4SwapLogs: n
 async function fetchNativeTrace(ctx: Ctx, wallet: string, txHash: string): Promise<RhNativeTransfer[] | null> {
   const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => ({
     txHash, attempted: false, cacheHit: false, budgetLane: 'native_trace', requestHost: null, authMode: null, httpStatus: null,
-    failureClass: null, transportAttempts: [], itemCount: null, paginated: false, malformed: false, missingSuccessStatus: false, result,
+    failureClass: null, transportAttempts: [], itemCount: null, paginated: false, malformed: false, missingSuccessStatus: false,
+    pagesRequested: 0, pagesSucceeded: 0, totalItemCount: null, paginationComplete: false, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result,
   })
   let res: RhNativeTraceResult
   if (!ctx.deps.nativeTransfersForTx) res = { transfers: null, audit: base('not_attempted_no_trace_source') }

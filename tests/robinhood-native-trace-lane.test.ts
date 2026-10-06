@@ -84,9 +84,9 @@ test('4. missing success field -> unknown_execution_status, no transfers', async
   assert.deepEqual([r.transfers, r.audit?.result, r.audit?.missingSuccessStatus], [null, 'unknown_execution_status', true])
 })
 
-test('5. paginated trace -> paginated (unavailable)', async () => {
+test('5. a trace whose cursor never advances (same next_page_params every page) -> unavailable', async () => {
   const r = await blockscoutNativeTransfersForTx(blockscout({ community: 'paged' }).fn)(nextHash())
-  assert.deepEqual([r.transfers, r.audit?.result, r.audit?.paginated], [null, 'paginated', true])
+  assert.deepEqual([r.transfers, r.audit?.result, r.audit?.paginationComplete, r.audit?.pagesRequested], [null, 'malformed', false, 2])
 })
 
 test('6. empty successful trace -> empty (a complete trace with no native transfers)', async () => {
