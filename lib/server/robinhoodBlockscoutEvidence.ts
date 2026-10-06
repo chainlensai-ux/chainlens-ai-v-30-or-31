@@ -56,10 +56,24 @@ const RATE_LIMIT_MAX_CALLS = 4
 // TWO LANES, same per-lane ceiling: the wallet-activity list endpoints (the fallback for a failed
 // primary) get their own window, so per-tx log / contract lookups — up to one per tx — can never use up
 // the budget a concurrent scan needs to reconstruct activity at all.
-export type BlockscoutBudgetLane = 'activity' | 'evidence'
+// native_trace: target-tx internal-transaction lookups for native ETH proof. Its own lane because per-tx
+// `/logs` lookups during activity reconstruction routinely exhaust `evidence` before PnL needs a trace. Its
+// unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
+// at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
+export const NATIVE_TRACE_MAX_LOOKUPS = 3
+export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace'
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
+  native_trace: { windowStart: 0, count: 0 },
   activity: { windowStart: 0, count: 0 },
   evidence: { windowStart: 0, count: 0 },
+}
+
+/** Lookups left in a lane's current window (diagnostics / tests). */
+export function blockscoutLaneRemaining(lane: BlockscoutBudgetLane): number {
+  const state = rateLimitState[lane]
+  if (Date.now() - state.windowStart > RATE_LIMIT_WINDOW_MS) return LANE_MAX[lane]
+  return Math.max(0, LANE_MAX[lane] - state.count)
 }
 
 export function __resetRobinhoodBlockscoutRateLimitForTest(): void {
@@ -73,7 +87,7 @@ function checkBlockscoutRateLimit(lane: BlockscoutBudgetLane): boolean {
     state.windowStart = now
     state.count = 0
   }
-  if (state.count >= RATE_LIMIT_MAX_CALLS) return false
+  if (state.count >= LANE_MAX[lane]) return false
   state.count += 1
   return true
 }
@@ -296,7 +310,7 @@ async function fetchBlockscout<T>(
   let res = await blockscoutRequest(path, fetchImpl, 'community')
   audit.transportAttempts.push(res.attempt)
   // ONE bounded alternate: only an auth/host refusal (401/403), only with a key, only within budget.
-  if (!res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY) && checkBlockscoutRateLimit(lane)) {
+  if (!res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY) && (lane === 'native_trace' || checkBlockscoutRateLimit(lane))) {
     res = await blockscoutRequest(path, fetchImpl, 'gateway')
     audit.transportAttempts.push(res.attempt)
   }
@@ -430,6 +444,7 @@ export async function getBlockscoutTransactionInternalTransactions(txHash: strin
     `robinhood:blockscout:tx-internal:${txHash.toLowerCase()}`,
     300,
     fetchImpl,
+    'native_trace',
   )
 }
 

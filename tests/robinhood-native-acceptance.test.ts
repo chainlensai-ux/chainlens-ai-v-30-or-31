@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
 import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_NATIVE, RH_V4_POSITION_MANAGER, V4_SWAP_TOPIC0, ERC20_TRANSFER_TOPIC0, type RhRpc, type RobinhoodPnlV1Deps } from '../lib/server/robinhoodPnlV1.ts'
 import { blockscoutNativeTransfersForTx } from '../lib/server/robinhoodNativeTrace.ts'
+import { __resetRobinhoodBlockscoutRateLimitForTest } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import type { RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
 
 process.env.ENABLE_ROBINHOOD_CHAIN = 'true'
@@ -120,9 +121,15 @@ test('4. an internal transfer with success:false is ignored -> no proven payout 
 
 test('5. a trace entry with missing/null success is not silently accepted (adapter fails closed)', async () => {
   const body = (success: unknown) => async () => new Response(JSON.stringify({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: String(E18), ...(success === undefined ? {} : { success }) }], next_page_params: null }), { status: 200, headers: { 'content-type': 'application/json' } })
-  assert.equal(await blockscoutNativeTransfersForTx(body(undefined))(`0x${'b1'.repeat(32)}`), null)
-  assert.equal(await blockscoutNativeTransfersForTx(body(null))(`0x${'b2'.repeat(32)}`), null)
-  assert.deepEqual(await blockscoutNativeTransfersForTx(body(true))(`0x${'b3'.repeat(32)}`), [{ from: ROUTER, to: WALLET, value: E18, success: true }])
+  __resetRobinhoodBlockscoutRateLimitForTest()
+  const missing = await blockscoutNativeTransfersForTx(body(undefined))(`0x${'b1'.repeat(32)}`)
+  assert.deepEqual([missing.transfers, missing.audit?.result, missing.audit?.missingSuccessStatus], [null, 'unknown_execution_status', true])
+  const nul = await blockscoutNativeTransfersForTx(body(null))(`0x${'b2'.repeat(32)}`)
+  assert.deepEqual([nul.transfers, nul.audit?.result], [null, 'unknown_execution_status'])
+  const ok = await blockscoutNativeTransfersForTx(body(true))(`0x${'b3'.repeat(32)}`)
+  assert.deepEqual(ok.transfers, [{ from: ROUTER, to: WALLET, value: E18, success: true }])
+  assert.equal(ok.audit?.result, 'proven')
+  __resetRobinhoodBlockscoutRateLimitForTest()
   // and through PnL V1: the adapter's null means no proof -> rejected
   const r = await run(new Map([[H(7), sellTx(E18)]]), blockscoutNativeTransfersForTx(body(null) as never))
   assert.equal(r.swapsVerified, 0)

@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
 import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, V3_SWAP_TOPIC0, WETH_WITHDRAWAL_TOPIC0 } from '../lib/server/robinhoodMixedRouteForensics.ts'
 import { blockscoutNativeTransfersForTx } from '../lib/server/robinhoodNativeTrace.ts'
+import { __resetRobinhoodBlockscoutRateLimitForTest } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import { computeRobinhoodPnlV1, __resetRobinhoodPnlV1CachesForTest, RH_V4_POSITION_MANAGER, RH_WETH, type RhPoolKey, type RhReceipt, type RhRpc } from '../lib/server/robinhoodPnlV1.ts'
 
 process.env.ENABLE_ROBINHOOD_CHAIN = 'true'
@@ -114,10 +115,13 @@ test('5. an ERC-20-output mixed route is unaffected (no native evidence needed)'
 
 test('Blockscout trace parser: incomplete (paginated) or malformed traces are not proof', async () => {
   const fetchOf = (body: unknown) => async () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
-  const ok = await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: '2000', success: true }], next_page_params: null }))(`0x${'a1'.repeat(32)}`)
+  __resetRobinhoodBlockscoutRateLimitForTest()
+  const ok = (await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: '2000', success: true }], next_page_params: null }))(`0x${'a1'.repeat(32)}`)).transfers
   assert.deepEqual(ok, [{ from: ROUTER, to: WALLET, value: BigInt(2000), success: true }])
-  assert.equal(await blockscoutNativeTransfersForTx(fetchOf({ items: [], next_page_params: { index: 1 } }))(`0x${'a2'.repeat(32)}`), null)
-  assert.equal(await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: 'not-a-number' }] }))(`0x${'a3'.repeat(32)}`), null)
+  const paged = await blockscoutNativeTransfersForTx(fetchOf({ items: [], next_page_params: { index: 1 } }))(`0x${'a2'.repeat(32)}`)
+  assert.deepEqual([paged.transfers, paged.audit?.result, paged.audit?.paginated], [null, 'paginated', true])
+  const bad = await blockscoutNativeTransfersForTx(fetchOf({ items: [{ from: { hash: ROUTER }, to: { hash: WALLET }, value: 'not-a-number', success: true }] }))(`0x${'a3'.repeat(32)}`)
+  assert.deepEqual([bad.transfers, bad.audit?.result, bad.audit?.malformed], [null, 'malformed', true])
 })
 
 // ── 6. Acceptance unchanged ─────────────────────────────────────────────────────────────────────

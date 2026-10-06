@@ -64,6 +64,29 @@ export type RhNativeStatus =
   | 'not_needed' | 'proven_target_tx_native_transfer' | 'block_balance_delta_only'
   | 'unavailable_multiple_wallet_txs_in_block' | 'unavailable_no_trace' | 'unavailable_no_balance_evidence'
 export type RhNativeTransfer = { from: string; to: string; value: bigint; success: boolean }
+
+/** Outcome of one target-tx trace lookup. Never contains the API key or a response body. */
+export type RhNativeTraceResultKind =
+  | 'proven' | 'empty' | 'budget_exhausted' | 'transport_failed' | 'malformed' | 'unknown_execution_status'
+  | 'paginated' | 'not_attempted_deadline' | 'not_attempted_no_trace_source'
+export type RhNativeTraceAudit = {
+  txHash: string
+  attempted: boolean
+  cacheHit: boolean
+  budgetLane: 'native_trace'
+  requestHost: string | null
+  authMode: string | null
+  httpStatus: number | null
+  failureClass: string | null
+  transportAttempts: Array<{ requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
+  itemCount: number | null
+  paginated: boolean
+  malformed: boolean
+  missingSuccessStatus: boolean
+  result: RhNativeTraceResultKind
+}
+/** transfers is non-null only for result proven / empty (a complete trace with explicit execution status). */
+export type RhNativeTraceResult = { transfers: RhNativeTransfer[] | null; audit: RhNativeTraceAudit | null }
 export type RhNativeEvidence = {
   walletBalanceBefore: string | null
   walletBalanceAfter: string | null
