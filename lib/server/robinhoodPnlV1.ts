@@ -198,10 +198,12 @@ export type RobinhoodPnlV1IngestionAudit = {
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
 export type RhHistoricalInboundResult = {
   rows: RhInboundTokenTransfer[]; pagesRequested: number; pagesSucceeded: number; olderInboundRowsFound: number
+  filteredPagesRequested?: number; fallbackPagesRequested?: number; fallbackActivated?: boolean; exactTokenRowsFound?: number
   historicalRangeStart: number | null; historicalRangeEnd: number | null; stopReason: string
 }
 export type RhDeepAcquisitionSummary = {
   deepAcquisitionAttempted: boolean; sellTxHash: string; token: string; pagesRequested: number; pagesSucceeded: number
+  filteredPagesRequested: number; fallbackPagesRequested: number; fallbackActivated: boolean; exactTokenRowsFound: number
   historicalRangeStart: number | null; historicalRangeEnd: number | null; historicalCandidatesFound: number
   olderInboundRowsFound: number; candidatesSelected: number; receiptsAttempted: number; verifiedBuysRecovered: number
   recoveredBuyRaw: string; unmatchedSellRawBefore: string; unmatchedSellRawAfter: string; closedLotsAdded: number
@@ -1246,6 +1248,8 @@ async function runDeepAcquisitionRecovery(
   const summary: RhDeepAcquisitionSummary = {
     deepAcquisitionAttempted: true, sellTxHash: sell.txHash, token: sell.token,
     pagesRequested: history?.pagesRequested ?? 0, pagesSucceeded: history?.pagesSucceeded ?? 0,
+    filteredPagesRequested: history?.filteredPagesRequested ?? 0, fallbackPagesRequested: history?.fallbackPagesRequested ?? 0,
+    fallbackActivated: history?.fallbackActivated ?? false, exactTokenRowsFound: history?.exactTokenRowsFound ?? 0,
     historicalRangeStart: history?.historicalRangeStart ?? null, historicalRangeEnd: history?.historicalRangeEnd ?? null,
     historicalCandidatesFound: candidates.length, olderInboundRowsFound: history?.olderInboundRowsFound ?? 0,
     candidatesSelected: Math.min(candidates.length, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs),

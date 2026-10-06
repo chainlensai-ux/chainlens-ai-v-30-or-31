@@ -419,3 +419,14 @@ test('the global swap candidate cap remains twenty', () => {
   assert.equal(selected.selected.length, 20)
   assert.equal(selected.dropped, 5)
 })
+
+test('deep history keeps its eight-receipt proof cap without widening the normal sample', async () => {
+  const older = Array.from({ length: 10 }, (_, i) => relayed(new Tx().xfer(A, OTHER, WALLET, n(i + 1)), TS - (i + 1) * 3600))
+  const entries = older.map((_, i) => ({ i: i + 1, raw: n(i + 1), ts: TS - (i + 1) * 3600 }))
+  const { r, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...older], {}, { historicalTokenInbounds: historical(...entries) })
+  assert.equal(r.ingestionAudit.candidateSwapTxCount, 1)
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 10)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
+  assert.equal(receiptCalls, 9) // sell plus eight bounded deep proofs
+})

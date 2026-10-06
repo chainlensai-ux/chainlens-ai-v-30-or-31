@@ -62,7 +62,8 @@ const RATE_LIMIT_MAX_CALLS = 4
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
 export const NATIVE_TRACE_MAX_LOOKUPS = 3
 export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition'
-const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 4 }
+// One empty filtered probe may precede four unfiltered history pages; each is one logical lookup.
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5 }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
   native_trace: { windowStart: 0, count: 0 },
   deep_acquisition: { windowStart: 0, count: 0 },
@@ -383,6 +384,10 @@ export type BlockscoutHistoricalInboundResult = {
   rows: BlockscoutHistoricalInbound[]
   pagesRequested: number
   pagesSucceeded: number
+  filteredPagesRequested: number
+  fallbackPagesRequested: number
+  fallbackActivated: boolean
+  exactTokenRowsFound: number
   olderInboundRowsFound: number
   historicalRangeStart: number | null
   historicalRangeEnd: number | null
@@ -394,34 +399,46 @@ export async function getBlockscoutHistoricalTokenInbounds(
   wallet: string, token: string, beforeTimestampSec: number, fetchImpl: FetchImpl,
   caps: { maxPages: number; maxCandidates: number; deadlineAt: number },
 ): Promise<BlockscoutHistoricalInboundResult> {
-  const out: BlockscoutHistoricalInboundResult = { rows: [], pagesRequested: 0, pagesSucceeded: 0, olderInboundRowsFound: 0, historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'not_configured' }
+  const out: BlockscoutHistoricalInboundResult = {
+    rows: [], pagesRequested: 0, pagesSucceeded: 0, filteredPagesRequested: 0, fallbackPagesRequested: 0,
+    fallbackActivated: false, exactTokenRowsFound: 0, olderInboundRowsFound: 0,
+    historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'not_configured',
+  }
   if (!isRobinhoodBlockscoutConfigured()) return out
   if (!/^0x[0-9a-f]{40}$/i.test(wallet) || !/^0x[0-9a-f]{40}$/i.test(token) || !Number.isSafeInteger(beforeTimestampSec)) return { ...out, stopReason: 'invalid_target' }
   // Blockscout v2 supports all three filters on this endpoint; still verify every returned row locally.
-  const base = `/api/v2/addresses/${wallet}/token-transfers?type=ERC-20&filter=to&token=${token}`
+  const addressTransfers = `/api/v2/addresses/${wallet}/token-transfers?type=ERC-20&filter=to`
+  const filteredBase = `${addressTransfers}&token=${token}`
   const seenCursors = new Set<string>()
   const seenRows = new Set<string>()
   let query = ''
   let gateway = false
+  let queryMode: 'filtered_token' | 'unfiltered_address_fallback' = 'filtered_token'
+  let modePage = 0
   const requestedToken = token.toLowerCase()
   const requestedWallet = wallet.toLowerCase()
   const validAddress = (value: unknown): value is string => typeof value === 'string' && /^0x[0-9a-f]{40}$/i.test(value)
-  for (let page = 1; page <= Math.min(4, caps.maxPages); page++) {
+  while (modePage < Math.min(4, caps.maxPages)) {
     const remaining = caps.deadlineAt - Date.now()
     if (remaining <= 0) { out.stopReason = 'deadline'; return out }
     if (!checkBlockscoutRateLimit('deep_acquisition')) { out.stopReason = 'budget_exhausted'; return out }
+    const page = ++modePage
+    const base = queryMode === 'filtered_token' ? filteredBase : addressTransfers
     const path = query ? `${base}&${query}` : base
     out.pagesRequested++
+    if (queryMode === 'filtered_token') out.filteredPagesRequested++
+    else out.fallbackPagesRequested++
     let res = await blockscoutRequest(path, fetchImpl, gateway ? 'gateway' : 'community', Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
     if (!gateway && !res.ok && (res.status === 401 || res.status === 403) && process.env.BLOCKSCOUT_API_KEY && Date.now() < caps.deadlineAt) {
       gateway = true
       res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, caps.deadlineAt - Date.now()))
     }
     const audit = {
-      page, authMode: res.attempt.authMode, httpStatus: res.attempt.httpStatus,
+      page, queryMode, authMode: res.attempt.authMode, httpStatus: res.attempt.httpStatus,
       queryType: 'ERC-20', queryFilter: 'to', requestedToken,
+      filteredProbeReturnedEmpty: false, fallbackActivated: out.fallbackActivated,
       rawItemCount: null as number | null, nextPagePresent: null as boolean | null,
-      acceptedRowCount: 0, rejectedWrongDirection: 0, rejectedWrongToken: 0, rejectedTimestamp: 0,
+      exactTokenMatches: 0, acceptedRowCount: 0, rejectedWrongDirection: 0, rejectedWrongToken: 0, rejectedTimestamp: 0,
       rejectedTxHash: 0, rejectedRawAmount: 0, token_identity_conflict: 0, rejectedDuplicate: 0,
       tokenAddressFieldSeen: { address: 0, address_hash: 0, both: 0, none: 0 },
     }
@@ -435,6 +452,19 @@ export async function getBlockscoutHistoricalTokenInbounds(
     out.pagesSucceeded++
     audit.rawItemCount = body.items.length
     audit.nextPagePresent = body.next_page_params != null
+    if (queryMode === 'filtered_token' && page === 1 && body.items.length === 0 && body.next_page_params == null) {
+      // This Robinhood gateway can return an empty token-filtered list despite unfiltered address rows.
+      // The probe is not one of the four fallback pages, but it does use one bounded lookup and deadline time.
+      out.fallbackActivated = true
+      audit.filteredProbeReturnedEmpty = true
+      audit.fallbackActivated = true
+      console.warn('[robinhood-deep-history-page-audit]', audit)
+      queryMode = 'unfiltered_address_fallback'
+      modePage = 0
+      query = ''
+      seenCursors.clear()
+      continue
+    }
     for (const item of body.items) {
       const transfer = item && typeof item === 'object' ? item : {} as BlockscoutTokenTransfer
       const tokenByAddress = transfer.token?.address
@@ -448,6 +478,7 @@ export async function getBlockscoutHistoricalTokenInbounds(
         && (!hasAddress || validAddress(tokenByAddress)) && (!hasHash || validAddress(tokenByHash))
         && (hasAddress || hasHash)
         && (hasAddress ? tokenByAddress.toLowerCase() : tokenByHash!.toLowerCase()) === requestedToken
+      if (tokenIdentityValid) { audit.exactTokenMatches++; out.exactTokenRowsFound++ }
       if (!tokenIdentityValid) audit.rejectedWrongToken++
       const ts = typeof transfer.timestamp === 'string' ? Date.parse(transfer.timestamp) : NaN
       const txHash = transfer.transaction_hash?.toLowerCase() ?? ''
@@ -468,7 +499,8 @@ export async function getBlockscoutHistoricalTokenInbounds(
       out.olderInboundRowsFound++
       out.historicalRangeStart = out.historicalRangeStart == null ? ts : Math.min(out.historicalRangeStart, ts)
       out.historicalRangeEnd = out.historicalRangeEnd == null ? ts : Math.max(out.historicalRangeEnd, ts)
-      if (out.rows.length < Math.min(20, caps.maxCandidates)) out.rows.push({ txHash, timestampMs: ts, token: token.toLowerCase(), rawAmount: raw })
+      out.rows.push({ txHash, timestampMs: ts, token: requestedToken, rawAmount: raw })
+      if (out.rows.length >= Math.min(20, caps.maxCandidates)) break
     }
     console.warn('[robinhood-deep-history-page-audit]', audit)
     if (out.rows.length >= Math.min(20, caps.maxCandidates)) { out.stopReason = 'candidate_cap'; return out }
