@@ -573,19 +573,35 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
       { method: 'eth_getBalance', params: [wallet, hex(N)] },
       { method: 'eth_getTransactionCount', params: [wallet, hex(N - 1)] },
       { method: 'eth_getTransactionCount', params: [wallet, hex(N)] },
+      { method: 'eth_getTransactionByHash', params: [txHash] },
     )
   }
   const res = batch.length > 0 ? await call(ctx, batch) : []
   let i = 0
   let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
   if (needBlock) timestampSec = hexToNum((res[i++] as Record<string, unknown> | null)?.timestamp)
+  // NATIVE ENDPOINT PROOF (accepted lane): the wallet's native net for THIS tx comes only from the target tx's
+  // own execution trace (internal native transfers to / from the wallet) plus its known top-level tx.value.
+  // The whole-block balance delta (after − before + gas) is kept as a diagnostic bound only: a nonce delta of
+  // one proves the wallet sent one tx in the block, not that no other tx in the block paid it ETH.
   let nativeNet: bigint | null = null
+  let nativeEvidence: RhNativeEvidence | null = null
   if (nativeTouched && N > 0) {
-    const [b0, b1, n0, n1] = [hexToBigInt(res[i]), hexToBigInt(res[i + 1]), hexToNum(res[i + 2]), hexToNum(res[i + 3])]
-    // Exact only when this is the wallet's one tx in the block: then balance change + gas fee = what the trade moved.
-    if (b0 != null && b1 != null && n0 != null && n1 != null && n1 - n0 === 1) nativeNet = b1 - b0 + receipt.gasUsed * receipt.effectiveGasPrice
+    const trace = ctx.deps.nativeTransfersForTx && Date.now() < ctx.deadlineAt
+      ? await ctx.deps.nativeTransfersForTx(txHash).catch(() => null)
+      : null
+    nativeEvidence = deriveRhNativeEvidence({
+      wallet, isSender: receipt.from === lower(wallet), gasPaid: receipt.gasUsed * receipt.effectiveGasPrice,
+      txValue: hexToBigInt((res[i + 4] as Record<string, unknown> | null)?.value),
+      balanceBefore: hexToBigInt(res[i]), balanceAfter: hexToBigInt(res[i + 1]), nonceBefore: hexToNum(res[i + 2]), nonceAfter: hexToNum(res[i + 3]),
+      trace,
+    })
+    if (nativeEvidence.status === 'proven_target_tx_native_transfer') nativeNet = nativeEvidence.nativeNetExGas
   }
   const route = verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet })
+  if (!route.ok && route.reason === 'native_flow_unprovable' && nativeEvidence) {
+    route.detail = `${route.detail} (native evidence: ${nativeEvidence.status}; block delta ex-gas ${nativeEvidence.blockBalanceDeltaExGas ?? 'n/a'} is diagnostic only)`
+  }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta: nativeNet, rejectionReason: route.ok ? null : route.reason })
   if (!route.ok) return out({ receiptFetched: true, v4SwapLogs, rejection: route.reason, detail: route.detail, forensics })
   if (timestampSec == null || timestampSec <= 0) return out({ receiptFetched: true, v4SwapLogs, rejection: 'timestamp_unavailable', forensics })

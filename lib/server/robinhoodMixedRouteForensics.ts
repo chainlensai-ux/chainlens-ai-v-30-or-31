@@ -112,7 +112,8 @@ export function deriveRhNativeEvidence(input: {
   }
   // The target tx's own top-level value is part of it; a wallet-sent tx's value is known only from the tx.
   if (input.trace && (!input.isSender || input.txValue != null)) {
-    const ok = input.trace.filter((t) => t.success && t.value > ZERO)
+    // Only explicitly successful transfers count (a reverted or unknown-status call moved nothing provable).
+    const ok = input.trace.filter((t) => t.success === true && t.value > ZERO)
     const toWallet = ok.filter((t) => t.to.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
     const fromWallet = ok.filter((t) => t.from.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
     ev.traceNativeToWallet = toWallet.toString()

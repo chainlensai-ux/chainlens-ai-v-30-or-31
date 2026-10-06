@@ -55,9 +55,12 @@ type Chain = {
   nonces: Map<number, number>
   pools: Map<string, Pool>
   calls: string[]
+  /** Target-tx evidence: top-level tx.value and the tx's own internal native transfers (its trace). */
+  txValues: Map<string, bigint>
+  traces: Map<string, Array<{ from: string; to: string; value: bigint; success: boolean }>>
 }
 function chain(): Chain {
-  return { receipts: new Map(), blockTs: new Map(), balances: new Map(), nonces: new Map(), pools: new Map(), calls: [] }
+  return { receipts: new Map(), blockTs: new Map(), balances: new Map(), nonces: new Map(), pools: new Map(), calls: [], txValues: new Map(), traces: new Map() }
 }
 function addTx(c: Chain, p: { n: number; block: number; ts: number; logs: unknown[]; from?: string; status?: number; nativeDelta?: bigint }) {
   c.receipts.set(txHash(p.n), { status: hex(p.status ?? 1), from: p.from ?? WALLET, blockNumber: hex(p.block), gasUsed: hex(GAS_USED), effectiveGasPrice: hex(GAS_PRICE), logs: p.logs })
@@ -67,6 +70,10 @@ function addTx(c: Chain, p: { n: number; block: number; ts: number; logs: unknow
   c.balances.set(p.block, before + (p.nativeDelta ?? BigInt(0)) - FEE)
   c.nonces.set(p.block - 1, p.block)
   c.nonces.set(p.block, p.block + 1)
+  // A buy pays ETH as the tx's top-level value; a sell is paid out by an internal transfer in this tx's trace.
+  const d = p.nativeDelta ?? BigInt(0)
+  c.txValues.set(txHash(p.n), d < BigInt(0) ? -d : BigInt(0))
+  c.traces.set(txHash(p.n), d > BigInt(0) ? [{ from: ROUTER, to: WALLET, value: d, success: true }] : [])
 }
 function fakeRpc(c: Chain): RhRpc {
   return async (calls) => calls.map(({ method, params }) => {
@@ -76,6 +83,7 @@ function fakeRpc(c: Chain): RhRpc {
     if (method === 'eth_getBlockByNumber') { const ts = c.blockTs.get(Number(p[0])); return ts == null ? null : { timestamp: hex(ts) } }
     if (method === 'eth_getBalance') { const b = c.balances.get(Number(p[1])); return b == null ? null : hex(b) }
     if (method === 'eth_getTransactionCount') { const n = c.nonces.get(Number(p[1])); return n == null ? null : hex(n) }
+    if (method === 'eth_getTransactionByHash') { const v = c.txValues.get(p[0]); return v == null ? null : { value: hex(v) } }
     if (method === 'eth_call') {
       const { to, data } = p[0]
       if (to === RH_V4_POSITION_MANAGER) {
@@ -95,7 +103,7 @@ const series = (fromSec: number, toSec: number, usd = ETH_USD): Array<[number, n
   return pts
 }
 function deps(c: Chain, over: Partial<RobinhoodPnlV1Deps> = {}): RobinhoodPnlV1Deps {
-  return { rpc: fakeRpc(c), ethUsdRange: async (f, t) => series(f, t), tokenHistoricalUsd: async () => null, now: Date.now, ...over }
+  return { rpc: fakeRpc(c), ethUsdRange: async (f, t) => series(f, t), tokenHistoricalUsd: async () => null, now: Date.now, nativeTransfersForTx: async (h) => c.traces.get(h) ?? null, ...over }
 }
 const run = (c: Chain, ns: number[], over: Partial<RobinhoodPnlV1Deps> = {}) => computeRobinhoodPnlV1({
   wallet: WALLET,
@@ -121,7 +129,7 @@ function sell(c: Chain, n: number, block: number, ts: number, tokens: bigint, et
 
 beforeEach(() => { __resetRobinhoodPnlV1CachesForTest() })
 
-test('1. verified V4 buy: ETH -> token proven from the receipt, native leg from the exact balance delta', async () => {
+test('1. verified V4 buy: ETH -> token proven from the receipt, native leg from the target tx\'s trace + tx.value', async () => {
   const c = chain()
   buy(c, 1, 100, DAY1, E18, BigInt(1000) * E18)
   const r = await run(c, [1])
@@ -140,7 +148,7 @@ test('1. verified V4 buy: ETH -> token proven from the receipt, native leg from 
   assert.equal(r.status, 'not_verified')
 })
 
-test('2. verified V4 sell: token -> ETH, the output read from balance delta + gas', async () => {
+test('2. verified V4 sell: token -> ETH, the output read from the target tx\'s trace', async () => {
   const c = chain()
   sell(c, 2, 200, DAY1, BigInt(500) * E18, BigInt(3) * E18 / BigInt(2))
   const r = await run(c, [2])

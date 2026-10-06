@@ -21,7 +21,11 @@ export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): NonNullabl
       let value: bigint
       try { value = BigInt(it.value ?? '0') } catch { return null }
       if (!from || !to) continue
-      out.push({ from, to, value, success: it.success !== false })
+      // FAIL CLOSED: Blockscout v2 internal transactions carry `success: boolean` (with `error` set when it
+      // failed). An entry without an explicit boolean has an unknown execution status, which is not proof —
+      // the whole trace is treated as unavailable rather than guessing the transfer happened.
+      if (typeof it.success !== 'boolean') return null
+      out.push({ from, to, value, success: it.success })
     }
     return out
   }
