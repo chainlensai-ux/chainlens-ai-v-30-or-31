@@ -1508,6 +1508,8 @@ export function robinhoodPnlV1CandidatesFromActivity(activity: RobinhoodWalletAc
   candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }>
   transactionCount: number
   transferCount: number
+  /** Inbound token rows — evidence for the acquisition recovery lane only (never a buy by themselves). */
+  inboundTokenTransfers: Array<{ txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }>
 } {
   const candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }> = []
   for (const item of activity.items) {
@@ -1518,7 +1520,13 @@ export function robinhoodPnlV1CandidatesFromActivity(activity: RobinhoodWalletAc
     if (a.swapLogsSeen > 0 && a.txHash) candidates.push({ txHash: a.txHash, timestampMs: null, hasSwapLog: true })
   }
   const transactionCount = new Set(candidates.map((c) => c.txHash.toLowerCase())).size
-  return { candidates, transactionCount, transferCount: activity.items.length }
+  const inboundTokenTransfers = activity.items
+    .filter((i) => i.kind === 'token_transfer' && i.direction === 'incoming' && i.tokenAddress)
+    .map((i) => {
+      const t = i.blockTimestamp ? Date.parse(i.blockTimestamp) : NaN
+      return { txHash: i.txHash, timestampMs: Number.isFinite(t) ? t : null, token: i.tokenAddress!.toLowerCase(), rawAmount: i.rawAmount }
+    })
+  return { candidates, transactionCount, transferCount: activity.items.length, inboundTokenTransfers }
 }
 
 /** The legacy pnl block, derived from V1 only (no current-price lane can produce it any more). */
