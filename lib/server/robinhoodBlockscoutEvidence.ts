@@ -438,6 +438,8 @@ export async function getBlockscoutHistoricalTokenInbounds(
       queryType: 'ERC-20', queryFilter: 'to', requestedToken,
       filteredProbeReturnedEmpty: false, fallbackActivated: out.fallbackActivated,
       rawItemCount: null as number | null, nextPagePresent: null as boolean | null,
+      nextPageParamKeys: [] as string[], nextPageParamValueTypes: {} as Record<string, string>,
+      cursorSerialized: null as string | null, cursorRejectedReason: null as DeepHistoryCursorRejectedReason | null,
       exactTokenMatches: 0, acceptedRowCount: 0, rejectedWrongDirection: 0, rejectedWrongToken: 0, rejectedTimestamp: 0,
       rejectedTxHash: 0, rejectedRawAmount: 0, token_identity_conflict: 0, rejectedDuplicate: 0,
       tokenAddressFieldSeen: { address: 0, address_hash: 0, both: 0, none: 0 },
@@ -502,13 +504,26 @@ export async function getBlockscoutHistoricalTokenInbounds(
       out.rows.push({ txHash, timestampMs: ts, token: requestedToken, rawAmount: raw })
       if (out.rows.length >= Math.min(20, caps.maxCandidates)) break
     }
+    if (out.rows.length >= Math.min(20, caps.maxCandidates)) {
+      console.warn('[robinhood-deep-history-page-audit]', audit)
+      out.stopReason = 'candidate_cap'
+      return out
+    }
+    if (body.next_page_params == null) {
+      console.warn('[robinhood-deep-history-page-audit]', audit)
+      out.stopReason = 'history_exhausted'
+      return out
+    }
+    const cursor = serializeDeepHistoryCursor(body.next_page_params, queryMode, requestedToken)
+    audit.nextPageParamKeys = cursor.keys
+    audit.nextPageParamValueTypes = cursor.valueTypes
+    audit.cursorSerialized = cursor.serializedForAudit
+    audit.cursorRejectedReason = cursor.rejectedReason
+    if (cursor.query && seenCursors.has(cursor.query)) audit.cursorRejectedReason = 'repeated_cursor'
     console.warn('[robinhood-deep-history-page-audit]', audit)
-    if (out.rows.length >= Math.min(20, caps.maxCandidates)) { out.stopReason = 'candidate_cap'; return out }
-    if (body.next_page_params == null) { out.stopReason = 'history_exhausted'; return out }
-    const next = cursorQuery(body.next_page_params)
-    if (!next || seenCursors.has(next) || [...new URLSearchParams(next).keys()].some((key) => key === 'token' || key === 'type' || key === 'filter')) { out.stopReason = 'invalid_cursor'; return out }
-    seenCursors.add(next)
-    query = next
+    if (audit.cursorRejectedReason || !cursor.query) { out.stopReason = 'invalid_cursor'; return out }
+    seenCursors.add(cursor.query)
+    query = cursor.query
   }
   out.stopReason = 'page_cap'
   return out
@@ -615,6 +630,54 @@ function cursorQuery(params: unknown): string | null {
     else return null
   }
   return q.toString()
+}
+type DeepHistoryCursorRejectedReason = 'non_object' | 'array_cursor' | 'nested_value' | 'empty_cursor' | 'repeated_cursor' | 'reserved_key_conflict'
+
+/** Only Blockscout-returned flat scalars can advance deep history; fixed filters cannot be overwritten. */
+function serializeDeepHistoryCursor(params: unknown, mode: 'filtered_token' | 'unfiltered_address_fallback', token: string): {
+  keys: string[]; valueTypes: Record<string, string>; serializedForAudit: string | null
+  query: string | null; rejectedReason: DeepHistoryCursorRejectedReason | null
+} {
+  const valueType = (value: unknown) => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+  if (Array.isArray(params)) return { keys: [], valueTypes: { $cursor: 'array' }, serializedForAudit: null, query: null, rejectedReason: 'array_cursor' }
+  if (params === null || typeof params !== 'object') return { keys: [], valueTypes: { $cursor: valueType(params) }, serializedForAudit: null, query: null, rejectedReason: 'non_object' }
+  const entries = Object.entries(params as Record<string, unknown>)
+  const keys = entries.map(([key]) => key)
+  const valueTypes = Object.fromEntries(entries.map(([key, value]) => [key, valueType(value)]))
+  const fail = (rejectedReason: DeepHistoryCursorRejectedReason, serializedForAudit: string | null = null) => ({ keys, valueTypes, serializedForAudit, query: null, rejectedReason })
+  if (entries.length === 0) return fail('empty_cursor', '')
+  if (entries.some(([, value]) => value !== null && typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean')) return fail('nested_value')
+  const raw = cursorQuery(params)!
+  const auditParams = new URLSearchParams(raw)
+  for (const [key, value] of auditParams) {
+    if (/^(?:key|api[_-]?key)$/i.test(key) || /authorization|auth|secret|credential|password/i.test(key)
+      || (key.toLowerCase() === 'token' && value !== 'null' && !/^0x[0-9a-f]{40}$/i.test(value))
+      || (process.env.BLOCKSCOUT_API_KEY && value.includes(process.env.BLOCKSCOUT_API_KEY))) auditParams.set(key, '[redacted]')
+  }
+  const serializedForAudit = auditParams.toString()
+  const forwarded = new URLSearchParams()
+  for (const [key, value] of entries) {
+    const reserved = key.toLowerCase()
+    if (reserved === 'type') {
+      if (value !== 'ERC-20') return fail('reserved_key_conflict', serializedForAudit)
+      continue
+    }
+    if (reserved === 'filter') {
+      if (value !== 'to') return fail('reserved_key_conflict', serializedForAudit)
+      continue
+    }
+    if (reserved === 'token') {
+      // The fallback has no token parameter. Null echoes absence; an exact sold-token echo is also
+      // harmless when stripped. Any different token would change the requested history and fails closed.
+      if (!(mode === 'unfiltered_address_fallback' && value === null)
+        && !(typeof value === 'string' && value.toLowerCase() === token)) return fail('reserved_key_conflict', serializedForAudit)
+      continue
+    }
+    forwarded.append(key, value === null ? 'null' : String(value))
+  }
+  if (forwarded.size === 0) return fail('empty_cursor', serializedForAudit)
+  forwarded.sort() // Canonical loop detection even if the provider changes key order between pages.
+  return { keys, valueTypes, serializedForAudit, query: forwarded.toString(), rejectedReason: null }
 }
 const itemKey = (it: BlockscoutInternalTransaction & { index?: unknown; block_index?: unknown; transaction_hash?: unknown }) =>
   JSON.stringify([it.transaction_hash ?? null, it.index ?? null, it.block_index ?? null, it.from?.hash ?? null, it.to?.hash ?? null, it.value ?? null, it.type ?? null, it.success ?? null])

@@ -63,6 +63,71 @@ test('historical pager follows cursors and admits only exact older inbound token
   assert.match(paths[1], /block_number=123/)
 })
 
+test('Blockscout block_number/index/items_count cursor advances without inventing pagination', async () => {
+  const cursor = { block_number: 123, index: 4, items_count: 50 }
+  const { result, paths, audits } = await scriptedHistory([reply([row(1)], cursor), reply([row(2)], null)])
+  assert.equal(result.pagesRequested, 2)
+  assert.match(paths[1], /block_number=123/)
+  assert.match(paths[1], /index=4/)
+  assert.match(paths[1], /items_count=50/)
+  assert.deepEqual(audits[0].nextPageParamKeys, ['block_number', 'index', 'items_count'])
+  assert.deepEqual(audits[0].nextPageParamValueTypes, { block_number: 'number', index: 'number', items_count: 'number' })
+  assert.equal(audits[0].cursorRejectedReason, null)
+  assert.equal(audits[0].cursorSerialized, 'block_number=123&index=4&items_count=50')
+})
+
+test('identical echoed type/filter/token keys are stripped and do not override fallback base filters', async () => {
+  const cursor = { block_number: 123, index: 4, type: 'ERC-20', filter: 'to', token: TOKEN }
+  const { result, paths, audits } = await scriptedHistory([reply([], null), reply([row(1)], cursor), reply([row(2)], null)])
+  assert.equal(result.fallbackPagesRequested, 2)
+  assert.equal(result.stopReason, 'history_exhausted')
+  assert.equal(audits[1].cursorRejectedReason, null)
+  assert.deepEqual(audits[1].nextPageParamKeys, ['block_number', 'index', 'type', 'filter', 'token'])
+  assert.ok(paths[2].includes('block_number=123&index=4'))
+  assert.ok(!paths[2].includes('&token='))
+  assert.equal((paths[2].match(/filter=/g) ?? []).length, 1)
+  assert.equal((paths[2].match(/type=/g) ?? []).length, 1)
+})
+
+test('fallback accepts a null token echo as absence, but rejects conflicting filter or token', async () => {
+  const accepted = await scriptedHistory([reply([], null), reply([row(1)], { block_number: 123, token: null }), reply([row(2)], null)])
+  assert.equal(accepted.result.fallbackPagesRequested, 2)
+  assert.ok(!accepted.paths[2].includes('&token='))
+  __resetRobinhoodBlockscoutRateLimitForTest()
+  for (const cursor of [
+    { block_number: 123, filter: 'from' },
+    { block_number: 123, token: '0x2222222222222222222222222222222222222222' },
+  ]) {
+    __resetRobinhoodBlockscoutRateLimitForTest()
+    const rejected = await scriptedHistory([reply([], null), reply([row(1)], cursor)])
+    assert.equal(rejected.result.stopReason, 'invalid_cursor')
+    assert.equal(rejected.result.fallbackPagesRequested, 1)
+    assert.equal(rejected.audits[1].cursorRejectedReason, 'reserved_key_conflict')
+    assert.equal(rejected.paths.length, 2)
+  }
+})
+
+test('malformed, empty, and repeated provider cursors fail closed with distinct reasons', async () => {
+  const invalidCases: Array<[unknown, string]> = [
+    ['next-page', 'non_object'],
+    [[123, 4], 'array_cursor'],
+    [{ block_number: { nested: 123 } }, 'nested_value'],
+    [{}, 'empty_cursor'],
+    [{ type: 'ERC-20', filter: 'to' }, 'empty_cursor'],
+  ]
+  for (const [cursor, reason] of invalidCases) {
+    __resetRobinhoodBlockscoutRateLimitForTest()
+    const { result, audits } = await scriptedHistory([reply([row(1)], cursor)])
+    assert.equal(result.stopReason, 'invalid_cursor')
+    assert.equal(audits[0].cursorRejectedReason, reason)
+  }
+  __resetRobinhoodBlockscoutRateLimitForTest()
+  const repeated = await scriptedHistory([reply([row(1)], { block_number: 123, index: 4 }), reply([row(2)], { index: 4, block_number: 123 })])
+  assert.equal(repeated.result.stopReason, 'invalid_cursor')
+  assert.equal(repeated.audits[1].cursorRejectedReason, 'repeated_cursor')
+  assert.equal(repeated.paths.length, 2)
+})
+
 test('historical pager never exceeds four pages or twenty inbound rows', async () => {
   let calls = 0
   const fetchImpl = async () => { calls++; return reply([row(calls)], { page: calls + 1 }) }
@@ -195,6 +260,28 @@ test('fallback continues through a zero-match page with a cursor', async () => {
   assert.equal(audits[1].exactTokenMatches, 0)
   assert.equal(audits[1].nextPagePresent, true)
   assert.equal(result.stopReason, 'history_exhausted')
+})
+
+test('fifty wrong-token fallback rows still advance to the known inbounds and an older candidate', async () => {
+  const wrong = Array.from({ length: 50 }, (_, i) => row(i + 1, '0x2222222222222222222222222222222222222222'))
+  const known = ['455896', '68a04c', '48ed6d', 'cc37ff'].map((prefix, i) => ({
+    ...row(i + 51), transaction_hash: `0x${prefix}${'0'.repeat(64 - prefix.length)}`, token: { address_hash: TOKEN },
+  }))
+  const older = { ...row(60, TOKEN, WALLET, '2026-09-20T00:00:00Z'), token: { address_hash: TOKEN } }
+  const { result, paths, audits } = await scriptedHistory([
+    reply([], null), reply(wrong, { block_number: 123, index: 4, items_count: 50, type: 'ERC-20', filter: 'to' }),
+    reply(known, { block_number: 100, index: 2, items_count: 4 }), reply([older], null),
+  ])
+  assert.equal(result.fallbackPagesRequested, 3)
+  assert.equal(result.exactTokenRowsFound, 5)
+  assert.equal(result.olderInboundRowsFound, 5)
+  assert.equal(audits[1].rawItemCount, 50)
+  assert.equal(audits[1].exactTokenMatches, 0)
+  assert.equal(audits[1].rejectedWrongToken, 50)
+  assert.equal(audits[2].acceptedRowCount, 4)
+  assert.equal(audits[3].acceptedRowCount, 1)
+  assert.match(paths[2], /block_number=123/)
+  assert.match(paths[3], /block_number=100/)
 })
 
 test('community refusal uses one gateway alternate, then keeps fallback pages on that gateway', async () => {
