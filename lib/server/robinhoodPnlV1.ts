@@ -243,6 +243,10 @@ export type RhRpcAcquisitionHistoryAudit = {
   knownInboundHashesExpected: string[]; knownInboundHashesFound: string[]
   knownInboundCoverageComplete: boolean; absoluteLookbackCapHit: boolean
   historicalMarginBlocks: number; maxAbsoluteLookbackBlocks: number
+  rawInboundAnchorHashes: string[]; recoveryCandidateAnchorHashes: string[]; unionAnchorHashes: string[]
+  cachedReceiptAnchorsResolved: Array<{ txHash: string; blockNumber: number }>
+  cachedReceiptAnchorsMissing: Array<{ txHash: string; reason: 'missing_cached_receipt' }>
+  cachedReceiptAnchorsRejected: Array<{ txHash: string; reason: 'invalid_block' | 'post_sell_block' | 'receipt_missing_wallet_token_credit' }>
 }
 
 export type RhAcquisitionRecoverySummary = {
@@ -251,6 +255,7 @@ export type RhAcquisitionRecoverySummary = {
   token: string | null
   candidatesFound: number
   candidatesAttempted: number
+  candidateTxHashes: string[]
   recoveredBuyCount: number
   recoveredBuyRaw: string
   unmatchedSellRawBefore: string | null
@@ -1202,7 +1207,7 @@ async function recoverAcquisitionsForSell(
 
 const emptyRecoverySummary = (): RhAcquisitionRecoverySummary => ({
   acquisitionRecoveryAttempted: false, sellTxHash: null, token: null, candidatesFound: 0, candidatesAttempted: 0, recoveredBuyCount: 0,
-  recoveredBuyRaw: '0', unmatchedSellRawBefore: null, unmatchedSellRawAfter: null, closedLotsAdded: 0, classifications: {},
+  candidateTxHashes: [], recoveredBuyRaw: '0', unmatchedSellRawBefore: null, unmatchedSellRawAfter: null, closedLotsAdded: 0, classifications: {},
 })
 
 /** Runs the recovery lane for the most recent verified sell the FIFO left unmatched; logs one audit line per candidate. */
@@ -1229,6 +1234,7 @@ async function runAcquisitionRecovery(
   const attempted = rows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length
   Object.assign(summary, {
     acquisitionRecoveryAttempted: true, sellTxHash: sell.txHash, token: sell.token, candidatesFound: found, candidatesAttempted: attempted,
+    candidateTxHashes: [...new Set(rows.map((row) => lower(row.candidateTxHash)).filter((hash) => /^0x[0-9a-f]{64}$/.test(hash)))].sort(),
     recoveredBuyCount: recovered.length, recoveredBuyRaw: recovered.reduce((t, x) => t + x.outputRaw, ZERO).toString(),
     unmatchedSellRawBefore: sell.unmatchedRaw.toString(), unmatchedSellRawAfter: after.toString(),
   })
@@ -1254,26 +1260,47 @@ async function runAcquisitionRecovery(
   return { summary, swaps: recovered, evidence }
 }
 
-/** The activity row identifies a known inbound; only its already-fetched exact receipt supplies a block anchor. */
+type RhKnownInboundAnchorDiagnostics = Pick<RhRpcAcquisitionHistoryAudit,
+  'rawInboundAnchorHashes' | 'recoveryCandidateAnchorHashes' | 'unionAnchorHashes'
+  | 'cachedReceiptAnchorsResolved' | 'cachedReceiptAnchorsMissing' | 'cachedReceiptAnchorsRejected'>
+
+/** Current recovery and activity identify candidates; only already-fetched exact receipts supply block anchors. */
 async function knownInboundReceiptAnchors(
   inbound: readonly RhInboundTokenTransfer[], token: string, wallet: string,
-  sellTxHash: string, sellBlock: number, sellTimestampSec: number,
-): Promise<{ expectedHashes: string[]; blockByHash: Map<string, number> }> {
-  const expectedHashes = [...new Set(inbound.filter((row) => lower(row.token) === token
+  recoveryCandidateHashes: readonly string[], sellTxHash: string, sellBlock: number, sellTimestampSec: number,
+): Promise<{ expectedHashes: string[]; blockByHash: Map<string, number>; diagnostics: RhKnownInboundAnchorDiagnostics }> {
+  const rawInboundAnchorHashes = [...new Set(inbound.filter((row) => lower(row.token) === token
     && lower(row.txHash) !== sellTxHash && /^0x[0-9a-f]{64}$/.test(lower(row.txHash))
     && (row.timestampMs == null || row.timestampMs < sellTimestampSec * 1000))
     .map((row) => lower(row.txHash)))].sort()
+  const recoveryCandidateAnchorHashes = [...new Set(recoveryCandidateHashes.map(lower)
+    .filter((hash) => hash !== sellTxHash && /^0x[0-9a-f]{64}$/.test(hash)))].sort()
+  const expectedHashes = [...new Set([...rawInboundAnchorHashes, ...recoveryCandidateAnchorHashes])].sort()
   const blockByHash = new Map<string, number>()
-  await Promise.all(expectedHashes.map(async (hash) => {
+  const diagnostics: RhKnownInboundAnchorDiagnostics = {
+    rawInboundAnchorHashes, recoveryCandidateAnchorHashes, unionAnchorHashes: expectedHashes,
+    cachedReceiptAnchorsResolved: [], cachedReceiptAnchorsMissing: [], cachedReceiptAnchorsRejected: [],
+  }
+  const cachedReceipts = await Promise.all(expectedHashes.map(async (hash) => {
     const cached = receiptCache.get(hash)
-    if (!cached) return
-    const receipt = await cached.catch(() => null)
-    if (receipt && Number.isSafeInteger(receipt.blockNumber) && receipt.blockNumber > 0
-      && receipt.blockNumber < sellBlock && walletReceivesToken(receipt, wallet, token)) {
-      blockByHash.set(hash, receipt.blockNumber)
-    }
+    return cached ? await cached.catch(() => null) : null
   }))
-  return { expectedHashes, blockByHash }
+  expectedHashes.forEach((hash, index) => {
+    const receipt = cachedReceipts[index]
+    if (!receipt) { diagnostics.cachedReceiptAnchorsMissing.push({ txHash: hash, reason: 'missing_cached_receipt' }); return }
+    if (!Number.isSafeInteger(receipt.blockNumber) || receipt.blockNumber <= 0) {
+      diagnostics.cachedReceiptAnchorsRejected.push({ txHash: hash, reason: 'invalid_block' }); return
+    }
+    if (receipt.blockNumber >= sellBlock) {
+      diagnostics.cachedReceiptAnchorsRejected.push({ txHash: hash, reason: 'post_sell_block' }); return
+    }
+    if (!walletReceivesToken(receipt, wallet, token)) {
+      diagnostics.cachedReceiptAnchorsRejected.push({ txHash: hash, reason: 'receipt_missing_wallet_token_credit' }); return
+    }
+    blockByHash.set(hash, receipt.blockNumber)
+    diagnostics.cachedReceiptAnchorsResolved.push({ txHash: hash, blockNumber: receipt.blockNumber })
+  })
+  return { expectedHashes, blockByHash, diagnostics }
 }
 
 /** Exact RPC Transfer-log discovery. Logs index candidates; only the unchanged receipt classifier can prove buys. */
@@ -1282,6 +1309,7 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
   rpcLogs: (query: RhRpcLogQuery, deadlineAt: number) => Promise<RhRpcLogResult>
   rpc: RhRpc; knownHashes: ReadonlySet<string>
   knownInboundHashesExpected?: readonly string[]; knownInboundBlocks?: ReadonlyMap<string, number>
+  anchorDiagnostics?: RhKnownInboundAnchorDiagnostics
   onCandidates?: (rows: RhInboundTokenTransfer[]) => Promise<'sell_covered' | 'proof_cap' | false>
   onRpcCalls?: (count: number) => void
 }): Promise<{ rows: RhInboundTokenTransfer[]; audit: RhRpcAcquisitionHistoryAudit }> {
@@ -1317,6 +1345,12 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
     absoluteLookbackCapHit,
     historicalMarginBlocks: ROBINHOOD_RPC_ACQUISITION_LIMITS.historicalMarginBlocks,
     maxAbsoluteLookbackBlocks: ROBINHOOD_RPC_ACQUISITION_LIMITS.maxAbsoluteLookbackBlocks,
+    rawInboundAnchorHashes: input.anchorDiagnostics?.rawInboundAnchorHashes ?? [],
+    recoveryCandidateAnchorHashes: input.anchorDiagnostics?.recoveryCandidateAnchorHashes ?? [],
+    unionAnchorHashes: input.anchorDiagnostics?.unionAnchorHashes ?? knownInboundHashesExpected,
+    cachedReceiptAnchorsResolved: input.anchorDiagnostics?.cachedReceiptAnchorsResolved ?? [],
+    cachedReceiptAnchorsMissing: input.anchorDiagnostics?.cachedReceiptAnchorsMissing ?? [],
+    cachedReceiptAnchorsRejected: input.anchorDiagnostics?.cachedReceiptAnchorsRejected ?? [],
   }
   const rows: RhInboundTokenTransfer[] = []
   if (!rpcLogs || !Number.isSafeInteger(sellBlock) || sellBlock <= 1 || !/^0x[0-9a-f]{40}$/.test(token) || !/^0x[0-9a-f]{40}$/.test(wallet)) {
@@ -1445,7 +1479,7 @@ async function runDeepAcquisitionRecovery(
   const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
   const sellBlock = swaps.find((s) => s.txHash === sell.txHash)?.blockNumber
   const knownInboundAnchors = sellBlock == null ? null : await knownInboundReceiptAnchors(
-    inbound, sell.token, wallet, sell.txHash, sellBlock, sell.timestampSec,
+    inbound, sell.token, wallet, currentRecovery.candidateTxHashes, sell.txHash, sellBlock, sell.timestampSec,
   )
   const rpcDeadlineAt = Date.now() + ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs
   const rpcCtx = { ...ctx, deadlineAt: rpcDeadlineAt }
@@ -1457,6 +1491,7 @@ async function runDeepAcquisitionRecovery(
       rpcLogs: ctx.deps.rpcInboundTransferLogs, rpc: ctx.rpc, knownHashes: new Set(excludedHashes),
       knownInboundHashesExpected: knownInboundAnchors?.expectedHashes,
       knownInboundBlocks: knownInboundAnchors?.blockByHash,
+      anchorDiagnostics: knownInboundAnchors?.diagnostics,
       onRpcCalls: (count) => { ctx.m.rpcCalls += count },
       onCandidates: async (chunkRows) => {
         const remainingProofs = ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs - rpcProofRows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length
