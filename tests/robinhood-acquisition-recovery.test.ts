@@ -397,6 +397,22 @@ test('four current-sample distributions remain non-buys before deeper history is
   assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
 })
 
+test('four already-seen inbounds are counted by history but never re-proved; only a genuinely older row is checked', async () => {
+  const distributions = [1, 2, 3, 4].map((i) => relayed(new Tx().xfer(A, ZERO_ADDR, WALLET, n(i * 10)), TS - i * 3600))
+  const older = relayedBuy(n(1), n(1000), TS - 86_400)
+  const entries = distributions.map((_, j) => ({ i: j + 1, raw: n((j + 1) * 10), ts: TS - (j + 1) * 3600 }))
+  const { r, rec, receiptCalls } = await run([sellShape(n(1000), n(1.5)), ...distributions, older], {
+    inbound: entries.map(({ i, raw }) => ({ i, raw })),
+  }, { historicalTokenInbounds: historical(...entries, { i: 5, raw: n(1000), ts: TS - 86_400 }) })
+  assert.equal(rec.length, 4)
+  assert.ok(rec.every((entry) => entry.classification === 'distribution_or_claim'))
+  assert.equal(r.deepAcquisition?.olderInboundRowsFound, 5)
+  assert.equal(r.deepAcquisition?.historicalCandidatesFound, 1)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 1)
+  assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 1)
+  assert.equal(receiptCalls, 6) // sell + four current-sample receipts + one older receipt
+})
+
 test('the global swap candidate cap remains twenty', () => {
   const sample = Array.from({ length: 25 }, (_, i) => ({ txHash: `0x${(i + 1).toString(16).padStart(64, '0')}`, timestampMs: i, hasSwapLog: true }))
   const selected = selectRobinhoodPnlV1Candidates(sample)

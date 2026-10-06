@@ -374,7 +374,7 @@ export type BlockscoutTokenTransfer = {
   from?: { hash?: string } | null
   to?: { hash?: string } | null
   total?: { value?: string; decimals?: string } | null
-  token?: { address?: string; symbol?: string } | null
+  token?: { address?: string; address_hash?: string; symbol?: string } | null
 }
 export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[] }
 
@@ -403,6 +403,9 @@ export async function getBlockscoutHistoricalTokenInbounds(
   const seenRows = new Set<string>()
   let query = ''
   let gateway = false
+  const requestedToken = token.toLowerCase()
+  const requestedWallet = wallet.toLowerCase()
+  const validAddress = (value: unknown): value is string => typeof value === 'string' && /^0x[0-9a-f]{40}$/i.test(value)
   for (let page = 1; page <= Math.min(4, caps.maxPages); page++) {
     const remaining = caps.deadlineAt - Date.now()
     if (remaining <= 0) { out.stopReason = 'deadline'; return out }
@@ -414,25 +417,60 @@ export async function getBlockscoutHistoricalTokenInbounds(
       gateway = true
       res = await blockscoutRequest(path, fetchImpl, 'gateway', Math.min(BLOCKSCOUT_TIMEOUT_MS, caps.deadlineAt - Date.now()))
     }
-    if (!res.ok) { out.stopReason = res.attempt.failureClass ?? 'transport_failed'; return out }
+    const audit = {
+      page, authMode: res.attempt.authMode, httpStatus: res.attempt.httpStatus,
+      queryType: 'ERC-20', queryFilter: 'to', requestedToken,
+      rawItemCount: null as number | null, nextPagePresent: null as boolean | null,
+      acceptedRowCount: 0, rejectedWrongDirection: 0, rejectedWrongToken: 0, rejectedTimestamp: 0,
+      rejectedTxHash: 0, rejectedRawAmount: 0, token_identity_conflict: 0, rejectedDuplicate: 0,
+      tokenAddressFieldSeen: { address: 0, address_hash: 0, both: 0, none: 0 },
+    }
+    if (!res.ok) { console.warn('[robinhood-deep-history-page-audit]', audit); out.stopReason = res.attempt.failureClass ?? 'transport_failed'; return out }
     const body = res.json as BlockscoutTokenTransfersResponse & { next_page_params?: unknown }
-    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) { out.stopReason = 'malformed_page'; return out }
+    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) {
+      console.warn('[robinhood-deep-history-page-audit]', audit)
+      out.stopReason = 'malformed_page'
+      return out
+    }
     out.pagesSucceeded++
+    audit.rawItemCount = body.items.length
+    audit.nextPagePresent = body.next_page_params != null
     for (const item of body.items) {
-      const ts = typeof item.timestamp === 'string' ? Date.parse(item.timestamp) : NaN
-      const txHash = item.transaction_hash?.toLowerCase() ?? ''
-      const raw = item.total?.value
-      if (!Number.isFinite(ts) || ts >= beforeTimestampSec * 1000 || item.to?.hash?.toLowerCase() !== wallet.toLowerCase()
-        || item.token?.address?.toLowerCase() !== token.toLowerCase() || !/^0x[0-9a-f]{64}$/.test(txHash)
-        || typeof raw !== 'string' || !/^\d+$/.test(raw) || BigInt(raw) <= BigInt(0)) continue
+      const transfer = item && typeof item === 'object' ? item : {} as BlockscoutTokenTransfer
+      const tokenByAddress = transfer.token?.address
+      const tokenByHash = transfer.token?.address_hash
+      const hasAddress = typeof tokenByAddress === 'string'
+      const hasHash = typeof tokenByHash === 'string'
+      audit.tokenAddressFieldSeen[hasAddress && hasHash ? 'both' : hasAddress ? 'address' : hasHash ? 'address_hash' : 'none']++
+      const identityConflict = hasAddress && hasHash && tokenByAddress.toLowerCase() !== tokenByHash.toLowerCase()
+      if (identityConflict) audit.token_identity_conflict++
+      const tokenIdentityValid = !identityConflict
+        && (!hasAddress || validAddress(tokenByAddress)) && (!hasHash || validAddress(tokenByHash))
+        && (hasAddress || hasHash)
+        && (hasAddress ? tokenByAddress.toLowerCase() : tokenByHash!.toLowerCase()) === requestedToken
+      if (!tokenIdentityValid) audit.rejectedWrongToken++
+      const ts = typeof transfer.timestamp === 'string' ? Date.parse(transfer.timestamp) : NaN
+      const txHash = transfer.transaction_hash?.toLowerCase() ?? ''
+      const raw = transfer.total?.value
+      const directionValid = transfer.to?.hash?.toLowerCase() === requestedWallet
+      const timestampValid = Number.isFinite(ts) && ts < beforeTimestampSec * 1000
+      const txHashValid = /^0x[0-9a-f]{64}$/.test(txHash)
+      const rawValid = typeof raw === 'string' && /^\d+$/.test(raw) && BigInt(raw) > BigInt(0)
+      if (!directionValid) audit.rejectedWrongDirection++
+      if (!timestampValid) audit.rejectedTimestamp++
+      if (!txHashValid) audit.rejectedTxHash++
+      if (!rawValid) audit.rejectedRawAmount++
+      if (!directionValid || !tokenIdentityValid || !timestampValid || !txHashValid || !rawValid) continue
       const key = `${txHash}:${raw}`
-      if (seenRows.has(key)) continue
+      if (seenRows.has(key)) { audit.rejectedDuplicate++; continue }
       seenRows.add(key)
+      audit.acceptedRowCount++
       out.olderInboundRowsFound++
       out.historicalRangeStart = out.historicalRangeStart == null ? ts : Math.min(out.historicalRangeStart, ts)
       out.historicalRangeEnd = out.historicalRangeEnd == null ? ts : Math.max(out.historicalRangeEnd, ts)
       if (out.rows.length < Math.min(20, caps.maxCandidates)) out.rows.push({ txHash, timestampMs: ts, token: token.toLowerCase(), rawAmount: raw })
     }
+    console.warn('[robinhood-deep-history-page-audit]', audit)
     if (out.rows.length >= Math.min(20, caps.maxCandidates)) { out.stopReason = 'candidate_cap'; return out }
     if (body.next_page_params == null) { out.stopReason = 'history_exhausted'; return out }
     const next = cursorQuery(body.next_page_params)
