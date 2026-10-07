@@ -126,15 +126,64 @@ function run() {
     check('Chains active includes Robinhood only when robinhoodIncluded is true', signals.find((s) => s.label === 'Chains active')?.value.includes('Robinhood'))
     check('Portfolio value shows the real merged total', signals.find((s) => s.label === 'Portfolio value')?.value === '$9,097.55' || signals.find((s) => s.label === 'Portfolio value')?.value.includes('9,097'))
     check('Largest chain exposure shows the real top chain and percent', signals.find((s) => s.label === 'Largest chain exposure')?.value === 'Robinhood · 81%')
-    check('Buys / sells only appears when real counts exist', signals.find((s) => s.label === 'Buys / sells')?.value === '10 / 8')
+    check('Buys / sells only appears when real counts exist, scoped to the EVM chains that produced it', signals.find((s) => s.label === 'Base/ETH buys / sells')?.value === '10 / 8')
+    check('no unscoped wallet-wide "Buys / sells" label', !signals.some((s) => s.label === 'Buys / sells'))
 
     const noTradesSignals = buildKeySignals({
       chainsScanned: ['base'], robinhoodIncluded: false, totalValueUsd: null, topChain: null, pricedTokenCount: 0,
       lastActiveMs: null, buyCount: 0, sellCount: 0, rotationStyle: null,
     })
-    check('Buys / sells is OMITTED (never a fake "0 / 0" row) when there is no real trade evidence', !noTradesSignals.some((s) => s.label === 'Buys / sells'))
+    check('Buys / sells is OMITTED (never a fake "0 / 0" row) when there is no real trade evidence', !noTradesSignals.some((s) => /buys \/ sells/i.test(s.label)))
     check('Rotation style is omitted when rotationStyle is null/"unknown" — never shown unbacked', !noTradesSignals.some((s) => s.label === 'Rotation style'))
     check('Largest chain exposure is omitted entirely when there is no real chain breakdown', !noTradesSignals.some((s) => s.label === 'Largest chain exposure'))
+  }
+
+  // ── 5b. Buys / sells scope: EVM behaviour counts and Robinhood verified swaps stay separate ─────
+  {
+    const base = { robinhoodIncluded: true, totalValueUsd: 100, topChain: null, pricedTokenCount: 1, lastActiveMs: null, rotationStyle: null }
+    // (1) Base/ETH behaviour counts + Robinhood verified swaps -> two separate, never-summed signals
+    const both = buildKeySignals({ ...base, chainsScanned: ['base', 'eth'], buyCount: 2, sellCount: 0, robinhoodVerifiedSwaps: 3 })
+    check('(1) Base/ETH counts carry an explicit Base/ETH scope', both.find((s) => s.label === 'Base/ETH buys / sells')?.value === '2 / 0')
+    check('(1) Robinhood verified swaps is its own signal', both.find((s) => s.label === 'Robinhood verified swaps')?.value === '3')
+    check('(1) counts are never added together', !both.some((s) => s.value === '5 / 0' || s.value === '5'))
+    // (2) Robinhood only, no EVM behaviour evidence -> no fake "0 / 0"
+    const rhOnly = buildKeySignals({ ...base, chainsScanned: ['base', 'eth'], buyCount: 0, sellCount: 0, robinhoodVerifiedSwaps: 3 })
+    check('(2) no fake "0 / 0" behaviour row without EVM evidence', !rhOnly.some((s) => /buys \/ sells/i.test(s.label)) && !rhOnly.some((s) => s.value === '0 / 0'))
+    check('(2) Robinhood verified swaps still shown', rhOnly.find((s) => s.label === 'Robinhood verified swaps')?.value === '3')
+    const rhNoBehavior = buildKeySignals({ ...base, chainsScanned: [], buyCount: null, sellCount: null, robinhoodVerifiedSwaps: 3 })
+    check('(2) null behaviour counts -> no behaviour row', !rhNoBehavior.some((s) => /buys \/ sells/i.test(s.label)))
+    // (3) No Robinhood -> behaviour count shown with the correct scope, no Robinhood signal
+    const noRh = buildKeySignals({ ...base, robinhoodIncluded: false, chainsScanned: ['base'], buyCount: 4, sellCount: 1, robinhoodVerifiedSwaps: null })
+    check('(3) behaviour count scoped to the scanned chain', noRh.find((s) => s.label === 'Base buys / sells')?.value === '4 / 1')
+    check('(3) no Robinhood signal without Robinhood', !noRh.some((s) => s.label.startsWith('Robinhood')))
+    const notIncluded = buildKeySignals({ ...base, robinhoodIncluded: false, chainsScanned: ['base'], buyCount: 4, sellCount: 1, robinhoodVerifiedSwaps: 3 })
+    check('(3) a Robinhood count is ignored when Robinhood is not included', !notIncluded.some((s) => s.label === 'Robinhood verified swaps'))
+    // (4) Robinhood verified buy-only sample via the top-level builder -> canonical swapsVerified, no fabricated sells
+    const rhResult = {
+      ok: true, wallet: '0x9d69b5ffb22608d8003508b9c6bd9f6b458d4184', chainSlug: 'robinhood', chainId: 4663,
+      holdings: { status: 'ok', native: null, holdings: [], portfolioTotalUsd: 0, unpricedTokenCount: 0, reason: null },
+      activity: { status: 'ok', items: [], skippedSwapLogs: 0, verifiedSwapCount: 0, blockscoutEvidence: { blockscoutAttempted: false, blockscoutSucceeded: false, blockscoutFallbackUsed: false, blockscoutStatus: 'not_attempted', blockscoutError: null, blockscoutVerifiedSwap: false }, reason: null },
+      pnl: { status: 'disabled', message: '', realizedPnlUsd: null, matchedLotsCount: 0, verifiedSwapCount: 1, reason: null },
+      robinhoodWalletScannerAudit: {},
+      robinhoodPnl: { status: 'not_verified', structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null, unmatchedSellCount: 0, exactReason: '1 swap proven, 1 priced on both legs, but no buy→sell pair closed a lot in this sample.', swapsFound: 1, swapsVerified: 1, swapsBothLegsPriced: 1 },
+    }
+    const read = buildWalletReadV2({
+      walletAddress: rhResult.wallet, scanTimestamp: null, chainsScanned: ['base', 'eth'],
+      behaviorIntel: { rotationStyle: { value: 'accumulator', basis: { buyCount: 2, sellCount: 0, distributionCount: 0, distinctTokensTraded: 1 } } },
+      finalSummary: null, totalValueUsd: 100, robinhoodIncluded: true, chainBreakdown: [], pricedTokenCount: 1,
+      concentrationDetail: null, concentrationLabel: null, matchedLotsCount: 0, lastActiveMs: null,
+      evmPnlLane: 'unavailable', robinhoodPnlLane: 'not_verified', robinhoodDisplayState: 'valued', robinhoodResult: rhResult,
+      pnlConfidence: { realized: 'Locked', unrealized: 'Unavailable', historicalCoverage: 'Not available' },
+    })
+    check('(4) Robinhood signal reflects canonical swapsVerified', read.keySignals.find((s) => s.label === 'Robinhood verified swaps')?.value === '1')
+    check('(4) no Robinhood sells fabricated', !read.keySignals.some((s) => /robinhood.*sells/i.test(s.label)))
+    check('(4) EVM behaviour row keeps its own scope and value', read.keySignals.find((s) => s.label === 'Base/ETH buys / sells')?.value === '2 / 0')
+    const failed = buildWalletReadV2({ ...{
+      walletAddress: null, scanTimestamp: null, chainsScanned: ['base'], behaviorIntel: null, finalSummary: null, totalValueUsd: null, robinhoodIncluded: true,
+      chainBreakdown: [], pricedTokenCount: 0, concentrationDetail: null, concentrationLabel: null, matchedLotsCount: 0, lastActiveMs: null,
+      evmPnlLane: 'unavailable', robinhoodPnlLane: 'unavailable', robinhoodDisplayState: 'valued',
+      pnlConfidence: { realized: 'Locked', unrealized: 'Unavailable', historicalCoverage: 'Not available' } }, robinhoodResult: { ...rhResult, ok: false } })
+    check('(4) a failed Robinhood response shows no Robinhood swap signal', !failed.keySignals.some((s) => s.label === 'Robinhood verified swaps'))
   }
 
   // ── 6. Why This Label: 3-5 real bullets, never padded, never fabricated ─────────────────────────

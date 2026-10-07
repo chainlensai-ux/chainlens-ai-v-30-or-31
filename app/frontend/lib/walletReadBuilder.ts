@@ -191,6 +191,8 @@ export function buildKeySignals(params: {
   buyCount: number | null
   sellCount: number | null
   rotationStyle: string | null
+  /** Canonical Robinhood PnL V1 `swapsVerified` (the PnL card's "N swaps proven"). Optional. */
+  robinhoodVerifiedSwaps?: number | null
 }): WalletReadKeySignal[] {
   const signals: WalletReadKeySignal[] = []
   const chains = [...params.chainsScanned.map(chainLabel), ...(params.robinhoodIncluded ? ['Robinhood'] : [])]
@@ -204,8 +206,16 @@ export function buildKeySignals(params: {
     label: 'Last active',
     value: params.lastActiveMs != null ? new Date(params.lastActiveMs).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : 'Unknown',
   })
+  // buyCount/sellCount are behaviorIntel rotation-style counts from the EVM timeline (inbound events /
+  // same-tx sell-shaped outbound events on the scanned EVM chains). Robinhood never enters that
+  // pipeline, so the label is scoped to the chains that produced it — never a wallet-wide claim.
+  const behaviorScope = params.chainsScanned.filter((c) => c !== 'robinhood').map(chainLabel).join('/') || 'EVM'
   if (params.buyCount != null && params.sellCount != null && (params.buyCount > 0 || params.sellCount > 0)) {
-    signals.push({ label: 'Buys / sells', value: `${params.buyCount} / ${params.sellCount}` })
+    signals.push({ label: `${behaviorScope} buys / sells`, value: `${params.buyCount} / ${params.sellCount}` })
+  }
+  // Robinhood's verified swaps are a separate lane: shown on their own, never added to the EVM counts.
+  if (params.robinhoodIncluded && params.robinhoodVerifiedSwaps != null && params.robinhoodVerifiedSwaps > 0) {
+    signals.push({ label: 'Robinhood verified swaps', value: String(params.robinhoodVerifiedSwaps) })
   }
   if (params.rotationStyle && params.rotationStyle !== 'unknown') {
     signals.push({ label: 'Rotation style', value: params.rotationStyle })
@@ -370,6 +380,7 @@ export function buildWalletReadV2(params: {
   const buyCount = params.behaviorIntel?.rotationStyle?.basis?.buyCount ?? null
   const sellCount = params.behaviorIntel?.rotationStyle?.basis?.sellCount ?? null
   const rotationStyle = params.behaviorIntel?.rotationStyle?.value ?? null
+  const robinhoodVerifiedSwaps = params.robinhoodResult?.ok ? params.robinhoodResult.robinhoodPnl?.swapsVerified ?? null : null
 
   return {
     identity: {
@@ -390,6 +401,7 @@ export function buildWalletReadV2(params: {
       buyCount,
       sellCount,
       rotationStyle,
+      robinhoodVerifiedSwaps,
     }),
     whyThisLabel: buildWhyThisLabel({
       topChain,
