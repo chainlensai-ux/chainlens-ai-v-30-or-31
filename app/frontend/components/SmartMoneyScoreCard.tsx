@@ -77,6 +77,9 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
   // Behaviour Score", badge "Not official"), not a bare "Not Yet Rated" string. "Not Yet Rated" is
   // now reserved for the genuine blank case: no breakdown category has any real data at all yet.
   const hasProvisionalScore = !isOfficial && !canonicalSampleUnavailable && provisionalBehaviorScore != null
+  // Zero verified closed lots (FIFO ran and found none to verify): no Smart Money number at all —
+  // Behavior Quality stays visible only as its own breakdown row.
+  const noVerifiedClosedTrades = !isOfficial && !canonicalSampleUnavailable && evidenceConfidence.fullyPricedTradeCount === 0
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -121,6 +124,11 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
           Official rating requires at least {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% verified closed-history coverage.
           {reasonNotRated ? ` ${reasonNotRated}` : ''}
+        </p>
+      ) : noVerifiedClosedTrades ? (
+        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+          No verified closed trades yet. Behavioral signals are shown separately and do not produce a Smart Money Score.
+          {evidenceConfidence.totalMatchedLotCount == null && reasonNotRated ? ` ${reasonNotRated}` : ''}
         </p>
       ) : !isOfficial && (
         <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>

@@ -139,6 +139,15 @@ console.log('\nSection E: Smart score renders official or provisional correctly'
   const blank = computeSmartMoneyScore({ trades: [] })
   check('a wallet with zero real evidence anywhere gets a genuine null provisionalBehaviorScore (never fabricated)', blank.provisionalBehaviorScore === null)
 
+  const behaviorOnly = computeSmartMoneyScore({
+    trades: [],
+    behaviorV2: { accumulationStyle: 'accumulator', rotationStyle: 'holding', memeBehavior: 'not_meme', farmingBehavior: 'not_farmer', stableRoutingBehavior: 'not_router' },
+  })
+  check('zero verified lots + real Behavior Quality → still not_yet_rated, officialScore null', behaviorOnly.status === 'not_yet_rated' && behaviorOnly.officialScore === null)
+  check('zero verified lots + real Behavior Quality → provisionalBehaviorScore null (behaviour never renormalized into a /100 Smart Money number)', behaviorOnly.provisionalBehaviorScore === null && typeof behaviorOnly.breakdown.behaviorQuality === 'number')
+  check('card headline falls back to "Not Yet Rated" whenever there is no provisional score', smartScoreCardSrc.includes('>Not Yet Rated</span>') && smartScoreCardSrc.includes('const hasProvisionalScore = !isOfficial && !canonicalSampleUnavailable && provisionalBehaviorScore != null'))
+  check('card explains that behavioral signals do not produce a Smart Money Score when there are no verified closed trades', smartScoreCardSrc.includes('No verified closed trades yet. Behavioral signals are shown separately and do not produce a Smart Money Score.'))
+
   check('card titles "Smart Money Score" + "Rated" badge when official', smartScoreCardSrc.includes('<StatusBadge label="Rated" tone="success" glow />'))
   check('card titles "Provisional Behaviour Score" + "Not official" badge when not official but a score exists', smartScoreCardSrc.includes("'Provisional Behaviour Score'") && smartScoreCardSrc.includes('label="Not official"'))
   check('card states the real official-rating coverage requirement', smartScoreCardSrc.includes('Official rating requires at least {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% verified closed-history coverage.'))

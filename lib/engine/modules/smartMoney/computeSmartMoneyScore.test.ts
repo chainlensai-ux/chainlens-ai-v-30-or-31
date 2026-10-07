@@ -150,14 +150,32 @@ test('deterministic and explainable output: identical input always produces iden
   assert.deepEqual(notRated.notes, [notRated.reasonNotRated])
 })
 
-test('provisional behavior read is clearly separate from the official score and never published when not rated', () => {
+test('zero verified closed lots: Behavior Quality alone never becomes a Smart Money number (no renormalization to 100%)', () => {
   const result = computeSmartMoneyScore({
     trades: [],
     behaviorV2: { ...neutralBehavior, accumulationStyle: 'accumulator', rotationStyle: 'holding' },
   })
   assert.equal(result.status, 'not_yet_rated')
   assert.equal(result.officialScore, null)
-  assert.notEqual(result.provisionalBehaviorScore, null)
+  assert.equal(result.provisionalBehaviorScore, null)
+  // Behavior Quality itself is unchanged and still reported as its own category; performance categories stay null, never 0.
+  assert.equal(typeof result.breakdown.behaviorQuality, 'number')
+  for (const k of ['verifiedProfitability', 'verifiedWinQuality', 'riskAdjustedPerformance', 'timingQuality', 'consistency'] as const) assert.equal(result.breakdown[k], null, k)
+  assert.equal(result.evidenceConfidence.fullyPricedTradeCount, 0)
+
+  // Unpriced / unverified closed lots don't count as verified evidence either.
+  const unverifiedOnly = computeSmartMoneyScore({ trades: [trade({ costBasisUsd: null, realizedPnlUsd: null })], behaviorV2: neutralBehavior })
+  assert.equal(unverifiedOnly.evidenceConfidence.fullyPricedTradeCount, 0)
+  assert.equal(unverifiedOnly.provisionalBehaviorScore, null)
+})
+
+test('at least one verified closed lot below the gate: the existing provisional weighted score is still allowed', () => {
+  const one = computeSmartMoneyScore({ trades: [trade()], behaviorV2: neutralBehavior })
+  assert.equal(one.status, 'not_yet_rated')
+  assert.equal(one.officialScore, null)
+  assert.equal(typeof one.provisionalBehaviorScore, 'number')
+  const few = computeSmartMoneyScore({ trades: richVerifiedSample(3), behaviorV2: neutralBehavior })
+  assert.equal(typeof few.provisionalBehaviorScore, 'number')
 
   // Once officially rated, the provisional field must not double as/replace the official score.
   const official = computeSmartMoneyScore({ trades: richVerifiedSample(), behaviorV2: neutralBehavior })

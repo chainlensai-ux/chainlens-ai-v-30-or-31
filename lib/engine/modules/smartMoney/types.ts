@@ -47,8 +47,9 @@ export type SmartMoneyScore = {
   // Optional, clearly separate from officialScore — the SAME weighted-average combine the official
   // score itself uses (combineBreakdown), computed over whatever breakdown categories this wallet's
   // real evidence already supports, BEFORE the verified-evidence gate is checked. Only meaningful
-  // when status === 'not_yet_rated'; null only when every breakdown category is null (no real data
-  // at all yet — see computeSmartMoneyScore.ts's own header for the full trace of this widening).
+  // when status === 'not_yet_rated'; null when there is no verified closed lot (Behavior Quality
+  // alone never produces a Smart Money number) or every breakdown category is null — see
+  // computeSmartMoneyScore.ts's own header for the full trace of this widening.
   // NEVER presented as, or substituted for, the official Smart Money Score — UI callers must label
   // it "provisional"/"not official" wherever shown.
   provisionalBehaviorScore: number | null

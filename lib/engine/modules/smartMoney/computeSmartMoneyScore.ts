@@ -371,7 +371,13 @@ export function computeSmartMoneyScore(params: ComputeSmartMoneyScoreParams): Sm
   // gate, still meetsGate-only above it) and is NEVER labeled or presented as the official score
   // anywhere this value is consumed — see SmartMoneyScoreCard.tsx's own explicit "Not official"
   // badge and reason line.
-  const provisionalBehaviorScore = !meetsGate ? combineBreakdown(breakdown) : null
+  //
+  // ZERO-EVIDENCE GUARD: with no verified closed lot every performance category is null, so the
+  // renormalizing combine would turn Behavior Quality's 10% weight into 100% of the number — a
+  // behaviour metric presented as a Smart Money score. A provisional score therefore requires at
+  // least one verified closed lot; below that the card shows "Not Yet Rated" and Behavior Quality
+  // only as its own breakdown row.
+  const provisionalBehaviorScore = !meetsGate && verifiedLots.length > 0 ? combineBreakdown(breakdown) : null
 
   const reasonNotRated = meetsGate ? null
     : evidenceConfidence.totalMatchedLotCount == null
