@@ -718,7 +718,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
     const trace = mixed && isSender && ctx.traceMode !== 'probe' ? await fetchNativeTrace(ctx, wallet, txHash) : null
     native = deriveRhNativeEvidence({
       wallet, isSender, gasPaid, txValue: hexToBigInt((txr as Record<string, unknown> | null)?.value),
-      balanceBefore: b0, balanceAfter: b1, nonceBefore: n0, nonceAfter: n1, trace,
+      balanceBefore: b0, balanceAfter: b1, nonceBefore: n0, nonceAfter: n1, trace, txFrom: receipt.from, txTo: receipt.to,
     })
   }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta, rejectionReason: rejection })
@@ -960,7 +960,7 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
     const trace = ctx.traceMode === 'probe' ? null : await fetchNativeTrace(ctx, wallet, txHash)
     if (ctx.traceMode === 'probe') registerDirectTraceProbe(ctx, wallet, txHash, receipt, poolKeys, timestampSec)
     nativeEvidence = deriveRhNativeEvidence({
-      wallet, isSender: receipt.from === lower(wallet), gasPaid: receipt.gasUsed * receipt.effectiveGasPrice,
+      wallet, isSender: receipt.from === lower(wallet), gasPaid: receipt.gasUsed * receipt.effectiveGasPrice, txFrom: receipt.from, txTo: receipt.to,
       txValue: hexToBigInt((res[i + 4] as Record<string, unknown> | null)?.value),
       balanceBefore: hexToBigInt(res[i]), balanceAfter: hexToBigInt(res[i + 1]), nonceBefore: hexToNum(res[i + 2]), nonceAfter: hexToNum(res[i + 3]),
       trace,

@@ -116,6 +116,14 @@ export type RhNativeEvidence = {
   /** The wallet's exact native net for the TARGET tx (gas excluded) — set ONLY when status is proven_target_tx_native_transfer. */
   nativeNetExGas: bigint | null
   status: RhNativeStatus
+  /** Top-level call: exact sender / destination (null = unknown or contract creation). */
+  txFrom?: string | null
+  txTo?: string | null
+  /** The top-level value's own wallet effect: −value wallet→other, +value other→wallet, 0 for a wallet→wallet self-call. */
+  topLevelNativeNet?: string | null
+  /** The trace also listed the top-level call itself (same from / to / value) — counted once, not twice. */
+  traceIncludesTopLevelTransfer?: boolean | null
+  nativeNetComposition?: string | null
 }
 
 /** PURE. Builds native evidence; only the target tx's own trace can make it proven. */
@@ -130,6 +138,13 @@ export function deriveRhNativeEvidence(input: {
   nonceAfter: number | null
   /** The target tx's internal native transfers; null when no trace could be read. */
   trace: ReadonlyArray<RhNativeTransfer> | null
+  /**
+   * The top-level call's exact sender / destination (receipt.from / receipt.to). The top-level value is attributed
+   * by destination: wallet→other = −value, other→wallet = +value, wallet→wallet (self-call) = 0. Omitted txTo keeps
+   * the legacy reading (a wallet-sent value always leaves the wallet).
+   */
+  txFrom?: string | null
+  txTo?: string | null
 }): RhNativeEvidence {
   const wallet = input.wallet.toLowerCase()
   const haveBal = input.balanceBefore != null && input.balanceAfter != null
@@ -147,15 +162,35 @@ export function deriveRhNativeEvidence(input: {
     nativeNetExGas: null,
     status: 'unavailable_no_balance_evidence',
   }
-  // The target tx's own top-level value is part of it; a wallet-sent tx's value is known only from the tx.
-  if (input.trace && (!input.isSender || input.txValue != null)) {
+  const txFrom = input.txFrom != null ? input.txFrom.toLowerCase() : (input.isSender ? wallet : null)
+  const txTo = input.txTo === undefined ? undefined : (input.txTo != null ? input.txTo.toLowerCase() : null)
+  const walletSent = input.isSender
+  const walletReceivesTopLevel = txTo != null && txTo === wallet
+  ev.txFrom = txFrom
+  ev.txTo = txTo ?? null
+  // The top-level value is part of the target tx; whenever it touches the wallet it must be known exactly.
+  if (input.trace && (!(walletSent || walletReceivesTopLevel) || input.txValue != null)) {
     // Only explicitly successful transfers count (a reverted or unknown-status call moved nothing provable).
     const ok = input.trace.filter((t) => t.success === true && t.value > ZERO)
-    const toWallet = ok.filter((t) => t.to.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
-    const fromWallet = ok.filter((t) => t.from.toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
-    ev.traceNativeToWallet = toWallet.toString()
-    ev.traceNativeFromWallet = fromWallet.toString()
-    ev.nativeNetExGas = toWallet - fromWallet - (input.isSender ? input.txValue! : ZERO)
+    const sum = (rows: RhNativeTransfer[], side: 'from' | 'to') => rows.filter((t) => t[side].toLowerCase() === wallet).reduce((s, t) => s + t.value, ZERO)
+    ev.traceNativeToWallet = sum(ok, 'to').toString()
+    ev.traceNativeFromWallet = sum(ok, 'from').toString()
+    // A trace that also lists the top-level call itself (exact same from / to / value) must not count it twice.
+    const value = input.txValue ?? ZERO
+    const rootIndex = value > ZERO && txFrom && txTo
+      ? ok.findIndex((t) => t.from.toLowerCase() === txFrom && t.to.toLowerCase() === txTo && t.value === value) : -1
+    const internal = rootIndex >= 0 ? ok.filter((_, i) => i !== rootIndex) : ok
+    const toWallet = sum(internal, 'to')
+    const fromWallet = sum(internal, 'from')
+    const topLevel = walletSent && walletReceivesTopLevel ? ZERO // wallet→wallet self-call: no net wallet effect
+      : walletSent ? -value
+      : walletReceivesTopLevel ? value
+      : ZERO
+    ev.topLevelNativeNet = topLevel.toString()
+    ev.traceIncludesTopLevelTransfer = txTo === undefined ? null : rootIndex >= 0
+    ev.nativeNetExGas = toWallet - fromWallet + topLevel
+    ev.nativeNetComposition = `trace in ${toWallet} − trace out ${fromWallet} + top-level ${topLevel}`
+      + `${walletSent && walletReceivesTopLevel ? ' (self-call: top-level value nets to 0)' : ''}${rootIndex >= 0 ? ' (top-level transfer listed in trace, counted once)' : ''}`
     ev.status = 'proven_target_tx_native_transfer'
     return ev
   }
