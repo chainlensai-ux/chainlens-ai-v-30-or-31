@@ -1,5 +1,6 @@
-// Robinhood relayed V4 native-input candidates: a DIAGNOSTIC native trace only (lowest priority, unused live capacity of
-// the request allocator). The verdict is logged; the receipt stays wallet_not_tx_sender — no relayed acceptance yet.
+// Robinhood relayed V4 native-input candidates: lowest-priority native trace (unused live capacity of the request
+// allocator). Only an exact-trace wallet_funded_route_candidate that replays through the unchanged V4 verifier becomes
+// relayed_wallet_swap_proven; every other verdict stays wallet_not_tx_sender.
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { encodeAbiParameters, keccak256, type Hex } from 'viem'
@@ -162,7 +163,7 @@ const relayedAudit = (lines: Awaited<ReturnType<typeof run>>, name: string) => l
 
 beforeEach(() => { __resetRobinhoodPnlV1CachesForTest(); calls.length = 0 })
 
-test('1. relayed V4-only buy, trace shows the wallet paying exactly the route input → wallet_funded_route_candidate, still rejected', async () => {
+test('1. relayed V4-only buy, trace shows the wallet paying exactly the route input → promoted relayed_wallet_swap_proven', async () => {
   const eth = BigInt('27834402594801934')
   const x = await scan([{ name: 'R', tx: relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)]) }])
   const a = relayedAudit(x, 'R')
@@ -170,9 +171,9 @@ test('1. relayed V4-only buy, trace shows the wallet paying exactly the route in
   assert.deepEqual([a.txFrom, a.txTo, a.routeInputNativeRaw, a.routeOutputToken, a.routeOutputRaw], [RELAYER, ROUTER, eth.toString(), A, n(1000).toString()])
   assert.deepEqual([a.selectedForDiagnosticTrace, a.liveBudgetOrdinal, a.traceComplete, a.traceNativeFromWalletRaw, a.tracedWalletNetRaw, a.walletNativeDebitMatchesRoute, a.competingNativePayers, a.topLevelValueIntoWallet],
     [true, 1, true, eth.toString(), (-eth).toString(), true, [], '0'])
-  // diagnostic only: never a verified swap
-  assert.equal(x.r.swapsVerified, 0)
-  assert.deepEqual(x.r.ingestionAudit.rejectionReasons, { wallet_not_tx_sender: 1 })
+  assert.deepEqual([a.promotedTo, a.acceptance], ['relayed_wallet_swap_proven', 'relayed_v4'])
+  assert.equal(x.r.swapsVerified, 1)
+  assert.deepEqual(x.r.ingestionAudit.rejectionReasons, {})
   assert.equal(x.r.ingestionAudit.relayedNativeTraceDiagnostics?.verdicts.wallet_funded_route_candidate, 1)
 })
 
@@ -237,5 +238,67 @@ test('7/8. direct wallet-sent candidates keep priority; total live trace calls s
   assert.equal(y.global.totalLiveUsed, 3)
   assert.equal(y.global.relayedDiagnosticLiveUsed, 2)
   assert.equal(relayedAudit(y, 'R3').diagnosticVerdict, 'trace_unavailable')
-  assert.equal(y.r.swapsVerified, 1)
+  assert.equal(y.r.swapsVerified, 3) // D0 direct + R1 / R2 relayed; R3 had no slot and stays wallet_not_tx_sender
+  assert.deepEqual(y.r.ingestionAudit.rejectionReasons, { wallet_not_tx_sender: 1 })
+  assert.equal(y.r.ingestionAudit.relayedWalletRejectedReasons?.trace_unavailable, 1)
+})
+
+// ── Promotion: production d861… geometry and the rejections ──────────────────────────────────────────────────
+test('production d861… shape: wallet internally pays the exact native input → one relayed_wallet_swap_proven buy', async () => {
+  const eth = BigInt('41050538212203691')
+  const out = BigInt('292180306497565869468771')
+  const x = await scan([{ name: 'D861', tx: relayedBuy(eth, out, TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)]) }])
+  const a = relayedAudit(x, 'D861')
+  assert.deepEqual([a.routeInputNativeRaw, a.traceNativeFromWalletRaw, a.traceNativeToWalletRaw, a.tracedWalletNetRaw, a.walletNativeDebitMatchesRoute, a.competingNativePayers, a.topLevelValueIntoWallet, a.traceComplete, a.diagnosticVerdict],
+    [eth.toString(), eth.toString(), '0', (-eth).toString(), true, [], '0', true, 'wallet_funded_route_candidate'])
+  const ia = x.r.ingestionAudit
+  assert.equal(ia.verifiedSwapTxCount, 1)
+  assert.equal(ia.normalizedBuyCount, 1)
+  assert.equal(ia.directV4VerifiedSwapCount, 0)
+  assert.equal(ia.relayedWalletVerifiedSwapCount, 1)
+  assert.equal(ia.relayedWalletRejectedCount, 0)
+  assert.equal(ia.v4AttributionClasses?.relayed_wallet_swap_proven, 1)
+  const e = x.r.priceEvidence[0]
+  assert.deepEqual([e.inputToken, e.outputToken], [RH_NATIVE, A])
+  assert.ok(Math.abs(e.inputAmount - Number(eth) / 1e18) < 1e-12)
+})
+
+async function rejected(tx: Tx, reason: RegExp | string) {
+  __resetRobinhoodPnlV1CachesForTest()
+  const x = await scan([{ name: 'X', tx }])
+  assert.equal(x.r.swapsVerified, 0)
+  assert.equal(x.r.ingestionAudit.relayedWalletVerifiedSwapCount ?? 0, 0)
+  assert.deepEqual(x.r.ingestionAudit.rejectionReasons, { wallet_not_tx_sender: 1 })
+  const a = relayedAudit(x, 'X')
+  if (reason === 'not_a_candidate') { assert.equal(a, undefined); return }
+  assert.equal(a.promotedTo, null)
+  assert.match(a.promotionRejectionReason, reason instanceof RegExp ? reason : new RegExp(`^${reason}$`))
+}
+
+test('rejections: somebody else pays / relayer funds-and-forwards / competing payer / bad trace / debit mismatch', async () => {
+  const eth = n(1)
+  await rejected(relayedBuy(eth, n(1000), TS, [pay(ROUTER, PM, eth)], { value: eth }), 'no_wallet_native_debit') // somebody else's swap paying the wallet
+  await rejected(relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)], { to: WALLET, value: eth }), 'externally_funded_route')
+  await rejected(relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth / BigInt(2)), pay(OTHER, ROUTER, eth / BigInt(2)), pay(ROUTER, PM, eth)]), 'externally_funded_route')
+  await rejected(relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth / BigInt(2))]), 'ambiguous_trace') // wallet debit does not reproduce the route input
+  for (const result of ['pagination_cap_exhausted', 'malformed', 'unknown_execution_status']) {
+    __resetRobinhoodPnlV1CachesForTest()
+    const x = await scan([{ name: 'X', tx: relayedBuy(eth, n(1000), TS, null), traceResult: { transfers: null, audit: { result } } }])
+    assert.equal(x.r.swapsVerified, 0, result)
+    assert.equal(relayedAudit(x, 'X').promotionRejectionReason, 'ambiguous_trace')
+  }
+})
+
+test('rejections: unrelated token transfer, mixed route, multiple-V4-route ambiguity never become relayed swaps', async () => {
+  const eth = n(1)
+  await rejected(relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth)]).xfer(D, WALLET, OTHER, n(3)), 'not_a_candidate')
+  const mixed = new Tx().v4(RH_NATIVE, B, eth, n(80)).xfer(B, PM, P3, n(80)).v3(P3, n(80), n(25)).xfer(C, P3, WALLET, n(25)).at(TS)
+  mixed.sender = RELAYER
+  mixed.trace = [pay(WALLET, ROUTER, eth)]
+  await rejected(mixed, 'not_a_candidate')
+  // two identical native → A hops, one wallet credit: two paths reproduce it — ambiguous, not one connected route
+  const twice = new Tx().v4(RH_NATIVE, A, eth, n(1000)).v4(RH_NATIVE, A, eth, n(1000)).xfer(A, PM, WALLET, n(1000)).at(TS)
+  twice.sender = RELAYER
+  twice.trace = [pay(WALLET, ROUTER, eth)]
+  await rejected(twice, 'not_a_candidate')
 })
