@@ -2679,9 +2679,14 @@ async function settleManifestBootstrap(
     boot.audit.selectedCandidates.push({ txHash: c.txHash, blockNumber: hint.get(c.txHash)?.blockNumber ?? null, poolManagerCounterparty: hint.get(c.txHash)?.poolManagerCounterparty ?? false, selectionRank: c.selectionRank, result })
   }
   boot.audit.verifiedCount = [...results.values()].filter((r) => r === 'verified').length
-  // A hint the normal lanes selected this scan was verified there (and recorded if accepted): retire it too.
+  // A hint the normal lanes selected this scan settles by that lane's real outcome (same classification): a
+  // decided one leaves `pending`, a transiently unprovable one stays for a bounded retry.
   const covered = new Map(results)
-  for (const c of selected) if (c.source !== 'manifest_bootstrap' && hint.has(c.txHash)) covered.set(c.txHash, 'rejected')
+  for (const c of selected) {
+    if (c.source === 'manifest_bootstrap' || !hint.has(c.txHash)) continue
+    const o = outcomes.find((x) => x.txHash === c.txHash)
+    if (o) covered.set(c.txHash, BOOTSTRAP_RESULT[manifestReplayResult(o, ctx, relayedTraced)])
+  }
   boot.audit.writtenCount = manifestAudit && manifestAudit.written > 0 && !manifestAudit.writeFailed ? boot.audit.verifiedCount : 0
   const settled = settleRobinhoodManifestBootstrapMarker(boot.marker, covered, ctx.deps.now())
   const written = await b.writeMarker(wallet, settled).catch(() => ({ written: false, reason: 'marker_write_failed' }))

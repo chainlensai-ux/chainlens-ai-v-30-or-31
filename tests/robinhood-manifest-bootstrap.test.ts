@@ -14,7 +14,7 @@ import {
   readRobinhoodVerifiedSwapManifest, recordRobinhoodVerifiedSwaps, robinhoodVerifiedSwapManifestKey, __setRobinhoodVerifiedSwapManifestKvForTest,
   readRobinhoodManifestBootstrapMarker, writeRobinhoodManifestBootstrapMarker, robinhoodManifestBootstrapKey, __setRobinhoodManifestBootstrapKvForTest,
   advanceRobinhoodManifestBootstrapMarker, newRobinhoodManifestBootstrapMarker, rankRobinhoodBootstrapPending, settleRobinhoodManifestBootstrapMarker,
-  ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS, type RobinhoodManifestBootstrapMarker,
+  ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS, ROBINHOOD_MANIFEST_BOOTSTRAP_CAS_SCRIPT, mergeRobinhoodManifestBootstrapMarkers, type RobinhoodManifestBootstrapMarker,
 } from '../lib/server/robinhoodVerifiedSwapManifest.ts'
 import { getBlockscoutWalletTokenTransferPages, __resetRobinhoodBlockscoutRateLimitForTest } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import type { RhNativeTransfer } from '../lib/server/robinhoodMixedRouteForensics.ts'
@@ -103,10 +103,25 @@ class FakeKv {
   }
   async get<T>(key: string): Promise<T | null> {
     if (this.failGet) throw new Error('kv down')
-    const v = this.strings.get(key)
+    const v = this.strings.get(key) // read now, return later: a genuinely stale read under concurrency
+    if (this.getDelayMs) await new Promise((r) => setTimeout(r, this.getDelayMs))
     return (v == null ? null : typeof v === 'string' ? JSON.parse(v) : v) as T | null
   }
   async set(key: string, value: unknown): Promise<'OK'> { this.strings.set(key, value); return 'OK' }
+  getDelayMs = 0
+  casCalls = 0
+  casConflicts = 0
+  // Faithful emulation of ROBINHOOD_MANIFEST_BOOTSTRAP_CAS_SCRIPT (atomic: no await between check and set).
+  async eval<TArgs extends unknown[], TData = unknown>(script: string, keys: string[], args: TArgs): Promise<TData> {
+    assert.equal(script, ROBINHOOD_MANIFEST_BOOTSTRAP_CAS_SCRIPT)
+    this.casCalls += 1
+    const cur = this.strings.get(keys[0])
+    let v = 0
+    if (cur != null) { try { const d = JSON.parse(String(cur)); if (d && typeof d === 'object' && typeof d.version === 'number') v = d.version } catch { /* not json */ } }
+    if (v !== Number(args[0])) { this.casConflicts += 1; return 0 as TData }
+    this.strings.set(keys[0], args[1])
+    return 1 as TData
+  }
   manifest() { return [...(this.hashes.get(robinhoodVerifiedSwapManifestKey(WALLET))?.keys() ?? [])].sort() }
   marker(): RobinhoodManifestBootstrapMarker | null { const v = this.strings.get(robinhoodManifestBootstrapKey(WALLET)); return v ? JSON.parse(String(v)) : null }
 }
@@ -148,7 +163,7 @@ function blockscout(chain: Chain, pages: PageSpec[]) {
 
 const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
 
-type ScanOpts = { activity?: string[]; pages: PageSpec[]; stored?: Set<string>; bootstrap?: boolean; configured?: boolean; deps?: Partial<RobinhoodPnlV1Deps> }
+type ScanOpts = { activity?: string[]; pages: PageSpec[]; stored?: Set<string>; receiptDown?: Set<string>; bootstrap?: boolean; configured?: boolean; deps?: Partial<RobinhoodPnlV1Deps> }
 async function scan(chain: Chain, opts: ScanOpts) {
   __resetRobinhoodPnlV1CachesForTest()
   __resetRobinhoodBlockscoutRateLimitForTest()
@@ -159,6 +174,7 @@ async function scan(chain: Chain, opts: ScanOpts) {
     if (method === 'eth_getTransactionReceipt') {
       const e = chain.get(p[0])
       receiptCalls.push(e?.name ?? p[0])
+      if (e && opts.receiptDown?.has(e.name)) return null
       return e ? { status: '0x1', from: e.tx.sender, to: e.tx.to, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null
     }
     if (method === 'eth_getTransactionByHash') { const e = chain.get(p[0]); return e ? { value: hex(e.tx.txValue) } : null }
@@ -299,7 +315,8 @@ test('a transient provider failure keeps the last good cursor; the next scan res
   // a failure before any page leaves the cursor untouched and counts one consecutive failure
   const before = kv.marker()!
   // (a completed marker is never regressed by a normal write — seed the incomplete state directly)
-  assert.equal((await writeRobinhoodManifestBootstrapMarker(WALLET, { ...before, completed: false, completedAt: null })).reason, 'newer_marker_stored')
+  assert.equal((await writeRobinhoodManifestBootstrapMarker(WALLET, { ...before, completed: false, completedAt: null })).reason, 'merged_with_stored')
+  assert.equal(kv.marker()!.completed, true, 'completion is sticky under merge')
   kv.strings.set(robinhoodManifestBootstrapKey(WALLET), JSON.stringify({ ...before, discoveryDone: false, completed: false, completedAt: null, cursor: 'block_number=9998&index=0&items_count=100', pending: [] }))
   const s3 = await scan(chain, { pages: [{ names: [] }, { names: [] }, { names: [], status: 500 }] })
   assert.deepEqual(s3.requested, [2])
@@ -390,4 +407,87 @@ test('discovery evidence never reaches PnL: a PoolManager-ranked non-swap hint i
   assert.equal(s.r.realizedPnlUsd, null)
   assert.deepEqual(kv.manifest(), [])
   assert.equal(s.boot!.writtenCount, 0)
+})
+
+test('overlap: a hint also selected by current activity keeps pending on receipt_unavailable, then verifies and enters the manifest', async () => {
+  const chain = chainOf([['H', directBuy(n(0.02), n(1500), TS + 10)]])
+  const s1 = await scan(chain, { activity: ['H'], pages: [{ names: ['H'] }], receiptDown: new Set(['H']) })
+  const h1 = s1.a.candidateSelection!.selectedCandidates.find((c) => c.txHash === H('H'))!
+  assert.equal(h1.source, 'current_activity', 'selected by the normal lane, not bootstrap')
+  assert.equal(s1.a.verifiedSwapTxCount, 0)
+  assert.deepEqual(kv.marker()!.pending.map((p) => [p.txHash, p.attempts]), [[H('H'), 1]], 'transient → stays pending, attempts+1')
+  assert.deepEqual([kv.marker()!.completed, kv.marker()!.retired], [false, []])
+  assert.deepEqual(kv.manifest(), [])
+  const s2 = await scan(chain, { activity: ['H'], pages: [{ names: ['H'] }] })
+  assert.deepEqual(s2.requested, [], 'discovery already done; only the pending hint settles')
+  assert.equal(s2.a.verifiedSwapTxCount, 1)
+  assert.deepEqual(kv.manifest(), [H('H')])
+  assert.deepEqual([kv.marker()!.pending, kv.marker()!.retired, kv.marker()!.completed], [[], [H('H')], true])
+})
+
+test('overlap: native trace unavailable on the normal lane keeps the hint pending; a later scan with budget proves it', async () => {
+  const chain = chainOf([['R', relayedBuy(n(0.01), n(1000), TS + 10)]])
+  const s1 = await scan(chain, { activity: ['R'], pages: [{ names: ['R'] }], deps: { nativeTraceLiveCap: 0 } })
+  assert.equal(s1.a.candidateSelection!.selectedCandidates[0].source, 'current_activity')
+  assert.equal(s1.a.verifiedSwapTxCount, 0)
+  assert.deepEqual(kv.marker()!.pending.map((p) => [p.txHash, p.attempts]), [[H('R'), 1]])
+  const s2 = await scan(chain, { activity: ['R'], pages: [{ names: ['R'] }] })
+  assert.equal(s2.a.relayedWalletVerifiedSwapCount, 1)
+  assert.deepEqual(kv.manifest(), [H('R')])
+  assert.deepEqual([kv.marker()!.pending, kv.marker()!.completed], [[], true])
+})
+
+test('overlap: a deterministic rejection by the normal lane retires the hint; repeated transient failures retire after max attempts', async () => {
+  const chain = chainOf([['junk', airdrop(TS + 10)], ['H', directBuy(n(0.02), n(1500), TS + 5)]])
+  await scan(chain, { activity: ['junk'], pages: [{ names: ['junk'] }] })
+  assert.deepEqual([kv.marker()!.pending, kv.marker()!.retired, kv.marker()!.completed], [[], [H('junk')], true])
+  kv.strings.clear()
+  for (let i = 0; i < ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS.maxAttempts; i++) await scan(chain, { activity: ['H'], pages: [{ names: ['H'] }], receiptDown: new Set(['H']) })
+  assert.deepEqual([kv.marker()!.pending, kv.marker()!.retired, kv.marker()!.completed], [[], [H('H')], true], 'bounded: retired after maxAttempts')
+})
+
+test('concurrent same-page marker writes keep both writers\' pending hints, max attempts and furthest progress', async () => {
+  const base = { ...newRobinhoodManifestBootstrapMarker(WALLET, 1), pagesScanned: 1, rowsScanned: 50, cursor: 'block_number=9999&index=0&items_count=50' }
+  await writeRobinhoodManifestBootstrapMarker(WALLET, base)
+  const p = (name: string, attempts: number, pm: boolean, block: number | null) => ({ txHash: H(name), attempts, poolManagerCounterparty: pm, blockNumber: block })
+  const one: RobinhoodManifestBootstrapMarker = { ...base, updatedAt: 2, pending: [p('P1', 0, false, null), p('shared', 2, false, 700)] }
+  const two: RobinhoodManifestBootstrapMarker = { ...base, updatedAt: 3, rowsScanned: 60, pending: [p('P2', 1, true, 800), p('shared', 0, true, null)] }
+  kv.getDelayMs = 2 // both writers read the same stored version before either sets
+  const results = await Promise.all([writeRobinhoodManifestBootstrapMarker(WALLET, one), writeRobinhoodManifestBootstrapMarker(WALLET, two)])
+  kv.getDelayMs = 0
+  assert.ok(results.every((r) => r.written), JSON.stringify(results))
+  assert.ok(kv.casConflicts >= 1, 'the race really happened and was retried')
+  const m = kv.marker()!
+  assert.deepEqual(m.pending.map((x) => x.txHash).sort(), [H('P1'), H('P2'), H('shared')].sort())
+  const shared = m.pending.find((x) => x.txHash === H('shared'))!
+  assert.deepEqual([shared.attempts, shared.poolManagerCounterparty, shared.blockNumber], [2, true, 700])
+  assert.deepEqual([m.pagesScanned, m.rowsScanned, m.cursor, m.version], [1, 60, base.cursor, 3])
+  // a stale writer at the same page count can't drop pending added by another scan or un-retire a decided hint
+  await writeRobinhoodManifestBootstrapMarker(WALLET, { ...base, pending: [], retired: [H('P1')] })
+  await writeRobinhoodManifestBootstrapMarker(WALLET, { ...base, pending: [p('P1', 0, false, null)] })
+  assert.deepEqual(kv.marker()!.pending.map((x) => x.txHash).sort(), [H('P2'), H('shared')].sort())
+  assert.deepEqual(kv.marker()!.retired, [H('P1')])
+})
+
+test('merge: furthest progress wins the cursor; done/completed are sticky; counters take the max', () => {
+  const a = { ...newRobinhoodManifestBootstrapMarker(WALLET, 1), pagesScanned: 3, rowsScanned: 150, cursor: 'block_number=3&index=0', version: 4 }
+  const b = { ...newRobinhoodManifestBootstrapMarker(WALLET, 2), pagesScanned: 2, rowsScanned: 160, cursor: 'block_number=2&index=0', discoveryDone: false, version: 2 }
+  const m = mergeRobinhoodManifestBootstrapMarkers(b, a)
+  assert.deepEqual([m.pagesScanned, m.rowsScanned, m.cursor], [3, 160, a.cursor])
+  const done = { ...a, discoveryDone: true, cursor: null, stopReason: 'history_exhausted' }
+  const tie = mergeRobinhoodManifestBootstrapMarkers(done, { ...a, updatedAt: 9 })
+  assert.deepEqual([tie.discoveryDone, tie.cursor, tie.stopReason], [true, null, 'history_exhausted'])
+  const completed = mergeRobinhoodManifestBootstrapMarkers({ ...done, completed: true, completedAt: 5 }, { ...a })
+  assert.deepEqual([completed.completed, completed.completedAt], [true, 5])
+})
+
+test('markers written before retired/version existed still read (as none / version 0) and upgrade on write', async () => {
+  const legacy = { ...newRobinhoodManifestBootstrapMarker(WALLET, 1), pagesScanned: 1, cursor: 'block_number=9999&index=0&items_count=50' } as Record<string, unknown>
+  delete legacy.retired
+  delete legacy.version
+  kv.strings.set(robinhoodManifestBootstrapKey(WALLET), JSON.stringify(legacy))
+  const read = await readRobinhoodManifestBootstrapMarker(WALLET)
+  assert.deepEqual([read.marker?.retired, read.marker?.version], [[], 0])
+  assert.equal((await writeRobinhoodManifestBootstrapMarker(WALLET, { ...read.marker!, rowsScanned: 5 })).written, true)
+  assert.deepEqual([kv.marker()!.version, kv.marker()!.rowsScanned], [1, 5])
 })
