@@ -33,7 +33,12 @@ import { nearestPriceWithGap } from '../v4SwapCandles'
 import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
-import { orderRobinhoodVerifiedSwapManifest, type RobinhoodVerifiedSwapManifestEntry, type RobinhoodVerifiedSwapManifestRead, type RobinhoodVerifiedSwapManifestVerified, type RobinhoodVerifiedSwapManifestWrite } from './robinhoodVerifiedSwapManifest'
+import {
+  orderRobinhoodVerifiedSwapManifest, advanceRobinhoodManifestBootstrapMarker, settleRobinhoodManifestBootstrapMarker, newRobinhoodManifestBootstrapMarker, rankRobinhoodBootstrapPending,
+  ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS,
+  type RobinhoodVerifiedSwapManifestEntry, type RobinhoodVerifiedSwapManifestRead, type RobinhoodVerifiedSwapManifestVerified, type RobinhoodVerifiedSwapManifestWrite,
+  type RobinhoodBootstrapDiscovery, type RobinhoodBootstrapPending, type RobinhoodManifestBootstrapMarker, type RobinhoodBootstrapCandidateResult,
+} from './robinhoodVerifiedSwapManifest'
 
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
 export const ROBINHOOD_PNL_V1_LIMITS = {
@@ -149,12 +154,22 @@ export type RobinhoodPnlV1Deps = {
     read: (wallet: string) => Promise<RobinhoodVerifiedSwapManifestRead>
     record: (wallet: string, verified: readonly RobinhoodVerifiedSwapManifestVerified[], known: readonly RobinhoodVerifiedSwapManifestEntry[], now: number) => Promise<RobinhoodVerifiedSwapManifestWrite>
   }
+  /**
+   * Manifest bootstrap: bounded, resumable historical discovery (Blockscout wallet ERC-20 transfers). Rows are
+   * candidate hints only; they take the manifest's reserved slots and pass the unchanged verifier. Absent → off.
+   */
+  manifestBootstrap?: {
+    configured: () => boolean
+    readMarker: (wallet: string) => Promise<{ marker: RobinhoodManifestBootstrapMarker | null; reason: string | null }>
+    writeMarker: (wallet: string, marker: RobinhoodManifestBootstrapMarker) => Promise<{ written: boolean; reason: string | null }>
+    discover: (wallet: string, cursor: string | null, caps: { maxPages: number; deadlineAt: number; stopAfterCandidates?: number }) => Promise<RobinhoodBootstrapDiscovery>
+  }
 }
 
 export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
 
-export type RhCandidateSource = 'current_activity' | 'verified_manifest'
-export type RhSelectionReason = 'manifest_reserved_slot' | 'current_activity_swap_log' | 'current_activity_recent'
+export type RhCandidateSource = 'current_activity' | 'verified_manifest' | 'manifest_bootstrap'
+export type RhSelectionReason = 'manifest_reserved_slot' | 'bootstrap_reserved_slot' | 'current_activity_swap_log' | 'current_activity_recent'
 export type RhSelectedCandidate = RobinhoodPnlV1Candidate & {
   source: RhCandidateSource
   /** The hash is listed in the wallet's verified-swap manifest (whichever lane selected it). */
@@ -172,6 +187,7 @@ export type RhCandidateSelectionAudit = {
   candidatePoolCount: number
   currentActivityCandidateCount: number
   manifestCandidateCount: number
+  bootstrapCandidateCount: number
   selectedCandidates: RhSelectedCandidate[]
   droppedCandidateCount: number
   /** Dropped hashes in selection order, first ROBINHOOD_DROPPED_HASHES_IN_AUDIT. */
@@ -195,6 +211,24 @@ export type RhVerifiedSwapManifestAudit = {
   writeSkippedOverCap: number
   writeFailed: boolean
   writeReason: string | null
+}
+export type RhManifestBootstrapAudit = {
+  attempted: boolean
+  resumed: boolean
+  /** Why bootstrap did not run / what the marker read returned. */
+  reason: string | null
+  pagesThisScan: number
+  pagesTotal: number
+  rowsThisScan: number
+  poolManagerCounterpartyRows: number
+  selectedCandidates: Array<{ txHash: string; blockNumber: number | null; poolManagerCounterparty: boolean; selectionRank: number; result: RobinhoodBootstrapCandidateResult | null }>
+  verifiedCount: number
+  writtenCount: number
+  cursorAdvanced: boolean
+  completed: boolean
+  stopReason: string | null
+  pendingRemaining: number
+  markerWriteReason: string | null
 }
 
 export type RhRejection =
@@ -285,6 +319,7 @@ export type RobinhoodPnlV1IngestionAudit = {
   relayedWalletRejectedReasons?: Record<string, number>
   candidateSelection?: RhCandidateSelectionAudit
   verifiedSwapManifest?: RhVerifiedSwapManifestAudit
+  manifestBootstrap?: RhManifestBootstrapAudit
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
@@ -2279,6 +2314,8 @@ export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnl
 export function selectRobinhoodPnlV1CandidatesWithManifest(
   candidates: readonly RobinhoodPnlV1Candidate[],
   manifest: readonly RobinhoodVerifiedSwapManifestEntry[],
+  /** Ranked bootstrap hints; they fill whatever reserved manifest capacity manifest replay left unused. */
+  bootstrap: readonly RobinhoodBootstrapPending[] = [],
 ): { selected: RhSelectedCandidate[]; dropped: string[]; audit: RhCandidateSelectionAudit } {
   const cap = ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts
   const currentOrder = orderRobinhoodPnlV1Candidates(candidates)
@@ -2295,6 +2332,20 @@ export function selectRobinhoodPnlV1CandidatesWithManifest(
       source: 'verified_manifest', manifestHit: true, inCurrentActivity: cur != null, selectionRank: selected.length + 1, selectionReason: 'manifest_reserved_slot',
     })
   }
+  // Bootstrap hints: never a hash the manifest already holds, nor one current activity would select anyway (its
+  // top slots computed as if the whole reserve were used — so a hint never takes a slot from itself).
+  const reserve = Math.min(ROBINHOOD_PNL_V1_LIMITS.maxManifestCandidates, cap)
+  const currentTop = new Set(currentOrder.filter((c) => !taken.has(c.txHash)).slice(0, cap - reserve).map((c) => c.txHash))
+  for (const b of bootstrap) {
+    if (selected.length >= reserve) break
+    if (taken.has(b.txHash) || manifestHashes.has(b.txHash) || currentTop.has(b.txHash) || !/^0x[0-9a-f]{64}$/.test(b.txHash)) continue
+    const cur = byHash.get(b.txHash)
+    taken.add(b.txHash)
+    selected.push({
+      txHash: b.txHash, timestampMs: cur?.timestampMs ?? null, hasSwapLog: cur?.hasSwapLog ?? false,
+      source: 'manifest_bootstrap', manifestHit: false, inCurrentActivity: cur != null, selectionRank: selected.length + 1, selectionReason: 'bootstrap_reserved_slot',
+    })
+  }
   for (const c of currentOrder) {
     if (selected.length >= cap) break
     if (taken.has(c.txHash)) continue
@@ -2309,7 +2360,7 @@ export function selectRobinhoodPnlV1CandidatesWithManifest(
     ...currentOrder.map((c) => c.txHash).filter((h) => !taken.has(h)),
     ...manifestOrder.map((e) => e.txHash).filter((h) => !taken.has(h) && !byHash.has(h)),
   ]
-  const pool = new Set([...byHash.keys(), ...manifestHashes])
+  const pool = new Set([...byHash.keys(), ...manifestHashes, ...selected.map((c) => c.txHash)])
   return {
     selected,
     dropped,
@@ -2317,6 +2368,7 @@ export function selectRobinhoodPnlV1CandidatesWithManifest(
       candidatePoolCount: pool.size,
       currentActivityCandidateCount: byHash.size,
       manifestCandidateCount: manifestOrder.length,
+      bootstrapCandidateCount: selected.filter((c) => c.source === 'manifest_bootstrap').length,
       selectedCandidates: selected,
       droppedCandidateCount: dropped.length,
       droppedCandidateHashes: dropped.slice(0, ROBINHOOD_DROPPED_HASHES_IN_AUDIT),
@@ -2351,7 +2403,8 @@ export async function computeRobinhoodPnlV1(params: {
   const manifestRead: RobinhoodVerifiedSwapManifestRead | null = params.deps.rpc && params.deps.verifiedSwapManifest
     ? await params.deps.verifiedSwapManifest.read(wallet).catch(() => ({ entries: [], reason: 'manifest_lookup_failed', invalidEntries: 0 }))
     : null
-  const selection = selectRobinhoodPnlV1CandidatesWithManifest(params.candidates, manifestRead?.entries ?? [])
+  const boot = manifestRead ? await prepareManifestBootstrap(params.deps, wallet, manifestRead) : null
+  const selection = selectRobinhoodPnlV1CandidatesWithManifest(params.candidates, manifestRead?.entries ?? [], boot?.marker?.pending ?? [])
   const selected = selection.selected
   const dropped = selection.dropped.length
   console.warn('[robinhood-candidate-selection-audit]', {
@@ -2372,6 +2425,7 @@ export async function computeRobinhoodPnlV1(params: {
     candidateSwapTxCount: selected.length, candidatesDroppedByCap: dropped, receiptsFetched: 0, v4SwapLogCount: 0,
     verifiedSwapTxCount: 0, rejectedSwapTxCount: 0, rejectionReasons: {}, normalizedBuyCount: 0, normalizedSellCount: 0,
     candidateSelection: selection.audit,
+    ...(boot ? { manifestBootstrap: boot.audit } : {}),
   }
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
     signalNativePrefetchComplete()
@@ -2443,6 +2497,7 @@ export async function computeRobinhoodPnlV1(params: {
   ingestion.relayedWalletRejectedReasons = relayed.relayedWalletRejectedReasons
   if (relayed.relayedWalletVerifiedSwapCount > 0) ds = await downstream()
   if (manifestRead) ingestion.verifiedSwapManifest = await replayAndRecordManifest(ctx, wallet, selected, outcomes, relayed.tracedTxHashes, manifestRead)
+  if (boot) await settleManifestBootstrap(ctx, wallet, boot, selected, outcomes, relayed.tracedTxHashes, ingestion.verifiedSwapManifest)
   const { swaps, evidence, recovery, intermediate, deep } = ds
   console.warn('[robinhood-native-trace-global-budget-audit]', {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
@@ -2553,6 +2608,87 @@ export async function computeRobinhoodPnlV1(params: {
         ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} proven, ${bothLegs} priced on both legs, but no buy→sell pair closed a lot in this sample.${recovery.summary.acquisitionRecoveryAttempted ? ` Acquisition recovery checked ${recovery.summary.candidatesAttempted} earlier inbound${recovery.summary.candidatesAttempted === 1 ? '' : 's'} of the sold token; none was a provable buy.` : ''}`
         : `${structural} lots closed, but none had verified prices on both the buy and the sell.`
   return finish({ ...base, status: 'not_verified', exactReason })
+}
+
+type ManifestBootstrapRun = { marker: RobinhoodManifestBootstrapMarker | null; audit: RhManifestBootstrapAudit }
+
+/**
+ * Decides whether bootstrap runs (start: manifest absent/empty and no complete marker; resume: an incomplete marker,
+ * whatever the manifest holds; never after a failed manifest or marker lookup), runs one bounded discovery pass from
+ * the saved cursor, and persists the advanced marker immediately — progress survives anything that happens later.
+ */
+async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string, manifestRead: RobinhoodVerifiedSwapManifestRead): Promise<ManifestBootstrapRun | null> {
+  const b = deps.manifestBootstrap
+  if (!b || !deps.rpc || !b.configured()) return null
+  const L = ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS
+  const audit: RhManifestBootstrapAudit = {
+    attempted: false, resumed: false, reason: null, pagesThisScan: 0, pagesTotal: 0, rowsThisScan: 0, poolManagerCounterpartyRows: 0,
+    selectedCandidates: [], verifiedCount: 0, writtenCount: 0, cursorAdvanced: false, completed: false, stopReason: null, pendingRemaining: 0, markerWriteReason: null,
+  }
+  if (manifestRead.reason === 'manifest_lookup_failed') return { marker: null, audit: { ...audit, reason: 'manifest_lookup_failed' } }
+  const read = await b.readMarker(wallet).catch(() => ({ marker: null, reason: 'marker_lookup_failed' }))
+  if (!read.marker && read.reason !== 'marker_absent' && read.reason !== 'invalid_marker') return { marker: null, audit: { ...audit, reason: read.reason } }
+  if (read.marker?.completed) return { marker: null, audit: { ...audit, reason: 'marker_completed', completed: true, pagesTotal: read.marker.pagesScanned, stopReason: read.marker.stopReason } }
+  if (!read.marker && manifestRead.entries.length > 0) return { marker: null, audit: { ...audit, reason: 'manifest_not_empty' } }
+  const now = deps.now()
+  const prev = read.marker ?? newRobinhoodManifestBootstrapMarker(wallet, now)
+  audit.attempted = true
+  audit.resumed = read.marker != null
+  audit.reason = read.reason
+  const exclude = new Set(manifestRead.entries.map((e) => e.txHash))
+  const waiting = prev.pending.filter((p) => !exclude.has(p.txHash)).length
+  let discovery: RobinhoodBootstrapDiscovery | null = null
+  if (!prev.discoveryDone && prev.pagesScanned < L.maxPagesLifetime && waiting < L.maxCandidatesPerScan) {
+    discovery = await b.discover(wallet, prev.cursor, {
+      maxPages: Math.min(L.maxPagesPerScan, L.maxPagesLifetime - prev.pagesScanned), deadlineAt: Date.now() + L.deadlineMs,
+      stopAfterCandidates: L.maxCandidatesPerScan - waiting,
+    })
+      .catch((): RobinhoodBootstrapDiscovery => ({ rows: [], pagesRequested: 0, pagesSucceeded: 0, rowsScanned: 0, nextCursor: prev.cursor, exhausted: false, stopReason: 'discovery_threw' }))
+  }
+  const marker = advanceRobinhoodManifestBootstrapMarker(prev, discovery, exclude, now)
+  const written = await b.writeMarker(wallet, marker).catch(() => ({ written: false, reason: 'marker_write_failed' }))
+  Object.assign(audit, {
+    pagesThisScan: discovery?.pagesSucceeded ?? 0, pagesTotal: marker.pagesScanned, rowsThisScan: discovery?.rowsScanned ?? 0,
+    poolManagerCounterpartyRows: discovery?.rows.filter((r) => r.poolManagerCounterparty).length ?? 0,
+    cursorAdvanced: marker.cursor !== prev.cursor || marker.pagesScanned > prev.pagesScanned,
+    completed: marker.completed, stopReason: discovery ? discovery.stopReason : prev.discoveryDone ? prev.stopReason : 'pending_hints_waiting',
+    pendingRemaining: marker.pending.length, markerWriteReason: written.reason,
+  })
+  if (marker.discoveryDone) audit.stopReason = marker.stopReason
+  return { marker: { ...marker, pending: rankRobinhoodBootstrapPending(marker.pending) }, audit }
+}
+
+const BOOTSTRAP_RESULT: Record<RhManifestReplayResult, RobinhoodBootstrapCandidateResult> = {
+  manifest_reverified: 'verified', manifest_rejected: 'rejected', manifest_receipt_unavailable: 'receipt_unavailable', manifest_trace_unavailable: 'trace_unavailable',
+}
+
+/** Classifies each bootstrap-selected hint, retires decided ones from `pending`, and persists the marker. */
+async function settleManifestBootstrap(
+  ctx: Ctx, wallet: string, boot: ManifestBootstrapRun, selected: readonly RhSelectedCandidate[], outcomes: readonly CandidateOutcome[],
+  relayedTraced: ReadonlySet<string>, manifestAudit: RhVerifiedSwapManifestAudit | undefined,
+): Promise<void> {
+  const b = ctx.deps.manifestBootstrap
+  if (!boot.marker || !b) return
+  const results = new Map<string, RobinhoodBootstrapCandidateResult>()
+  const hint = new Map(boot.marker.pending.map((p) => [p.txHash, p]))
+  for (const c of selected) {
+    if (c.source !== 'manifest_bootstrap') continue
+    const o = outcomes.find((x) => x.txHash === c.txHash)
+    const result = o ? BOOTSTRAP_RESULT[manifestReplayResult(o, ctx, relayedTraced)] : null
+    if (result) results.set(c.txHash, result)
+    boot.audit.selectedCandidates.push({ txHash: c.txHash, blockNumber: hint.get(c.txHash)?.blockNumber ?? null, poolManagerCounterparty: hint.get(c.txHash)?.poolManagerCounterparty ?? false, selectionRank: c.selectionRank, result })
+  }
+  boot.audit.verifiedCount = [...results.values()].filter((r) => r === 'verified').length
+  // A hint the normal lanes selected this scan was verified there (and recorded if accepted): retire it too.
+  const covered = new Map(results)
+  for (const c of selected) if (c.source !== 'manifest_bootstrap' && hint.has(c.txHash)) covered.set(c.txHash, 'rejected')
+  boot.audit.writtenCount = manifestAudit && manifestAudit.written > 0 && !manifestAudit.writeFailed ? boot.audit.verifiedCount : 0
+  const settled = settleRobinhoodManifestBootstrapMarker(boot.marker, covered, ctx.deps.now())
+  const written = await b.writeMarker(wallet, settled).catch(() => ({ written: false, reason: 'marker_write_failed' }))
+  boot.audit.completed = settled.completed
+  boot.audit.pendingRemaining = settled.pending.length
+  boot.audit.markerWriteReason = written.reason
+  console.warn('[robinhood-manifest-bootstrap-audit]', { wallet, ...boot.audit })
 }
 
 /**

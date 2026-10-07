@@ -44,7 +44,7 @@ import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureE
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTransfersForTx, storedRobinhoodNativeTrace } from './robinhoodNativeTrace'
 import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
-import { readRobinhoodVerifiedSwapManifest, recordRobinhoodVerifiedSwaps } from './robinhoodVerifiedSwapManifest'
+import { readRobinhoodVerifiedSwapManifest, recordRobinhoodVerifiedSwaps, readRobinhoodManifestBootstrapMarker, writeRobinhoodManifestBootstrapMarker } from './robinhoodVerifiedSwapManifest'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
 import { dexScreenerPairIsRequestedPricedToken } from './clarkMarketDataProviders'
 import { fetchCoingeckoEthUsdRecent } from './coingeckoOnchainOhlcv'
@@ -55,7 +55,7 @@ import {
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
 } from './robinhoodSwapDecoder'
 import {
-  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutAddressTokenBalances, getBlockscoutHistoricalTokenInbounds, getBlockscoutTokenHistoryInbounds,
+  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers, getBlockscoutWalletTokenTransferPages, getBlockscoutAddressTokenBalances, getBlockscoutHistoricalTokenInbounds, getBlockscoutTokenHistoryInbounds,
   getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
   buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
   type BlockscoutEvidenceAudit, type BlockscoutAddressTokenBalance,
@@ -1719,6 +1719,11 @@ export async function scanRobinhoodWallet(
     : {
         ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), nativeTraceCached: storedRobinhoodNativeTrace,
         verifiedSwapManifest: { read: readRobinhoodVerifiedSwapManifest, record: recordRobinhoodVerifiedSwaps },
+        manifestBootstrap: {
+          configured: isRobinhoodBlockscoutConfigured,
+          readMarker: readRobinhoodManifestBootstrapMarker, writeMarker: writeRobinhoodManifestBootstrapMarker,
+          discover: (target, cursor, caps) => getBlockscoutWalletTokenTransferPages(target, cursor, fetchImpl, caps),
+        },
         historicalTokenInbounds: (targetWallet, token, beforeTimestampSec, deadlineAt) => getBlockscoutHistoricalTokenInbounds(
           targetWallet, token, beforeTimestampSec, fetchImpl,
           { maxPages: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxPages, maxCandidates: ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates, deadlineAt },

@@ -139,3 +139,182 @@ export async function recordRobinhoodVerifiedSwaps(
     return { written: 0, skippedOverCap, writeFailed: true, reason: 'manifest_write_failed' }
   }
 }
+
+// ── Manifest bootstrap (empty manifest → bounded, resumable historical discovery) ─────────────────────────────
+//
+// Discovery reads the wallet's paginated Blockscout ERC-20 transfers. A row is ONLY a candidate hint: the tx is
+// re-fetched and run through the unchanged verifier like any other candidate, and only a current-scan acceptance
+// is written to the manifest. The marker persists the resume cursor so each scan continues where the last one
+// stopped (never page 1 again), bounded per scan and per wallet lifetime. Once started, a bootstrap keeps resuming
+// even after the manifest gains entries, until history is exhausted, the lifetime page cap is hit, or the marker
+// completes. Hint rows that were found but not yet tried wait in a bounded `pending` list.
+
+export const ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS = {
+  maxPagesPerScan: 4,
+  maxPagesLifetime: 12,
+  deadlineMs: 4_000,
+  maxCandidatesPerScan: 8,
+  maxPending: 64,
+  /** A pending hint whose proof was transiently unavailable is retried this many times in total. */
+  maxAttempts: 3,
+  /** Consecutive scans whose discovery failed before any page succeeded; then the marker completes. */
+  maxConsecutiveFailures: 3,
+} as const
+
+export type RobinhoodBootstrapTransferRow = {
+  txHash: string
+  blockNumber: number | null
+  timestampMs: number | null
+  token: string | null
+  /** The wallet's counterparty on this transfer is the V4 PoolManager — a structural hint, never proof. */
+  poolManagerCounterparty: boolean
+}
+export type RobinhoodBootstrapDiscovery = {
+  rows: RobinhoodBootstrapTransferRow[]
+  pagesRequested: number
+  pagesSucceeded: number
+  rowsScanned: number
+  /** Cursor to resume from: advanced only past pages that succeeded; null once history is exhausted. */
+  nextCursor: string | null
+  exhausted: boolean
+  stopReason: string
+}
+export type RobinhoodBootstrapPending = { txHash: string; blockNumber: number | null; poolManagerCounterparty: boolean; attempts: number }
+export type RobinhoodManifestBootstrapMarker = {
+  schemaVersion: 1
+  wallet: string
+  cursor: string | null
+  pagesScanned: number
+  rowsScanned: number
+  /** Discovery is finished (exhausted / lifetime cap / unrecoverable cursor / repeated failures). */
+  discoveryDone: boolean
+  completed: boolean
+  completedAt: number | null
+  stopReason: string | null
+  updatedAt: number
+  consecutiveFailures: number
+  pending: RobinhoodBootstrapPending[]
+}
+
+type MarkerKv = Pick<typeof vercelKv, 'get' | 'set'>
+let markerKvOverrideForTest: MarkerKv | null = null
+export function __setRobinhoodManifestBootstrapKvForTest(client: MarkerKv | null): void { markerKvOverrideForTest = client }
+const markerConfigured = () => markerKvOverrideForTest !== null || Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+
+export function robinhoodManifestBootstrapKey(wallet: string): string {
+  return `robinhood:verified-swap-manifest-bootstrap:v1:${wallet.toLowerCase()}`
+}
+
+const nullableBlock = (v: unknown) => v === null || nonNegInt(v)
+
+/** PURE. A stored marker is used only if it is exactly this schema for this wallet. */
+export function validateRobinhoodManifestBootstrapMarker(raw: unknown, wallet: string): RobinhoodManifestBootstrapMarker | null {
+  const value = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) as unknown } catch { return null } })() : raw
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const r = value as Record<string, unknown>
+  if (r.schemaVersion !== 1 || r.wallet !== wallet.toLowerCase()) return null
+  if (r.cursor !== null && (typeof r.cursor !== 'string' || !/^[A-Za-z0-9_.~%=&+-]{1,512}$/.test(r.cursor))) return null
+  if (!nonNegInt(r.pagesScanned) || !nonNegInt(r.rowsScanned) || !nonNegInt(r.updatedAt) || !nonNegInt(r.consecutiveFailures)) return null
+  if (typeof r.discoveryDone !== 'boolean' || typeof r.completed !== 'boolean') return null
+  if (r.completedAt !== null && !nonNegInt(r.completedAt)) return null
+  if (r.stopReason !== null && typeof r.stopReason !== 'string') return null
+  if (!Array.isArray(r.pending) || r.pending.length > ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS.maxPending) return null
+  for (const p of r.pending) {
+    if (!p || typeof p !== 'object') return null
+    const x = p as Record<string, unknown>
+    if (typeof x.txHash !== 'string' || !TX_HASH.test(x.txHash) || !nullableBlock(x.blockNumber) || typeof x.poolManagerCounterparty !== 'boolean' || !nonNegInt(x.attempts)) return null
+  }
+  return r as RobinhoodManifestBootstrapMarker
+}
+
+export async function readRobinhoodManifestBootstrapMarker(wallet: string): Promise<{ marker: RobinhoodManifestBootstrapMarker | null; reason: string | null }> {
+  const w = wallet.toLowerCase()
+  if (!ADDRESS.test(w)) return { marker: null, reason: 'invalid_wallet' }
+  if (!markerConfigured()) return { marker: null, reason: 'kv_not_configured' }
+  try {
+    const raw = await bounded((markerKvOverrideForTest ?? vercelKv).get<unknown>(robinhoodManifestBootstrapKey(w)), READ_TIMEOUT_MS)
+    if (raw == null) return { marker: null, reason: 'marker_absent' }
+    const marker = validateRobinhoodManifestBootstrapMarker(raw, w)
+    return marker ? { marker, reason: null } : { marker: null, reason: 'invalid_marker' }
+  } catch {
+    return { marker: null, reason: 'marker_lookup_failed' }
+  }
+}
+
+/** Never regresses a newer stored marker (more pages scanned, or completed) written by a concurrent scan. */
+export async function writeRobinhoodManifestBootstrapMarker(wallet: string, marker: RobinhoodManifestBootstrapMarker): Promise<{ written: boolean; reason: string | null }> {
+  const w = wallet.toLowerCase()
+  if (!validateRobinhoodManifestBootstrapMarker(marker, w)) return { written: false, reason: 'invalid_marker' }
+  if (!markerConfigured()) return { written: false, reason: 'kv_not_configured' }
+  try {
+    const client = markerKvOverrideForTest ?? vercelKv
+    const stored = validateRobinhoodManifestBootstrapMarker(await bounded(client.get<unknown>(robinhoodManifestBootstrapKey(w)), READ_TIMEOUT_MS), w)
+    if (stored && (stored.pagesScanned > marker.pagesScanned || (stored.completed && !marker.completed))) return { written: false, reason: 'newer_marker_stored' }
+    await bounded(client.set(robinhoodManifestBootstrapKey(w), JSON.stringify(marker)), WRITE_TIMEOUT_MS)
+    return { written: true, reason: null }
+  } catch {
+    return { written: false, reason: 'marker_write_failed' }
+  }
+}
+
+export function newRobinhoodManifestBootstrapMarker(wallet: string, now: number): RobinhoodManifestBootstrapMarker {
+  return { schemaVersion: 1, wallet: wallet.toLowerCase(), cursor: null, pagesScanned: 0, rowsScanned: 0, discoveryDone: false, completed: false, completedAt: null, stopReason: null, updatedAt: now, consecutiveFailures: 0, pending: [] }
+}
+
+/** PURE. PoolManager counterparty first, then blockNumber DESC (known first), then txHash ASC. */
+export function rankRobinhoodBootstrapPending(pending: readonly RobinhoodBootstrapPending[]): RobinhoodBootstrapPending[] {
+  return [...pending].sort((a, b) => Number(b.poolManagerCounterparty) - Number(a.poolManagerCounterparty)
+    || (b.blockNumber ?? -1) - (a.blockNumber ?? -1) || a.txHash.localeCompare(b.txHash))
+}
+
+/** PURE. Folds one discovery pass into the marker: cursor/pages/rows, stop state, and the deduped pending hints. */
+export function advanceRobinhoodManifestBootstrapMarker(
+  prev: RobinhoodManifestBootstrapMarker, discovery: RobinhoodBootstrapDiscovery | null, exclude: ReadonlySet<string>, now: number,
+): RobinhoodManifestBootstrapMarker {
+  const L = ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS
+  const next: RobinhoodManifestBootstrapMarker = { ...prev, pending: prev.pending.map((p) => ({ ...p })), updatedAt: now }
+  if (discovery) {
+    if (discovery.pagesSucceeded > 0) {
+      next.cursor = discovery.nextCursor
+      next.pagesScanned = prev.pagesScanned + discovery.pagesSucceeded
+      next.rowsScanned = prev.rowsScanned + discovery.rowsScanned
+      next.consecutiveFailures = 0
+    }
+    const failedBeforeAnyPage = discovery.pagesSucceeded === 0 && !discovery.exhausted
+    if (failedBeforeAnyPage && discovery.stopReason !== 'page_cap') next.consecutiveFailures = prev.consecutiveFailures + 1
+    next.stopReason = discovery.stopReason
+    if (discovery.exhausted) { next.discoveryDone = true; next.stopReason = 'history_exhausted' }
+    else if (discovery.stopReason === 'repeated_cursor' || discovery.stopReason === 'invalid_cursor') next.discoveryDone = true
+    else if (next.pagesScanned >= L.maxPagesLifetime) { next.discoveryDone = true; next.stopReason = 'lifetime_page_cap' }
+    else if (next.consecutiveFailures >= L.maxConsecutiveFailures) { next.discoveryDone = true; next.stopReason = 'failure_cap' }
+    const byHash = new Map(next.pending.map((p) => [p.txHash, p]))
+    for (const row of discovery.rows) {
+      if (exclude.has(row.txHash)) continue
+      const old = byHash.get(row.txHash)
+      byHash.set(row.txHash, old
+        ? { ...old, poolManagerCounterparty: old.poolManagerCounterparty || row.poolManagerCounterparty, blockNumber: old.blockNumber ?? row.blockNumber }
+        : { txHash: row.txHash, blockNumber: row.blockNumber, poolManagerCounterparty: row.poolManagerCounterparty, attempts: 0 })
+    }
+    next.pending = rankRobinhoodBootstrapPending([...byHash.values()]).slice(0, L.maxPending)
+  }
+  next.pending = next.pending.filter((p) => !exclude.has(p.txHash))
+  return next
+}
+
+export type RobinhoodBootstrapCandidateResult = 'verified' | 'rejected' | 'receipt_unavailable' | 'trace_unavailable'
+
+/** PURE. After verification: a decided hint leaves `pending`; a transiently unprovable one is retried (bounded). */
+export function settleRobinhoodManifestBootstrapMarker(
+  marker: RobinhoodManifestBootstrapMarker, results: ReadonlyMap<string, RobinhoodBootstrapCandidateResult>, now: number,
+): RobinhoodManifestBootstrapMarker {
+  const pending: RobinhoodBootstrapPending[] = []
+  for (const p of marker.pending) {
+    const r = results.get(p.txHash)
+    if (!r) { pending.push(p); continue }
+    if (r === 'verified' || r === 'rejected') continue
+    const attempts = p.attempts + 1
+    if (attempts < ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS.maxAttempts) pending.push({ ...p, attempts })
+  }
+  const completed = marker.discoveryDone && pending.length === 0
+  return { ...marker, pending, completed, completedAt: completed ? (marker.completedAt ?? now) : null, updatedAt: now }
+}
