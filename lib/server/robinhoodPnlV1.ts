@@ -222,7 +222,9 @@ export type RobinhoodPnlV1IngestionAudit = {
     totalCap: number; mainLiveUsed: number; recoveryLiveUsed: number; totalLiveUsed: number
     storedProofHitsMain: number; storedProofHitsRecovery: number; mainEligibleDeferredForRecovery: number
     recoveryEligible: number; recoverySelected: number; reservedSlotReleasedToMain: boolean
+    relayedDiagnosticLiveUsed?: number
   }
+  relayedNativeTraceDiagnostics?: { candidates: number; verdicts: Record<RhRelayedDiagnosticVerdict, number> }
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
@@ -429,7 +431,28 @@ type Ctx = {
   traceReplay?: Map<string, RhNativeTransfer[] | null>
   /** Request-scoped live native-trace allocator, shared by main verification and every recovery lane (ctx copies share it). */
   traceBudget?: RhLiveTraceAllocator
+  /** Relayed V4-only native-input receipts eligible for a DIAGNOSTIC trace only (never acceptance). */
+  relayedTraceRequests?: Map<string, RhRelayedTraceRequest>
 }
+
+/**
+ * A receipt the wallet did not send (rejected wallet_not_tx_sender) that still looks like a native-funded V4 buy for
+ * the wallet: canonical V4 only, no other venue, no liquidity event, one connected route the unchanged verifier
+ * accepts for a native input the V4 deltas imply, input native, output to the wallet, no unrelated wallet token flow.
+ * Only such receipts may get a diagnostic trace, with the lowest priority; the verdict never changes the outcome.
+ */
+export type RhRelayedTraceRequest = {
+  txHash: string
+  txFrom: string
+  txTo: string | null
+  timestampSec: number | null
+  blockNumber: number
+  routeInputNativeRaw: bigint
+  routeOutputToken: string
+  routeOutputRaw: bigint
+  poolKeys: ReadonlyMap<string, RhPoolKey>
+}
+export type RhRelayedDiagnosticVerdict = 'wallet_funded_route_candidate' | 'externally_funded_route' | 'no_wallet_native_debit' | 'ambiguous_trace' | 'trace_unavailable'
 
 /** Live native-trace slots per scan — the Blockscout native_trace lane cap (NATIVE_TRACE_MAX_LOOKUPS). Unchanged. */
 export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 3
@@ -455,10 +478,13 @@ export type RhLiveTraceAllocator = {
   recoveryEligible: number
   recoverySelected: number
   reservedSlotReleasedToMain: boolean
+  /** Diagnostic-only traces for relayed candidates: lowest priority, otherwise-unused capacity only. */
+  relayedDiagnosticLiveUsed: number
 }
 const newLiveTraceAllocator = (cap: number): RhLiveTraceAllocator => ({
   cap, used: 0, mainUsed: 0, recoveryUsed: 0, resolved: new Map(), storedProofHitsMain: 0, storedProofHitsRecovery: 0,
   mainDeferred: [], mainEligibleDeferredForRecovery: 0, recoveryEligible: 0, recoverySelected: 0, reservedSlotReleasedToMain: false,
+  relayedDiagnosticLiveUsed: 0,
 })
 export type RhNativeTracePriorityClass = 'p2_single_hop_v4_one_erc20_side' | 'p3_native_dependent' | 'p4_complex_multi_hop'
 export type RhNativeTraceRequest = {
@@ -724,6 +750,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
     }
   }
   const isSender = receipt.from === lower(wallet)
+  if (ctx.traceMode === 'probe' && !isSender && rejection === 'wallet_not_tx_sender') registerRelayedTraceProbe(ctx, wallet, txHash, receipt, poolKeys, timestampSec)
   const mixed = poolIds.length > 0 && receipt.logs.some((l) => l.topics[0] === V2_SWAP_TOPIC0 || l.topics[0] === V3_SWAP_TOPIC0)
   const nativeTouched = [...poolKeys.values()].some((k) => k.currency0 === RH_NATIVE || k.currency1 === RH_NATIVE)
   const N = receipt.blockNumber
@@ -1068,6 +1095,116 @@ async function planRecoveryTraces(
   }
 }
 
+
+// ── Relayed V4 native-input diagnostics (no acceptance) ─────────────────────────────────────────────────
+function registerRelayedTraceProbe(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt, poolKeys: ReadonlyMap<string, RhPoolKey>, timestampSec: number | null): void {
+  if (!ctx.relayedTraceRequests || receipt.status !== 1 || receipt.from === wallet) return
+  if (receipt.logs.some((l) => LIQUIDITY_TOPICS.has(l.topics[0] ?? '') || OTHER_VENUE_SWAP_TOPICS.has(l.topics[0] ?? '')
+    || (l.topics[0] === V4_SWAP_TOPIC0 && l.address !== POOL_MANAGER))) return
+  const swaps = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER)
+  if (swaps.length === 0 || swaps.some((l) => !poolKeys.has(l.topics[1]))) return
+  // The route the unchanged verifier accepts when the wallet pays one of the native inputs its V4 deltas imply.
+  const nativeInputs = new Set<bigint>()
+  for (const l of swaps) {
+    const key = poolKeys.get(l.topics[1])!
+    const native = lower(key.currency0) === RH_NATIVE ? signedWord(l.data, 0) : lower(key.currency1) === RH_NATIVE ? signedWord(l.data, 1) : null
+    if (native != null && native !== ZERO) nativeInputs.add(abs(native))
+  }
+  const accepted = [...nativeInputs].map((x) => verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet: -x }))
+    .filter((r): r is Extract<RhRouteResult, { ok: true }> => r.ok && r.inputToken === RH_NATIVE && r.outputToken !== RH_NATIVE)
+  if (accepted.length !== 1) return // none, or more than one reading: not one connected route
+  const route = accepted[0]
+  ctx.relayedTraceRequests.set(txHash, {
+    txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec, blockNumber: receipt.blockNumber,
+    routeInputNativeRaw: BigInt(route.hops[0].inRaw), routeOutputToken: route.outputToken, routeOutputRaw: route.outputRaw, poolKeys,
+  })
+}
+
+/** PURE. The diagnostic verdict for one relayed candidate from its exact target-tx trace. Never acceptance. */
+export function robinhoodRelayedDiagnosticVerdict(input: {
+  wallet: string; receipt: RhReceipt; poolKeys: ReadonlyMap<string, RhPoolKey>; txValue: bigint | null
+  routeInputNativeRaw: bigint; trace: RhNativeTraceResult | null
+}): {
+  verdict: RhRelayedDiagnosticVerdict; traceComplete: boolean; traceNativeFromWalletRaw: string | null; traceNativeToWalletRaw: string | null
+  tracedWalletNetRaw: string | null; walletNativeDebitMatchesRoute: boolean; competingNativePayers: string[]; topLevelValueIntoWallet: string | null
+} {
+  const wallet = lower(input.wallet)
+  const { receipt } = input
+  const topLevelIntoWallet = receipt.to === wallet ? input.txValue : ZERO
+  const base = {
+    traceComplete: false, traceNativeFromWalletRaw: null, traceNativeToWalletRaw: null, tracedWalletNetRaw: null,
+    walletNativeDebitMatchesRoute: false, competingNativePayers: [] as string[], topLevelValueIntoWallet: topLevelIntoWallet?.toString() ?? null,
+  }
+  const result = input.trace?.audit?.result ?? (input.trace?.transfers ? (input.trace.transfers.length ? 'proven' : 'empty') : null)
+  if (!input.trace?.transfers) {
+    const ambiguous = result === 'malformed' || result === 'unknown_execution_status' || result === 'pagination_cap_exhausted'
+    return { ...base, verdict: ambiguous ? 'ambiguous_trace' : 'trace_unavailable' }
+  }
+  const ev = deriveRhNativeEvidence({
+    wallet, isSender: false, gasPaid: ZERO, txValue: input.txValue, balanceBefore: null, balanceAfter: null,
+    nonceBefore: null, nonceAfter: null, trace: input.trace.transfers, txFrom: receipt.from, txTo: receipt.to,
+  })
+  const fromWallet = ev.traceNativeFromWallet != null ? BigInt(ev.traceNativeFromWallet) : null
+  const out = { ...base, traceComplete: true, traceNativeFromWalletRaw: ev.traceNativeFromWallet, traceNativeToWalletRaw: ev.traceNativeToWallet, tracedWalletNetRaw: ev.nativeNetExGas?.toString() ?? null }
+  if (ev.status !== 'proven_target_tx_native_transfer' || ev.nativeNetExGas == null || fromWallet == null) return { ...out, verdict: 'ambiguous_trace' }
+  // Who paid native into this tx: net native outflow per address (successful internal transfers + the top-level value).
+  // The PoolManager pays out swap proceeds and the wallet is the subject; any other net payer is a competing payer.
+  const net = new Map<string, bigint>()
+  const bump = (a: string, v: bigint) => net.set(a, (net.get(a) ?? ZERO) + v)
+  for (const t of input.trace.transfers) if (t.success === true && t.value > ZERO) { bump(lower(t.from), -t.value); bump(lower(t.to), t.value) }
+  if (input.txValue != null && input.txValue > ZERO && receipt.to) { bump(receipt.from, -input.txValue); bump(receipt.to, input.txValue) }
+  const competing = [...net].filter(([a, v]) => v < ZERO && a !== wallet && a !== POOL_MANAGER).map(([a]) => a).sort()
+  const matches = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas }).ok
+    && -ev.nativeNetExGas >= input.routeInputNativeRaw
+  const verdict: RhRelayedDiagnosticVerdict = fromWallet === ZERO ? 'no_wallet_native_debit'
+    : ev.nativeNetExGas >= ZERO || competing.length > 0 || (topLevelIntoWallet ?? ZERO) > ZERO ? 'externally_funded_route'
+    : matches ? 'wallet_funded_route_candidate'
+    : 'ambiguous_trace'
+  return { ...out, walletNativeDebitMatchesRoute: matches, competingNativePayers: competing, verdict }
+}
+
+/**
+ * Lowest priority: after main verification, recovery and the release back to main. Uses only stored proofs (free) and
+ * otherwise-unused live slots of the request allocator. Logs one [robinhood-relayed-native-trace-audit] per candidate.
+ * Outcomes are never changed: these receipts stay wallet_not_tx_sender.
+ */
+async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string): Promise<Record<RhRelayedDiagnosticVerdict, number>> {
+  const counts: Record<RhRelayedDiagnosticVerdict, number> = { wallet_funded_route_candidate: 0, externally_funded_route: 0, no_wallet_native_debit: 0, ambiguous_trace: 0, trace_unavailable: 0 }
+  const alloc = ctx.traceBudget
+  const requests = [...(ctx.relayedTraceRequests?.values() ?? [])]
+    .sort((a, b) => (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
+  for (const r of requests) {
+    let stored: RhNativeTraceResult | null = null
+    if (ctx.deps.nativeTraceCached && Date.now() < ctx.deadlineAt) stored = await Promise.resolve().then(() => ctx.deps.nativeTraceCached!(r.txHash)).catch(() => null)
+    let trace: RhNativeTraceResult | null = stored?.transfers ? stored : null
+    let ordinal: number | null = null
+    if (!trace && alloc && alloc.used < alloc.cap && Date.now() < ctx.deadlineAt) {
+      alloc.used += 1
+      alloc.relayedDiagnosticLiveUsed += 1
+      ordinal = alloc.used
+      trace = await requestNativeTrace(ctx, r.txHash)
+      logNativeTrace(wallet, r.txHash, trace)
+    }
+    const receipt = await receiptCache.get(r.txHash)?.catch(() => null)
+    const [txr] = trace?.transfers && receipt ? await call(ctx, [{ method: 'eth_getTransactionByHash', params: [r.txHash] }]) : [null]
+    const txValue = recoveryTxValue(txr)
+    const v = receipt ? robinhoodRelayedDiagnosticVerdict({ wallet, receipt, poolKeys: r.poolKeys, txValue, routeInputNativeRaw: r.routeInputNativeRaw, trace }) : null
+    const verdict: RhRelayedDiagnosticVerdict = v?.verdict ?? 'trace_unavailable'
+    counts[verdict] += 1
+    console.warn('[robinhood-relayed-native-trace-audit]', {
+      txHash: r.txHash, txFrom: r.txFrom, txTo: r.txTo, routeInputNativeRaw: r.routeInputNativeRaw.toString(),
+      routeOutputToken: r.routeOutputToken, routeOutputRaw: r.routeOutputRaw.toString(),
+      storedTraceHit: stored?.transfers != null, selectedForDiagnosticTrace: ordinal != null, liveBudgetOrdinal: ordinal,
+      traceComplete: v?.traceComplete ?? false, traceNativeFromWalletRaw: v?.traceNativeFromWalletRaw ?? null, traceNativeToWalletRaw: v?.traceNativeToWalletRaw ?? null,
+      tracedWalletNetRaw: v?.tracedWalletNetRaw ?? null, walletNativeDebitMatchesRoute: v?.walletNativeDebitMatchesRoute ?? false,
+      competingNativePayers: v?.competingNativePayers ?? [], topLevelValueIntoWallet: v?.topLevelValueIntoWallet ?? null,
+      diagnosticVerdict: verdict,
+      skippedReason: trace ? null : !alloc || alloc.used >= alloc.cap ? 'no_unused_live_capacity' : Date.now() >= ctx.deadlineAt ? 'pnl_deadline_reached' : null,
+      acceptance: 'unchanged_wallet_not_tx_sender',
+    })
+  }
+  return counts
+}
 
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
   const out = (o: Partial<CandidateOutcome>): CandidateOutcome => ({ txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: null, detail: null, ...o })
@@ -2026,6 +2163,7 @@ export async function computeRobinhoodPnlV1(params: {
   // Phase 1: classify every receipt without any native trace (records which ones a trace could change).
   ctx.traceMode = 'probe'
   ctx.traceRequests = new Map()
+  ctx.relayedTraceRequests = new Map()
   const outcomes = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch(() => threw(c.txHash)))
   // Phase 2: stored proofs, then bounded live traces in priority order. Phase 3: re-verify only the traced receipts
   // through the unchanged classifier with their real trace.
@@ -2068,17 +2206,22 @@ export async function computeRobinhoodPnlV1(params: {
   let ds = await downstream()
   if (await releaseReservedSlotsToMain(ctx, wallet, outcomes, traceSelection.summary, threw)) ds = await downstream()
   const { swaps, evidence, recovery, intermediate, deep } = ds
+  // Diagnostics only, with whatever live capacity is left; never changes an outcome.
+  const relayedDiagnostics = await runRelayedNativeTraceDiagnostics(ctx, wallet)
+  ingestion.relayedNativeTraceDiagnostics = { candidates: ctx.relayedTraceRequests?.size ?? 0, verdicts: relayedDiagnostics }
   console.warn('[robinhood-native-trace-global-budget-audit]', {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
     mainEligibleDeferredForRecovery: alloc.mainEligibleDeferredForRecovery, recoveryEligible: alloc.recoveryEligible,
     recoverySelected: alloc.recoverySelected, reservedSlotReleasedToMain: alloc.reservedSlotReleasedToMain,
+    relayedDiagnosticLiveUsed: alloc.relayedDiagnosticLiveUsed,
   })
   ingestion.nativeTraceGlobalBudget = {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
     mainEligibleDeferredForRecovery: alloc.mainEligibleDeferredForRecovery, recoveryEligible: alloc.recoveryEligible,
     recoverySelected: alloc.recoverySelected, reservedSlotReleasedToMain: alloc.reservedSlotReleasedToMain,
+    relayedDiagnosticLiveUsed: alloc.relayedDiagnosticLiveUsed,
   }
   for (const o of outcomes) {
     if (o.receiptFetched) ingestion.receiptsFetched += 1
