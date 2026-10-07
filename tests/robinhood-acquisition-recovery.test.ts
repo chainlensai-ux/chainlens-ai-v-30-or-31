@@ -592,7 +592,10 @@ test('multiple deep buys enter FIFO chronologically and stop when inventory cove
   assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 2)
   assert.equal(r.deepAcquisition?.unmatchedSellRawAfter, '0')
   assert.equal(r.deepAcquisition?.closedLotsAdded, 2)
-  assert.equal(receiptCalls, 3) // sell plus the two needed buys; third older candidate is not proved
+  // Native-trace planning reads the bounded candidates' receipts up front (to rank live trace slots), but proofs
+  // still stop at coverage: the third, older candidate is never proved.
+  assert.equal(receiptCalls, 4)
+  assert.equal(r.deepAcquisition?.receiptsAttempted, 2)
 })
 
 test('four current-sample distributions remain non-buys before deeper history is searched', async () => {

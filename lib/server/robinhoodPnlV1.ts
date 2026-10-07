@@ -218,6 +218,11 @@ export type RobinhoodPnlV1IngestionAudit = {
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
   deepAcquisition?: RhDeepAcquisitionSummary | null
   nativeTraceSelection?: RhNativeTraceSelectionSummary
+  nativeTraceGlobalBudget?: {
+    totalCap: number; mainLiveUsed: number; recoveryLiveUsed: number; totalLiveUsed: number
+    storedProofHitsMain: number; storedProofHitsRecovery: number; mainEligibleDeferredForRecovery: number
+    recoveryEligible: number; recoverySelected: number; reservedSlotReleasedToMain: boolean
+  }
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
@@ -422,10 +427,39 @@ type Ctx = {
   traceMode?: 'live' | 'probe' | 'replay'
   traceRequests?: Map<string, RhNativeTraceRequest>
   traceReplay?: Map<string, RhNativeTransfer[] | null>
+  /** Request-scoped live native-trace allocator, shared by main verification and every recovery lane (ctx copies share it). */
+  traceBudget?: RhLiveTraceAllocator
 }
 
 /** Live native-trace slots per scan — the Blockscout native_trace lane cap (NATIVE_TRACE_MAX_LOOKUPS). Unchanged. */
 export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 3
+/** Of the request's live slots, this many are held back from main verification for acquisition / deep recovery. */
+export const ROBINHOOD_NATIVE_TRACE_RECOVERY_RESERVE = 1
+
+/**
+ * ONE live native-trace budget per Robinhood PnL request (main verification + acquisition recovery + deep acquisition).
+ * Stored proofs (memory / persistent) never take a slot. Every resolved trace is kept in `resolved`, and every later
+ * verification replays from it, so no lane can reach the provider outside this allocator.
+ */
+export type RhLiveTraceAllocator = {
+  cap: number
+  used: number
+  mainUsed: number
+  recoveryUsed: number
+  resolved: Map<string, RhNativeTransfer[] | null>
+  storedProofHitsMain: number
+  storedProofHitsRecovery: number
+  /** Main eligible receipts that got no slot, in main priority order. */
+  mainDeferred: RhNativeTraceRequest[]
+  mainEligibleDeferredForRecovery: number
+  recoveryEligible: number
+  recoverySelected: number
+  reservedSlotReleasedToMain: boolean
+}
+const newLiveTraceAllocator = (cap: number): RhLiveTraceAllocator => ({
+  cap, used: 0, mainUsed: 0, recoveryUsed: 0, resolved: new Map(), storedProofHitsMain: 0, storedProofHitsRecovery: 0,
+  mainDeferred: [], mainEligibleDeferredForRecovery: 0, recoveryEligible: 0, recoverySelected: 0, reservedSlotReleasedToMain: false,
+})
 export type RhNativeTracePriorityClass = 'p2_single_hop_v4_one_erc20_side' | 'p3_native_dependent' | 'p4_complex_multi_hop'
 export type RhNativeTraceRequest = {
   txHash: string
@@ -840,9 +874,10 @@ const PRIORITY_RANK: Record<RhNativeTracePriorityClass, number> = { p2_single_ho
  * priority order (class, then timestamp ASC, then txHash ASC) up to the live cap. Logs one selection line per
  * receipt candidate plus a summary. Returns the traces to replay.
  */
-async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly CandidateOutcome[]): Promise<{ replay: Map<string, RhNativeTransfer[] | null>; summary: RhNativeTraceSelectionSummary }> {
+async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly CandidateOutcome[], mainLiveCap: number): Promise<{ replay: Map<string, RhNativeTransfer[] | null>; summary: RhNativeTraceSelectionSummary }> {
+  const alloc = ctx.traceBudget!
   const requests = ctx.traceRequests ?? new Map<string, RhNativeTraceRequest>()
-  const cap = Math.max(0, ctx.deps.nativeTraceLiveCap ?? ROBINHOOD_NATIVE_TRACE_LIVE_CAP)
+  const cap = alloc.cap
   const eligible = [...requests.values()].filter((r) => r.nativeProofCouldChangeOutcome)
     .sort((a, b) => PRIORITY_RANK[a.priorityClass] - PRIORITY_RANK[b.priorityClass]
       || (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
@@ -859,19 +894,36 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
     : eligible.map(() => null)
   eligible.forEach((r, i) => {
     const hit = stored[i]
-    if (hit?.transfers) { cacheHit.add(r.txHash); replay.set(r.txHash, logNativeTrace(wallet, r.txHash, hit)) }
+    if (hit?.transfers) {
+      cacheHit.add(r.txHash)
+      alloc.storedProofHitsMain += 1
+      replay.set(r.txHash, logNativeTrace(wallet, r.txHash, hit))
+      alloc.resolved.set(r.txHash, hit.transfers)
+    }
   })
   const live = eligible.filter((r) => !cacheHit.has(r.txHash))
   // Past the PnL deadline no live trace is started (requestNativeTrace also re-checks per request).
   const deadlineReached = Date.now() >= ctx.deadlineAt
-  const selected = deadlineReached ? [] : live.slice(0, cap)
-  const ordinal = new Map(selected.map((r, i) => [r.txHash, i + 1]))
+  const selected = deadlineReached ? [] : live.slice(0, Math.max(0, Math.min(mainLiveCap, cap - alloc.used)))
+  const ordinal = new Map(selected.map((r, i) => [r.txHash, alloc.used + i + 1]))
+  alloc.used += selected.length
+  alloc.mainUsed += selected.length
   const results = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => requestNativeTrace(ctx, r.txHash))
-  selected.forEach((r, i) => replay.set(r.txHash, logNativeTrace(wallet, r.txHash, results[i])))
-  // Eligible but beyond the live cap: no request at all (the slot would not exist); said so explicitly.
-  for (const r of live.slice(selected.length)) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, deadlineReached ? 'not_attempted_deadline' : 'budget_exhausted') })
+  selected.forEach((r, i) => {
+    const transfers = logNativeTrace(wallet, r.txHash, results[i])
+    replay.set(r.txHash, transfers)
+    alloc.resolved.set(r.txHash, transfers)
+  })
+  // Eligible without a slot now: the first ones fit under the request cap but wait for recovery's reserved slot
+  // (released back to main if recovery does not need it); the rest exceed the cap. No request is made for either.
+  alloc.mainDeferred = deadlineReached ? [] : live.slice(selected.length)
+  const reservedRoom = Math.max(0, cap - alloc.used)
+  alloc.mainEligibleDeferredForRecovery = Math.min(alloc.mainDeferred.length, reservedRoom)
+  if (deadlineReached) for (const r of live) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, 'not_attempted_deadline') })
+  const deferredIndex = new Map(alloc.mainDeferred.map((r, i) => [r.txHash, i]))
   for (const o of outcomes) {
     const r = requests.get(o.txHash)
+    const di = deferredIndex.get(o.txHash)
     console.warn('[robinhood-native-trace-selection-audit]', {
       candidateTxHash: o.txHash,
       preTraceClassification: r?.preTraceClassification ?? (o.swap ? 'accepted_without_native_trace' : o.rejection ?? 'no_native_dependency'),
@@ -883,7 +935,8 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       persistentOrMemoryHit: cacheHit.has(o.txHash),
       liveBudgetOrdinal: ordinal.get(o.txHash) ?? null,
       skippedReason: !r ? 'no_native_dependency' : !r.nativeProofCouldChangeOutcome ? 'terminal_without_native_trace'
-        : cacheHit.has(o.txHash) || ordinal.has(o.txHash) ? null : deadlineReached ? 'pnl_deadline_reached' : 'live_budget_exhausted',
+        : cacheHit.has(o.txHash) || ordinal.has(o.txHash) ? null : deadlineReached ? 'pnl_deadline_reached'
+        : di != null && di < reservedRoom ? 'deferred_reserved_for_recovery' : 'live_budget_exhausted',
     })
   }
   const summary: RhNativeTraceSelectionSummary = {
@@ -893,12 +946,128 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
     cacheSatisfied: cacheHit.size,
     selectedForLiveTrace: selected.length,
     liveBudgetCap: cap,
-    liveBudgetExhaustedEligibleCount: deadlineReached ? 0 : Math.max(0, live.length - cap),
+    liveBudgetExhaustedEligibleCount: deadlineReached ? 0 : Math.max(0, live.length - selected.length - reservedRoom),
     tracesAvoidedByStructuralPrefilter: [...requests.values()].filter((r) => !r.nativeProofCouldChangeOutcome).length,
   }
   console.warn('[robinhood-native-trace-selection-audit]', { summary })
   return { replay, summary }
 }
+
+/**
+ * After recovery: any live slot it did not use (the reserve, when there was no unmatched sell or no eligible
+ * recovery receipt) goes to the next deferred main receipts in main priority order. Returns true when a receipt's
+ * outcome changed. Deferred receipts still without a slot log budget_exhausted (no request made).
+ */
+async function releaseReservedSlotsToMain(ctx: Ctx, wallet: string, outcomes: CandidateOutcome[], summary: RhNativeTraceSelectionSummary, threw: (h: string) => CandidateOutcome): Promise<boolean> {
+  const alloc = ctx.traceBudget!
+  let changed = false
+  while (alloc.used < alloc.cap && alloc.mainDeferred.length > 0 && Date.now() < ctx.deadlineAt) {
+    const r = alloc.mainDeferred.shift()!
+    alloc.used += 1
+    alloc.mainUsed += 1
+    alloc.reservedSlotReleasedToMain = true
+    summary.selectedForLiveTrace += 1
+    const transfers = logNativeTrace(wallet, r.txHash, await requestNativeTrace(ctx, r.txHash))
+    alloc.resolved.set(r.txHash, transfers)
+    console.warn('[robinhood-native-trace-selection-audit]', {
+      candidateTxHash: r.txHash, preTraceClassification: r.preTraceClassification, terminalWithoutNativeTrace: false,
+      nativeProofCouldChangeOutcome: true, traceEligible: true, priorityClass: r.priorityClass, selectedForLiveTrace: true,
+      persistentOrMemoryHit: false, liveBudgetOrdinal: alloc.used, skippedReason: null, releasedFromRecoveryReserve: true,
+    })
+    const i = outcomes.findIndex((o) => o.txHash === r.txHash)
+    if (i >= 0) {
+      const before = outcomes[i].swap
+      outcomes[i] = await verifyCandidate(ctx, wallet, r.txHash).catch(() => threw(r.txHash))
+      if ((before == null) !== (outcomes[i].swap == null)) changed = true
+    }
+  }
+  for (const r of alloc.mainDeferred) logNativeTrace(wallet, r.txHash, { transfers: null, audit: nativeTraceAuditBase(r.txHash, Date.now() >= ctx.deadlineAt ? 'not_attempted_deadline' : 'budget_exhausted') })
+  alloc.mainDeferred = []
+  return changed
+}
+
+/**
+ * Recovery candidates the wallet itself sent need the exact native trace. Probe each one with the main lane's no-trace
+ * rules; stored proofs are free and resolved now. The request's remaining live slots are reserved for the highest-
+ * priority eligible ones (class, then the recovery's own canonical order, then txHash) but only spent when the proof
+ * loop actually reaches that candidate (`ensureTrace`) — a sell covered earlier leaves the slot unused (and released
+ * to main). Everything resolved lands in the allocator, so the unchanged verifier replays it. `flush` logs one line per
+ * candidate.
+ */
+type RecoveryTracePlan = { preloaded: Map<string, RhReceipt | null>; ensureTrace: (txHash: string) => Promise<void>; flush: () => void }
+async function planRecoveryTraces(
+  ctx: Ctx, recoveryDeadlineAt: number, wallet: string, phase: 'acquisition_recovery' | 'deep_acquisition',
+  candidates: ReadonlyArray<{ txHash: string }>, outcomes: readonly CandidateOutcome[],
+): Promise<RecoveryTracePlan> {
+  const preloaded = new Map<string, RhReceipt | null>()
+  const alloc = ctx.traceBudget
+  if (!alloc) return { preloaded, ensureTrace: async () => {}, flush: () => {} }
+  type Row = { txHash: string; order: number; pre: string; eligible: boolean; req: RhNativeTraceRequest | null; stored: boolean; entitled: boolean; selected: boolean; ordinal: number | null; skipped: string | null }
+  const rows: Row[] = []
+  for (const [order, c] of candidates.entries()) {
+    const row: Row = { txHash: c.txHash, order, pre: 'not_wallet_sent', eligible: false, req: null, stored: false, entitled: false, selected: false, ordinal: null, skipped: 'not_wallet_sent' }
+    rows.push(row)
+    if (outcomes.some((o) => o.txHash === c.txHash)) { Object.assign(row, { pre: 'main_sample_receipt', skipped: 'handled_by_main_verification' }); continue }
+    if (alloc.resolved.has(c.txHash)) { Object.assign(row, { pre: 'native_trace_already_resolved', eligible: true, skipped: null }); continue }
+    if (Date.now() >= recoveryDeadlineAt) { Object.assign(row, { pre: 'not_attempted', skipped: 'recovery_deadline' }); continue }
+    const receipt = await withinRecoveryDeadline(recoveryDeadlineAt, () => loadReceipt(ctx, c.txHash))
+    preloaded.set(c.txHash, receipt) // the proof loop reuses it (a missing receipt is not re-requested)
+    if (!receipt) { Object.assign(row, { pre: 'receipt_unavailable', skipped: 'receipt_unavailable' }); continue }
+    if (receipt.from !== wallet) continue
+    const pctx: Ctx = { ...ctx, traceMode: 'probe', traceRequests: new Map() }
+    const pre = await withinRecoveryDeadline(recoveryDeadlineAt, () => verifyCandidate(pctx, wallet, c.txHash).catch(() => null))
+    const req = pctx.traceRequests!.get(c.txHash) ?? null
+    row.req = req
+    row.pre = req?.preTraceClassification ?? (pre?.swap ? 'accepted_without_native_trace' : pre?.rejection ?? 'not_attempted')
+    row.eligible = req?.nativeProofCouldChangeOutcome ?? false
+    row.skipped = row.eligible ? null : req ? 'terminal_without_native_trace' : 'no_native_dependency'
+  }
+  const eligible = rows.filter((r) => r.eligible && r.req && !alloc.resolved.has(r.txHash))
+  alloc.recoveryEligible += eligible.length
+  const readStored = ctx.deps.nativeTraceCached
+  const stored = readStored && Date.now() < recoveryDeadlineAt
+    ? await mapLimit(eligible, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => Date.now() >= recoveryDeadlineAt ? Promise.resolve(null)
+      : Promise.resolve().then(() => readStored(r.txHash)).catch(() => null))
+    : eligible.map(() => null)
+  eligible.forEach((r, i) => {
+    const hit = stored[i]
+    if (!hit?.transfers) return
+    r.stored = true
+    alloc.storedProofHitsRecovery += 1
+    alloc.resolved.set(r.txHash, logNativeTrace(wallet, r.txHash, hit))
+  })
+  const live = eligible.filter((r) => !r.stored)
+    .sort((a, b) => PRIORITY_RANK[a.req!.priorityClass] - PRIORITY_RANK[b.req!.priorityClass] || a.order - b.order || a.txHash.localeCompare(b.txHash))
+  live.forEach((r, i) => {
+    if (i < Math.max(0, alloc.cap - alloc.used)) { r.entitled = true; r.skipped = 'not_reached_sell_covered' }
+    else r.skipped = 'global_live_budget_exhausted'
+  })
+  const byHash = new Map(rows.map((r) => [r.txHash, r]))
+  return {
+    preloaded,
+    ensureTrace: async (txHash) => {
+      const r = byHash.get(txHash)
+      if (!r || !r.entitled || r.selected || alloc.resolved.has(txHash)) return
+      if (Date.now() >= recoveryDeadlineAt) { r.skipped = 'recovery_deadline'; return }
+      if (alloc.used >= alloc.cap) { r.skipped = 'global_live_budget_exhausted'; return }
+      alloc.used += 1
+      alloc.recoveryUsed += 1
+      alloc.recoverySelected += 1
+      Object.assign(r, { selected: true, ordinal: alloc.used, skipped: null })
+      alloc.resolved.set(txHash, logNativeTrace(wallet, txHash, await requestNativeTrace({ ...ctx, deadlineAt: recoveryDeadlineAt }, txHash)))
+    },
+    flush: () => {
+      for (const r of rows) {
+        console.warn('[robinhood-native-trace-recovery-selection-audit]', {
+          candidateTxHash: r.txHash, phase, preTraceClassification: r.pre, traceEligible: r.eligible,
+          priorityClass: r.req && r.eligible ? (r.stored ? 'p1_stored_proof' : r.req.priorityClass) : null,
+          storedProofHit: r.stored, selectedForLiveTrace: r.selected, globalLiveOrdinal: r.ordinal, skippedReason: r.skipped,
+        })
+      }
+    },
+  }
+}
+
 
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
   const out = (o: Partial<CandidateOutcome>): CandidateOutcome => ({ txHash, receiptFetched: false, v4SwapLogs: 0, swap: null, rejection: null, detail: null, ...o })
@@ -1301,7 +1470,7 @@ async function recoverAcquisitionsForSell(
   sell: { txHash: string; token: string; timestampSec: number; unmatchedRaw: bigint },
   inbound: readonly RhInboundTokenTransfer[],
   outcomes: readonly CandidateOutcome[],
-  options: { historicalOnly?: boolean; excludedHashes?: ReadonlySet<string>; maxCandidates?: number } = {},
+  options: { historicalOnly?: boolean; excludedHashes?: ReadonlySet<string>; maxCandidates?: number; phase?: 'acquisition_recovery' | 'deep_acquisition' } = {},
 ): Promise<{ found: number; rows: RecoveryRow[] }> {
   const token = sell.token
   const verified = new Set(outcomes.filter((o) => o.swap).map((o) => o.txHash))
@@ -1329,7 +1498,11 @@ async function recoverAcquisitionsForSell(
   listed.sort((a, b) => b.ts - a.ts || a.txHash.localeCompare(b.txHash))
   const rows: RecoveryRow[] = []
   let covered = ZERO
-  for (const c of listed.slice(0, options.maxCandidates ?? ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)) {
+  const slice = listed.slice(0, options.maxCandidates ?? ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)
+  // Native traces for the wallet's own historical txs come only from the request-scoped allocator (never a direct live call).
+  const plan = await planRecoveryTraces(ctx, recoveryDeadlineAt, wallet, options.phase ?? 'acquisition_recovery', slice, outcomes)
+  const preloaded = plan.preloaded
+  for (const c of slice) {
     if (covered >= sell.unmatchedRaw) break
     const row: RecoveryRow = {
       candidateTxHash: c.txHash, candidateTimestamp: c.ts, inboundRaw: c.rows.length === 1 ? c.rows[0].toString() : null, classification: 'ambiguous',
@@ -1337,7 +1510,7 @@ async function recoverAcquisitionsForSell(
     }
     rows.push(row)
     if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
-    const receipt = await withinRecoveryDeadline(recoveryDeadlineAt, () => loadReceipt(ctx, c.txHash))
+    const receipt = preloaded.has(c.txHash) ? preloaded.get(c.txHash)! : await withinRecoveryDeadline(recoveryDeadlineAt, () => loadReceipt(ctx, c.txHash))
     if (Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
     if (!receipt) { row.rejectionReason = 'receipt_unavailable'; continue }
     const ts = receiptTimestamp(receipt) ?? c.ts
@@ -1363,7 +1536,9 @@ async function recoverAcquisitionsForSell(
     })
     Object.assign(row, { classification: proof.classification, walletFundingToken: proof.walletFundingToken, walletFundingRaw: proof.walletFundingRaw, rejectionReason: proof.rejectionReason, inboundRaw: proof.walletCreditRaw ?? row.inboundRaw })
     if (isSender) {
-      // The wallet's own tx: only the existing direct-V4 / mixed-route lanes may call it a swap.
+      // The wallet's own tx: only the existing direct-V4 / mixed-route lanes may call it a swap. Its native trace, if
+      // it is entitled to one, is requested now through the request-scoped allocator; the verifier only replays.
+      await plan.ensureTrace(c.txHash)
       const o = outcomes.find((x) => x.txHash === c.txHash)
         ?? await withinRecoveryDeadline(recoveryDeadlineAt, () => verifyCandidate(ctx, wallet, c.txHash))
       if (!o || Date.now() >= recoveryDeadlineAt) { row.rejectionReason = 'not_attempted_recovery_deadline'; continue }
@@ -1392,6 +1567,7 @@ async function recoverAcquisitionsForSell(
     }
     covered += row.swap.outputRaw
   }
+  plan.flush()
   return { found: listed.length, rows }
 }
 
@@ -1690,7 +1866,7 @@ async function runDeepAcquisitionRecovery(
         if (remainingProofs <= 0) return 'proof_cap'
         const result = await recoverAcquisitionsForSell(rpcCtx, rpcDeadlineAt, wallet,
           { ...sell, unmatchedRaw: sell.unmatchedRaw - rpcCovered }, chunkRows, outcomes,
-          { historicalOnly: true, excludedHashes, maxCandidates: remainingProofs })
+          { historicalOnly: true, excludedHashes, maxCandidates: remainingProofs, phase: 'deep_acquisition' })
         rpcProofRows.push(...result.rows)
         for (const row of result.rows) excludedHashes.add(row.candidateTxHash)
         rpcCovered += result.rows.reduce((sum, row) => sum + (row.swap?.outputRaw ?? ZERO), ZERO)
@@ -1734,7 +1910,7 @@ async function runDeepAcquisitionRecovery(
     .slice(0, Math.max(0, ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxInboundCandidates - (rpcResult?.audit.uniqueTxCandidates ?? 0)))
   const fallbackResult = runFallback ? await recoverAcquisitionsForSell(proofCtx, proofDeadlineAt, wallet,
     { ...sell, unmatchedRaw: sell.unmatchedRaw - rpcCovered }, candidates, outcomes,
-    { historicalOnly: true, excludedHashes, maxCandidates: remainingProofs }) : { rows: [] as RecoveryRow[] }
+    { historicalOnly: true, excludedHashes, maxCandidates: remainingProofs, phase: 'deep_acquisition' }) : { rows: [] as RecoveryRow[] }
   const rows = [...rpcProofRows, ...fallbackResult.rows]
   const fallbackRecovered = fallbackResult.rows.map((r) => r.swap).filter((s): s is RhVerifiedSwap => s != null)
   const recovered = [...rpcRecovered, ...fallbackRecovered]
@@ -1853,21 +2029,61 @@ export async function computeRobinhoodPnlV1(params: {
   const outcomes = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch(() => threw(c.txHash)))
   // Phase 2: stored proofs, then bounded live traces in priority order. Phase 3: re-verify only the traced receipts
   // through the unchanged classifier with their real trace.
+  // One live native-trace budget for the whole request; main takes at most cap − reserve now.
+  const alloc = newLiveTraceAllocator(Math.max(0, ctx.deps.nativeTraceLiveCap ?? ROBINHOOD_NATIVE_TRACE_LIVE_CAP))
+  ctx.traceBudget = alloc
   ctx.traceMode = 'live'
-  const traceSelection = await selectNativeTraces(ctx, wallet, outcomes)
+  const reserve = alloc.cap >= 2 ? ROBINHOOD_NATIVE_TRACE_RECOVERY_RESERVE : 0
+  const traceSelection = await selectNativeTraces(ctx, wallet, outcomes, alloc.cap - reserve)
+  // From here on every verification replays resolved traces only; nothing reaches the provider outside the allocator.
   ctx.traceMode = 'replay'
-  ctx.traceReplay = traceSelection.replay
+  ctx.traceReplay = alloc.resolved
   for (const txHash of traceSelection.replay.keys()) {
     const i = outcomes.findIndex((o) => o.txHash === txHash)
     if (i >= 0) outcomes[i] = await verifyCandidate(ctx, wallet, txHash).catch(() => threw(txHash))
   }
-  ctx.traceMode = 'live'
   ingestion.nativeTraceSelection = traceSelection.summary
-  const swaps: RhVerifiedSwap[] = []
+
+  // Provisional swaps → pricing → FIFO → recovery (which may use the reserved slot). A slot recovery did not use goes
+  // back to the next deferred main receipt; if that changes a main outcome, the downstream runs once more (replay only).
+  const downstream = async () => {
+    const swaps = outcomes.filter((o) => o.swap).map((o) => o.swap!)
+    try {
+      if (params.deps.prefetchNativeEthDays) await params.deps.prefetchNativeEthDays(swaps)
+    } catch (err) {
+      console.warn('[robinhood-native-price-prefetch-error]', { error: err instanceof Error ? err.message : String(err) })
+    } finally {
+      signalNativePrefetchComplete()
+    }
+    const evidence = swaps.length > 0 ? await priceRobinhoodSwaps(ctx, swaps) : []
+    const first = buildRobinhoodPnlV1Fifo(wallet, swaps, evidence)
+    const recovery = await runAcquisitionRecovery(ctx, wallet, swaps, first.fifo.unmatchedSells, outcomes, params.inboundTokenTransfers ?? [])
+    const intermediate = recovery.swaps.length > 0
+      ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence])
+      : first
+    recovery.summary.closedLotsAdded = intermediate.fifo.matchedLots.length - first.fifo.matchedLots.length
+    const deep = await runDeepAcquisitionRecovery(ctx, wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence], recovery.summary, params.inboundTokenTransfers ?? [], outcomes)
+    return { swaps, evidence, first, recovery, intermediate, deep }
+  }
+  let ds = await downstream()
+  if (await releaseReservedSlotsToMain(ctx, wallet, outcomes, traceSelection.summary, threw)) ds = await downstream()
+  const { swaps, evidence, recovery, intermediate, deep } = ds
+  console.warn('[robinhood-native-trace-global-budget-audit]', {
+    totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
+    storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
+    mainEligibleDeferredForRecovery: alloc.mainEligibleDeferredForRecovery, recoveryEligible: alloc.recoveryEligible,
+    recoverySelected: alloc.recoverySelected, reservedSlotReleasedToMain: alloc.reservedSlotReleasedToMain,
+  })
+  ingestion.nativeTraceGlobalBudget = {
+    totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
+    storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
+    mainEligibleDeferredForRecovery: alloc.mainEligibleDeferredForRecovery, recoveryEligible: alloc.recoveryEligible,
+    recoverySelected: alloc.recoverySelected, reservedSlotReleasedToMain: alloc.reservedSlotReleasedToMain,
+  }
   for (const o of outcomes) {
     if (o.receiptFetched) ingestion.receiptsFetched += 1
     ingestion.v4SwapLogCount += o.v4SwapLogs
-    if (o.swap) { swaps.push(o.swap); continue }
+    if (o.swap) continue // swaps were collected by the downstream pass
     if (o.rejection === 'deadline_exceeded') m.deadlineHit = true
     ingestion.rejectedSwapTxCount += 1
     if (o.rejection) ingestion.rejectionReasons[o.rejection] = (ingestion.rejectionReasons[o.rejection] ?? 0) + 1
@@ -1892,26 +2108,9 @@ export async function computeRobinhoodPnlV1(params: {
   }
   m.swapsVerified = swaps.length
   const swapsFound = outcomes.filter((o) => o.v4SwapLogs > 0).length
-
-  try {
-    if (params.deps.prefetchNativeEthDays) await params.deps.prefetchNativeEthDays(swaps)
-  } catch (err) {
-    console.warn('[robinhood-native-price-prefetch-error]', { error: err instanceof Error ? err.message : String(err) })
-  } finally {
-    signalNativePrefetchComplete()
-  }
-  const evidence = swaps.length > 0 ? await priceRobinhoodSwaps(ctx, swaps) : []
   for (const e of evidence) console.warn('[robinhood-price-evidence-audit]', e)
   const bothLegs = evidence.filter((e) => e.bothLegsVerified).length
-  const first = buildRobinhoodPnlV1Fifo(wallet, swaps, evidence)
-  // Recovery lane: only a verified sell the FIFO left unmatched; only proven acquisitions join the FIFO.
-  const recovery = await runAcquisitionRecovery(ctx, wallet, swaps, first.fifo.unmatchedSells, outcomes, params.inboundTokenTransfers ?? [])
-  const intermediate = recovery.swaps.length > 0
-    ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence])
-    : first
-  recovery.summary.closedLotsAdded = intermediate.fifo.matchedLots.length - first.fifo.matchedLots.length
   ingestion.acquisitionRecovery = recovery.summary
-  const deep = await runDeepAcquisitionRecovery(ctx, wallet, [...swaps, ...recovery.swaps], [...evidence, ...recovery.evidence], recovery.summary, params.inboundTokenTransfers ?? [], outcomes)
   const { fifo, buyCount, sellCount } = deep.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
     : intermediate
