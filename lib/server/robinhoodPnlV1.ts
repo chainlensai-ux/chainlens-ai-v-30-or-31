@@ -2613,9 +2613,11 @@ export async function computeRobinhoodPnlV1(params: {
 type ManifestBootstrapRun = { marker: RobinhoodManifestBootstrapMarker | null; audit: RhManifestBootstrapAudit }
 
 /**
- * Decides whether bootstrap runs (start: manifest absent/empty and no complete marker; resume: an incomplete marker,
- * whatever the manifest holds; never after a failed manifest or marker lookup), runs one bounded discovery pass from
- * the saved cursor, and persists the advanced marker immediately — progress survives anything that happens later.
+ * Decides whether bootstrap runs. A missing marker means bootstrap was never initialized — not that the manifest is
+ * complete — so it starts whenever the manifest read succeeded, whatever the manifest holds (a manifest written before
+ * bootstrap existed gets a one-time migration; its hashes are excluded from discovery). An incomplete marker resumes; a
+ * completed one never restarts; a failed manifest or marker lookup never starts or resumes. One bounded discovery pass
+ * runs from the saved cursor and the advanced marker is persisted immediately — progress survives anything later.
  */
 async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string, manifestRead: RobinhoodVerifiedSwapManifestRead): Promise<ManifestBootstrapRun | null> {
   const b = deps.manifestBootstrap
@@ -2629,7 +2631,6 @@ async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string
   const read = await b.readMarker(wallet).catch(() => ({ marker: null, reason: 'marker_lookup_failed' }))
   if (!read.marker && read.reason !== 'marker_absent' && read.reason !== 'invalid_marker') return { marker: null, audit: { ...audit, reason: read.reason } }
   if (read.marker?.completed) return { marker: null, audit: { ...audit, reason: 'marker_completed', completed: true, pagesTotal: read.marker.pagesScanned, stopReason: read.marker.stopReason } }
-  if (!read.marker && manifestRead.entries.length > 0) return { marker: null, audit: { ...audit, reason: 'manifest_not_empty' } }
   const now = deps.now()
   const prev = read.marker ?? newRobinhoodManifestBootstrapMarker(wallet, now)
   audit.attempted = true

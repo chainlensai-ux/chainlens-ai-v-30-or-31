@@ -90,7 +90,9 @@ class FakeKv {
   hashes = new Map<string, Map<string, unknown>>()
   strings = new Map<string, unknown>()
   failGet = false
+  failHgetall = false
   async hgetall<T extends Record<string, unknown>>(key: string): Promise<T | null> {
+    if (this.failHgetall) throw new Error('kv down')
     const h = this.hashes.get(key)
     if (!h || h.size === 0) return null
     return Object.fromEntries([...h].map(([k, v]) => [k, typeof v === 'string' ? JSON.parse(v) : v])) as T
@@ -392,10 +394,6 @@ test('no Blockscout / KV config, or a failed lookup: bootstrap never runs and se
   const failed = await scan(chain, { activity, pages: [{ names: ['Y'] }] })
   assert.deepEqual([failed.boot!.attempted, failed.boot!.reason, failed.requested.length], [false, 'marker_lookup_failed', 0])
   kv.failGet = false
-  // a non-empty manifest with no marker never starts a bootstrap
-  await recordRobinhoodVerifiedSwaps(WALLET, [{ txHash: H('Y'), blockNumber: 1010, timestampMs: null }], [], 1)
-  const nonEmpty = await scan(chain, { activity, pages: [{ names: ['Y'] }] })
-  assert.deepEqual([nonEmpty.boot!.attempted, nonEmpty.boot!.reason, nonEmpty.requested.length], [false, 'manifest_not_empty', 0])
 })
 
 test('discovery evidence never reaches PnL: a PoolManager-ranked non-swap hint is rejected, not recorded, not in FIFO', async () => {
@@ -490,4 +488,51 @@ test('markers written before retired/version existed still read (as none / versi
   assert.deepEqual([read.marker?.retired, read.marker?.version], [[], 0])
   assert.equal((await writeRobinhoodManifestBootstrapMarker(WALLET, { ...read.marker!, rowsScanned: 5 })).written, true)
   assert.deepEqual([kv.marker()!.version, kv.marker()!.rowsScanned], [1, 5])
+})
+
+test('migration: a legacy manifest (X) with no marker starts bootstrap once; X is excluded, Y and Z are discovered and verified', async () => {
+  const p1 = noise('a', 6, TS + 900), p2 = noise('b', 7, TS + 600)
+  const chain = chainOf([['X', directBuy(n(0.01), n(1000), TS + 960)], ['Y', relayedBuy(n(0.02), n(1500), TS + 950)], ['Z', directBuy(n(0.03), n(2000), TS + 650)], ...p1, ...p2])
+  const pages: PageSpec[] = [{ names: ['X', 'Y', ...p1.map(([k]) => k)] }, { names: ['Z', ...p2.map(([k]) => k)] }]
+  // manifest written before bootstrap existed; no marker
+  await recordRobinhoodVerifiedSwaps(WALLET, [{ txHash: H('X'), blockNumber: 1960, timestampMs: null }], [], 1)
+  assert.equal(kv.marker(), null)
+
+  const s1 = await scan(chain, { pages })
+  assert.deepEqual([s1.boot!.attempted, s1.boot!.resumed, s1.boot!.reason, s1.boot!.pagesThisScan], [true, false, 'marker_absent', 1])
+  assert.deepEqual(s1.requested, [0])
+  assert.ok(!s1.boot!.selectedCandidates.some((c) => c.txHash === H('X')), 'X is already manifested: never a bootstrap hint')
+  assert.ok(!kv.marker()!.pending.some((p) => p.txHash === H('X')))
+  assert.equal(s1.a.candidateSelection!.selectedCandidates.find((c) => c.txHash === H('X'))?.source, 'verified_manifest', 'X still re-verified by manifest replay')
+  assert.equal(s1.boot!.selectedCandidates.find((c) => c.txHash === H('Y'))?.result, 'verified')
+  assert.equal(s1.a.verifiedSwapTxCount, 2)
+  assert.deepEqual(kv.manifest(), [H('X'), H('Y')].sort(), 'manifest kept, never cleared or recreated')
+
+  // marker exists now: resume page 2
+  const s2 = await scan(chain, { pages, stored: new Set(['Y']) })
+  assert.deepEqual([s2.boot!.attempted, s2.boot!.resumed, s2.requested], [true, true, [1]])
+  assert.equal(s2.boot!.selectedCandidates.find((c) => c.txHash === H('Z'))?.result, 'verified')
+  assert.deepEqual(kv.manifest(), [H('X'), H('Y'), H('Z')].sort())
+  while (!kv.marker()!.completed) await scan(chain, { pages, stored: new Set(['Y']) })
+  const done = await scan(chain, { pages, stored: new Set(['Y']) })
+  assert.deepEqual([done.boot!.attempted, done.boot!.reason, done.requested], [false, 'marker_completed', []])
+  assert.equal(done.a.verifiedSwapTxCount, 3)
+})
+
+test('non-empty manifest + completed marker: bootstrap never restarts', async () => {
+  const chain = chainOf([['X', directBuy(n(0.01), n(1000), TS + 960)], ['Y', directBuy(n(0.02), n(1500), TS + 950)]])
+  await recordRobinhoodVerifiedSwaps(WALLET, [{ txHash: H('X'), blockNumber: 1960, timestampMs: null }], [], 1)
+  await writeRobinhoodManifestBootstrapMarker(WALLET, { ...newRobinhoodManifestBootstrapMarker(WALLET, 1), pagesScanned: 2, discoveryDone: true, completed: true, completedAt: 5, stopReason: 'history_exhausted' })
+  const s = await scan(chain, { pages: [{ names: ['X', 'Y'] }] })
+  assert.deepEqual([s.boot!.attempted, s.boot!.reason, s.boot!.completed, s.requested], [false, 'marker_completed', true, []])
+  assert.deepEqual(kv.manifest(), [H('X')])
+})
+
+test('manifest lookup failed: bootstrap fails closed (no marker created, no paging)', async () => {
+  const chain = chainOf([['Y', directBuy(n(0.02), n(1500), TS + 950)]])
+  kv.failHgetall = true
+  const s = await scan(chain, { pages: [{ names: ['Y'] }] })
+  kv.failHgetall = false
+  assert.deepEqual([s.boot!.attempted, s.boot!.reason, s.requested], [false, 'manifest_lookup_failed', []])
+  assert.equal(kv.marker(), null)
 })
