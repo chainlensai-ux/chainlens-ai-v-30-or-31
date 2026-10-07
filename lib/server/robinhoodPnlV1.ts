@@ -1130,11 +1130,15 @@ export function robinhoodRelayedDiagnosticVerdict(input: {
 }): {
   verdict: RhRelayedDiagnosticVerdict; traceComplete: boolean; traceNativeFromWalletRaw: string | null; traceNativeToWalletRaw: string | null
   tracedWalletNetRaw: string | null; walletNativeDebitMatchesRoute: boolean; competingNativePayers: string[]; topLevelValueIntoWallet: string | null
+  /** The top-level tx.value was retrieved and parsed (promotion requires it; unknown is never treated as 0). */
+  txValueKnown: boolean; txValueRaw: string | null
 } {
   const wallet = lower(input.wallet)
   const { receipt } = input
+  const txValueKnown = input.txValue != null
   const topLevelIntoWallet = receipt.to === wallet ? input.txValue : ZERO
   const base = {
+    txValueKnown, txValueRaw: input.txValue?.toString() ?? null,
     traceComplete: false, traceNativeFromWalletRaw: null, traceNativeToWalletRaw: null, tracedWalletNetRaw: null,
     walletNativeDebitMatchesRoute: false, competingNativePayers: [] as string[], topLevelValueIntoWallet: topLevelIntoWallet?.toString() ?? null,
   }
@@ -1154,8 +1158,16 @@ export function robinhoodRelayedDiagnosticVerdict(input: {
   // The PoolManager pays out swap proceeds and the wallet is the subject; any other net payer is a competing payer.
   const net = new Map<string, bigint>()
   const bump = (a: string, v: bigint) => net.set(a, (net.get(a) ?? ZERO) + v)
-  for (const t of input.trace.transfers) if (t.success === true && t.value > ZERO) { bump(lower(t.from), -t.value); bump(lower(t.to), t.value) }
-  if (input.txValue != null && input.txValue > ZERO && receipt.to) { bump(receipt.from, -input.txValue); bump(receipt.to, input.txValue) }
+  // The exact top-level tx.from → tx.to value always participates; a trace entry identical to it is that same transfer
+  // (counted once). An unknown tx.value cannot be accounted for here — promotion then fails closed.
+  const value = input.txValue ?? ZERO
+  let rootSkipped = false
+  for (const t of input.trace.transfers) {
+    if (t.success !== true || t.value <= ZERO) continue
+    if (!rootSkipped && value > ZERO && lower(t.from) === receipt.from && receipt.to != null && lower(t.to) === receipt.to && t.value === value) { rootSkipped = true; continue }
+    bump(lower(t.from), -t.value); bump(lower(t.to), t.value)
+  }
+  if (value > ZERO) { bump(receipt.from, -value); if (receipt.to) bump(receipt.to, value) }
   const competing = [...net].filter(([a, v]) => v < ZERO && a !== wallet && a !== POOL_MANAGER).map(([a]) => a).sort()
   const matches = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas }).ok
     && -ev.nativeNetExGas >= input.routeInputNativeRaw
@@ -1169,7 +1181,7 @@ export function robinhoodRelayedDiagnosticVerdict(input: {
 /**
  * Lowest priority: after main verification, recovery and the release back to main. Uses only stored proofs (free) and
  * otherwise-unused live slots of the request allocator. Logs one [robinhood-relayed-native-trace-audit] per candidate.
- * Outcomes are never changed: these receipts stay wallet_not_tx_sender.
+ * Only promoteRelayedWalletSwap (below) may change an outcome; everything else stays wallet_not_tx_sender.
  */
 /**
  * relayed_wallet_swap_proven: ONLY a wallet_funded_route_candidate whose exact complete trace shows the wallet's own
@@ -1181,6 +1193,8 @@ async function promoteRelayedWalletSwap(
   ctx: Ctx, wallet: string, r: RhRelayedTraceRequest, receipt: RhReceipt, v: ReturnType<typeof robinhoodRelayedDiagnosticVerdict>,
 ): Promise<{ swap: RhVerifiedSwap | null; reason: string }> {
   if (v.verdict !== 'wallet_funded_route_candidate') return { swap: null, reason: v.verdict }
+  // Without the exact top-level value, a relayer / executor funding source could be missing from the payer analysis.
+  if (!v.txValueKnown) return { swap: null, reason: 'top_level_tx_value_unavailable' }
   if (receipt.status !== 1 || receipt.from === lower(wallet)) return { swap: null, reason: 'not_a_relayed_success_receipt' }
   const fromWallet = v.traceNativeFromWalletRaw != null ? BigInt(v.traceNativeFromWalletRaw) : ZERO
   const net = v.tracedWalletNetRaw != null ? BigInt(v.tracedWalletNetRaw) : null
@@ -1268,6 +1282,7 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
       traceComplete: v?.traceComplete ?? false, traceNativeFromWalletRaw: v?.traceNativeFromWalletRaw ?? null, traceNativeToWalletRaw: v?.traceNativeToWalletRaw ?? null,
       tracedWalletNetRaw: v?.tracedWalletNetRaw ?? null, walletNativeDebitMatchesRoute: v?.walletNativeDebitMatchesRoute ?? false,
       competingNativePayers: v?.competingNativePayers ?? [], topLevelValueIntoWallet: v?.topLevelValueIntoWallet ?? null,
+      txValueKnown: v?.txValueKnown ?? false, txValueRaw: v?.txValueRaw ?? null,
       diagnosticVerdict: verdict,
       promotedTo: promoted.swap ? 'relayed_wallet_swap_proven' : null,
       promotionRejectionReason: promoted.swap ? null : promoted.reason,

@@ -93,7 +93,12 @@ async function run(specs: Spec[], extra: Partial<RobinhoodPnlV1Deps> = {}) {
   const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
     const p = params as any[]
     if (method === 'eth_getTransactionReceipt') { const e = byHash.get(p[0]); return e ? { status: '0x1', from: e.tx.sender, to: e.tx.to, blockNumber: hex(e.block), gasUsed: '0x1', effectiveGasPrice: '0x1', logs: e.tx.logs } : null }
-    if (method === 'eth_getTransactionByHash') { const e = byHash.get(p[0]); return e ? { value: hex(e.tx.txValue) } : null }
+    if (method === 'eth_getTransactionByHash') {
+      const e = byHash.get(p[0])
+      const override = (e?.tx as unknown as { txResponse?: unknown } | undefined)?.txResponse
+      if (override === 'throw') throw new Error('rpc down')
+      return e ? (override !== undefined ? override : { value: hex(e.tx.txValue) }) : null
+    }
     if (method === 'eth_getBalance') return hex(BigInt(10) * E18)
     if (method === 'eth_getTransactionCount') return byBlock.get(Number(p[1]))?.tx.sender === WALLET ? '0x2' : '0x1'
     if (method === 'eth_call' && p[0].to === RH_V4_POSITION_MANAGER) return [...POOLS.entries()].find(([id]) => id.slice(2, 52) === String(p[0].data).slice(10, 60))?.[1] ?? null
@@ -301,4 +306,43 @@ test('rejections: unrelated token transfer, mixed route, multiple-V4-route ambig
   twice.sender = RELAYER
   twice.trace = [pay(WALLET, ROUTER, eth)]
   await rejected(twice, 'not_a_candidate')
+})
+
+// ── Top-level tx.value must be known exactly; a nonzero top-level value always enters the payer analysis ─────────
+test('unknown top-level tx.value (lookup failed / malformed) → diagnostic may look wallet-funded, but promotion fails closed', async () => {
+  const eth = n(1)
+  for (const resp of [null, { value: 'zz' }, {}, 'throw']) {
+    __resetRobinhoodPnlV1CachesForTest()
+    const tx = relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)])
+    ;(tx as unknown as { txResponse: unknown }).txResponse = resp
+    const x = await scan([{ name: 'X', tx }])
+    const a = relayedAudit(x, 'X')
+    assert.equal(a.diagnosticVerdict, 'wallet_funded_route_candidate', JSON.stringify(resp))
+    assert.deepEqual([a.txValueKnown, a.txValueRaw, a.promotedTo, a.promotionRejectionReason], [false, null, null, 'top_level_tx_value_unavailable'])
+    assert.equal(x.r.ingestionAudit.verifiedSwapTxCount, 0)
+    assert.deepEqual(x.r.ingestionAudit.rejectionReasons, { wallet_not_tx_sender: 1 })
+    assert.equal(x.r.ingestionAudit.relayedWalletRejectedReasons?.top_level_tx_value_unavailable, 1)
+  }
+})
+
+test('a relayer sending nonzero top-level value to the router while the wallet also pays → competing payer, no promotion', async () => {
+  const eth = n(1)
+  const x = await scan([{ name: 'X', tx: relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)], { to: ROUTER, value: eth / BigInt(2) }) }])
+  const a = relayedAudit(x, 'X')
+  assert.deepEqual([a.txValueKnown, a.txValueRaw, a.competingNativePayers, a.diagnosticVerdict, a.promotedTo], [true, (eth / BigInt(2)).toString(), [RELAYER], 'externally_funded_route', null])
+  assert.equal(x.r.swapsVerified, 0)
+  // the same top-level transfer also listed in the trace is counted once (still the relayer's funding)
+  __resetRobinhoodPnlV1CachesForTest()
+  const y = await scan([{ name: 'X', tx: relayedBuy(eth, n(1000), TS, [pay(RELAYER, ROUTER, eth / BigInt(2)), pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth)], { to: ROUTER, value: eth / BigInt(2) }) }])
+  assert.deepEqual(relayedAudit(y, 'X').competingNativePayers, [RELAYER])
+  assert.equal(y.r.swapsVerified, 0)
+})
+
+test('a nonzero top-level value that is fully returned to the relayer is accounted for and does not block wallet-alone funding', async () => {
+  const eth = n(1)
+  const refund = eth / BigInt(10)
+  const x = await scan([{ name: 'X', tx: relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth), pay(ROUTER, PM, eth), pay(ROUTER, RELAYER, refund)], { to: ROUTER, value: refund }) }])
+  const a = relayedAudit(x, 'X')
+  assert.deepEqual([a.txValueKnown, a.txValueRaw, a.competingNativePayers, a.diagnosticVerdict, a.promotedTo], [true, refund.toString(), [], 'wallet_funded_route_candidate', 'relayed_wallet_swap_proven'])
+  assert.equal(x.r.swapsVerified, 1)
 })
