@@ -33,10 +33,13 @@ import { nearestPriceWithGap } from '../v4SwapCandles'
 import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
+import { orderRobinhoodVerifiedSwapManifest, type RobinhoodVerifiedSwapManifestEntry, type RobinhoodVerifiedSwapManifestRead, type RobinhoodVerifiedSwapManifestVerified, type RobinhoodVerifiedSwapManifestWrite } from './robinhoodVerifiedSwapManifest'
 
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
 export const ROBINHOOD_PNL_V1_LIMITS = {
   maxCandidateReceipts: 20,
+  /** Of the receipt candidates, at most this many are reserved for the verified-swap manifest (unused → current activity). */
+  maxManifestCandidates: 8,
   maxHistoricalPriceSides: 20,
   concurrency: 3,
   deadlineMs: 15_000,
@@ -138,9 +141,61 @@ export type RobinhoodPnlV1Deps = {
   tokenHistoryInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhTokenHistoryResult>
   /** Exact token/recipient RPC Transfer-log index. Never proof of a buy on its own. */
   rpcInboundTransferLogs?: (query: RhRpcLogQuery, deadlineAt: number) => Promise<RhRpcLogResult>
+  /**
+   * Per-wallet verified-swap candidate manifest (lib/server/robinhoodVerifiedSwapManifest.ts). A candidate hint only:
+   * every listed tx is re-verified from its current receipt by the unchanged verifier. Absent → no manifest lane.
+   */
+  verifiedSwapManifest?: {
+    read: (wallet: string) => Promise<RobinhoodVerifiedSwapManifestRead>
+    record: (wallet: string, verified: readonly RobinhoodVerifiedSwapManifestVerified[], known: readonly RobinhoodVerifiedSwapManifestEntry[], now: number) => Promise<RobinhoodVerifiedSwapManifestWrite>
+  }
 }
 
 export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
+
+export type RhCandidateSource = 'current_activity' | 'verified_manifest'
+export type RhSelectionReason = 'manifest_reserved_slot' | 'current_activity_swap_log' | 'current_activity_recent'
+export type RhSelectedCandidate = RobinhoodPnlV1Candidate & {
+  source: RhCandidateSource
+  /** The hash is listed in the wallet's verified-swap manifest (whichever lane selected it). */
+  manifestHit: boolean
+  /** The hash is present in this scan's current activity. */
+  inCurrentActivity: boolean
+  selectionRank: number
+  selectionReason: RhSelectionReason
+}
+/** In the ingestion audit, at most this many dropped hashes; the debug line carries up to the larger bound. */
+export const ROBINHOOD_DROPPED_HASHES_IN_AUDIT = 25
+export const ROBINHOOD_DROPPED_HASHES_IN_DEBUG = 200
+export type RhCandidateSelectionAudit = {
+  /** Distinct valid hashes from current activity + the manifest, before the cap. */
+  candidatePoolCount: number
+  currentActivityCandidateCount: number
+  manifestCandidateCount: number
+  selectedCandidates: RhSelectedCandidate[]
+  droppedCandidateCount: number
+  /** Dropped hashes in selection order, first ROBINHOOD_DROPPED_HASHES_IN_AUDIT. */
+  droppedCandidateHashes: string[]
+  droppedCandidateHashesTruncated: boolean
+}
+export type RhManifestReplayResult = 'manifest_reverified' | 'manifest_rejected' | 'manifest_receipt_unavailable' | 'manifest_trace_unavailable'
+export type RhVerifiedSwapManifestAudit = {
+  readReason: string | null
+  entriesRead: number
+  invalidEntries: number
+  /** Manifest hashes given a reserved slot this scan. */
+  injected: number
+  /** Of those, how many were also in the current activity (a duplicate occupies one slot). */
+  injectedAlsoInCurrentActivity: number
+  /** Of those, how many were absent from the current activity (only the manifest brought them back). */
+  injectedMissingFromCurrentActivity: number
+  replayResults: Record<RhManifestReplayResult, number>
+  replays: Array<{ txHash: string; result: RhManifestReplayResult; rejection: RhRejection | null }>
+  written: number
+  writeSkippedOverCap: number
+  writeFailed: boolean
+  writeReason: string | null
+}
 
 export type RhRejection =
   | 'receipt_unavailable' | 'tx_reverted' | 'wallet_not_tx_sender' | 'no_v4_swap_in_tx' | 'wrong_pool_manager'
@@ -228,6 +283,8 @@ export type RobinhoodPnlV1IngestionAudit = {
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
   relayedWalletRejectedReasons?: Record<string, number>
+  candidateSelection?: RhCandidateSelectionAudit
+  verifiedSwapManifest?: RhVerifiedSwapManifestAudit
 }
 
 export type RhInboundTokenTransfer = { txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }
@@ -1235,11 +1292,13 @@ export type RhRelayedWalletSummary = {
   relayedWalletVerifiedSwapCount: number
   relayedWalletRejectedCount: number
   relayedWalletRejectedReasons: Record<string, number>
+  /** Relayed candidates whose exact trace (stored or live) was actually available this scan. */
+  tracedTxHashes: Set<string>
 }
 
 async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcomes: CandidateOutcome[]): Promise<RhRelayedWalletSummary> {
   const counts: Record<RhRelayedDiagnosticVerdict, number> = { wallet_funded_route_candidate: 0, externally_funded_route: 0, no_wallet_native_debit: 0, ambiguous_trace: 0, trace_unavailable: 0 }
-  const summary: RhRelayedWalletSummary = { candidates: 0, verdicts: counts, relayedWalletVerifiedSwapCount: 0, relayedWalletRejectedCount: 0, relayedWalletRejectedReasons: {} }
+  const summary: RhRelayedWalletSummary = { candidates: 0, verdicts: counts, relayedWalletVerifiedSwapCount: 0, relayedWalletRejectedCount: 0, relayedWalletRejectedReasons: {}, tracedTxHashes: new Set() }
   const alloc = ctx.traceBudget
   const requests = [...(ctx.relayedTraceRequests?.values() ?? [])]
     .sort((a, b) => (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
@@ -1255,6 +1314,7 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
       trace = await requestNativeTrace(ctx, r.txHash)
       logNativeTrace(wallet, r.txHash, trace)
     }
+    if (trace?.transfers) summary.tracedTxHashes.add(r.txHash)
     const receipt = await receiptCache.get(r.txHash)?.catch(() => null)
     const [txr] = trace?.transfers && receipt ? await call(ctx, [{ method: 'eth_getTransactionByHash', params: [r.txHash] }]) : [null]
     const txValue = recoveryTxValue(txr)
@@ -2190,7 +2250,8 @@ async function runDeepAcquisitionRecovery(
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────────────────────────────
-export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candidate[]): { selected: RobinhoodPnlV1Candidate[]; dropped: number } {
+/** Deduped current-activity candidates in the deterministic selection order (Swap log first, newest, hash). */
+function orderRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candidate[]): RobinhoodPnlV1Candidate[] {
   const byHash = new Map<string, RobinhoodPnlV1Candidate>()
   for (const c of candidates) {
     const h = lower(c.txHash)
@@ -2201,9 +2262,75 @@ export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnl
       : { txHash: h, timestampMs: c.timestampMs, hasSwapLog: c.hasSwapLog })
   }
   // Txs with a seen Swap log first, then most recent first, then hash: a deterministic bounded sample.
-  const all = [...byHash.values()].sort((a, b) => Number(b.hasSwapLog) - Number(a.hasSwapLog) || (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
+  return [...byHash.values()].sort((a, b) => Number(b.hasSwapLog) - Number(a.hasSwapLog) || (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
+}
+
+export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candidate[]): { selected: RobinhoodPnlV1Candidate[]; dropped: number } {
+  const all = orderRobinhoodPnlV1Candidates(candidates)
   const selected = all.slice(0, ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts)
   return { selected, dropped: all.length - selected.length }
+}
+
+/**
+ * Manifest-aware bounded selection. Up to `maxManifestCandidates` slots go to manifest hashes (blockNumber DESC,
+ * timestampMs DESC, txHash ASC); the remaining slots (including any unused manifest slots) are filled by the
+ * unchanged current-activity order. A hash in both lanes occupies one slot. Deterministic for a given input.
+ */
+export function selectRobinhoodPnlV1CandidatesWithManifest(
+  candidates: readonly RobinhoodPnlV1Candidate[],
+  manifest: readonly RobinhoodVerifiedSwapManifestEntry[],
+): { selected: RhSelectedCandidate[]; dropped: string[]; audit: RhCandidateSelectionAudit } {
+  const cap = ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts
+  const currentOrder = orderRobinhoodPnlV1Candidates(candidates)
+  const byHash = new Map(currentOrder.map((c) => [c.txHash, c]))
+  const manifestOrder = orderRobinhoodVerifiedSwapManifest(manifest.filter((e, i, all) => /^0x[0-9a-f]{64}$/.test(e.txHash) && all.findIndex((x) => x.txHash === e.txHash) === i))
+  const manifestHashes = new Set(manifestOrder.map((e) => e.txHash))
+  const selected: RhSelectedCandidate[] = []
+  const taken = new Set<string>()
+  for (const e of manifestOrder.slice(0, Math.min(ROBINHOOD_PNL_V1_LIMITS.maxManifestCandidates, cap))) {
+    const cur = byHash.get(e.txHash)
+    taken.add(e.txHash)
+    selected.push({
+      txHash: e.txHash, timestampMs: cur?.timestampMs ?? e.timestampMs, hasSwapLog: cur?.hasSwapLog ?? false,
+      source: 'verified_manifest', manifestHit: true, inCurrentActivity: cur != null, selectionRank: selected.length + 1, selectionReason: 'manifest_reserved_slot',
+    })
+  }
+  for (const c of currentOrder) {
+    if (selected.length >= cap) break
+    if (taken.has(c.txHash)) continue
+    taken.add(c.txHash)
+    selected.push({
+      ...c, source: 'current_activity', manifestHit: manifestHashes.has(c.txHash), inCurrentActivity: true,
+      selectionRank: selected.length + 1, selectionReason: c.hasSwapLog ? 'current_activity_swap_log' : 'current_activity_recent',
+    })
+  }
+  // Dropped, in selection order: remaining current activity, then manifest entries beyond the reserve.
+  const dropped = [
+    ...currentOrder.map((c) => c.txHash).filter((h) => !taken.has(h)),
+    ...manifestOrder.map((e) => e.txHash).filter((h) => !taken.has(h) && !byHash.has(h)),
+  ]
+  const pool = new Set([...byHash.keys(), ...manifestHashes])
+  return {
+    selected,
+    dropped,
+    audit: {
+      candidatePoolCount: pool.size,
+      currentActivityCandidateCount: byHash.size,
+      manifestCandidateCount: manifestOrder.length,
+      selectedCandidates: selected,
+      droppedCandidateCount: dropped.length,
+      droppedCandidateHashes: dropped.slice(0, ROBINHOOD_DROPPED_HASHES_IN_AUDIT),
+      droppedCandidateHashesTruncated: dropped.length > ROBINHOOD_DROPPED_HASHES_IN_AUDIT,
+    },
+  }
+}
+
+function manifestReplayResult(o: CandidateOutcome, ctx: Ctx, relayedTraced: ReadonlySet<string>): RhManifestReplayResult {
+  if (o.swap) return 'manifest_reverified'
+  if (!o.receiptFetched) return 'manifest_receipt_unavailable'
+  const wanted = ctx.traceRequests?.get(o.txHash)?.nativeProofCouldChangeOutcome === true || ctx.relayedTraceRequests?.has(o.txHash) === true
+  const got = Array.isArray(ctx.traceBudget?.resolved.get(o.txHash)) || relayedTraced.has(o.txHash)
+  return wanted && !got ? 'manifest_trace_unavailable' : 'manifest_rejected'
 }
 
 export async function computeRobinhoodPnlV1(params: {
@@ -2220,7 +2347,20 @@ export async function computeRobinhoodPnlV1(params: {
   const startedAt = params.deps.now()
   const wallet = lower(params.wallet)
   const m: RobinhoodPnlV1Metrics = { robinhoodPnlMs: 0, receiptCalls: 0, rpcCalls: 0, historicalPriceCalls: 0, cacheHits: 0, swapsVerified: 0, lotsBuilt: 0, deadlineHit: false, nativeTraceLookups: 0 }
-  const { selected, dropped } = selectRobinhoodPnlV1Candidates(params.candidates)
+  // The manifest is read only when receipts can actually be verified (no RPC → nothing to replay).
+  const manifestRead: RobinhoodVerifiedSwapManifestRead | null = params.deps.rpc && params.deps.verifiedSwapManifest
+    ? await params.deps.verifiedSwapManifest.read(wallet).catch(() => ({ entries: [], reason: 'manifest_lookup_failed', invalidEntries: 0 }))
+    : null
+  const selection = selectRobinhoodPnlV1CandidatesWithManifest(params.candidates, manifestRead?.entries ?? [])
+  const selected = selection.selected
+  const dropped = selection.dropped.length
+  console.warn('[robinhood-candidate-selection-audit]', {
+    wallet, candidatePoolCount: selection.audit.candidatePoolCount, currentActivityCandidateCount: selection.audit.currentActivityCandidateCount,
+    manifestCandidateCount: selection.audit.manifestCandidateCount, selectedCount: selected.length, droppedCandidateCount: dropped,
+    selectedCandidates: selected.map((c) => ({ txHash: c.txHash, timestampMs: c.timestampMs, hasSwapLog: c.hasSwapLog, source: c.source, manifestHit: c.manifestHit, inCurrentActivity: c.inCurrentActivity, selectionRank: c.selectionRank, selectionReason: c.selectionReason })),
+    droppedCandidateHashes: selection.dropped.slice(0, ROBINHOOD_DROPPED_HASHES_IN_DEBUG),
+    droppedCandidateHashesTruncated: dropped > ROBINHOOD_DROPPED_HASHES_IN_DEBUG,
+  })
   let prefetchSignalled = false
   const signalNativePrefetchComplete = () => {
     if (prefetchSignalled) return
@@ -2231,6 +2371,7 @@ export async function computeRobinhoodPnlV1(params: {
     wallet, transactionCount: params.transactionCount, transferCount: params.transferCount,
     candidateSwapTxCount: selected.length, candidatesDroppedByCap: dropped, receiptsFetched: 0, v4SwapLogCount: 0,
     verifiedSwapTxCount: 0, rejectedSwapTxCount: 0, rejectionReasons: {}, normalizedBuyCount: 0, normalizedSellCount: 0,
+    candidateSelection: selection.audit,
   }
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
     signalNativePrefetchComplete()
@@ -2301,6 +2442,7 @@ export async function computeRobinhoodPnlV1(params: {
   ingestion.relayedWalletRejectedCount = relayed.relayedWalletRejectedCount
   ingestion.relayedWalletRejectedReasons = relayed.relayedWalletRejectedReasons
   if (relayed.relayedWalletVerifiedSwapCount > 0) ds = await downstream()
+  if (manifestRead) ingestion.verifiedSwapManifest = await replayAndRecordManifest(ctx, wallet, selected, outcomes, relayed.tracedTxHashes, manifestRead)
   const { swaps, evidence, recovery, intermediate, deep } = ds
   console.warn('[robinhood-native-trace-global-budget-audit]', {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
@@ -2411,6 +2553,43 @@ export async function computeRobinhoodPnlV1(params: {
         ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} proven, ${bothLegs} priced on both legs, but no buy→sell pair closed a lot in this sample.${recovery.summary.acquisitionRecoveryAttempted ? ` Acquisition recovery checked ${recovery.summary.candidatesAttempted} earlier inbound${recovery.summary.candidatesAttempted === 1 ? '' : 's'} of the sold token; none was a provable buy.` : ''}`
         : `${structural} lots closed, but none had verified prices on both the buy and the sell.`
   return finish({ ...base, status: 'not_verified', exactReason })
+}
+
+/**
+ * Classifies each manifest-injected candidate's replay (audit only), then records the txs the unchanged verifier
+ * accepted in THIS scan (direct V4 / mixed route / relayed). Never deletes an entry: a failed replay — transient or
+ * not — just doesn't verify and never reaches FIFO.
+ */
+async function replayAndRecordManifest(
+  ctx: Ctx, wallet: string, selected: readonly RhSelectedCandidate[], outcomes: readonly CandidateOutcome[],
+  relayedTraced: ReadonlySet<string>, manifestRead: RobinhoodVerifiedSwapManifestRead,
+): Promise<RhVerifiedSwapManifestAudit> {
+  const injected = selected.filter((c) => c.source === 'verified_manifest')
+  const replayResults: Record<RhManifestReplayResult, number> = { manifest_reverified: 0, manifest_rejected: 0, manifest_receipt_unavailable: 0, manifest_trace_unavailable: 0 }
+  const replays: RhVerifiedSwapManifestAudit['replays'] = []
+  for (const c of injected) {
+    const o = outcomes.find((x) => x.txHash === c.txHash)
+    if (!o) continue
+    const result = manifestReplayResult(o, ctx, relayedTraced)
+    replayResults[result] += 1
+    replays.push({ txHash: c.txHash, result, rejection: o.swap ? null : o.rejection })
+  }
+  const verified: RobinhoodVerifiedSwapManifestVerified[] = outcomes
+    .filter((o) => o.swap && (o.acceptedVia === 'direct_v4' || o.acceptedVia === 'mixed_route' || o.acceptedVia === 'relayed_v4'))
+    .map((o) => ({ txHash: o.txHash, blockNumber: o.swap!.blockNumber, timestampMs: Number.isFinite(o.swap!.timestampSec) ? o.swap!.timestampSec * 1000 : null }))
+  const write = verified.length > 0 && ctx.deps.verifiedSwapManifest
+    ? await ctx.deps.verifiedSwapManifest.record(wallet, verified, manifestRead.entries, ctx.deps.now()).catch((): RobinhoodVerifiedSwapManifestWrite => ({ written: 0, skippedOverCap: 0, writeFailed: true, reason: 'manifest_write_failed' }))
+    : { written: 0, skippedOverCap: 0, writeFailed: false, reason: 'nothing_verified' }
+  const audit: RhVerifiedSwapManifestAudit = {
+    readReason: manifestRead.reason, entriesRead: manifestRead.entries.length, invalidEntries: manifestRead.invalidEntries,
+    injected: injected.length,
+    injectedAlsoInCurrentActivity: injected.filter((c) => c.inCurrentActivity).length,
+    injectedMissingFromCurrentActivity: injected.filter((c) => !c.inCurrentActivity).length,
+    replayResults, replays,
+    written: write.written, writeSkippedOverCap: write.skippedOverCap, writeFailed: write.writeFailed, writeReason: write.reason,
+  }
+  console.warn('[robinhood-verified-swap-manifest-audit]', { wallet, ...audit })
+  return audit
 }
 
 // ── Real dependencies ───────────────────────────────────────────────────────────────────────────────
