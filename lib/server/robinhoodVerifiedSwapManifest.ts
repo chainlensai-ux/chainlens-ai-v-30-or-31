@@ -157,8 +157,14 @@ export const ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS = {
   maxPending: 64,
   /** A pending hint whose proof was transiently unavailable is retried this many times in total. */
   maxAttempts: 3,
-  /** Consecutive scans whose discovery failed before any page succeeded; then the marker completes. */
+  /**
+   * Consecutive scans whose discovery failed before any page succeeded (timeout / 429 / 5xx / transport / malformed).
+   * Transient failures NEVER complete the marker; from this many on, discovery pauses for a bounded, growing cooldown
+   * and then retries from the saved cursor.
+   */
   maxConsecutiveFailures: 3,
+  failureCooldownBaseMs: 15 * 60_000,
+  failureCooldownMaxMs: 6 * 60 * 60_000,
   /** Hints already decided (verified / rejected / out of attempts): never re-added by a merge or a later page. */
   maxRetired: 640,
 } as const
@@ -195,6 +201,8 @@ export type RobinhoodManifestBootstrapMarker = {
   stopReason: string | null
   updatedAt: number
   consecutiveFailures: number
+  /** Discovery retry backoff after repeated transient failures (null = not paused). Never a completion. */
+  pausedUntil: number | null
   pending: RobinhoodBootstrapPending[]
   /** Tombstones for decided hints, so a concurrent writer's stale `pending` can never bring one back. */
   retired: string[]
@@ -250,7 +258,15 @@ export function validateRobinhoodManifestBootstrapMarker(raw: unknown, wallet: s
   // `version` is absent on markers written before compare-and-set existed: read as 0.
   const version = r.version === undefined ? 0 : r.version
   if (!nonNegInt(version)) return null
-  return { ...(r as RobinhoodManifestBootstrapMarker), retired: retired as string[], version }
+  // `pausedUntil` is absent on markers written before the failure backoff existed: read as not paused.
+  const pausedUntil = r.pausedUntil === undefined ? null : r.pausedUntil
+  if (pausedUntil !== null && !nonNegInt(pausedUntil)) return null
+  // Markers that earlier code closed with `failure_cap` were closed by transient provider failures, not a terminal
+  // discovery condition: reopen them (cursor/progress/pending kept) so the bootstrap retries from where it was.
+  if (r.stopReason === 'failure_cap') {
+    return { ...(r as RobinhoodManifestBootstrapMarker), retired: retired as string[], version, pausedUntil: null, discoveryDone: false, completed: false, completedAt: null, stopReason: 'failure_cap_reopened' }
+  }
+  return { ...(r as RobinhoodManifestBootstrapMarker), retired: retired as string[], version, pausedUntil }
 }
 
 /**
@@ -289,6 +305,7 @@ export function mergeRobinhoodManifestBootstrapMarkers(stored: RobinhoodManifest
     stopReason: stored.discoveryDone && !proposed.discoveryDone ? stored.stopReason : furthest.stopReason,
     updatedAt: Math.max(stored.updatedAt, proposed.updatedAt),
     consecutiveFailures: furthest.consecutiveFailures,
+    pausedUntil: furthest.pausedUntil,
     pending: rankRobinhoodBootstrapPending([...byHash.values()]).slice(0, L.maxPending),
     retired,
     version: Math.max(stored.version, proposed.version),
@@ -340,7 +357,7 @@ export async function writeRobinhoodManifestBootstrapMarker(wallet: string, mark
 }
 
 export function newRobinhoodManifestBootstrapMarker(wallet: string, now: number): RobinhoodManifestBootstrapMarker {
-  return { schemaVersion: 1, wallet: wallet.toLowerCase(), cursor: null, pagesScanned: 0, rowsScanned: 0, discoveryDone: false, completed: false, completedAt: null, stopReason: null, updatedAt: now, consecutiveFailures: 0, pending: [], retired: [], version: 0 }
+  return { schemaVersion: 1, wallet: wallet.toLowerCase(), cursor: null, pagesScanned: 0, rowsScanned: 0, discoveryDone: false, completed: false, completedAt: null, stopReason: null, updatedAt: now, consecutiveFailures: 0, pausedUntil: null, pending: [], retired: [], version: 0 }
 }
 
 /** PURE. PoolManager counterparty first, then blockNumber DESC (known first), then txHash ASC. */
@@ -362,14 +379,23 @@ export function advanceRobinhoodManifestBootstrapMarker(
       next.pagesScanned = prev.pagesScanned + discovery.pagesSucceeded
       next.rowsScanned = prev.rowsScanned + discovery.rowsScanned
       next.consecutiveFailures = 0
+      next.pausedUntil = null
     }
     const failedBeforeAnyPage = discovery.pagesSucceeded === 0 && !discovery.exhausted
-    if (failedBeforeAnyPage && discovery.stopReason !== 'page_cap') next.consecutiveFailures = prev.consecutiveFailures + 1
+    if (failedBeforeAnyPage && discovery.stopReason !== 'page_cap') {
+      // Transient: keep cursor / progress / pending, count it, and back off once repeated — never complete.
+      next.consecutiveFailures = prev.consecutiveFailures + 1
+      if (next.consecutiveFailures >= L.maxConsecutiveFailures) {
+        const exp = Math.min(next.consecutiveFailures - L.maxConsecutiveFailures, 10)
+        next.pausedUntil = now + Math.min(L.failureCooldownMaxMs, L.failureCooldownBaseMs * 2 ** exp)
+      }
+    }
     next.stopReason = discovery.stopReason
+    // Only terminal discovery conditions finish discovery: exhausted history, the lifetime page cap, or a
+    // deterministic cursor the provider handed back that can never be followed.
     if (discovery.exhausted) { next.discoveryDone = true; next.stopReason = 'history_exhausted' }
     else if (discovery.stopReason === 'repeated_cursor' || discovery.stopReason === 'invalid_cursor') next.discoveryDone = true
     else if (next.pagesScanned >= L.maxPagesLifetime) { next.discoveryDone = true; next.stopReason = 'lifetime_page_cap' }
-    else if (next.consecutiveFailures >= L.maxConsecutiveFailures) { next.discoveryDone = true; next.stopReason = 'failure_cap' }
     const byHash = new Map(next.pending.map((p) => [p.txHash, p]))
     for (const row of discovery.rows) {
       if (exclude.has(row.txHash) || retired.has(row.txHash)) continue

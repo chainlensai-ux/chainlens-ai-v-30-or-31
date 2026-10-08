@@ -229,6 +229,9 @@ export type RhManifestBootstrapAudit = {
   stopReason: string | null
   pendingRemaining: number
   markerWriteReason: string | null
+  /** Discovery failures before any page in a row (observability; transient failures never complete the marker). */
+  consecutiveFailures: number
+  pausedUntil: number | null
 }
 
 export type RhRejection =
@@ -2626,6 +2629,7 @@ async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string
   const audit: RhManifestBootstrapAudit = {
     attempted: false, resumed: false, reason: null, pagesThisScan: 0, pagesTotal: 0, rowsThisScan: 0, poolManagerCounterpartyRows: 0,
     selectedCandidates: [], verifiedCount: 0, writtenCount: 0, cursorAdvanced: false, completed: false, stopReason: null, pendingRemaining: 0, markerWriteReason: null,
+    consecutiveFailures: 0, pausedUntil: null,
   }
   if (manifestRead.reason === 'manifest_lookup_failed') return { marker: null, audit: { ...audit, reason: 'manifest_lookup_failed' } }
   const read = await b.readMarker(wallet).catch(() => ({ marker: null, reason: 'marker_lookup_failed' }))
@@ -2639,7 +2643,8 @@ async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string
   const exclude = new Set(manifestRead.entries.map((e) => e.txHash))
   const waiting = prev.pending.filter((p) => !exclude.has(p.txHash)).length
   let discovery: RobinhoodBootstrapDiscovery | null = null
-  if (!prev.discoveryDone && prev.pagesScanned < L.maxPagesLifetime && waiting < L.maxCandidatesPerScan) {
+  const paused = prev.pausedUntil != null && prev.pausedUntil > now
+  if (!prev.discoveryDone && !paused && prev.pagesScanned < L.maxPagesLifetime && waiting < L.maxCandidatesPerScan) {
     discovery = await b.discover(wallet, prev.cursor, {
       maxPages: Math.min(L.maxPagesPerScan, L.maxPagesLifetime - prev.pagesScanned), deadlineAt: Date.now() + L.deadlineMs,
       stopAfterCandidates: L.maxCandidatesPerScan - waiting,
@@ -2652,7 +2657,8 @@ async function prepareManifestBootstrap(deps: RobinhoodPnlV1Deps, wallet: string
     pagesThisScan: discovery?.pagesSucceeded ?? 0, pagesTotal: marker.pagesScanned, rowsThisScan: discovery?.rowsScanned ?? 0,
     poolManagerCounterpartyRows: discovery?.rows.filter((r) => r.poolManagerCounterparty).length ?? 0,
     cursorAdvanced: marker.cursor !== prev.cursor || marker.pagesScanned > prev.pagesScanned,
-    completed: marker.completed, stopReason: discovery ? discovery.stopReason : prev.discoveryDone ? prev.stopReason : 'pending_hints_waiting',
+    completed: marker.completed, stopReason: discovery ? discovery.stopReason : prev.discoveryDone ? prev.stopReason : paused ? 'paused_after_failures' : 'pending_hints_waiting',
+    consecutiveFailures: marker.consecutiveFailures, pausedUntil: marker.pausedUntil,
     pendingRemaining: marker.pending.length, markerWriteReason: written.reason,
   })
   if (marker.discoveryDone) audit.stopReason = marker.stopReason

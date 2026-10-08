@@ -142,7 +142,7 @@ function rowsFor(chain: Chain, name: string) {
       from: { hash: x.from }, to: { hash: x.to }, total: { value: BigInt(x.l.data).toString(), decimals: '18' }, token: { address_hash: x.l.address },
     }))
 }
-type PageSpec = { names: string[]; status?: number; malformed?: boolean; repeatCursor?: boolean }
+type PageSpec = { names: string[]; status?: number; malformed?: boolean; repeatCursor?: boolean; timeout?: boolean }
 function blockscout(chain: Chain, pages: PageSpec[]) {
   const requested: number[] = []
   const cursorFor = (i: number) => ({ block_number: 10_000 - i, index: 0, items_count: 50 * i })
@@ -154,6 +154,7 @@ function blockscout(chain: Chain, pages: PageSpec[]) {
     requested.push(i)
     const p = pages[i]
     if (!p) return new Response('{}', { status: 404 })
+    if (p.timeout) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
     if (p.status) return new Response('upstream error', { status: p.status })
     const items = p.names.flatMap((name) => rowsFor(chain, name))
     if (p.malformed) return new Response(JSON.stringify({ items }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -535,4 +536,77 @@ test('manifest lookup failed: bootstrap fails closed (no marker created, no pagi
   kv.failHgetall = false
   assert.deepEqual([s.boot!.attempted, s.boot!.reason, s.requested], [false, 'manifest_lookup_failed', []])
   assert.equal(kv.marker(), null)
+})
+
+const T0 = 1_800_000_000_000
+const at = (ms: number): Partial<RobinhoodPnlV1Deps> => ({ now: () => ms })
+
+test('transient failures before any page never complete the marker; discovery backs off, then resumes when the provider recovers', async () => {
+  const p1 = noise('a', 8, TS + 900)
+  const chain = chainOf(p1)
+  const down: PageSpec[] = [{ names: [], timeout: true }]
+  const up: PageSpec[] = [{ names: p1.map(([k]) => k) }, { names: [] }]
+  for (const [i, ms] of [[1, T0], [2, T0 + 1_000], [3, T0 + 2_000]] as const) {
+    const s = await scan(chain, { pages: down, deps: at(ms) })
+    assert.deepEqual(s.requested, [0], `scan ${i} tried page 1`)
+    assert.equal(s.boot!.stopReason, 'timeout')
+    const m = kv.marker()!
+    assert.deepEqual([m.completed, m.discoveryDone, m.pagesScanned, m.cursor, m.consecutiveFailures], [false, false, 0, null, i])
+  }
+  const paused = kv.marker()!
+  assert.equal(paused.pausedUntil, T0 + 2_000 + ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS.failureCooldownBaseMs, 'bounded cooldown after the threshold — not a completion')
+  // still inside the cooldown: no paging, marker untouched and incomplete
+  const during = await scan(chain, { pages: up, deps: at(T0 + 60_000) })
+  assert.deepEqual([during.requested, during.boot!.attempted, during.boot!.stopReason, during.boot!.completed], [[], true, 'paused_after_failures', false])
+  // scan 4, provider recovered after the cooldown: page 1 is scanned and the cursor advances
+  const s4 = await scan(chain, { pages: up, deps: at(T0 + 60 * 60_000) })
+  assert.deepEqual(s4.requested, [0])
+  const m4 = kv.marker()!
+  assert.deepEqual([m4.pagesScanned, m4.cursor, m4.consecutiveFailures, m4.pausedUntil, m4.completed], [1, 'block_number=9999&index=0&items_count=50', 0, null, false])
+  assert.equal(s4.boot!.cursorAdvanced, true)
+})
+
+test('a 5xx / 429 storm behaves the same: never complete, and the backoff grows but stays bounded', async () => {
+  const chain = chainOf(noise('a', 2, TS + 900))
+  let now = T0
+  for (let i = 0; i < 12; i++) {
+    const m = kv.marker()
+    if (m?.pausedUntil) now = m.pausedUntil + 1
+    await scan(chain, { pages: [{ names: [], status: i % 2 ? 429 : 503 }], deps: at(now) })
+  }
+  const m = kv.marker()!
+  assert.deepEqual([m.completed, m.discoveryDone, m.pagesScanned, m.consecutiveFailures], [false, false, 0, 12])
+  assert.ok(m.pausedUntil! - now <= ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS.failureCooldownMaxMs)
+})
+
+test('failures after successful pages keep cursor and progress; recovery resumes from the saved page, never page 1', async () => {
+  const p1 = noise('a', 8, TS + 900), p2 = noise('b', 8, TS + 600)
+  const chain = chainOf([...p1, ...p2])
+  const ok: PageSpec[] = [{ names: p1.map(([k]) => k) }, { names: p2.map(([k]) => k) }]
+  await scan(chain, { pages: ok, deps: at(T0) })
+  const saved = kv.marker()!
+  assert.deepEqual([saved.pagesScanned, saved.cursor], [1, 'block_number=9999&index=0&items_count=50'])
+  const broken: PageSpec[] = [{ names: p1.map(([k]) => k) }, { names: [], timeout: true }]
+  for (let i = 1; i <= 4; i++) {
+    const m = kv.marker()!
+    const s = await scan(chain, { pages: broken, deps: at(Math.max(T0 + i * 1_000, (m.pausedUntil ?? 0) + 1)) })
+    assert.deepEqual(s.requested, [1], 'always the saved page, never page 1')
+    assert.deepEqual([kv.marker()!.pagesScanned, kv.marker()!.cursor, kv.marker()!.completed], [1, saved.cursor, false])
+  }
+  const s = await scan(chain, { pages: ok, deps: at(kv.marker()!.pausedUntil! + 1) })
+  assert.deepEqual(s.requested, [1])
+  assert.deepEqual([kv.marker()!.pagesScanned, kv.marker()!.consecutiveFailures, kv.marker()!.discoveryDone], [2, 0, true])
+})
+
+test('a marker closed by the old failure_cap rule is reopened and resumes from its cursor', async () => {
+  const p1 = noise('a', 8, TS + 900)
+  const chain = chainOf(p1)
+  kv.strings.set(robinhoodManifestBootstrapKey(WALLET), JSON.stringify({
+    ...newRobinhoodManifestBootstrapMarker(WALLET, 1), consecutiveFailures: 3, discoveryDone: true, completed: true, completedAt: 9, stopReason: 'failure_cap', version: 4,
+  }))
+  const read = await readRobinhoodManifestBootstrapMarker(WALLET)
+  assert.deepEqual([read.marker!.completed, read.marker!.discoveryDone, read.marker!.stopReason], [false, false, 'failure_cap_reopened'])
+  const s = await scan(chain, { pages: [{ names: p1.map(([k]) => k) }, { names: [] }], deps: at(T0) })
+  assert.deepEqual([s.boot!.attempted, s.boot!.resumed, s.requested], [true, true, [0]])
+  assert.deepEqual([kv.marker()!.completed, kv.marker()!.pagesScanned, kv.marker()!.consecutiveFailures], [false, 1, 0])
 })
