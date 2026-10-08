@@ -136,22 +136,26 @@ test('the live cap is unchanged (= the Blockscout native_trace lane cap)', () =>
   assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, 3)
 })
 
-test('production shape, live cap 2: A/B/C/F take no slot; D and E each get one live trace and are accepted by the normal classifier', async () => {
+// POLICY (relayed attribution fix): a relayed ETH → token buy (C) is no longer terminal — it competes for the same slots as
+// wallet-sent receipts. Token → ETH sells (D) come first; buys (C relayed, E wallet-sent) are equals, older first.
+test('production shape, live cap 2: A/B/F take no slot; D (sell) then C (relayed buy, older than E) get the two live traces; C stays rejected', async () => {
   const { r, traceCalls, sel, summary, verified } = await run(production())
-  assert.deepEqual(traceCalls.slice().sort(), ['D', 'E'])
-  assert.deepEqual(verified, ['D', 'E'])
-  assert.equal(r.swapsVerified, 2)
-  assert.deepEqual(r.ingestionAudit.rejectionReasons, { route_does_not_match_wallet_amounts: 1, liquidity_event_in_tx: 1, wallet_not_tx_sender: 1, other_venue_swap_in_tx: 1 })
+  assert.deepEqual(traceCalls.slice().sort(), ['C', 'D'])
+  // C's trace shows no native debit from the wallet (the relayer's top-level value paid): traced, never promoted.
+  assert.deepEqual(verified, ['D'])
+  assert.equal(r.swapsVerified, 1)
+  assert.deepEqual(r.ingestionAudit.rejectionReasons, { route_does_not_match_wallet_amounts: 1, liquidity_event_in_tx: 1, wallet_not_tx_sender: 1, native_flow_unprovable: 1, other_venue_swap_in_tx: 1 })
+  assert.equal(r.ingestionAudit.relayedWalletRejectedReasons?.no_wallet_native_debit, 1)
   const by = Object.fromEntries(sel.map((s) => [s.name, s]))
   assert.deepEqual([by.A.traceEligible, by.A.terminalWithoutNativeTrace, by.A.preTraceClassification, by.A.skippedReason], [false, true, 'route_does_not_match_wallet_amounts', 'terminal_without_native_trace'])
   assert.deepEqual([by.B.traceEligible, by.B.skippedReason], [false, 'no_native_dependency'])
-  assert.deepEqual([by.C.traceEligible, by.C.skippedReason], [false, 'no_native_dependency'])
+  assert.deepEqual([by.C.traceEligible, by.C.priorityClass, by.C.preTraceClassification], [true, 'p2_relayed_buy', 'relayed_native_in_token_out_pending_trace'])
   assert.deepEqual([by.F.traceEligible, by.F.terminalWithoutNativeTrace], [false, true])
-  assert.deepEqual([by.D.selectedForLiveTrace, by.D.liveBudgetOrdinal, by.D.priorityClass, by.D.nativeProofCouldChangeOutcome], [true, 1, 'p2_single_hop_v4_one_erc20_side', true])
-  assert.deepEqual([by.E.selectedForLiveTrace, by.E.liveBudgetOrdinal, by.E.priorityClass], [true, 2, 'p2_single_hop_v4_one_erc20_side'])
+  assert.deepEqual([by.D.selectedForLiveTrace, by.D.liveBudgetOrdinal, by.D.priorityClass, by.D.nativeProofCouldChangeOutcome], [true, 1, 'p1_native_out_sell', true])
+  assert.deepEqual([by.E.traceEligible, by.E.selectedForLiveTrace, by.E.priorityClass], [true, false, 'p2_single_hop_v4_one_erc20_side'])
   assert.deepEqual(summary, {
-    receiptCandidates: 6, terminalRejectedBeforeTrace: 4, nativeTraceEligible: 2, cacheSatisfied: 0, selectedForLiveTrace: 2,
-    liveBudgetCap: 2, liveBudgetExhaustedEligibleCount: 0, tracesAvoidedByStructuralPrefilter: 2,
+    receiptCandidates: 6, terminalRejectedBeforeTrace: 3, nativeTraceEligible: 3, cacheSatisfied: 0, selectedForLiveTrace: 2,
+    liveBudgetCap: 2, liveBudgetExhaustedEligibleCount: 1, tracesAvoidedByStructuralPrefilter: 2,
   })
   assert.equal(r.ingestionAudit.nativeTraceSelection?.selectedForLiveTrace, 2)
 })
@@ -212,7 +216,7 @@ test('no receipt is accepted merely because it was prioritized (the real trace m
 })
 
 test('with native evidence for every eligible receipt, results match the unprioritized classifier', async () => {
-  const capped = await run(production(), { nativeTraceLiveCap: 2 })
+  const capped = await run(production(), { nativeTraceLiveCap: 3 }) // three eligible receipts (C, D, E), three slots
   const all = await run(production(), { nativeTraceLiveCap: 50 })
   assert.deepEqual(all.verified, capped.verified)
   assert.deepEqual(all.r.ingestionAudit.rejectionReasons, capped.r.ingestionAudit.rejectionReasons)

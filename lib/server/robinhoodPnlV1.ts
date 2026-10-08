@@ -334,6 +334,14 @@ export type RobinhoodPnlV1IngestionAudit = {
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
   relayedWalletRejectedReasons?: Record<string, number>
+  /** Every remaining wallet_not_tx_sender rejection, classified A–I (diagnostic only). */
+  relayedAttribution?: {
+    classes: Record<RhRelayedAttributionClass, number>
+    withWalletErc20Inflow: number; withWalletErc20Outflow: number
+    /** Rejections with a route reading (A/B) that needs an exact trace — formerly always terminal in trace selection. */
+    routeReadingAwaitingTrace: number
+    tracedThisScan: number
+  }
   candidateSelection?: RhCandidateSelectionAudit
   /** Stage-2 (budgeted) verification beyond the first selection. */
   stagedVerification?: RhStagedVerificationAudit
@@ -582,6 +590,10 @@ export type RhRelayedTraceRequest = {
    * must be the route output.
    */
   direction?: 'native_in' | 'native_out'
+  /** The native leg runs through a WETH pool the router wrapped / unwrapped. */
+  viaWeth?: boolean
+  /** V4 hops on the route reading (trace priority: single-hop first). */
+  hopCount?: number
   routeInputToken?: string
   routeInputRaw?: bigint
 }
@@ -611,18 +623,23 @@ export type RhLiveTraceAllocator = {
   recoveryEligible: number
   recoverySelected: number
   reservedSlotReleasedToMain: boolean
-  /** Diagnostic-only traces for relayed candidates: lowest priority, otherwise-unused capacity only. */
+  /** Live slots that went to relayed candidates (shared selection, reserve release, or the relayed lane itself). */
   relayedDiagnosticLiveUsed: number
+  /** Every resolved trace result with its audit (a failed one keeps why: malformed vs transport). */
+  resolvedResults: Map<string, RhNativeTraceResult>
+  /** Live-budget ordinal per traced tx; stored proofs per tx. */
+  liveOrdinal: Map<string, number>
+  storedResolved: Set<string>
 }
 const newLiveTraceAllocator = (cap: number): RhLiveTraceAllocator => ({
   cap, used: 0, mainUsed: 0, recoveryUsed: 0, resolved: new Map(), storedProofHitsMain: 0, storedProofHitsRecovery: 0,
   mainDeferred: [], mainEligibleDeferredForRecovery: 0, recoveryEligible: 0, recoverySelected: 0, reservedSlotReleasedToMain: false,
-  relayedDiagnosticLiveUsed: 0,
+  relayedDiagnosticLiveUsed: 0, resolvedResults: new Map(), liveOrdinal: new Map(), storedResolved: new Set(),
 })
-export type RhNativeTracePriorityClass = 'p2_single_hop_v4_one_erc20_side' | 'p3_native_dependent' | 'p4_complex_multi_hop'
+export type RhNativeTracePriorityClass = 'p1_native_out_sell' | 'p2_single_hop_v4_one_erc20_side' | 'p2_relayed_buy' | 'p3_native_dependent' | 'p4_complex_multi_hop'
 export type RhNativeTraceRequest = {
   txHash: string
-  kind: 'direct_v4' | 'mixed_route'
+  kind: 'direct_v4' | 'mixed_route' | 'relayed'
   /** What the receipt is without any native trace (never acceptance). */
   preTraceClassification: string
   /** Proven native flow could move the tx to accepted (or, for a mixed route, is required to confirm it). */
@@ -700,6 +717,11 @@ export type RhRouteInput = {
   poolKeys: ReadonlyMap<string, RhPoolKey>
   /** Wallet's exact native balance change from this tx, gas added back; null when unproven. */
   nativeNet: bigint | null
+  /**
+   * Relayed proofs only: a route through a WETH pool whose WETH the router wraps / unwraps (the wallet itself moves no
+   * WETH) — the wallet's proven native flow is then its WETH leg. Never set for wallet-sent receipts.
+   */
+  nativeViaWeth?: boolean
 }
 export type RhRouteResult =
   | { ok: true; inputToken: string; outputToken: string; inputRaw: bigint; outputRaw: bigint; hops: RhVerifiedSwap['hops']; intermediary: { currency: string; kind: 'native' | 'stable'; raw: bigint } | null; firstLogIndex: number }
@@ -753,6 +775,10 @@ export function verifyRobinhoodV4Route(input: RhRouteInput): RhRouteResult {
   if (nativeTouched) {
     if (input.nativeNet == null) return fail('native_flow_unprovable', 'route trades native ETH but the wallet native delta is unproven')
     if (input.nativeNet !== ZERO) walletNet.set(RH_NATIVE, (walletNet.get(RH_NATIVE) ?? ZERO) + input.nativeNet)
+  } else if (input.nativeViaWeth === true && routeCurrencies.has(RH_WETH) && input.nativeNet != null && input.nativeNet !== ZERO) {
+    // The router wrapped / unwrapped for the wallet: a wallet that also moved WETH itself is two flows, not one leg.
+    if (walletNet.has(RH_WETH)) return fail('ambiguous_wallet_flows', 'wallet moved WETH itself and has a native leg')
+    walletNet.set(RH_WETH, input.nativeNet)
   }
   const ins = [...walletNet].filter(([, v]) => v < ZERO)
   const outs = [...walletNet].filter(([, v]) => v > ZERO)
@@ -985,9 +1011,10 @@ function registerDirectTraceProbe(ctx: Ctx, wallet: string, txHash: string, rece
   }
   const failures: Array<{ reason: RhRejection; detail: string }> = []
   let couldChange = false
+  let sell = false
   for (const nativeNet of hypotheses) {
     const r = verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet })
-    if (r.ok) { couldChange = true; break }
+    if (r.ok) { couldChange = true; sell = nativeNet > ZERO && r.outputToken === RH_NATIVE; break }
     failures.push({ reason: r.reason, detail: r.detail })
   }
   // A wrong-sign hypothesis only produces a wallet side-count failure; prefer the structural one.
@@ -1002,7 +1029,8 @@ function registerDirectTraceProbe(ctx: Ctx, wallet: string, txHash: string, rece
     nativeProofCouldChangeOutcome: couldChange,
     terminalReason: couldChange ? null : terminal?.reason ?? null,
     terminalDetail: couldChange ? null : terminal ? `${terminal.detail} (holds for every native amount this route implies; no native trace requested)` : null,
-    priorityClass: swaps.length === 1 && erc20Sides === 1 ? 'p2_single_hop_v4_one_erc20_side' : swaps.length === 1 ? 'p3_native_dependent' : 'p4_complex_multi_hop',
+    // A token → ETH sell needs its native credit proven and no other lane can supply it: first in line.
+    priorityClass: couldChange && sell && swaps.length === 1 ? 'p1_native_out_sell' : swaps.length === 1 && erc20Sides === 1 ? 'p2_single_hop_v4_one_erc20_side' : swaps.length === 1 ? 'p3_native_dependent' : 'p4_complex_multi_hop',
   })
 }
 
@@ -1027,7 +1055,20 @@ export type RhNativeTraceSelectionSummary = {
   receiptCandidates: number; terminalRejectedBeforeTrace: number; nativeTraceEligible: number; cacheSatisfied: number
   selectedForLiveTrace: number; liveBudgetCap: number; liveBudgetExhaustedEligibleCount: number; tracesAvoidedByStructuralPrefilter: number
 }
-const PRIORITY_RANK: Record<RhNativeTracePriorityClass, number> = { p2_single_hop_v4_one_erc20_side: 2, p3_native_dependent: 3, p4_complex_multi_hop: 4 }
+// Token → ETH sells first (wallet-sent or relayed: only the exact trace proves the native credit), then single-hop
+// wallet-sent receipts and relayed ETH → token buys as equals (older first, then hash), then the costlier shapes.
+const PRIORITY_RANK: Record<RhNativeTracePriorityClass, number> = { p1_native_out_sell: 1, p2_single_hop_v4_one_erc20_side: 2, p2_relayed_buy: 2, p3_native_dependent: 3, p4_complex_multi_hop: 4 }
+
+/** A relayed candidate whose one route reading needs the exact trace, as a request in the shared priority order. */
+function relayedAsTraceRequest(r: RhRelayedTraceRequest): RhNativeTraceRequest {
+  const sell = r.direction === 'native_out'
+  return {
+    txHash: r.txHash, kind: 'relayed', blockNumber: r.blockNumber, timestampSec: r.timestampSec,
+    preTraceClassification: sell ? 'relayed_token_in_native_out_pending_trace' : 'relayed_native_in_token_out_pending_trace',
+    nativeProofCouldChangeOutcome: true,
+    priorityClass: (r.hopCount ?? 1) > 1 ? 'p4_complex_multi_hop' : sell ? 'p1_native_out_sell' : 'p2_relayed_buy',
+  }
+}
 
 /**
  * Resolves traces for the eligible receipts: stored proofs first (no live slot), then live lookups in deterministic
@@ -1036,7 +1077,10 @@ const PRIORITY_RANK: Record<RhNativeTracePriorityClass, number> = { p2_single_ho
  */
 async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly CandidateOutcome[], mainLiveCap: number): Promise<{ replay: Map<string, RhNativeTransfer[] | null>; summary: RhNativeTraceSelectionSummary }> {
   const alloc = ctx.traceBudget!
-  const requests = ctx.traceRequests ?? new Map<string, RhNativeTraceRequest>()
+  // Wallet-sent receipts and relayed route readings compete for the same slots in one deterministic priority order
+  // (relayed readings used to get only capacity nobody else wanted — in practice none).
+  const requests = new Map<string, RhNativeTraceRequest>(ctx.traceRequests ?? [])
+  for (const r of ctx.relayedTraceRequests?.values() ?? []) if (!requests.has(r.txHash)) requests.set(r.txHash, relayedAsTraceRequest(r))
   const cap = alloc.cap
   const eligible = [...requests.values()].filter((r) => r.nativeProofCouldChangeOutcome)
     .sort((a, b) => PRIORITY_RANK[a.priorityClass] - PRIORITY_RANK[b.priorityClass]
@@ -1059,6 +1103,8 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       alloc.storedProofHitsMain += 1
       replay.set(r.txHash, logNativeTrace(wallet, r.txHash, hit))
       alloc.resolved.set(r.txHash, hit.transfers)
+      alloc.resolvedResults.set(r.txHash, hit)
+      alloc.storedResolved.add(r.txHash)
     }
   })
   const live = eligible.filter((r) => !cacheHit.has(r.txHash))
@@ -1073,6 +1119,9 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
     const transfers = logNativeTrace(wallet, r.txHash, results[i])
     replay.set(r.txHash, transfers)
     alloc.resolved.set(r.txHash, transfers)
+    alloc.resolvedResults.set(r.txHash, results[i])
+    alloc.liveOrdinal.set(r.txHash, ordinal.get(r.txHash)!)
+    if (r.kind === 'relayed') alloc.relayedDiagnosticLiveUsed += 1
   })
   // Eligible without a slot now: the first ones fit under the request cap but wait for recovery's reserved slot
   // (released back to main if recovery does not need it); the rest exceed the cap. No request is made for either.
@@ -1127,14 +1176,18 @@ async function releaseReservedSlotsToMain(ctx: Ctx, wallet: string, outcomes: Ca
     alloc.mainUsed += 1
     alloc.reservedSlotReleasedToMain = true
     summary.selectedForLiveTrace += 1
-    const transfers = logNativeTrace(wallet, r.txHash, await requestNativeTrace(ctx, r.txHash))
+    const result = await requestNativeTrace(ctx, r.txHash)
+    const transfers = logNativeTrace(wallet, r.txHash, result)
     alloc.resolved.set(r.txHash, transfers)
+    alloc.resolvedResults.set(r.txHash, result)
+    alloc.liveOrdinal.set(r.txHash, alloc.used)
+    if (r.kind === 'relayed') alloc.relayedDiagnosticLiveUsed += 1
     console.warn('[robinhood-native-trace-selection-audit]', {
       candidateTxHash: r.txHash, preTraceClassification: r.preTraceClassification, terminalWithoutNativeTrace: false,
       nativeProofCouldChangeOutcome: true, traceEligible: true, priorityClass: r.priorityClass, selectedForLiveTrace: true,
       persistentOrMemoryHit: false, liveBudgetOrdinal: alloc.used, skippedReason: null, releasedFromRecoveryReserve: true,
     })
-    const i = outcomes.findIndex((o) => o.txHash === r.txHash)
+    const i = r.kind === 'relayed' ? -1 : outcomes.findIndex((o) => o.txHash === r.txHash) // relayed: promoted by its own lane
     if (i >= 0) {
       const before = outcomes[i].swap
       outcomes[i] = await verifyCandidate(ctx, wallet, r.txHash).catch(() => threw(r.txHash))
@@ -1232,34 +1285,75 @@ async function planRecoveryTraces(
 // ── Relayed V4 native-input diagnostics (no acceptance) ─────────────────────────────────────────────────
 function registerRelayedTraceProbe(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt, poolKeys: ReadonlyMap<string, RhPoolKey>, timestampSec: number | null): void {
   if (!ctx.relayedTraceRequests || receipt.status !== 1 || receipt.from === wallet) return
-  if (receipt.logs.some((l) => LIQUIDITY_TOPICS.has(l.topics[0] ?? '') || OTHER_VENUE_SWAP_TOPICS.has(l.topics[0] ?? '')
-    || (l.topics[0] === V4_SWAP_TOPIC0 && l.address !== POOL_MANAGER))) return
-  const swaps = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER)
-  if (swaps.length === 0 || swaps.some((l) => !poolKeys.has(l.topics[1]))) return
-  // The route the unchanged verifier accepts when the wallet pays one of the native inputs its V4 deltas imply.
-  const nativeInputs = new Set<bigint>()
-  for (const l of swaps) {
-    const key = poolKeys.get(l.topics[1])!
-    const native = lower(key.currency0) === RH_NATIVE ? signedWord(l.data, 0) : lower(key.currency1) === RH_NATIVE ? signedWord(l.data, 1) : null
-    if (native != null && native !== ZERO) nativeInputs.add(abs(native))
-  }
-  const accepted = [...nativeInputs].map((x) => verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet: -x }))
-    .filter((r): r is Extract<RhRouteResult, { ok: true }> => r.ok && r.inputToken === RH_NATIVE && r.outputToken !== RH_NATIVE)
-  // token → ETH: the wallet's ERC-20 debit is in the receipt; the native credit each V4 native delta implies is the
-  // hypothesis the exact trace must later confirm.
-  const sells = [...nativeInputs].map((x) => verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet: x }))
-    .filter((r): r is Extract<RhRouteResult, { ok: true }> => r.ok && r.inputToken !== RH_NATIVE && r.outputToken === RH_NATIVE)
-  if (accepted.length + sells.length !== 1) return // none, or more than one reading: not one connected route
-  const base = { txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec, blockNumber: receipt.blockNumber, poolKeys }
-  if (accepted.length === 1) {
-    const route = accepted[0]
-    ctx.relayedTraceRequests.set(txHash, { ...base, direction: 'native_in', routeInputNativeRaw: BigInt(route.hops[0].inRaw), routeOutputToken: route.outputToken, routeOutputRaw: route.outputRaw })
+  const reading = relayedRouteHypothesis(wallet, receipt, poolKeys)
+  if (!reading) return
+  const base = { txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec, blockNumber: receipt.blockNumber, poolKeys, viaWeth: reading.viaWeth, hopCount: reading.route.hops.length }
+  if (reading.direction === 'native_in') {
+    ctx.relayedTraceRequests.set(txHash, { ...base, direction: 'native_in', routeInputNativeRaw: BigInt(reading.route.hops[0].inRaw), routeOutputToken: reading.route.outputToken, routeOutputRaw: reading.route.outputRaw })
     return
   }
-  const route = sells[0]
   ctx.relayedTraceRequests.set(txHash, {
-    ...base, direction: 'native_out', routeInputNativeRaw: ZERO, routeOutputToken: RH_NATIVE, routeOutputRaw: route.outputRaw,
-    routeInputToken: route.inputToken, routeInputRaw: route.inputRaw,
+    ...base, direction: 'native_out', routeInputNativeRaw: ZERO, routeOutputToken: RH_NATIVE, routeOutputRaw: reading.route.outputRaw,
+    routeInputToken: reading.route.inputToken, routeInputRaw: reading.route.inputRaw,
+  })
+}
+
+const nativeLike = (t: string) => t === RH_NATIVE || t === RH_WETH
+
+/**
+ * PURE. The one route reading a relayed receipt supports when the wallet's missing side is native ETH: every native /
+ * WETH delta of its canonical V4 swaps is a candidate amount; an ETH → token reading needs the wallet's ERC-20 credit
+ * (receipt) and a native debit of that amount, a token → ETH reading its ERC-20 debit (receipt) and a native credit.
+ * Exactly one reading must pass the unchanged verifier (WETH pools count when the router wrapped / unwrapped). The
+ * native amount is only a hypothesis here — acceptance needs the exact trace.
+ */
+export function relayedRouteHypothesis(wallet: string, receipt: RhReceipt, poolKeys: ReadonlyMap<string, RhPoolKey>):
+  { direction: 'native_in' | 'native_out'; route: Extract<RhRouteResult, { ok: true }>; viaWeth: boolean } | null {
+  if (receipt.logs.some((l) => LIQUIDITY_TOPICS.has(l.topics[0] ?? '') || OTHER_VENUE_SWAP_TOPICS.has(l.topics[0] ?? '')
+    || (l.topics[0] === V4_SWAP_TOPIC0 && l.address !== POOL_MANAGER))) return null
+  const swaps = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER)
+  if (swaps.length === 0 || swaps.some((l) => !poolKeys.has(l.topics[1]))) return null
+  const amounts = new Set<bigint>()
+  let viaWeth = false
+  for (const l of swaps) {
+    const key = poolKeys.get(l.topics[1])!
+    const c0 = lower(key.currency0)
+    const c1 = lower(key.currency1)
+    const side = nativeLike(c0) ? 0 : nativeLike(c1) ? 1 : null
+    if (side == null) continue
+    if ((side === 0 ? c0 : c1) === RH_WETH) viaWeth = true
+    const d = signedWord(l.data, side)
+    if (d != null && d !== ZERO) amounts.add(abs(d))
+  }
+  const readings: Array<{ direction: 'native_in' | 'native_out'; route: Extract<RhRouteResult, { ok: true }> }> = []
+  for (const x of amounts) {
+    for (const [direction, nativeNet] of [['native_in', -x], ['native_out', x]] as const) {
+      const r = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys, nativeNet, nativeViaWeth: true })
+      if (!r.ok) continue
+      if (direction === 'native_in' ? nativeLike(r.inputToken) && !nativeLike(r.outputToken) : !nativeLike(r.inputToken) && nativeLike(r.outputToken)) readings.push({ direction, route: r })
+    }
+  }
+  return readings.length === 1 ? { ...readings[0], viaWeth } : null
+}
+
+/** ERC-4337 EntryPoints (v0.6, v0.7): a wallet → EntryPoint native transfer is a gas prefund, never a swap input. */
+export const RH_ERC4337_ENTRY_POINTS = new Set(['0x5ff137d4b0fdcd49dca30c7cf57e578a026d2789', '0x0000000071727de22e5e9d8baf0edac6f37da032'])
+
+/**
+ * Relayer / gas mechanics are not swap economics. Exactly these legs are removed before any payer analysis:
+ *   - the wallet paying the tx sender (relayer / bundler gas compensation) or a canonical ERC-4337 EntryPoint (prefund);
+ *   - a canonical EntryPoint compensating the tx sender (bundler).
+ * Everything else stays — a relayer's top-level value and its refund still net against each other, and a router
+ * pass-through nets to zero, so neither is ever a payer; a genuinely distinct funding source still is.
+ */
+export function relayedSwapNativeTransfers(transfers: readonly RhNativeTransfer[], receipt: RhReceipt, wallet: string): RhNativeTransfer[] {
+  const w = lower(wallet)
+  return transfers.filter((t) => {
+    const from = lower(t.from)
+    const to = lower(t.to)
+    if (from === w && (to === receipt.from || RH_ERC4337_ENTRY_POINTS.has(to))) return false
+    if (RH_ERC4337_ENTRY_POINTS.has(from) && to === receipt.from) return false
+    return true
   })
 }
 
@@ -1286,15 +1380,15 @@ export function robinhoodRelayedNativeOutVerdict(input: {
   }
   const ev = deriveRhNativeEvidence({
     wallet, isSender: false, gasPaid: ZERO, txValue: input.txValue, balanceBefore: null, balanceAfter: null,
-    nonceBefore: null, nonceAfter: null, trace: input.trace.transfers, txFrom: receipt.from, txTo: receipt.to,
+    nonceBefore: null, nonceAfter: null, trace: relayedSwapNativeTransfers(input.trace.transfers, receipt, wallet), txFrom: receipt.from, txTo: receipt.to,
   })
   const fromWallet = ev.traceNativeFromWallet != null ? BigInt(ev.traceNativeFromWallet) : null
   const out = { ...base, traceComplete: true, traceNativeFromWalletRaw: ev.traceNativeFromWallet, traceNativeToWalletRaw: ev.traceNativeToWallet, tracedWalletNetRaw: ev.nativeNetExGas?.toString() ?? null }
   if (ev.status !== 'proven_target_tx_native_transfer' || ev.nativeNetExGas == null || fromWallet == null) return { ...out, verdict: 'ambiguous_trace' }
   if ((topLevelIntoWallet ?? ZERO) > ZERO) return { ...out, verdict: 'externally_funded_route' }
   if (fromWallet > ZERO || ev.nativeNetExGas <= ZERO) return { ...out, verdict: 'ambiguous_trace' }
-  const route = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas })
-  const matches = route.ok && route.inputToken !== RH_NATIVE && route.outputToken === RH_NATIVE && route.outputRaw === ev.nativeNetExGas
+  const route = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas, nativeViaWeth: true })
+  const matches = route.ok && !nativeLike(route.inputToken) && nativeLike(route.outputToken) && route.outputRaw === ev.nativeNetExGas
   return { ...out, walletNativeDebitMatchesRoute: matches, verdict: matches ? 'wallet_funded_route_candidate' : 'ambiguous_trace' }
 }
 
@@ -1322,9 +1416,10 @@ export function robinhoodRelayedDiagnosticVerdict(input: {
     const ambiguous = result === 'malformed' || result === 'unknown_execution_status' || result === 'pagination_cap_exhausted'
     return { ...base, verdict: ambiguous ? 'ambiguous_trace' : 'trace_unavailable' }
   }
+  const swapTransfers = relayedSwapNativeTransfers(input.trace.transfers, receipt, wallet)
   const ev = deriveRhNativeEvidence({
     wallet, isSender: false, gasPaid: ZERO, txValue: input.txValue, balanceBefore: null, balanceAfter: null,
-    nonceBefore: null, nonceAfter: null, trace: input.trace.transfers, txFrom: receipt.from, txTo: receipt.to,
+    nonceBefore: null, nonceAfter: null, trace: swapTransfers, txFrom: receipt.from, txTo: receipt.to,
   })
   const fromWallet = ev.traceNativeFromWallet != null ? BigInt(ev.traceNativeFromWallet) : null
   const out = { ...base, traceComplete: true, traceNativeFromWalletRaw: ev.traceNativeFromWallet, traceNativeToWalletRaw: ev.traceNativeToWallet, tracedWalletNetRaw: ev.nativeNetExGas?.toString() ?? null }
@@ -1337,14 +1432,14 @@ export function robinhoodRelayedDiagnosticVerdict(input: {
   // (counted once). An unknown tx.value cannot be accounted for here — promotion then fails closed.
   const value = input.txValue ?? ZERO
   let rootSkipped = false
-  for (const t of input.trace.transfers) {
+  for (const t of swapTransfers) {
     if (t.success !== true || t.value <= ZERO) continue
     if (!rootSkipped && value > ZERO && lower(t.from) === receipt.from && receipt.to != null && lower(t.to) === receipt.to && t.value === value) { rootSkipped = true; continue }
     bump(lower(t.from), -t.value); bump(lower(t.to), t.value)
   }
   if (value > ZERO) { bump(receipt.from, -value); if (receipt.to) bump(receipt.to, value) }
   const competing = [...net].filter(([a, v]) => v < ZERO && a !== wallet && a !== POOL_MANAGER).map(([a]) => a).sort()
-  const matches = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas }).ok
+  const matches = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas, nativeViaWeth: true }).ok
     && -ev.nativeNetExGas >= input.routeInputNativeRaw
   const verdict: RhRelayedDiagnosticVerdict = fromWallet === ZERO ? 'no_wallet_native_debit'
     : ev.nativeNetExGas >= ZERO || competing.length > 0 || (topLevelIntoWallet ?? ZERO) > ZERO ? 'externally_funded_route'
@@ -1378,9 +1473,9 @@ async function promoteRelayedWalletSwap(
   if (v.competingNativePayers.length > 0) return { swap: null, reason: 'competing_native_payer' }
   if (v.topLevelValueIntoWallet !== '0') return { swap: null, reason: 'top_level_value_into_wallet' }
   if (!v.walletNativeDebitMatchesRoute) return { swap: null, reason: 'wallet_debit_does_not_match_route' }
-  const route = verifyRobinhoodV4Route({ wallet, txHash: r.txHash, receipt, poolKeys: r.poolKeys, nativeNet: net })
+  const route = verifyRobinhoodV4Route({ wallet, txHash: r.txHash, receipt, poolKeys: r.poolKeys, nativeNet: net, nativeViaWeth: true })
   if (!route.ok) return { swap: null, reason: `route_replay_failed:${route.reason}` }
-  if (route.inputToken !== RH_NATIVE || route.outputToken === RH_NATIVE || route.inputRaw !== -net) return { swap: null, reason: 'route_replay_not_native_in_token_out' }
+  if (!nativeLike(route.inputToken) || nativeLike(route.outputToken) || route.inputRaw !== -net) return { swap: null, reason: 'route_replay_not_native_in_token_out' }
   if (route.outputToken !== r.routeOutputToken || route.outputRaw !== r.routeOutputRaw) return { swap: null, reason: 'route_replay_output_changed' }
   let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
   if (timestampSec == null) {
@@ -1397,8 +1492,9 @@ async function promoteRelayedWalletSwap(
   return {
     reason: 'relayed_wallet_swap_proven',
     swap: {
+      // The wallet paid native ETH (a WETH pool's WETH was the router's wrap of it).
       txHash: r.txHash, blockNumber: receipt.blockNumber, firstLogIndex: route.firstLogIndex, timestampSec,
-      inputToken: route.inputToken, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
+      inputToken: RH_NATIVE, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
       inputDecimals, outputDecimals, hops: route.hops,
       intermediary: route.intermediary ? { ...route.intermediary, decimals: interDecimals } : null,
     },
@@ -1418,9 +1514,9 @@ async function promoteRelayedNativeOutSwap(
   if (!v.traceComplete || fromWallet == null || fromWallet !== ZERO || net == null || net <= ZERO) return { swap: null, reason: 'no_traced_wallet_native_credit' }
   if (v.topLevelValueIntoWallet !== '0') return { swap: null, reason: 'top_level_value_into_wallet' }
   if (!v.walletNativeDebitMatchesRoute) return { swap: null, reason: 'wallet_credit_does_not_match_route' }
-  const route = verifyRobinhoodV4Route({ wallet, txHash: r.txHash, receipt, poolKeys: r.poolKeys, nativeNet: net })
+  const route = verifyRobinhoodV4Route({ wallet, txHash: r.txHash, receipt, poolKeys: r.poolKeys, nativeNet: net, nativeViaWeth: true })
   if (!route.ok) return { swap: null, reason: `route_replay_failed:${route.reason}` }
-  if (route.inputToken === RH_NATIVE || route.outputToken !== RH_NATIVE || route.outputRaw !== net) return { swap: null, reason: 'route_replay_not_token_in_native_out' }
+  if (nativeLike(route.inputToken) || !nativeLike(route.outputToken) || route.outputRaw !== net) return { swap: null, reason: 'route_replay_not_token_in_native_out' }
   if (route.inputToken !== r.routeInputToken || route.inputRaw !== r.routeInputRaw) return { swap: null, reason: 'route_replay_input_changed' }
   let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
   if (timestampSec == null) {
@@ -1437,11 +1533,123 @@ async function promoteRelayedNativeOutSwap(
     reason: 'relayed_wallet_swap_proven',
     swap: {
       txHash: r.txHash, blockNumber: receipt.blockNumber, firstLogIndex: route.firstLogIndex, timestampSec,
-      inputToken: route.inputToken, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
+      // The wallet received native ETH (a WETH pool's WETH was unwrapped for it).
+      inputToken: route.inputToken, outputToken: RH_NATIVE, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
       inputDecimals, outputDecimals: 18, hops: route.hops,
       intermediary: route.intermediary ? { ...route.intermediary, decimals: interDecimals } : null,
     },
   }
+}
+
+// ── Relayed attribution audit (classes A–I) ──────────────────────────────────────────────────────────
+export type RhRelayedAttributionClass =
+  | 'A_native_in_token_out' | 'B_token_in_native_out' | 'C_token_in_token_out' | 'D_output_only_no_provable_input'
+  | 'E_input_only_no_provable_output' | 'F_competing_payer' | 'G_unrelated_transfer_in_other_swap'
+  | 'H_insufficient_evidence' | 'I_other'
+export type RhRelayedAttributionRow = {
+  txHash: string; txFrom: string; txTo: string | null; timestampSec: number | null; v4SwapLogs: number
+  walletErc20In: Array<{ token: string; raw: string }>; walletErc20Out: Array<{ token: string; raw: string }>
+  walletNativeDebitRaw: string | null; walletNativeCreditRaw: string | null
+  routeInput: { token: string; raw: string } | null; routeOutput: { token: string; raw: string } | null
+  settlement: string; outputRecipients: string[]; inputPayers: string[]; competingPayers: string[]
+  traceAvailable: boolean; traceComplete: boolean; rejectionBranch: string; attributionClass: RhRelayedAttributionClass
+}
+
+/**
+ * PURE. One relayed (wallet_not_tx_sender) receipt into exactly one class, from the receipt, its proven pool keys and —
+ * when the shared selection resolved one — the exact trace and the relayed verdict. Diagnostic only: never acceptance.
+ */
+export function classifyRelayedRejection(input: {
+  wallet: string; txHash: string; receipt: RhReceipt; poolKeys: ReadonlyMap<string, RhPoolKey>
+  relayed: { trace: RhNativeTransfer[] | null; verdict: RhRelayedDiagnosticVerdict; reason: string; competingNativePayers: string[]; traceComplete: boolean } | null
+}): RhRelayedAttributionRow {
+  const w = lower(input.wallet)
+  const { receipt } = input
+  const ins = new Map<string, bigint>()
+  const outs = new Map<string, bigint>()
+  const payersByToken = new Map<string, Set<string>>()
+  const recipientsByToken = new Map<string, Set<string>>()
+  for (const l of receipt.logs) {
+    if (l.topics[0] !== ERC20_TRANSFER_TOPIC0 || l.topics.length !== 3) continue
+    const from = `0x${l.topics[1].slice(-40)}`
+    const to = `0x${l.topics[2].slice(-40)}`
+    const amt = word(l.data, 0) ? BigInt(`0x${word(l.data, 0)}`) : ZERO
+    if (to === w) ins.set(l.address, (ins.get(l.address) ?? ZERO) + amt)
+    if (from === w) outs.set(l.address, (outs.get(l.address) ?? ZERO) + amt)
+    if (to === POOL_MANAGER) (payersByToken.get(l.address) ?? payersByToken.set(l.address, new Set()).get(l.address)!).add(from)
+    if (from === POOL_MANAGER) (recipientsByToken.get(l.address) ?? recipientsByToken.set(l.address, new Set()).get(l.address)!).add(to)
+  }
+  const v4SwapLogs = receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER).length
+  const trace = input.relayed?.trace ? relayedSwapNativeTransfers(input.relayed.trace, receipt, w) : null
+  const okT = (trace ?? []).filter((t) => t.success === true && t.value > ZERO)
+  const debit = trace ? okT.filter((t) => lower(t.from) === w).reduce((a, t) => a + t.value, ZERO) : null
+  const credit = trace ? okT.filter((t) => lower(t.to) === w).reduce((a, t) => a + t.value, ZERO) : null
+  const reading = relayedRouteHypothesis(w, receipt, input.poolKeys)
+  const token = robinhoodRelayedTokenRouteProof(w, receipt, input.poolKeys)
+  const hasNative = [...input.poolKeys.values()].some((k) => nativeLike(lower(k.currency0)) || nativeLike(lower(k.currency1)))
+  const routeCurrencies = new Set([...input.poolKeys.values()].flatMap((k) => [lower(k.currency0), lower(k.currency1)]))
+  const tokenRoute = !hasNative ? verifyRobinhoodV4Route({ wallet: w, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ZERO }) : null
+  const route = reading?.route ?? (token.ok ? token.route : tokenRoute?.ok ? tokenRoute : null)
+  const relayed = input.relayed
+  let cls: RhRelayedAttributionClass
+  const pre = robinhoodReceiptPreflight(receipt.from, receipt)
+  if (!pre.ok && pre.reason !== 'no_v4_swap_in_tx') cls = pre.reason === 'malformed_swap_delta' ? 'H_insufficient_evidence' : 'I_other'
+  else if (v4SwapLogs === 0) cls = 'I_other'
+  else if (pre.ok && pre.poolIds.some((id) => !input.poolKeys.has(id))) cls = 'H_insufficient_evidence'
+  else if (relayed && (relayed.verdict === 'externally_funded_route' || relayed.competingNativePayers.length > 0)) cls = 'F_competing_payer'
+  else if (reading?.direction === 'native_in') cls = relayed?.verdict === 'no_wallet_native_debit' ? 'D_output_only_no_provable_input' : 'A_native_in_token_out'
+  else if (reading?.direction === 'native_out') cls = 'B_token_in_native_out'
+  else if (route) cls = 'C_token_in_token_out'
+  // A wallet transfer of a token no V4 hop in this tx trades is someone else's swap with an unrelated wallet transfer.
+  else if ([...ins.keys(), ...outs.keys()].some((t) => !routeCurrencies.has(t) && !(t === RH_WETH && routeCurrencies.has(RH_NATIVE)))) cls = 'G_unrelated_transfer_in_other_swap'
+  else if (ins.size > 0 && outs.size === 0) cls = 'D_output_only_no_provable_input'
+  else if (outs.size > 0 && ins.size === 0) cls = 'E_input_only_no_provable_output'
+  else if (ins.size > 0 || outs.size > 0) cls = 'G_unrelated_transfer_in_other_swap'
+  else cls = 'H_insufficient_evidence' // the wallet is linked only by native flow the receipt cannot show
+  const list = (m: Map<string, bigint>) => [...m].map(([t, v]) => ({ token: t, raw: v.toString() }))
+  const inTok = route ? (nativeLike(route.inputToken) ? RH_WETH : route.inputToken) : null
+  const outTok = route ? (nativeLike(route.outputToken) ? RH_WETH : route.outputToken) : null
+  return {
+    txHash: input.txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec: receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null, v4SwapLogs,
+    walletErc20In: list(ins), walletErc20Out: list(outs),
+    walletNativeDebitRaw: debit?.toString() ?? null, walletNativeCreditRaw: credit?.toString() ?? null,
+    routeInput: route ? { token: route.inputToken, raw: route.inputRaw.toString() } : null,
+    routeOutput: route ? { token: route.outputToken, raw: route.outputRaw.toString() } : null,
+    settlement: POOL_MANAGER,
+    outputRecipients: outTok ? [...(recipientsByToken.get(outTok) ?? [])].sort() : [],
+    inputPayers: inTok ? [...(payersByToken.get(inTok) ?? [])].sort() : [],
+    competingPayers: relayed?.competingNativePayers ?? [],
+    traceAvailable: relayed?.trace != null, traceComplete: relayed?.traceComplete ?? false,
+    rejectionBranch: relayed ? `relayed_lane:${relayed.reason}` : reading ? 'relayed_reading_no_trace' : token.ok ? 'receipt_token_route' : `wallet_not_tx_sender:${token.reason}`,
+    attributionClass: cls,
+  }
+}
+
+async function auditRelayedAttribution(ctx: Ctx, wallet: string, outcomes: readonly CandidateOutcome[], relayed: RhRelayedWalletSummary): Promise<NonNullable<RobinhoodPnlV1IngestionAudit['relayedAttribution']>> {
+  const classes = Object.fromEntries((['A_native_in_token_out', 'B_token_in_native_out', 'C_token_in_token_out', 'D_output_only_no_provable_input', 'E_input_only_no_provable_output', 'F_competing_payer', 'G_unrelated_transfer_in_other_swap', 'H_insufficient_evidence', 'I_other'] as const).map((k) => [k, 0])) as Record<RhRelayedAttributionClass, number>
+  const out = { classes, withWalletErc20Inflow: 0, withWalletErc20Outflow: 0, routeReadingAwaitingTrace: 0, tracedThisScan: 0 }
+  for (const o of outcomes) {
+    if (o.swap || o.rejection !== 'wallet_not_tx_sender') continue
+    const receipt = await receiptCache.get(o.txHash)?.catch(() => null)
+    if (!receipt) continue
+    const ids = [...new Set(receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER && /^0x[0-9a-f]{64}$/.test(l.topics[1] ?? '')).map((l) => l.topics[1]))]
+    const poolKeys = new Map<string, RhPoolKey>()
+    for (const id of ids) {
+      // Pool keys are cached from verification; only a miss costs a call, and never past the deadline.
+      if (Date.now() >= ctx.deadlineAt && !poolKeyCache.has(id)) continue
+      const key = await resolveRobinhoodPoolKey(id, ctx.rpc, (n) => { ctx.m.rpcCalls += n }, () => { ctx.m.cacheHits += 1 }).catch(() => null)
+      if (key) poolKeys.set(id, { currency0: lower(key.currency0), currency1: lower(key.currency1) })
+    }
+    const row = classifyRelayedRejection({ wallet, txHash: o.txHash, receipt, poolKeys, relayed: relayed.byTx.get(o.txHash) ?? null })
+    classes[row.attributionClass] += 1
+    if (row.walletErc20In.length) out.withWalletErc20Inflow += 1
+    if (row.walletErc20Out.length) out.withWalletErc20Outflow += 1
+    if (row.attributionClass === 'A_native_in_token_out' || row.attributionClass === 'B_token_in_native_out') out.routeReadingAwaitingTrace += 1
+    if (row.traceAvailable) out.tracedThisScan += 1
+    console.warn('[robinhood-relayed-attribution-audit]', row)
+  }
+  console.warn('[robinhood-relayed-attribution-audit]', { wallet, summary: out })
+  return out
 }
 
 export type RhRelayedWalletSummary = {
@@ -1452,20 +1660,25 @@ export type RhRelayedWalletSummary = {
   relayedWalletRejectedReasons: Record<string, number>
   /** Relayed candidates whose exact trace (stored or live) was actually available this scan. */
   tracedTxHashes: Set<string>
+  /** Per relayed candidate: its trace, verdict and promotion outcome (attribution audit). */
+  byTx: Map<string, { trace: RhNativeTransfer[] | null; verdict: RhRelayedDiagnosticVerdict; reason: string; competingNativePayers: string[]; traceComplete: boolean }>
 }
 
 async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcomes: CandidateOutcome[]): Promise<RhRelayedWalletSummary> {
   const counts: Record<RhRelayedDiagnosticVerdict, number> = { wallet_funded_route_candidate: 0, externally_funded_route: 0, no_wallet_native_debit: 0, ambiguous_trace: 0, trace_unavailable: 0 }
-  const summary: RhRelayedWalletSummary = { candidates: 0, verdicts: counts, relayedWalletVerifiedSwapCount: 0, relayedWalletRejectedCount: 0, relayedWalletRejectedReasons: {}, tracedTxHashes: new Set() }
+  const summary: RhRelayedWalletSummary = { candidates: 0, verdicts: counts, relayedWalletVerifiedSwapCount: 0, relayedWalletRejectedCount: 0, relayedWalletRejectedReasons: {}, tracedTxHashes: new Set(), byTx: new Map() }
   const alloc = ctx.traceBudget
   const requests = [...(ctx.relayedTraceRequests?.values() ?? [])]
     .sort((a, b) => (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
   for (const r of requests) {
-    let stored: RhNativeTraceResult | null = null
-    if (ctx.deps.nativeTraceCached && Date.now() < ctx.deadlineAt) stored = await Promise.resolve().then(() => ctx.deps.nativeTraceCached!(r.txHash)).catch(() => null)
-    let trace: RhNativeTraceResult | null = stored?.transfers ? stored : null
-    let ordinal: number | null = null
-    if (!trace && alloc && alloc.used < alloc.cap && Date.now() < ctx.deadlineAt) {
+    // A trace the shared selection already resolved (stored or live) is replayed; nothing is fetched twice.
+    const resolvedResult = alloc?.resolvedResults.get(r.txHash) ?? null
+    const resolvedBySelection = resolvedResult != null || (alloc?.resolved.has(r.txHash) ?? false)
+    let stored: RhNativeTraceResult | null = resolvedResult && alloc?.storedResolved.has(r.txHash) ? resolvedResult : null
+    if (!resolvedBySelection && ctx.deps.nativeTraceCached && Date.now() < ctx.deadlineAt) stored = await Promise.resolve().then(() => ctx.deps.nativeTraceCached!(r.txHash)).catch(() => null)
+    let trace: RhNativeTraceResult | null = resolvedResult ?? (stored?.transfers ? stored : null)
+    let ordinal: number | null = alloc?.liveOrdinal.get(r.txHash) ?? null
+    if (!trace && !resolvedBySelection && alloc && alloc.used < alloc.cap && Date.now() < ctx.deadlineAt) {
       alloc.used += 1
       alloc.relayedDiagnosticLiveUsed += 1
       ordinal = alloc.used
@@ -1483,6 +1696,7 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
     counts[verdict] += 1
     summary.candidates += 1
     const promoted = receipt && v ? await promoteRelayedWalletSwap(ctx, wallet, r, receipt, v) : { swap: null, reason: verdict }
+    summary.byTx.set(r.txHash, { trace: trace?.transfers ?? null, verdict, reason: promoted.swap ? 'relayed_wallet_swap_proven' : promoted.reason, competingNativePayers: v?.competingNativePayers ?? [], traceComplete: v?.traceComplete ?? false })
     const i = outcomes.findIndex((o) => o.txHash === r.txHash)
     if (promoted.swap && i >= 0) {
       const o = outcomes[i]
@@ -1500,7 +1714,7 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
     console.warn('[robinhood-relayed-native-trace-audit]', {
       txHash: r.txHash, txFrom: r.txFrom, txTo: r.txTo, direction: r.direction ?? 'native_in', routeInputNativeRaw: r.routeInputNativeRaw.toString(),
       routeOutputToken: r.routeOutputToken, routeOutputRaw: r.routeOutputRaw.toString(),
-      storedTraceHit: stored?.transfers != null, selectedForDiagnosticTrace: ordinal != null, liveBudgetOrdinal: ordinal,
+      storedTraceHit: stored?.transfers != null, resolvedBySharedSelection: resolvedBySelection, selectedForDiagnosticTrace: ordinal != null, liveBudgetOrdinal: ordinal,
       traceComplete: v?.traceComplete ?? false, traceNativeFromWalletRaw: v?.traceNativeFromWalletRaw ?? null, traceNativeToWalletRaw: v?.traceNativeToWalletRaw ?? null,
       tracedWalletNetRaw: v?.tracedWalletNetRaw ?? null, walletNativeDebitMatchesRoute: v?.walletNativeDebitMatchesRoute ?? false,
       competingNativePayers: v?.competingNativePayers ?? [], topLevelValueIntoWallet: v?.topLevelValueIntoWallet ?? null,
@@ -2767,6 +2981,7 @@ export async function computeRobinhoodPnlV1(params: {
   ctx.traceMode = 'replay'
   ctx.traceReplay = alloc.resolved
   for (const txHash of traceSelection.replay.keys()) {
+    if (ctx.relayedTraceRequests?.has(txHash) && !ctx.traceRequests?.has(txHash)) continue // promoted by the relayed lane
     const i = outcomes.findIndex((o) => o.txHash === txHash)
     if (i >= 0) outcomes[i] = await verifyCandidate(ctx, wallet, txHash).catch(() => threw(txHash))
   }
@@ -2804,6 +3019,7 @@ export async function computeRobinhoodPnlV1(params: {
   ingestion.relayedWalletRejectedCount = relayed.relayedWalletRejectedCount
   ingestion.relayedWalletRejectedReasons = relayed.relayedWalletRejectedReasons
   if (relayed.relayedWalletVerifiedSwapCount > 0) ds = await downstream()
+  ingestion.relayedAttribution = await auditRelayedAttribution(ctx, wallet, outcomes, relayed)
   if (manifestRead) ingestion.verifiedSwapManifest = await replayAndRecordManifest(ctx, wallet, selected, outcomes, relayed.tracedTxHashes, manifestRead)
   if (boot) await settleManifestBootstrap(ctx, wallet, boot, selected, outcomes, relayed.tracedTxHashes, ingestion.verifiedSwapManifest)
   const { swaps, evidence, recovery, intermediate, deep } = ds
