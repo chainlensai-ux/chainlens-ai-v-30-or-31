@@ -105,6 +105,12 @@ export type WalletPnlViewModel = {
   sampleEvidenceLine: string | null
   // Header badge when the included sample is allowed. Null when sample PnL is not publishable.
   sampleStatusBadge: string | null
+  /**
+   * Presentation-only section badge when the combined (Base/ETH) figure is unavailable but Robinhood swap evidence
+   * is verified ("Partial"), so the section never reads as if the whole PnL scan failed. combinedStatus and every
+   * box/gate keyed on it are unchanged. Null otherwise.
+   */
+  evidenceBadgeLabel: string | null
   // Kept for backward compatibility with existing callers/tests — identical to robinhoodBox.proof.
   robinhoodProof: WalletRobinhoodPnlProof | null
 }
@@ -151,7 +157,8 @@ export function shouldSuppressUnverifiedZeroPnl(
   realizedPnlUsd: number | null | undefined,
 ): boolean {
   const verified = status === 'Verified' || status === 'verified'
-  return !verified && realizedPnlUsd === 0
+  // Sub-cent residue (incl. -0 / -1e-12 float noise) is zero for display purposes.
+  return !verified && realizedPnlUsd != null && Math.abs(realizedPnlUsd) < 0.005
 }
 
 // OFFICIAL UNAVAILABLE COPY, DISCLOSED (Wallet PnL publish Item 1 — confirmed production lie:
@@ -454,6 +461,16 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   } else {
     combinedReason = formatFullWalletUnavailableReason(reconciliationSummary) ?? specificUnavailableReason
   }
+  // ROBINHOOD EVIDENCE IN THE HEADER (presentation only): combined realized PnL stays unavailable, but verified
+  // Robinhood swap evidence is named instead of a blanket "missing evidence" line.
+  const robinhoodSwapEvidence = selectRobinhoodSwapEvidence(robinhoodResult)
+  let evidenceBadgeLabel: string | null = null
+  if (combinedStatus === 'unavailable' && !canonicalSampleUnavailable && robinhoodLane !== 'verified' && robinhoodSwapEvidence && robinhoodSwapEvidence.swapsVerified > 0) {
+    const n = robinhoodSwapEvidence.swapsVerified
+    const base = combinedReason === PNL_UNAVAILABLE_MESSAGE ? 'Realized PnL unavailable' : combinedReason.replace(/\.\s*$/, '')
+    combinedReason = `${base} · ${robinhoodSwapEvidence.openPositionOnly ? 'Robinhood open-position evidence verified' : `${n} Robinhood swap${n === 1 ? '' : 's'} verified`}`
+    evidenceBadgeLabel = 'Partial'
+  }
 
   // COMBINED REALIZED BOX, DISCLOSED (this task's own root-cause fix — confirmed reported bug: the
   // old "Realized PnL" tile computed its OWN status from confidence.realized/blocked independently of
@@ -519,7 +536,6 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // CORTEX both already use.
   // The specific Robinhood reason (open position / the V1 exact reason) always wins over the generic
   // "requires verified swaps + both-leg price evidence" fallback, which is only for a lane with no such evidence.
-  const robinhoodSwapEvidence = selectRobinhoodSwapEvidence(robinhoodResult)
   const robinhoodBoxStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified'
     : robinhoodLane === 'not_verified' ? (robinhoodSwapEvidence?.openPositionOnly ? 'Open position only' : 'Not verified') : 'Unavailable'
   const robinhoodNotVerifiedReason = robinhoodSwapEvidence?.reason ?? robinhoodResult?.robinhoodPnl?.exactReason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
@@ -650,6 +666,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     chainRows,
     sampleEvidenceLine,
     sampleStatusBadge: sampleAllowed ? VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL : null,
+    evidenceBadgeLabel,
     robinhoodProof,
   }
 }

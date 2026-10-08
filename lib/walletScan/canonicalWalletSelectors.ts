@@ -127,6 +127,7 @@ export type RobinhoodPnlCardView =
   | { kind: 'blocker'; title: 'ROBINHOOD PNL'; statusLabel: 'NOT VERIFIED' | 'UNAVAILABLE' | 'OPEN POSITION ONLY'; blocker: string }
 
 function signedUsd(v: number): string {
+  if (Math.abs(v) < 0.005) return '$0.00' // -0 / float residue never renders "-$0.00"
   const sign = v > 0 ? '+' : v < 0 ? '-' : ''
   return `${sign}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }

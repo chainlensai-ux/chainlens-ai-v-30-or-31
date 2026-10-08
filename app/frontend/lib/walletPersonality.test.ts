@@ -254,7 +254,10 @@ test('risk trait now reads the CALIBRATED axis, not the legacy riskOnOff field �
   })
   const data = deriveWalletPersonality(report)
   assert.notEqual(data.traits.riskAppetite, 'risk on')
-  assert.ok(['Low behavioral risk', 'Moderate behavioral risk', 'Elevated behavioral risk', 'Very high behavioral risk', 'Unknown'].includes(data.traits.riskAppetite))
+  // 6 transactions is below MIN_TRANSACTIONS_FOR_RISK_LABEL: the calibrated axis is still the source, but its
+  // category is withheld and the raw signal is shown as low confidence.
+  assert.ok(['Low behavioral risk', 'Moderate behavioral risk', 'Elevated behavioral risk', 'Very high behavioral risk', 'Unknown'].includes(data.traits.riskAppetite)
+    || /^Insufficient evidence \(raw signal \d+%, low confidence\)$/.test(data.traits.riskAppetite), data.traits.riskAppetite)
 })
 
 test('no false zero values: win rate/holding time/router-repetition are null (not 0) when genuinely unknown', () => {
@@ -356,7 +359,9 @@ test('full evidence wallet: gets a distinctive, non-generic title and a fully po
   // CALIBRATED risk axis reads Low here (long-enough holding, no concentration evidence) — the
   // title must never say "Risk-On" for a calibrated-Low wallet, matching this task's own rule.
   assert.ok(!data.title.toLowerCase().includes('risk-on'))
-  assert.equal(data.classification.risk, 'Low risk behavior')
+  // 6 transactions: below the risk-label minimum, so the category is withheld rather than asserted.
+  assert.equal(data.classification.risk, 'Not enough data')
+  assert.equal(data.riskLowSample, true)
   assert.equal(data.evidenceBasis, 'behavior_plus_pnl')
   // Conviction has a real 'high' categorical input plus a holding-duration signal — a genuine axis
   // score, not the old riskOnOff-forced binary.
@@ -766,4 +771,50 @@ test('chain count wording: the personality card counts EVM chains that passed th
   assert.ok(data.subtitle.includes('1 active EVM chain'), data.subtitle)
   assert.ok(data.summarySentence.includes('1 active EVM chain'), data.summarySentence)
   assert.ok(!/\b1 active chain\b/.test(data.subtitle))
+})
+
+test('low-sample risk: a 2-transaction, single-signal reading can never present as a confident high-risk conclusion', () => {
+  const twoBuys = baseReport({
+    behaviorIntel: { ...baseReport().behaviorIntel, rotationStyle: { value: 'accumulator', basis: { buyCount: 2, sellCount: 0, distributionCount: 0, distinctTokensTraded: 2 } } },
+    timelines: {
+      buyTimeline: { totalBuys: 2, entries: [buyEntry(), buyEntry({ txHash: '0xbuy2', token: '0xtoken2' })] },
+      sellTimeline: { totalSells: 0, entries: [] }, distributionTimeline: { totalDistributions: 0, entries: [] },
+      sellTimelineV2: { totalSells: 0, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: [] },
+    } as unknown as WalletPersonalitySourceReport['timelines'],
+    // one dominant priced holding — the concentration signal that alone produced "81% Very high" in production
+    portfolio: portfolioWithDominantHolding(),
+  })
+  const data = deriveWalletPersonality(twoBuys)
+  assert.ok(data.radar.risk.signalStrength != null && data.radar.risk.signalStrength >= 35, `fixture reproduces a categorizable raw signal (${data.radar.risk.signalStrength})`)
+  assert.equal(data.metrics.totalTransactions, 2)
+  assert.equal(data.riskLowSample, true)
+  assert.equal(data.classification.risk, 'Not enough data')
+  assert.equal(data.radar.risk.label, 'Insufficient evidence', 'categorical label withheld')
+  assert.ok(!/very high|high behavioral risk|elevated/i.test(data.traits.riskAppetite), data.traits.riskAppetite)
+  assert.ok(/low confidence/.test(data.traits.riskAppetite))
+  if (data.radar.risk.signalStrength != null) assert.ok(data.traits.riskAppetite.includes(`${data.radar.risk.signalStrength}%`), 'raw signal preserved, visibly qualified')
+  assert.ok(!/high-risk|elevated-risk/i.test(data.title))
+  assert.ok(data.summarySentence.includes('an undetermined calibrated behavioral risk signal'))
+})
+
+test('enough evidence: the categorical risk reading is still shown', () => {
+  const sells = Array.from({ length: 6 }, (_, i) => sellEntry({ txHash: `0xs${i}` }))
+  const buys = Array.from({ length: 6 }, (_, i) => buyEntry({ txHash: `0xb${i}` }))
+  const data = deriveWalletPersonality(baseReport({
+    timelines: {
+      buyTimeline: { totalBuys: 6, entries: buys }, sellTimeline: { totalSells: 0, entries: [] }, distributionTimeline: { totalDistributions: 0, entries: [] },
+      sellTimelineV2: { totalSells: 6, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: sells },
+    } as unknown as WalletPersonalitySourceReport['timelines'],
+    fifoAndPnl: { ...baseReport().fifoAndPnl, matchedLots: [lot({ lotId: 'a', openedAt: NOW - 3 * DAY, closedAt: NOW - 2 * DAY }), lot({ lotId: 'b', openedAt: NOW - 4 * DAY, closedAt: NOW - 1 * DAY })] },
+  }))
+  assert.equal(data.metrics.totalTransactions, 12)
+  assert.ok(data.radar.risk.evidenceConfidence >= 0.5)
+  assert.equal(data.riskLowSample, false)
+  assert.notEqual(data.classification.risk, 'Not enough data')
+  assert.notEqual(data.radar.risk.label, 'Insufficient evidence')
+})
+
+test('personality scope is explicit: built from Base/ETH activity only', () => {
+  const data = deriveWalletPersonality(baseReport())
+  assert.deepEqual(data.scope, { kind: 'evm_only', label: 'Behavior profile based on Base/ETH activity only' })
 })

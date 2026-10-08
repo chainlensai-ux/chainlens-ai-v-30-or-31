@@ -32,12 +32,18 @@ export function fmtChainLabel(chain: string): string {
   return CHAIN_LABELS[chain] ?? chain
 }
 
+// Values that round to $0.00 (incl. -0 and float residue like -1e-12) are exactly zero for display — never "-$0.00".
+const roundsToZeroCents = (value: number) => Math.abs(value) < 0.005
+
 export function fmtUsd(value: number | null | undefined): string {
-  return value == null ? '—' : `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  if (value == null) return '—'
+  const v = roundsToZeroCents(value) ? 0 : value
+  return `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 export function fmtSignedUsd(value: number | null | undefined): string {
   if (value == null) return '—'
+  if (roundsToZeroCents(value)) return '$0.00'
   const sign = value > 0 ? '+' : value < 0 ? '-' : ''
   return `${sign}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }

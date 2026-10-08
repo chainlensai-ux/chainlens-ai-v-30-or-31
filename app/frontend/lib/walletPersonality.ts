@@ -181,7 +181,23 @@ export type WalletPersonalityData = {
   // transactions) to say anything specific — the card still renders (never blank), just with this
   // flag driving a plain "insufficient evidence" message instead of a detailed profile.
   insufficientEvidence: boolean
+  /**
+   * What this profile is built from. Every input (timelines, behaviorIntel, chainSelection, FIFO lots, priced
+   * portfolio) comes from the Base/ETH pipeline; the Robinhood sidecar never feeds it, so it is labelled as such
+   * rather than presented as a wallet-wide personality.
+   */
+  scope: { kind: 'evm_only'; label: string }
+  /** The risk axis' categorical reading is withheld (raw signal kept) because the sample is too small. */
+  riskLowSample: boolean
 }
+
+export const PERSONALITY_SCOPE_LABEL = 'Behavior profile based on Base/ETH activity only'
+// LOW-SAMPLE RISK GATE: the risk axis is a weighted signal INTENSITY over whichever sub-signals have data — not a
+// calibrated probability. With a handful of transactions it is usually one signal (portfolio concentration), so a
+// categorical "High/Very high behavioral risk" would overstate certainty. Below these bars the raw signal is kept
+// and shown, but the category is withheld.
+export const MIN_TRANSACTIONS_FOR_RISK_LABEL = 10
+export const MIN_RISK_EVIDENCE_CONFIDENCE = 0.5
 
 const MS_PER_DAY = 86_400_000
 
@@ -721,7 +737,10 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   })
 
   const automationClass = classifyAutomation(radar.automation, suspectedBot)
-  const riskClass = classifyRisk(radar.risk)
+  const riskLowSample = radar.risk.signalStrength != null
+    && (totalTransactions < MIN_TRANSACTIONS_FOR_RISK_LABEL || radar.risk.evidenceConfidence < MIN_RISK_EVIDENCE_CONFIDENCE)
+  if (riskLowSample) radar.risk = { ...radar.risk, label: 'Insufficient evidence' }
+  const riskClass: RiskClass = riskLowSample ? 'Not enough data' : classifyRisk(radar.risk)
 
   const officialPnlStatus = report.finalSummary?.financialStatus?.officialPnlStatus ?? null
   const { wins, losses, evaluated, winRate } = computeVerifiedWinLoss(matchedLots)
@@ -835,6 +854,8 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     confidence: overallConfidence,
     evidenceBasis,
     radar,
+    scope: { kind: 'evm_only', label: PERSONALITY_SCOPE_LABEL },
+    riskLowSample,
     traits: {
       tradingStyle: automationClass,
       activityLevel,
@@ -847,7 +868,9 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
       // from the SAME radar.risk.signalStrength via describeCalibratedRisk()'s exact mapping — the
       // one number every other part of this card (badge, bar, "Why this score?" panel) already
       // uses, so no raw legacy categorical field can ever contradict it in presentation again.
-      riskAppetite: describeCalibratedRisk(radar.risk.signalStrength),
+      riskAppetite: riskLowSample
+        ? `Insufficient evidence (raw signal ${radar.risk.signalStrength}%, low confidence)`
+        : describeCalibratedRisk(radar.risk.signalStrength),
       automationLikelihood: automationClass,
       chainPreference: b?.multiChainParticipation?.primaryChain ?? 'Unknown',
       portfolioConcentration: concentrationClass,

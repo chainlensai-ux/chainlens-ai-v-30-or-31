@@ -274,8 +274,11 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
             <h2 style={{ margin: '0 0 4px', fontSize: '23px', fontWeight: 900, color: WHITE, fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.15 }}>
               {data.title}
             </h2>
-            <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'rgba(226,232,240,0.65)', marginBottom: '10px' }}>
+            <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'rgba(226,232,240,0.65)', marginBottom: '4px' }}>
               {data.subtitle}
+            </div>
+            <div data-personality-scope style={{ fontSize: '11px', fontWeight: 600, color: SLATE, marginBottom: '10px' }}>
+              {data.scope.label}
             </div>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               <StatusBadge label={`${data.confidence.toUpperCase()} CONFIDENCE`} tone={confidenceTone(data.confidence)} glow={data.confidence === 'high'} />
@@ -294,7 +297,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
           <div style={{ padding: '16px 18px', borderRadius: '14px', background: 'rgba(122,138,158,0.06)', border: '1px solid rgba(122,138,158,0.20)' }}>
             <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap' }}>
               <Stat label="Total Transactions" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
-              <Stat label="Active Chains" value={fmtMetric(data.metrics.activeChains)} />
+              <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />
               <Stat label="Wallet Age" value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} />
             </div>
           </div>
@@ -338,7 +341,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 <TraitHighlight label="Holding Pattern" value={data.traits.holdingStyle} accent={TEAL} icon="⏳" />
               </div>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                <Chip label="Chain" value={data.traits.chainPreference} />
+                <Chip label="Primary EVM chain" value={data.traits.chainPreference} />
                 <Chip label="Concentration" value={data.traits.portfolioConcentration} />
                 <Chip label="Activity" value={data.traits.activityLevel} />
                 <Chip label="Rotation" value={data.traits.rotationBehavior} />
@@ -358,7 +361,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 <Stat label="Wallet Age" value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} emphasized />
                 <Stat label="Buys" value={fmtMetric(data.metrics.buys)} />
                 <Stat label="Sells" value={fmtMetric(data.metrics.sells)} />
-                <Stat label="Active Chains" value={fmtMetric(data.metrics.activeChains)} />
+                <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />
                 <Stat label="Median Holding" value={fmtHoldingDays(data.metrics.medianHoldingDays)} />
                 <Stat label="Last Active" value={fmtDate(data.metrics.lastActiveAt)} />
               </div>

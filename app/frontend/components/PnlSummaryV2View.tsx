@@ -47,6 +47,7 @@ function fmtChain(chain: string): string {
 
 function fmtUsd(value: number | null): string {
   if (value == null) return 'No USD evidence'
+  if (Math.abs(value) < 0.005) return '$0.00' // -0 / float residue never renders "-$0.00"
   const sign = value > 0 ? '+' : value < 0 ? '-' : ''
   return `${sign}$${Math.abs(value).toFixed(2)}`
 }

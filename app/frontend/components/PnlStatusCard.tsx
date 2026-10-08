@@ -1041,8 +1041,8 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             Combined status is the Full Wallet card's value, not a second header badge. Per-card
             badges were removed because they overlapped titles/values and repeated this label. */}
         <StatusBadge
-          label={pnlViewModel.sampleStatusBadge ?? COMBINED_STATUS_LABEL[pnlViewModel.combinedStatus]}
-          tone={pnlViewModel.sampleStatusBadge ? 'warning' : COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
+          label={pnlViewModel.sampleStatusBadge ?? pnlViewModel.evidenceBadgeLabel ?? COMBINED_STATUS_LABEL[pnlViewModel.combinedStatus]}
+          tone={pnlViewModel.sampleStatusBadge || pnlViewModel.evidenceBadgeLabel ? 'warning' : COMBINED_STATUS_TONE[pnlViewModel.combinedStatus]}
           glow={!pnlViewModel.sampleStatusBadge && pnlViewModel.combinedStatus === 'verified'}
         />
       </div>
