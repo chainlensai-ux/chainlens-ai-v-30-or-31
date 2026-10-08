@@ -35,7 +35,7 @@ import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyC
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
 import { savePortfolioScanResult } from '@/app/frontend/lib/portfolioSharedCache'
-import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, computeRobinhoodDisplayState, mergedCoverageText, mergedTotalText } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, computeRobinhoodDisplayState, mergedCoverageText, mergedTotalText, canonicalPricedTokenCount, resolveRobinhoodResultOnJobComplete, resolveRobinhoodResultOnScanStart, buildWalletFinalPricingSummaryAudit } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
@@ -304,7 +304,7 @@ function buildCortexReadV2(
     portfolioEvidence: merged.evidence,
     robinhoodIncluded: merged.robinhoodIncluded,
     chainBreakdown,
-    pricedTokenCount: stats.pricedTokenCount + (merged.robinhoodIncluded && robinhoodResult?.ok ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0) : 0),
+    pricedTokenCount: canonicalPricedTokenCount(merged, stats.pricedTokenCount + (merged.robinhoodIncluded && robinhoodResult?.ok ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0) : 0)),
     concentrationDetail: stats.concentration?.detail ?? null,
     concentrationLabel: b?.concentrationSignals?.concentrationLabel ?? null,
     matchedLotsCount: report.fifoAndPnl?.matchedLots?.length ?? 0,
@@ -542,6 +542,10 @@ export default function WalletScannerPage() {
   const robinhoodSidecarDurationMsRef = useRef<number | null>(null)
   // The jobId whose Robinhood result is still being awaited (null once delivered or superseded).
   const robinhoodJobRef = useRef<string | null>(null)
+  // The job whose job-backed Robinhood request produced the current robinhoodResult (null: standalone / none).
+  const robinhoodResultJobRef = useRef<string | null>(null)
+  // The most recent scan job; a job-backed Robinhood response for any other job is superseded.
+  const latestScanJobRef = useRef<string | null>(null)
   // CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the real,
   // canonical requested/allowed/omitted chain decision (including Robinhood's numeric chain id,
   // 4663, when relevant) echoed back from the /api/wallet-scan POST response — captured here so
@@ -580,6 +584,9 @@ export default function WalletScannerPage() {
   const [robinhoodLoading, setRobinhoodLoading] = useState(false)
   const [robinhoodError, setRobinhoodError] = useState<string | null>(null)
   const [robinhoodResult, setRobinhoodResult] = useState<RobinhoodWalletScanResponse | null>(null)
+  // Latest robinhoodResult for async handlers (their closures hold the value from when the scan started).
+  const robinhoodResultRef = useRef<RobinhoodWalletScanResponse | null>(null)
+  useEffect(() => { robinhoodResultRef.current = robinhoodResult }, [robinhoodResult])
   // DEBUG-ONLY RAW VIEW, DISCLOSED (multi-chain integration task's own "no separate custom page
   // unless debug=true" requirement): the normal Robinhood card UI below never depends on this — it
   // only gates an OPTIONAL raw-JSON troubleshooting block appended after the real cards, for anyone
@@ -835,6 +842,10 @@ export default function WalletScannerPage() {
     setModuleErrors(null)
     setScanDurationMs(null)
     setChainSelectionAudit(null)
+    // A previous scan's Robinhood lane may stay on screen only for the same wallet, and only until this job's
+    // own Robinhood result settles it (resolveRobinhoodResultOnJobComplete below) — never another wallet's.
+    setRobinhoodResult((prev) => resolveRobinhoodResultOnScanStart(prev, address))
+    latestScanJobRef.current = null
 
     // SCAN IDENTITY CAPTURE, DISCLOSED: held in a local (not read back from `currentJobId` state,
     // which the finally-block below deliberately clears) so the completed report is bound to the
@@ -868,6 +879,7 @@ export default function WalletScannerPage() {
         // it can never clobber the newer scan's state.
         if (scanGenerationRef.current !== myGeneration) return
         scanJobId = jobId
+        if (jobId) latestScanJobRef.current = jobId
         setCurrentJobId(jobId)
         if (!robinhoodRequestedForJob && jobId) {
           robinhoodRequestedForJob = true
@@ -962,17 +974,29 @@ export default function WalletScannerPage() {
       // update — never merged field-by-field with the prior scan.
       const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
       setResultEnvelope(envelope)
-      // The job's own Robinhood result (same single provider scan) settles the Robinhood lane if the
-      // job-backed Robinhood request has not delivered it yet; that request then stops polling.
+      // The job's own Robinhood result (same single provider scan); a still-polling job-backed request then stops.
       const jobRobinhood = (report as unknown as { robinhood?: Parameters<typeof toRobinhoodWalletScanResponse>[1] | null }).robinhood
-      if (jobRobinhood) setRobinhoodResult((prev) => prev ?? toRobinhoodWalletScanResponse(address, jobRobinhood))
+      // FINAL ROBINHOOD LANE: this job's own Robinhood result always settles the lane (was `prev ?? job`, which kept
+      // a previous scan's Robinhood lane next to this job's EVM lane). Without one, only the same wallet's survives.
+      const nextRobinhood = resolveRobinhoodResultOnJobComplete({
+        prev: robinhoodResultRef.current, wallet: address,
+        jobRobinhood: jobRobinhood ? toRobinhoodWalletScanResponse(address, jobRobinhood) : null,
+      })
+      if (jobRobinhood) robinhoodResultJobRef.current = scanJobId
+      else if (nextRobinhood == null) robinhoodResultJobRef.current = null
+      robinhoodResultRef.current = nextRobinhood
+      setRobinhoodResult(nextRobinhood)
       if (robinhoodJobRef.current === scanJobId) robinhoodJobRef.current = null
+      console.warn('[wallet-final-pricing-summary-audit]', buildWalletFinalPricingSummaryAudit({
+        evmEvidence: deriveEvmPortfolioEvidence(report), robinhoodResult: nextRobinhood, canonicalOverride: deriveCanonicalMergeOverride(report),
+        jobId: scanJobId, robinhoodResultJobId: robinhoodResultJobRef.current,
+      }))
       setPartialSnapshot(null)
       // PORTFOLIO-SHARED-CACHE, DISCLOSED (Portfolio-page-empty-data audit): hands this completed,
       // real scan result to the shared sessionStorage cache so /terminal/portfolio can use it
       // immediately for the same wallet instead of re-scanning or showing empty — see
       // app/frontend/lib/portfolioSharedCache.ts's own header.
-      savePortfolioScanResult(address, report, robinhoodResult)
+      savePortfolioScanResult(address, report, nextRobinhood)
       const workerPerf = (report as { walletScanPerformanceAudit?: { providerCalls?: number; cacheHits?: number; slowestStage?: { name: string; ms: number } | null; stageDurations?: Record<string, number>; totalDurationMs?: number; evmWorkerDurationMs?: number } }).walletScanPerformanceAudit
       // eslint-disable-next-line no-console
       console.warn('[walletScanPerformanceAudit]', {
@@ -1083,12 +1107,16 @@ export default function WalletScannerPage() {
         setRobinhoodError('Robinhood Chain scan is still running — results will appear when the scan completes.')
         return
       }
+      // Superseded: a job-backed response for an older job never replaces a newer scan's Robinhood lane.
+      if (opts.jobId && latestScanJobRef.current !== opts.jobId) return
       if (!res.ok || !json?.ok) {
         setRobinhoodResult(null)
+        robinhoodResultJobRef.current = null
         setRobinhoodError(json?.error?.message ?? 'Robinhood scan failed — try again later')
         return
       }
       setRobinhoodResult(json)
+      robinhoodResultJobRef.current = opts.jobId ?? null
       // PORTFOLIO-SHARED-CACHE, DISCLOSED: same hand-off as the main EVM scan above — a Robinhood
       // result scanned after the EVM report is already cached should not be lost; re-saves with
       // whatever EVM report is currently on screen (null if none yet, unchanged either way).

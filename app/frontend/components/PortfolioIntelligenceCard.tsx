@@ -41,7 +41,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, mergedTotalText, mergedCoverage, robinhoodStatusCopy, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, mergedTotalText, mergedCoverage, robinhoodStatusCopy, canonicalPricedTokenCount, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { ChainBadge } from './ChainBadge'
 
@@ -158,7 +158,8 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
   const robinhoodPricedCount = (merged.robinhoodIncluded && robinhoodResult?.ok)
     ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0)
     : 0
-  const pricedTokenCount = stats.pricedTokenCount + robinhoodPricedCount
+  // Same numerator as the Pricing Coverage box (canonical merged evidence) whenever that evidence exists.
+  const pricedTokenCount = canonicalPricedTokenCount(merged, stats.pricedTokenCount + robinhoodPricedCount)
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
 
   return (

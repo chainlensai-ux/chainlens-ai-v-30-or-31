@@ -470,3 +470,75 @@ export function mergeRobinhoodIntoPricedHoldings(
     chainValueUsd: mergedChainValueUsd,
   }
 }
+
+// ── Final pricing summary: one canonical collection ─────────────────────────────────────────────────
+// Root cause of a final "24/193 holdings priced" while the same job's Robinhood holdings were 94/201: the page
+// kept the Robinhood result it already had (`prev ?? jobRobinhood`) and never cleared it when a new scan
+// started. A rescan of the same wallet therefore rendered the PREVIOUS scan's Robinhood lane merged with this
+// job's Base/ETH lane. The job's own Robinhood result now always settles the lane (a job-backed route response
+// for the same job carries the same scan body); without one, an earlier result survives only for the same wallet.
+
+/** The Robinhood result the page keeps once a scan job completes. */
+export function resolveRobinhoodResultOnJobComplete(params: {
+  prev: RobinhoodWalletScanResponse | null
+  wallet: string
+  jobRobinhood: RobinhoodWalletScanResponse | null
+}): RobinhoodWalletScanResponse | null {
+  if (params.jobRobinhood) return params.jobRobinhood
+  return resolveRobinhoodResultOnScanStart(params.prev, params.wallet)
+}
+
+/** The Robinhood result kept when a new scan starts: only the same wallet's (shown until this job settles it). */
+export function resolveRobinhoodResultOnScanStart(prev: RobinhoodWalletScanResponse | null, wallet: string): RobinhoodWalletScanResponse | null {
+  if (!prev) return null
+  if (!prev.ok || typeof prev.wallet !== 'string') return null
+  return prev.wallet.toLowerCase() === wallet.toLowerCase() ? prev : null
+}
+
+/** "Priced Tokens": the same numerator as the coverage line (canonical evidence), else the legacy count. */
+export function canonicalPricedTokenCount(merged: Pick<MergedTotal, 'evidence'>, legacyCount: number): number {
+  return merged.evidence ? merged.evidence.pricedHoldings : legacyCount
+}
+
+export type WalletFinalPricingSummaryAudit = {
+  evmPriced: number | null
+  evmTotal: number | null
+  robinhoodPriced: number | null
+  robinhoodTotal: number | null
+  combinedPriced: number | null
+  combinedTotal: number | null
+  renderedPriced: number | null
+  renderedTotal: number | null
+  robinhoodResultJobId: string | null
+  jobId: string | null
+  sources: Record<'evm' | 'robinhood' | 'combined' | 'rendered', string>
+}
+
+/** [wallet-final-pricing-summary-audit]: each lane, their canonical merge, and what the card renders. */
+export function buildWalletFinalPricingSummaryAudit(params: {
+  evmEvidence: PortfolioEvidence | null
+  robinhoodResult: RobinhoodWalletScanResponse | null
+  canonicalOverride?: CanonicalMergeOverride
+  jobId: string | null
+  robinhoodResultJobId: string | null
+}): WalletFinalPricingSummaryAudit {
+  const evm = params.evmEvidence ? portfolioCoverage(params.evmEvidence) : null
+  const rhLane = robinhoodLaneEvidence(params.robinhoodResult)
+  const rh = rhLane ? portfolioCoverage(rhLane) : null
+  const combinedEvidence = params.evmEvidence || rhLane ? mergePortfolioEvidence([params.evmEvidence, rhLane]) : null
+  const combined = portfolioCoverage(combinedEvidence)
+  const rendered = mergedCoverage(computeMergedTotalValueUsd(null, params.robinhoodResult, params.canonicalOverride, params.evmEvidence))
+  return {
+    evmPriced: evm?.priced ?? null, evmTotal: evm?.total ?? null,
+    robinhoodPriced: rh?.priced ?? null, robinhoodTotal: rh?.total ?? null,
+    combinedPriced: combined?.priced ?? null, combinedTotal: combined?.total ?? null,
+    renderedPriced: rendered?.priced ?? null, renderedTotal: rendered?.total ?? null,
+    robinhoodResultJobId: params.robinhoodResultJobId, jobId: params.jobId,
+    sources: {
+      evm: 'report.evmPortfolioEvidence',
+      robinhood: params.robinhoodResult?.ok ? (params.robinhoodResult.holdings.portfolioEvidence ? 'robinhoodResult.holdings.portfolioEvidence' : 'robinhoodResult.holdings.holdings[]') : 'none',
+      combined: 'mergePortfolioEvidence([evm, robinhood])',
+      rendered: 'mergedCoverage(computeMergedTotalValueUsd(...))',
+    },
+  }
+}

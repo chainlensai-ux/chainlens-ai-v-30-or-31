@@ -20,7 +20,7 @@
 // classification PnlStatusCard.tsx's own RobinhoodPnlRow uses. This function has no PnL math of its
 // own; it only reads the already-classified lane status and a message.
 
-import { portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
+import { portfolioCoverage, portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
 import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
@@ -292,9 +292,9 @@ export function buildEvidence(params: {
   if (params.robinhoodPnlLane === 'not_verified' && !rh?.openPositionOnly) partial.push('Robinhood PnL (real evidence, not fully verified)')
   if (params.behaviorProfileAvailable) partial.push('Behavioral profile')
   const pe = params.portfolioEvidence
-  if (pe && pe.status === 'partial' && pe.pricedHoldings + pe.unpricedHoldings > 0) {
-    partial.push(`Portfolio value (pricing coverage ${pe.pricedHoldings}/${pe.pricedHoldings + pe.unpricedHoldings})`)
-  }
+  // Same numerator/denominator as the Portfolio card's coverage line (portfolioCoverage, recent-verified included).
+  const coverage = pe && pe.status === 'partial' ? portfolioCoverage(pe) : null
+  if (coverage) partial.push(`Portfolio value (pricing coverage ${coverage.priced}/${coverage.total})`)
   if (rh?.openPositionOnly) missing.push('Realized closed-lot PnL (no verified buy→sell lot closed yet)')
   if (params.smartMoneyStatus === 'not_yet_rated') missing.push('Closed-trade performance score')
 
