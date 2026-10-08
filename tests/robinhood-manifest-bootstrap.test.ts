@@ -610,3 +610,43 @@ test('a marker closed by the old failure_cap rule is reopened and resumes from i
   assert.deepEqual([s.boot!.attempted, s.boot!.resumed, s.requested], [true, true, [0]])
   assert.deepEqual([kv.marker()!.completed, kv.marker()!.pagesScanned, kv.marker()!.consecutiveFailures], [false, 1, 0])
 })
+
+test('merge: equal page progress keeps the newest failure count and cooldown; a further page advance resets both', () => {
+  const T = 1_800_000_000_000
+  const base = newRobinhoodManifestBootstrapMarker(WALLET, 1)
+  const stored = { ...base, consecutiveFailures: 3, pausedUntil: T + 15 * 60_000, version: 4 }
+  const stale = { ...base, consecutiveFailures: 2, pausedUntil: null, version: 3 }
+  const m = mergeRobinhoodManifestBootstrapMarkers(stored, stale)
+  assert.deepEqual([m.pagesScanned, m.consecutiveFailures, m.pausedUntil], [0, 3, T + 15 * 60_000])
+  // both paused: the later pause wins, regardless of argument order
+  const later = mergeRobinhoodManifestBootstrapMarkers({ ...stored, pausedUntil: T + 30 * 60_000 }, { ...stored, consecutiveFailures: 4, pausedUntil: T + 15 * 60_000 })
+  assert.deepEqual([later.consecutiveFailures, later.pausedUntil], [4, T + 30 * 60_000])
+  // page progress is authoritative
+  const progressed = { ...base, pagesScanned: 1, cursor: 'block_number=9999&index=0&items_count=50', consecutiveFailures: 0, pausedUntil: null }
+  const failed = { ...base, consecutiveFailures: 5, pausedUntil: T + 60 * 60_000 }
+  for (const r of [mergeRobinhoodManifestBootstrapMarkers(failed, progressed), mergeRobinhoodManifestBootstrapMarkers(progressed, failed)]) {
+    assert.deepEqual([r.pagesScanned, r.cursor, r.consecutiveFailures, r.pausedUntil], [1, progressed.cursor, 0, null])
+  }
+})
+
+test('concurrent CAS: an equal-page stale writer retrying after a conflict cannot erase a newly established cooldown', async () => {
+  const T = 1_800_000_000_000
+  const base = { ...newRobinhoodManifestBootstrapMarker(WALLET, 1), consecutiveFailures: 2 }
+  await writeRobinhoodManifestBootstrapMarker(WALLET, base)
+  const cooling = { ...base, consecutiveFailures: 3, pausedUntil: T + 15 * 60_000, updatedAt: 3 }
+  const stale = { ...base, consecutiveFailures: 2, pausedUntil: null, updatedAt: 2 }
+  kv.getDelayMs = 2 // both read the same version; one CAS fails and that writer re-reads + re-merges
+  const results = await Promise.all([writeRobinhoodManifestBootstrapMarker(WALLET, cooling), writeRobinhoodManifestBootstrapMarker(WALLET, stale)])
+  kv.getDelayMs = 0
+  assert.ok(results.every((r) => r.written))
+  assert.ok(kv.casConflicts >= 1, 'the race really happened')
+  const m = kv.marker()!
+  assert.deepEqual([m.pagesScanned, m.consecutiveFailures, m.pausedUntil], [0, 3, T + 15 * 60_000])
+  // and in the other order: the stale writer lands first, the cooldown writer still wins
+  kv.strings.clear()
+  await writeRobinhoodManifestBootstrapMarker(WALLET, base)
+  kv.getDelayMs = 2
+  await Promise.all([writeRobinhoodManifestBootstrapMarker(WALLET, stale), writeRobinhoodManifestBootstrapMarker(WALLET, cooling)])
+  kv.getDelayMs = 0
+  assert.deepEqual([kv.marker()!.consecutiveFailures, kv.marker()!.pausedUntil], [3, T + 15 * 60_000])
+})

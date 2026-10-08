@@ -304,8 +304,14 @@ export function mergeRobinhoodManifestBootstrapMarkers(stored: RobinhoodManifest
     completedAt: completed ? (completedAts.length ? Math.min(...completedAts) : Math.max(stored.updatedAt, proposed.updatedAt)) : null,
     stopReason: stored.discoveryDone && !proposed.discoveryDone ? stored.stopReason : furthest.stopReason,
     updatedAt: Math.max(stored.updatedAt, proposed.updatedAt),
-    consecutiveFailures: furthest.consecutiveFailures,
-    pausedUntil: furthest.pausedUntil,
+    // Failure/backoff state: a strictly further page advance is authoritative (a successful page resets both); at
+    // equal page progress a stale writer must never shorten or clear a newer cooldown.
+    ...(stored.pagesScanned !== proposed.pagesScanned
+      ? { consecutiveFailures: furthest.consecutiveFailures, pausedUntil: furthest.pausedUntil }
+      : {
+          consecutiveFailures: Math.max(stored.consecutiveFailures, proposed.consecutiveFailures),
+          pausedUntil: stored.pausedUntil == null ? proposed.pausedUntil : proposed.pausedUntil == null ? stored.pausedUntil : Math.max(stored.pausedUntil, proposed.pausedUntil),
+        }),
     pending: rankRobinhoodBootstrapPending([...byHash.values()]).slice(0, L.maxPending),
     retired,
     version: Math.max(stored.version, proposed.version),
