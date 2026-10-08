@@ -315,6 +315,7 @@ function buildCortexReadV2(
     robinhoodResult,
     pnlConfidence,
     pnlViewModel,
+    smartMoneyStatus: report.smartMoneyScore?.status ?? null,
   })
 }
 

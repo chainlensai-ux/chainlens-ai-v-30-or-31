@@ -23,6 +23,7 @@ import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleM
 import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
+import { selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import {
   selectVerifiedPnlData,
   selectDisplayedPnl,
@@ -48,7 +49,7 @@ export type WalletPnlBox = {
   statusLabel?: string
 }
 
-export type WalletPnlChainRowStatus = 'Verified' | 'Partial' | 'Unavailable' | 'Not verified'
+export type WalletPnlChainRowStatus = 'Verified' | 'Partial' | 'Unavailable' | 'Not verified' | 'Open position only'
 
 export type WalletPnlChainRow = {
   chain: string
@@ -128,6 +129,7 @@ export function chainPnlRowReason(status: WalletPnlChainRowStatus): string {
   if (status === 'Verified') return CHAIN_PNL_VERIFIED_REASON
   if (status === 'Partial') return CHAIN_PNL_PARTIAL_REASON
   if (status === 'Not verified') return ROBINHOOD_PNL_NOT_VERIFIED_REASON
+  if (status === 'Open position only') return 'Swaps verified and priced — no verified buy→sell lot closed yet.'
   return CHAIN_PNL_UNAVAILABLE_REASON
 }
 
@@ -515,7 +517,12 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // 'Verified' shows the real gated figure + compact proof; a genuinely not-verified or absent scan
   // never shows a number, matching the exact same selectRobinhoodPnlLaneStatus gate the chain row and
   // CORTEX both already use.
-  const robinhoodBoxStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified' : robinhoodLane === 'not_verified' ? 'Not verified' : 'Unavailable'
+  // The specific Robinhood reason (open position / the V1 exact reason) always wins over the generic
+  // "requires verified swaps + both-leg price evidence" fallback, which is only for a lane with no such evidence.
+  const robinhoodSwapEvidence = selectRobinhoodSwapEvidence(robinhoodResult)
+  const robinhoodBoxStatus: WalletPnlChainRowStatus = robinhoodLane === 'verified' ? 'Verified'
+    : robinhoodLane === 'not_verified' ? (robinhoodSwapEvidence?.openPositionOnly ? 'Open position only' : 'Not verified') : 'Unavailable'
+  const robinhoodNotVerifiedReason = robinhoodSwapEvidence?.reason ?? robinhoodResult?.robinhoodPnl?.exactReason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
 
   // UNREALIZED, DISCLOSED: a finite officialUnrealizedPnlUsd is Partial/Verified from the
   // reconciliation itself — never Locked just because realized publicPnlStatus is unavailable or
@@ -600,7 +607,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       label: fmtChainLabel('robinhood'),
       status: robinhoodBoxStatus,
       value: robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
-      reason: chainPnlRowReason(robinhoodBoxStatus),
+      reason: robinhoodBoxStatus === 'Verified' || robinhoodBoxStatus === 'Unavailable' ? chainPnlRowReason(robinhoodBoxStatus) : robinhoodNotVerifiedReason,
     })
     if (robinhoodLane === 'verified' && audit) {
       robinhoodProof = {
@@ -617,8 +624,8 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     value: robinhoodLane === 'verified' && robinhoodResult ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
     reason: robinhoodBoxStatus === 'Verified'
       ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL.`
-      : robinhoodBoxStatus === 'Not verified'
-        ? (robinhoodResult?.robinhoodPnl?.exactReason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON)
+      : robinhoodBoxStatus === 'Not verified' || robinhoodBoxStatus === 'Open position only'
+        ? robinhoodNotVerifiedReason
         : 'No Robinhood scan for this wallet.',
     proof: robinhoodProof,
   }

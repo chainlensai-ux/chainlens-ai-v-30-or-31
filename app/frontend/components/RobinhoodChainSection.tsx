@@ -20,6 +20,7 @@ import {
   ROBINHOOD_CHAIN_META as ROBINHOOD_CHAIN_META_SHARED,
   selectRobinhoodPnlLaneStatus as selectRobinhoodPnlLaneStatusShared,
   robinhoodPnlCardView,
+  selectRobinhoodSwapEvidence,
   type RobinhoodPnlLaneStatus as RobinhoodPnlLaneStatusShared,
   type RobinhoodPnlVerificationAudit as RobinhoodPnlVerificationAuditShared,
   type RobinhoodWalletScanResponse as RobinhoodWalletScanResponseShared,
@@ -61,7 +62,10 @@ export function RobinhoodChainSection({
   // SAME selector PnlStatusCard / CORTEX use — never pnl.status === 'verified' alone, which would
   // skip the Phase 3 source-marker / both-leg / FIFO-closed-lot proof.
   const robinhoodPnlVerified = selectRobinhoodPnlLaneStatus(result) === 'verified'
-  const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : 'Robinhood: Not verified'
+  // Swaps verified + priced but no closed lot is an open position, not missing evidence.
+  const swapEvidence = selectRobinhoodSwapEvidence(result)
+  const openPositionOnly = swapEvidence?.openPositionOnly === true
+  const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : openPositionOnly ? 'Robinhood PnL: Open position only' : 'Robinhood: Not verified'
   const pnlTone: StatusTone = robinhoodPnlVerified ? 'success' : 'neutral'
   const pnlAudit = result.robinhoodPnlVerificationAudit
   const pnlCard = robinhoodPnlCardView(result.robinhoodPnl)
@@ -121,7 +125,7 @@ export function RobinhoodChainSection({
             <PnLHeaderCard label="Priced Holdings" value={String(pricedCount)} tone="neutral" index={2} />
             <PnLHeaderCard label="Unpriced Holdings" value={String(unpricedCount)} tone={unpricedCount > 0 ? 'negative' : 'neutral'} index={3} />
             <PnLHeaderCard label="Pricing Coverage" value={`${pricingCoveragePercent}%`} tone={pricingCoveragePercent === 100 ? 'positive' : 'neutral'} index={4} />
-            <PnLHeaderCard label="PnL Status" value={robinhoodPnlVerified ? 'Verified' : 'Not verified'} tone={robinhoodPnlVerified ? 'positive' : 'neutral'} index={5} />
+            <PnLHeaderCard label="PnL Status" value={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : 'Not verified'} tone={robinhoodPnlVerified ? 'positive' : 'neutral'} index={5} />
           </div>
 
           {/* HOLDINGS TABLE: Token / Balance / Price / Value / Pricing status / Source — a real table,
@@ -205,7 +209,7 @@ export function RobinhoodChainSection({
             background: robinhoodPnlVerified ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.02)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-              <StatusBadge label={robinhoodPnlVerified ? 'Verified' : 'Not verified'} tone={pnlTone} />
+              <StatusBadge label={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : 'Not verified'} tone={pnlTone} />
               <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
             </div>
             {pnlCard?.kind === 'sample' ? (
@@ -228,7 +232,7 @@ export function RobinhoodChainSection({
               </div>
             ) : (
               <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
-                Reason: Requires verified Robinhood swaps + both-leg price evidence.
+                Reason: {swapEvidence?.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON}
               </div>
             )}
           </div>

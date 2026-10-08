@@ -25,6 +25,9 @@ export type SmartMoneyScoreCardProps = {
   // itself reports — the SAME canonical-sample-unavailable state PnlStatusCard's own
   // `canonicalSampleManifestAudit` prop gates its PnL display on.
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
+  // OPTIONAL, ADDITIVE: Robinhood swaps verified this scan (selectRobinhoodSwapEvidence). Shown next to the
+  // closed-trade count so a verified swap is never mistaken for a closed FIFO trade.
+  robinhoodVerifiedSwapCount?: number | null
 }
 
 const BREAKDOWN_LABELS: Array<{ key: keyof SmartMoneyPerformanceBreakdown; label: string; weightPercent: number }> = [
@@ -52,7 +55,7 @@ function fmtBreakdownValue(v: number | null): string {
   return v == null ? 'No data' : `${v}`
 }
 
-export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAudit }: SmartMoneyScoreCardProps) {
+export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAudit, robinhoodVerifiedSwapCount }: SmartMoneyScoreCardProps) {
   const [expanded, setExpanded] = useState(false)
   if (!smartMoneyScore) return null
 
@@ -80,6 +83,9 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
   // Zero verified closed lots (FIFO ran and found none to verify): no Smart Money number at all —
   // Behavior Quality stays visible only as its own breakdown row.
   const noVerifiedClosedTrades = !isOfficial && !canonicalSampleUnavailable && evidenceConfidence.fullyPricedTradeCount === 0
+  // BEHAVIORAL INTELLIGENCE, kept apart from the performance score: shown whenever the performance score is not
+  // official and Behavior Quality has real data — never blended into, or presented as, a Smart Money number.
+  const behavioralIntelligence = !isOfficial && !canonicalSampleUnavailable && !hasProvisionalScore && breakdown.behaviorQuality != null ? breakdown.behaviorQuality : null
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -104,6 +110,8 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
             <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>/ 100</span>
             <StatusBadge label="Not official" tone="warning" />
           </>
+        ) : noVerifiedClosedTrades ? (
+          <span style={{ fontSize: '15px', fontWeight: 800, color: '#fbbf24' }}>Insufficient Performance History</span>
         ) : (
           <span style={{ fontSize: '15px', fontWeight: 800, color: '#fbbf24' }}>Not Yet Rated</span>
         )}
@@ -137,6 +145,14 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         </p>
       )}
 
+      {behavioralIntelligence != null && (
+        <div data-smart-money-behavioral-intelligence style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '12px' }}>
+          <span style={{ fontWeight: 800, color: '#e2e8f0' }}>Behavioral Intelligence:</span>
+          <span style={{ fontWeight: 900, color: scoreColor(behavioralIntelligence) }}>{behavioralIntelligence}/100</span>
+          <span style={{ color: 'rgba(148,163,184,0.75)' }}>· {evidenceConfidence.level === 'high' ? 'High' : evidenceConfidence.level === 'medium' ? 'Medium' : 'Low'} confidence · behavior only, not part of the performance score</span>
+        </div>
+      )}
+
       {/* VERIFIED TRADES / COVERAGE, DISCLOSED: always shown, official or not — this is the real
           evidence backing (or currently withholding) the score, never hidden. Shows real threshold
           PROGRESS ("X / Y minimum met/not met"), not just a bare number, and an honest
@@ -145,7 +161,7 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
       <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
-            Verified Trades
+            Verified Closed Trades
           </div>
           {displayedFullyPricedTradeCount == null ? (
             <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>
@@ -157,6 +173,11 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
               <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
                 {displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? 'met' : 'not met'}
               </span>
+            </div>
+          )}
+          {robinhoodVerifiedSwapCount != null && robinhoodVerifiedSwapCount > 0 && (
+            <div data-smart-money-swaps-verified style={{ fontSize: '10px', fontWeight: 700, color: 'rgba(148,163,184,0.70)', marginTop: '2px' }}>
+              {robinhoodVerifiedSwapCount} swap{robinhoodVerifiedSwapCount === 1 ? '' : 's'} verified — a verified swap is not a closed trade
             </div>
           )}
         </div>

@@ -124,7 +124,7 @@ export type RobinhoodPnlSummary = {
 /** What the Robinhood PnL card shows: the verified sample only when evidence exists, otherwise the exact blocker. */
 export type RobinhoodPnlCardView =
   | { kind: 'sample'; title: 'ROBINHOOD PNL'; statusLabel: 'VERIFIED BOUNDED SAMPLE' | 'PARTIAL SAMPLE'; realized: string; roi: string | null; lotsLine: string; coverageLine: string | null }
-  | { kind: 'blocker'; title: 'ROBINHOOD PNL'; statusLabel: 'NOT VERIFIED' | 'UNAVAILABLE'; blocker: string }
+  | { kind: 'blocker'; title: 'ROBINHOOD PNL'; statusLabel: 'NOT VERIFIED' | 'UNAVAILABLE' | 'OPEN POSITION ONLY'; blocker: string }
 
 function signedUsd(v: number): string {
   const sign = v > 0 ? '+' : v < 0 ? '-' : ''
@@ -144,7 +144,48 @@ export function robinhoodPnlCardView(pnl: RobinhoodPnlSummary | null | undefined
       coverageLine: pnl.pricingCoverage != null ? `${pnl.pricingCoverage.toFixed(1)}% coverage` : null,
     }
   }
+  // Every swap verified and priced on both legs, but no buy→sell lot closed: an open position, not missing evidence.
+  if (pnl.swapsVerified > 0 && pnl.swapsBothLegsPriced === pnl.swapsVerified && pnl.structuralClosedLots === 0 && pnl.verifiedClosedLots === 0) {
+    return {
+      kind: 'blocker', title: 'ROBINHOOD PNL', statusLabel: 'OPEN POSITION ONLY',
+      blocker: `${pnl.swapsVerified} swap${pnl.swapsVerified === 1 ? '' : 's'} verified · ${pnl.swapsBothLegsPriced}/${pnl.swapsVerified} priced on both legs · no verified buy→sell lot closed yet.`,
+    }
+  }
   return { kind: 'blocker', title: 'ROBINHOOD PNL', statusLabel: pnl.status === 'unavailable' ? 'UNAVAILABLE' : 'NOT VERIFIED', blocker: pnl.exactReason }
+}
+
+export const ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL = 'Open position only'
+
+/**
+ * Robinhood swap evidence, kept separate from closed trades / realized PnL. A verified swap is NOT a closed
+ * FIFO trade: `openPositionOnly` is the case where every requirement the generic "Requires verified swaps +
+ * both-leg price evidence" reason names is already met (swaps verified, all priced on both legs) and the only
+ * thing missing is a closed buy→sell lot. Reads the V1 summary (the PnL card's own figures), else the
+ * verification audit. Never a status change — realized PnL stays unverified until a lot actually closes.
+ */
+export type RobinhoodSwapEvidence = {
+  swapsVerified: number
+  swapsBothLegsPriced: number
+  closedLots: number
+  openPositionOnly: boolean
+  /** The most specific honest reason realized PnL is not verified; null when it is verified. */
+  reason: string | null
+}
+
+export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodSwapEvidence | null {
+  if (!robinhoodResult || !robinhoodResult.ok) return null
+  const v1 = robinhoodResult.robinhoodPnl
+  const audit = robinhoodResult.robinhoodPnlVerificationAudit
+  const swapsVerified = v1 ? v1.swapsVerified : audit?.swapsFedToFifo ?? 0
+  const swapsBothLegsPriced = v1 ? v1.swapsBothLegsPriced : audit?.priceEvidenceBothLegsCount ?? 0
+  const closedLots = v1 ? Math.max(v1.structuralClosedLots, v1.verifiedClosedLots) : audit?.fifoClosedLots ?? 0
+  const verified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
+  const openPositionOnly = !verified && swapsVerified > 0 && swapsBothLegsPriced === swapsVerified && closedLots === 0
+  const reason = verified ? null
+    : openPositionOnly
+      ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet.`
+      : v1?.exactReason ?? robinhoodResult.pnl.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
+  return { swapsVerified, swapsBothLegsPriced, closedLots, openPositionOnly, reason }
 }
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'

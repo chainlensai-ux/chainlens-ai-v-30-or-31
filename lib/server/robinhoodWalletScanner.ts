@@ -1880,6 +1880,8 @@ export function buildRobinhoodPnlVerificationAuditFromV1(input: {
     missingPriceEvidenceCount: v1.swapsVerified - v1.swapsBothLegsPriced,
     pnlEnabledReason: countsProve ? ROBINHOOD_PNL_ENABLED_REASON : null,
     pnlDisabledReason: countsProve ? null : v1.exactReason,
-    rejectedReasonIfNotVerified: countsProve ? null : ROBINHOOD_PNL_NOT_VERIFIED_REASON,
+    // The specific V1 reason (e.g. "3 swaps proven, 3 priced on both legs, but no buy→sell pair closed a lot")
+    // must reach every consumer; the generic reason is only for a lane with no proven swap at all.
+    rejectedReasonIfNotVerified: countsProve ? null : v1.swapsVerified > 0 ? v1.exactReason : ROBINHOOD_PNL_NOT_VERIFIED_REASON,
   }
 }

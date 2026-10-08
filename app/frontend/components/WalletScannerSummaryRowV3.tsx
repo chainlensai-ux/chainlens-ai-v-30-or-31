@@ -10,6 +10,7 @@
 // requirements (unavailable-evidence messaging, never showing a blocked/unstable figure as verified
 // profit, real backend-classification badges only) — see that file's own header.
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
+import { selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
@@ -79,7 +80,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
 
       {report.smartMoneyScore && (
         <div style={cardStyle}>
-          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} />
+          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} robinhoodVerifiedSwapCount={selectRobinhoodSwapEvidence(robinhoodResult)?.swapsVerified ?? null} />
         </div>
       )}
 

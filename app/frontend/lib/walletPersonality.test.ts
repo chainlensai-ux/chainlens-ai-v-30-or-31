@@ -738,3 +738,32 @@ test('concentration, conviction, and risk consistency: the chip (traits), Risk a
   assert.ok(Math.abs(riskConcentration - convictionConcentration) < 1e-9)
   assert.ok(Math.abs(riskConcentration - 0.7014) < 0.01)
 })
+
+test('accumulator classification: a placeholder personalityV2 archetype ("Unknown"/"General User") never replaces the evidence-backed title', () => {
+  const accumulatorIntel = {
+    ...baseReport().behaviorIntel,
+    rotationStyle: { value: 'accumulator' as const, basis: { buyCount: 2, sellCount: 0, distributionCount: 0, distinctTokensTraded: 1 } },
+    confidence: 'low' as const,
+  }
+  for (const archetype of ['Unknown', 'unknown', 'General User', '  ']) {
+    const data = deriveWalletPersonality(baseReport({
+      behaviorIntel: accumulatorIntel,
+      personalityV2: { archetype } as unknown as WalletPersonalitySourceReport['personalityV2'],
+    }))
+    assert.notEqual(data.title, 'Unknown', `archetype ${JSON.stringify(archetype)} must not become the headline`)
+    assert.equal(data.title, 'Accumulator', 'the same word CORTEX uses for this classification')
+    assert.equal(data.evidenceBasis, 'behavior_only')
+    assert.equal(data.confidence, 'low')
+    assert.equal(data.profitEvidence.kind, 'not_proven')
+  }
+  // a real, specific archetype is still honoured
+  const real = deriveWalletPersonality(baseReport({ behaviorIntel: accumulatorIntel, personalityV2: { archetype: 'Stable Farmer' } as unknown as WalletPersonalitySourceReport['personalityV2'] }))
+  assert.equal(real.title, 'Stable Farmer')
+})
+
+test('chain count wording: the personality card counts EVM chains that passed the activity gate and says so', () => {
+  const data = deriveWalletPersonality(baseReport())
+  assert.ok(data.subtitle.includes('1 active EVM chain'), data.subtitle)
+  assert.ok(data.summarySentence.includes('1 active EVM chain'), data.summarySentence)
+  assert.ok(!/\b1 active chain\b/.test(data.subtitle))
+})

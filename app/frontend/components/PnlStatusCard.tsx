@@ -57,7 +57,7 @@ const COMBINED_REASON_COLOR: Record<WalletPnlCombinedStatus, string> = {
   verified: '#4ade80', partial: '#fbbf24', locked: '#fbbf24', unavailable: 'rgba(226,232,240,0.75)',
 }
 const CHAIN_ROW_STATUS_TONE: Record<WalletPnlChainRow['status'], 'success' | 'warning' | 'danger' | 'neutral'> = {
-  Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning',
+  Verified: 'success', Partial: 'warning', Unavailable: 'neutral', 'Not verified': 'warning', 'Open position only': 'neutral',
 }
 
 // PNL BOX TILE, DISCLOSED: one clean tile per top-row figure — title, value, optional detail.
@@ -86,7 +86,7 @@ function PnlBoxTile({ label, box }: { label: string; box: WalletPnlBox }) {
 // generic PnlBoxTile — shows the real gated value/reason plus the compact swaps/closed-lots/price-
 // evidence proof lines directly in the box, never merged with the Combined Realized PnL tile.
 function PnlRobinhoodBoxTile({ box }: { box: WalletPnlRobinhoodBox }) {
-  const value = box.value ?? (box.status === 'Not verified' ? 'Not Verified' : box.status === 'Unavailable' ? 'Unavailable' : '—')
+  const value = box.value ?? (box.status === 'Not verified' ? 'Not Verified' : box.status === 'Open position only' ? 'Open Position Only' : box.status === 'Unavailable' ? 'Unavailable' : '—')
   return (
     <div style={{
       minWidth: 0, padding: '14px 16px', borderRadius: '13px',

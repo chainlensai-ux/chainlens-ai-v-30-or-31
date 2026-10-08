@@ -18,6 +18,7 @@
 //     to a HyperEVM chain that was never requested.
 
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
+import { selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
@@ -506,7 +507,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       {report.smartMoneyScore && (
         <>
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
-          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} />
+          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} robinhoodVerifiedSwapCount={selectRobinhoodSwapEvidence(robinhoodResult)?.swapsVerified ?? null} />
         </>
       )}
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />

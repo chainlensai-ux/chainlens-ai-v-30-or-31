@@ -138,7 +138,7 @@ export function WalletReadPanel({ read }: { read: WalletReadV2 }) {
         <SectionLabel>Evidence</SectionLabel>
         <EvidenceGroup tone="verified" title="Verified" items={read.evidence.verified} />
         <EvidenceGroup tone="partial" title="Partial" items={read.evidence.partial} />
-        <EvidenceGroup tone="missing" title="Missing" items={read.evidence.missing} />
+        <EvidenceGroup tone="missing" title="Missing / not yet verified" items={read.evidence.missing} />
       </div>
 
       {/* 6. PNL LANE SUMMARY — never merged */}

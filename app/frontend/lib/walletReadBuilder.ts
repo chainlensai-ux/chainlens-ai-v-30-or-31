@@ -24,6 +24,7 @@ import { portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT, type PortfolioEvi
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
 import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
+import { selectRobinhoodSwapEvidence, ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL, type RobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { ChainBreakdownRow } from '@/app/frontend/components/WalletProfileHeader'
 import type { PnlConfidenceStatus, EvmPnlLaneStatus, RobinhoodPnlLaneStatus } from '@/app/frontend/components/PnlStatusCard'
 import type { RobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
@@ -162,7 +163,7 @@ export function buildHeadline(params: {
 }): string {
   const { personalityLabel, activeChainCount, topChain, evmPnlLane } = params
   const robinhoodDominant = topChain?.chain === 'robinhood' && topChain.percent >= 50
-  const chainClause = activeChainCount > 1 ? ` across ${activeChainCount} chains` : ''
+  const chainClause = activeChainCount > 1 ? ` across ${activeChainCount} scanned chains` : ''
   const robinhoodClause = robinhoodDominant ? ' with heavy Robinhood exposure' : ''
   const sentence1 = `${personalityLabel}${chainClause}${robinhoodClause}.`
 
@@ -196,7 +197,9 @@ export function buildKeySignals(params: {
 }): WalletReadKeySignal[] {
   const signals: WalletReadKeySignal[] = []
   const chains = [...params.chainsScanned.map(chainLabel), ...(params.robinhoodIncluded ? ['Robinhood'] : [])]
-  signals.push({ label: 'Chains active', value: chains.length > 0 ? chains.join(', ') : 'None' })
+  // "Scanned", not "active": this lists the chains the scan covered (Base/ETH + the Robinhood sidecar), which is a
+  // different set from the personality card's EVM chains that passed the activity gate.
+  signals.push({ label: 'Chains scanned', value: chains.length > 0 ? chains.join(', ') : 'None' })
   signals.push({ label: 'Portfolio value', value: params.portfolioEvidence ? portfolioValueText(params.portfolioEvidence, fmtUsd) : params.totalValueUsd != null ? fmtUsd(params.totalValueUsd) : PORTFOLIO_VALUE_UNAVAILABLE_TEXT })
   if (params.topChain) {
     signals.push({ label: 'Largest chain exposure', value: `${chainLabel(params.topChain.chain)} · ${params.topChain.percent.toFixed(0)}%` })
@@ -265,18 +268,35 @@ export function buildEvidence(params: {
   robinhoodDisplayState: RobinhoodDisplayState
   robinhoodPnlLane: RobinhoodPnlLaneStatus
   matchedLotsCount: number
+  /** Optional, additive: Robinhood swap evidence (selectRobinhoodSwapEvidence) — swaps are never closed trades. */
+  robinhoodSwapEvidence?: RobinhoodSwapEvidence | null
+  behaviorProfileAvailable?: boolean
+  portfolioEvidence?: PortfolioEvidence | null
+  smartMoneyStatus?: 'official' | 'not_yet_rated' | null
 }): WalletReadEvidence {
   const verified: string[] = []
   const partial: string[] = []
   const missing: string[] = []
+  const rh = params.robinhoodSwapEvidence ?? null
 
   if (params.hasHoldingsData) verified.push('Holdings and chain exposure')
   if (params.robinhoodDisplayState === 'valued' || params.robinhoodDisplayState === 'partial_unpriced') verified.push('Robinhood holdings scan')
   if (params.matchedLotsCount > 0) verified.push('Closed-lot sample')
+  if (rh && rh.swapsVerified > 0) {
+    verified.push(`${rh.swapsVerified} Robinhood swap${rh.swapsVerified === 1 ? '' : 's'} verified`)
+    if (rh.swapsBothLegsPriced > 0) verified.push(`${rh.swapsBothLegsPriced} swap${rh.swapsBothLegsPriced === 1 ? '' : 's'} priced on both legs`)
+  }
 
   if (params.pnlConfidence.realized === 'Partial') partial.push('Realized PnL (bounded sample)')
   if (params.pnlConfidence.unrealized === 'Partial') partial.push('Unrealized/open-position PnL')
-  if (params.robinhoodPnlLane === 'not_verified') partial.push('Robinhood PnL (real evidence, not fully verified)')
+  if (params.robinhoodPnlLane === 'not_verified' && !rh?.openPositionOnly) partial.push('Robinhood PnL (real evidence, not fully verified)')
+  if (params.behaviorProfileAvailable) partial.push('Behavioral profile')
+  const pe = params.portfolioEvidence
+  if (pe && pe.status === 'partial' && pe.pricedHoldings + pe.unpricedHoldings > 0) {
+    partial.push(`Portfolio value (pricing coverage ${pe.pricedHoldings}/${pe.pricedHoldings + pe.unpricedHoldings})`)
+  }
+  if (rh?.openPositionOnly) missing.push('Realized closed-lot PnL (no verified buy→sell lot closed yet)')
+  if (params.smartMoneyStatus === 'not_yet_rated') missing.push('Closed-trade performance score')
 
   if (params.pnlConfidence.realized === 'Locked') missing.push('Realized PnL')
   if (params.pnlConfidence.unrealized === 'Unavailable') missing.push('Unrealized PnL')
@@ -312,13 +332,15 @@ export function buildPnlLanes(params: {
 
   if (params.robinhoodResult) {
     const verified = params.robinhoodPnlLane === 'verified'
+    // The specific reason (open position / the exact V1 reason) always wins over the generic fallback.
+    const evidence = selectRobinhoodSwapEvidence(params.robinhoodResult)
     lanes.push({
       chainLabel: 'Robinhood',
       status: params.robinhoodPnlLane,
-      statusLabel: verified ? 'Verified' : params.robinhoodPnlLane === 'not_verified' ? 'Not verified' : 'Unavailable',
+      statusLabel: verified ? 'Verified' : params.robinhoodPnlLane === 'not_verified' ? (evidence?.openPositionOnly ? ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL : 'Not verified') : 'Unavailable',
       detail: verified
         ? `${params.robinhoodResult.pnl.verifiedSwapCount} verified swap${params.robinhoodResult.pnl.verifiedSwapCount === 1 ? '' : 's'} — realized PnL is a real, gated figure.`
-        : ROBINHOOD_PNL_NOT_VERIFIED_REASON,
+        : evidence?.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON,
     })
   }
 
@@ -336,7 +358,7 @@ export function buildNextAction(params: {
   concentrationLabel: string | null
 }): string {
   if (params.evmPnlLane === 'partial') return 'Run Deep Scan to improve verified history coverage.'
-  if (params.robinhoodResult && params.robinhoodPnlLane === 'not_verified') return 'Inspect the Robinhood tab for verified swap evidence.'
+  if (params.robinhoodResult && params.robinhoodPnlLane === 'not_verified' && !selectRobinhoodSwapEvidence(params.robinhoodResult)?.openPositionOnly) return 'Inspect the Robinhood tab for verified swap evidence.'
   if (params.concentrationLabel === 'high') return 'Review concentration risk in top holdings.'
   if (params.evmPnlLane === 'unavailable') return 'Run Deep Scan to build a verifiable PnL sample.'
   return 'No further action needed — evidence coverage is strong.'
@@ -370,6 +392,8 @@ export function buildWalletReadV2(params: {
   // pnlEvidenceSummary simply degrades to null (see WalletReadV2's own header), never a fabricated
   // one built from a second, independent derivation.
   pnlViewModel?: WalletPnlViewModel | null
+  // OPTIONAL, ADDITIVE: the Smart Money status, so the evidence panel can name a missing closed-trade score.
+  smartMoneyStatus?: 'official' | 'not_yet_rated' | null
 }): WalletReadV2 {
   const topChain = params.chainBreakdown.length > 0
     ? [...params.chainBreakdown].sort((a, b) => b.percent - a.percent)[0]
@@ -416,6 +440,10 @@ export function buildWalletReadV2(params: {
       robinhoodDisplayState: params.robinhoodDisplayState,
       robinhoodPnlLane: params.robinhoodPnlLane,
       matchedLotsCount: params.matchedLotsCount,
+      robinhoodSwapEvidence: selectRobinhoodSwapEvidence(params.robinhoodResult),
+      behaviorProfileAvailable: rotationStyle != null && rotationStyle !== 'unknown',
+      portfolioEvidence: params.portfolioEvidence ?? null,
+      smartMoneyStatus: params.smartMoneyStatus ?? null,
     }),
     pnlLanes: buildPnlLanes({ evmPnlLane: params.evmPnlLane, robinhoodPnlLane: params.robinhoodPnlLane, robinhoodResult: params.robinhoodResult }),
     pnlEvidenceSummary: params.pnlViewModel ? { status: params.pnlViewModel.combinedStatus, reason: params.pnlViewModel.combinedReason, sampleReason: params.pnlViewModel.sampleEvidenceLine } : null,

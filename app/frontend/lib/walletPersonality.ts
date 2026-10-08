@@ -370,7 +370,8 @@ export function composeTitle(params: {
   if (holdingClass === 'Long-term holder') return riskClass === 'Low risk behavior' ? 'Disciplined Long-Term Holder' : 'Conviction Long-Term Holder'
   if (holdingClass === 'Hyperactive sniper') return 'Hyperactive Token Sniper'
   if (holdingClass === 'Short-term rotator') return 'Short-Term Token Rotator'
-  if (rotationValue === 'accumulator') return 'Steady Accumulator'
+  // Same word the CORTEX label uses for this classification ('Accumulator'), so the two never disagree.
+  if (rotationValue === 'accumulator') return 'Accumulator'
   if (rotationValue === 'distributor') return 'Active Distributor'
 
   // GENERIC FALLBACK, DISCLOSED: uses calibrated risk ONLY when it is genuinely Medium/High —
@@ -516,7 +517,7 @@ function computeRiskAxis(params: {
     // REDUCED WEIGHT, DISCLOSED (shared with Rotation's own primary churnRatio signal at 0.35) —
     // never double-counted at full strength.
     { key: 'tokenChurnReduced', label: 'Token churn (reduced weight)', detail: uniqueTokensTraded != null ? `${uniqueTokensTraded} unique tokens` : 'Unknown', value: tokenChurn, weight: 0.15 },
-    { key: 'chainBreadth', label: 'Chain breadth', detail: `${activeChains} active chain${activeChains === 1 ? '' : 's'}`, value: chainBreadth, weight: 0.10 },
+    { key: 'chainBreadth', label: 'Chain breadth', detail: `${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`, value: chainBreadth, weight: 0.10 },
   ])
 }
 
@@ -658,6 +659,8 @@ function fmtDays(v: number | null): string {
 // PURE. The single source of truth for the whole card — never throws, never returns a shape that
 // would force the caller to hide the card. Every field is either a real derived value or an
 // honestly-labeled "not enough data" placeholder — never a fabricated 0/blank.
+const PLACEHOLDER_ARCHETYPES = new Set(['unknown', 'general user', 'n/a', 'none'])
+
 export function deriveWalletPersonality(report: WalletPersonalitySourceReport): WalletPersonalityData {
   const b = report.behaviorIntel
   // CANONICAL SOURCE, DISCLOSED: goes through the SAME shared selector Smart Money's adapter uses
@@ -782,7 +785,11 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   // evidence of our own — composeTitle()'s calibrated-risk-aware result always wins once
   // `insufficientEvidence` is false, regardless of what an external archetype field claims.
   const archetypeOverride = report.personalityV2?.archetype
-  const useArchetypeOverride = !insufficientEvidence && archetypeOverride != null && archetypeOverride.trim().length > 0 && archetypeOverride !== 'General User'
+  // PLACEHOLDER ARCHETYPES, DISCLOSED: the V2 engine's empty-case archetype is the literal 'Unknown' (and its
+  // generic fallback 'General User') — neither is a classification, so neither may replace composeTitle()'s
+  // evidence-backed title (the live "Unknown" headline next to an ACCUMULATOR label elsewhere on the page).
+  const useArchetypeOverride = !insufficientEvidence && archetypeOverride != null && archetypeOverride.trim().length > 0
+    && !PLACEHOLDER_ARCHETYPES.has(archetypeOverride.trim().toLowerCase())
   const title = insufficientEvidence
     ? 'General User'
     : (useArchetypeOverride ? archetypeOverride! : composeTitle({
@@ -791,11 +798,11 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
 
   const subtitle = insufficientEvidence
     ? 'Insufficient evidence for a detailed personality'
-    : `${automationClass} · ${holdingClass} · ${activeChains} active chain${activeChains === 1 ? '' : 's'}`
+    : `${automationClass} · ${holdingClass} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
 
   const summarySentence = insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
-    : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
+    : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
 
   const overallConfidence = deriveOverallConfidence({
     backendConfidence: b?.confidence ?? 'low',

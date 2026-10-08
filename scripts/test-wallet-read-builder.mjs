@@ -106,7 +106,7 @@ function run() {
   // ── 4. Headline: real template, no AI-slop phrasing, no fake numbers ────────────────────────────
   {
     const headline = buildHeadline({ personalityLabel: 'Multi-chain Rotator', activeChainCount: 3, topChain: { chain: 'robinhood', valueUsd: 900, percent: 90 }, evmPnlLane: 'partial' })
-    check('headline mentions the real personality label and chain count', headline.includes('Multi-chain Rotator across 3 chains'))
+    check('headline mentions the real personality label and chain count', headline.includes('Multi-chain Rotator across 3 scanned chains'))
     check('headline flags heavy Robinhood exposure ONLY when the real top chain is Robinhood at >=50%', headline.includes('heavy Robinhood exposure'))
     check('headline states the real bounded-coverage PnL lane, never a specific fabricated percentage', headline.includes('bounded'))
     check('headline never uses banned AI-slop phrasing', !/appears to|seems to|overall this wallet/i.test(headline))
@@ -123,7 +123,8 @@ function run() {
       topChain: { chain: 'robinhood', valueUsd: 7376.32, percent: 81 }, pricedTokenCount: 12,
       lastActiveMs: Date.parse('2025-06-01T00:00:00Z'), buyCount: 10, sellCount: 8, rotationStyle: 'rotator',
     })
-    check('Chains active includes Robinhood only when robinhoodIncluded is true', signals.find((s) => s.label === 'Chains active')?.value.includes('Robinhood'))
+    check('Chains scanned includes Robinhood only when robinhoodIncluded is true', signals.find((s) => s.label === 'Chains scanned')?.value.includes('Robinhood'))
+    check('no key signal uses the ambiguous "Chains active" label', !signals.some((s) => s.label === 'Chains active'))
     check('Portfolio value shows the real merged total', signals.find((s) => s.label === 'Portfolio value')?.value === '$9,097.55' || signals.find((s) => s.label === 'Portfolio value')?.value.includes('9,097'))
     check('Largest chain exposure shows the real top chain and percent', signals.find((s) => s.label === 'Largest chain exposure')?.value === 'Robinhood · 81%')
     check('Buys / sells only appears when real counts exist, scoped to the EVM chains that produced it', signals.find((s) => s.label === 'Base/ETH buys / sells')?.value === '10 / 8')
