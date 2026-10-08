@@ -13,6 +13,8 @@ export type ClarkHistoryPanelProps = {
   historyChatCount?: number
   historyAtLimit?: boolean
   historyLimitCopy?: string | null
+  /** Optional small type label per row (e.g. Token / Wallet / LP / Chat). Presentation only. */
+  chatTypeLabel?: (chat: ClarkChatSummary) => string | null
   onNewChat: () => void
   onSelectChat: (id: string) => void
   onSearch: (query: string) => void
@@ -33,9 +35,21 @@ function isGenericChatTitle(title: string): boolean {
   return t.length <= 3 || GENERIC_CHAT_TITLES.has(t)
 }
 
+/** Compact relative time for a chat row ("now", "8m", "3h", "2d", or a short date). */
+export function chatRowTime(updatedAt: string, nowMs: number = Date.now()): string {
+  const t = Date.parse(updatedAt)
+  if (!Number.isFinite(t)) return ''
+  const s = Math.max(0, Math.round((nowMs - t) / 1000))
+  if (s < 60) return 'now'
+  if (s < 3600) return `${Math.floor(s / 60)}m`
+  if (s < 86400) return `${Math.floor(s / 3600)}h`
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)}d`
+  return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
 export default function ClarkHistoryPanel({
   folders, chats, activeChatId, historySaveFailed, historyStatusMessage,
-  historyLimit = null, historyChatCount = 0, historyAtLimit = false, historyLimitCopy = null,
+  historyLimit = null, historyChatCount = 0, historyAtLimit = false, historyLimitCopy = null, chatTypeLabel,
   onNewChat, onSelectChat, onSearch, onCreateFolder, onRenameChat, onMoveChat, onDeleteChat, onDeleteFolder,
 }: ClarkHistoryPanelProps) {
   const [query, setQuery] = useState('')
@@ -48,44 +62,54 @@ export default function ClarkHistoryPanel({
   return (
     <div className='clk-histpanel'>
       <style>{`
-        .clk-histpanel { display:flex; flex-direction:column; gap:13px; }
-        .clk-histpanel-new { border:1px solid rgba(34,211,238,.28); border-radius:10px; background:rgba(34,211,238,.06); color:#67e8f9; font-weight:750; font-size:13.5px; padding:10px 14px; cursor:pointer; transition:background .15s, border-color .15s; }
-        .clk-histpanel-new:hover { background:rgba(34,211,238,.11); border-color:rgba(34,211,238,.42); }
+        .clk-histpanel { display:flex; flex-direction:column; gap:8px; min-height:0; }
+        .clk-histpanel-top { display:flex; gap:6px; align-items:center; }
+        .clk-histpanel-new { flex:0 0 auto; border:1px solid rgba(34,211,238,.26); border-radius:7px; background:rgba(34,211,238,.06); color:#67e8f9; font-weight:700; font-size:12px; padding:6px 10px; cursor:pointer; white-space:nowrap; transition:background .15s, border-color .15s; }
+        .clk-histpanel-new:hover { background:rgba(34,211,238,.12); border-color:rgba(34,211,238,.42); }
         .clk-histpanel-new:disabled { opacity:.45; cursor:not-allowed; }
-        .clk-histpanel-new:disabled:hover { background:rgba(34,211,238,.06); border-color:rgba(34,211,238,.28); }
-        .clk-histpanel-meta { color:#71809a; font-size:11px; font-weight:650; letter-spacing:.04em; }
-        .clk-histpanel-search { border:1px solid rgba(148,163,184,.16); border-radius:10px; background:rgba(2,6,14,.6); color:#e2e8f0; font-size:13.5px; padding:9px 12px; }
-        .clk-histpanel-fail { color:#fbbf24; font-size:11.5px; font-weight:700; }
-        .clk-histpanel-folders { display:flex; flex-wrap:wrap; gap:7px; }
-        .clk-histpanel-folder-chip { border:1px solid rgba(148,163,184,.16); border-radius:999px; padding:4px 10px; font-size:11px; font-weight:700; color:#a8b4c7; background:rgba(15,23,42,.35); cursor:pointer; }
-        .clk-histpanel-folder-chip--active { color:#67e8f9; border-color:rgba(34,211,238,.4); background:rgba(34,211,238,.08); }
-        .clk-histpanel-list { display:flex; flex-direction:column; gap:4px; overflow-y:auto; max-height:390px; }
-        .clk-histpanel-item { border:1px solid transparent; border-radius:10px; padding:11px 12px; cursor:pointer; background:transparent; transition:background .15s, border-color .15s; }
-        .clk-histpanel-item:hover { background:rgba(148,163,184,.05); border-color:rgba(148,163,184,.12); }
-        .clk-histpanel-item--active { border-color:rgba(45,212,191,.32); background:rgba(45,212,191,.055); }
-        .clk-histpanel-item-title { font-size:13.5px; font-weight:700; color:#dbe4f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .clk-histpanel-item-title--generic { font-size:12.5px; font-weight:500; color:#5b6b84; }
-        .clk-histpanel-item-preview { font-size:11.5px; color:#71809a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:3px; }
-        .clk-histpanel-item-row { display:flex; align-items:center; justify-content:space-between; gap:7px; }
-        /* AUDIT/DESIGN FIX, DISCLOSED (Clark AI polish): rename/move/delete previously rendered as
-           permanent text buttons on every row — visible noise even when not needed. Now hidden by
-           default and revealed only on row hover/focus, matching the task's "subtle, not visible
-           noise unless hover-supported" spec. Kept as real, always-clickable elements (not removed
-           from the DOM) so keyboard/focus navigation still reaches them via :focus-within. */
-        .clk-histpanel-item-actions { display:flex; gap:9px; flex-shrink:0; opacity:0; transition:opacity .15s; }
+        .clk-histpanel-new:disabled:hover { background:rgba(34,211,238,.06); border-color:rgba(34,211,238,.26); }
+        .clk-histpanel-meta { color:#8391a7; font:600 10.5px var(--font-plex-mono, monospace); letter-spacing:.04em; }
+        .clk-histpanel-search { flex:1 1 auto; min-width:0; border:1px solid rgba(148,163,184,.12); border-radius:7px; background:rgba(2,6,14,.55); color:#e2e8f0; font-size:12.5px; padding:6px 9px; }
+        .clk-histpanel-search:focus { outline:none; border-color:rgba(34,211,238,.4); }
+        .clk-histpanel-fail { color:#fbbf24; font-size:11px; font-weight:650; line-height:1.4; }
+        .clk-histpanel-folders { display:flex; flex-wrap:wrap; gap:4px 10px; }
+        .clk-histpanel-folder-chip { border:0; padding:0; font-size:11px; font-weight:600; color:#8391a7; background:transparent; cursor:pointer; display:inline-flex; align-items:center; }
+        .clk-histpanel-folder-chip:hover { color:#c3ccdb; }
+        .clk-histpanel-folder-chip--active { color:#67e8f9; }
+        .clk-histpanel-list { display:flex; flex-direction:column; gap:1px; overflow-y:auto; max-height:min(420px, calc(100vh - 360px)); margin:0 -6px; }
+        .clk-histpanel-item { position:relative; border-radius:6px; padding:6px 8px 6px 10px; cursor:pointer; background:transparent; transition:background .12s; }
+        .clk-histpanel-item:hover { background:rgba(148,163,184,.06); }
+        .clk-histpanel-item--active { background:rgba(34,211,238,.07); }
+        .clk-histpanel-item--active::before { content:''; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:2px; background:#22d3ee; }
+        .clk-histpanel-item-title { font-size:12.5px; font-weight:600; color:#dbe4f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .clk-histpanel-item-title--generic { font-weight:500; color:#7c8aa1; }
+        .clk-histpanel-item-sub { display:flex; gap:6px; align-items:center; margin-top:1px; font:600 10px var(--font-plex-mono, monospace); letter-spacing:.04em; color:#71809a; text-transform:uppercase; }
+        .clk-histpanel-item-row { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+        /* Rename/move/delete stay real, always-clickable elements, revealed on row hover/focus. */
+        .clk-histpanel-item-actions { display:flex; gap:7px; flex-shrink:0; opacity:0; transition:opacity .15s; }
         .clk-histpanel-item:hover .clk-histpanel-item-actions,
         .clk-histpanel-item:focus-within .clk-histpanel-item-actions { opacity:1; }
         @media (hover: none) {
           .clk-histpanel-item-actions { opacity:1; }
           .clk-histpanel-item-btn { min-height:44px; padding:8px 10px; }
         }
-        .clk-histpanel-item-btn { border:0; background:transparent; color:#5b6b84; cursor:pointer; font-size:11px; font-weight:600; padding:0; }
-        .clk-histpanel-item-btn:hover { color:#94a3b8; }
-        .clk-histpanel-empty { color:#7c8aa1; font-size:13px; line-height:1.55; padding:12px 2px; }
-        .clk-histpanel-rename-input { width:100%; font-size:13.5px; border:1px solid rgba(34,211,238,.4); border-radius:9px; background:rgba(2,6,14,.8); color:#e5edf8; padding:7px 9px; }
+        .clk-histpanel-item-btn { border:0; background:transparent; color:#71809a; cursor:pointer; font-size:10.5px; font-weight:600; padding:0; }
+        .clk-histpanel-item-btn:hover { color:#cbd5e1; }
+        .clk-histpanel-empty { color:#8391a7; font-size:12px; line-height:1.5; padding:4px 6px; margin:0; }
+        .clk-histpanel-rename-input { width:100%; font-size:12.5px; border:1px solid rgba(34,211,238,.4); border-radius:6px; background:rgba(2,6,14,.8); color:#e5edf8; padding:5px 7px; }
       `}</style>
 
-      <button type='button' className='clk-histpanel-new' onClick={onNewChat} disabled={historyAtLimit}>+ New Chat</button>
+      <div className='clk-histpanel-top'>
+        <input
+          className='clk-histpanel-search'
+          placeholder='Search chats...'
+          aria-label='Search chats'
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); onSearch(e.target.value) }}
+        />
+        <button type='button' className='clk-histpanel-new' onClick={onNewChat} disabled={historyAtLimit}>+ New Chat</button>
+      </div>
+
       {historyLimit != null && (
         <span className='clk-histpanel-meta'>{historyChatCount}/{historyLimit} saved chats</span>
       )}
@@ -97,12 +121,6 @@ export default function ClarkHistoryPanel({
           {historyStatusMessage ?? 'History not saved — Clark still works, but this chat won’t persist.'}
         </span>
       )}
-      <input
-        className='clk-histpanel-search'
-        placeholder='Search chats...'
-        value={query}
-        onChange={(e) => { setQuery(e.target.value); onSearch(e.target.value) }}
-      />
 
       <div className='clk-histpanel-folders'>
         <span
@@ -156,8 +174,11 @@ export default function ClarkHistoryPanel({
             ) : (
               <div className='clk-histpanel-item-row'>
                 <div style={{ minWidth: 0 }}>
-                  <div className={`clk-histpanel-item-title${isGenericChatTitle(chat.title) ? ' clk-histpanel-item-title--generic' : ''}`}>{chat.pinned ? '📌 ' : ''}{chat.title}</div>
-                  {chat.last_message_preview && !isGenericChatTitle(chat.title) && <div className='clk-histpanel-item-preview'>{chat.last_message_preview}</div>}
+                  <div className={`clk-histpanel-item-title${isGenericChatTitle(chat.title) ? ' clk-histpanel-item-title--generic' : ''}`} title={chat.last_message_preview ?? chat.title}>{chat.pinned ? '📌 ' : ''}{chat.title}</div>
+                  <div className='clk-histpanel-item-sub'>
+                    {chatTypeLabel?.(chat) && <span>{chatTypeLabel(chat)}</span>}
+                    <span>{chatRowTime(chat.updated_at)}</span>
+                  </div>
                 </div>
                 <div className='clk-histpanel-item-actions'>
                   <button type='button' className='clk-histpanel-item-btn' onClick={(e) => { e.stopPropagation(); setRenameValue(chat.title); setRenamingId(chat.id) }}>Rename</button>

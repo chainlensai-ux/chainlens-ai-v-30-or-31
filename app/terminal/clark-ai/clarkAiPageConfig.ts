@@ -8,21 +8,6 @@ export const MODES: Mode[] = [
   { key: 'radar',    label: 'Base Radar',       helper: 'Use imported Base Radar signal context for a concise verdict.',       prompt: 'Use my imported Base Radar context and give a concise WATCH / AVOID / SCAN DEEPER verdict.', icon: '⟲' },
 ]
 
-export const ANALYST_CHIPS = [
-  { label: "What's pumping on Base?", prompt: "What's pumping on Base?" },
-  { label: '/token',                  prompt: '/token '                 },
-  { label: '/lp',                     prompt: '/lp '                     },
-  { label: '/holders',                prompt: '/holders '                },
-  { label: '/deployer',               prompt: '/deployer '               },
-  { label: '/wallet',                 prompt: '/wallet '                 },
-]
-export const CHAT_CHIPS = [
-  { label: 'Who deployed VIRTUAL?',  prompt: 'Who deployed VIRTUAL?'         },
-  { label: 'Show Base whales',        prompt: 'Show Base whales'              },
-  { label: 'Top movers today',        prompt: 'Top movers on Base today'       },
-  { label: 'Base activity',           prompt: 'Latest activity on Base?'      },
-]
-
 export type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
 export const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
   token: ['Analyzing token...', 'Checking liquidity...', 'Reviewing holder distribution...', 'Inspecting security signals...', 'Building CORTEX summary...'],
@@ -38,20 +23,33 @@ export function inferAnalysisKind(text: string, mode?: Mode['key']): AnalysisKin
   return 'general'
 }
 
+// SLASH COMMANDS: shown ONLY in the composer's "/" command menu (they used to be repeated in the empty state and
+// above the input). Each still runs through applyCommandChip — context-aware, unchanged.
 export const START_WITH_CHIPS = [
-  { label: '/token', prompt: '/token ' },
-  { label: '/lp', prompt: '/lp ' },
-  { label: '/holders', prompt: '/holders ' },
-  { label: '/deployer', prompt: '/deployer ' },
-  { label: '/wallet', prompt: '/wallet ' },
-  { label: 'explain lp', prompt: 'explain lp' },
+  { label: '/token', prompt: '/token ', hint: 'Token risk read' },
+  { label: '/lp', prompt: '/lp ', hint: 'Liquidity control & lock proof' },
+  { label: '/holders', prompt: '/holders ', hint: 'Holder concentration' },
+  { label: '/deployer', prompt: '/deployer ', hint: 'Deployer history' },
+  { label: '/wallet', prompt: '/wallet ', hint: 'Wallet behavior read' },
+  { label: 'explain lp', prompt: 'explain lp', hint: 'Explain the last LP result' },
 ]
 
-export const QUICK_ACTIONS = [
-  { title: 'Market movers', sub: 'Find Base momentum.', icon: '◈', accent: '#22d3ee', prompt: "What's pumping on Base?" },
-  { title: 'Scan token', sub: 'Run token intelligence.', icon: '◎', accent: '#2dd4bf', prompt: 'Scan BRETT' },
-  { title: 'Wallet read', sub: 'Analyze wallet behavior.', icon: '▣', accent: '#a78bfa', prompt: 'Show Base whales' },
-  { title: 'LP safety', sub: 'Check liquidity control.', icon: '⌘', accent: '#22d3ee', prompt: 'Liquidity check AERO' },
+// ONE ROW of suggested actions under the command bar. `command` entries go through applyCommandChip (they reuse the
+// last token/wallet in context, or prime the input); `prompt` entries are sent as typed.
+export type SuggestedAction = { label: string; command?: string; prompt?: string }
+export const SUGGESTED_ACTIONS: SuggestedAction[] = [
+  { label: 'Token scan', command: '/token' },
+  { label: 'Wallet read', command: '/wallet' },
+  { label: 'LP safety', command: '/lp' },
+  { label: 'Market movers', prompt: "What's pumping on Base?" },
+  { label: 'Explain risk', prompt: 'Explain the risk' },
+]
+
+// Empty-state examples: clicking one fills the composer (never auto-sends, so it costs no usage until sent).
+export const EXAMPLE_PROMPTS = [
+  'Is this token safe to ape?',
+  'What is this wallet doing?',
+  "Who controls this token's liquidity?",
 ]
 
 export { CLARK_DAILY_LIMITS, CLARK_DAILY_UNAUTH as CLARK_LIMIT_UNAUTH } from '@/lib/pricingPlans'

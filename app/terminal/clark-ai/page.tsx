@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
@@ -27,12 +27,11 @@ import { doesClarkTokenResponseMatch, parseClarkTokenCommand } from '@/lib/clark
 import { CLARK_AI_PAGE_CSS } from './clarkAiPageCss'
 import {
   ANALYSIS_STAGES,
-  ANALYST_CHIPS,
-  CHAT_CHIPS,
+  EXAMPLE_PROMPTS,
   inferAnalysisKind,
   MODES,
-  QUICK_ACTIONS,
   START_WITH_CHIPS,
+  SUGGESTED_ACTIONS,
   bumpClarkUsage,
   decodePrompt,
   CLARK_DAILY_LIMITS,
@@ -121,6 +120,10 @@ function ClarkAiContent() {
   const [memoryEpoch, setMemoryEpoch] = useState(0)
   const [activeTokenPending, setActiveTokenPending] = useState<string | null>(null)
   const [clarkUsed, setClarkUsed] = useState(0)
+  // Presentation only: the context/history rail as a drawer at narrower widths, and the composer's "/" menu.
+  const [railOpen, setRailOpen] = useState(false)
+  const [cmdMenuOpen, setCmdMenuOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
   const account = useAccount()
   const planLimit = account.email === undefined
     ? null
@@ -578,146 +581,211 @@ function ClarkAiContent() {
 
   const isLimited   = planLimit !== null && clarkUsed >= planLimit
   const usagePct    = planLimit ? Math.min(100, (clarkUsed / planLimit) * 100) : 0
-  const chips       = uiTab === 'analyst' ? ANALYST_CHIPS : CHAT_CHIPS
   const hasMessages = messages.length > 0
   const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown; lastChain?: unknown }
   const formatContextValue = (value: unknown) => formatLastWalletDisplay(value)
   const contextChain = formatChainDisplay(resolveClarkContextChain(clientContext))
   const lastTokenDisplay = activeTokenPending ? `Scanning ${activeTokenPending.length > 18 ? `${activeTokenPending.slice(0, 10)}…${activeTokenPending.slice(-6)}` : activeTokenPending}` : formatLastTokenDisplay(clientContext.lastToken)
-  const startWithChips = START_WITH_CHIPS
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
-  const quickActions = QUICK_ACTIONS
-  void memoryEpoch; void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
+  const recentTokenValue = clientContext.lastToken ? formatLastTokenDisplay(clientContext.lastToken) : null
+  const memoryOn = Boolean(messages.length > 0 || clientContext.lastToken || clientContext.lastWallet)
+  const modeLabel = activeMode === 'radar' ? 'Radar' : 'Adaptive'
+  // The "/" menu opens from its button, or while a bare slash command is being typed (no argument yet).
+  const typedCommand = /^\/[a-z]*$/i.test(input.trim()) ? input.trim().toLowerCase() : null
+  const commandMenuItems = START_WITH_CHIPS.filter((c) => !typedCommand || c.label.startsWith(typedCommand))
+  const showCommandMenu = !loading && (cmdMenuOpen || typedCommand != null) && commandMenuItems.length > 0
+  void memoryEpoch; void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet
+
+  function runCommand(prompt: string) {
+    setCmdMenuOpen(false)
+    applyCommandChip(prompt)
+    inputRef.current?.focus()
+  }
+  function runSuggested(action: (typeof SUGGESTED_ACTIONS)[number]) {
+    if (action.command) runCommand(action.command)
+    else if (action.prompt) void handleSendText(action.prompt)
+  }
+  function fillExample(prompt: string) {
+    setInput(prompt)
+    inputRef.current?.focus()
+  }
+
+  const contextRail = (
+    <>
+      <section className='clk-rail-block' aria-label='Clark context'>
+        <h2 className='clk-rail-title'>Context</h2>
+        <dl className='clk-ctx'>
+          <dt>Chain</dt><dd title={contextChain.id ? `Chain ID ${contextChain.id}` : 'Follows last scanned chain'}>{contextChain.label}</dd>
+          <dt>Token</dt><dd title={lastTokenDisplay}>{lastTokenDisplay}</dd>
+          <dt>Wallet</dt><dd title={formatLastWalletDisplay(clientContext.lastWallet)}>{formatLastWalletDisplay(clientContext.lastWallet)}</dd>
+          <dt>Mode</dt><dd>{modeLabel}</dd>
+        </dl>
+      </section>
+      <section className='clk-rail-block clk-rail-block--history' aria-label='Chat history'>
+        <h2 className='clk-rail-title'>Chat history</h2>
+        <ClarkHistoryPanel
+          folders={folders}
+          chats={chats}
+          activeChatId={activeChatId}
+          historySaveFailed={historySaveFailed}
+          historyStatusMessage={historyErrorCode ? HISTORY_STATUS_MESSAGE[historyErrorCode] : null}
+          historyLimit={historyLimit}
+          historyChatCount={savedChatCount}
+          historyAtLimit={historyAtLimit}
+          historyLimitCopy={historyLimitCopy}
+          chatTypeLabel={(chat) => {
+            const kind = inferAnalysisKind(`${chat.title} ${chat.last_message_preview ?? ''}`)
+            return kind === 'general' ? 'Chat' : kind === 'lp' ? 'LP' : kind === 'token' ? 'Token' : 'Wallet'
+          }}
+          onNewChat={() => { handleNewChat(); setRailOpen(false) }}
+          onSelectChat={(id) => { void loadChat(id); setRailOpen(false) }}
+          onSearch={(q) => { void refreshHistory(q || undefined) }}
+          onCreateFolder={(name) => { createClarkFolder(name).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+          onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+          onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+          onDeleteChat={(id) => {
+            deleteClarkChat(id).then(() => {
+              deleteClarkMemoryForChat(id)
+              if (id === activeChatId) handleNewChat({ ignoreLimit: true, skipSave: true })
+              return refreshHistory()
+            }).catch(reportHistoryFailure)
+          }}
+          onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
+        />
+      </section>
+    </>
+  )
+
+  const composer = (
+    <div className='clk-composer'>
+      <div className='clk-input-row'>
+        <div className='clk-seg' role='tablist' aria-label='Clark mode'>
+          <button type='button' role='tab' aria-selected={uiTab === 'analyst'} title='Structured intelligence and scans' className={`clk-seg-btn${uiTab === 'analyst' ? ' clk-seg-btn--on' : ''}`} onClick={() => setUiTab('analyst')}>Analyst</button>
+          <button type='button' role='tab' aria-selected={uiTab === 'chat'} title='Conversational Clark' className={`clk-seg-btn${uiTab === 'chat' ? ' clk-seg-btn--on' : ''}`} onClick={() => setUiTab('chat')}>Chat</button>
+        </div>
+        <button type='button' className={`clk-cmd-btn${showCommandMenu ? ' clk-cmd-btn--on' : ''}`} aria-label='Commands' aria-expanded={showCommandMenu} aria-haspopup='menu' onClick={() => setCmdMenuOpen((v) => !v)} disabled={loading}>/</button>
+        <input
+          ref={inputRef}
+          className='clk-panel-input'
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { setCmdMenuOpen(false); return }
+            if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); setCmdMenuOpen(false); void handleSend() }
+          }}
+          disabled={loading}
+          placeholder={uiTab === 'chat' ? 'Ask Clark anything about Base…' : 'Ask Clark about a token, wallet, liquidity position, or market move…'}
+          aria-label='Ask Clark'
+        />
+        <button className='clk-send-btn' onClick={() => { setCmdMenuOpen(false); void handleSend() }} disabled={loading || !input.trim() || isLimited} aria-label='Send'>
+          <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M22 2 11 13'/><path d='m22 2-7 20-4-9-9-4Z'/></svg>
+        </button>
+      </div>
+      {showCommandMenu && (
+        <div className='clk-cmd-menu' role='menu' aria-label='Clark commands'>
+          {commandMenuItems.map((chip) => (
+            <button key={chip.label} type='button' role='menuitem' className='clk-cmd-item' onClick={() => runCommand(chip.prompt)}>
+              <span className='clk-cmd-name'>{chip.label}</span>
+              <span className='clk-cmd-hint'>{chip.hint}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div className='clk-page'>
       <style>{CLARK_AI_PAGE_CSS}</style>
 
-      <div aria-hidden='true'>
-        <div className='clk-grid' />
-        <div className='clk-glow' />
-      </div>
-
       <div className='clk-shell'>
         <main className='clk-main'>
-          <section className='clk-hero'>
-            <div className='clk-title-row'>
+          <header className='clk-head'>
+            <div className='clk-head-copy'>
               <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
-              <span className='clk-ready-pill'>CORTEX READY</span>
+              <p className='clk-subtitle'>On-chain intelligence copilot</p>
             </div>
-            <p className='clk-subtitle'>Base-native onchain analyst for tokens, wallets, liquidity, and risk.</p>
-            <div className='clk-status-row' aria-label='Clark status'>
-              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: '#22d3ee' }} />Base</span>
-              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: (messages.length > 0 || clientContext.lastToken || clientContext.lastWallet) ? '#34d399' : '#475569' }} />Memory {(messages.length > 0 || clientContext.lastToken || clientContext.lastWallet) ? 'On' : 'Idle'}</span>
-              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: '#a78bfa' }} />{activeMode === 'radar' ? 'Radar Mode' : 'Adaptive Mode'}</span>
-              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: loading ? '#f59e0b' : '#5eead4' }} />{loading ? 'CORTEX Working' : 'CORTEX Ready'}</span>
+            <div className='clk-head-side'>
+              <span className={`clk-ready-pill${loading ? ' clk-ready-pill--busy' : ''}`}>{loading ? 'CORTEX WORKING' : 'CORTEX READY'}</span>
+              <button type='button' className='clk-rail-toggle' onClick={() => setRailOpen(true)} aria-label='Open context and chat history'>Context &amp; history</button>
             </div>
-          </section>
+          </header>
+          <div className='clk-meta' aria-label='Clark status'>
+            <span>{contextChain.id ? contextChain.label : 'Base'}</span><i>•</i><span>{modeLabel}</span><i>•</i>
+            <span className={memoryOn ? 'clk-meta-on' : undefined}>Memory {memoryOn ? 'on' : 'idle'}</span>
+          </div>
 
-          <section className='clk-actions-row' aria-label='Clark quick actions'>
-            {quickActions.map((action) => (
-              <button
-                key={action.title}
-                className='clk-quick-card'
-                style={{ '--accent': action.accent } as CSSProperties}
-                onClick={() => { void handleSendText(action.prompt) }}
-              >
-                <span className='clk-quick-icon'>{action.icon}</span>
-                <span className='clk-quick-copy'>
-                  <span className='clk-quick-title'>{action.title}</span>
-                  <span className='clk-quick-sub'>{action.sub}</span>
-                </span>
-              </button>
-            ))}
-          </section>
-
-          <section className='clk-console'>
-            <div className='clk-tabs'>
-              <button className={`clk-tab${uiTab === 'analyst' ? ' clk-tab--active' : ''}`} onClick={() => setUiTab('analyst')}>
-                <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M3 17l6-6 4 4 7-8'/><path d='M14 7h6v6'/></svg>
-                Analyst
-              </button>
-              <button className={`clk-tab${uiTab === 'chat' ? ' clk-tab--active' : ''}`} onClick={() => setUiTab('chat')}>
-                <svg width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z'/></svg>
-                Chat
-              </button>
-            </div>
-
-            <div className='clk-thread' ref={threadRef}>
-              <div className='clk-thread-top'>
-                {hasMessages && <button onClick={handleClear} className='clk-clear-btn'>Clear conversation</button>}
-              </div>
-              {!hasMessages && (
-                <div className='clk-intro--empty'>
-                  <div>
-                    <p className='clk-intro-title'>Clark is ready.</p>
-                    <p className='clk-intro-text'>Ask for a token read, wallet read, LP check, or Base market summary.</p>
-                  </div>
-                  <div className='clk-start-with' aria-label='Start with a command'>
-                    <span className='clk-start-with-label'>Start with</span>
-                    <div className='clk-start-with-row'>
-                      {startWithChips.map((chip) => (
-                        <button
-                          key={chip.label}
-                          type='button'
-                          className='clk-start-chip'
-                          onClick={() => applyCommandChip(chip.prompt)}
-                        >
-                          {chip.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+          <section className={`clk-console${hasMessages ? ' clk-console--thread' : ''}`}>
+            {hasMessages && (
+              <div className='clk-thread' ref={threadRef}>
+                <div className='clk-thread-top'>
+                  <button onClick={handleClear} className='clk-clear-btn'>Clear conversation</button>
                 </div>
-              )}
-              {messages.map((msg, idx) => {
-                const isThinking = msg.role === 'clark' && loading && (msg.text === THINKING_MESSAGE || msg.text === DEEP_SCAN_STARTED_MESSAGE)
-                return (
-                  <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
-                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? resolveIntentBadge(msg.text))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
-                    {isThinking ? (
-                      <div className='clk-thinking'>
-                        <ThinkingOrb state="composing" size={64} speed={2.80} />
-                        <div className='clk-thinking-stage'>{loadingStages[loadingStage] ?? loadingStages[0]}</div>
-                      </div>
-                    ) : (
-                      <>
-                        {msg.intentBadge && <span className='clk-intent-badge'>{msg.intentBadge}</span>}
-                        <p className='clk-msg-text'>{msg.text}</p>
-                        {msg.whaleIntelligence && <ClarkWhaleIntelligence data={msg.whaleIntelligence} />}
-                        {msg.actions && msg.actions.length > 0 && (
-                          <div className='clk-actions'>
-                            {msg.actions.map((action) => action.kind === 'prompt' && action.prompt ? (
-                              <button
-                                key={`${action.label}-${action.prompt}`}
-                                type='button'
-                                className='clk-action clk-action--btn'
-                                onClick={() => {
-                                  // CLARK TICKER SELECTION FIX, DISCLOSED: a "Scan N" ticker-picker
-                                  // button carries the exact option it was rendered with — echo it
-                                  // back so the server scans THIS option, never re-deriving "1"
-                                  // against whatever session memory currently holds.
-                                  const tickerSelection = action.tickerSearchId && action.tokenAddress
-                                    ? { tickerSearchId: action.tickerSearchId, optionIndex: action.optionIndex ?? 0, tokenAddress: action.tokenAddress, chainId: action.chainId ?? null }
-                                    : undefined
-                                  void handleSendText(action.prompt as string, tickerSelection)
-                                }}
-                              >
-                                {action.label}
-                              </button>
-                            ) : (
-                              <a key={`${action.label}-${action.href}`} className={`clk-action${action.requiresInput ? ' clk-action--disabled' : ''}`} href={action.requiresInput ? undefined : action.href} aria-disabled={action.requiresInput || undefined}>
-                                {action.label}
-                              </a>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )
-              })}
+                {messages.map((msg, idx) => {
+                  const isThinking = msg.role === 'clark' && loading && (msg.text === THINKING_MESSAGE || msg.text === DEEP_SCAN_STARTED_MESSAGE)
+                  return (
+                    <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
+                      <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? resolveIntentBadge(msg.text))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
+                      {isThinking ? (
+                        <div className='clk-thinking'>
+                          <ThinkingOrb state="composing" size={64} speed={2.80} />
+                          <div className='clk-thinking-stage'>{loadingStages[loadingStage] ?? loadingStages[0]}</div>
+                        </div>
+                      ) : (
+                        <>
+                          {msg.intentBadge && <span className='clk-intent-badge'>{msg.intentBadge}</span>}
+                          <p className='clk-msg-text'>{msg.text}</p>
+                          {msg.whaleIntelligence && <ClarkWhaleIntelligence data={msg.whaleIntelligence} />}
+                          {msg.actions && msg.actions.length > 0 && (
+                            <div className='clk-actions'>
+                              {msg.actions.map((action) => action.kind === 'prompt' && action.prompt ? (
+                                <button
+                                  key={`${action.label}-${action.prompt}`}
+                                  type='button'
+                                  className='clk-action clk-action--btn'
+                                  onClick={() => {
+                                    // CLARK TICKER SELECTION FIX, DISCLOSED: a "Scan N" ticker-picker
+                                    // button carries the exact option it was rendered with — echo it
+                                    // back so the server scans THIS option, never re-deriving "1"
+                                    // against whatever session memory currently holds.
+                                    const tickerSelection = action.tickerSearchId && action.tokenAddress
+                                      ? { tickerSearchId: action.tickerSearchId, optionIndex: action.optionIndex ?? 0, tokenAddress: action.tokenAddress, chainId: action.chainId ?? null }
+                                      : undefined
+                                    void handleSendText(action.prompt as string, tickerSelection)
+                                  }}
+                                >
+                                  {action.label}
+                                </button>
+                              ) : (
+                                <a key={`${action.label}-${action.href}`} className={`clk-action${action.requiresInput ? ' clk-action--disabled' : ''}`} href={action.requiresInput ? undefined : action.href} aria-disabled={action.requiresInput || undefined}>
+                                  {action.label}
+                                </a>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {composer}
+
+            <div className='clk-under'>
+              <div className='clk-suggest' aria-label='Suggested actions'>
+                {SUGGESTED_ACTIONS.map((action) => (
+                  <button key={action.label} type='button' className='clk-suggest-btn' disabled={loading} onClick={() => runSuggested(action)}>{action.label}</button>
+                ))}
+              </div>
+              <div className='clk-usage' title='Clark requests used today'>
+                <div className='clk-usage-track'>
+                  <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? '#f43f5e' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? '#f59e0b' : 'linear-gradient(90deg,#22d3ee,#8b5cf6)' }} />
+                </div>
+                <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '…'} today</span>
+              </div>
             </div>
 
             {isLimited && (
@@ -726,145 +794,62 @@ function ClarkAiContent() {
                 <a href='/pricing' className='clk-upgrade-link'>Upgrade →</a>
               </div>
             )}
-
-            {!hasMessages && (
-              <div className='clk-command'>
-                <span className='clk-command-label'>Ask Clark</span>
-                <p className='clk-command-line'>Ask about a token, wallet, LP position, or Base market move.</p>
-              </div>
-            )}
-            <div className='clk-input-wrap'>
-              <div className='clk-start-with-row' style={{ marginBottom: 8 }} aria-label='Clark commands'>
-                {['/token', '/lp', '/holders', '/deployer', '/wallet'].map((cmd) => (
-                  <button
-                    key={cmd}
-                    type='button'
-                    className='clk-start-chip'
-                    onClick={() => {
-                      applyCommandChip(`${cmd} `)
-                    }}
-                  >
-                    {cmd}
-                  </button>
-                ))}
-                <button
-                  type='button'
-                  className='clk-start-chip'
-                  onClick={() => { void handleSendText('explain lp') }}
-                >
-                  explain lp
-                </button>
-              </div>
-              <div className='clk-input-row'>
-                <span className='clk-prompt-mark'>›</span>
-                <input
-                  className='clk-panel-input'
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); void handleSend() } }}
-                  disabled={loading}
-                  placeholder='Ask Clark about a token, wallet, contract, or market move…'
-                />
-                <span className='clk-helper'>Shift + Enter for new line</span>
-                <button className='clk-send-btn' onClick={() => void handleSend()} disabled={loading || !input.trim() || isLimited} aria-label='Send'>
-                  <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M22 2 11 13'/><path d='m22 2-7 20-4-9-9-4Z'/></svg>
-                </button>
-              </div>
-            </div>
-
-            <div className='clk-usage'>
-              <span className='clk-usage-label'>Usage today</span>
-              <div className='clk-usage-track'>
-                <div className='clk-usage-fill' style={{ width: `${usagePct}%`, background: isLimited ? 'linear-gradient(90deg,#ef4444,#f43f5e)' : planLimit !== null && clarkUsed / planLimit >= 0.8 ? 'linear-gradient(90deg,#f59e0b,#ef4444)' : 'linear-gradient(90deg,#2dd4bf,#8b5cf6)' }} />
-              </div>
-              <span className='clk-usage-count'>{clarkUsed} / {planLimit ?? '...'}</span>
-            </div>
           </section>
 
-          <section className='clk-intel'>
-            <div className='clk-intel-head'>
-              <h2 className='clk-intel-title'>Recent Intelligence</h2>
-              <p className='clk-intel-desc'>Recent Clark reads will appear here after scans or chats.</p>
-            </div>
-            {recentTokens.length === 0 && !recentWalletValue ? (
-              <div className='clk-intel-empty-row'>Recent Clark reads will appear here after scans or chats.</div>
-            ) : (
-              <div className='clk-intel-grid'>
-                {recentTokens.length > 0 ? (
-                  recentTokens.map((t, idx) => (
-                    <div className='clk-intel-card' key={`${t.symbol}-${idx}`} style={{ '--accent': '#22d3ee' } as CSSProperties}>
-                      <span className='clk-intel-icon'>◎</span>
-                      <div className='clk-intel-label'>{t.symbol}</div>
-                      <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div>
-                    </div>
-                  ))
-                ) : (
-                  <div className='clk-intel-card clk-intel-card--empty'>
-                    <span className='clk-intel-icon'>◎</span>
-                    <div className='clk-intel-label'>No token read yet</div>
-                    <div className='clk-intel-sub'>Run a token scan to populate this module.</div>
-                  </div>
-                )}
-                {recentWalletValue ? (
-                  <div className='clk-intel-card' style={{ '--accent': '#8b5cf6' } as CSSProperties}>
-                    <span className='clk-intel-icon'>▣</span>
-                    <div className='clk-intel-label'>{recentWalletValue}</div>
-                    <div className='clk-intel-sub'>Last wallet read</div>
-                  </div>
-                ) : (
-                  <div className='clk-intel-card clk-intel-card--empty'>
-                    <span className='clk-intel-icon'>▣</span>
-                    <div className='clk-intel-label'>No wallet read yet</div>
-                    <div className='clk-intel-sub'>Scan a wallet to build wallet memory.</div>
-                  </div>
-                )}
-                <div className='clk-intel-card clk-intel-card--empty'>
-                  <span className='clk-intel-icon'>⌘</span>
-                  <div className='clk-intel-label'>No LP check yet</div>
-                  <div className='clk-intel-sub'>Run an LP check to track liquidity proof.</div>
-                </div>
+          {!hasMessages && (
+            <section className='clk-empty' aria-label='Clark is ready'>
+              <p className='clk-empty-title'>Clark is ready.</p>
+              <p className='clk-empty-text'>Start with a token, wallet, or market question.</p>
+              <div className='clk-examples'>
+                {EXAMPLE_PROMPTS.map((prompt) => (
+                  <button key={prompt} type='button' className='clk-example' onClick={() => fillExample(prompt)}>
+                    <span aria-hidden='true'>→</span>{prompt}
+                  </button>
+                ))}
               </div>
-            )}
+            </section>
+          )}
+
+          <section className='clk-intel' aria-label='Recent intelligence'>
+            <h2 className='clk-section-label'>Recent intelligence</h2>
+            <div className='clk-intel-rows'>
+              <div className={`clk-intel-row${recentTokenValue ? '' : ' clk-intel-row--empty'}`}>
+                <span className='clk-tag clk-tag--token'>Token</span>
+                <span className='clk-intel-main'>{recentTokenValue ?? 'No token read yet'}</span>
+                <span className='clk-intel-meta'>{recentTokenValue ? 'Last token read' : 'Run a token scan'}</span>
+              </div>
+              <div className={`clk-intel-row${recentWalletValue ? '' : ' clk-intel-row--empty'}`}>
+                <span className='clk-tag clk-tag--wallet'>Wallet</span>
+                <span className='clk-intel-main'>{recentWalletValue ?? 'No wallet read yet'}</span>
+                <span className='clk-intel-meta'>{recentWalletValue ? 'Last wallet read' : 'Read a wallet'}</span>
+              </div>
+              {recentTokens.length > 0 ? recentTokens.map((t, idx) => (
+                <div className='clk-intel-row' key={`${t.symbol}-${idx}`}>
+                  <span className='clk-tag clk-tag--market'>Market</span>
+                  <span className='clk-intel-main'>${t.symbol}</span>
+                  {typeof t.change24h === 'number' && Number.isFinite(t.change24h) && (
+                    <span className={`clk-intel-num${t.change24h >= 0 ? ' clk-up' : ' clk-down'}`}>{t.change24h >= 0 ? '+' : ''}{t.change24h.toFixed(1)}%</span>
+                  )}
+                  <span className='clk-intel-meta'>{t.reasonTag ?? 'Recent Base read'}</span>
+                </div>
+              )) : (
+                <div className='clk-intel-row clk-intel-row--empty'>
+                  <span className='clk-tag clk-tag--market'>Market</span>
+                  <span className='clk-intel-main'>No market read yet</span>
+                  <span className='clk-intel-meta'>Ask for Base movers</span>
+                </div>
+              )}
+            </div>
           </section>
         </main>
 
-        <aside className='clk-side'>
-          <section className='clk-side-card'>
-            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><circle cx='12' cy='12' r='2'/><path d='M16.24 7.76 14 10'/><path d='M8 16l2-2'/><path d='M14 14l2.24 2.24'/><path d='M7.76 7.76 10 10'/><circle cx='18' cy='6' r='2'/><circle cx='6' cy='18' r='2'/><circle cx='18' cy='18' r='2'/><circle cx='6' cy='6' r='2'/></svg>Context</h2>
-            <div className='clk-context-row'><div className='clk-context-label'>Current Chain</div><div className='clk-context-value'>{contextChain.label}</div>{contextChain.id ? <div className='clk-context-sub'>Chain ID: {contextChain.id}</div> : <div className='clk-context-sub'>Follows last scanned chain</div>}</div>
-            <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{lastTokenDisplay}</div></div>
-            <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatLastWalletDisplay(clientContext.lastWallet)}</div></div>
-            <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>{activeMode === 'radar' ? 'Radar Mode' : 'Adaptive'}</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
-          </section>
-
-          <section className='clk-side-card'>
-            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Chat History</h2>
-            <ClarkHistoryPanel
-              folders={folders}
-              chats={chats}
-              activeChatId={activeChatId}
-              historySaveFailed={historySaveFailed}
-              historyStatusMessage={historyErrorCode ? HISTORY_STATUS_MESSAGE[historyErrorCode] : null}
-              historyLimit={historyLimit}
-              historyChatCount={savedChatCount}
-              historyAtLimit={historyAtLimit}
-              historyLimitCopy={historyLimitCopy}
-              onNewChat={handleNewChat}
-              onSelectChat={(id) => { void loadChat(id) }}
-              onSearch={(q) => { void refreshHistory(q || undefined) }}
-              onCreateFolder={(name) => { createClarkFolder(name).then(() => refreshHistory()).catch(reportHistoryFailure) }}
-              onRenameChat={(id, title) => { renameClarkChat(id, title).then(() => refreshHistory()).catch(reportHistoryFailure) }}
-              onMoveChat={(id, folderId) => { moveClarkChatToFolder(id, folderId).then(() => refreshHistory()).catch(reportHistoryFailure) }}
-              onDeleteChat={(id) => {
-                deleteClarkChat(id).then(() => {
-                  deleteClarkMemoryForChat(id)
-                  if (id === activeChatId) handleNewChat({ ignoreLimit: true, skipSave: true })
-                  return refreshHistory()
-                }).catch(reportHistoryFailure)
-              }}
-              onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
-            />
-          </section>
+        {railOpen && <button type='button' className='clk-rail-scrim' aria-label='Close context and chat history' onClick={() => setRailOpen(false)} />}
+        <aside className={`clk-side${railOpen ? ' clk-side--open' : ''}`}>
+          <div className='clk-rail-drawer-head'>
+            <span>Context &amp; history</span>
+            <button type='button' onClick={() => setRailOpen(false)} aria-label='Close'>✕</button>
+          </div>
+          {contextRail}
         </aside>
       </div>
     </div>

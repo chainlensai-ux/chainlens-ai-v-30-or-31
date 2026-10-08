@@ -144,9 +144,11 @@ assert.match(routeCode, /buildClarkLpAnswerActions/)
 assert.match(routeCode, /buildClarkWalletAnswerActions/)
 assert.match(routeCode, /routed\.intent === "holders_check"/)
 assert.match(routeCode, /routed\.intent === "deployer_check"/)
-assert.match(pageSrc, /\/holders/)
-assert.match(pageSrc, /\/deployer/)
+// The slash commands live once, in the composer's "/" menu (START_WITH_CHIPS), routed through applyCommandChip.
+assert.match(pageSrc, /START_WITH_CHIPS/)
+assert.match(pageSrc, /applyCommandChip\(prompt\)/)
 assert.match(configSrc, /\/holders/)
+assert.match(configSrc, /\/deployer/)
 assert.match(radarSrc, /\/holders/)
 
 console.log('test-clark-real-actions.mjs: all assertions passed')
