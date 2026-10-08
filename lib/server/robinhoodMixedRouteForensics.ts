@@ -226,6 +226,8 @@ export type RobinhoodMixedRouteForensics = {
   singleConnectedEconomicRoute: boolean
   amountConservationPassed: boolean
   ownershipProven: boolean
+  /** Why ownership holds: the wallet sent the tx, or (relayed) the economic flow proof established it. */
+  ownershipBasis?: 'tx_sender' | 'economic_flows' | 'not_proven'
   finalClassification: RhMixedClassification
   reason: string
 }
@@ -240,6 +242,12 @@ export function analyzeRobinhoodMixedRoute(input: {
   poolManager: string
   v4PoolKeys: ReadonlyMap<string, RhPoolKey>
   native: RhNativeEvidence
+  /**
+   * A relayed receipt (tx.from != wallet): ownership is then not assumed from the sender — it is what the flow proof
+   * itself establishes (the wallet is the route's only economic input source and its output recipient, no outside
+   * funding, no unrelated wallet flow, one connected route). Native legs still come only from the target tx's trace.
+   */
+  relayed?: boolean
 }): RobinhoodMixedRouteForensics {
   const wallet = input.wallet.toLowerCase()
   const pm = input.poolManager.toLowerCase()
@@ -329,6 +337,7 @@ export function analyzeRobinhoodMixedRoute(input: {
     nativeEvidence: nativeEvidenceOut,
     nativeAttributionStatus: input.native.status,
     ownershipProven: receipt.from === wallet,
+    ownershipBasis: (receipt.from === wallet ? 'tx_sender' : input.relayed === true ? 'economic_flows' : 'not_proven') as RobinhoodMixedRouteForensics['ownershipBasis'],
   }
   const finish = (o: Partial<RobinhoodMixedRouteForensics> & { finalClassification: RhMixedClassification; reason: string }): RobinhoodMixedRouteForensics => ({
     ...base,
@@ -338,7 +347,7 @@ export function analyzeRobinhoodMixedRoute(input: {
     ...o,
   })
 
-  if (!base.ownershipProven) return finish({ finalClassification: 'ambiguous', reason: 'tx.from != wallet: mixed routes are only considered for the wallet\'s own transactions' })
+  if (!base.ownershipProven && input.relayed !== true) return finish({ finalClassification: 'ambiguous', reason: 'tx.from != wallet: mixed routes are only considered for the wallet\'s own transactions' })
   if (receipt.status !== 1) return finish({ finalClassification: 'ambiguous', reason: 'reverted tx' })
   if (liquidity) return finish({ finalClassification: 'independent_second_action', reason: 'liquidity add/remove in the same tx' })
   if (v4Raw.length === 0) return finish({ finalClassification: 'ambiguous', reason: 'no canonical V4 swap in this receipt' })
@@ -439,5 +448,6 @@ export function analyzeRobinhoodMixedRoute(input: {
   if (okOnes.length > 1) return finish({ ...common, finalClassification: 'ambiguous', reason: 'both V4 sign readings produce a valid route' })
   if (okOnes.length === 0) return finish({ ...common, finalClassification: chosen.cls, reason: chosen.reason })
   if (unrelated.length > 0) return finish({ ...common, finalClassification: 'independent_second_action', reason: 'wallet moved an asset the route does not trade' })
-  return finish({ ...common, singleConnectedEconomicRoute: true, finalClassification: 'direct_mixed_route_proven', reason: chosen.reason })
+  // Relayed: the flow proof above IS the ownership proof (wallet-only input, wallet output, no outside funding).
+  return finish({ ...common, singleConnectedEconomicRoute: true, ownershipProven: true, finalClassification: 'direct_mixed_route_proven', reason: chosen.reason })
 }

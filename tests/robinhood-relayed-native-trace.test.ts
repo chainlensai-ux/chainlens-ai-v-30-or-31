@@ -208,13 +208,17 @@ test('4. an incomplete / malformed trace → ambiguous_trace; a transport failur
   }
 })
 
-test('5. a mixed-route relayed tx gets no diagnostic trace', async () => {
+// POLICY (relayed route construction): a relayed mixed (V4 + V3) route whose only missing wallet side is native is
+// trace-eligible; the mixed-route flow proof (ownership from economic flows) then promotes it with the exact trace.
+test('5. a relayed mixed-route buy is trace-eligible and, with the wallet\'s exact native debit, proven once', async () => {
   const mixed = new Tx().v4(RH_NATIVE, B, n(1), n(80)).xfer(B, PM, P3, n(80)).v3(P3, n(80), n(25)).xfer(C, P3, WALLET, n(25)).at(TS)
   mixed.sender = RELAYER
   mixed.trace = [pay(WALLET, ROUTER, n(1))]
   const x = await scan([{ name: 'M', tx: mixed }])
-  assert.equal(x.relayed.length, 0)
-  assert.deepEqual(x.calls, [])
+  assert.deepEqual(x.calls, ['M'])
+  assert.equal(relayedAudit(x, 'M').promotedTo, 'relayed_wallet_swap_proven')
+  assert.equal(x.r.swapsVerified, 1)
+  assert.equal(x.r.ingestionAudit.normalizedBuyCount, 1)
 })
 
 test('6. a relayed tx with an unrelated wallet token flow gets no diagnostic trace', async () => {
@@ -294,13 +298,14 @@ test('rejections: somebody else pays / relayer funds-and-forwards / competing pa
   }
 })
 
-test('rejections: unrelated token transfer, mixed route, multiple-V4-route ambiguity never become relayed swaps', async () => {
+test('rejections: unrelated token transfer, co-funded mixed route, multiple-V4-route ambiguity never become relayed swaps', async () => {
   const eth = n(1)
   await rejected(relayedBuy(eth, n(1000), TS, [pay(WALLET, ROUTER, eth)]).xfer(D, WALLET, OTHER, n(3)), 'not_a_candidate')
+  // a relayed mixed route another address co-funds natively stays rejected (competing payer)
   const mixed = new Tx().v4(RH_NATIVE, B, eth, n(80)).xfer(B, PM, P3, n(80)).v3(P3, n(80), n(25)).xfer(C, P3, WALLET, n(25)).at(TS)
   mixed.sender = RELAYER
-  mixed.trace = [pay(WALLET, ROUTER, eth)]
-  await rejected(mixed, 'not_a_candidate')
+  mixed.trace = [pay(WALLET, ROUTER, eth / BigInt(2)), pay(OTHER, ROUTER, eth / BigInt(2))]
+  await rejected(mixed, 'externally_funded_route')
   // two identical native → A hops, one wallet credit: two paths reproduce it — ambiguous, not one connected route
   const twice = new Tx().v4(RH_NATIVE, A, eth, n(1000)).v4(RH_NATIVE, A, eth, n(1000)).xfer(A, PM, WALLET, n(1000)).at(TS)
   twice.sender = RELAYER
