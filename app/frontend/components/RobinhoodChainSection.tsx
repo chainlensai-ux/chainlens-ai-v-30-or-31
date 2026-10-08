@@ -199,8 +199,15 @@ export function RobinhoodChainSection({
               {swapEvidence?.decodedSwapCandidates != null && (
                 <span data-robinhood-decoded-candidates>Decoded swap candidates: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.decodedSwapCandidates}</strong></span>
               )}
+              {swapEvidence?.coverage && (
+                <span data-robinhood-verified-legs>Verified buys / sells: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.coverage.verifiedBuys} · {swapEvidence.coverage.verifiedSells}</strong></span>
+              )}
               {swapEvidence && (
                 <span data-robinhood-closed-trades>Closed trades: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.closedLots}</strong></span>
+              )}
+              {/* A verified-swap count is a sample of the candidates actually checked — never shown as full history. */}
+              {swapEvidence?.coverage && swapEvidence.coverage.candidatesConsidered > 0 && (
+                <span data-robinhood-verification-coverage>Candidates checked: <strong style={{ color: swapEvidence.coverage.complete ? '#e2e8f0' : '#fbbf24' }}>{swapEvidence.coverage.candidatesChecked}/{swapEvidence.coverage.candidatesConsidered}</strong>{!swapEvidence.coverage.complete && swapEvidence.coverage.verificationCoveragePct != null ? ` · verification coverage ${swapEvidence.coverage.verificationCoveragePct}%` : ''}</span>
               )}
               <span>Skipped unsupported swap logs: <strong style={{ color: '#e2e8f0' }}>{activity.skippedSwapLogs}</strong></span>
               {lastActivity && (

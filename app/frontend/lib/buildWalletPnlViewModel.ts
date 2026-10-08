@@ -23,7 +23,7 @@ import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleM
 import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
-import { selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
+import { robinhoodCoverageLabel, selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import {
   selectVerifiedPnlData,
   selectDisplayedPnl,
@@ -468,7 +468,8 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   if (combinedStatus === 'unavailable' && !canonicalSampleUnavailable && robinhoodLane !== 'verified' && robinhoodSwapEvidence && robinhoodSwapEvidence.swapsVerified > 0) {
     const n = robinhoodSwapEvidence.swapsVerified
     const base = combinedReason === PNL_UNAVAILABLE_MESSAGE ? 'Realized PnL unavailable' : combinedReason.replace(/\.\s*$/, '')
-    combinedReason = `${base} · ${robinhoodSwapEvidence.openPositionOnly ? 'Robinhood open-position evidence verified' : `${n} Robinhood swap${n === 1 ? '' : 's'} verified`}`
+    const coverageLabel = robinhoodCoverageLabel(robinhoodSwapEvidence.coverage)
+    combinedReason = `${base} · ${robinhoodSwapEvidence.openPositionOnly ? 'Robinhood open-position evidence verified' : `${n} Robinhood swap${n === 1 ? '' : 's'} verified`}${coverageLabel ? ` · ${coverageLabel}` : ''}`
     evidenceBadgeLabel = 'Partial'
   }
 

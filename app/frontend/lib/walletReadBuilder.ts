@@ -24,7 +24,7 @@ import { portfolioCoverage, portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
 import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
-import { selectRobinhoodSwapEvidence, ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL, type RobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
+import { robinhoodCoverageLabel, selectRobinhoodSwapEvidence, ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL, type RobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { ChainBreakdownRow } from '@/app/frontend/components/WalletProfileHeader'
 import type { PnlConfidenceStatus, EvmPnlLaneStatus, RobinhoodPnlLaneStatus } from '@/app/frontend/components/PnlStatusCard'
 import type { RobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
@@ -283,7 +283,8 @@ export function buildEvidence(params: {
   if (params.robinhoodDisplayState === 'valued' || params.robinhoodDisplayState === 'partial_unpriced') verified.push('Robinhood holdings scan')
   if (params.matchedLotsCount > 0) verified.push('Closed-lot sample')
   if (rh && rh.swapsVerified > 0) {
-    verified.push(`${rh.swapsVerified} Robinhood swap${rh.swapsVerified === 1 ? '' : 's'} verified`)
+    const coverageLabel = robinhoodCoverageLabel(rh.coverage)
+    verified.push(`${rh.swapsVerified} Robinhood swap${rh.swapsVerified === 1 ? '' : 's'} verified${coverageLabel ? ` (${coverageLabel})` : ''}`)
     if (rh.swapsBothLegsPriced > 0) verified.push(`${rh.swapsBothLegsPriced} swap${rh.swapsBothLegsPriced === 1 ? '' : 's'} priced on both legs`)
   }
 

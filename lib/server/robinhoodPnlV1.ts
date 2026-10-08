@@ -23,6 +23,7 @@
 // amounts can pass, so the convention is proven by the wallet's transfers, not assumed.
 
 import { encodeAbiParameters, keccak256, toFunctionSelector, type Hex } from 'viem'
+import type { RobinhoodSwapVerificationCoverage } from '../walletScan/canonicalWalletSelectors'
 import { buildFifoOutput, type SupportedChain } from '../../src/modules/fifoEngine'
 import type { NormalizedEvent } from '../../src/modules/normalization/types'
 import { CHAIN_ASSET_REGISTRY } from './chainAssetRegistry'
@@ -43,6 +44,15 @@ import {
 // ── Limits ────────────────────────────────────────────────────────────────────────────────────────
 export const ROBINHOOD_PNL_V1_LIMITS = {
   maxCandidateReceipts: 20,
+  /**
+   * STAGED VERIFICATION: after the first `maxCandidateReceipts`, up to this many more candidates are classified from
+   * their receipts (swap-evidence first), while the scan-wide budgets below hold. Never a blind full-history sweep.
+   */
+  maxStagedReceipts: 40,
+  /** Stage 2 adds at most this many RPC calls (receipts + the existing per-receipt evidence batch + pool keys). */
+  maxStagedRpcCalls: 160,
+  /** Stage 2 stops this long before the PnL deadline so pricing / FIFO / recovery keep their time. */
+  stagedDeadlineReserveMs: 7_000,
   /** Of the receipt candidates, at most this many are reserved for the verified-swap manifest (unused → current activity). */
   maxManifestCandidates: 8,
   maxHistoricalPriceSides: 20,
@@ -166,7 +176,11 @@ export type RobinhoodPnlV1Deps = {
   }
 }
 
-export type RobinhoodPnlV1Candidate = { txHash: string; timestampMs: number | null; hasSwapLog: boolean }
+export type RobinhoodPnlV1Candidate = {
+  txHash: string; timestampMs: number | null; hasSwapLog: boolean
+  /** The activity feed saw the wallet itself send/receive a token in this tx (stage-2 priority only; never proof). */
+  hasWalletTokenFlow?: boolean
+}
 
 export type RhCandidateSource = 'current_activity' | 'verified_manifest' | 'manifest_bootstrap'
 export type RhSelectionReason = 'manifest_reserved_slot' | 'bootstrap_reserved_slot' | 'current_activity_swap_log' | 'current_activity_recent'
@@ -321,6 +335,17 @@ export type RobinhoodPnlV1IngestionAudit = {
   relayedWalletRejectedCount?: number
   relayedWalletRejectedReasons?: Record<string, number>
   candidateSelection?: RhCandidateSelectionAudit
+  /** Stage-2 (budgeted) verification beyond the first selection. */
+  stagedVerification?: RhStagedVerificationAudit
+  /** Candidates this scan knew about (current activity ∪ manifest ∪ bootstrap hints). */
+  candidatesConsidered?: number
+  /** Candidates whose receipt was actually classified (stage 1 + stage 2). */
+  candidatesVerified?: number
+  /** Candidates left unchecked by the receipt / RPC / time budgets. */
+  candidatesDroppedByBudget?: number
+  verificationCoveragePct?: number | null
+  /** Activity window the candidates came from (timestamps the activity feed reported). */
+  activityWindow?: { earliestMs: number | null; latestMs: number | null; uniqueTxHashes: number; swapLogTxHashes: number; walletTokenFlowTxHashes: number }
   verifiedSwapManifest?: RhVerifiedSwapManifestAudit
   manifestBootstrap?: RhManifestBootstrapAudit
 }
@@ -406,6 +431,8 @@ export type RobinhoodPnlV1 = {
   /** Targeted acquisition recovery for a verified, FIFO-unmatched sell (null when the lane did not run). */
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
   deepAcquisition?: RhDeepAcquisitionSummary | null
+  /** Candidate coverage behind swapsVerified + verified buy/sell legs (absent on early exits). */
+  verificationCoverage?: RobinhoodSwapVerificationCoverage | null
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -549,6 +576,14 @@ export type RhRelayedTraceRequest = {
   routeOutputToken: string
   routeOutputRaw: bigint
   poolKeys: ReadonlyMap<string, RhPoolKey>
+  /**
+   * native_in (default): ETH → token buy, the wallet's traced native debit must pay the route input.
+   * native_out: token → ETH sell, the wallet's ERC-20 debit (receipt) is the route input and its traced native credit
+   * must be the route output.
+   */
+  direction?: 'native_in' | 'native_out'
+  routeInputToken?: string
+  routeInputRaw?: bigint
 }
 export type RhRelayedDiagnosticVerdict = 'wallet_funded_route_candidate' | 'externally_funded_route' | 'no_wallet_native_debit' | 'ambiguous_trace' | 'trace_unavailable'
 
@@ -1210,12 +1245,57 @@ function registerRelayedTraceProbe(ctx: Ctx, wallet: string, txHash: string, rec
   }
   const accepted = [...nativeInputs].map((x) => verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet: -x }))
     .filter((r): r is Extract<RhRouteResult, { ok: true }> => r.ok && r.inputToken === RH_NATIVE && r.outputToken !== RH_NATIVE)
-  if (accepted.length !== 1) return // none, or more than one reading: not one connected route
-  const route = accepted[0]
+  // token → ETH: the wallet's ERC-20 debit is in the receipt; the native credit each V4 native delta implies is the
+  // hypothesis the exact trace must later confirm.
+  const sells = [...nativeInputs].map((x) => verifyRobinhoodV4Route({ wallet, txHash, receipt, poolKeys, nativeNet: x }))
+    .filter((r): r is Extract<RhRouteResult, { ok: true }> => r.ok && r.inputToken !== RH_NATIVE && r.outputToken === RH_NATIVE)
+  if (accepted.length + sells.length !== 1) return // none, or more than one reading: not one connected route
+  const base = { txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec, blockNumber: receipt.blockNumber, poolKeys }
+  if (accepted.length === 1) {
+    const route = accepted[0]
+    ctx.relayedTraceRequests.set(txHash, { ...base, direction: 'native_in', routeInputNativeRaw: BigInt(route.hops[0].inRaw), routeOutputToken: route.outputToken, routeOutputRaw: route.outputRaw })
+    return
+  }
+  const route = sells[0]
   ctx.relayedTraceRequests.set(txHash, {
-    txHash, txFrom: receipt.from, txTo: receipt.to, timestampSec, blockNumber: receipt.blockNumber,
-    routeInputNativeRaw: BigInt(route.hops[0].inRaw), routeOutputToken: route.outputToken, routeOutputRaw: route.outputRaw, poolKeys,
+    ...base, direction: 'native_out', routeInputNativeRaw: ZERO, routeOutputToken: RH_NATIVE, routeOutputRaw: route.outputRaw,
+    routeInputToken: route.inputToken, routeInputRaw: route.inputRaw,
   })
+}
+
+/**
+ * PURE. Verdict for a relayed token → ETH candidate from its exact target-tx trace: the wallet paid no native, its
+ * traced native net is a credit, no top-level value was sent to the wallet (a relayer could otherwise "pay" it), and
+ * the unchanged route verifier accepts the route with exactly that traced credit as the wallet's ETH output.
+ */
+export function robinhoodRelayedNativeOutVerdict(input: {
+  wallet: string; receipt: RhReceipt; poolKeys: ReadonlyMap<string, RhPoolKey>; txValue: bigint | null; trace: RhNativeTraceResult | null
+}): ReturnType<typeof robinhoodRelayedDiagnosticVerdict> {
+  const wallet = lower(input.wallet)
+  const { receipt } = input
+  const topLevelIntoWallet = receipt.to === wallet ? input.txValue : ZERO
+  const base = {
+    txValueKnown: input.txValue != null, txValueRaw: input.txValue?.toString() ?? null,
+    traceComplete: false, traceNativeFromWalletRaw: null, traceNativeToWalletRaw: null, tracedWalletNetRaw: null,
+    walletNativeDebitMatchesRoute: false, competingNativePayers: [] as string[], topLevelValueIntoWallet: topLevelIntoWallet?.toString() ?? null,
+  }
+  const result = input.trace?.audit?.result ?? (input.trace?.transfers ? (input.trace.transfers.length ? 'proven' : 'empty') : null)
+  if (!input.trace?.transfers) {
+    const ambiguous = result === 'malformed' || result === 'unknown_execution_status' || result === 'pagination_cap_exhausted'
+    return { ...base, verdict: ambiguous ? 'ambiguous_trace' : 'trace_unavailable' }
+  }
+  const ev = deriveRhNativeEvidence({
+    wallet, isSender: false, gasPaid: ZERO, txValue: input.txValue, balanceBefore: null, balanceAfter: null,
+    nonceBefore: null, nonceAfter: null, trace: input.trace.transfers, txFrom: receipt.from, txTo: receipt.to,
+  })
+  const fromWallet = ev.traceNativeFromWallet != null ? BigInt(ev.traceNativeFromWallet) : null
+  const out = { ...base, traceComplete: true, traceNativeFromWalletRaw: ev.traceNativeFromWallet, traceNativeToWalletRaw: ev.traceNativeToWallet, tracedWalletNetRaw: ev.nativeNetExGas?.toString() ?? null }
+  if (ev.status !== 'proven_target_tx_native_transfer' || ev.nativeNetExGas == null || fromWallet == null) return { ...out, verdict: 'ambiguous_trace' }
+  if ((topLevelIntoWallet ?? ZERO) > ZERO) return { ...out, verdict: 'externally_funded_route' }
+  if (fromWallet > ZERO || ev.nativeNetExGas <= ZERO) return { ...out, verdict: 'ambiguous_trace' }
+  const route = verifyRobinhoodV4Route({ wallet, txHash: '', receipt, poolKeys: input.poolKeys, nativeNet: ev.nativeNetExGas })
+  const matches = route.ok && route.inputToken !== RH_NATIVE && route.outputToken === RH_NATIVE && route.outputRaw === ev.nativeNetExGas
+  return { ...out, walletNativeDebitMatchesRoute: matches, verdict: matches ? 'wallet_funded_route_candidate' : 'ambiguous_trace' }
 }
 
 /** PURE. The diagnostic verdict for one relayed candidate from its exact target-tx trace. Never acceptance. */
@@ -1291,6 +1371,7 @@ async function promoteRelayedWalletSwap(
   // Without the exact top-level value, a relayer / executor funding source could be missing from the payer analysis.
   if (!v.txValueKnown) return { swap: null, reason: 'top_level_tx_value_unavailable' }
   if (receipt.status !== 1 || receipt.from === lower(wallet)) return { swap: null, reason: 'not_a_relayed_success_receipt' }
+  if (r.direction === 'native_out') return promoteRelayedNativeOutSwap(ctx, wallet, r, receipt, v)
   const fromWallet = v.traceNativeFromWalletRaw != null ? BigInt(v.traceNativeFromWalletRaw) : ZERO
   const net = v.tracedWalletNetRaw != null ? BigInt(v.tracedWalletNetRaw) : null
   if (!v.traceComplete || fromWallet <= ZERO || net == null || net >= ZERO) return { swap: null, reason: 'no_traced_wallet_native_debit' }
@@ -1319,6 +1400,45 @@ async function promoteRelayedWalletSwap(
       txHash: r.txHash, blockNumber: receipt.blockNumber, firstLogIndex: route.firstLogIndex, timestampSec,
       inputToken: route.inputToken, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
       inputDecimals, outputDecimals, hops: route.hops,
+      intermediary: route.intermediary ? { ...route.intermediary, decimals: interDecimals } : null,
+    },
+  }
+}
+
+/**
+ * relayed_wallet_swap_proven for token → ETH: the wallet's own ERC-20 debit (receipt) is the exact route input, its
+ * exact traced native credit is the route output (the unchanged verifier with that net), it paid no native, and no
+ * top-level value reached it. The same RhVerifiedSwap the direct lane builds. Anything short of that stays rejected.
+ */
+async function promoteRelayedNativeOutSwap(
+  ctx: Ctx, wallet: string, r: RhRelayedTraceRequest, receipt: RhReceipt, v: ReturnType<typeof robinhoodRelayedDiagnosticVerdict>,
+): Promise<{ swap: RhVerifiedSwap | null; reason: string }> {
+  const fromWallet = v.traceNativeFromWalletRaw != null ? BigInt(v.traceNativeFromWalletRaw) : null
+  const net = v.tracedWalletNetRaw != null ? BigInt(v.tracedWalletNetRaw) : null
+  if (!v.traceComplete || fromWallet == null || fromWallet !== ZERO || net == null || net <= ZERO) return { swap: null, reason: 'no_traced_wallet_native_credit' }
+  if (v.topLevelValueIntoWallet !== '0') return { swap: null, reason: 'top_level_value_into_wallet' }
+  if (!v.walletNativeDebitMatchesRoute) return { swap: null, reason: 'wallet_credit_does_not_match_route' }
+  const route = verifyRobinhoodV4Route({ wallet, txHash: r.txHash, receipt, poolKeys: r.poolKeys, nativeNet: net })
+  if (!route.ok) return { swap: null, reason: `route_replay_failed:${route.reason}` }
+  if (route.inputToken === RH_NATIVE || route.outputToken !== RH_NATIVE || route.outputRaw !== net) return { swap: null, reason: 'route_replay_not_token_in_native_out' }
+  if (route.inputToken !== r.routeInputToken || route.inputRaw !== r.routeInputRaw) return { swap: null, reason: 'route_replay_input_changed' }
+  let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
+  if (timestampSec == null) {
+    const [blk] = await call(ctx, [{ method: 'eth_getBlockByNumber', params: [`0x${receipt.blockNumber.toString(16)}`, false] }])
+    timestampSec = hexToNum((blk as Record<string, unknown> | null)?.timestamp)
+  }
+  if (timestampSec == null || timestampSec <= 0) return { swap: null, reason: 'timestamp_unavailable' }
+  const [inputDecimals, interDecimals] = await Promise.all([
+    tokenDecimals(ctx, route.inputToken),
+    route.intermediary ? tokenDecimals(ctx, route.intermediary.currency) : Promise.resolve(0),
+  ])
+  if (inputDecimals == null || interDecimals == null) return { swap: null, reason: 'decimals_unavailable' }
+  return {
+    reason: 'relayed_wallet_swap_proven',
+    swap: {
+      txHash: r.txHash, blockNumber: receipt.blockNumber, firstLogIndex: route.firstLogIndex, timestampSec,
+      inputToken: route.inputToken, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
+      inputDecimals, outputDecimals: 18, hops: route.hops,
       intermediary: route.intermediary ? { ...route.intermediary, decimals: interDecimals } : null,
     },
   }
@@ -1356,7 +1476,9 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
     const receipt = await receiptCache.get(r.txHash)?.catch(() => null)
     const [txr] = trace?.transfers && receipt ? await call(ctx, [{ method: 'eth_getTransactionByHash', params: [r.txHash] }]) : [null]
     const txValue = recoveryTxValue(txr)
-    const v = receipt ? robinhoodRelayedDiagnosticVerdict({ wallet, receipt, poolKeys: r.poolKeys, txValue, routeInputNativeRaw: r.routeInputNativeRaw, trace }) : null
+    const v = !receipt ? null
+      : r.direction === 'native_out' ? robinhoodRelayedNativeOutVerdict({ wallet, receipt, poolKeys: r.poolKeys, txValue, trace })
+        : robinhoodRelayedDiagnosticVerdict({ wallet, receipt, poolKeys: r.poolKeys, txValue, routeInputNativeRaw: r.routeInputNativeRaw, trace })
     const verdict: RhRelayedDiagnosticVerdict = v?.verdict ?? 'trace_unavailable'
     counts[verdict] += 1
     summary.candidates += 1
@@ -1366,7 +1488,9 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
       const o = outcomes[i]
       outcomes[i] = {
         ...o, swap: promoted.swap, rejection: null, detail: null, acceptedVia: 'relayed_v4',
-        forensics: o.forensics ? { ...o.forensics, attributionClass: 'relayed_wallet_swap_proven', attributionDetail: 'exact complete target-tx trace: the wallet alone paid the exact native route input (no competing payer, no top-level value into the wallet) and received the exact V4 output' } : o.forensics,
+        forensics: o.forensics ? { ...o.forensics, attributionClass: 'relayed_wallet_swap_proven', attributionDetail: r.direction === 'native_out'
+          ? 'receipt + exact complete target-tx trace: the wallet supplied the exact ERC-20 route input, paid no native, and its exact traced native credit is the V4 route output (no top-level value into the wallet)'
+          : 'exact complete target-tx trace: the wallet alone paid the exact native route input (no competing payer, no top-level value into the wallet) and received the exact V4 output' } : o.forensics,
       }
       summary.relayedWalletVerifiedSwapCount += 1
     } else {
@@ -1374,7 +1498,7 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
       summary.relayedWalletRejectedReasons[promoted.reason] = (summary.relayedWalletRejectedReasons[promoted.reason] ?? 0) + 1
     }
     console.warn('[robinhood-relayed-native-trace-audit]', {
-      txHash: r.txHash, txFrom: r.txFrom, txTo: r.txTo, routeInputNativeRaw: r.routeInputNativeRaw.toString(),
+      txHash: r.txHash, txFrom: r.txFrom, txTo: r.txTo, direction: r.direction ?? 'native_in', routeInputNativeRaw: r.routeInputNativeRaw.toString(),
       routeOutputToken: r.routeOutputToken, routeOutputRaw: r.routeOutputRaw.toString(),
       storedTraceHit: stored?.transfers != null, selectedForDiagnosticTrace: ordinal != null, liveBudgetOrdinal: ordinal,
       traceComplete: v?.traceComplete ?? false, traceNativeFromWalletRaw: v?.traceNativeFromWalletRaw ?? null, traceNativeToWalletRaw: v?.traceNativeToWalletRaw ?? null,
@@ -1389,6 +1513,67 @@ async function runRelayedNativeTraceDiagnostics(ctx: Ctx, wallet: string, outcom
     })
   }
   return summary
+}
+
+/**
+ * relayed_wallet_swap_proven by RECEIPT ALONE, for a relayed (wallet_not_tx_sender) receipt whose canonical V4 route
+ * never touches native ETH — so every wallet flow is an ERC-20 Transfer in the receipt itself:
+ *   1. the wallet's single ERC-20 debit is the exact route input (it supplied the input token),
+ *   2. the wallet's single ERC-20 credit is the route output, here with NO transfer-tax leeway (the whole output, within
+ *      the route fee bound, reached the wallet — nothing left for a relayer or another user),
+ *   3. exactly one connected V4 path reproduces both amounts and every V4 swap / token transfer in the tx is on it
+ *      (the unchanged verifier), so the route is uniquely the wallet's; no liquidity event, no other venue.
+ * A native leg is never inferred here: those routes need the exact target-tx trace (relayed trace lanes).
+ */
+export function robinhoodRelayedTokenRouteProof(wallet: string, receipt: RhReceipt, poolKeys: ReadonlyMap<string, RhPoolKey>):
+  { ok: true; route: Extract<RhRouteResult, { ok: true }> } | { ok: false; reason: string } {
+  const w = lower(wallet)
+  if (receipt.status !== 1 || receipt.from === w) return { ok: false, reason: 'not_a_relayed_success_receipt' }
+  // Every structural preflight check except the sender one.
+  const pre = robinhoodReceiptPreflight(receipt.from, receipt)
+  if (!pre.ok) return { ok: false, reason: pre.reason }
+  if (pre.poolIds.some((id) => !poolKeys.has(id))) return { ok: false, reason: 'pool_key_unproven' }
+  if (pre.poolIds.some((id) => { const k = poolKeys.get(id)!; return lower(k.currency0) === RH_NATIVE || lower(k.currency1) === RH_NATIVE })) {
+    return { ok: false, reason: 'native_leg_needs_trace' }
+  }
+  const route = verifyRobinhoodV4Route({ wallet: w, txHash: '', receipt, poolKeys, nativeNet: ZERO })
+  if (!route.ok) return { ok: false, reason: route.reason }
+  if (route.inputToken === RH_NATIVE || route.outputToken === RH_NATIVE) return { ok: false, reason: 'native_leg_needs_trace' }
+  const lastOut = BigInt(route.hops[route.hops.length - 1].outRaw)
+  if (route.outputRaw > lastOut || !withinFee(lastOut - route.outputRaw, lastOut)) return { ok: false, reason: 'route_output_not_fully_received_by_wallet' }
+  return { ok: true, route }
+}
+
+async function promoteRelayedTokenRoute(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt): Promise<RhVerifiedSwap | null> {
+  const ids = [...new Set(receipt.logs.filter((l) => l.topics[0] === V4_SWAP_TOPIC0 && l.address === POOL_MANAGER && /^0x[0-9a-f]{64}$/.test(l.topics[1] ?? '')).map((l) => l.topics[1]))]
+  if (ids.length === 0) return null
+  const poolKeys = new Map<string, RhPoolKey>()
+  for (const id of ids) {
+    if (Date.now() >= ctx.deadlineAt) return null
+    const key = await resolveRobinhoodPoolKey(id, ctx.rpc, (n) => { ctx.m.rpcCalls += n }, () => { ctx.m.cacheHits += 1 })
+    if (!key) return null
+    poolKeys.set(id, { currency0: lower(key.currency0), currency1: lower(key.currency1) })
+  }
+  const proof = robinhoodRelayedTokenRouteProof(wallet, receipt, poolKeys)
+  if (!proof.ok) return null
+  const route = proof.route
+  let timestampSec = receipt.logs.find((l) => l.blockTimestamp != null)?.blockTimestamp ?? null
+  if (timestampSec == null) {
+    const [blk] = await call(ctx, [{ method: 'eth_getBlockByNumber', params: [`0x${receipt.blockNumber.toString(16)}`, false] }])
+    timestampSec = hexToNum((blk as Record<string, unknown> | null)?.timestamp)
+  }
+  if (timestampSec == null || timestampSec <= 0) return null
+  const [inputDecimals, outputDecimals, interDecimals] = await Promise.all([
+    tokenDecimals(ctx, route.inputToken), tokenDecimals(ctx, route.outputToken),
+    route.intermediary ? tokenDecimals(ctx, route.intermediary.currency) : Promise.resolve(0),
+  ])
+  if (inputDecimals == null || outputDecimals == null || interDecimals == null) return null
+  return {
+    txHash, blockNumber: receipt.blockNumber, firstLogIndex: route.firstLogIndex, timestampSec,
+    inputToken: route.inputToken, outputToken: route.outputToken, inputRaw: route.inputRaw, outputRaw: route.outputRaw,
+    inputDecimals, outputDecimals, hops: route.hops,
+    intermediary: route.intermediary ? { ...route.intermediary, decimals: interDecimals } : null,
+  }
 }
 
 async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promise<CandidateOutcome> {
@@ -1413,6 +1598,16 @@ async function verifyCandidate(ctx: Ctx, wallet: string, txHash: string): Promis
       const promoted = await promoteMixedRoute(ctx, txHash, receipt, ev.mixedRoute)
       if (promoted.swap) return out({ ...base, swap: promoted.swap, acceptedVia: 'mixed_route' })
       return out({ ...base, rejection: pre.reason, detail: pre.detail, mixedRejection: promoted.reason })
+    }
+    // RELAYED, RECEIPT-PROVEN: a relayed receipt whose V4 route has no native leg is proven from its own ERC-20 flows.
+    if (pre.reason === 'wallet_not_tx_sender') {
+      const relayed = await promoteRelayedTokenRoute(ctx, wallet, txHash, receipt).catch(() => null)
+      if (relayed) {
+        return out({
+          ...base, swap: relayed, acceptedVia: 'relayed_v4',
+          forensics: base.forensics ? { ...base.forensics, attributionClass: 'relayed_wallet_swap_proven', attributionDetail: 'receipt proof: the wallet alone supplied the exact ERC-20 route input and received the whole ERC-20 route output on one connected canonical V4 route (no native leg, no other venue)' } : base.forensics,
+        })
+      }
     }
     return out({ ...base, rejection: pre.reason, detail: pre.detail })
   }
@@ -2295,12 +2490,23 @@ function orderRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candid
     const h = lower(c.txHash)
     if (!/^0x[0-9a-f]{64}$/.test(h)) continue
     const prev = byHash.get(h)
+    const flow = Boolean(prev?.hasWalletTokenFlow || c.hasWalletTokenFlow)
     byHash.set(h, prev
-      ? { txHash: h, timestampMs: prev.timestampMs ?? c.timestampMs, hasSwapLog: prev.hasSwapLog || c.hasSwapLog }
-      : { txHash: h, timestampMs: c.timestampMs, hasSwapLog: c.hasSwapLog })
+      ? { txHash: h, timestampMs: prev.timestampMs ?? c.timestampMs, hasSwapLog: prev.hasSwapLog || c.hasSwapLog, ...(flow ? { hasWalletTokenFlow: true } : {}) }
+      : { txHash: h, timestampMs: c.timestampMs, hasSwapLog: c.hasSwapLog, ...(flow ? { hasWalletTokenFlow: true } : {}) })
   }
   // Txs with a seen Swap log first, then most recent first, then hash: a deterministic bounded sample.
   return [...byHash.values()].sort((a, b) => Number(b.hasSwapLog) - Number(a.hasSwapLog) || (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
+}
+
+/** The activity window the candidate set covers (diagnostic; timestamps as the activity feed reported them). */
+export function robinhoodActivityWindow(candidates: readonly RobinhoodPnlV1Candidate[]): NonNullable<RobinhoodPnlV1IngestionAudit['activityWindow']> {
+  const all = orderRobinhoodPnlV1Candidates(candidates)
+  const ts = all.map((c) => c.timestampMs).filter((t): t is number => t != null && Number.isFinite(t))
+  return {
+    earliestMs: ts.length ? Math.min(...ts) : null, latestMs: ts.length ? Math.max(...ts) : null, uniqueTxHashes: all.length,
+    swapLogTxHashes: all.filter((c) => c.hasSwapLog).length, walletTokenFlowTxHashes: all.filter((c) => c.hasWalletTokenFlow).length,
+  }
 }
 
 export function selectRobinhoodPnlV1Candidates(candidates: readonly RobinhoodPnlV1Candidate[]): { selected: RobinhoodPnlV1Candidate[]; dropped: number } {
@@ -2380,6 +2586,91 @@ export function selectRobinhoodPnlV1CandidatesWithManifest(
   }
 }
 
+// ── Staged verification (stage 2) ────────────────────────────────────────────────────────────────────
+/**
+ * Stage-2 order for the candidates stage 1 left unchecked: previously verified manifest hashes first (proven swaps),
+ * then txs with a seen Swap log, then txs where the wallet itself moved a token, then the rest — each newest first,
+ * then hash. Deduped; never a hash stage 1 already checked. PURE and deterministic.
+ */
+export function orderRobinhoodStagedCandidates(
+  droppedHashes: readonly string[], candidates: readonly RobinhoodPnlV1Candidate[], manifestHashes: ReadonlySet<string>,
+): Array<{ txHash: string; tier: 'manifest' | 'swap_log' | 'wallet_token_flow' | 'other'; timestampMs: number | null }> {
+  const byHash = new Map(orderRobinhoodPnlV1Candidates(candidates).map((c) => [c.txHash, c]))
+  const seen = new Set<string>()
+  const rows: Array<{ txHash: string; tier: 'manifest' | 'swap_log' | 'wallet_token_flow' | 'other'; timestampMs: number | null }> = []
+  for (const raw of droppedHashes) {
+    const h = lower(raw)
+    if (!/^0x[0-9a-f]{64}$/.test(h) || seen.has(h)) continue
+    seen.add(h)
+    const c = byHash.get(h)
+    const tier = manifestHashes.has(h) ? 'manifest' : c?.hasSwapLog ? 'swap_log' : c?.hasWalletTokenFlow ? 'wallet_token_flow' : 'other'
+    rows.push({ txHash: h, tier, timestampMs: c?.timestampMs ?? null })
+  }
+  const rank = { manifest: 0, swap_log: 1, wallet_token_flow: 2, other: 3 } as const
+  return rows.sort((a, b) => rank[a.tier] - rank[b.tier] || (b.timestampMs ?? -1) - (a.timestampMs ?? -1) || a.txHash.localeCompare(b.txHash))
+}
+
+export type RhStagedVerificationAudit = {
+  stage1Checked: number
+  stage2Eligible: number
+  stage2Checked: number
+  stage2ByTier: Record<'manifest' | 'swap_log' | 'wallet_token_flow' | 'other', number>
+  stage2RpcCalls: number
+  stage2StopReason: 'complete' | 'receipt_budget' | 'rpc_budget' | 'time_budget'
+  budget: { maxStagedReceipts: number; maxStagedRpcCalls: number; stagedDeadlineReserveMs: number }
+}
+
+/**
+ * Stage 2: classify more receipts — same verifier, same probe mode (trace requests are only registered; the one live
+ * trace allocator still decides) — in batches of the usual concurrency, stopping at the first of: no candidates
+ * left, the receipt budget, the stage RPC budget, or the time reserve before the PnL deadline. Receipts are cached
+ * (one fetch per tx); a hash already checked is never checked again.
+ */
+async function runStagedVerification(
+  ctx: Ctx, wallet: string, ordered: ReturnType<typeof orderRobinhoodStagedCandidates>, outcomes: CandidateOutcome[],
+  threw: (txHash: string) => CandidateOutcome,
+): Promise<RhStagedVerificationAudit> {
+  const L = ROBINHOOD_PNL_V1_LIMITS
+  const checked = new Set(outcomes.map((o) => o.txHash))
+  const queue = ordered.filter((c) => !checked.has(c.txHash))
+  const audit: RhStagedVerificationAudit = {
+    stage1Checked: outcomes.filter((o) => o.rejection !== 'deadline_exceeded').length, stage2Eligible: queue.length, stage2Checked: 0,
+    stage2ByTier: { manifest: 0, swap_log: 0, wallet_token_flow: 0, other: 0 }, stage2RpcCalls: 0, stage2StopReason: 'complete',
+    budget: { maxStagedReceipts: L.maxStagedReceipts, maxStagedRpcCalls: L.maxStagedRpcCalls, stagedDeadlineReserveMs: L.stagedDeadlineReserveMs },
+  }
+  const rpcBefore = ctx.m.rpcCalls
+  let i = 0
+  while (i < queue.length) {
+    if (audit.stage2Checked >= L.maxStagedReceipts) { audit.stage2StopReason = 'receipt_budget'; break }
+    // A batch can cost up to ~7 calls per receipt (receipt + evidence batch + pool keys); stop before it could overrun.
+    if (ctx.m.rpcCalls - rpcBefore + L.concurrency * 7 > L.maxStagedRpcCalls) { audit.stage2StopReason = 'rpc_budget'; break }
+    if (Date.now() >= ctx.deadlineAt - L.stagedDeadlineReserveMs) { audit.stage2StopReason = 'time_budget'; break }
+    const batch = queue.slice(i, i + Math.min(L.concurrency, L.maxStagedReceipts - audit.stage2Checked))
+    i += batch.length
+    const res = await mapLimit(batch, L.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch(() => threw(c.txHash)))
+    for (const [k, o] of res.entries()) {
+      if (checked.has(o.txHash)) continue
+      checked.add(o.txHash)
+      outcomes.push(o)
+      audit.stage2Checked += 1
+      audit.stage2ByTier[batch[k].tier] += 1
+    }
+  }
+  audit.stage2RpcCalls = ctx.m.rpcCalls - rpcBefore
+  return audit
+}
+
+/** Verification coverage: of the candidates this scan knew about, how many receipts were actually classified. */
+export function robinhoodVerificationCoverage(candidatesConsidered: number, candidatesChecked: number): { candidatesConsidered: number; candidatesChecked: number; candidatesDroppedByBudget: number; verificationCoveragePct: number | null; complete: boolean } {
+  const considered = Math.max(0, candidatesConsidered)
+  const checked = Math.min(Math.max(0, candidatesChecked), considered)
+  return {
+    candidatesConsidered: considered, candidatesChecked: checked, candidatesDroppedByBudget: considered - checked,
+    verificationCoveragePct: considered > 0 ? Math.round((checked / considered) * 1000) / 10 : null,
+    complete: considered > 0 && checked >= considered,
+  }
+}
+
 function manifestReplayResult(o: CandidateOutcome, ctx: Ctx, relayedTraced: ReadonlySet<string>): RhManifestReplayResult {
   if (o.swap) return 'manifest_reverified'
   if (!o.receiptFetched) return 'manifest_receipt_unavailable'
@@ -2429,6 +2720,8 @@ export async function computeRobinhoodPnlV1(params: {
     verifiedSwapTxCount: 0, rejectedSwapTxCount: 0, rejectionReasons: {}, normalizedBuyCount: 0, normalizedSellCount: 0,
     candidateSelection: selection.audit,
     ...(boot ? { manifestBootstrap: boot.audit } : {}),
+    candidatesConsidered: selection.audit.candidatePoolCount, candidatesVerified: 0, candidatesDroppedByBudget: dropped,
+    verificationCoveragePct: null, activityWindow: robinhoodActivityWindow(params.candidates),
   }
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
     signalNativePrefetchComplete()
@@ -2450,6 +2743,18 @@ export async function computeRobinhoodPnlV1(params: {
   ctx.traceRequests = new Map()
   ctx.relayedTraceRequests = new Map()
   const outcomes = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (c) => verifyCandidate(ctx, wallet, c.txHash).catch(() => threw(c.txHash)))
+  // Stage 2 (still probe mode): continue past the first selection within the receipt / RPC / time budgets.
+  const manifestHashSet = new Set((manifestRead?.entries ?? []).map((e) => lower(e.txHash)))
+  const staged = await runStagedVerification(ctx, wallet, orderRobinhoodStagedCandidates(selection.dropped, params.candidates, manifestHashSet), outcomes, threw)
+  const checkedCount = outcomes.filter((o) => o.rejection !== 'deadline_exceeded').length
+  const cov = robinhoodVerificationCoverage(selection.audit.candidatePoolCount, checkedCount)
+  ingestion.stagedVerification = staged
+  ingestion.candidatesConsidered = cov.candidatesConsidered
+  ingestion.candidatesVerified = cov.candidatesChecked
+  ingestion.candidatesDroppedByBudget = cov.candidatesDroppedByBudget
+  ingestion.candidatesDroppedByCap = cov.candidatesDroppedByBudget
+  ingestion.verificationCoveragePct = cov.verificationCoveragePct
+  console.warn('[robinhood-staged-verification-audit]', { wallet, ...staged, ...cov })
   // Phase 2: stored proofs, then bounded live traces in priority order. Phase 3: re-verify only the traced receipts
   // through the unchanged classifier with their real trace.
   // One live native-trace budget for the whole request; main takes at most cap − reserve now.
@@ -2596,6 +2901,10 @@ export async function computeRobinhoodPnlV1(params: {
     swapsBothLegsPriced: bothLegs,
     priceEvidence: [...evidence, ...recovery.evidence, ...deep.evidence],
     acquisitionRecovery: recovery.summary,
+    verificationCoverage: {
+      ...robinhoodVerificationCoverage(ingestion.candidatesConsidered ?? 0, ingestion.candidatesVerified ?? 0),
+      verifiedBuys: buyCount, verifiedSells: sellCount,
+    },
     deepAcquisition: deep.summary,
   }
   if (verifiedLots.length > 0) {

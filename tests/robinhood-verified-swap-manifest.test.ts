@@ -189,7 +189,7 @@ test('repeated scans: Scan A proves 3 and records them; Scan B (75 newer rows, t
   const scanB = await scan(chain, { activity: noise(75).map(([name]) => name), stored: new Set(['relayedD861', 'relayed8364', 'direct']) })
   assert.equal(scanB.a.candidateSelection!.candidatePoolCount, 78)
   assert.equal(scanB.a.candidateSwapTxCount, 20)
-  assert.ok(scanB.receiptCalls.length <= ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts)
+  assert.ok(scanB.receiptCalls.length <= ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts + ROBINHOOD_PNL_V1_LIMITS.maxStagedReceipts)
   const injected = scanB.a.candidateSelection!.selectedCandidates.filter((c) => c.source === 'verified_manifest')
   assert.deepEqual(scanB.names(injected.map((c) => c.txHash)), ['direct', 'relayed8364', 'relayedD861'])
   assert.ok(injected.every((c) => c.manifestHit && !c.inCurrentActivity && c.selectionReason === 'manifest_reserved_slot'))

@@ -1821,16 +1821,17 @@ export async function sharedHistoricalEthUsdAt(timestampSec: number): Promise<im
 // ── PnL V1 bridges ─────────────────────────────────────────────────────────────────────────────────
 /** Every tx the sidecar saw the wallet move tokens in (or saw a Swap log in) is a candidate; V1 proves or rejects each. */
 export function robinhoodPnlV1CandidatesFromActivity(activity: RobinhoodWalletActivityResult): {
-  candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }>
+  candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean; hasWalletTokenFlow?: boolean }>
   transactionCount: number
   transferCount: number
   /** Inbound token rows — evidence for the acquisition recovery lane only (never a buy by themselves). */
   inboundTokenTransfers: Array<{ txHash: string; timestampMs: number | null; token: string; rawAmount: string | null }>
 } {
-  const candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean }> = []
+  const candidates: Array<{ txHash: string; timestampMs: number | null; hasSwapLog: boolean; hasWalletTokenFlow?: boolean }> = []
   for (const item of activity.items) {
     const t = item.blockTimestamp ? Date.parse(item.blockTimestamp) : NaN
-    candidates.push({ txHash: item.txHash, timestampMs: Number.isFinite(t) ? t : null, hasSwapLog: false })
+    // A wallet token transfer only raises stage-2 priority; acceptance still comes from the receipt.
+    candidates.push({ txHash: item.txHash, timestampMs: Number.isFinite(t) ? t : null, hasSwapLog: false, ...(item.kind === 'token_transfer' ? { hasWalletTokenFlow: true } : {}) })
   }
   for (const a of activity.swapDecodeAudits) {
     if (a.swapLogsSeen > 0 && a.txHash) candidates.push({ txHash: a.txHash, timestampMs: null, hasSwapLog: true })

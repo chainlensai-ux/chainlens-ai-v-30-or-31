@@ -369,7 +369,8 @@ test('receipts stay <= 20 and live native traces <= 3 with manifest + bootstrap 
   const s = await scan(chain, { activity: current.map(([k]) => k), pages: [{ names: relayed.map(([k]) => k) }] })
   const sel = s.a.candidateSelection!.selectedCandidates
   assert.equal(sel.length, ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts)
-  assert.ok(s.receiptCalls.length <= 20, String(s.receiptCalls.length))
+  // Stage 1 selects 20; the staged verifier may classify more receipts, but only within its own receipt budget.
+  assert.ok(s.receiptCalls.length <= ROBINHOOD_PNL_V1_LIMITS.maxCandidateReceipts + ROBINHOOD_PNL_V1_LIMITS.maxStagedReceipts, String(s.receiptCalls.length))
   assert.deepEqual([sel.filter((c) => c.source === 'verified_manifest').length, sel.filter((c) => c.source === 'manifest_bootstrap').length, sel.filter((c) => c.source === 'current_activity').length], [2, 6, 12])
   assert.ok(s.liveTraces.length <= 3, s.liveTraces.join(','))
   assert.equal(s.a.nativeTraceGlobalBudget!.totalLiveUsed <= 3, true)

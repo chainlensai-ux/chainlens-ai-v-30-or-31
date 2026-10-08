@@ -119,6 +119,38 @@ export type RobinhoodPnlSummary = {
   swapsFound: number
   swapsVerified: number
   swapsBothLegsPriced: number
+  /** How much of the known candidate set was actually checked this scan (null on older payloads). */
+  verificationCoverage?: RobinhoodSwapVerificationCoverage | null
+}
+
+/**
+ * Robinhood swap-verification coverage. `verifiedSwaps` is only ever a count over the candidates actually checked, so
+ * it must never be shown without this: "3 verified swaps" over 20 of 78 known candidates is a bounded sample.
+ */
+export type RobinhoodSwapVerificationCoverage = {
+  /** Candidate txs this scan knew about (wallet activity ∪ verified-swap manifest ∪ bootstrap hints). */
+  candidatesConsidered: number
+  /** Candidates whose receipt was actually classified. */
+  candidatesChecked: number
+  candidatesDroppedByBudget: number
+  verificationCoveragePct: number | null
+  complete: boolean
+  /** Verified swap legs that opened a position (token received) / closed one (token sent). Never closed trades. */
+  verifiedBuys: number
+  verifiedSells: number
+}
+
+/** "20/78 candidates checked" while coverage is partial; null when complete or unknown. */
+export function robinhoodCoverageLabel(c: RobinhoodSwapVerificationCoverage | null | undefined): string | null {
+  if (!c || c.candidatesConsidered <= 0 || c.complete) return null
+  return `${c.candidatesChecked}/${c.candidatesConsidered} candidates checked`
+}
+
+/** "3 verified swaps · 20/78 candidates checked" — a verified-swap count is never shown without its coverage. */
+export function robinhoodVerifiedSwapsText(swapsVerified: number, c: RobinhoodSwapVerificationCoverage | null | undefined): string {
+  const base = `${swapsVerified} verified swap${swapsVerified === 1 ? '' : 's'}`
+  const label = robinhoodCoverageLabel(c)
+  return label ? `${base} · ${label}` : base
 }
 
 /** What the Robinhood PnL card shows: the verified sample only when evidence exists, otherwise the exact blocker. */
@@ -179,6 +211,8 @@ export type RobinhoodSwapEvidence = {
   openPositionOnly: boolean
   /** The most specific honest reason realized PnL is not verified; null when it is verified. */
   reason: string | null
+  /** Candidate coverage of this scan's verification; null when the payload predates it. */
+  coverage: RobinhoodSwapVerificationCoverage | null
 }
 
 export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodSwapEvidence | null {
@@ -190,12 +224,14 @@ export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScan
   const closedLots = v1 ? Math.max(v1.structuralClosedLots, v1.verifiedClosedLots) : audit?.fifoClosedLots ?? 0
   const verified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
   const openPositionOnly = !verified && swapsVerified > 0 && swapsBothLegsPriced === swapsVerified && closedLots === 0
+  const coverage = v1?.verificationCoverage ?? null
+  const coverageLabel = robinhoodCoverageLabel(coverage)
   const reason = verified ? null
     : openPositionOnly
-      ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet.`
+      ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet${coverageLabel ? ` · ${coverageLabel}` : ''}.`
       : v1?.exactReason ?? robinhoodResult.pnl.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
   const decodedSwapCandidates = v1 ? v1.swapsFound : null
-  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason }
+  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason, coverage }
 }
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
