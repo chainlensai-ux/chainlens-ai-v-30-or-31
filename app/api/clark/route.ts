@@ -4321,6 +4321,7 @@ async function buildClarkWalletReadResponse(params: {
     pricedHoldingsCount: result.pricedHoldingsCount,
     unpricedHoldingsCount: result.unpricedHoldingsCount,
     verifiedSwapCount: result.verifiedSwapCount,
+    robinhoodVerifiedSwapCount: result.robinhoodVerifiedSwapCount,
     verifiedCoveragePercent: result.verifiedCoveragePercent,
     openPositionCoveragePercent: result.openPositionCoveragePercent,
     blockingReason: result.missingEvidence[0] ?? null,

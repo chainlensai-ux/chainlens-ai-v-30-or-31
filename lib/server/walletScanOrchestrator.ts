@@ -46,6 +46,7 @@ import {
   selectEvmPnlLaneStatus,
   selectRobinhoodPnlLaneStatus,
   robinhoodCompactProof,
+  selectRobinhoodSwapEvidence,
   toRobinhoodWalletScanResponse,
   type EvmPnlLaneStatus,
   type RobinhoodPnlLaneStatus,
@@ -68,7 +69,10 @@ export type CanonicalWalletScanResult = {
   realizedPnlUsd?: number | null
   unrealizedPnlUsd?: number | null
   pricingCoverage: 'ok' | 'partial' | 'unknown'
+  /** Base/ETH verified closed trades (published canonical lots). Never includes Robinhood swaps. */
   verifiedSwapCount: number | null
+  /** Canonical verified Robinhood swaps (selectRobinhoodSwapEvidence). Swaps, not closed trades. */
+  robinhoodVerifiedSwapCount: number | null
   skippedSwapLogs: number | null
   evidenceSources: WalletScanEvidenceSource[]
   missingEvidence: string[]
@@ -400,7 +404,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
         : []
       holdings = holdings.concat(rhHoldings, rh.holdings.holdings.map((t) => ({ chain: 'robinhood', symbol: t.symbol ?? t.address.slice(0, 8), valueUsd: t.valueUsd })))
       skippedSwapLogs = rh.audit.skippedSwapLogs
-      verifiedSwapCount = (verifiedSwapCount ?? 0) + rh.pnl.verifiedSwapCount
+      // Never added to the closed-trade count: rh.pnl.verifiedSwapCount is the both-leg-priced PnL gate count and
+      // Robinhood swaps are not closed trades. The canonical Robinhood swap count travels in its own field.
       lastActive = lastActiveFromRobinhood(rh.activity.items)
       // HARD RULE: never promote Robinhood PnL into the EVM canonical pnlStatus. Lanes stay split.
     } else {
@@ -435,6 +440,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   })
   const robinhoodPnlLaneStatus = selectRobinhoodPnlLaneStatus(robinhoodResponse)
   const robinhoodPnlProof = robinhoodCompactProof(robinhoodResponse)
+  const robinhoodVerifiedSwapCount = selectRobinhoodSwapEvidence(robinhoodResponse)?.swapsVerified ?? null
 
   if (params.scanDepth === 'preview') {
     nextActions.push('Run Deep Scan Wallet')
@@ -471,6 +477,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     unrealizedPnlUsd,
     pricingCoverage,
     verifiedSwapCount,
+    robinhoodVerifiedSwapCount,
     skippedSwapLogs,
     evidenceSources,
     missingEvidence,

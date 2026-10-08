@@ -2115,6 +2115,7 @@ export type CanonicalWalletReadInput = {
   pricedHoldingsCount?: number;
   unpricedHoldingsCount?: number;
   verifiedSwapCount?: number | null;
+  robinhoodVerifiedSwapCount?: number | null;
   verifiedCoveragePercent?: number | null;
   openPositionCoveragePercent?: number | null;
   behaviorLabel?: string | null;
@@ -2197,6 +2198,7 @@ export function formatCanonicalPnlEvidence(r: Pick<
   | "verifiedCoveragePercent"
   | "openPositionCoveragePercent"
   | "verifiedSwapCount"
+  | "robinhoodVerifiedSwapCount"
   | "missingEvidence"
   | "scanMode"
   | "jobStatus"
@@ -2241,7 +2243,10 @@ export function formatCanonicalPnlEvidence(r: Pick<
     lines.push(`- Open-position coverage: ${Math.round(r.openPositionCoveragePercent)}%`);
   }
   if (typeof r.verifiedSwapCount === "number") {
-    lines.push(`- Verified trades: ${r.verifiedSwapCount}`);
+    lines.push(`- Verified closed trades: ${r.verifiedSwapCount}`);
+  }
+  if (typeof r.robinhoodVerifiedSwapCount === "number" && r.robinhoodVerifiedSwapCount > 0 && !(r.robinhoodPnlLaneStatus === "verified" && r.robinhoodPnlProof)) {
+    lines.push(`- Robinhood verified swaps: ${r.robinhoodVerifiedSwapCount} (swaps, not closed trades)`);
   }
 
   if (r.robinhoodPnlLaneStatus === "verified" && r.robinhoodPnlProof) {

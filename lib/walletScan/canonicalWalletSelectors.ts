@@ -164,9 +164,17 @@ export const ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL = 'Open position only'
  * verification audit. Never a status change — realized PnL stays unverified until a lot actually closes.
  */
 export type RobinhoodSwapEvidence = {
+  /**
+   * THE canonical "verified Robinhood swaps": one per tx that passed the current verification/acceptance pipeline
+   * (direct V4, mixed route, or relayed_wallet_swap_proven — V1 `swapsVerified`, the verifier's own outcome count).
+   * Never decoded candidates, receipt candidates, rejected wallet_not_tx_sender / externally funded routes, manifest
+   * or bootstrap candidates that did not re-verify, merely priced txs, or replayed evidence counted twice.
+   */
   swapsVerified: number
   swapsBothLegsPriced: number
   closedLots: number
+  /** Sampled receipts that carried at least one canonical V4 Swap log — candidates, NOT verified swaps. Null when unknown. */
+  decodedSwapCandidates: number | null
   openPositionOnly: boolean
   /** The most specific honest reason realized PnL is not verified; null when it is verified. */
   reason: string | null
@@ -185,7 +193,8 @@ export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScan
     : openPositionOnly
       ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet.`
       : v1?.exactReason ?? robinhoodResult.pnl.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
-  return { swapsVerified, swapsBothLegsPriced, closedLots, openPositionOnly, reason }
+  const decodedSwapCandidates = v1 ? v1.swapsFound : null
+  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason }
 }
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
@@ -222,7 +231,8 @@ export function robinhoodCompactProof(robinhoodResult: RobinhoodWalletScanRespon
   if (!audit) return null
   return {
     source: 'Robinhood Phase 3 sidecar',
-    verifiedSwapCount: audit.verifiedSwapCount,
+    // Canonical verified swaps (not audit.verifiedSwapCount, which is the both-leg-priced PnL gate count).
+    verifiedSwapCount: selectRobinhoodSwapEvidence(robinhoodResult)?.swapsVerified ?? audit.swapsFedToFifo,
     fifoClosedLots: audit.fifoClosedLots,
     priceEvidenceBothLegs: true,
   }

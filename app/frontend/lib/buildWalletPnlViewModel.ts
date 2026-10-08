@@ -612,7 +612,8 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     if (robinhoodLane === 'verified' && audit) {
       robinhoodProof = {
         source: 'Phase 3 sidecar',
-        verifiedSwaps: audit.verifiedSwapCount,
+        // Canonical verified swaps — never audit.verifiedSwapCount (the both-leg-priced PnL gate count).
+        verifiedSwaps: robinhoodSwapEvidence?.swapsVerified ?? audit.swapsFedToFifo,
         closedLots: audit.fifoClosedLots,
         priceEvidence: 'both legs verified',
       }

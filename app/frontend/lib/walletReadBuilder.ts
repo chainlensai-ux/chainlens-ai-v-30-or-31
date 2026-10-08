@@ -339,7 +339,7 @@ export function buildPnlLanes(params: {
       status: params.robinhoodPnlLane,
       statusLabel: verified ? 'Verified' : params.robinhoodPnlLane === 'not_verified' ? (evidence?.openPositionOnly ? ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL : 'Not verified') : 'Unavailable',
       detail: verified
-        ? `${params.robinhoodResult.pnl.verifiedSwapCount} verified swap${params.robinhoodResult.pnl.verifiedSwapCount === 1 ? '' : 's'} — realized PnL is a real, gated figure.`
+        ? `${evidence?.swapsVerified ?? 0} verified swap${evidence?.swapsVerified === 1 ? '' : 's'} — realized PnL is a real, gated figure.`
         : evidence?.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON,
     })
   }
@@ -404,7 +404,7 @@ export function buildWalletReadV2(params: {
   const buyCount = params.behaviorIntel?.rotationStyle?.basis?.buyCount ?? null
   const sellCount = params.behaviorIntel?.rotationStyle?.basis?.sellCount ?? null
   const rotationStyle = params.behaviorIntel?.rotationStyle?.value ?? null
-  const robinhoodVerifiedSwaps = params.robinhoodResult?.ok ? params.robinhoodResult.robinhoodPnl?.swapsVerified ?? null : null
+  const robinhoodVerifiedSwaps = selectRobinhoodSwapEvidence(params.robinhoodResult)?.swapsVerified ?? null
 
   return {
     identity: {

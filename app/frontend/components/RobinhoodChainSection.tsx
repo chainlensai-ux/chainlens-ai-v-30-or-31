@@ -192,7 +192,16 @@ export function RobinhoodChainSection({
                 : `No activity data available${activity.reason ? ` (${activity.reason})` : ''}.`}
             </p>
             <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
-              <span>Verified Robinhood swaps: <strong style={{ color: '#e2e8f0' }}>{activity.verifiedSwapCount}</strong></span>
+              {/* Three different things, never collapsed: verified swaps (the canonical verifier count — the same
+                  number every other surface shows), decoded swap candidates, and closed trades. The old
+                  activity.verifiedSwapCount is a per-LOG decode-time counter and is only shown, renamed, in debug. */}
+              <span data-robinhood-verified-swaps>Verified swaps: <strong style={{ color: '#e2e8f0' }}>{swapEvidence ? swapEvidence.swapsVerified : '—'}</strong></span>
+              {swapEvidence?.decodedSwapCandidates != null && (
+                <span data-robinhood-decoded-candidates>Decoded swap candidates: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.decodedSwapCandidates}</strong></span>
+              )}
+              {swapEvidence && (
+                <span data-robinhood-closed-trades>Closed trades: <strong style={{ color: '#e2e8f0' }}>{swapEvidence.closedLots}</strong></span>
+              )}
               <span>Skipped unsupported swap logs: <strong style={{ color: '#e2e8f0' }}>{activity.skippedSwapLogs}</strong></span>
               {lastActivity && (
                 <span>Last activity: <strong style={{ color: '#e2e8f0' }}>{new Date(lastActivity).toLocaleString()}</strong></span>
@@ -225,7 +234,8 @@ export function RobinhoodChainSection({
             ) : robinhoodPnlVerified && pnlAudit ? (
               <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
                 <span>Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'}</span>
-                <span>Verified swaps: {pnlAudit.verifiedSwapCount}</span>
+                <span>Verified swaps: {swapEvidence?.swapsVerified ?? pnlAudit.swapsFedToFifo}</span>
+                <span>Priced on both legs: {pnlAudit.priceEvidenceBothLegsCount}</span>
                 <span>Closed lots: {pnlAudit.fifoClosedLots}</span>
                 <span>Price evidence: both legs verified</span>
                 <span>Source: Robinhood Phase 3 sidecar</span>
@@ -253,7 +263,7 @@ export function RobinhoodChainSection({
               />
             </div>
             <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
-              <span>verifiedSwapCount: {activity.verifiedSwapCount}</span>
+              <span>activityDecoderHighConfidenceSwapLogs: {activity.verifiedSwapCount}</span>
               <span>skippedSwapLogs: {activity.skippedSwapLogs}</span>
               <span>blockscoutFallbackUsed: {String(blockscout?.blockscoutFallbackUsed ?? false)}</span>
             </div>

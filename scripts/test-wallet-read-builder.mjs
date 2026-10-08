@@ -244,11 +244,13 @@ function run() {
     const lanesNoRobinhood = buildPnlLanes({ evmPnlLane: 'verified', robinhoodPnlLane: 'unavailable', robinhoodResult: null })
     check('with no robinhoodResult at all, only ONE lane exists — Base/ETH', lanesNoRobinhood.length === 1 && lanesNoRobinhood[0].chainLabel === 'Base/ETH')
 
-    const robinhoodVerified = { ok: true, pnl: { status: 'verified', realizedPnlUsd: 12.5, verifiedSwapCount: 3, message: '', reason: null } }
+    // verifiedSwapCount here is the both-leg-priced PnL gate count (2); the lane shows the CANONICAL verified swap
+    // count — robinhoodPnl.swapsVerified (3), the same number every other surface shows.
+    const robinhoodVerified = { ok: true, pnl: { status: 'verified', realizedPnlUsd: 12.5, verifiedSwapCount: 2, message: '', reason: null }, robinhoodPnl: { swapsVerified: 3, swapsBothLegsPriced: 2, structuralClosedLots: 1, verifiedClosedLots: 1, swapsFound: 5, exactReason: '' } }
     const lanesVerified = buildPnlLanes({ evmPnlLane: 'partial', robinhoodPnlLane: 'verified', robinhoodResult: robinhoodVerified })
     check('two DISTINCT lanes exist when a real robinhoodResult is present — never merged into one', lanesVerified.length === 2 && lanesVerified[0].chainLabel === 'Base/ETH' && lanesVerified[1].chainLabel === 'Robinhood')
     check('the Base/ETH lane status is completely independent of the Robinhood lane status', lanesVerified[0].status === 'partial' && lanesVerified[1].status === 'verified')
-    check('a verified Robinhood lane shows the real verifiedSwapCount, never a fabricated number', lanesVerified[1].detail.includes('3 verified swaps'))
+    check('a verified Robinhood lane shows the canonical verified swap count (not the priced gate count), never a fabricated number', lanesVerified[1].detail.includes('3 verified swaps') && !lanesVerified[1].detail.includes('2 verified'))
 
     const robinhoodUnverified = { ok: true, pnl: { status: 'disabled', realizedPnlUsd: null, verifiedSwapCount: 0, message: '', reason: null } }
     const lanesNotVerified = buildPnlLanes({ evmPnlLane: 'verified', robinhoodPnlLane: 'not_verified', robinhoodResult: robinhoodUnverified })
