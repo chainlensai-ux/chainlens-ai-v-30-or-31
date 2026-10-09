@@ -47,22 +47,22 @@ export async function storedRobinhoodNativeTrace(txHash: string): Promise<RhNati
 
 export type RobinhoodNativeTraceSource = {
   /** `deadlineAt`: the scan-wide deadline — bounds every request and decides whether a same-page retry may run. */
-  transfersForTx: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTraceResult>
+  transfersForTx: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number }) => Promise<RhNativeTraceResult>
   /**
    * Continues a trace that hit the normal pagination cap (never re-requesting a fetched page), at most once per tx.
    * Null when there is nothing to continue (not oversized, already extended, or no valid cursor).
    */
-  extendOversized: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number }) => Promise<RhNativeTraceResult | null>
+  extendOversized: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number; pageTimeoutMs?: number }) => Promise<RhNativeTraceResult | null>
 }
 
-export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTraceResult> {
+export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number }) => Promise<RhNativeTraceResult> {
   return blockscoutNativeTraceSource(fetchImpl).transfersForTx
 }
 
 export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNativeTraceSource {
   const resumes = new Map<string, InternalTxTraceResume>()
-  const live = async (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => {
-    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl, undefined, { deadlineAt: opts?.deadlineAt, reserveRetry: opts?.reserveRetry })
+  const live = async (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number }) => {
+    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl, undefined, { deadlineAt: opts?.deadlineAt, reserveRetry: opts?.reserveRetry, pageTimeoutMs: opts?.pageTimeoutMs })
     if (t.resume) resumes.set(lower(txHash), t.resume)
     return nativeTraceResultFrom(txHash, t)
   }
@@ -95,7 +95,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
       resumes.delete(lower(txHash)) // one continuation per tx per scan
       const t = await continueBlockscoutTransactionInternalTransactions(resume, fetchImpl, {
         maxExtraPages: budget.maxExtraPages, maxItems: NATIVE_TRACE_EXTENDED_MAX_ITEMS, maxTotalMs: budget.maxTotalMs, deadlineAt: budget.deadlineAt,
-        reserveRetry: budget.priority === 'p1_native_out_sell',
+        reserveRetry: budget.priority === 'p1_native_out_sell', pageTimeoutMs: budget.pageTimeoutMs,
       })
       const r = nativeTraceResultFrom(txHash, t)
       if (r.audit) r.audit.extension = t.extension ? { ...t.extension, priority: budget.priority } : null
@@ -150,6 +150,8 @@ function nativeTraceResultFrom(txHash: string, t: InternalTxTraceResult): RhNati
     indexingPending: t.indexingPending,
     filterProbes: t.filterProbes,
     filterCapabilityWaitMs: t.filterCapabilityWaitMs,
+    deadlineStopped: t.deadlineStopped,
+    retrySkippedForDeadline: t.retrySkippedForDeadline,
     result: 'transport_failed',
   }
   const done = (result: RhNativeTraceAudit['result'], transfers: RhNativeTransfer[] | null = null): RhNativeTraceResult => ({ transfers, audit: { ...audit, result } })

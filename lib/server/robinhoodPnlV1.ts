@@ -142,9 +142,11 @@ export type RobinhoodPnlV1Deps = {
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
-  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
   /** Tests / benchmarks only: concurrent live native traces in the main selection (default ROBINHOOD_NATIVE_TRACE_CONCURRENCY). */
   nativeTraceConcurrency?: number
+  /** Tests / benchmarks only: per-request timeout for p1 sell trace pages (default ROBINHOOD_P1_TRACE_PAGE_TIMEOUT_MS). */
+  nativeTraceP1PageTimeoutMs?: number
   /**
    * Already-verified native traces (process memory / persistent positive proof) — never a live request, never a
    * live budget slot. Null when none is stored for the tx.
@@ -154,7 +156,7 @@ export type RobinhoodPnlV1Deps = {
    * Oversized traces only: continues a live lookup that stopped at the normal pagination cap, from its next cursor
    * (never a fetched page again), under the extra page / time budget given. Null when there is nothing to continue.
    */
-  extendNativeTraceForTx?: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number }) => Promise<RhNativeTraceResult | null>
+  extendNativeTraceForTx?: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number; pageTimeoutMs?: number }) => Promise<RhNativeTraceResult | null>
   /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 5). */
   nativeTraceLiveCap?: number
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
@@ -716,7 +718,7 @@ async function extendOversizedTrace(ctx: Ctx, txHash: string, priority: RhOversi
   o.extendedTx += 1
   o.extraPagesUsed += grant
   const started = Date.now()
-  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: grant, maxTotalMs: msLeft, priority, deadlineAt }).catch(() => null)
+  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: grant, maxTotalMs: msLeft, priority, deadlineAt, ...(priority === 'p1_native_out_sell' && p1PageTimeoutMs(ctx) != null ? { pageTimeoutMs: p1PageTimeoutMs(ctx) } : {}) }).catch(() => null)
   if (!ext) { // nothing to continue (no valid cursor kept): no oversized slot spent
     o.extendedTx -= 1
     o.extraPagesUsed -= grant
@@ -1019,10 +1021,15 @@ async function requestNativeTrace(ctx: Ctx, txHash: string, opts: { reserveRetry
   const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => nativeTraceAuditBase(txHash, result)
   let res: RhNativeTraceResult
   if (!ctx.deps.nativeTransfersForTx) res = { transfers: null, audit: base('not_attempted_no_trace_source') }
-  else if (Date.now() >= ctx.deadlineAt) res = { transfers: null, audit: base('not_attempted_deadline') }
+  // ADMISSION: no live trace starts with less than ROBINHOOD_TRACE_MIN_START_MS of scan left — it could not finish one
+  // page inside the lane. No provider request, no timeout, no retry, nothing persisted: not_attempted_deadline.
+  else if (ctx.deadlineAt - Date.now() < ROBINHOOD_TRACE_MIN_START_MS) res = { transfers: null, audit: base('not_attempted_deadline') }
   else {
     ctx.m.nativeTraceLookups += 1
-    const raw = await ctx.deps.nativeTransfersForTx(txHash, { deadlineAt: ctx.deadlineAt, ...(opts.reserveRetry ? { reserveRetry: true } : {}) }).catch(() => null)
+    const p1Timeout = opts.reserveRetry ? p1PageTimeoutMs(ctx) : undefined
+    const raw = await ctx.deps.nativeTransfersForTx(txHash, {
+      deadlineAt: ctx.deadlineAt, ...(opts.reserveRetry ? { reserveRetry: true } : {}), ...(p1Timeout != null ? { pageTimeoutMs: p1Timeout } : {}),
+    }).catch(() => null)
     // Injected sources may return the bare transfer list (complete trace) or null (unavailable).
     res = raw == null || Array.isArray(raw)
       ? { transfers: raw, audit: { ...base(raw == null ? 'transport_failed' : raw.length === 0 ? 'empty' : 'proven'), attempted: true, itemCount: raw?.length ?? null } }
@@ -1040,10 +1047,32 @@ async function requestNativeTrace(ctx: Ctx, txHash: string, opts: { reserveRetry
  * each started only when a slot frees. The selection, the live cap and every proof rule are unchanged.
  */
 export const ROBINHOOD_NATIVE_TRACE_CONCURRENCY = 2
+/**
+ * Scan time a live trace needs to be admitted at all: one ~2 s Blockscout page + the 0.5 s deadline margin + slack.
+ * Below it the trace is not started (not_attempted_deadline) — production 6c3736d5 started two wave-2 buys with
+ * ~0.5 s left and they ran ~12 s past the lane.
+ */
+export const ROBINHOOD_TRACE_MIN_START_MS = 3_000
+/** Per-request timeout for p1 sell trace pages (null: the transport default, 6 s). */
+export const ROBINHOOD_P1_TRACE_PAGE_TIMEOUT_MS: number | null = null
+const p1PageTimeoutMs = (ctx: Ctx): number | undefined => ctx.deps.nativeTraceP1PageTimeoutMs ?? ROBINHOOD_P1_TRACE_PAGE_TIMEOUT_MS ?? undefined
+export type RhTraceOutcomeClass = 'completed' | 'transport_failed' | 'not_attempted_deadline' | 'retry_exhausted' | 'pagination_incomplete'
+/** Scheduler outcome class of one live trace (lookup + continuation): never changes what is proven. */
+function traceOutcomeClass(res: RhNativeTraceResult): RhTraceOutcomeClass {
+  const a = res.audit
+  if (res.transfers) return 'completed'
+  if (a?.result === 'not_attempted_deadline') return 'not_attempted_deadline'
+  if (a?.result === 'pagination_cap_exhausted' || a?.deadlineStopped) return 'pagination_incomplete'
+  if (a?.result === 'transport_failed' && ((a.pageRetryCount ?? 0) > 0 || a.retrySkippedForDeadline)) return 'retry_exhausted'
+  return 'transport_failed'
+}
 export type RhTraceSchedulerSummary = {
   selectedCount: number; concurrencyLimit: number; waves: { wave1: number; wave2: number }
   peakConcurrency: number; provider429Count: number; timeoutCount: number; retryCount: number
   completedLiveTraces: number; failedLiveTraces: number; skippedInsufficientDeadline: number; duplicateCapabilityProbes: number
+  outcomes: Record<RhTraceOutcomeClass, number>
+  /** Traces that finished after the scan deadline (ms past it, max). */
+  deadlineOverruns: number; maxOverrunMs: number
 }
 async function scheduleLiveTraces(ctx: Ctx, selected: readonly RhNativeTraceRequest[]): Promise<RhNativeTraceResult[]> {
   const limit = Math.max(1, ctx.deps.nativeTraceConcurrency ?? ROBINHOOD_NATIVE_TRACE_CONCURRENCY)
@@ -1069,7 +1098,8 @@ async function scheduleLiveTraces(ctx: Ctx, selected: readonly RhNativeTraceRequ
       const sum = (f: (a: RhNativeTraceAudit) => number) => audits.reduce((t, a) => t + (a ? f(a) : 0), 0)
       Object.assign(row, {
         finishedAtMs: Date.now() - t0, filterCapabilityWaited: first.audit?.filterCapabilityWaitMs != null, filterCapabilityWaitMs: first.audit?.filterCapabilityWaitMs ?? null,
-        result: res.audit?.result ?? (res.transfers ? 'proven' : 'transport_failed'), continued: res !== first,
+        result: res.audit?.result ?? (res.transfers ? 'proven' : 'transport_failed'), outcome: traceOutcomeClass(res), continued: res !== first,
+        overrunMs: Math.max(0, Date.now() - ctx.deadlineAt),
         pagesSucceeded: res.audit?.pagesSucceeded ?? null, pageRetryCount: sum((a) => a.pageRetryCount ?? 0),
         http429: sum((a) => (a.pageTransportAttempts ?? []).filter((x) => x.httpStatus === 429).length),
         timeouts: sum((a) => (a.pageTransportAttempts ?? []).filter((x) => x.failureClass === 'timeout').length), filterProbes: sum((a) => a.filterProbes ?? 0),
@@ -1086,7 +1116,10 @@ async function scheduleLiveTraces(ctx: Ctx, selected: readonly RhNativeTraceRequ
     failedLiveTraces: results.filter((x) => x.transfers == null && x.audit?.result !== 'not_attempted_deadline').length,
     skippedInsufficientDeadline: results.filter((x) => x.audit?.result === 'not_attempted_deadline').length,
     duplicateCapabilityProbes: Math.max(0, n('filterProbes') - 1),
+    outcomes: { completed: 0, transport_failed: 0, not_attempted_deadline: 0, retry_exhausted: 0, pagination_incomplete: 0 },
+    deadlineOverruns: rows.filter((x) => Number(x.overrunMs) > 0).length, maxOverrunMs: Math.max(0, ...rows.map((x) => Number(x.overrunMs) || 0)),
   }
+  for (const x of results) summary.outcomes[traceOutcomeClass(x)] += 1
   for (const row of rows) console.warn('[robinhood-trace-scheduler-audit]', { selectedCount: selected.length, concurrencyLimit: limit, ...row })
   console.warn('[robinhood-trace-scheduler-audit]', { summary })
   if (ctx.traceBudget) ctx.traceBudget.scheduler = summary

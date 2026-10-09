@@ -91,7 +91,7 @@ export type RhNativeTraceAudit = {
   paginationComplete: boolean
   paginationCap: { maxPages: number; maxItems: number; maxTotalMs: number } | null
   paginationCapHit: boolean
-  pageTransportAttempts: Array<{ page: number; attempt?: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null }>
+  pageTransportAttempts: Array<{ page: number; attempt?: number; requestHost: string; authMode: string; httpStatus: number | null; failureClass: string | null; startedAtMs?: number; durationMs?: number; timeoutBudgetMs?: number; scanRemainingMs?: number | null }>
   /** Real HTTP requests (pages + gateway switches + same-page retries); pagesRequested stays logical pages. */
   transportAttemptsTotal?: number
   pageRetryCount?: number
@@ -107,6 +107,10 @@ export type RhNativeTraceAudit = {
   filterProbes?: number
   /** ms spent awaiting another lookup's in-flight filter probe (null: did not wait). */
   filterCapabilityWaitMs?: number | null
+  /** The scan deadline stopped the lookup before a request (no request sent for that page). */
+  deadlineStopped?: boolean
+  /** A transient failure whose retry the scan deadline did not allow. */
+  retrySkippedForDeadline?: boolean
   /** Oversized-trace extension (extra pages beyond the normal cap): what it spent and how it ended. */
   extension?: { pagesRequested: number; transportAttempts: number; elapsedMs: number; priority: string } | null
   result: RhNativeTraceResultKind

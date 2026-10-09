@@ -237,7 +237,7 @@ const sellTx = (k: number, ts: number) => new Tx(ts).xfer(TOKENS[k], WALLET, PM,
 const buyTx = (k: number, ts: number) => new Tx(ts).v4(RH_NATIVE, TOKENS[k], n(0.01), n(100 + k)).xfer(TOKENS[k], PM, WALLET, n(100 + k))
 const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
 
-async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean; concurrency?: number } = {}) {
+async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean; concurrency?: number; wrapTrace?: (inner: ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx']) => ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx'] } = {}) {
   __resetRobinhoodPnlV1CachesForTest()
   const byHash = new Map(txs.map((tx, i) => [hashN(100 + i), { tx, i, block: 1000 + i * 10 }]))
   const server = blockscout(new Map([...byHash].map(([h, e]) => [h, { items: e.tx.items, faults: e.tx.faults }])), { honorsFilter: opts.honorsFilter, rejectsFilter: opts.rejectsFilter, latencyMs: opts.latencyMs })
@@ -265,7 +265,7 @@ async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: b
       transactionCount: txs.length, transferCount: txs.length, activityUnavailableReason: null,
       deps: {
         rpc, now: Date.now, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt, ethUsdRange: async () => null,
-        nativeTransfersForTx: source.transfersForTx,
+        nativeTransfersForTx: opts.wrapTrace ? opts.wrapTrace(source.transfersForTx) : source.transfersForTx,
         ...(opts.concurrency != null ? { nativeTraceConcurrency: opts.concurrency } : {}),
         ...(opts.extension === false ? {} : { extendNativeTraceForTx: source.extendOversized }),
       },
@@ -408,9 +408,11 @@ test('R4. a 422 filter rejection is cached: later lookups skip the probe; the en
 test('R5. scan deadline too close for a retry → fail closed without retrying', async () => {
   const H = hashN(207)
   const s = blockscout(new Map([[H, big({ 2: ['timeout'] })]]))
-  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 1_000 })
+  // Room for a first attempt (≥ 1 s of scan after the margin) but not for a retry (≥ 1.5 s + delay).
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 2_000 })
   assert.equal(r.audit?.result, 'transport_failed')
   assert.equal(r.audit?.pageRetryCount, 0)
+  assert.equal(r.audit?.retrySkippedForDeadline, true)
   assert.equal(r.transfers, null)
 })
 
@@ -514,4 +516,44 @@ test('S6. scheduler: concurrency 2, sells first (wave 1), buys start only when a
   assert.equal(summary.completedLiveTraces, 4)
   assert.equal(r.swapsVerified, 4)
   assert.equal(r.ingestionAudit.traceScheduler?.peakConcurrency, 2)
+  assert.deepEqual(summary.outcomes, { completed: 4, transport_failed: 0, not_attempted_deadline: 0, retry_exhausted: 0, pagination_incomplete: 0 })
+  assert.equal(summary.deadlineOverruns, 0)
+})
+
+// ── Admission (job 6c3736d5: wave-2 buys started with ~0.5 s left and ran ~12 s past the lane) ───────────────────
+test('T1. a p2 buy with 500 ms of scan left is not started: zero requests, not_attempted_deadline, nothing stored', async () => {
+  const realNow = Date.now
+  let offset = 0
+  const t0 = realNow()
+  Date.now = () => realNow() + offset
+  try {
+    const txs = [buyTx(4, TS - 300).trace(BUY_ROWS, 10), sellTx(5, TS - 100).trace(SELL_ROWS, 10)]
+    const { r, server, lines } = await scan(txs, {
+      concurrency: 1,
+      // The sell (wave 1) "takes" the lane: when it returns, 500 ms of the 15 s scan deadline remain.
+      wrapTrace: (inner) => async (h, o) => { const res = await inner(h, o); if (h === hashN(101)) offset = t0 + 15_000 - 500 - realNow(); return res },
+    })
+    const buyHash = hashN(100)
+    assert.equal(server.traceUrls().filter((u) => u.includes(buyHash)).length, 0, 'no provider request for the buy')
+    const rows = lines.filter(([t, b]) => t === '[robinhood-trace-scheduler-audit]' && b.txHash).map(([, b]) => b)
+    const buy = rows.find((b) => b.txHash === buyHash)!
+    assert.deepEqual([buy.outcome, buy.timeouts, buy.pageRetryCount, buy.http429], ['not_attempted_deadline', 0, 0, 0])
+    assert.ok(buy.remainingScanMsAtStart < 600)
+    const summary = lines.find(([t, b]) => t === '[robinhood-trace-scheduler-audit]' && b.summary)![1].summary
+    assert.equal(summary.skippedInsufficientDeadline, 1)
+    assert.equal(summary.outcomes.transport_failed, 0)
+    assert.equal(readRobinhoodNativeTraceMemory(buyHash), null)
+    assert.equal(r.ingestionAudit.normalizedBuyCount, 0, 'an untraced relayed buy never promotes')
+  } finally { Date.now = realNow }
+})
+
+test('T2. every first attempt is bounded by the scan deadline: a hung low-priority page ends before it', async () => {
+  const H = hashN(320)
+  const s = blockscout(new Map([[H, { items: blockscoutItems(SELL_ROWS, 60), faults: { 1: ['hang'] } }]]))
+  const started = Date.now()
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: started + 3_000 })
+  assert.ok(Date.now() - started < 3_000, `ended at ${Date.now() - started} ms`)
+  assert.equal(r.transfers, null)
+  const a = r.audit!.pageTransportAttempts[0]
+  assert.ok(a.timeoutBudgetMs! <= 2_500 && a.scanRemainingMs! <= 3_000)
 })

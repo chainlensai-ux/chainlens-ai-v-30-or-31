@@ -812,6 +812,11 @@ export const NATIVE_TRACE_EXTENDED_MAX_ITEMS = 600
 // parameter, and the same lookup re-requests page 1 without it (never a second budget slot).
 export const NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM = 'include_zero_value'
 const NATIVE_TRACE_MIN_REQUEST_MS = 250 // below this a request cannot meaningfully complete: fail closed
+/**
+ * With a scan deadline, no request is sent with less than this left of the scan (a ~2 s Blockscout page cannot answer in
+ * less): the lookup stops before sending instead of launching a doomed page that would overrun the lane.
+ */
+export const NATIVE_TRACE_MIN_MEANINGFUL_REQUEST_MS = 1_000
 const NATIVE_TRACE_RETRY_DELAY_MS = 150
 const NATIVE_TRACE_RESERVE_SLACK_MS = 100 // timer drift between the failed attempt's timeout and the retry check
 /** A same-page retry needs at least this much time (a page that just failed will not answer in 250 ms). */
@@ -846,7 +851,11 @@ export type InternalTxTraceStatus =
   | 'inconsistent_pagination' | 'pagination_cap_exhausted' | 'indexing_pending'
   /** Not started: the scan deadline left no room for a first attempt plus its retry reserve. */
   | 'insufficient_deadline'
-export type InternalTxPageAttempt = { page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
+export type InternalTxPageAttempt = {
+  page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null
+  /** Timeline (ms from the lookup start), the timeout this attempt was given and the scan time left when it started. */
+  startedAtMs?: number; durationMs?: number; timeoutBudgetMs?: number; scanRemainingMs?: number | null
+}
 export type NativeTraceZeroValueFilter = 'applied' | 'ignored_by_server' | 'rejected_fallback_unfiltered' | 'skipped_known_unsupported' | 'off'
 /** What the fetched items are: why a trace is large, and how much of it carries native value. */
 export type InternalTxItemCategories = {
@@ -901,6 +910,10 @@ export type InternalTxTraceResult = {
   filterProbes: number
   /** ms this lookup waited for another lookup's in-flight filter probe (null: did not wait). */
   filterCapabilityWaitMs: number | null
+  /** The scan deadline stopped this lookup between pages / before a request (never a timeout of a sent request). */
+  deadlineStopped: boolean
+  /** A transient failure whose retry was not sent because the scan deadline left too little time. */
+  retrySkippedForDeadline: boolean
   /** Extension only: pages / HTTP requests / ms this continuation spent (on top of the original lookup). */
   extension: { pagesRequested: number; transportAttempts: number; elapsedMs: number } | null
 }
@@ -1008,7 +1021,7 @@ function emptyInternalTxTraceResult(caps: InternalTxTraceResult['paginationCap']
     paginationComplete: false, paginationCap: caps, paginationCapHit: false, pageTransportAttempts: [],
     transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
     last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
-    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null, filterProbes: 0, filterCapabilityWaitMs: null,
+    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null, filterProbes: 0, filterCapabilityWaitMs: null, deadlineStopped: false, retrySkippedForDeadline: false,
   }
 }
 const internalTxCacheKey = (txHash: string) => `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
@@ -1024,6 +1037,8 @@ export async function getBlockscoutTransactionInternalTransactions(
      * time unused, so a transient failure can still be retried; with less than a meaningful attempt left, no page starts.
      */
     reserveRetry?: boolean
+    /** Per-request timeout ceiling for this lookup (default BLOCKSCOUT_TIMEOUT_MS). */
+    pageTimeoutMs?: number
   } = {},
 ): Promise<InternalTxTraceResult> {
   const result = emptyInternalTxTraceResult(NATIVE_TRACE_PAGINATION)
@@ -1058,7 +1073,7 @@ export async function getBlockscoutTransactionInternalTransactions(
     return await runInternalTxPages(result, {
       txHash, filter, zeroValueFilter: knownUnsupported ? 'skipped_known_unsupported' : filter ? 'applied' : 'off',
       query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
-    }, fetchImpl, { ...caps, deadlineAt: opts.deadlineAt, reserveRetry: opts.reserveRetry }, startedAt, probe ? settle : null)
+    }, fetchImpl, { ...caps, deadlineAt: opts.deadlineAt, reserveRetry: opts.reserveRetry, pageTimeoutMs: opts.pageTimeoutMs }, startedAt, probe ? settle : null)
   } finally {
     settle() // a probe that ended without a verdict (transient failure, deadline) settles nothing: waiters re-check
   }
@@ -1072,9 +1087,9 @@ export async function getBlockscoutTransactionInternalTransactions(
 export async function continueBlockscoutTransactionInternalTransactions(
   resume: InternalTxTraceResume,
   fetchImpl: FetchImpl,
-  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean },
+  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number },
 ): Promise<InternalTxTraceResult> {
-  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs, deadlineAt: caps.deadlineAt, reserveRetry: caps.reserveRetry }
+  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs, deadlineAt: caps.deadlineAt, reserveRetry: caps.reserveRetry, pageTimeoutMs: caps.pageTimeoutMs }
   const result = { ...emptyInternalTxTraceResult(total), pagesRequested: resume.pagesDone, pagesSucceeded: resume.pagesDone }
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const startedAt = Date.now()
@@ -1091,7 +1106,7 @@ async function runInternalTxPages(
   result: InternalTxTraceResult,
   st: MutableResume,
   fetchImpl: FetchImpl,
-  caps: { maxPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean },
+  caps: { maxPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number },
   startedAt: number,
   settleProbe: (() => void) | null = null,
 ): Promise<InternalTxTraceResult> {
@@ -1106,7 +1121,11 @@ async function runInternalTxPages(
   const windowLeft = () => caps.maxTotalMs - (Date.now() - startedAt)
   const scanLeft = () => (caps.deadlineAt != null ? caps.deadlineAt - Date.now() - NATIVE_TRACE_DEADLINE_MARGIN_MS : Number.POSITIVE_INFINITY)
   const reserve = caps.reserveRetry && caps.deadlineAt != null
-  const firstLeft = () => (reserve ? Math.min(windowLeft(), scanLeft() - NATIVE_TRACE_MIN_RETRY_MS - NATIVE_TRACE_RETRY_DELAY_MS - NATIVE_TRACE_RESERVE_SLACK_MS) : windowLeft())
+  // Every first attempt is bounded by the scan deadline too (minus the margin): a low-priority page can no longer run
+  // on the 12 s lookup window past the lane (production 6c3736d5: wave-2 buys started with ~0.5 s left, ended +10 s).
+  const firstLeft = () => Math.min(windowLeft(), reserve ? scanLeft() - NATIVE_TRACE_MIN_RETRY_MS - NATIVE_TRACE_RETRY_DELAY_MS - NATIVE_TRACE_RESERVE_SLACK_MS : scanLeft())
+  const minFirst = reserve ? NATIVE_TRACE_MIN_RETRY_MS : caps.deadlineAt != null ? NATIVE_TRACE_MIN_MEANINGFUL_REQUEST_MS : NATIVE_TRACE_MIN_REQUEST_MS
+  const pageTimeout = Math.max(NATIVE_TRACE_MIN_REQUEST_MS, caps.pageTimeoutMs ?? BLOCKSCOUT_TIMEOUT_MS)
   const retryLeft = () => (caps.deadlineAt != null ? scanLeft() : windowLeft())
   const base = `/api/v2/transactions/${st.txHash}/internal-transactions`
   const finish = (r: InternalTxTraceResult): InternalTxTraceResult => {
@@ -1132,12 +1151,18 @@ async function runInternalTxPages(
     // One real request for this page, bounded by the time left; null when no meaningful time remains.
     const send = async (mode: 'community' | 'gateway', retry = false): Promise<TransportResponse | null> => {
       const remaining = retry ? retryLeft() : firstLeft()
-      // A reserved first attempt must itself be meaningful (≥ the retry minimum): never launch a doomed page.
-      if (remaining < (retry || reserve ? NATIVE_TRACE_MIN_RETRY_MS : NATIVE_TRACE_MIN_REQUEST_MS)) return null
+      // Never launch a doomed page: a retry / reserved first attempt needs the retry minimum, any request under a scan
+      // deadline a meaningful minimum; otherwise the lookup stops here (no request, fail closed).
+      if (remaining < (retry ? NATIVE_TRACE_MIN_RETRY_MS : minFirst)) { result.deadlineStopped = caps.deadlineAt != null; return null }
       attempt += 1
       result.transportAttemptsTotal += 1
-      const r = await blockscoutRequest(path, fetchImpl, mode, Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
-      result.pageTransportAttempts.push({ page, attempt, ...pick(r.attempt) })
+      const timeoutBudgetMs = Math.min(pageTimeout, remaining)
+      const at = Date.now()
+      const r = await blockscoutRequest(path, fetchImpl, mode, timeoutBudgetMs)
+      result.pageTransportAttempts.push({
+        page, attempt, ...pick(r.attempt), startedAtMs: at - startedAt, durationMs: Date.now() - at, timeoutBudgetMs,
+        scanRemainingMs: caps.deadlineAt != null ? caps.deadlineAt - at : null,
+      })
       result.last = pick(r.attempt)
       return r
     }
@@ -1171,7 +1196,7 @@ async function runInternalTxPages(
       if (retries >= NATIVE_TRACE_MAX_RETRIES_PER_PAGE) break
       // Retry the same page: same path / cursor, same host + auth mode as the failed request; never back to community.
       const mode = res.attempt.authMode === 'gateway' ? 'gateway' : 'community'
-      if (retryLeft() - NATIVE_TRACE_RETRY_DELAY_MS < NATIVE_TRACE_MIN_RETRY_MS) break // not enough scan time: fail closed
+      if (retryLeft() - NATIVE_TRACE_RETRY_DELAY_MS < NATIVE_TRACE_MIN_RETRY_MS) { result.retrySkippedForDeadline = true; break } // fail closed
       await new Promise((r) => setTimeout(r, NATIVE_TRACE_RETRY_DELAY_MS))
       const again = await send(mode, true)
       if (!again) break // no meaningful time left: fail closed with the original failure
