@@ -142,7 +142,7 @@ export type RobinhoodPnlV1Deps = {
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
-  nativeTransfersForTx?: (txHash: string) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
   /**
    * Already-verified native traces (process memory / persistent positive proof) — never a live request, never a
    * live budget slot. Null when none is stored for the tx.
@@ -152,7 +152,7 @@ export type RobinhoodPnlV1Deps = {
    * Oversized traces only: continues a live lookup that stopped at the normal pagination cap, from its next cursor
    * (never a fetched page again), under the extra page / time budget given. Null when there is nothing to continue.
    */
-  extendNativeTraceForTx?: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string }) => Promise<RhNativeTraceResult | null>
+  extendNativeTraceForTx?: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number }) => Promise<RhNativeTraceResult | null>
   /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 5). */
   nativeTraceLiveCap?: number
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
@@ -620,13 +620,16 @@ export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 5
 export const ROBINHOOD_NATIVE_TRACE_RECOVERY_RESERVE = 1
 /**
  * OVERSIZED-TRACE BUDGET, per scan (not a global pagination raise): a live trace that stopped at the normal cap
- * (4 pages / 200 items) may continue from its next cursor for at most `maxTxPerScan` transactions and
+ * (4 pages / 200 items) — or whose page failed on transport after ≥ 1 good page, its one same-page retry spent — may
+ * continue from that exact cursor (fetched pages are kept, never re-requested) for at most `maxTxPerScan` transactions and
  * `maxExtraPagesPerScan` extra pages in total (each page ≤ 1 retry + 1 gateway switch), each continuation bounded by
  * `maxMsPerTx` and the PnL deadline. Priority: token → ETH sells (main lane), then recovery receipts that can close a
  * FIFO lot, then everything else (relayed buys) after recovery. Promotion still needs next_page_params == null; an
  * extension that runs out of pages / time leaves the trace pagination_cap_exhausted (rejected).
  */
 export const ROBINHOOD_OVERSIZED_TRACE_BUDGET = { maxTxPerScan: 2, maxExtraPagesPerScan: 8, maxMsPerTx: 8_000 } as const
+/** A continuation needs at least one same-page retry's worth of time (= Blockscout NATIVE_TRACE_MIN_RETRY_MS). */
+export const ROBINHOOD_OVERSIZED_MIN_CONTINUATION_MS = 1_500
 export type RhOversizedTracePriority = 'p1_native_out_sell' | 'p2_recovery_fifo_close' | 'p3_relayed_buy_or_other'
 export type RhOversizedTraceSummary = {
   maxTxPerScan: number; maxExtraPagesPerScan: number
@@ -680,24 +683,31 @@ const newLiveTraceAllocator = (cap: number): RhLiveTraceAllocator => ({
  * budget allows, else keep the capped result. Returns the result to use — complete only when the continuation reached
  * next_page_params == null; anything else stays the (rejected) pagination_cap_exhausted / failure result.
  */
+/**
+ * A started multi-page trace that may continue from its cursor: it hit the page / item cap, or a page failed on transport
+ * after at least one good page (its retry exhausted). Never a proof by itself.
+ */
+const resumableTrace = (res: RhNativeTraceResult) => res.audit?.result === 'pagination_cap_exhausted'
+  || (res.audit?.result === 'transport_failed' && (res.audit.pagesSucceeded ?? 0) > 0)
 async function extendOversizedTrace(ctx: Ctx, txHash: string, priority: RhOversizedTracePriority, res: RhNativeTraceResult, deadlineAt = ctx.deadlineAt): Promise<RhNativeTraceResult> {
   const alloc = ctx.traceBudget
-  if (!alloc || res.audit?.result !== 'pagination_cap_exhausted' || !ctx.deps.extendNativeTraceForTx) return res
+  if (!alloc || !resumableTrace(res) || !ctx.deps.extendNativeTraceForTx) return res
   const o = alloc.oversized
   if (!o.seen.has(txHash)) { o.seen.add(txHash); o.oversizedSeen += 1 }
   if (o.extended.has(txHash)) return res
   const pagesLeft = o.maxExtraPagesPerScan - o.extraPagesUsed
   const msLeft = Math.min(ROBINHOOD_OVERSIZED_TRACE_BUDGET.maxMsPerTx, deadlineAt - Date.now())
-  if (o.extendedTx >= o.maxTxPerScan || pagesLeft <= 0 || msLeft <= 0) {
+  // A continuation with less than one retry's worth of time cannot finish a page that just failed: skip, fail closed.
+  if (o.extendedTx >= o.maxTxPerScan || pagesLeft <= 0 || msLeft < ROBINHOOD_OVERSIZED_MIN_CONTINUATION_MS) {
     if (o.perTx.some((p) => p.txHash === txHash)) return res // already recorded as skipped
     o.skippedBudgetExhausted += 1
-    o.perTx.push({ txHash, priority, outcome: msLeft <= 0 ? 'skipped_deadline' : 'skipped_oversized_budget_exhausted', extraPages: 0, extraRequests: 0, elapsedMs: 0 })
+    o.perTx.push({ txHash, priority, outcome: msLeft < ROBINHOOD_OVERSIZED_MIN_CONTINUATION_MS ? 'skipped_deadline' : 'skipped_oversized_budget_exhausted', extraPages: 0, extraRequests: 0, elapsedMs: 0 })
     return res
   }
   o.extended.add(txHash)
   o.extendedTx += 1
   const started = Date.now()
-  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: pagesLeft, maxTotalMs: msLeft, priority }).catch(() => null)
+  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: pagesLeft, maxTotalMs: msLeft, priority, deadlineAt }).catch(() => null)
   if (!ext) { // nothing to continue (no valid cursor kept): no oversized slot spent
     o.extendedTx -= 1
     o.perTx.push({ txHash, priority, outcome: 'no_continuation', extraPages: 0, extraRequests: 0, elapsedMs: Date.now() - started })
@@ -725,7 +735,7 @@ async function extendRemainingOversizedTraces(ctx: Ctx, wallet: string, outcomes
   const requests = new Map<string, RhNativeTraceRequest>(ctx.traceRequests ?? [])
   for (const r of ctx.relayedTraceRequests?.values() ?? []) if (!requests.has(r.txHash)) requests.set(r.txHash, relayedAsTraceRequest(r))
   const pending = [...alloc.resolvedResults.entries()]
-    .filter(([h, r]) => r.audit?.result === 'pagination_cap_exhausted' && !alloc.oversized.extended.has(h) && requests.get(h)?.nativeProofCouldChangeOutcome)
+    .filter(([h, r]) => resumableTrace(r) && !alloc.oversized.extended.has(h) && requests.get(h)?.nativeProofCouldChangeOutcome)
     .map(([h]) => requests.get(h)!)
     .sort((a, b) => PRIORITY_RANK[a.priorityClass] - PRIORITY_RANK[b.priorityClass] || (a.hopCount ?? 1) - (b.hopCount ?? 1)
       || (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
@@ -1002,7 +1012,7 @@ async function requestNativeTrace(ctx: Ctx, txHash: string): Promise<RhNativeTra
   else if (Date.now() >= ctx.deadlineAt) res = { transfers: null, audit: base('not_attempted_deadline') }
   else {
     ctx.m.nativeTraceLookups += 1
-    const raw = await ctx.deps.nativeTransfersForTx(txHash).catch(() => null)
+    const raw = await ctx.deps.nativeTransfersForTx(txHash, { deadlineAt: ctx.deadlineAt }).catch(() => null)
     // Injected sources may return the bare transfer list (complete trace) or null (unavailable).
     res = raw == null || Array.isArray(raw)
       ? { transfers: raw, audit: { ...base(raw == null ? 'transport_failed' : raw.length === 0 ? 'empty' : 'proven'), attempted: true, itemCount: raw?.length ?? null } }

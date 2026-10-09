@@ -813,13 +813,29 @@ export const NATIVE_TRACE_EXTENDED_MAX_ITEMS = 600
 export const NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM = 'include_zero_value'
 const NATIVE_TRACE_MIN_REQUEST_MS = 250 // below this a request cannot meaningfully complete: fail closed
 const NATIVE_TRACE_RETRY_DELAY_MS = 150
+/** A same-page retry needs at least this much time (a page that just failed will not answer in 250 ms). */
+export const NATIVE_TRACE_MIN_RETRY_MS = 1_500
+/** Kept free before the scan-wide deadline: a request never runs into the time the PnL lane needs to finish. */
+export const NATIVE_TRACE_DEADLINE_MARGIN_MS = 500
+// ENDPOINT CAPABILITY (per runtime instance, versioned, expiring): after a definitive HTTP 400 / 422 for
+// include_zero_value=false, later lookups skip the filter probe until the entry expires — never forever.
+export const NATIVE_TRACE_FILTER_CAPABILITY_VERSION = 1
+export const NATIVE_TRACE_FILTER_UNSUPPORTED_TTL_MS = 30 * 60_000
+let zeroValueFilterUnsupported: { version: number; until: number; httpStatus: number } | null = null
+function zeroValueFilterKnownUnsupported(): boolean {
+  const c = zeroValueFilterUnsupported
+  if (!c || c.version !== NATIVE_TRACE_FILTER_CAPABILITY_VERSION || Date.now() >= c.until) { zeroValueFilterUnsupported = null; return false }
+  return true
+}
+/** Tests only. */
+export function __resetNativeTraceFilterCapabilityForTest(): void { zeroValueFilterUnsupported = null }
 export type NativeTraceTransientFailure = 'timeout' | 'network_error' | 'rate_limited' | 'http_5xx'
 
 export type InternalTxTraceStatus =
   | 'complete' | 'not_configured' | 'budget_exhausted' | 'transport_failed' | 'malformed'
   | 'inconsistent_pagination' | 'pagination_cap_exhausted' | 'indexing_pending'
 export type InternalTxPageAttempt = { page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
-export type NativeTraceZeroValueFilter = 'applied' | 'ignored_by_server' | 'rejected_fallback_unfiltered' | 'off'
+export type NativeTraceZeroValueFilter = 'applied' | 'ignored_by_server' | 'rejected_fallback_unfiltered' | 'skipped_known_unsupported' | 'off'
 /** What the fetched items are: why a trace is large, and how much of it carries native value. */
 export type InternalTxItemCategories = {
   callWithValue: number; callZeroValue: number; delegatecall: number; staticcall: number; callcode: number
@@ -864,8 +880,13 @@ export type InternalTxTraceResult = {
   itemCategories: InternalTxItemCategories
   /** Blockscout meta.status 2: the tx's internal transactions are still being indexed — never complete. */
   indexingPending: boolean
-  /** Present only on pagination_cap_exhausted with a valid next cursor. */
+  /**
+   * Present on pagination_cap_exhausted with a valid next cursor, and on a transient transport failure after at least
+   * one successful page (the failed page's exact cursor) — never a proof by itself.
+   */
   resume: InternalTxTraceResume | null
+  /** HTTP 400 / 422 filter probes this lookup made (0 once the capability is known unsupported). */
+  filterProbes: number
   /** Extension only: pages / HTTP requests / ms this continuation spent (on top of the original lookup). */
   extension: { pagesRequested: number; transportAttempts: number; elapsedMs: number } | null
 }
@@ -973,7 +994,7 @@ function emptyInternalTxTraceResult(caps: InternalTxTraceResult['paginationCap']
     paginationComplete: false, paginationCap: caps, paginationCapHit: false, pageTransportAttempts: [],
     transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
     last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
-    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null,
+    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null, filterProbes: 0,
   }
 }
 const internalTxCacheKey = (txHash: string) => `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
@@ -982,17 +1003,20 @@ export async function getBlockscoutTransactionInternalTransactions(
   txHash: string,
   fetchImpl: FetchImpl,
   caps: { maxPages: number; maxItems: number; maxTotalMs: number } = NATIVE_TRACE_PAGINATION,
-  opts: { zeroValueFilter?: boolean } = {},
+  opts: { zeroValueFilter?: boolean; deadlineAt?: number } = {},
 ): Promise<InternalTxTraceResult> {
   const result = emptyInternalTxTraceResult(NATIVE_TRACE_PAGINATION)
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const cached = await getTokenCache<BlockscoutInternalTransaction[]>(internalTxCacheKey(txHash)).catch(() => null)
   if (Array.isArray(cached)) return { ...result, status: 'complete', items: cached, cacheHit: true, paginationComplete: true, totalItemCount: cached.length, itemCategories: categorizeInternalTransactions(cached) }
   if (!checkBlockscoutRateLimit('native_trace')) return { ...result, status: 'budget_exhausted', last: { ...result.last, failureClass: 'rate_limited' } }
-  const filter = opts.zeroValueFilter ?? true
+  const wanted = opts.zeroValueFilter ?? true
+  const knownUnsupported = wanted && zeroValueFilterKnownUnsupported()
+  const filter = wanted && !knownUnsupported
   return runInternalTxPages(result, {
-    txHash, filter, zeroValueFilter: filter ? 'applied' : 'off', query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
-  }, fetchImpl, caps, Date.now())
+    txHash, filter, zeroValueFilter: knownUnsupported ? 'skipped_known_unsupported' : filter ? 'applied' : 'off',
+    query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
+  }, fetchImpl, { ...caps, deadlineAt: opts.deadlineAt }, Date.now())
 }
 
 /**
@@ -1003,9 +1027,9 @@ export async function getBlockscoutTransactionInternalTransactions(
 export async function continueBlockscoutTransactionInternalTransactions(
   resume: InternalTxTraceResume,
   fetchImpl: FetchImpl,
-  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number },
+  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number },
 ): Promise<InternalTxTraceResult> {
-  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs }
+  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs, deadlineAt: caps.deadlineAt }
   const result = { ...emptyInternalTxTraceResult(total), pagesRequested: resume.pagesDone, pagesSucceeded: resume.pagesDone }
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const startedAt = Date.now()
@@ -1022,9 +1046,17 @@ async function runInternalTxPages(
   result: InternalTxTraceResult,
   st: MutableResume,
   fetchImpl: FetchImpl,
-  caps: { maxPages: number; maxItems: number; maxTotalMs: number },
+  caps: { maxPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number },
   startedAt: number,
 ): Promise<InternalTxTraceResult> {
+  // TIME: a page's first attempt is bounded by the lookup window (unchanged). The one same-page retry of a page that
+  // failed transiently is bounded by the SCAN deadline (minus a margin) instead — before, the failed attempt itself
+  // could use up the rest of the window (its timeout was min(6s, window left)), so the retry found < 250 ms and was
+  // skipped: production page 4, pageRetryCount 0, transport_failed. Without a scan deadline the retry stays inside
+  // the window as before. Either way a retry that cannot get NATIVE_TRACE_MIN_RETRY_MS fails closed.
+  const windowLeft = () => caps.maxTotalMs - (Date.now() - startedAt)
+  const firstLeft = windowLeft
+  const retryLeft = () => (caps.deadlineAt != null ? caps.deadlineAt - Date.now() - NATIVE_TRACE_DEADLINE_MARGIN_MS : windowLeft())
   const base = `/api/v2/transactions/${st.txHash}/internal-transactions`
   const finish = (r: InternalTxTraceResult): InternalTxTraceResult => {
     const all = [...st.items.values()]
@@ -1047,9 +1079,9 @@ async function runInternalTxPages(
     result.pagesRequested += 1
     let attempt = 0
     // One real request for this page, bounded by the time left; null when no meaningful time remains.
-    const send = async (mode: 'community' | 'gateway'): Promise<TransportResponse | null> => {
-      const remaining = caps.maxTotalMs - (Date.now() - startedAt)
-      if (remaining < NATIVE_TRACE_MIN_REQUEST_MS) return null
+    const send = async (mode: 'community' | 'gateway', retry = false): Promise<TransportResponse | null> => {
+      const remaining = retry ? retryLeft() : firstLeft()
+      if (remaining < (retry ? NATIVE_TRACE_MIN_RETRY_MS : NATIVE_TRACE_MIN_REQUEST_MS)) return null
       attempt += 1
       result.transportAttemptsTotal += 1
       const r = await blockscoutRequest(path, fetchImpl, mode, Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
@@ -1057,7 +1089,9 @@ async function runInternalTxPages(
       result.last = pick(r.attempt)
       return r
     }
-    const deadline = () => finish({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const } })
+    // A transient failure after ≥ 1 good page keeps this page's exact cursor (and every fetched item) for a continuation.
+    const resumable = () => (st.pagesDone > 0 ? { ...st, items: new Map(st.items), cursors: new Set(st.cursors) } : null)
+    const deadline = () => finish({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const }, resume: resumable() })
     let res = await send(st.useGateway ? 'gateway' : 'community')
     if (!res) return deadline()
     if (!st.useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
@@ -1067,6 +1101,8 @@ async function runInternalTxPages(
     }
     // The server refused the filter parameter itself: the same logical page 1, unfiltered, on the same host.
     if (!res.ok && st.filter && page === 1 && (res.status === 400 || res.status === 422)) {
+      result.filterProbes += 1
+      zeroValueFilterUnsupported = { version: NATIVE_TRACE_FILTER_CAPABILITY_VERSION, until: Date.now() + NATIVE_TRACE_FILTER_UNSUPPORTED_TTL_MS, httpStatus: res.status }
       st.filter = false
       st.zeroValueFilter = 'rejected_fallback_unfiltered'
       path = base
@@ -1080,16 +1116,18 @@ async function runInternalTxPages(
       if (retries >= NATIVE_TRACE_MAX_RETRIES_PER_PAGE) break
       // Retry the same page: same path / cursor, same host + auth mode as the failed request; never back to community.
       const mode = res.attempt.authMode === 'gateway' ? 'gateway' : 'community'
-      if (caps.maxTotalMs - (Date.now() - startedAt) - NATIVE_TRACE_RETRY_DELAY_MS >= NATIVE_TRACE_MIN_REQUEST_MS) {
-        await new Promise((r) => setTimeout(r, NATIVE_TRACE_RETRY_DELAY_MS))
-      }
-      const again = await send(mode)
+      if (retryLeft() - NATIVE_TRACE_RETRY_DELAY_MS < NATIVE_TRACE_MIN_RETRY_MS) break // not enough scan time: fail closed
+      await new Promise((r) => setTimeout(r, NATIVE_TRACE_RETRY_DELAY_MS))
+      const again = await send(mode, true)
       if (!again) break // no meaningful time left: fail closed with the original failure
       result.pageRetryCount += 1
       if (!result.pagesRetried.includes(page)) result.pagesRetried.push(page)
       res = again
     }
-    if (!res.ok) return finish({ ...result, status: res.attempt.failureClass === 'invalid_json' ? 'malformed' : 'transport_failed' })
+    if (!res.ok) {
+      if (res.attempt.failureClass === 'invalid_json') return finish({ ...result, status: 'malformed' })
+      return finish({ ...result, status: 'transport_failed', resume: nativeTraceTransientFailure(res) ? resumable() : null })
+    }
     const body = res.json as BlockscoutInternalTransactionsResponse & { meta?: { status?: unknown } | null }
     if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) return finish({ ...result, status: 'malformed' })
     // meta.status 2 = Blockscout has not finished indexing this tx's internal transactions: what it returned is not

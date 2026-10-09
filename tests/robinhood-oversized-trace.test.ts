@@ -12,8 +12,11 @@ import {
 } from '../lib/server/robinhoodPnlV1.ts'
 import {
   NATIVE_TRACE_PAGINATION, NATIVE_TRACE_EXTENDED_MAX_ITEMS, __resetRobinhoodBlockscoutRateLimitForTest, blockscoutLaneRemaining,
+  __resetNativeTraceFilterCapabilityForTest,
 } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import { blockscoutNativeTraceSource } from '../lib/server/robinhoodNativeTrace.ts'
+import { getBlockscoutTransactionInternalTransactions } from '../lib/server/robinhoodBlockscoutEvidence.ts'
+import { readRobinhoodNativeTraceMemory } from '../lib/server/robinhoodNativeTracePersistence.ts'
 import { __resetMemoryFallbackForTest } from '../lib/server/cache/tokenCache.ts'
 import { __resetRobinhoodNativeTraceMemoryForTest, __setRobinhoodNativeTraceKvForTest } from '../lib/server/robinhoodNativeTracePersistence.ts'
 
@@ -56,10 +59,12 @@ function blockscoutItems(rows: Row[], zeroFrames: number, nativeAt = zeroFrames)
   const all = [...zero.slice(0, nativeAt), ...native, ...zero.slice(nativeAt)]
   return all.map((it, i) => ({ ...it, index: i + 1 }))
 }
-type ServerTx = { items: Item[]; pending?: boolean }
+/** Transport faults for one tx page, consumed one per attempt: then the page answers normally. */
+type Fault = 'timeout' | 'hang' | 500 | 503 | 429 | 'network'
+type ServerTx = { items: Item[]; pending?: boolean; faults?: Record<number, Fault[]> }
 function blockscout(txs: Map<string, ServerTx>, opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number } = {}) {
   const urls: string[] = []
-  const fn = async (url: string): Promise<Response> => {
+  const fn = async (url: string, init?: RequestInit): Promise<Response> => {
     urls.push(url)
     if (opts.latencyMs) await new Promise((r) => setTimeout(r, opts.latencyMs))
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -73,6 +78,15 @@ function blockscout(txs: Map<string, ServerTx>, opts: { honorsFilter?: boolean; 
     const after = u.searchParams.has('index') ? Number(u.searchParams.get('index')) : 0
     const visible = tx.items.filter((it) => !(filtered && opts.honorsFilter && it.value === '0' && ['call', 'delegatecall', 'staticcall', 'callcode'].includes(it.type)))
     const rest = visible.filter((it) => it.index > after)
+    const pageNo = Math.floor((visible.length - rest.length) / 50) + 1
+    const fault = tx.faults?.[pageNo]?.shift()
+    if (fault === 'timeout') { const e = new Error('t'); e.name = 'TimeoutError'; throw e }
+    if (fault === 'network') throw new TypeError('fetch failed')
+    if (fault === 'hang') return new Promise<Response>((_, reject) => {
+      const keepAlive = setInterval(() => {}, 1_000) // AbortSignal.timeout timers are unref'd
+      init?.signal?.addEventListener('abort', () => { clearInterval(keepAlive); reject(init.signal!.reason) })
+    })
+    if (typeof fault === 'number') return json({ message: 'upstream' }, fault)
     const page = rest.slice(0, 50)
     const next = rest.length > 50 ? { block_number: 4_200_000, index: page[page.length - 1].index, items_count: 50, transaction_index: 3, ...(filtered ? { include_zero_value: false } : {}) } : null
     return json({ items: page, next_page_params: next, meta: { status: tx.pending ? 2 : 1, message: null } })
@@ -86,6 +100,7 @@ const BUY_ROWS: Row[] = [[WALLET, ROUTER, n(0.01)], [ROUTER, PM, n(0.01)]]
 const toWallet = (tr: Array<{ to: string; value: bigint; success: boolean }> | null) => (tr ?? []).filter((x) => x.success && x.to === WALLET).reduce((a, x) => a + x.value, BigInt(0))
 
 beforeEach(() => {
+  __resetNativeTraceFilterCapabilityForTest() // the 422 capability cache is per runtime
   __resetRobinhoodBlockscoutRateLimitForTest()
   __resetMemoryFallbackForTest()
   __resetRobinhoodNativeTraceMemoryForTest()
@@ -206,6 +221,7 @@ function poolId(x: string, y: string) {
 class Tx {
   logs: Array<{ address: string; topics: string[]; data: string; logIndex: string; blockTimestamp: string }> = []
   items: Item[] = []
+  faults: Record<number, Fault[]> | undefined
   private i = 0
   constructor(public ts = TS) {}
   private push(address: string, topics: string[], data: string) { this.logs.push({ address, topics, data, logIndex: hex(this.i++), blockTimestamp: hex(this.ts) }); return this }
@@ -221,10 +237,10 @@ const sellTx = (k: number, ts: number) => new Tx(ts).xfer(TOKENS[k], WALLET, PM,
 const buyTx = (k: number, ts: number) => new Tx(ts).v4(RH_NATIVE, TOKENS[k], n(0.01), n(100 + k)).xfer(TOKENS[k], PM, WALLET, n(100 + k))
 const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
 
-async function scan(txs: Tx[], opts: { honorsFilter?: boolean; latencyMs?: number; extension?: boolean } = {}) {
+async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean } = {}) {
   __resetRobinhoodPnlV1CachesForTest()
   const byHash = new Map(txs.map((tx, i) => [hashN(100 + i), { tx, i, block: 1000 + i * 10 }]))
-  const server = blockscout(new Map([...byHash].map(([h, e]) => [h, { items: e.tx.items }])), { honorsFilter: opts.honorsFilter, latencyMs: opts.latencyMs })
+  const server = blockscout(new Map([...byHash].map(([h, e]) => [h, { items: e.tx.items, faults: e.tx.faults }])), { honorsFilter: opts.honorsFilter, rejectsFilter: opts.rejectsFilter, latencyMs: opts.latencyMs })
   const source = blockscoutNativeTraceSource(server.fn)
   let rpcCalls = 0
   const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
@@ -317,4 +333,115 @@ test('P5. with the zero-value filter honoured the same oversized txs need no ext
   assert.equal(r.swapsVerified, 3)
   assert.equal(r.ingestionAudit.oversizedTraceBudget?.oversizedSeen, 0)
   assert.equal(server.traceUrls().length, 3)
+})
+
+// ── Transport reliability of a started oversized trace (production job 100ad3b6: 0x8aac…9310 / 0xe603…7e7e —
+// filter 422 → unfiltered, pages 1–3 ok, page 4 timed out, pageRetryCount 0, transport_failed) ─────────────────────
+const pageOf = (url: string) => new URL(url).searchParams.get('index') ?? 'p1'
+const big = (faults?: Record<number, Fault[]>): ServerTx => ({ items: blockscoutItems(SELL_ROWS, 230), faults }) // 5 pages
+const SLOW_WINDOW = { maxPages: 6, maxItems: 600, maxTotalMs: 1_200 }
+
+test('R0. the bug: a hung page 4 eats the rest of the lookup window → no time for its retry (pageRetryCount 0)', async () => {
+  const H = hashN(200)
+  const s = blockscout(new Map([[H, big({ 4: ['hang'] })]]), { rejectsFilter: true })
+  const t = await getBlockscoutTransactionInternalTransactions(H, s.fn, SLOW_WINDOW) // no scan deadline: old rule
+  assert.equal(t.status, 'transport_failed')
+  assert.deepEqual([t.pagesSucceeded, t.totalItemCount, t.pageRetryCount, t.transientFailureCounts.timeout], [3, 150, 0, 1])
+  assert.equal(t.items, null)
+})
+
+test('R1. page 4 timeout → same-cursor retry inside the scan deadline → complete, proof valid', async () => {
+  const H = hashN(201)
+  const s = blockscout(new Map([[H, big({ 4: ['hang'] })]]), { rejectsFilter: true })
+  const t = await getBlockscoutTransactionInternalTransactions(H, s.fn, SLOW_WINDOW, { deadlineAt: Date.now() + 6_000 })
+  assert.equal(t.status, 'pagination_cap_exhausted', 'the retry used the scan time; the lookup window is spent')
+  assert.ok(t.resume, 'page 5 continues from its cursor')
+  assert.deepEqual([t.pagesSucceeded, t.pageRetryCount, t.pagesRetried], [4, 1, [4]])
+  const done = await (await import('../lib/server/robinhoodBlockscoutEvidence.ts')).continueBlockscoutTransactionInternalTransactions(t.resume!, s.fn, { maxExtraPages: 2, maxItems: 600, maxTotalMs: 2_000 })
+  assert.equal(done.status, 'complete')
+  assert.equal(done.items!.length, 232)
+  const pages = s.traceUrls().map(pageOf)
+  // Repeats: page 1 (the 422 filter probe, then unfiltered) and page 4 (its one retry). Nothing else.
+  assert.deepEqual(pages.filter((p) => pages.indexOf(p) !== pages.lastIndexOf(p)), ['p1', 'p1', '150', '150'])
+  assert.equal(pages.length, 5 + 2)
+})
+
+test('R2. page 4 times out twice → fail closed (no items), resumable cursor kept, nothing stored', async () => {
+  const H = hashN(202)
+  const s = blockscout(new Map([[H, big({ 4: ['timeout', 'timeout'] })]]))
+  const src = blockscoutNativeTraceSource(s.fn)
+  const r = await src.transfersForTx(H, { deadlineAt: Date.now() + 20_000 })
+  assert.equal(r.audit?.result, 'transport_failed')
+  assert.equal(r.transfers, null)
+  assert.deepEqual([r.audit?.pagesSucceeded, r.audit?.pageRetryCount, r.audit?.paginationComplete], [3, 1, false])
+  assert.equal(readRobinhoodNativeTraceMemory(H), null, 'an incomplete trace is never persisted')
+})
+
+test('R3. page 3 HTTP 500 → one retry on the same cursor → complete', async () => {
+  const H = hashN(203)
+  const items = blockscoutItems(SELL_ROWS, 150) // 4 pages
+  const s = blockscout(new Map([[H, { items, faults: { 3: [500] } }]]))
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 20_000 })
+  assert.equal(r.audit?.result, 'proven')
+  assert.deepEqual([r.audit?.pageRetryCount, r.audit?.pagesRetried, r.audit?.totalItemCount], [1, [3], 152])
+  assert.equal(toWallet(r.transfers), n(0.02))
+  assert.equal(s.traceUrls().length, 5, 'pages 1, 2, 3, 3 (retry), 4 — no other page refetched')
+})
+
+test('R4. a 422 filter rejection is cached: later lookups skip the probe; the entry expires', async () => {
+  const s = blockscout(new Map([[hashN(204), { items: blockscoutItems(SELL_ROWS, 10) }], [hashN(205), { items: blockscoutItems(SELL_ROWS, 10) }], [hashN(206), { items: blockscoutItems(SELL_ROWS, 10) }]]), { rejectsFilter: true })
+  const src = blockscoutNativeTraceSource(s.fn)
+  const a = await src.transfersForTx(hashN(204))
+  assert.deepEqual([a.audit?.zeroValueFilter, a.audit?.filterProbes], ['rejected_fallback_unfiltered', 1])
+  const b = await src.transfersForTx(hashN(205))
+  assert.deepEqual([b.audit?.zeroValueFilter, b.audit?.filterProbes, b.audit?.result], ['skipped_known_unsupported', 0, 'proven'])
+  assert.equal(s.traceUrls().filter((u) => u.includes('include_zero_value')).length, 1, 'one probe for the runtime window')
+  const realNow = Date.now
+  try {
+    Date.now = () => realNow() + 31 * 60_000 // past the capability TTL: probe again
+    const c = await src.transfersForTx(hashN(206))
+    assert.equal(c.audit?.filterProbes, 1)
+  } finally { Date.now = realNow }
+})
+
+test('R5. scan deadline too close for a retry → fail closed without retrying', async () => {
+  const H = hashN(207)
+  const s = blockscout(new Map([[H, big({ 2: ['timeout'] })]]))
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 1_000 })
+  assert.equal(r.audit?.result, 'transport_failed')
+  assert.equal(r.audit?.pageRetryCount, 0)
+  assert.equal(r.transfers, null)
+})
+
+test('R6. a started trace that failed on transport resumes at the failed page (pages 1–3 never refetched) → proven', async () => {
+  const H = hashN(208)
+  const s = blockscout(new Map([[H, big({ 4: ['timeout', 'timeout'] })]]))
+  const src = blockscoutNativeTraceSource(s.fn)
+  await src.transfersForTx(H, { deadlineAt: Date.now() + 20_000 })
+  const before = s.traceUrls().length
+  const ext = await src.extendOversized(H, { maxExtraPages: 8, maxTotalMs: 5_000, priority: 'p1_native_out_sell', deadlineAt: Date.now() + 20_000 })
+  assert.equal(ext?.audit?.result, 'proven')
+  const after = s.traceUrls().slice(before).map(pageOf)
+  assert.equal(after.length, 2, 'page 4 (exact cursor) and page 5 only')
+  assert.equal(after[0], pageOf(s.traceUrls()[before - 1]), 'resumed on the failed page cursor')
+  assert.equal(toWallet(ext!.transfers), n(0.02))
+})
+
+test('R7. PnL: production shape (422 + page 4 timeout once) — relayed sell promoted only on the complete trace', async () => {
+  const tx = sellTx(6, TS - 100).trace(SELL_ROWS, 160) // 4 pages, native rows on page 4
+  tx.faults = { 4: ['timeout'] }
+  const { r, server } = await scan([tx], { rejectsFilter: true })
+  assert.equal(r.swapsVerified, 1)
+  const pages = server.traceUrls().map(pageOf)
+  assert.equal(pages.length - new Set(pages).size, 2, 'duplicates: page 1 (422 probe → unfiltered) and page 4 (retry) only')
+})
+
+test('R8. PnL: competing payer on the retried final page still rejects (externally funded)', async () => {
+  const rows: Row[] = [[WALLET, ROUTER, n(0.005)], [OTHER, ROUTER, n(0.005)], [ROUTER, PM, n(0.01)]]
+  const tx = buyTx(7, TS - 100)
+  tx.items = blockscoutItems(rows, 160, 158) // all three native rows on page 4
+  tx.faults = { 4: [503] }
+  const { r } = await scan([tx], { rejectsFilter: true })
+  assert.equal(r.swapsVerified, 0)
+  assert.deepEqual(r.ingestionAudit.relayedWalletRejectedReasons, { externally_funded_route: 1 })
 })

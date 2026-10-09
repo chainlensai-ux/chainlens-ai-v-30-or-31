@@ -103,6 +103,8 @@ export type RhNativeTraceAudit = {
   itemCategories?: Record<string, number>
   /** Blockscout meta.status 2 (internal transactions still indexing): never complete. */
   indexingPending?: boolean
+  /** include_zero_value=false probes refused with HTTP 400 / 422 by this lookup (0 when the capability is cached). */
+  filterProbes?: number
   /** Oversized-trace extension (extra pages beyond the normal cap): what it spent and how it ended. */
   extension?: { pagesRequested: number; transportAttempts: number; elapsedMs: number; priority: string } | null
   result: RhNativeTraceResultKind

@@ -46,22 +46,23 @@ export async function storedRobinhoodNativeTrace(txHash: string): Promise<RhNati
 }
 
 export type RobinhoodNativeTraceSource = {
-  transfersForTx: (txHash: string) => Promise<RhNativeTraceResult>
+  /** `deadlineAt`: the scan-wide deadline — bounds every request and decides whether a same-page retry may run. */
+  transfersForTx: (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTraceResult>
   /**
    * Continues a trace that hit the normal pagination cap (never re-requesting a fetched page), at most once per tx.
    * Null when there is nothing to continue (not oversized, already extended, or no valid cursor).
    */
-  extendOversized: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string }) => Promise<RhNativeTraceResult | null>
+  extendOversized: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number }) => Promise<RhNativeTraceResult | null>
 }
 
-export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string) => Promise<RhNativeTraceResult> {
+export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTraceResult> {
   return blockscoutNativeTraceSource(fetchImpl).transfersForTx
 }
 
 export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNativeTraceSource {
   const resumes = new Map<string, InternalTxTraceResume>()
-  const live = async (txHash: string) => {
-    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl)
+  const live = async (txHash: string, deadlineAt?: number) => {
+    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl, undefined, { deadlineAt })
     if (t.resume) resumes.set(lower(txHash), t.resume)
     return nativeTraceResultFrom(txHash, t)
   }
@@ -74,7 +75,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
     }
   }
   return {
-    transfersForTx: async (txHash) => {
+    transfersForTx: async (txHash, opts) => {
       const audit = newPersistenceAudit(txHash)
       const fromRecord = (record: RobinhoodNativeTraceRecord): RhNativeTraceResult => nativeTraceFromRecord(txHash, record)
       const mem = readRobinhoodNativeTraceMemory(txHash)
@@ -83,7 +84,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
       audit.persistentReadReason = stored.reason
       if (stored.record) { audit.persistentHit = true; return logPersistence(audit, fromRecord(stored.record)) }
       audit.liveAttempted = true
-      const r = await live(txHash)
+      const r = await live(txHash, opts?.deadlineAt)
       audit.liveResult = r.audit?.result ?? null
       await persisted(txHash, r, audit)
       return logPersistence(audit, r)
@@ -93,7 +94,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
       if (!resume) return null
       resumes.delete(lower(txHash)) // one continuation per tx per scan
       const t = await continueBlockscoutTransactionInternalTransactions(resume, fetchImpl, {
-        maxExtraPages: budget.maxExtraPages, maxItems: NATIVE_TRACE_EXTENDED_MAX_ITEMS, maxTotalMs: budget.maxTotalMs,
+        maxExtraPages: budget.maxExtraPages, maxItems: NATIVE_TRACE_EXTENDED_MAX_ITEMS, maxTotalMs: budget.maxTotalMs, deadlineAt: budget.deadlineAt,
       })
       const r = nativeTraceResultFrom(txHash, t)
       if (r.audit) r.audit.extension = t.extension ? { ...t.extension, priority: budget.priority } : null
@@ -146,6 +147,7 @@ function nativeTraceResultFrom(txHash: string, t: InternalTxTraceResult): RhNati
     zeroValueFilter: t.zeroValueFilter,
     itemCategories: t.itemCategories,
     indexingPending: t.indexingPending,
+    filterProbes: t.filterProbes,
     result: 'transport_failed',
   }
   const done = (result: RhNativeTraceAudit['result'], transfers: RhNativeTransfer[] | null = null): RhNativeTraceResult => ({ transfers, audit: { ...audit, result } })
