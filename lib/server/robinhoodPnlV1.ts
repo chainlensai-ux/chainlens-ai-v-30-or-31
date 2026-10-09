@@ -31,7 +31,7 @@ import { ROBINHOOD_V4_POOL_MANAGER } from './uniswapV4RobinhoodRpc'
 import { getRobinhoodRpcUrl } from './robinhoodChainConfig'
 import { fetchCoingeckoEthUsdRange } from './coingeckoOnchainOhlcv'
 import { nearestPriceWithGap } from '../v4SwapCandles'
-import { analyzeRobinhoodMixedRoute, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
+import { analyzeRobinhoodMixedRoute, robinhoodMixedRouteGraph, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
 import {
@@ -1201,6 +1201,7 @@ async function forensicsForRejectedReceipt(ctx: Ctx, wallet: string, txHash: str
   }
   const forensics = buildRobinhoodSwapForensics({ wallet, txHash, timestampSec, receipt, poolManager: POOL_MANAGER, poolKeys, walletNativeDelta, rejectionReason: rejection })
   const mixedRoute = mixed ? analyzeRobinhoodMixedRoute({ wallet, txHash, receipt, poolManager: POOL_MANAGER, v4PoolKeys: poolKeys, native: isSender ? native : relayedNoNative(native), relayed: !isSender }) : null
+  if (mixedRoute && ctx.traceMode !== 'probe') logMixedRouteGraph(wallet, receipt, mixedRoute)
   if (ctx.traceMode === 'probe' && mixedRoute && isSender && native.status !== 'not_needed') registerMixedTraceProbe(ctx, txHash, receipt, mixedRoute, timestampSec)
   if (ctx.traceMode === 'probe' && mixedRoute && !isSender && rejection === 'wallet_not_tx_sender') registerRelayedMixedProbe(ctx, txHash, receipt, mixedRoute, poolKeys, timestampSec)
   return { forensics, mixedRoute }
@@ -1356,6 +1357,7 @@ async function relayedMixedVerdict(ctx: Ctx, wallet: string, r: RhRelayedTraceRe
   if ((topLevelIntoWallet ?? ZERO) > ZERO || competing.length > 0) return { v: { ...out, verdict: 'externally_funded_route' }, promoted: { swap: null, reason: 'externally_funded_route' }, mixed: null }
   if (native.status !== 'proven_target_tx_native_transfer' || native.nativeNetExGas == null || native.nativeNetExGas === ZERO) return { v: { ...out, verdict: 'no_wallet_native_debit' }, promoted: { swap: null, reason: 'no_traced_wallet_native_leg' }, mixed: null }
   const mixed = analyzeRobinhoodMixedRoute({ wallet: w, txHash: r.txHash, receipt, poolManager: POOL_MANAGER, v4PoolKeys: r.poolKeys, native, relayed: true })
+  logMixedRouteGraph(w, receipt, mixed)
   const promoted = await promoteMixedRoute(ctx, r.txHash, receipt, mixed)
   const matchesDirection = promoted.swap != null && (r.direction === 'native_out' ? promoted.swap.outputToken === RH_NATIVE : promoted.swap.inputToken === RH_NATIVE)
   return {
@@ -1363,6 +1365,11 @@ async function relayedMixedVerdict(ctx: Ctx, wallet: string, r: RhRelayedTraceRe
     promoted: matchesDirection ? { swap: promoted.swap, reason: 'relayed_wallet_swap_proven' } : { swap: null, reason: promoted.swap ? 'mixed_route_direction_changed' : `mixed_route_not_proven:${promoted.reason}` },
     mixed,
   }
+}
+
+/** One `[robinhood-mixed-route-graph-audit]` line per final mixed-route reading (diagnostic only). */
+function logMixedRouteGraph(wallet: string, receipt: RhReceipt, forensics: RobinhoodMixedRouteForensics): void {
+  console.warn('[robinhood-mixed-route-graph-audit]', robinhoodMixedRouteGraph({ wallet, receipt, poolManager: POOL_MANAGER, forensics }))
 }
 
 // A wallet-sent mixed route needs its own trace when exactly one wallet side is missing (only native can fill it),

@@ -473,3 +473,105 @@ export function analyzeRobinhoodMixedRoute(input: {
   // Relayed: the flow proof above IS the ownership proof (wallet-only input, wallet output, no outside funding).
   return finish({ ...common, singleConnectedEconomicRoute: true, ownershipProven: true, finalClassification: 'direct_mixed_route_proven', reason: chosen.reason })
 }
+
+// ── Mixed-route graph audit (diagnostic only — never changes a classification) ──────────────────────────
+// Why a swap is "independent": a swap is CONNECTED iff its input token is forward-reachable from the wallet's input
+// token AND its output token is backward-reachable from the wallet's output token (WETH ≡ native). Any leg that
+// carries the wallet's value from input to output lies on such a path, so an EXCLUDED swap is never a required
+// intermediate leg. What it can be is told by which side breaks:
+//   input_off_route_into_route  (in ∉ fwd, out ∈ back): another source converting a foreign asset INTO a route asset
+//                                 — another order, or outside funding of the wallet's output (A or D)
+//   route_value_leaving         (in ∈ fwd, out ∉ back): route value converted OUT into a foreign asset — fee / leftover
+//                                 sweep / diversion (C or D)
+//   disjoint                    (neither): an order that never touches the route's assets (A, or router housekeeping C)
+// Call ancestry is not available from receipt logs (Blockscout internal transactions are not linked to logs), so
+// linkage below is only by token reachability, exact amounts and Transfer payer / recipient.
+export type RhMixedEdgeKind = 'connected' | 'input_off_route_into_route' | 'route_value_leaving' | 'disjoint' | 'unresolved'
+export type RobinhoodMixedRouteGraphAudit = {
+  txHash: string; wallet: string; walletInputToken: string | null; targetOutput: string | null
+  actionCount: number; actionOrdinals: number[]
+  nodes: string[]
+  edges: Array<{
+    ordinal: number; venue: string; venueAddress: string; inToken: string | null; outToken: string | null; inRaw: string | null; outRaw: string | null
+    payer: string | null; recipient: string | null; walletTouched: boolean; kind: RhMixedEdgeKind; classHint: string
+  }>
+  connectedActions: number[]; independentActions: number[]; ambiguousActions: number[]
+  amountContinuityChecks: Array<{ asset: string; producedOrSuppliedRaw: string; consumedOrDeliveredRaw: string; exact: boolean; withinFeeBound: boolean; note: string }>
+  ancestryChecks: { available: false; reason: string }
+  recipientChecks: Array<{ ordinal: number; payer: string | null; recipient: string | null; payerIsWallet: boolean; recipientIsWallet: boolean }>
+  finalClassification: RhMixedClassification; rejectionReason: string | null
+}
+
+/** PURE. The wallet route as a graph, for `[robinhood-mixed-route-graph-audit]`. */
+export function robinhoodMixedRouteGraph(input: { wallet: string; receipt: RhReceipt; poolManager: string; forensics: RobinhoodMixedRouteForensics }): RobinhoodMixedRouteGraphAudit {
+  const wallet = input.wallet.toLowerCase()
+  const pm = input.poolManager.toLowerCase()
+  const m = input.forensics
+  const transfers: Transfer[] = []
+  for (const l of input.receipt.logs) {
+    if (l.topics[0] !== ERC20_TRANSFER_TOPIC0 || l.topics.length !== 3) continue
+    const amount = word(l.data, 0, false)
+    if (amount != null) transfers.push({ token: l.address, from: addr(l.topics[1]), to: addr(l.topics[2]), amount, logIndex: l.logIndex })
+  }
+  const inToken = m.walletInputToken
+  const outToken = m.walletOutputToken
+  const resolved = m.hops.filter((h) => h.inToken && h.outToken)
+  const fwd = new Set(inToken ? [inToken] : [])
+  for (let changed = true; changed;) { changed = false; for (const h of resolved) if (fwd.has(h.inToken!) && !fwd.has(h.outToken!)) { fwd.add(h.outToken!); changed = true } }
+  const back = new Set(outToken ? [outToken] : [])
+  for (let changed = true; changed;) { changed = false; for (const h of resolved) if (back.has(h.outToken!) && !back.has(h.inToken!)) { back.add(h.inToken!); changed = true } }
+  // Exact Transfer into / out of the venue for this hop's amount (V4: through the PoolManager).
+  const party = (venue: string, token: string | null, raw: string | null, dir: 'in' | 'out'): string | null => {
+    if (!token || raw == null) return null
+    const hits = transfers.filter((t) => norm(t.token) === token && t.amount === BigInt(raw) && (dir === 'in' ? t.to === venue : t.from === venue))
+    const who = [...new Set(hits.map((t) => (dir === 'in' ? t.from : t.to)))]
+    return who.length === 1 ? who[0] : null
+  }
+  const hint: Record<RhMixedEdgeKind, string> = {
+    connected: 'route_leg', input_off_route_into_route: 'A_or_D_foreign_input_into_route_asset', route_value_leaving: 'C_or_D_route_value_converted_out',
+    disjoint: 'A_or_C_disjoint_from_route', unresolved: 'D_unresolved',
+  }
+  const edges = m.hops.map((h) => {
+    const venue = h.venue === 'v4' ? pm : h.address.toLowerCase()
+    const payer = party(venue, h.inToken, h.inRaw, 'in')
+    const recipient = party(venue, h.outToken, h.outRaw, 'out')
+    const kind: RhMixedEdgeKind = !h.inToken || !h.outToken ? 'unresolved'
+      : m.connectedSwapIndexes.includes(h.index) ? 'connected'
+      : !fwd.has(h.inToken) && back.has(h.outToken) ? 'input_off_route_into_route'
+      : fwd.has(h.inToken) && !back.has(h.outToken) ? 'route_value_leaving'
+      : !fwd.has(h.inToken) && !back.has(h.outToken) ? 'disjoint' : 'connected'
+    return {
+      ordinal: h.index, venue: h.venue, venueAddress: h.address, inToken: h.inToken, outToken: h.outToken, inRaw: h.inRaw, outRaw: h.outRaw,
+      payer, recipient, walletTouched: payer === wallet || recipient === wallet, kind, classHint: hint[kind],
+    }
+  })
+  // Amount continuity over the CONNECTED legs only: per asset, what the wallet supplied + the legs produced vs what the
+  // legs consumed + the wallet received.
+  const supply = new Map<string, bigint>()
+  const demand = new Map<string, bigint>()
+  const add = (mp: Map<string, bigint>, k: string, v: bigint) => mp.set(k, (mp.get(k) ?? ZERO) + v)
+  if (inToken && m.walletInputRaw) add(supply, inToken, BigInt(m.walletInputRaw))
+  if (outToken && m.walletOutputRaw) add(demand, outToken, BigInt(m.walletOutputRaw))
+  for (const e of edges) if (e.kind === 'connected' && e.inRaw && e.outRaw) { add(supply, e.outToken!, BigInt(e.outRaw)); add(demand, e.inToken!, BigInt(e.inRaw)) }
+  const amountContinuityChecks = [...new Set([...supply.keys(), ...demand.keys()])].map((asset) => {
+    const s = supply.get(asset) ?? ZERO
+    const d = demand.get(asset) ?? ZERO
+    return {
+      asset, producedOrSuppliedRaw: s.toString(), consumedOrDeliveredRaw: d.toString(), exact: s === d, withinFeeBound: d <= s && withinFee(s - d, s),
+      note: d > s ? 'connected legs consume more than the wallet / route supplied' : s === d ? 'exact' : 'leftover on the route',
+    }
+  })
+  return {
+    txHash: m.txHash, wallet, walletInputToken: inToken, targetOutput: outToken,
+    actionCount: m.hops.length, actionOrdinals: m.hops.map((h) => h.index),
+    nodes: [...new Set(['wallet', ...m.hops.flatMap((h) => [h.inToken, h.outToken]).filter((x): x is string => x != null)])],
+    edges,
+    connectedActions: edges.filter((e) => e.kind === 'connected').map((e) => e.ordinal),
+    independentActions: edges.filter((e) => e.kind !== 'connected' && e.kind !== 'unresolved').map((e) => e.ordinal),
+    ambiguousActions: edges.filter((e) => e.kind === 'unresolved').map((e) => e.ordinal),
+    amountContinuityChecks,
+    ancestryChecks: { available: false, reason: 'receipt logs carry no call ancestry; Blockscout internal transactions are not linked to logs' },
+    recipientChecks: edges.map((e) => ({ ordinal: e.ordinal, payer: e.payer, recipient: e.recipient, payerIsWallet: e.payer === wallet, recipientIsWallet: e.recipient === wallet })),
+    finalClassification: m.finalClassification, rejectionReason: m.finalClassification === 'direct_mixed_route_proven' ? null : m.reason,
+  }
+}
