@@ -71,8 +71,13 @@ const X = '0xdee52f2ab639b6942b0d0f0565400b93b7a0fbe5' // 0x8aac's wallet token
 const Y = '0xedbf91223639800bcd5756815caf908df3b890be' // 0xe603's wallet token
 const T = ['0x1100000000000000000000000000000000000001', '0x1100000000000000000000000000000000000002', '0x1100000000000000000000000000000000000003', '0x1100000000000000000000000000000000000004', '0x1100000000000000000000000000000000000005']
 const F = ['0x2200000000000000000000000000000000000001', '0x2200000000000000000000000000000000000002', '0x2200000000000000000000000000000000000003']
-const ETH_8AAC = BigInt('612973348436214280')
-const ETH_E603 = BigInt('1725135499030843309')
+// Production amounts (job d2dd794c graph audit).
+const ETH_8AAC = BigInt('612973348436214280') // wallet native credit
+const ROUTE_8AAC = BigInt('611968335685361819') // connected route native output
+const FOREIGN_IN_8AAC = BigInt('49586058630238604') // action 6: 0xaf3d76… in
+const FOREIGN_OUT_8AAC = BigInt('6207741659008261') // action 6: native out
+const ETH_E603 = BigInt('1725135499030843309') // wallet native credit
+const ROUTE_E603 = BigInt('218167034561284875') // connected route native output
 const relayed = (rx: Rx, native: RhNativeEvidence) => analyzeRobinhoodMixedRoute({ wallet: WALLET, txHash: '0xfeed', receipt: rx.receipt(RELAYER), poolManager: PM, v4PoolKeys: rx.keys, native, relayed: true })
 const graph = (rx: Rx, m: ReturnType<typeof relayed>) => robinhoodMixedRouteGraph({ wallet: WALLET, receipt: rx.receipt(RELAYER), poolManager: PM, forensics: m })
 
@@ -80,8 +85,8 @@ const graph = (rx: Rx, m: ReturnType<typeof relayed>) => robinhoodMixedRouteGrap
 function shape8aac() {
   const rx = new Rx().xfer(X, WALLET, PM, n(1000))
   const path = [X, ...T, RH_WETH]
-  for (let i = 0; i < 6; i++) rx.v4(path[i], path[i + 1], i === 0 ? n(1000) : n(900 - i), i === 5 ? ETH_8AAC : n(900 - i - 1))
-  return rx.xfer(F[0], USER2, PM, n(77)).v4(F[0], RH_WETH, n(77), n(1))
+  for (let i = 0; i < 6; i++) rx.v4(path[i], path[i + 1], i === 0 ? n(1000) : n(900 - i), i === 5 ? ROUTE_8AAC : n(900 - i - 1))
+  return rx.xfer(F[0], USER2, PM, FOREIGN_IN_8AAC).v4(F[0], RH_WETH, FOREIGN_IN_8AAC, FOREIGN_OUT_8AAC)
 }
 /** 0xe603 shape: ordinals 0 and 4 are the wallet route Y → T0 → native; 1,2,3,5,6 are other orders in the batch. */
 function shapeE603() {
@@ -90,7 +95,7 @@ function shapeE603() {
     .xfer(F[0], USER2, PM, n(10)).v4(F[0], RH_WETH, n(10), n(3))            // 1: another order → native
     .xfer(F[1], USER2, PM, n(20)).v4(F[1], F[2], n(20), n(5))               // 2: disjoint order
     .v4(F[2], RH_WETH, n(5), n(2))                                           // 3: its continuation → native
-    .v4(T[0], RH_WETH, n(40), ETH_E603)                                      // 4: wallet leg → native
+    .v4(T[0], RH_WETH, n(40), ROUTE_E603)                                    // 4: wallet leg → native
     .v4(RH_WETH, T[1], n(1), n(9))                                           // 5: native → foreign token (route value leaving or another order)
     .xfer(T[2], USER2, PM, n(4)).v4(T[2], T[3], n(4), n(4))                  // 6: disjoint
 }
@@ -170,4 +175,61 @@ test('9. complete trace but an unresolvable branch → ambiguous', () => {
 test('10. no complete-trace native leg (incomplete / partial trace) → never proven', () => {
   const rx = new Rx().xfer(A, WALLET, PM, n(100)).v4(A, RH_WETH, n(100), n(2))
   assert.notEqual(relayed(rx, nativeNone).finalClassification, 'direct_mixed_route_proven')
+})
+
+// ── Reconciliation diagnostics (job d2dd794c) — acceptance unchanged ───────────────────────────────────────────
+test('R-A. 0x8aac production shape: still rejected; foreign native contribution + connected output below the wallet credit', () => {
+  const rx = shape8aac()
+  const m = relayed(rx, nativeProven(ETH_8AAC))
+  assert.equal(m.finalClassification, 'independent_second_action', 'acceptance unchanged')
+  const g = graph(rx, m)
+  assert.deepEqual([g.connectedNativeOutputRaw, g.walletNativeCreditRaw, g.foreignNativeContributionRaw], [ROUTE_8AAC.toString(), ETH_8AAC.toString(), FOREIGN_OUT_8AAC.toString()])
+  assert.equal(g.unexplainedNativeCreditRaw, (ETH_8AAC - ROUTE_8AAC).toString())
+  assert.equal(g.outputReconciles, false)
+  assert.deepEqual(g.reconciliationReasons, ['foreign_route_contribution_detected', 'connected_output_below_wallet_credit'])
+  assert.equal(g.reconciliationReason, 'mixed_batch_output_not_reconciled')
+  assert.equal(g.structuralSubreason, 'independent_second_action')
+  assert.equal(g.inputReconciles, true)
+})
+
+test('R-B. 0xe603 production shape: still rejected; connected output far below the credit, foreign input, route value diverted', () => {
+  const rx = shapeE603()
+  const m = relayed(rx, nativeProven(ETH_E603))
+  assert.equal(m.finalClassification, 'independent_second_action')
+  const g = graph(rx, m)
+  assert.deepEqual([g.connectedNativeOutputRaw, g.walletNativeCreditRaw], [ROUTE_E603.toString(), ETH_E603.toString()])
+  assert.equal(g.unexplainedNativeCreditRaw, (ETH_E603 - ROUTE_E603).toString())
+  assert.deepEqual(g.reconciliationReasons, ['foreign_route_contribution_detected', 'connected_output_below_wallet_credit', 'route_value_diverted_to_foreign_asset'])
+  assert.equal(g.reconciliationReason, 'mixed_batch_output_not_reconciled')
+})
+
+test('R-C. clean aggregator route: proven, reconciles exactly, no reconciliation reason', () => {
+  const rx = new Rx().xfer(A, WALLET, PM, n(100)).v4(A, B, n(100), n(50)).xfer(B, PM, ROUTER, n(50)).xfer(B, ROUTER, P3, n(50)).v3(P3, n(50), n(2)).xfer(RH_WETH, P3, ROUTER, n(2)).unwrap(ROUTER, n(2))
+  const m = relayed(rx, nativeProven(n(2)))
+  assert.equal(m.finalClassification, 'direct_mixed_route_proven')
+  const g = graph(rx, m)
+  assert.deepEqual([g.outputReconciles, g.inputReconciles, g.reconciliationReason, g.structuralSubreason, g.unexplainedNativeCreditRaw], [true, true, null, null, '0'])
+})
+
+test('R-D. unrelated disjoint swap, route reconciles: reported separately, acceptance unchanged (still rejected)', () => {
+  const rx = new Rx().xfer(A, WALLET, PM, n(100)).v4(A, RH_WETH, n(100), n(2)).xfer(C, USER2, PM, n(5)).v4(C, D, n(5), n(5)).xfer(D, PM, USER2, n(5))
+  const m = relayed(rx, nativeProven(n(2)))
+  assert.equal(m.finalClassification, 'independent_second_action', 'acceptance unchanged in this task')
+  const g = graph(rx, m)
+  assert.deepEqual([g.outputReconciles, g.inputReconciles, g.reconciliationReason, g.offRouteDisjointActions], [true, true, null, [1]])
+  assert.equal(g.structuralSubreason, 'independent_second_action')
+})
+
+test('R-E. a foreign swap produces the native target asset → rejected, foreign_route_contribution_detected', () => {
+  const rx = new Rx().xfer(A, WALLET, PM, n(100)).v4(A, RH_WETH, n(100), n(2)).xfer(C, USER2, PM, n(9)).v4(C, RH_WETH, n(9), n(1))
+  const m = relayed(rx, nativeProven(n(2)))
+  assert.notEqual(m.finalClassification, 'direct_mixed_route_proven')
+  assert.deepEqual(graph(rx, m).reconciliationReasons, ['foreign_route_contribution_detected'])
+})
+
+test('R-F. route token diverted into a foreign asset → rejected, route_value_diverted_to_foreign_asset', () => {
+  const rx = new Rx().xfer(A, WALLET, PM, n(100)).v4(A, B, n(100), n(50)).v4(B, RH_WETH, n(40), n(2)).v4(B, C, n(10), n(3)).xfer(C, PM, OTHER, n(3))
+  const m = relayed(rx, nativeProven(n(2)))
+  assert.notEqual(m.finalClassification, 'direct_mixed_route_proven')
+  assert.ok(graph(rx, m).reconciliationReasons.includes('route_value_diverted_to_foreign_asset'))
 })

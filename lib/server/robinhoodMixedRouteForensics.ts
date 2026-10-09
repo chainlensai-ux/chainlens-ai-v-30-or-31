@@ -500,7 +500,34 @@ export type RobinhoodMixedRouteGraphAudit = {
   ancestryChecks: { available: false; reason: string }
   recipientChecks: Array<{ ordinal: number; payer: string | null; recipient: string | null; payerIsWallet: boolean; recipientIsWallet: boolean }>
   finalClassification: RhMixedClassification; rejectionReason: string | null
+  /**
+   * RECONCILIATION (diagnostic only — never changes acceptance): can the CONNECTED legs alone explain the wallet's
+   * output credit and input debit? Amounts are raw units of the wallet's output asset (native for sells, WETH ≡ native)
+   * and input asset. "foreign" = produced by excluded swaps whose input is off the wallet's route.
+   */
+  targetAsset: string | null
+  connectedNativeOutputRaw: string | null
+  walletNativeCreditRaw: string | null
+  foreignNativeContributionRaw: string | null
+  unexplainedNativeCreditRaw: string | null
+  walletInputDebitRaw: string | null
+  connectedInputConsumedRaw: string | null
+  /** walletInputDebit − connectedInputConsumed (negative: connected legs consumed more than the wallet paid). */
+  unexplainedInputRaw: string | null
+  outputReconciles: boolean
+  inputReconciles: boolean
+  /** The analyzer's structural class when it rejected (e.g. independent_second_action); null when proven. */
+  structuralSubreason: RhMixedClassification | null
+  /** Every deterministic mismatch found (empty when the connected route reconciles exactly or within the fee bound). */
+  reconciliationReasons: RhMixedReconciliationReason[]
+  /** One reason: the single mismatch, mixed_batch_output_not_reconciled when several, null when none. */
+  reconciliationReason: RhMixedReconciliationReason | null
+  /** Excluded swaps that touch neither the route's input nor its output asset (reported, never accepted here). */
+  offRouteDisjointActions: number[]
 }
+export type RhMixedReconciliationReason =
+  | 'foreign_route_contribution_detected' | 'connected_output_below_wallet_credit' | 'route_value_diverted_to_foreign_asset'
+  | 'connected_input_mismatch' | 'mixed_batch_output_not_reconciled'
 
 /** PURE. The wallet route as a graph, for `[robinhood-mixed-route-graph-audit]`. */
 export function robinhoodMixedRouteGraph(input: { wallet: string; receipt: RhReceipt; poolManager: string; forensics: RobinhoodMixedRouteForensics }): RobinhoodMixedRouteGraphAudit {
@@ -561,7 +588,40 @@ export function robinhoodMixedRouteGraph(input: { wallet: string; receipt: RhRec
       note: d > s ? 'connected legs consume more than the wallet / route supplied' : s === d ? 'exact' : 'leftover on the route',
     }
   })
+  // ── Reconciliation over the connected legs vs the wallet's own debit / credit ──
+  const sumRaw = (pick: (e: (typeof edges)[number]) => string | null, where: (e: (typeof edges)[number]) => boolean) =>
+    edges.filter(where).reduce((t, e) => t + BigInt(pick(e) ?? '0'), ZERO)
+  const connectedOut = outToken ? sumRaw((e) => e.outRaw, (e) => e.kind === 'connected' && e.outToken === outToken) - sumRaw((e) => e.inRaw, (e) => e.kind === 'connected' && e.inToken === outToken) : null
+  const connectedIn = inToken ? sumRaw((e) => e.inRaw, (e) => e.kind === 'connected' && e.inToken === inToken) - sumRaw((e) => e.outRaw, (e) => e.kind === 'connected' && e.outToken === inToken) : null
+  const foreignOut = outToken ? sumRaw((e) => e.outRaw, (e) => e.kind === 'input_off_route_into_route' && e.outToken === outToken) : null
+  const credit = m.walletOutputRaw != null ? BigInt(m.walletOutputRaw) : null
+  const debit = m.walletInputRaw != null ? BigInt(m.walletInputRaw) : null
+  const outputReconciles = credit != null && connectedOut != null && credit <= connectedOut && withinFee(connectedOut - credit, connectedOut)
+  const inputReconciles = debit != null && connectedIn != null && connectedIn <= debit && withinFee(debit - connectedIn, debit)
+  const reasons: RhMixedReconciliationReason[] = []
+  if (foreignOut != null && foreignOut > ZERO) reasons.push('foreign_route_contribution_detected')
+  if (credit != null && connectedOut != null && connectedOut < credit) reasons.push('connected_output_below_wallet_credit')
+  // Route value consumed by an excluded branch: an excluded swap whose input is on the wallet's route (incl. its input).
+  if (edges.some((e) => e.kind === 'route_value_leaving' || (e.kind !== 'connected' && e.kind !== 'unresolved' && e.inToken != null && e.inToken === inToken))) reasons.push('route_value_diverted_to_foreign_asset')
+  if (!inputReconciles && debit != null && connectedIn != null && !reasons.includes('route_value_diverted_to_foreign_asset')) reasons.push('connected_input_mismatch')
+  const proven = m.finalClassification === 'direct_mixed_route_proven'
+  const reconciliation = {
+    targetAsset: outToken,
+    connectedNativeOutputRaw: connectedOut?.toString() ?? null,
+    walletNativeCreditRaw: credit?.toString() ?? null,
+    foreignNativeContributionRaw: foreignOut?.toString() ?? null,
+    unexplainedNativeCreditRaw: credit != null && connectedOut != null ? (credit > connectedOut ? credit - connectedOut : ZERO).toString() : null,
+    walletInputDebitRaw: debit?.toString() ?? null,
+    connectedInputConsumedRaw: connectedIn?.toString() ?? null,
+    unexplainedInputRaw: debit != null && connectedIn != null ? (debit - connectedIn).toString() : null,
+    outputReconciles, inputReconciles,
+    structuralSubreason: proven ? null : m.finalClassification,
+    reconciliationReasons: reasons,
+    reconciliationReason: reasons.length === 0 ? null : reasons.length === 1 ? reasons[0] : 'mixed_batch_output_not_reconciled' as RhMixedReconciliationReason,
+    offRouteDisjointActions: edges.filter((e) => e.kind === 'disjoint').map((e) => e.ordinal),
+  }
   return {
+    ...reconciliation,
     txHash: m.txHash, wallet, walletInputToken: inToken, targetOutput: outToken,
     actionCount: m.hops.length, actionOrdinals: m.hops.map((h) => h.index),
     nodes: [...new Set(['wallet', ...m.hops.flatMap((h) => [h.inToken, h.outToken]).filter((x): x is string => x != null)])],
