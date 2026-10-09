@@ -27,6 +27,9 @@ export type ClarkRoutingDebug = {
   routeUsed: string | null
   missingInput: string | null
   reason: string
+  userPlan?: string | null
+  plan?: string | null
+  blockedReason?: string | null
 }
 
 // TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress): the lookahead
@@ -210,6 +213,9 @@ export function buildClarkRoutingDebug(input: {
   routeUsed: string | null
   missingInput: string | null
   reason: string
+  userPlan?: string | null
+  plan?: string | null
+  blockedReason?: string | null
 }): ClarkRoutingDebug {
   return { ...input }
 }
