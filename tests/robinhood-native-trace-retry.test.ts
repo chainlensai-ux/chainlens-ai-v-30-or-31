@@ -59,10 +59,10 @@ beforeEach(() => {
   __setRobinhoodNativeTraceKvForTest(null)
 })
 
-test('limits: 12s trace window, 4 pages, 200 items, one retry per page, still 3 lookups', () => {
+test('limits: 12s trace window, 4 pages, 200 items, one retry per page, 5 lookups', () => {
   assert.deepEqual({ ...NATIVE_TRACE_PAGINATION }, { maxPages: 4, maxItems: 200, maxTotalMs: 12_000 })
   assert.equal(NATIVE_TRACE_MAX_RETRIES_PER_PAGE, 1)
-  assert.equal(NATIVE_TRACE_MAX_LOOKUPS, 3)
+  assert.equal(NATIVE_TRACE_MAX_LOOKUPS, 5)
 })
 
 test('1. production shape: page1 gateway 200 → page2 timeout → page2 retry 200 → complete, exact combined trace', async () => {

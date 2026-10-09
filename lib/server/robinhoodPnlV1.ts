@@ -148,7 +148,7 @@ export type RobinhoodPnlV1Deps = {
    * live budget slot. Null when none is stored for the tx.
    */
   nativeTraceCached?: (txHash: string) => Promise<RhNativeTraceResult | null>
-  /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 3). */
+  /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 5). */
   nativeTraceLiveCap?: number
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
   historicalTokenInbounds?: (wallet: string, token: string, beforeTimestampSec: number, deadlineAt: number) => Promise<RhHistoricalInboundResult>
@@ -605,8 +605,11 @@ export type RhRelayedTraceRequest = {
 }
 export type RhRelayedDiagnosticVerdict = 'wallet_funded_route_candidate' | 'externally_funded_route' | 'no_wallet_native_debit' | 'ambiguous_trace' | 'trace_unavailable'
 
-/** Live native-trace slots per scan — the Blockscout native_trace lane cap (NATIVE_TRACE_MAX_LOOKUPS). Unchanged. */
-export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 3
+/**
+ * Live native-trace slots per scan — the Blockscout native_trace lane cap (NATIVE_TRACE_MAX_LOOKUPS). Raised 3 → 5 once
+ * production showed eligible relayed buys skipped only as live_budget_exhausted; stored proofs still take no slot.
+ */
+export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 5
 /** Of the request's live slots, this many are held back from main verification for acquisition / deep recovery. */
 export const ROBINHOOD_NATIVE_TRACE_RECOVERY_RESERVE = 1
 

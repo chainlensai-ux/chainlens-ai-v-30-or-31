@@ -117,6 +117,9 @@ async function run(specs: Spec[], extra: Partial<RobinhoodPnlV1Deps> = {}) {
       transactionCount: specs.length, transferCount: specs.length, activityUnavailableReason: null,
       deps: {
         rpc, now: Date.now, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt, ethUsdRange: async () => null,
+        // These scenarios exercise allocator mechanics with three slots (2 main + 1 recovery reserve); production uses
+        // ROBINHOOD_NATIVE_TRACE_LIVE_CAP (5), covered by tests/robinhood-native-trace-cap.test.ts.
+        nativeTraceLiveCap: 3,
         nativeTransfersForTx: async (h) => {
           const e = byHash.get(h)!
           liveCalls.push(e.name)

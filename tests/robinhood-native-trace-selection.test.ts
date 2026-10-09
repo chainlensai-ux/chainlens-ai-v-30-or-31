@@ -131,9 +131,9 @@ const production = (): Array<[string, Tx]> => [['A', candA()], ['B', candB()], [
 
 beforeEach(() => { __resetRobinhoodPnlV1CachesForTest() })
 
-test('the live cap is unchanged (= the Blockscout native_trace lane cap)', () => {
+test('the live cap equals the Blockscout native_trace lane cap (5)', () => {
   assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, NATIVE_TRACE_MAX_LOOKUPS)
-  assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, 3)
+  assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, 5)
 })
 
 // POLICY (relayed attribution fix): a relayed ETH → token buy (C) is no longer terminal — it competes for the same slots as

@@ -145,8 +145,8 @@ function mixedReceipt(block: number) {
   }
 }
 
-test('9/10. three production-shaped mixed txs with multi-page traces: 3 logical slots, all proven, routes still rejected', async () => {
-  const hashes = [nextHash(), nextHash(), nextHash(), nextHash()]
+test('9/10. lane-cap + 1 production-shaped mixed txs with multi-page traces: lane-cap logical slots, all proven, routes still rejected', async () => {
+  const hashes = Array.from({ length: NATIVE_TRACE_MAX_LOOKUPS + 1 }, () => nextHash())
   const rcpts = new Map(hashes.map((h, i) => [h, mixedReceipt(2000 + i * 10)]))
   const rpc: RhRpc = async (calls) => calls.map(({ method, params }) => {
     const p = params as any[]
@@ -164,17 +164,17 @@ test('9/10. three production-shaped mixed txs with multi-page traces: 3 logical 
   let r
   try {
     r = await computeRobinhoodPnlV1({
-      wallet: WALLET, candidates: hashes.map((h) => ({ txHash: h, timestampMs: null, hasSwapLog: true })), transactionCount: 4, transferCount: 4, activityUnavailableReason: null,
+      wallet: WALLET, candidates: hashes.map((h) => ({ txHash: h, timestampMs: null, hasSwapLog: true })), transactionCount: hashes.length, transferCount: hashes.length, activityUnavailableReason: null,
       deps: { rpc, ethUsdRange: async () => null, tokenHistoricalUsd: async () => null, now: Date.now, nativeTransfersForTx: blockscoutNativeTransfersForTx(s.fn) },
     })
   } finally { console.warn = w }
   const audits = lines.filter(([t]) => t === '[robinhood-native-trace-audit]').map(([, x]) => x)
-  assert.equal(audits.length, 4)
+  assert.equal(audits.length, hashes.length)
   const proven = audits.filter((a) => a.result === 'proven')
-  assert.equal(proven.length, NATIVE_TRACE_MAX_LOOKUPS, 'only 3 logical trace slots, however many pages each needed')
+  assert.equal(proven.length, NATIVE_TRACE_MAX_LOOKUPS, 'only lane-cap logical trace slots, however many pages each needed')
   assert.ok(proven.every((a) => a.pagesRequested === 3 && a.paginationComplete && a.nativeToWalletRaw === E18.toString()))
   assert.deepEqual(audits.filter((a) => a.result !== 'proven').map((a) => [a.result, a.attempted]), [['budget_exhausted', false]])
   // 10. these fixture routes are not proven (the wallet receives nothing the route produces), so they stay rejected
   assert.equal(r.swapsVerified, 0)
-  assert.deepEqual(r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: 4 })
+  assert.deepEqual(r.ingestionAudit.rejectionReasons, { other_venue_swap_in_tx: hashes.length })
 })

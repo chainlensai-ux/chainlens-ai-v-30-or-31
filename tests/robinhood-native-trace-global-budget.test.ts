@@ -118,6 +118,9 @@ async function run(specs: Spec[], extra: Partial<RobinhoodPnlV1Deps> = {}) {
           if (e.traceDelayMs) await new Promise((res) => setTimeout(res, e.traceDelayMs))
           return e.tx.trace
         },
+        // These scenarios exercise allocator mechanics with three slots (2 main + 1 recovery reserve); production uses
+        // ROBINHOOD_NATIVE_TRACE_LIVE_CAP (5), covered by tests/robinhood-native-trace-cap.test.ts.
+        nativeTraceLiveCap: 3,
         nativeTraceCached: async (h) => { const e = byHash.get(h); return e?.stored && e.tx.trace ? { transfers: e.tx.trace, audit: null } : null },
         historicalTokenInbounds: historicalRows.length ? async () => ({
           rows: historicalRows, pagesRequested: 1, pagesSucceeded: 1, olderInboundRowsFound: historicalRows.length,
@@ -158,7 +161,7 @@ beforeEach(() => { __resetRobinhoodPnlV1CachesForTest() })
 
 test('production shape: main live 2 + recovery live 1 = 3; the historical self-call buy is proven and closes the sell', async () => {
   const { r, liveCalls, global, recoverySel, traceAudits } = await run(production())
-  assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, 3)
+  assert.equal(ROBINHOOD_NATIVE_TRACE_LIVE_CAP, 5) // production cap; this scenario pins 3 slots
   assert.deepEqual(liveCalls.slice().sort(), ['H0', 'M1', 'M2'])
   assert.deepEqual([global.totalCap, global.mainLiveUsed, global.recoveryLiveUsed, global.totalLiveUsed], [3, 2, 1, 3])
   assert.deepEqual([global.storedProofHitsMain, global.mainEligibleDeferredForRecovery, global.recoverySelected, global.reservedSlotReleasedToMain], [4, 1, 1, false])

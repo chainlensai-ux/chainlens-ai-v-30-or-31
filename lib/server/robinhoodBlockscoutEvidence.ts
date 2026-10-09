@@ -62,7 +62,7 @@ const RATE_LIMIT_MAX_CALLS = 4
 // `/logs` lookups during activity reconstruction routinely exhaust `evidence` before PnL needs a trace. Its
 // unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
-export const NATIVE_TRACE_MAX_LOOKUPS = 3
+export const NATIVE_TRACE_MAX_LOOKUPS = 5 // = ROBINHOOD_NATIVE_TRACE_LIVE_CAP (one scan's live traces fit one window)
 export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history' | 'holdings' | 'manifest_bootstrap'
 // One empty filtered probe may precede four unfiltered history pages; each is one logical lookup.
 const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4, holdings: 2, manifest_bootstrap: 4 }

@@ -200,6 +200,9 @@ async function scan(chain: Chain, opts: ScanOpts) {
       wallet: WALLET, candidates, transactionCount: candidates.length, transferCount: candidates.length, activityUnavailableReason: null,
       deps: {
         rpc, now: () => 1_800_000_000_000, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt, ethUsdRange: async () => null,
+        // These scenarios exercise allocator mechanics with three slots (2 main + 1 recovery reserve); production uses
+        // ROBINHOOD_NATIVE_TRACE_LIVE_CAP (5), covered by tests/robinhood-native-trace-cap.test.ts.
+        nativeTraceLiveCap: 3,
         nativeTransfersForTx: async (h) => { const e = chain.get(h)!; liveTraces.push(e.name); return e.tx.trace },
         nativeTraceCached: async (h) => { const e = chain.get(h); return e && opts.stored?.has(e.name) && e.tx.trace ? { transfers: e.tx.trace, audit: null } : null },
         verifiedSwapManifest: { read: readRobinhoodVerifiedSwapManifest, record: recordRobinhoodVerifiedSwaps },

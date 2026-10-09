@@ -61,8 +61,8 @@ test('2. the native_trace budget is bounded independently (and never touches the
   const b = blockscout({ community: 'ok' })
   const results = []
   for (let i = 0; i < NATIVE_TRACE_MAX_LOOKUPS + 2; i++) results.push(await blockscoutNativeTransfersForTx(b.fn)(nextHash()))
-  assert.deepEqual(results.map((r) => r.audit?.result), ['proven', 'proven', 'proven', 'budget_exhausted', 'budget_exhausted'])
-  assert.equal(results[3].audit?.attempted, false)
+  assert.deepEqual(results.map((r) => r.audit?.result), [...Array(NATIVE_TRACE_MAX_LOOKUPS).fill('proven'), 'budget_exhausted', 'budget_exhausted'])
+  assert.equal(results[NATIVE_TRACE_MAX_LOOKUPS].audit?.attempted, false)
   assert.equal(b.traceCalls(), NATIVE_TRACE_MAX_LOOKUPS)
   assert.equal(blockscoutLaneRemaining('evidence'), 4, 'evidence budget untouched')
 })
@@ -153,16 +153,17 @@ async function runMixed(count: number, reply: { community: Reply; gateway?: Repl
   } finally { console.warn = w }
 }
 
-test('8. exactly 3 mixed txs trigger at most 3 trace lookups (<= 2 HTTP each via the 403 -> gateway path); a 4th is budget_exhausted', async () => {
-  const three = await runMixed(3, { community: 'cf403', gateway: 'ok' })
-  assert.equal(three.audits.length, 3, 'one [robinhood-native-trace-audit] line per mixed tx')
-  assert.ok(three.audits.every((a) => a.result === 'proven' && a.nativeToWalletRaw === E18.toString()))
-  assert.ok(three.b.traceCalls() <= 6)
-  assert.equal(three.r.metrics.nativeTraceLookups, 3)
+test('8. exactly N (= the lane cap, 5) mixed txs trigger at most N trace lookups (<= 2 HTTP each via the 403 -> gateway path); an (N+1)th is budget_exhausted', async () => {
+  const N = NATIVE_TRACE_MAX_LOOKUPS
+  const full = await runMixed(N, { community: 'cf403', gateway: 'ok' })
+  assert.equal(full.audits.length, N, 'one [robinhood-native-trace-audit] line per mixed tx')
+  assert.ok(full.audits.every((a) => a.result === 'proven' && a.nativeToWalletRaw === E18.toString()))
+  assert.ok(full.b.traceCalls() <= 2 * N)
+  assert.equal(full.r.metrics.nativeTraceLookups, N)
   __resetRobinhoodBlockscoutRateLimitForTest()
-  const four = await runMixed(4, { community: 'ok' })
-  assert.equal(four.b.traceCalls(), 3)
-  assert.deepEqual(four.audits.map((a) => a.result).sort(), ['budget_exhausted', 'proven', 'proven', 'proven'])
+  const over = await runMixed(N + 1, { community: 'ok' })
+  assert.equal(over.b.traceCalls(), N)
+  assert.deepEqual(over.audits.map((a) => a.result).sort(), ['budget_exhausted', ...Array(N).fill('proven')])
 })
 
 test('9. unproven mixed routes stay rejected even when the trace proves a payout', async () => {
