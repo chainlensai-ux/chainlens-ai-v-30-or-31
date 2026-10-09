@@ -34,6 +34,7 @@ import { nearestPriceWithGap } from '../v4SwapCandles'
 import { analyzeRobinhoodMixedRoute, robinhoodMixedRouteGraph, deriveRhNativeEvidence, NATIVE_ASSET, V2_SWAP_TOPIC0, V3_SWAP_TOPIC0, type RhMixedClassification, type RhNativeEvidence, type RhNativeTraceAudit, type RhNativeTraceResult, type RhNativeTransfer, type RobinhoodMixedRouteForensics } from './robinhoodMixedRouteForensics'
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
+import { robinhoodFifoCoverageAudit } from './robinhoodFifoCoverageAudit'
 import {
   orderRobinhoodVerifiedSwapManifest, advanceRobinhoodManifestBootstrapMarker, settleRobinhoodManifestBootstrapMarker, newRobinhoodManifestBootstrapMarker, rankRobinhoodBootstrapPending,
   ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS,
@@ -349,6 +350,8 @@ export type RobinhoodPnlV1IngestionAudit = {
   }
   oversizedTraceBudget?: RhOversizedTraceSummary
   traceScheduler?: RhTraceSchedulerSummary
+  /** Diagnostic: FIFO coverage of verified sells ([robinhood-fifo-coverage-audit] summary). */
+  fifoCoverage?: import('./robinhoodFifoCoverageAudit').RhFifoCoverageSummary
   relayedNativeTraceDiagnostics?: { candidates: number; verdicts: Record<RhRelayedDiagnosticVerdict, number> }
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
@@ -3524,6 +3527,23 @@ export async function computeRobinhoodPnlV1(params: {
   const { fifo, buyCount, sellCount } = deep.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
     : intermediate
+  // Diagnostic only: why each verified sell does / does not close a FIFO lot (observational universe = the full merged
+  // activity set before staged receipt truncation). Never feeds verification, pricing or FIFO.
+  try {
+    const coverage = robinhoodFifoCoverageAudit({
+      wallet, isQuote: (t) => quoteKind(t) != null,
+      swaps: [...swaps, ...recovery.swaps, ...deep.swaps], evidence: [...evidence, ...recovery.evidence, ...deep.evidence],
+      matchedLots: fifo.matchedLots, inbound: params.inboundTokenTransfers ?? [], candidatePool: params.candidates.map((c) => c.txHash),
+      selectedStage1: selected.map((c) => c.txHash), outcomes,
+      tracedTxHashes: new Set([...alloc.resolved].filter(([, t]) => t != null).map(([h]) => h)),
+      recovery: recovery.summary.acquisitionRecoveryAttempted ? recovery.summary : null,
+    })
+    for (const row of coverage.sells) console.warn('[robinhood-fifo-coverage-audit]', { wallet, ...row })
+    console.warn('[robinhood-fifo-coverage-audit]', { wallet, summary: coverage.summary })
+    ingestion.fifoCoverage = coverage.summary
+  } catch (err) {
+    console.warn('[robinhood-fifo-coverage-audit]', { wallet, error: err instanceof Error ? err.message : String(err) })
+  }
   if (deep.summary) {
     deep.summary.closedLotsAdded = fifo.matchedLots.length - intermediate.fifo.matchedLots.length
     if (deep.summary.rpcHistory) {

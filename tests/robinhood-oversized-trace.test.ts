@@ -522,6 +522,11 @@ test('S6. scheduler: concurrency 2, sells first (wave 1), buys start only when a
   assert.equal(r.swapsVerified, 4)
   assert.equal(r.ingestionAudit.traceScheduler?.peakConcurrency, 2)
   assert.deepEqual(summary.outcomes, { completed: 4, transport_failed: 0, not_attempted_deadline: 0, retry_exhausted: 0, pagination_incomplete: 0 })
+  // [robinhood-fifo-coverage-audit] is emitted once per verified sell plus a summary (diagnostic only).
+  const fifo = lines.filter(([t]) => t === '[robinhood-fifo-coverage-audit]').map(([, b]) => b)
+  assert.equal(fifo.filter((b) => b.sellTxHash).length, 2)
+  assert.equal(fifo.find((b) => b.summary)?.summary.verifiedSellCount, 2)
+  assert.equal(r.ingestionAudit.fifoCoverage?.verifiedSwapCount, 4)
   assert.equal(summary.deadlineOverruns, 0)
 })
 
