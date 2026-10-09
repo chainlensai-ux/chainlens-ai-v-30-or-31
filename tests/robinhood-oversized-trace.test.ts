@@ -17,6 +17,7 @@ import {
 import { blockscoutNativeTraceSource } from '../lib/server/robinhoodNativeTrace.ts'
 import { getBlockscoutTransactionInternalTransactions } from '../lib/server/robinhoodBlockscoutEvidence.ts'
 import { readRobinhoodNativeTraceMemory } from '../lib/server/robinhoodNativeTracePersistence.ts'
+import { __resetRobinhoodPartialTraceMemoryForTest, __setRobinhoodPartialTraceKvForTest, partialTraceProgress } from '../lib/server/robinhoodPartialNativeTrace.ts'
 import { __resetMemoryFallbackForTest } from '../lib/server/cache/tokenCache.ts'
 import { __resetRobinhoodNativeTraceMemoryForTest, __setRobinhoodNativeTraceKvForTest } from '../lib/server/robinhoodNativeTracePersistence.ts'
 
@@ -100,6 +101,8 @@ const BUY_ROWS: Row[] = [[WALLET, ROUTER, n(0.01)], [ROUTER, PM, n(0.01)]]
 const toWallet = (tr: Array<{ to: string; value: bigint; success: boolean }> | null) => (tr ?? []).filter((x) => x.success && x.to === WALLET).reduce((a, x) => a + x.value, BigInt(0))
 
 beforeEach(() => {
+  __resetRobinhoodPartialTraceMemoryForTest()
+  __setRobinhoodPartialTraceKvForTest(null)
   __resetNativeTraceFilterCapabilityForTest() // the 422 capability cache is per runtime
   __resetRobinhoodBlockscoutRateLimitForTest()
   __resetMemoryFallbackForTest()
@@ -267,6 +270,7 @@ async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: b
         rpc, now: Date.now, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt, ethUsdRange: async () => null,
         nativeTransfersForTx: opts.wrapTrace ? opts.wrapTrace(source.transfersForTx) : source.transfersForTx,
         ...(opts.concurrency != null ? { nativeTraceConcurrency: opts.concurrency } : {}),
+        nativeTracePartialProgress: partialTraceProgress,
         ...(opts.extension === false ? {} : { extendNativeTraceForTx: source.extendOversized }),
       },
     })
@@ -279,6 +283,7 @@ test('P1. >200-item relayed sell with a valid wallet route: rejected without the
   const before = await scan(txs(), { extension: false })
   assert.equal(before.r.swapsVerified, 1)
   assert.equal(before.r.ingestionAudit.relayedWalletRejectedReasons?.ambiguous_trace, 1)
+  __resetRobinhoodPartialTraceMemoryForTest() // this test is about the in-scan extension, not cross-scan progress
   const after = await scan(txs())
   assert.equal(after.r.swapsVerified, 2)
   assert.deepEqual([after.r.ingestionAudit.normalizedBuyCount, after.r.ingestionAudit.normalizedSellCount], [1, 1])
@@ -556,4 +561,42 @@ test('T2. every first attempt is bounded by the scan deadline: a hung low-priori
   assert.equal(r.transfers, null)
   const a = r.audit!.pageTransportAttempts[0]
   assert.ok(a.timeoutBudgetMs! <= 2_500 && a.scanRemainingMs! <= 3_000)
+})
+
+// ── Cross-scan partial progress at the PnL level (job cc6ad1dc) ──────────────────────────────────────────────────
+test('P-D. relayed buy: scan 1 stores pages 1–2 (no promotion); scan 2 resumes and the payer on the resumed page rejects it', async () => {
+  const rows: Row[] = [[WALLET, ROUTER, n(0.005)], [OTHER, ROUTER, n(0.005)], [ROUTER, PM, n(0.01)]]
+  const tx = buyTx(6, TS - 100)
+  tx.items = blockscoutItems(rows, 170, 3) // wallet debit on page 1 …
+  const co = tx.items.find((it) => it.from.hash === OTHER)!
+  tx.items = tx.items.filter((it) => it !== co)
+  tx.items.splice(160, 0, co) // … the co-payer on page 4 (never fetched in scan 1)
+  tx.items = tx.items.map((it, i) => ({ ...it, index: i + 1 }))
+  tx.faults = { 3: ['timeout', 'timeout', 'timeout', 'timeout'] } // lookup + retry, in-scan continuation + retry
+  const s1 = await scan([tx], { rejectsFilter: true })
+  assert.equal(s1.r.swapsVerified, 0, 'I: partial progress never promotes')
+  assert.equal(s1.r.ingestionAudit.relayedWalletRejectedReasons?.trace_unavailable, 1)
+  const partialLine = s1.lines.find(([t, b]) => t === '[robinhood-partial-trace-audit]' && b.writeSucceeded)
+  assert.ok(partialLine, 'progress stored')
+  const s2 = await scan([tx], { rejectsFilter: true })
+  const resumed = s2.lines.find(([t, b]) => t === '[robinhood-partial-trace-audit]' && b.hit)![1]
+  assert.deepEqual([resumed.completedPagesBefore, resumed.pagesRefetched], [2, 0])
+  assert.equal(s2.r.swapsVerified, 0)
+  assert.deepEqual(s2.r.ingestionAudit.relayedWalletRejectedReasons, { externally_funded_route: 1 })
+})
+
+test('P-O. a p1 sell with partial progress is traced before a brand-new p1 sell (p0_partial_resume_sell)', async () => {
+  const fresh = sellTx(6, TS - 500).trace(SELL_ROWS, 120)   // older: would normally go first
+  const resumable = sellTx(7, TS - 100).trace(SELL_ROWS, 120)
+  resumable.faults = { 2: ['timeout', 'timeout', 'timeout', 'timeout'] } // lookup + retry, in-scan continuation + retry
+  await scan([fresh, resumable], { concurrency: 1 }) // scan 1: resumable stores page 1
+  const { r, lines, idx } = await scan([fresh, resumable], { concurrency: 1 })
+  const rows = lines.filter(([t, b]) => t === '[robinhood-trace-scheduler-audit]' && b.txHash).map(([, b]) => b)
+  if (rows.length === 1) {
+    // The fresh sell was proven in scan 1 already (stored proof, no live slot): only the resumable one runs live.
+    assert.equal(rows[0].priorityClass, 'p0_partial_resume_sell')
+  } else {
+    assert.deepEqual(rows.map((b) => [idx(b.txHash), b.priorityClass]), [[1, 'p0_partial_resume_sell'], [0, 'p1_native_out_sell']])
+  }
+  assert.equal(r.swapsVerified, 2)
 })

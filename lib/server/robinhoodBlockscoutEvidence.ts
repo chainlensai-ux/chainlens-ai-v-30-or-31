@@ -1100,6 +1100,45 @@ export async function continueBlockscoutTransactionInternalTransactions(
   return out
 }
 
+/** Rebuilds a continuation from stored pages (a persisted partial trace): same item identity as a live lookup. */
+export function internalTxResumeFrom(input: {
+  txHash: string; filter: boolean; zeroValueFilter: NativeTraceZeroValueFilter; nextCursor: string; cursors: readonly string[]
+  items: readonly BlockscoutInternalTransaction[]; useGateway: boolean; completedPages: number
+}): InternalTxTraceResume {
+  const items = new Map<string, BlockscoutInternalTransaction>()
+  for (const it of input.items) items.set(itemKey(it as never), it)
+  return {
+    txHash: input.txHash.toLowerCase(), filter: input.filter, zeroValueFilter: input.zeroValueFilter, query: input.nextCursor,
+    items, cursors: new Set(input.cursors), useGateway: input.useGateway, pagesDone: input.completedPages,
+  }
+}
+
+/**
+ * A NEW scan resuming a persisted partial trace: the next pages from the stored cursor only (pages 1..pagesDone are
+ * never requested again). It is a normal lookup — one native_trace lane slot, the normal per-lookup page / item / time
+ * caps counted from the resume point (whole trace ≤ NATIVE_TRACE_EXTENDED_MAX_ITEMS), the scan deadline, the same
+ * retry / reserve rules — and complete only at next_page_params == null.
+ */
+export async function resumeBlockscoutTransactionInternalTransactions(
+  resume: InternalTxTraceResume,
+  fetchImpl: FetchImpl,
+  opts: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number } = {},
+): Promise<InternalTxTraceResult> {
+  const caps = {
+    maxPages: resume.pagesDone + NATIVE_TRACE_PAGINATION.maxPages,
+    maxItems: Math.min(NATIVE_TRACE_EXTENDED_MAX_ITEMS, resume.items.size + NATIVE_TRACE_PAGINATION.maxItems),
+    maxTotalMs: NATIVE_TRACE_PAGINATION.maxTotalMs,
+  }
+  const result = { ...emptyInternalTxTraceResult(caps), pagesRequested: resume.pagesDone, pagesSucceeded: resume.pagesDone, totalItemCount: resume.items.size }
+  if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
+  if (!checkBlockscoutRateLimit('native_trace')) return { ...result, status: 'budget_exhausted', last: { ...result.last, failureClass: 'rate_limited' } }
+  return runInternalTxPages(result, { ...resume, items: new Map(resume.items), cursors: new Set(resume.cursors) }, fetchImpl,
+    { ...caps, deadlineAt: opts.deadlineAt, reserveRetry: opts.reserveRetry, pageTimeoutMs: opts.pageTimeoutMs }, Date.now())
+}
+
+/** True when the endpoint is currently known to refuse include_zero_value=false (partial-trace compatibility). */
+export function nativeTraceFilterKnownUnsupported(): boolean { return zeroValueFilterCapabilityState() === 'unsupported' }
+
 type MutableResume = { -readonly [K in keyof InternalTxTraceResume]: InternalTxTraceResume[K] } & { items: Map<string, BlockscoutInternalTransaction>; cursors: Set<string> }
 
 async function runInternalTxPages(

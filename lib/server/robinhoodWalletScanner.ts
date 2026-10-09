@@ -43,6 +43,7 @@
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { blockscoutNativeTraceSource, storedRobinhoodNativeTrace } from './robinhoodNativeTrace'
+import { partialTraceProgress } from './robinhoodPartialNativeTrace'
 import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
 import { readRobinhoodVerifiedSwapManifest, recordRobinhoodVerifiedSwaps, readRobinhoodManifestBootstrapMarker, writeRobinhoodManifestBootstrapMarker } from './robinhoodVerifiedSwapManifest'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
@@ -1701,9 +1702,9 @@ export async function prefetchRobinhoodNativePriceDays(swaps: readonly RhVerifie
 // this only reorders nothing and adds no new logic, it is a pure extraction of the existing call
 // order into a named, reusable function.
 /** One native-trace source per scan: live lookups plus their oversized-trace continuations (never shared across scans). */
-function nativeTraceDeps(fetchImpl: FetchImpl): Pick<RobinhoodPnlV1Deps, 'nativeTransfersForTx' | 'extendNativeTraceForTx'> {
+function nativeTraceDeps(fetchImpl: FetchImpl): Pick<RobinhoodPnlV1Deps, 'nativeTransfersForTx' | 'extendNativeTraceForTx' | 'nativeTracePartialProgress'> {
   const source = blockscoutNativeTraceSource(fetchImpl)
-  return { nativeTransfersForTx: source.transfersForTx, extendNativeTraceForTx: source.extendOversized }
+  return { nativeTransfersForTx: source.transfersForTx, extendNativeTraceForTx: source.extendOversized, nativeTracePartialProgress: partialTraceProgress }
 }
 
 export async function scanRobinhoodWallet(

@@ -111,6 +111,12 @@ export type RhNativeTraceAudit = {
   deadlineStopped?: boolean
   /** A transient failure whose retry the scan deadline did not allow. */
   retrySkippedForDeadline?: boolean
+  /** Cross-scan partial progress (never evidence): resumed at page resumedFromPage with resumedItemCount stored items. */
+  partialTraceHit?: boolean
+  resumedFromPage?: number | null
+  resumedItemCount?: number | null
+  pagesRefetched?: number
+  partialWritten?: boolean
   /** Oversized-trace extension (extra pages beyond the normal cap): what it spent and how it ended. */
   extension?: { pagesRequested: number; transportAttempts: number; elapsedMs: number; priority: string } | null
   result: RhNativeTraceResultKind

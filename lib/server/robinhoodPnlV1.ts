@@ -142,7 +142,15 @@ export type RobinhoodPnlV1Deps = {
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
-  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  nativeTransfersForTx?: (txHash: string, opts?: {
+    deadlineAt?: number; reserveRetry?: boolean; pageTimeoutMs?: number
+    identity?: { blockNumber: number | null; blockHash: string | null; txStatus: number | null }
+  }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  /**
+   * Cross-scan partial trace progress for ORDERING only (never evidence): a p1 sell with stored progress is cheapest
+   * to finish and is traced before brand-new p1 sells. Null when none.
+   */
+  nativeTracePartialProgress?: (txHash: string) => Promise<{ completedPages: number; itemCount: number } | null>
   /** Tests / benchmarks only: concurrent live native traces in the main selection (default ROBINHOOD_NATIVE_TRACE_CONCURRENCY). */
   nativeTraceConcurrency?: number
   /** Tests / benchmarks only: per-request timeout for p1 sell trace pages (default ROBINHOOD_P1_TRACE_PAGE_TIMEOUT_MS). */
@@ -533,7 +541,7 @@ export function __resetRobinhoodPnlV1CachesForTest(): void {
 
 // ── Receipt-level evidence ──────────────────────────────────────────────────────────────────────────
 type RhLog = { address: string; topics: string[]; data: string; logIndex: number; blockTimestamp: number | null }
-export type RhReceipt = { status: number | null; from: string; to: string | null; blockNumber: number; gasUsed: bigint; effectiveGasPrice: bigint; logs: RhLog[] }
+export type RhReceipt = { status: number | null; from: string; to: string | null; blockNumber: number; gasUsed: bigint; effectiveGasPrice: bigint; logs: RhLog[]; blockHash?: string | null }
 
 function parseReceipt(raw: unknown): RhReceipt | null {
   const r = raw as Record<string, unknown> | null
@@ -559,6 +567,7 @@ function parseReceipt(raw: unknown): RhReceipt | null {
     gasUsed: hexToBigInt(r.gasUsed) ?? ZERO,
     effectiveGasPrice: hexToBigInt(r.effectiveGasPrice) ?? ZERO,
     logs,
+    blockHash: typeof r.blockHash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(r.blockHash) ? r.blockHash.toLowerCase() : null,
   }
 }
 
@@ -579,6 +588,8 @@ type Ctx = {
   traceReplay?: Map<string, RhNativeTransfer[] | null>
   /** Request-scoped live native-trace allocator, shared by main verification and every recovery lane (ctx copies share it). */
   traceBudget?: RhLiveTraceAllocator
+  /** p1 sells resuming cross-scan partial trace progress this scan (ordering / audit only). */
+  partialResumeSells?: Set<string>
   /** Relayed V4-only native-input receipts eligible for a DIAGNOSTIC trace only (never acceptance). */
   relayedTraceRequests?: Map<string, RhRelayedTraceRequest>
 }
@@ -1027,8 +1038,11 @@ async function requestNativeTrace(ctx: Ctx, txHash: string, opts: { reserveRetry
   else {
     ctx.m.nativeTraceLookups += 1
     const p1Timeout = opts.reserveRetry ? p1PageTimeoutMs(ctx) : undefined
+    // The receipt already read for this tx pins its identity: a stored partial trace must match it to be resumed.
+    const receipt = await receiptCache.get(txHash)?.catch(() => null)
     const raw = await ctx.deps.nativeTransfersForTx(txHash, {
       deadlineAt: ctx.deadlineAt, ...(opts.reserveRetry ? { reserveRetry: true } : {}), ...(p1Timeout != null ? { pageTimeoutMs: p1Timeout } : {}),
+      ...(receipt ? { identity: { blockNumber: receipt.blockNumber, blockHash: receipt.blockHash ?? null, txStatus: receipt.status } } : {}),
     }).catch(() => null)
     // Injected sources may return the bare transfer list (complete trace) or null (unavailable).
     res = raw == null || Array.isArray(raw)
@@ -1084,7 +1098,7 @@ async function scheduleLiveTraces(ctx: Ctx, selected: readonly RhNativeTraceRequ
   const results = await mapLimit(selected, limit, async (r) => {
     const sell = r.priorityClass === 'p1_native_out_sell'
     const row: Record<string, unknown> = {
-      txHash: r.txHash, priorityClass: r.priorityClass, wave: sell ? 1 : 2, startOrdinal: ++ordinal, startedAtMs: Date.now() - t0,
+      txHash: r.txHash, priorityClass: ctx.partialResumeSells?.has(r.txHash) ? 'p0_partial_resume_sell' : r.priorityClass, wave: sell ? 1 : 2, startOrdinal: ++ordinal, startedAtMs: Date.now() - t0,
       activeAtStart: active, remainingScanMsAtStart: ctx.deadlineAt - Date.now(), retryReserveMs: sell ? ROBINHOOD_TRACE_RETRY_RESERVE_MS : 0,
     }
     rows.push(row)
@@ -1425,7 +1439,18 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       alloc.storedResolved.add(r.txHash)
     }
   })
-  const live = eligible.filter((r) => !cacheHit.has(r.txHash))
+  // p0: p1 sells with cross-scan partial progress go first (cheapest to finish); otherwise the order is unchanged.
+  // Ordering only — eligibility was decided above and a partial is never evidence.
+  const liveUnordered = eligible.filter((r) => !cacheHit.has(r.txHash))
+  const readPartial = ctx.deps.nativeTracePartialProgress
+  const partialSell = new Set<string>()
+  if (readPartial && Date.now() < ctx.deadlineAt) {
+    const sells = liveUnordered.filter((r) => r.priorityClass === 'p1_native_out_sell')
+    const progress = await mapLimit(sells, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => Promise.resolve().then(() => readPartial(r.txHash)).catch(() => null))
+    sells.forEach((r, i) => { if (progress[i] && progress[i]!.completedPages > 0) partialSell.add(r.txHash) })
+  }
+  const live = [...liveUnordered.filter((r) => partialSell.has(r.txHash)), ...liveUnordered.filter((r) => !partialSell.has(r.txHash))]
+  ctx.partialResumeSells = partialSell
   // Past the PnL deadline no live trace is started (requestNativeTrace also re-checks per request).
   const deadlineReached = Date.now() >= ctx.deadlineAt
   const selected = deadlineReached ? [] : live.slice(0, Math.max(0, Math.min(mainLiveCap, cap - alloc.used)))
@@ -1458,7 +1483,7 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
       terminalWithoutNativeTrace: !r?.nativeProofCouldChangeOutcome,
       nativeProofCouldChangeOutcome: r?.nativeProofCouldChangeOutcome ?? false,
       traceEligible: r?.nativeProofCouldChangeOutcome ?? false,
-      priorityClass: r?.nativeProofCouldChangeOutcome ? (cacheHit.has(o.txHash) ? 'p1_stored_proof' : r.priorityClass) : null,
+      priorityClass: r?.nativeProofCouldChangeOutcome ? (cacheHit.has(o.txHash) ? 'p1_stored_proof' : partialSell.has(o.txHash) ? 'p0_partial_resume_sell' : r.priorityClass) : null,
       selectedForLiveTrace: ordinal.has(o.txHash),
       persistentOrMemoryHit: cacheHit.has(o.txHash),
       liveBudgetOrdinal: ordinal.get(o.txHash) ?? null,
