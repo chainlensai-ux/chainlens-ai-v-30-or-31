@@ -142,7 +142,9 @@ export type RobinhoodPnlV1Deps = {
   tokenHistoricalUsd: (token: string, timestampSec: number) => Promise<RhHistoricalTokenPrice | null>
   now: () => number
   /** Forensics only: the target tx's internal native transfers (execution trace); null when unavailable. */
-  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  nativeTransfersForTx?: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTransfer[] | null | RhNativeTraceResult>
+  /** Tests / benchmarks only: concurrent live native traces in the main selection (default ROBINHOOD_NATIVE_TRACE_CONCURRENCY). */
+  nativeTraceConcurrency?: number
   /**
    * Already-verified native traces (process memory / persistent positive proof) — never a live request, never a
    * live budget slot. Null when none is stored for the tx.
@@ -336,6 +338,7 @@ export type RobinhoodPnlV1IngestionAudit = {
     relayedDiagnosticLiveUsed?: number
   }
   oversizedTraceBudget?: RhOversizedTraceSummary
+  traceScheduler?: RhTraceSchedulerSummary
   relayedNativeTraceDiagnostics?: { candidates: number; verdicts: Record<RhRelayedDiagnosticVerdict, number> }
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
@@ -664,6 +667,8 @@ export type RhLiveTraceAllocator = {
   /** Live-budget ordinal per traced tx; stored proofs per tx. */
   liveOrdinal: Map<string, number>
   storedResolved: Set<string>
+  /** Main-selection live trace scheduler (concurrency / waves / provider pressure). */
+  scheduler?: RhTraceSchedulerSummary
   /** Oversized-trace continuations: each tx at most once; pages and tx counted against the per-scan budget. */
   oversized: RhOversizedTraceSummary & { extended: Set<string>; seen: Set<string> }
 }
@@ -704,17 +709,22 @@ async function extendOversizedTrace(ctx: Ctx, txHash: string, priority: RhOversi
     o.perTx.push({ txHash, priority, outcome: msLeft < ROBINHOOD_OVERSIZED_MIN_CONTINUATION_MS ? 'skipped_deadline' : 'skipped_oversized_budget_exhausted', extraPages: 0, extraRequests: 0, elapsedMs: 0 })
     return res
   }
+  // Continuations may run concurrently (one per scheduler slot): each reserves its fair share of the pages still free
+  // up front (all of them when it is the last oversized slot) and gives back what it did not use.
+  const grant = Math.max(1, Math.ceil(pagesLeft / Math.max(1, o.maxTxPerScan - o.extendedTx)))
   o.extended.add(txHash)
   o.extendedTx += 1
+  o.extraPagesUsed += grant
   const started = Date.now()
-  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: pagesLeft, maxTotalMs: msLeft, priority, deadlineAt }).catch(() => null)
+  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: grant, maxTotalMs: msLeft, priority, deadlineAt }).catch(() => null)
   if (!ext) { // nothing to continue (no valid cursor kept): no oversized slot spent
     o.extendedTx -= 1
+    o.extraPagesUsed -= grant
     o.perTx.push({ txHash, priority, outcome: 'no_continuation', extraPages: 0, extraRequests: 0, elapsedMs: Date.now() - started })
     return res
   }
   const spent = ext.audit?.extension ?? null
-  o.extraPagesUsed += spent?.pagesRequested ?? 0
+  o.extraPagesUsed -= grant - Math.min(grant, spent?.pagesRequested ?? 0)
   o.extraRequestsUsed += spent?.transportAttempts ?? 0
   o.extraMsTotal += Date.now() - started
   const outcome = ext.audit?.result ?? 'transport_failed'
@@ -1005,14 +1015,14 @@ const nativeTraceAuditBase = (txHash: string, result: RhNativeTraceAudit['result
   pagesRequested: 0, pagesSucceeded: 0, totalItemCount: null, paginationComplete: false, paginationCap: null, paginationCapHit: false, pageTransportAttempts: [], result,
 })
 
-async function requestNativeTrace(ctx: Ctx, txHash: string): Promise<RhNativeTraceResult> {
+async function requestNativeTrace(ctx: Ctx, txHash: string, opts: { reserveRetry?: boolean } = {}): Promise<RhNativeTraceResult> {
   const base = (result: RhNativeTraceAudit['result']): RhNativeTraceAudit => nativeTraceAuditBase(txHash, result)
   let res: RhNativeTraceResult
   if (!ctx.deps.nativeTransfersForTx) res = { transfers: null, audit: base('not_attempted_no_trace_source') }
   else if (Date.now() >= ctx.deadlineAt) res = { transfers: null, audit: base('not_attempted_deadline') }
   else {
     ctx.m.nativeTraceLookups += 1
-    const raw = await ctx.deps.nativeTransfersForTx(txHash, { deadlineAt: ctx.deadlineAt }).catch(() => null)
+    const raw = await ctx.deps.nativeTransfersForTx(txHash, { deadlineAt: ctx.deadlineAt, ...(opts.reserveRetry ? { reserveRetry: true } : {}) }).catch(() => null)
     // Injected sources may return the bare transfer list (complete trace) or null (unavailable).
     res = raw == null || Array.isArray(raw)
       ? { transfers: raw, audit: { ...base(raw == null ? 'transport_failed' : raw.length === 0 ? 'empty' : 'proven'), attempted: true, itemCount: raw?.length ?? null } }
@@ -1020,6 +1030,70 @@ async function requestNativeTrace(ctx: Ctx, txHash: string): Promise<RhNativeTra
   }
   return res
 }
+
+/**
+ * LIVE TRACE SCHEDULER (main selection). The selected traces were already in priority order, but they used to start
+ * through the receipt lane's mapLimit (3 at once): both p1 sells AND the first p2 buy paged against the same Blockscout
+ * gateway together (429s / timeouts), and every one of them probed include_zero_value=false at t=0. Now: at most
+ * ROBINHOOD_NATIVE_TRACE_CONCURRENCY traces in flight, started strictly in priority order — wave 1 = p1 token → ETH
+ * sells (each with a retry reserve: its first attempts leave time for a same-page retry), wave 2 = everything else,
+ * each started only when a slot frees. The selection, the live cap and every proof rule are unchanged.
+ */
+export const ROBINHOOD_NATIVE_TRACE_CONCURRENCY = 2
+export type RhTraceSchedulerSummary = {
+  selectedCount: number; concurrencyLimit: number; waves: { wave1: number; wave2: number }
+  peakConcurrency: number; provider429Count: number; timeoutCount: number; retryCount: number
+  completedLiveTraces: number; failedLiveTraces: number; skippedInsufficientDeadline: number; duplicateCapabilityProbes: number
+}
+async function scheduleLiveTraces(ctx: Ctx, selected: readonly RhNativeTraceRequest[]): Promise<RhNativeTraceResult[]> {
+  const limit = Math.max(1, ctx.deps.nativeTraceConcurrency ?? ROBINHOOD_NATIVE_TRACE_CONCURRENCY)
+  const t0 = Date.now()
+  let active = 0
+  let peak = 0
+  let ordinal = 0
+  const rows: Array<Record<string, unknown>> = []
+  const results = await mapLimit(selected, limit, async (r) => {
+    const sell = r.priorityClass === 'p1_native_out_sell'
+    const row: Record<string, unknown> = {
+      txHash: r.txHash, priorityClass: r.priorityClass, wave: sell ? 1 : 2, startOrdinal: ++ordinal, startedAtMs: Date.now() - t0,
+      activeAtStart: active, remainingScanMsAtStart: ctx.deadlineAt - Date.now(), retryReserveMs: sell ? ROBINHOOD_TRACE_RETRY_RESERVE_MS : 0,
+    }
+    rows.push(row)
+    active += 1
+    peak = Math.max(peak, active)
+    try {
+      const first = await requestNativeTrace(ctx, r.txHash, { reserveRetry: sell })
+      // A sell continues right away in its own slot — before any wave-2 trace can take the provider capacity.
+      const res = sell ? await extendOversizedTrace(ctx, r.txHash, 'p1_native_out_sell', first) : first
+      const audits = res === first ? [first.audit] : [first.audit, res.audit] // lookup + its continuation
+      const sum = (f: (a: RhNativeTraceAudit) => number) => audits.reduce((t, a) => t + (a ? f(a) : 0), 0)
+      Object.assign(row, {
+        finishedAtMs: Date.now() - t0, filterCapabilityWaited: first.audit?.filterCapabilityWaitMs != null, filterCapabilityWaitMs: first.audit?.filterCapabilityWaitMs ?? null,
+        result: res.audit?.result ?? (res.transfers ? 'proven' : 'transport_failed'), continued: res !== first,
+        pagesSucceeded: res.audit?.pagesSucceeded ?? null, pageRetryCount: sum((a) => a.pageRetryCount ?? 0),
+        http429: sum((a) => (a.pageTransportAttempts ?? []).filter((x) => x.httpStatus === 429).length),
+        timeouts: sum((a) => (a.pageTransportAttempts ?? []).filter((x) => x.failureClass === 'timeout').length), filterProbes: sum((a) => a.filterProbes ?? 0),
+      })
+      return res
+    } finally { active -= 1 }
+  })
+  const n = (k: string) => rows.reduce((t, x) => t + (Number(x[k]) || 0), 0)
+  const summary: RhTraceSchedulerSummary = {
+    selectedCount: selected.length, concurrencyLimit: limit,
+    waves: { wave1: rows.filter((x) => x.wave === 1).length, wave2: rows.filter((x) => x.wave === 2).length },
+    peakConcurrency: peak, provider429Count: n('http429'), timeoutCount: n('timeouts'), retryCount: n('pageRetryCount'),
+    completedLiveTraces: results.filter((x) => x.transfers != null).length,
+    failedLiveTraces: results.filter((x) => x.transfers == null && x.audit?.result !== 'not_attempted_deadline').length,
+    skippedInsufficientDeadline: results.filter((x) => x.audit?.result === 'not_attempted_deadline').length,
+    duplicateCapabilityProbes: Math.max(0, n('filterProbes') - 1),
+  }
+  for (const row of rows) console.warn('[robinhood-trace-scheduler-audit]', { selectedCount: selected.length, concurrencyLimit: limit, ...row })
+  console.warn('[robinhood-trace-scheduler-audit]', { summary })
+  if (ctx.traceBudget) ctx.traceBudget.scheduler = summary
+  return results
+}
+/** = Blockscout NATIVE_TRACE_MIN_RETRY_MS + retry delay + slack + NATIVE_TRACE_DEADLINE_MARGIN_MS (left free by a reserved first attempt). */
+const ROBINHOOD_TRACE_RETRY_RESERVE_MS = 2_250
 
 /** Exactly one [robinhood-native-trace-audit] line per resolved / skipped trace. */
 function logNativeTrace(wallet: string, txHash: string, res: RhNativeTraceResult): RhNativeTransfer[] | null {
@@ -1325,9 +1399,8 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
   const ordinal = new Map(selected.map((r, i) => [r.txHash, alloc.used + i + 1]))
   alloc.used += selected.length
   alloc.mainUsed += selected.length
-  const results = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => requestNativeTrace(ctx, r.txHash))
-  // Oversized token → ETH sells get the first claim on the oversized budget (priority order, one at a time).
-  for (const [i, r] of selected.entries()) if (r.priorityClass === 'p1_native_out_sell') results[i] = await extendOversizedTrace(ctx, r.txHash, 'p1_native_out_sell', results[i])
+  // Oversized token → ETH sells continue inside their own scheduler slot (first claim on the oversized budget).
+  const results = await scheduleLiveTraces(ctx, selected)
   selected.forEach((r, i) => {
     const transfers = logNativeTrace(wallet, r.txHash, results[i])
     replay.set(r.txHash, transfers)
@@ -3344,6 +3417,7 @@ export async function computeRobinhoodPnlV1(params: {
     relayedDiagnosticLiveUsed: alloc.relayedDiagnosticLiveUsed, oversizedTraceBudget: oversizedSummary(alloc),
   })
   ingestion.oversizedTraceBudget = oversizedSummary(alloc)
+  if (alloc.scheduler) ingestion.traceScheduler = alloc.scheduler
   ingestion.nativeTraceGlobalBudget = {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,

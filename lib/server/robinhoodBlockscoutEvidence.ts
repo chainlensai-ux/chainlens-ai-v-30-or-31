@@ -813,6 +813,7 @@ export const NATIVE_TRACE_EXTENDED_MAX_ITEMS = 600
 export const NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM = 'include_zero_value'
 const NATIVE_TRACE_MIN_REQUEST_MS = 250 // below this a request cannot meaningfully complete: fail closed
 const NATIVE_TRACE_RETRY_DELAY_MS = 150
+const NATIVE_TRACE_RESERVE_SLACK_MS = 100 // timer drift between the failed attempt's timeout and the retry check
 /** A same-page retry needs at least this much time (a page that just failed will not answer in 250 ms). */
 export const NATIVE_TRACE_MIN_RETRY_MS = 1_500
 /** Kept free before the scan-wide deadline: a request never runs into the time the PnL lane needs to finish. */
@@ -821,19 +822,30 @@ export const NATIVE_TRACE_DEADLINE_MARGIN_MS = 500
 // include_zero_value=false, later lookups skip the filter probe until the entry expires — never forever.
 export const NATIVE_TRACE_FILTER_CAPABILITY_VERSION = 1
 export const NATIVE_TRACE_FILTER_UNSUPPORTED_TTL_MS = 30 * 60_000
-let zeroValueFilterUnsupported: { version: number; until: number; httpStatus: number } | null = null
-function zeroValueFilterKnownUnsupported(): boolean {
-  const c = zeroValueFilterUnsupported
-  if (!c || c.version !== NATIVE_TRACE_FILTER_CAPABILITY_VERSION || Date.now() >= c.until) { zeroValueFilterUnsupported = null; return false }
-  return true
+// SINGLEFLIGHT: while the capability is unknown, exactly ONE lookup probes the filter on page 1; concurrent lookups await
+// that probe's verdict (bounded by their own window / deadline) instead of all sending the parameter before the first
+// 422 lands. An accepted parameter is cached the same way (no waiting next time); a transient probe failure settles
+// nothing, and the next lookup probes again.
+type FilterCapability = { version: number; state: 'unsupported' | 'accepted'; until: number; httpStatus: number }
+let zeroValueFilterCapability: FilterCapability | null = null
+let filterProbeInFlight: Promise<void> | null = null
+function zeroValueFilterCapabilityState(): FilterCapability['state'] | null {
+  const c = zeroValueFilterCapability
+  if (!c || c.version !== NATIVE_TRACE_FILTER_CAPABILITY_VERSION || Date.now() >= c.until) { zeroValueFilterCapability = null; return null }
+  return c.state
+}
+function recordFilterCapability(state: FilterCapability['state'], httpStatus: number): void {
+  zeroValueFilterCapability = { version: NATIVE_TRACE_FILTER_CAPABILITY_VERSION, state, until: Date.now() + NATIVE_TRACE_FILTER_UNSUPPORTED_TTL_MS, httpStatus }
 }
 /** Tests only. */
-export function __resetNativeTraceFilterCapabilityForTest(): void { zeroValueFilterUnsupported = null }
+export function __resetNativeTraceFilterCapabilityForTest(): void { zeroValueFilterCapability = null; filterProbeInFlight = null }
 export type NativeTraceTransientFailure = 'timeout' | 'network_error' | 'rate_limited' | 'http_5xx'
 
 export type InternalTxTraceStatus =
   | 'complete' | 'not_configured' | 'budget_exhausted' | 'transport_failed' | 'malformed'
   | 'inconsistent_pagination' | 'pagination_cap_exhausted' | 'indexing_pending'
+  /** Not started: the scan deadline left no room for a first attempt plus its retry reserve. */
+  | 'insufficient_deadline'
 export type InternalTxPageAttempt = { page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
 export type NativeTraceZeroValueFilter = 'applied' | 'ignored_by_server' | 'rejected_fallback_unfiltered' | 'skipped_known_unsupported' | 'off'
 /** What the fetched items are: why a trace is large, and how much of it carries native value. */
@@ -887,6 +899,8 @@ export type InternalTxTraceResult = {
   resume: InternalTxTraceResume | null
   /** HTTP 400 / 422 filter probes this lookup made (0 once the capability is known unsupported). */
   filterProbes: number
+  /** ms this lookup waited for another lookup's in-flight filter probe (null: did not wait). */
+  filterCapabilityWaitMs: number | null
   /** Extension only: pages / HTTP requests / ms this continuation spent (on top of the original lookup). */
   extension: { pagesRequested: number; transportAttempts: number; elapsedMs: number } | null
 }
@@ -994,7 +1008,7 @@ function emptyInternalTxTraceResult(caps: InternalTxTraceResult['paginationCap']
     paginationComplete: false, paginationCap: caps, paginationCapHit: false, pageTransportAttempts: [],
     transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
     last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
-    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null, filterProbes: 0,
+    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null, filterProbes: 0, filterCapabilityWaitMs: null,
   }
 }
 const internalTxCacheKey = (txHash: string) => `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
@@ -1003,20 +1017,51 @@ export async function getBlockscoutTransactionInternalTransactions(
   txHash: string,
   fetchImpl: FetchImpl,
   caps: { maxPages: number; maxItems: number; maxTotalMs: number } = NATIVE_TRACE_PAGINATION,
-  opts: { zeroValueFilter?: boolean; deadlineAt?: number } = {},
+  opts: {
+    zeroValueFilter?: boolean; deadlineAt?: number
+    /**
+     * High-priority lookups: every first attempt leaves NATIVE_TRACE_MIN_RETRY_MS + NATIVE_TRACE_DEADLINE_MARGIN_MS of scan
+     * time unused, so a transient failure can still be retried; with less than a meaningful attempt left, no page starts.
+     */
+    reserveRetry?: boolean
+  } = {},
 ): Promise<InternalTxTraceResult> {
   const result = emptyInternalTxTraceResult(NATIVE_TRACE_PAGINATION)
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const cached = await getTokenCache<BlockscoutInternalTransaction[]>(internalTxCacheKey(txHash)).catch(() => null)
   if (Array.isArray(cached)) return { ...result, status: 'complete', items: cached, cacheHit: true, paginationComplete: true, totalItemCount: cached.length, itemCategories: categorizeInternalTransactions(cached) }
   if (!checkBlockscoutRateLimit('native_trace')) return { ...result, status: 'budget_exhausted', last: { ...result.last, failureClass: 'rate_limited' } }
+  const startedAt = Date.now()
   const wanted = opts.zeroValueFilter ?? true
-  const knownUnsupported = wanted && zeroValueFilterKnownUnsupported()
+  let state = wanted ? zeroValueFilterCapabilityState() : null
+  if (wanted && state == null && filterProbeInFlight) {
+    // Another lookup is probing right now: wait for its verdict (never past this lookup's own window / deadline).
+    const waitMs = Math.max(0, Math.min(caps.maxTotalMs, (opts.deadlineAt ?? Number.POSITIVE_INFINITY) - startedAt))
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([filterProbeInFlight, new Promise<void>((r) => { timer = setTimeout(r, waitMs) })])
+    clearTimeout(timer)
+    result.filterCapabilityWaitMs = Date.now() - startedAt
+    state = zeroValueFilterCapabilityState()
+  }
+  const knownUnsupported = state === 'unsupported'
   const filter = wanted && !knownUnsupported
-  return runInternalTxPages(result, {
-    txHash, filter, zeroValueFilter: knownUnsupported ? 'skipped_known_unsupported' : filter ? 'applied' : 'off',
-    query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
-  }, fetchImpl, { ...caps, deadlineAt: opts.deadlineAt }, Date.now())
+  // The prober: the one lookup that sends the filter while the capability is unknown and nobody else is probing.
+  let resolveProbe: (() => void) | null = null
+  let mine: Promise<void> | null = null
+  if (filter && state == null && !filterProbeInFlight) {
+    mine = new Promise<void>((r) => { resolveProbe = r })
+    filterProbeInFlight = mine
+  }
+  const probe = resolveProbe as (() => void) | null
+  const settle = () => { if (probe) { probe(); if (filterProbeInFlight === mine) filterProbeInFlight = null } }
+  try {
+    return await runInternalTxPages(result, {
+      txHash, filter, zeroValueFilter: knownUnsupported ? 'skipped_known_unsupported' : filter ? 'applied' : 'off',
+      query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
+    }, fetchImpl, { ...caps, deadlineAt: opts.deadlineAt, reserveRetry: opts.reserveRetry }, startedAt, probe ? settle : null)
+  } finally {
+    settle() // a probe that ended without a verdict (transient failure, deadline) settles nothing: waiters re-check
+  }
 }
 
 /**
@@ -1027,9 +1072,9 @@ export async function getBlockscoutTransactionInternalTransactions(
 export async function continueBlockscoutTransactionInternalTransactions(
   resume: InternalTxTraceResume,
   fetchImpl: FetchImpl,
-  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number },
+  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean },
 ): Promise<InternalTxTraceResult> {
-  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs, deadlineAt: caps.deadlineAt }
+  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs, deadlineAt: caps.deadlineAt, reserveRetry: caps.reserveRetry }
   const result = { ...emptyInternalTxTraceResult(total), pagesRequested: resume.pagesDone, pagesSucceeded: resume.pagesDone }
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const startedAt = Date.now()
@@ -1046,17 +1091,23 @@ async function runInternalTxPages(
   result: InternalTxTraceResult,
   st: MutableResume,
   fetchImpl: FetchImpl,
-  caps: { maxPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number },
+  caps: { maxPages: number; maxItems: number; maxTotalMs: number; deadlineAt?: number; reserveRetry?: boolean },
   startedAt: number,
+  settleProbe: (() => void) | null = null,
 ): Promise<InternalTxTraceResult> {
   // TIME: a page's first attempt is bounded by the lookup window (unchanged). The one same-page retry of a page that
   // failed transiently is bounded by the SCAN deadline (minus a margin) instead — before, the failed attempt itself
   // could use up the rest of the window (its timeout was min(6s, window left)), so the retry found < 250 ms and was
   // skipped: production page 4, pageRetryCount 0, transport_failed. Without a scan deadline the retry stays inside
   // the window as before. Either way a retry that cannot get NATIVE_TRACE_MIN_RETRY_MS fails closed.
+  // RETRY HEADROOM (reserveRetry, high-priority lookups): a first attempt never uses the last NATIVE_TRACE_MIN_RETRY_MS +
+  // NATIVE_TRACE_RETRY_DELAY_MS + NATIVE_TRACE_DEADLINE_MARGIN_MS before the scan deadline, so its own transient failure
+  // can still be retried. The reserve is per attempt: once a page succeeds nothing stays held for it.
   const windowLeft = () => caps.maxTotalMs - (Date.now() - startedAt)
-  const firstLeft = windowLeft
-  const retryLeft = () => (caps.deadlineAt != null ? caps.deadlineAt - Date.now() - NATIVE_TRACE_DEADLINE_MARGIN_MS : windowLeft())
+  const scanLeft = () => (caps.deadlineAt != null ? caps.deadlineAt - Date.now() - NATIVE_TRACE_DEADLINE_MARGIN_MS : Number.POSITIVE_INFINITY)
+  const reserve = caps.reserveRetry && caps.deadlineAt != null
+  const firstLeft = () => (reserve ? Math.min(windowLeft(), scanLeft() - NATIVE_TRACE_MIN_RETRY_MS - NATIVE_TRACE_RETRY_DELAY_MS - NATIVE_TRACE_RESERVE_SLACK_MS) : windowLeft())
+  const retryLeft = () => (caps.deadlineAt != null ? scanLeft() : windowLeft())
   const base = `/api/v2/transactions/${st.txHash}/internal-transactions`
   const finish = (r: InternalTxTraceResult): InternalTxTraceResult => {
     const all = [...st.items.values()]
@@ -1081,7 +1132,8 @@ async function runInternalTxPages(
     // One real request for this page, bounded by the time left; null when no meaningful time remains.
     const send = async (mode: 'community' | 'gateway', retry = false): Promise<TransportResponse | null> => {
       const remaining = retry ? retryLeft() : firstLeft()
-      if (remaining < (retry ? NATIVE_TRACE_MIN_RETRY_MS : NATIVE_TRACE_MIN_REQUEST_MS)) return null
+      // A reserved first attempt must itself be meaningful (≥ the retry minimum): never launch a doomed page.
+      if (remaining < (retry || reserve ? NATIVE_TRACE_MIN_RETRY_MS : NATIVE_TRACE_MIN_REQUEST_MS)) return null
       attempt += 1
       result.transportAttemptsTotal += 1
       const r = await blockscoutRequest(path, fetchImpl, mode, Math.min(BLOCKSCOUT_TIMEOUT_MS, remaining))
@@ -1091,7 +1143,9 @@ async function runInternalTxPages(
     }
     // A transient failure after ≥ 1 good page keeps this page's exact cursor (and every fetched item) for a continuation.
     const resumable = () => (st.pagesDone > 0 ? { ...st, items: new Map(st.items), cursors: new Set(st.cursors) } : null)
-    const deadline = () => finish({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const }, resume: resumable() })
+    const deadline = () => attempt === 0 && st.pagesDone === 0 && result.transportAttemptsTotal === 0
+      ? finish({ ...result, status: 'insufficient_deadline' as const })
+      : finish({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const }, resume: resumable() })
     let res = await send(st.useGateway ? 'gateway' : 'community')
     if (!res) return deadline()
     if (!st.useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
@@ -1102,7 +1156,8 @@ async function runInternalTxPages(
     // The server refused the filter parameter itself: the same logical page 1, unfiltered, on the same host.
     if (!res.ok && st.filter && page === 1 && (res.status === 400 || res.status === 422)) {
       result.filterProbes += 1
-      zeroValueFilterUnsupported = { version: NATIVE_TRACE_FILTER_CAPABILITY_VERSION, until: Date.now() + NATIVE_TRACE_FILTER_UNSUPPORTED_TTL_MS, httpStatus: res.status }
+      recordFilterCapability('unsupported', res.status)
+      settleProbe?.() // waiting lookups go unfiltered right away
       st.filter = false
       st.zeroValueFilter = 'rejected_fallback_unfiltered'
       path = base
@@ -1124,6 +1179,7 @@ async function runInternalTxPages(
       if (!result.pagesRetried.includes(page)) result.pagesRetried.push(page)
       res = again
     }
+    if (res.ok && st.filter && page === 1) { recordFilterCapability('accepted', res.status); settleProbe?.() }
     if (!res.ok) {
       if (res.attempt.failureClass === 'invalid_json') return finish({ ...result, status: 'malformed' })
       return finish({ ...result, status: 'transport_failed', resume: nativeTraceTransientFailure(res) ? resumable() : null })

@@ -105,6 +105,8 @@ export type RhNativeTraceAudit = {
   indexingPending?: boolean
   /** include_zero_value=false probes refused with HTTP 400 / 422 by this lookup (0 when the capability is cached). */
   filterProbes?: number
+  /** ms spent awaiting another lookup's in-flight filter probe (null: did not wait). */
+  filterCapabilityWaitMs?: number | null
   /** Oversized-trace extension (extra pages beyond the normal cap): what it spent and how it ended. */
   extension?: { pagesRequested: number; transportAttempts: number; elapsedMs: number; priority: string } | null
   result: RhNativeTraceResultKind

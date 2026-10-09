@@ -237,7 +237,7 @@ const sellTx = (k: number, ts: number) => new Tx(ts).xfer(TOKENS[k], WALLET, PM,
 const buyTx = (k: number, ts: number) => new Tx(ts).v4(RH_NATIVE, TOKENS[k], n(0.01), n(100 + k)).xfer(TOKENS[k], PM, WALLET, n(100 + k))
 const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
 
-async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean } = {}) {
+async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean; concurrency?: number } = {}) {
   __resetRobinhoodPnlV1CachesForTest()
   const byHash = new Map(txs.map((tx, i) => [hashN(100 + i), { tx, i, block: 1000 + i * 10 }]))
   const server = blockscout(new Map([...byHash].map(([h, e]) => [h, { items: e.tx.items, faults: e.tx.faults }])), { honorsFilter: opts.honorsFilter, rejectsFilter: opts.rejectsFilter, latencyMs: opts.latencyMs })
@@ -266,6 +266,7 @@ async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: b
       deps: {
         rpc, now: Date.now, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt, ethUsdRange: async () => null,
         nativeTransfersForTx: source.transfersForTx,
+        ...(opts.concurrency != null ? { nativeTraceConcurrency: opts.concurrency } : {}),
         ...(opts.extension === false ? {} : { extendNativeTraceForTx: source.extendOversized }),
       },
     })
@@ -444,4 +445,73 @@ test('R8. PnL: competing payer on the retried final page still rejects (external
   const { r } = await scan([tx], { rejectsFilter: true })
   assert.equal(r.swapsVerified, 0)
   assert.deepEqual(r.ingestionAudit.relayedWalletRejectedReasons, { externally_funded_route: 1 })
+})
+
+// ── Trace contention (job c7618df3): concurrent traces probed the filter together and a sell's first attempt could
+// leave no time for its retry; selected traces ran 3 at a time regardless of priority ─────────────────────────────
+test('S1. filter probe singleflight: 3 concurrent lookups → ONE 422 probe; the others wait, then go unfiltered', async () => {
+  const hs = [hashN(300), hashN(301), hashN(302)]
+  const s = blockscout(new Map(hs.map((h) => [h, { items: blockscoutItems(SELL_ROWS, 10) }])), { rejectsFilter: true, latencyMs: 40 })
+  const src = blockscoutNativeTraceSource(s.fn)
+  const rs = await Promise.all(hs.map((h) => src.transfersForTx(h)))
+  assert.deepEqual(rs.map((r) => r.audit?.result), ['proven', 'proven', 'proven'])
+  assert.equal(rs.reduce((t, r) => t + (r.audit?.filterProbes ?? 0), 0), 1)
+  assert.equal(s.traceUrls().filter((u) => u.includes('include_zero_value')).length, 1, 'no duplicate 422 probes')
+  assert.deepEqual(rs.map((r) => r.audit?.filterCapabilityWaitMs != null), [false, true, true])
+  assert.deepEqual(rs.slice(1).map((r) => r.audit?.zeroValueFilter), ['skipped_known_unsupported', 'skipped_known_unsupported'])
+})
+
+test('S2. a probe that fails transiently settles nothing: a waiter probes next (never stuck), still one 422 in total', async () => {
+  const hs = [hashN(303), hashN(304)]
+  const s = blockscout(new Map([[hs[0], { items: blockscoutItems(SELL_ROWS, 10), faults: { 1: [500, 500] } }], [hs[1], { items: blockscoutItems(SELL_ROWS, 10) }]]), { latencyMs: 20 })
+  const src = blockscoutNativeTraceSource(s.fn)
+  const [a, b] = await Promise.all(hs.map((h) => src.transfersForTx(h, { deadlineAt: Date.now() + 20_000 })))
+  assert.equal(a.audit?.result, 'transport_failed')
+  assert.equal(b.audit?.result, 'proven')
+  assert.notEqual(b.audit?.filterCapabilityWaitMs, null)
+})
+
+test('S3. retry headroom: a high-priority first attempt leaves room for its retry; without the reserve it does not', async () => {
+  const run = async (reserveRetry: boolean, h: string) => {
+    const s = blockscout(new Map([[h, { items: blockscoutItems(SELL_ROWS, 60), faults: { 2: ['hang'] } }]]))
+    return blockscoutNativeTraceSource(s.fn).transfersForTx(h, { deadlineAt: Date.now() + 4_500, reserveRetry })
+  }
+  const without = await run(false, hashN(305))
+  assert.deepEqual([without.audit?.result, without.audit?.pageRetryCount], ['transport_failed', 0])
+  __resetRobinhoodBlockscoutRateLimitForTest()
+  const withReserve = await run(true, hashN(306))
+  assert.deepEqual([withReserve.audit?.result, withReserve.audit?.pageRetryCount, withReserve.audit?.pagesRetried], ['proven', 1, [2]])
+})
+
+test('S4. not enough scan time for a meaningful first attempt + reserve → no page is launched (fail closed)', async () => {
+  const H = hashN(307)
+  const s = blockscout(new Map([[H, { items: blockscoutItems(SELL_ROWS, 10) }]]))
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 3_000, reserveRetry: true })
+  assert.equal(r.audit?.result, 'not_attempted_deadline')
+  assert.equal(r.transfers, null)
+  assert.equal(s.traceUrls().length, 0)
+})
+
+test('S5. the reserve is per attempt, not held: a 4-page high-priority trace completes with the deadline just above one reserve', async () => {
+  const H = hashN(308)
+  const s = blockscout(new Map([[H, { items: blockscoutItems(SELL_ROWS, 160) }]]), { latencyMs: 30 })
+  const r = await blockscoutNativeTraceSource(s.fn).transfersForTx(H, { deadlineAt: Date.now() + 4_000, reserveRetry: true })
+  assert.deepEqual([r.audit?.result, r.audit?.pagesSucceeded], ['proven', 4])
+})
+
+test('S6. scheduler: concurrency 2, sells first (wave 1), buys start only when a slot frees; proof unchanged', async () => {
+  const txs = [buyTx(0, TS - 400).trace(BUY_ROWS, 60), buyTx(1, TS - 300).trace(BUY_ROWS, 60), sellTx(2, TS - 200).trace(SELL_ROWS, 120), sellTx(3, TS - 100).trace(SELL_ROWS, 120)]
+  const { r, lines, idx } = await scan(txs, { latencyMs: 30 })
+  const rows = lines.filter(([t, b]) => t === '[robinhood-trace-scheduler-audit]' && b.txHash).map(([, b]) => ({ ...b, i: idx(b.txHash) }))
+  const summary = lines.find(([t, b]) => t === '[robinhood-trace-scheduler-audit]' && b.summary)![1].summary
+  assert.deepEqual(rows.slice(0, 2).map((x) => x.priorityClass), ['p1_native_out_sell', 'p1_native_out_sell'])
+  assert.deepEqual(rows.map((x) => x.wave), [1, 1, 2, 2])
+  assert.equal(summary.peakConcurrency, 2)
+  assert.equal(summary.concurrencyLimit, 2)
+  const firstFinish = Math.min(...rows.slice(0, 2).map((x) => x.finishedAtMs))
+  assert.ok(rows.slice(2).every((x) => x.startedAtMs >= firstFinish), 'no buy overlaps both sells')
+  assert.deepEqual(rows.slice(0, 2).map((x) => x.retryReserveMs), [2250, 2250])
+  assert.equal(summary.completedLiveTraces, 4)
+  assert.equal(r.swapsVerified, 4)
+  assert.equal(r.ingestionAudit.traceScheduler?.peakConcurrency, 2)
 })

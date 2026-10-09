@@ -47,7 +47,7 @@ export async function storedRobinhoodNativeTrace(txHash: string): Promise<RhNati
 
 export type RobinhoodNativeTraceSource = {
   /** `deadlineAt`: the scan-wide deadline — bounds every request and decides whether a same-page retry may run. */
-  transfersForTx: (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTraceResult>
+  transfersForTx: (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTraceResult>
   /**
    * Continues a trace that hit the normal pagination cap (never re-requesting a fetched page), at most once per tx.
    * Null when there is nothing to continue (not oversized, already extended, or no valid cursor).
@@ -55,14 +55,14 @@ export type RobinhoodNativeTraceSource = {
   extendOversized: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string; deadlineAt?: number }) => Promise<RhNativeTraceResult | null>
 }
 
-export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string, opts?: { deadlineAt?: number }) => Promise<RhNativeTraceResult> {
+export function blockscoutNativeTransfersForTx(fetchImpl: FetchLike): (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => Promise<RhNativeTraceResult> {
   return blockscoutNativeTraceSource(fetchImpl).transfersForTx
 }
 
 export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNativeTraceSource {
   const resumes = new Map<string, InternalTxTraceResume>()
-  const live = async (txHash: string, deadlineAt?: number) => {
-    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl, undefined, { deadlineAt })
+  const live = async (txHash: string, opts?: { deadlineAt?: number; reserveRetry?: boolean }) => {
+    const t = await getBlockscoutTransactionInternalTransactions(txHash, fetchImpl, undefined, { deadlineAt: opts?.deadlineAt, reserveRetry: opts?.reserveRetry })
     if (t.resume) resumes.set(lower(txHash), t.resume)
     return nativeTraceResultFrom(txHash, t)
   }
@@ -84,7 +84,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
       audit.persistentReadReason = stored.reason
       if (stored.record) { audit.persistentHit = true; return logPersistence(audit, fromRecord(stored.record)) }
       audit.liveAttempted = true
-      const r = await live(txHash, opts?.deadlineAt)
+      const r = await live(txHash, opts)
       audit.liveResult = r.audit?.result ?? null
       await persisted(txHash, r, audit)
       return logPersistence(audit, r)
@@ -95,6 +95,7 @@ export function blockscoutNativeTraceSource(fetchImpl: FetchLike): RobinhoodNati
       resumes.delete(lower(txHash)) // one continuation per tx per scan
       const t = await continueBlockscoutTransactionInternalTransactions(resume, fetchImpl, {
         maxExtraPages: budget.maxExtraPages, maxItems: NATIVE_TRACE_EXTENDED_MAX_ITEMS, maxTotalMs: budget.maxTotalMs, deadlineAt: budget.deadlineAt,
+        reserveRetry: budget.priority === 'p1_native_out_sell',
       })
       const r = nativeTraceResultFrom(txHash, t)
       if (r.audit) r.audit.extension = t.extension ? { ...t.extension, priority: budget.priority } : null
@@ -148,12 +149,14 @@ function nativeTraceResultFrom(txHash: string, t: InternalTxTraceResult): RhNati
     itemCategories: t.itemCategories,
     indexingPending: t.indexingPending,
     filterProbes: t.filterProbes,
+    filterCapabilityWaitMs: t.filterCapabilityWaitMs,
     result: 'transport_failed',
   }
   const done = (result: RhNativeTraceAudit['result'], transfers: RhNativeTransfer[] | null = null): RhNativeTraceResult => ({ transfers, audit: { ...audit, result } })
   if (t.status === 'budget_exhausted') return done('budget_exhausted')
   if (t.status === 'pagination_cap_exhausted') return done('pagination_cap_exhausted')
   if (t.status === 'indexing_pending') return done('indexing_pending')
+  if (t.status === 'insufficient_deadline') return done('not_attempted_deadline')
   if (t.status === 'malformed' || t.status === 'inconsistent_pagination') return done('malformed')
   if (t.status !== 'complete' || !t.items) return done('transport_failed')
   const out: RhNativeTransfer[] = []
