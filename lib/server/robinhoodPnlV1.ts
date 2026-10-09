@@ -35,6 +35,7 @@ import { analyzeRobinhoodMixedRoute, robinhoodMixedRouteGraph, deriveRhNativeEvi
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
 import { robinhoodFifoCoverageAudit } from './robinhoodFifoCoverageAudit'
+import { robinhoodAcquisitionFundingAudit } from './robinhoodAcquisitionFundingAudit'
 import {
   orderRobinhoodVerifiedSwapManifest, advanceRobinhoodManifestBootstrapMarker, settleRobinhoodManifestBootstrapMarker, newRobinhoodManifestBootstrapMarker, rankRobinhoodBootstrapPending,
   ROBINHOOD_MANIFEST_BOOTSTRAP_LIMITS,
@@ -1367,6 +1368,24 @@ async function relayedMixedVerdict(ctx: Ctx, wallet: string, r: RhRelayedTraceRe
     v: { ...out, walletNativeDebitMatchesRoute: matchesDirection, verdict: matchesDirection ? 'wallet_funded_route_candidate' : 'ambiguous_trace' },
     promoted: matchesDirection ? { swap: promoted.swap, reason: 'relayed_wallet_swap_proven' } : { swap: null, reason: promoted.swap ? 'mixed_route_direction_changed' : `mixed_route_not_proven:${promoted.reason}` },
     mixed,
+  }
+}
+
+/**
+ * One `[robinhood-historical-acquisition-funding-audit]` line per acquisition candidate recovery did not prove
+ * (diagnostic only): what the wallet paid, who funded the executor, competing payers and whether a wallet-funded asset
+ * reaches the target token through the unchanged analyzer with the COMPLETE trace's native leg. Never feeds acceptance.
+ */
+function logAcquisitionFunding(ctx: Ctx, wallet: string, txHash: string, receipt: RhReceipt, targetToken: string, poolKeys: ReadonlyMap<string, RhPoolKey>, txValue: bigint | null, phase: string, rejectionReason: string | null): void {
+  try {
+    const trace = ctx.traceBudget?.resolved.get(txHash) ?? null
+    const audit = robinhoodAcquisitionFundingAudit({
+      wallet, txHash, receipt, targetToken, poolManager: POOL_MANAGER, wethAddress: RH_WETH, v4PoolKeys: poolKeys,
+      trace: trace ? relayedSwapNativeTransfers(trace, receipt, wallet) : null, txValue,
+    })
+    console.warn('[robinhood-historical-acquisition-funding-audit]', { phase, recoveryRejectionReason: rejectionReason, ...audit })
+  } catch (err) {
+    console.warn('[robinhood-historical-acquisition-funding-audit]', { txHash, phase, error: err instanceof Error ? err.message : String(err) })
   }
 }
 
@@ -2722,6 +2741,7 @@ async function recoverAcquisitionsForSell(
       } else if (proof.classification === 'verified_buy' || proof.classification === 'ambiguous') {
         Object.assign(row, { classification: 'ambiguous', rejectionReason: `existing verification rejected the wallet's own tx: ${o.mixedRejection ?? o.rejection ?? 'no swap of the sold token'}` })
       }
+      if (!row.swap) logAcquisitionFunding(ctx, wallet, c.txHash, receipt, token, poolKeys, null, options.phase ?? 'acquisition_recovery', row.rejectionReason)
       continue
     }
     if (proof.classification !== 'verified_buy') {
@@ -2733,6 +2753,7 @@ async function recoverAcquisitionsForSell(
         Object.assign(row, { classification: 'verified_buy', walletFundingToken: relayedSwap.inputToken, walletFundingRaw: relayedSwap.inputRaw.toString(), inboundRaw: relayedSwap.outputRaw.toString(), routeProven: true, ownershipProven: true, rejectionReason: null, swap: relayedSwap })
         covered += relayedSwap.outputRaw
       } else if (plan.relayed.has(c.txHash) && !row.rejectionReason) row.rejectionReason = 'relayed_buy_not_proven'
+      if (!row.swap) logAcquisitionFunding(ctx, wallet, c.txHash, receipt, token, poolKeys, txValue, options.phase ?? 'acquisition_recovery', row.rejectionReason)
       continue
     }
     const inputToken = proof.walletFundingToken!
