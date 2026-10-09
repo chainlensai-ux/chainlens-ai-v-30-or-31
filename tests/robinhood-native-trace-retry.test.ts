@@ -30,7 +30,7 @@ function server(page2: Step[], page1: Step = 'ok') {
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
   const fn = async (url: string, init?: RequestInit): Promise<Response> => {
     const host = new URL(url).host
-    const page = url.includes('?') ? 2 : 1
+    const page = new URL(url).searchParams.has('block_number') ? 2 : 1 // page 1 carries only include_zero_value=false
     calls.push({ url, host, page, auth: (init?.headers as Record<string, string> | undefined)?.authorization ?? null })
     if (!url.includes('/internal-transactions')) return json({ items: [] })
     if (host !== 'api.blockscout.com') return json({ message: 'Forbidden' }, 403) // community host refuses (production)

@@ -148,6 +148,11 @@ export type RobinhoodPnlV1Deps = {
    * live budget slot. Null when none is stored for the tx.
    */
   nativeTraceCached?: (txHash: string) => Promise<RhNativeTraceResult | null>
+  /**
+   * Oversized traces only: continues a live lookup that stopped at the normal pagination cap, from its next cursor
+   * (never a fetched page again), under the extra page / time budget given. Null when there is nothing to continue.
+   */
+  extendNativeTraceForTx?: (txHash: string, budget: { maxExtraPages: number; maxTotalMs: number; priority: string }) => Promise<RhNativeTraceResult | null>
   /** Live native-trace lookups one scan may spend (the Blockscout native_trace lane cap; default 5). */
   nativeTraceLiveCap?: number
   /** Blockscout history is only a candidate index; every row still needs the existing receipt classifier. */
@@ -330,6 +335,7 @@ export type RobinhoodPnlV1IngestionAudit = {
     recoveryEligible: number; recoverySelected: number; reservedSlotReleasedToMain: boolean
     relayedDiagnosticLiveUsed?: number
   }
+  oversizedTraceBudget?: RhOversizedTraceSummary
   relayedNativeTraceDiagnostics?: { candidates: number; verdicts: Record<RhRelayedDiagnosticVerdict, number> }
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
@@ -612,6 +618,22 @@ export type RhRelayedDiagnosticVerdict = 'wallet_funded_route_candidate' | 'exte
 export const ROBINHOOD_NATIVE_TRACE_LIVE_CAP = 5
 /** Of the request's live slots, this many are held back from main verification for acquisition / deep recovery. */
 export const ROBINHOOD_NATIVE_TRACE_RECOVERY_RESERVE = 1
+/**
+ * OVERSIZED-TRACE BUDGET, per scan (not a global pagination raise): a live trace that stopped at the normal cap
+ * (4 pages / 200 items) may continue from its next cursor for at most `maxTxPerScan` transactions and
+ * `maxExtraPagesPerScan` extra pages in total (each page ≤ 1 retry + 1 gateway switch), each continuation bounded by
+ * `maxMsPerTx` and the PnL deadline. Priority: token → ETH sells (main lane), then recovery receipts that can close a
+ * FIFO lot, then everything else (relayed buys) after recovery. Promotion still needs next_page_params == null; an
+ * extension that runs out of pages / time leaves the trace pagination_cap_exhausted (rejected).
+ */
+export const ROBINHOOD_OVERSIZED_TRACE_BUDGET = { maxTxPerScan: 2, maxExtraPagesPerScan: 8, maxMsPerTx: 8_000 } as const
+export type RhOversizedTracePriority = 'p1_native_out_sell' | 'p2_recovery_fifo_close' | 'p3_relayed_buy_or_other'
+export type RhOversizedTraceSummary = {
+  maxTxPerScan: number; maxExtraPagesPerScan: number
+  oversizedSeen: number; extendedTx: number; extraPagesUsed: number; extraRequestsUsed: number; extraMsTotal: number
+  completedByExtension: number; stillCapped: number; skippedBudgetExhausted: number
+  perTx: Array<{ txHash: string; priority: RhOversizedTracePriority; outcome: string; extraPages: number; extraRequests: number; elapsedMs: number }>
+}
 
 /**
  * ONE live native-trace budget per Robinhood PnL request (main verification + acquisition recovery + deep acquisition).
@@ -639,12 +661,98 @@ export type RhLiveTraceAllocator = {
   /** Live-budget ordinal per traced tx; stored proofs per tx. */
   liveOrdinal: Map<string, number>
   storedResolved: Set<string>
+  /** Oversized-trace continuations: each tx at most once; pages and tx counted against the per-scan budget. */
+  oversized: RhOversizedTraceSummary & { extended: Set<string>; seen: Set<string> }
 }
 const newLiveTraceAllocator = (cap: number): RhLiveTraceAllocator => ({
   cap, used: 0, mainUsed: 0, recoveryUsed: 0, resolved: new Map(), storedProofHitsMain: 0, storedProofHitsRecovery: 0,
   mainDeferred: [], mainEligibleDeferredForRecovery: 0, recoveryEligible: 0, recoverySelected: 0, reservedSlotReleasedToMain: false,
   relayedDiagnosticLiveUsed: 0, resolvedResults: new Map(), liveOrdinal: new Map(), storedResolved: new Set(),
+  oversized: {
+    maxTxPerScan: ROBINHOOD_OVERSIZED_TRACE_BUDGET.maxTxPerScan, maxExtraPagesPerScan: ROBINHOOD_OVERSIZED_TRACE_BUDGET.maxExtraPagesPerScan,
+    oversizedSeen: 0, extendedTx: 0, extraPagesUsed: 0, extraRequestsUsed: 0, extraMsTotal: 0, completedByExtension: 0, stillCapped: 0,
+    skippedBudgetExhausted: 0, perTx: [], extended: new Set(), seen: new Set(),
+  },
 })
+
+/**
+ * Oversized trace (stopped at the normal pagination cap): continue it once from its cursor if the per-scan oversized
+ * budget allows, else keep the capped result. Returns the result to use — complete only when the continuation reached
+ * next_page_params == null; anything else stays the (rejected) pagination_cap_exhausted / failure result.
+ */
+async function extendOversizedTrace(ctx: Ctx, txHash: string, priority: RhOversizedTracePriority, res: RhNativeTraceResult, deadlineAt = ctx.deadlineAt): Promise<RhNativeTraceResult> {
+  const alloc = ctx.traceBudget
+  if (!alloc || res.audit?.result !== 'pagination_cap_exhausted' || !ctx.deps.extendNativeTraceForTx) return res
+  const o = alloc.oversized
+  if (!o.seen.has(txHash)) { o.seen.add(txHash); o.oversizedSeen += 1 }
+  if (o.extended.has(txHash)) return res
+  const pagesLeft = o.maxExtraPagesPerScan - o.extraPagesUsed
+  const msLeft = Math.min(ROBINHOOD_OVERSIZED_TRACE_BUDGET.maxMsPerTx, deadlineAt - Date.now())
+  if (o.extendedTx >= o.maxTxPerScan || pagesLeft <= 0 || msLeft <= 0) {
+    if (o.perTx.some((p) => p.txHash === txHash)) return res // already recorded as skipped
+    o.skippedBudgetExhausted += 1
+    o.perTx.push({ txHash, priority, outcome: msLeft <= 0 ? 'skipped_deadline' : 'skipped_oversized_budget_exhausted', extraPages: 0, extraRequests: 0, elapsedMs: 0 })
+    return res
+  }
+  o.extended.add(txHash)
+  o.extendedTx += 1
+  const started = Date.now()
+  const ext = await ctx.deps.extendNativeTraceForTx(txHash, { maxExtraPages: pagesLeft, maxTotalMs: msLeft, priority }).catch(() => null)
+  if (!ext) { // nothing to continue (no valid cursor kept): no oversized slot spent
+    o.extendedTx -= 1
+    o.perTx.push({ txHash, priority, outcome: 'no_continuation', extraPages: 0, extraRequests: 0, elapsedMs: Date.now() - started })
+    return res
+  }
+  const spent = ext.audit?.extension ?? null
+  o.extraPagesUsed += spent?.pagesRequested ?? 0
+  o.extraRequestsUsed += spent?.transportAttempts ?? 0
+  o.extraMsTotal += Date.now() - started
+  const outcome = ext.audit?.result ?? 'transport_failed'
+  if (ext.transfers) o.completedByExtension += 1
+  else o.stillCapped += 1
+  o.perTx.push({ txHash, priority, outcome, extraPages: spent?.pagesRequested ?? 0, extraRequests: spent?.transportAttempts ?? 0, elapsedMs: Date.now() - started })
+  console.warn('[robinhood-oversized-trace-audit]', { txHash, priority, outcome, ...spent, itemCategories: ext.audit?.itemCategories ?? null, zeroValueFilter: ext.audit?.zeroValueFilter ?? null, extraPagesUsed: o.extraPagesUsed, extendedTx: o.extendedTx })
+  return ext
+}
+/**
+ * After recovery had its claim: any trace still pagination_cap_exhausted (relayed buys, other shapes, a sell the budget
+ * could not take earlier) in the shared trace priority order. Wallet-sent receipts are re-verified on the extended
+ * trace; relayed ones are replayed by their own lane. Returns true when a main outcome changed.
+ */
+async function extendRemainingOversizedTraces(ctx: Ctx, wallet: string, outcomes: CandidateOutcome[], threw: (h: string) => CandidateOutcome): Promise<boolean> {
+  const alloc = ctx.traceBudget
+  if (!alloc || !ctx.deps.extendNativeTraceForTx) return false
+  const requests = new Map<string, RhNativeTraceRequest>(ctx.traceRequests ?? [])
+  for (const r of ctx.relayedTraceRequests?.values() ?? []) if (!requests.has(r.txHash)) requests.set(r.txHash, relayedAsTraceRequest(r))
+  const pending = [...alloc.resolvedResults.entries()]
+    .filter(([h, r]) => r.audit?.result === 'pagination_cap_exhausted' && !alloc.oversized.extended.has(h) && requests.get(h)?.nativeProofCouldChangeOutcome)
+    .map(([h]) => requests.get(h)!)
+    .sort((a, b) => PRIORITY_RANK[a.priorityClass] - PRIORITY_RANK[b.priorityClass] || (a.hopCount ?? 1) - (b.hopCount ?? 1)
+      || (a.timestampSec ?? a.blockNumber) - (b.timestampSec ?? b.blockNumber) || a.txHash.localeCompare(b.txHash))
+  let changed = false
+  for (const r of pending) {
+    if (Date.now() >= ctx.deadlineAt) break
+    const res = await extendOversizedTrace(ctx, r.txHash, r.priorityClass === 'p1_native_out_sell' ? 'p1_native_out_sell' : 'p3_relayed_buy_or_other', alloc.resolvedResults.get(r.txHash)!)
+    if (res === alloc.resolvedResults.get(r.txHash)) continue // not extended (budget) — stays capped / rejected
+    alloc.resolved.set(r.txHash, logNativeTrace(wallet, r.txHash, res))
+    alloc.resolvedResults.set(r.txHash, res)
+    const i = r.kind === 'relayed' ? -1 : outcomes.findIndex((o) => o.txHash === r.txHash)
+    if (i >= 0 && res.transfers) {
+      const before = outcomes[i].swap
+      outcomes[i] = await verifyCandidate(ctx, wallet, r.txHash).catch(() => threw(r.txHash))
+      if ((before == null) !== (outcomes[i].swap == null)) changed = true
+    }
+  }
+  return changed
+}
+const oversizedSummary = (alloc: RhLiveTraceAllocator): RhOversizedTraceSummary => {
+  const o = alloc.oversized
+  return {
+    maxTxPerScan: o.maxTxPerScan, maxExtraPagesPerScan: o.maxExtraPagesPerScan, oversizedSeen: o.oversizedSeen, extendedTx: o.extendedTx,
+    extraPagesUsed: o.extraPagesUsed, extraRequestsUsed: o.extraRequestsUsed, extraMsTotal: o.extraMsTotal, completedByExtension: o.completedByExtension,
+    stillCapped: o.stillCapped, skippedBudgetExhausted: o.skippedBudgetExhausted, perTx: [...o.perTx],
+  }
+}
 export type RhNativeTracePriorityClass = 'p1_native_out_sell' | 'p2_single_hop_v4_one_erc20_side' | 'p2_relayed_buy' | 'p3_native_dependent' | 'p4_complex_multi_hop'
 export type RhNativeTraceRequest = {
   txHash: string
@@ -1208,6 +1316,8 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
   alloc.used += selected.length
   alloc.mainUsed += selected.length
   const results = await mapLimit(selected, ROBINHOOD_PNL_V1_LIMITS.concurrency, (r) => requestNativeTrace(ctx, r.txHash))
+  // Oversized token → ETH sells get the first claim on the oversized budget (priority order, one at a time).
+  for (const [i, r] of selected.entries()) if (r.priorityClass === 'p1_native_out_sell') results[i] = await extendOversizedTrace(ctx, r.txHash, 'p1_native_out_sell', results[i])
   selected.forEach((r, i) => {
     const transfers = logNativeTrace(wallet, r.txHash, results[i])
     replay.set(r.txHash, transfers)
@@ -1269,7 +1379,8 @@ async function releaseReservedSlotsToMain(ctx: Ctx, wallet: string, outcomes: Ca
     alloc.mainUsed += 1
     alloc.reservedSlotReleasedToMain = true
     summary.selectedForLiveTrace += 1
-    const result = await requestNativeTrace(ctx, r.txHash)
+    let result = await requestNativeTrace(ctx, r.txHash)
+    if (r.priorityClass === 'p1_native_out_sell') result = await extendOversizedTrace(ctx, r.txHash, 'p1_native_out_sell', result)
     const transfers = logNativeTrace(wallet, r.txHash, result)
     alloc.resolved.set(r.txHash, transfers)
     alloc.resolvedResults.set(r.txHash, result)
@@ -1384,7 +1495,8 @@ async function planRecoveryTraces(
       alloc.recoveryUsed += 1
       alloc.recoverySelected += 1
       Object.assign(r, { selected: true, ordinal: alloc.used, skipped: null })
-      const result = await requestNativeTrace({ ...ctx, deadlineAt: recoveryDeadlineAt }, txHash)
+      // A recovery receipt is traced only when it can close a FIFO lot (an unmatched sell): second oversized claim.
+      const result = await extendOversizedTrace(ctx, txHash, 'p2_recovery_fifo_close', await requestNativeTrace({ ...ctx, deadlineAt: recoveryDeadlineAt }, txHash), recoveryDeadlineAt)
       alloc.resolved.set(txHash, logNativeTrace(wallet, txHash, result))
       alloc.resolvedResults.set(txHash, result)
       alloc.liveOrdinal.set(txHash, alloc.used)
@@ -3200,6 +3312,7 @@ export async function computeRobinhoodPnlV1(params: {
   }
   let ds = await downstream()
   if (await releaseReservedSlotsToMain(ctx, wallet, outcomes, traceSelection.summary, threw)) ds = await downstream()
+  if (await extendRemainingOversizedTraces(ctx, wallet, outcomes, threw)) ds = await downstream()
   // Relayed V4 native-input candidates: lowest priority, whatever live capacity is left. Only the exact-trace
   // wallet_funded_route_candidate that replays through the unchanged verifier is promoted; then the downstream
   // (pricing / FIFO / recovery) runs once more on resolved traces only.
@@ -3218,8 +3331,9 @@ export async function computeRobinhoodPnlV1(params: {
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
     mainEligibleDeferredForRecovery: alloc.mainEligibleDeferredForRecovery, recoveryEligible: alloc.recoveryEligible,
     recoverySelected: alloc.recoverySelected, reservedSlotReleasedToMain: alloc.reservedSlotReleasedToMain,
-    relayedDiagnosticLiveUsed: alloc.relayedDiagnosticLiveUsed,
+    relayedDiagnosticLiveUsed: alloc.relayedDiagnosticLiveUsed, oversizedTraceBudget: oversizedSummary(alloc),
   })
+  ingestion.oversizedTraceBudget = oversizedSummary(alloc)
   ingestion.nativeTraceGlobalBudget = {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,

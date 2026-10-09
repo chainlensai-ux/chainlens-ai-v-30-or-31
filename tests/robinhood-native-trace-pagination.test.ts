@@ -56,7 +56,9 @@ test('1. a 2-page trace completes and proves the payout (cursor passed through e
   assert.equal(r.audit?.result, 'proven')
   assert.deepEqual([r.audit?.pagesRequested, r.audit?.pagesSucceeded, r.audit?.totalItemCount, r.audit?.paginationComplete], [2, 2, 3, true])
   assert.equal(toWallet(r.transfers), E18)
-  assert.equal(new URL(s.traceUrls()[1]).search, '?block_number=4200000&index=50&items_count=50&transaction_index=3')
+  // Blockscout's cursor untouched, plus the zero-value filter every page carries.
+  assert.equal(new URL(s.traceUrls()[0]).search, '?include_zero_value=false')
+  assert.equal(new URL(s.traceUrls()[1]).search, '?block_number=4200000&index=50&items_count=50&transaction_index=3&include_zero_value=false')
 })
 
 test('2. a 4-page trace completes', async () => {

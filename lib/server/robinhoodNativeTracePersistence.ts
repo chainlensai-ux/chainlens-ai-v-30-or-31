@@ -14,7 +14,7 @@ import type { RhNativeTransfer } from './robinhoodMixedRouteForensics'
 export const ROBINHOOD_NATIVE_TRACE_SCHEMA_VERSION = 1
 const READ_TIMEOUT_MS = 800
 const WRITE_TIMEOUT_MS = 1_500
-const MAX_TRANSFERS = 200 // the native-trace pagination item cap: a larger row cannot have come from a complete trace
+const MAX_TRANSFERS = 600 // = NATIVE_TRACE_EXTENDED_MAX_ITEMS: a larger row cannot have come from a complete (extended) trace
 const MEMORY_MAX = 2_000
 
 export type RobinhoodNativeTraceRecord = {

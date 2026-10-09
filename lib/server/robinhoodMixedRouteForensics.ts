@@ -68,7 +68,7 @@ export type RhNativeTransfer = { from: string; to: string; value: bigint; succes
 /** Outcome of one target-tx trace lookup. Never contains the API key or a response body. */
 export type RhNativeTraceResultKind =
   | 'proven' | 'empty' | 'budget_exhausted' | 'transport_failed' | 'malformed' | 'unknown_execution_status'
-  | 'pagination_cap_exhausted' | 'not_attempted_deadline' | 'not_attempted_no_trace_source'
+  | 'pagination_cap_exhausted' | 'not_attempted_deadline' | 'not_attempted_no_trace_source' | 'indexing_pending'
 export type RhNativeTraceAudit = {
   txHash: string
   attempted: boolean
@@ -97,6 +97,14 @@ export type RhNativeTraceAudit = {
   pageRetryCount?: number
   pagesRetried?: number[]
   transientFailureCounts?: { timeout: number; network_error: number; rate_limited: number; http_5xx: number }
+  /** Blockscout include_zero_value=false: applied / ignored_by_server / rejected_fallback_unfiltered / off. */
+  zeroValueFilter?: string
+  /** What the fetched items were (call with / without value, delegate / static calls, creates, failed, value-bearing). */
+  itemCategories?: Record<string, number>
+  /** Blockscout meta.status 2 (internal transactions still indexing): never complete. */
+  indexingPending?: boolean
+  /** Oversized-trace extension (extra pages beyond the normal cap): what it spent and how it ended. */
+  extension?: { pagesRequested: number; transportAttempts: number; elapsedMs: number; priority: string } | null
   result: RhNativeTraceResultKind
 }
 /** transfers is non-null only for result proven / empty (a complete trace with explicit execution status). */

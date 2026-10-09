@@ -800,14 +800,45 @@ export type BlockscoutInternalTransactionsResponse = { items?: BlockscoutInterna
 // a successful response. Retries never take another native_trace budget slot.
 export const NATIVE_TRACE_PAGINATION = { maxPages: 4, maxItems: 200, maxTotalMs: 12_000 } as const
 export const NATIVE_TRACE_MAX_RETRIES_PER_PAGE = 1 // initial request + at most one retry
+/** Whole-trace item ceiling for an extended (oversized-budget) continuation: 200 + 8 extra pages × 50. */
+export const NATIVE_TRACE_EXTENDED_MAX_ITEMS = 600
+// ZERO-VALUE FILTER (Blockscout `include_zero_value=false`, transaction_controller internal_transactions): the server
+// drops only call-family frames (call / delegatecall / staticcall / callcode) whose value is 0 — every value-bearing
+// call (failed ones included), every create / create2 / selfdestruct / reward stays. A zero-value call moves no native,
+// and no attribution rule reads one (every consumer keeps `success && value > 0`), so the filtered set is the complete
+// native payer universe of the tx. Completeness is unchanged: the trace is proof only when a page returns
+// next_page_params == null. Self-checked: a returned zero-value call means the server ignored the parameter (the
+// trace is then the unfiltered superset — still complete evidence); HTTP 400 / 422 on page 1 means it rejected the
+// parameter, and the same lookup re-requests page 1 without it (never a second budget slot).
+export const NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM = 'include_zero_value'
 const NATIVE_TRACE_MIN_REQUEST_MS = 250 // below this a request cannot meaningfully complete: fail closed
 const NATIVE_TRACE_RETRY_DELAY_MS = 150
 export type NativeTraceTransientFailure = 'timeout' | 'network_error' | 'rate_limited' | 'http_5xx'
 
 export type InternalTxTraceStatus =
   | 'complete' | 'not_configured' | 'budget_exhausted' | 'transport_failed' | 'malformed'
-  | 'inconsistent_pagination' | 'pagination_cap_exhausted'
+  | 'inconsistent_pagination' | 'pagination_cap_exhausted' | 'indexing_pending'
 export type InternalTxPageAttempt = { page: number; attempt: number; requestHost: string; authMode: BlockscoutAuthMode; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
+export type NativeTraceZeroValueFilter = 'applied' | 'ignored_by_server' | 'rejected_fallback_unfiltered' | 'off'
+/** What the fetched items are: why a trace is large, and how much of it carries native value. */
+export type InternalTxItemCategories = {
+  callWithValue: number; callZeroValue: number; delegatecall: number; staticcall: number; callcode: number
+  create: number; selfdestruct: number; other: number; failed: number; valueBearing: number; distinctValueAddresses: number
+}
+/**
+ * Continuation of a lookup that stopped at its page / item / time cap on a valid Blockscout cursor. Opaque: holds the
+ * items already fetched and the next cursor, so an extension never re-requests a page. Never a proof by itself.
+ */
+export type InternalTxTraceResume = {
+  readonly txHash: string
+  readonly filter: boolean
+  readonly zeroValueFilter: NativeTraceZeroValueFilter
+  readonly query: string
+  readonly items: ReadonlyMap<string, BlockscoutInternalTransaction>
+  readonly cursors: ReadonlySet<string>
+  readonly useGateway: boolean
+  readonly pagesDone: number
+}
 export type InternalTxTraceResult = {
   status: InternalTxTraceStatus
   /** Every internal tx of the target tx, deduplicated — only when status is 'complete'. */
@@ -817,7 +848,7 @@ export type InternalTxTraceResult = {
   pagesSucceeded: number
   totalItemCount: number
   paginationComplete: boolean
-  paginationCap: typeof NATIVE_TRACE_PAGINATION
+  paginationCap: { maxPages: number; maxItems: number; maxTotalMs: number }
   paginationCapHit: boolean
   /** Every real HTTP attempt (page, attempt number within the page, host, auth, status, failure class). */
   pageTransportAttempts: InternalTxPageAttempt[]
@@ -828,6 +859,15 @@ export type InternalTxTraceResult = {
   transientFailureCounts: Record<NativeTraceTransientFailure, number>
   /** The last request's outcome (host / auth / status / failure class). */
   last: { requestHost: string | null; authMode: BlockscoutAuthMode | null; httpStatus: number | null; failureClass: BlockscoutFailureClass | null }
+  zeroValueFilter: NativeTraceZeroValueFilter
+  /** Categories of every item fetched so far (complete or not). */
+  itemCategories: InternalTxItemCategories
+  /** Blockscout meta.status 2: the tx's internal transactions are still being indexed — never complete. */
+  indexingPending: boolean
+  /** Present only on pagination_cap_exhausted with a valid next cursor. */
+  resume: InternalTxTraceResume | null
+  /** Extension only: pages / HTTP requests / ms this continuation spent (on top of the original lookup). */
+  extension: { pagesRequested: number; transportAttempts: number; elapsedMs: number } | null
 }
 
 /** Query string built only from the returned cursor; null when the cursor is not a flat object of scalars. */
@@ -897,32 +937,113 @@ function serializeDeepHistoryCursor(params: unknown, mode: 'filtered_token' | 'u
 const itemKey = (it: BlockscoutInternalTransaction & { index?: unknown; block_index?: unknown; transaction_hash?: unknown }) =>
   JSON.stringify([it.transaction_hash ?? null, it.index ?? null, it.block_index ?? null, it.from?.hash ?? null, it.to?.hash ?? null, it.value ?? null, it.type ?? null, it.success ?? null])
 
+const CALL_FAMILY = new Set(['call', 'delegatecall', 'staticcall', 'callcode'])
+const isZeroValue = (v: unknown) => { try { return BigInt(typeof v === 'string' && v !== '' ? v : '0') === BigInt(0) } catch { return false } }
+/** PURE. What the fetched items are (the oversized-trace audit). */
+export function categorizeInternalTransactions(items: Iterable<BlockscoutInternalTransaction>): InternalTxItemCategories {
+  const c: InternalTxItemCategories = { callWithValue: 0, callZeroValue: 0, delegatecall: 0, staticcall: 0, callcode: 0, create: 0, selfdestruct: 0, other: 0, failed: 0, valueBearing: 0, distinctValueAddresses: 0 }
+  const addrs = new Set<string>()
+  for (const it of items) {
+    const type = String(it.type ?? '').toLowerCase()
+    const zero = isZeroValue(it.value)
+    if (type === 'call') { if (zero) c.callZeroValue++; else c.callWithValue++ }
+    else if (type === 'delegatecall') c.delegatecall++
+    else if (type === 'staticcall') c.staticcall++
+    else if (type === 'callcode') c.callcode++
+    else if (type === 'create' || type === 'create2') c.create++
+    else if (type === 'selfdestruct') c.selfdestruct++
+    else c.other++
+    if (it.success === false) c.failed++
+    if (!zero) { c.valueBearing++; addrs.add(String(it.from?.hash ?? '').toLowerCase()); addrs.add(String(it.to?.hash ?? '').toLowerCase()) }
+  }
+  addrs.delete('')
+  c.distinctValueAddresses = addrs.size
+  return c
+}
+/** A zero-value call-family frame in a filtered response: the server did not apply include_zero_value=false. */
+const zeroValueCallFrames = (items: Iterable<BlockscoutInternalTransaction>) => {
+  let n = 0
+  for (const it of items) if (CALL_FAMILY.has(String(it.type ?? '').toLowerCase()) && isZeroValue(it.value)) n++
+  return n
+}
+
+function emptyInternalTxTraceResult(caps: InternalTxTraceResult['paginationCap']): InternalTxTraceResult {
+  return {
+    status: 'transport_failed', items: null, cacheHit: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: 0,
+    paginationComplete: false, paginationCap: caps, paginationCapHit: false, pageTransportAttempts: [],
+    transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
+    last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
+    zeroValueFilter: 'off', itemCategories: categorizeInternalTransactions([]), indexingPending: false, resume: null, extension: null,
+  }
+}
+const internalTxCacheKey = (txHash: string) => `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
+
 export async function getBlockscoutTransactionInternalTransactions(
   txHash: string,
   fetchImpl: FetchImpl,
   caps: { maxPages: number; maxItems: number; maxTotalMs: number } = NATIVE_TRACE_PAGINATION,
+  opts: { zeroValueFilter?: boolean } = {},
 ): Promise<InternalTxTraceResult> {
-  const result: InternalTxTraceResult = {
-    status: 'transport_failed', items: null, cacheHit: false, pagesRequested: 0, pagesSucceeded: 0, totalItemCount: 0,
-    paginationComplete: false, paginationCap: NATIVE_TRACE_PAGINATION, paginationCapHit: false, pageTransportAttempts: [],
-    transportAttemptsTotal: 0, pageRetryCount: 0, pagesRetried: [], transientFailureCounts: { timeout: 0, network_error: 0, rate_limited: 0, http_5xx: 0 },
-    last: { requestHost: null, authMode: null, httpStatus: null, failureClass: null },
-  }
+  const result = emptyInternalTxTraceResult(NATIVE_TRACE_PAGINATION)
   if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
-  const cacheKey = `robinhood:blockscout:tx-internal-all:${txHash.toLowerCase()}`
-  const cached = await getTokenCache<BlockscoutInternalTransaction[]>(cacheKey).catch(() => null)
-  if (Array.isArray(cached)) return { ...result, status: 'complete', items: cached, cacheHit: true, paginationComplete: true, totalItemCount: cached.length }
+  const cached = await getTokenCache<BlockscoutInternalTransaction[]>(internalTxCacheKey(txHash)).catch(() => null)
+  if (Array.isArray(cached)) return { ...result, status: 'complete', items: cached, cacheHit: true, paginationComplete: true, totalItemCount: cached.length, itemCategories: categorizeInternalTransactions(cached) }
   if (!checkBlockscoutRateLimit('native_trace')) return { ...result, status: 'budget_exhausted', last: { ...result.last, failureClass: 'rate_limited' } }
+  const filter = opts.zeroValueFilter ?? true
+  return runInternalTxPages(result, {
+    txHash, filter, zeroValueFilter: filter ? 'applied' : 'off', query: '', items: new Map(), cursors: new Set(), useGateway: false, pagesDone: 0,
+  }, fetchImpl, caps, Date.now())
+}
 
+/**
+ * Extended-budget continuation of a lookup that hit its cap: the next pages from the stored cursor only (no page is
+ * ever requested twice), same transport / retry / cursor / completeness rules. `maxExtraPages` and `maxTotalMs` are
+ * this continuation's own limits; `maxItems` bounds the whole trace. Takes no native_trace lane slot (same lookup).
+ */
+export async function continueBlockscoutTransactionInternalTransactions(
+  resume: InternalTxTraceResume,
+  fetchImpl: FetchImpl,
+  caps: { maxExtraPages: number; maxItems: number; maxTotalMs: number },
+): Promise<InternalTxTraceResult> {
+  const total = { maxPages: resume.pagesDone + Math.max(0, caps.maxExtraPages), maxItems: caps.maxItems, maxTotalMs: caps.maxTotalMs }
+  const result = { ...emptyInternalTxTraceResult(total), pagesRequested: resume.pagesDone, pagesSucceeded: resume.pagesDone }
+  if (!isRobinhoodBlockscoutConfigured()) return { ...result, status: 'not_configured' }
   const startedAt = Date.now()
-  const base = `/api/v2/transactions/${txHash}/internal-transactions`
-  const seen = new Map<string, BlockscoutInternalTransaction>()
-  const seenCursors = new Set<string>()
-  let query = ''
-  let useGateway = false // set once the community host refused this lookup (401/403): later pages go to the gateway
-  for (let page = 1; ; page++) {
-    if (page > caps.maxPages || Date.now() - startedAt >= caps.maxTotalMs) return { ...result, status: 'pagination_cap_exhausted', paginationCapHit: true }
-    const path = query ? `${base}?${query}` : base // fixed for every attempt of this logical page
+  const out = await runInternalTxPages(result, {
+    ...resume, items: new Map(resume.items), cursors: new Set(resume.cursors),
+  }, fetchImpl, total, startedAt)
+  out.extension = { pagesRequested: out.pagesRequested - resume.pagesDone, transportAttempts: out.transportAttemptsTotal, elapsedMs: Date.now() - startedAt }
+  return out
+}
+
+type MutableResume = { -readonly [K in keyof InternalTxTraceResume]: InternalTxTraceResume[K] } & { items: Map<string, BlockscoutInternalTransaction>; cursors: Set<string> }
+
+async function runInternalTxPages(
+  result: InternalTxTraceResult,
+  st: MutableResume,
+  fetchImpl: FetchImpl,
+  caps: { maxPages: number; maxItems: number; maxTotalMs: number },
+  startedAt: number,
+): Promise<InternalTxTraceResult> {
+  const base = `/api/v2/transactions/${st.txHash}/internal-transactions`
+  const finish = (r: InternalTxTraceResult): InternalTxTraceResult => {
+    const all = [...st.items.values()]
+    r.itemCategories = categorizeInternalTransactions(all)
+    if (st.filter && st.zeroValueFilter === 'applied' && zeroValueCallFrames(all) > 0) st.zeroValueFilter = 'ignored_by_server'
+    r.zeroValueFilter = st.zeroValueFilter
+    return r
+  }
+  const capped = () => finish({ ...result, status: 'pagination_cap_exhausted', paginationCapHit: true, resume: st.query ? { ...st, items: new Map(st.items), cursors: new Set(st.cursors) } : null })
+  for (let page = st.pagesDone + 1; ; page++) {
+    if (page > caps.maxPages || Date.now() - startedAt >= caps.maxTotalMs) return capped()
+    // Filtered: every page carries include_zero_value=false (page 1 alone; later pages on the returned cursor).
+    const withFilter = (q: string) => {
+      if (!st.filter) return q
+      const p = new URLSearchParams(q)
+      p.set(NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM, 'false')
+      return p.toString()
+    }
+    let path = `${base}${withFilter(st.query) ? `?${withFilter(st.query)}` : ''}` // fixed for every attempt of this logical page
     result.pagesRequested += 1
     let attempt = 0
     // One real request for this page, bounded by the time left; null when no meaningful time remains.
@@ -936,12 +1057,20 @@ export async function getBlockscoutTransactionInternalTransactions(
       result.last = pick(r.attempt)
       return r
     }
-    const deadline = () => ({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const } })
-    let res = await send(useGateway ? 'gateway' : 'community')
+    const deadline = () => finish({ ...result, status: 'transport_failed' as const, last: { ...result.last, failureClass: 'timeout' as const } })
+    let res = await send(st.useGateway ? 'gateway' : 'community')
     if (!res) return deadline()
-    if (!useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
-      useGateway = true
+    if (!st.useGateway && !res.ok && (res.status === 401 || res.status === 403) && Boolean(process.env.BLOCKSCOUT_API_KEY)) {
+      st.useGateway = true
       res = await send('gateway')
+      if (!res) return deadline()
+    }
+    // The server refused the filter parameter itself: the same logical page 1, unfiltered, on the same host.
+    if (!res.ok && st.filter && page === 1 && (res.status === 400 || res.status === 422)) {
+      st.filter = false
+      st.zeroValueFilter = 'rejected_fallback_unfiltered'
+      path = base
+      res = await send(res.attempt.authMode === 'gateway' ? 'gateway' : 'community')
       if (!res) return deadline()
     }
     for (let retries = 0; !res.ok; retries++) {
@@ -960,23 +1089,31 @@ export async function getBlockscoutTransactionInternalTransactions(
       if (!result.pagesRetried.includes(page)) result.pagesRetried.push(page)
       res = again
     }
-    if (!res.ok) return { ...result, status: res.attempt.failureClass === 'invalid_json' ? 'malformed' : 'transport_failed' }
-    const body = res.json as BlockscoutInternalTransactionsResponse
-    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) return { ...result, status: 'malformed' }
+    if (!res.ok) return finish({ ...result, status: res.attempt.failureClass === 'invalid_json' ? 'malformed' : 'transport_failed' })
+    const body = res.json as BlockscoutInternalTransactionsResponse & { meta?: { status?: unknown } | null }
+    if (!body || !Array.isArray(body.items) || !('next_page_params' in body)) return finish({ ...result, status: 'malformed' })
+    // meta.status 2 = Blockscout has not finished indexing this tx's internal transactions: what it returned is not
+    // the payer universe (pending rows are omitted), so the lookup fails closed on any page.
+    if (body.meta?.status === 2) return finish({ ...result, status: 'indexing_pending', indexingPending: true })
     result.pagesSucceeded += 1
-    for (const it of body.items) seen.set(itemKey(it as never), it)
-    result.totalItemCount = seen.size
+    st.pagesDone = page
+    for (const it of body.items) st.items.set(itemKey(it as never), it)
+    result.totalItemCount = st.items.size
     const next = body.next_page_params
     if (next == null) {
-      const items = [...seen.values()]
-      await setTokenCache(cacheKey, items, 300).catch(() => {})
-      return { ...result, status: 'complete', items, paginationComplete: true }
+      const items = [...st.items.values()]
+      await setTokenCache(internalTxCacheKey(st.txHash), items, 300).catch(() => {})
+      return finish({ ...result, status: 'complete', items, paginationComplete: true })
     }
-    if (seen.size >= caps.maxItems) return { ...result, status: 'pagination_cap_exhausted', paginationCapHit: true }
     const q = cursorQuery(next)
-    if (q == null || q === '' || seenCursors.has(q)) return { ...result, status: 'inconsistent_pagination' }
-    seenCursors.add(q)
-    query = q
+    // An echoed filter must still be the filter we asked for; anything else would change the requested set.
+    const echoed = q == null ? null : new URLSearchParams(q).get(NATIVE_TRACE_ZERO_VALUE_FILTER_PARAM)
+    if (q == null || q === '' || st.cursors.has(q) || (echoed != null && echoed !== (st.filter ? 'false' : echoed))) {
+      return finish({ ...result, status: 'inconsistent_pagination' })
+    }
+    st.cursors.add(q)
+    st.query = q
+    if (st.items.size >= caps.maxItems) return capped()
   }
 }
 const pick = (a: BlockscoutTransportAttempt) => ({ requestHost: a.requestHost, authMode: a.authMode, httpStatus: a.httpStatus, failureClass: a.failureClass })

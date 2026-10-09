@@ -42,7 +42,7 @@
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, isRobinhoodChainFeatureEnabled, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
-import { blockscoutNativeTransfersForTx, storedRobinhoodNativeTrace } from './robinhoodNativeTrace'
+import { blockscoutNativeTraceSource, storedRobinhoodNativeTrace } from './robinhoodNativeTrace'
 import { resolveHistoricalNativeUsdPrice, prefetchNativeUsdPrices, getNativePriceResolverDiagnostics, NATIVE_PRICE_BUCKET_MS, type NativePriceResolution } from '../../src/modules/nativePriceResolver'
 import { readRobinhoodVerifiedSwapManifest, recordRobinhoodVerifiedSwaps, readRobinhoodManifestBootstrapMarker, writeRobinhoodManifestBootstrapMarker } from './robinhoodVerifiedSwapManifest'
 import { computeRobinhoodPnlV1, defaultRobinhoodPnlV1Deps, resolveRobinhoodPoolKey, selectRobinhoodNativePriceDays, ROBINHOOD_DEEP_ACQUISITION_LIMITS, type RhVerifiedSwap, type RobinhoodPnlV1, type RobinhoodPnlV1Deps } from './robinhoodPnlV1'
@@ -1700,6 +1700,12 @@ export async function prefetchRobinhoodNativePriceDays(swaps: readonly RhVerifie
 // real implementation instead of two copies drifting apart. No internal function here is modified —
 // this only reorders nothing and adds no new logic, it is a pure extraction of the existing call
 // order into a named, reusable function.
+/** One native-trace source per scan: live lookups plus their oversized-trace continuations (never shared across scans). */
+function nativeTraceDeps(fetchImpl: FetchImpl): Pick<RobinhoodPnlV1Deps, 'nativeTransfersForTx' | 'extendNativeTraceForTx'> {
+  const source = blockscoutNativeTraceSource(fetchImpl)
+  return { nativeTransfersForTx: source.transfersForTx, extendNativeTraceForTx: source.extendOversized }
+}
+
 export async function scanRobinhoodWallet(
   wallet: string,
   fetchImpl: FetchImpl,
@@ -1717,7 +1723,7 @@ export async function scanRobinhoodWallet(
   const v1Deps: RobinhoodPnlV1Deps = pnlV1Deps
     ? { ...pnlV1Deps, onNativePricePrefetchComplete: onNativePricePrefetchComplete ?? pnlV1Deps.onNativePricePrefetchComplete }
     : {
-        ...defaultRobinhoodPnlV1Deps(fetchImpl), nativeTransfersForTx: blockscoutNativeTransfersForTx(fetchImpl), nativeTraceCached: storedRobinhoodNativeTrace,
+        ...defaultRobinhoodPnlV1Deps(fetchImpl), ...nativeTraceDeps(fetchImpl), nativeTraceCached: storedRobinhoodNativeTrace,
         verifiedSwapManifest: { read: readRobinhoodVerifiedSwapManifest, record: recordRobinhoodVerifiedSwaps },
         manifestBootstrap: {
           configured: isRobinhoodBlockscoutConfigured,
