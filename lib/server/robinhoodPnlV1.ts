@@ -35,6 +35,7 @@ import { analyzeRobinhoodMixedRoute, robinhoodMixedRouteGraph, deriveRhNativeEvi
 import { buildRobinhoodSwapForensics, summarizeAttribution, type RhAttributionClass, type RobinhoodSwapForensics } from './robinhoodSwapForensics'
 import { classifyRobinhoodAcquisition, robinhoodUnmatchedSellRaw, type RhAcquisitionClass } from './robinhoodAcquisitionRecovery'
 import { robinhoodFifoCoverageAudit } from './robinhoodFifoCoverageAudit'
+import { robinhoodVerifiedSwapFifoAudit } from './robinhoodVerifiedSwapFifoAudit'
 import { robinhoodAcquisitionFundingAudit } from './robinhoodAcquisitionFundingAudit'
 import {
   orderRobinhoodVerifiedSwapManifest, advanceRobinhoodManifestBootstrapMarker, settleRobinhoodManifestBootstrapMarker, newRobinhoodManifestBootstrapMarker, rankRobinhoodBootstrapPending,
@@ -3657,6 +3658,16 @@ export async function computeRobinhoodPnlV1(params: {
       recovery: recovery.summary.acquisitionRecoveryAttempted ? recovery.summary : null,
     })
     for (const row of coverage.sells) console.warn('[robinhood-fifo-coverage-audit]', { wallet, ...row })
+    // The exact canonical set behind "Verified swaps" (main lane) vs what FIFO matched, with an independent re-run.
+    const vf = robinhoodVerifiedSwapFifoAudit({
+      chain: String(ROBINHOOD_FIFO_CHAIN), isQuote: (t) => quoteKind(t) != null, canonicalSwaps: swaps,
+      extraSwaps: [...recovery.swaps.map((x) => ({ swap: x, source: 'acquisition_recovery' })), ...deep.swaps.map((x) => ({ swap: x, source: 'deep_acquisition' }))],
+      evidence: [...evidence, ...recovery.evidence, ...deep.evidence], matchedLots: fifo.matchedLots,
+      attributionByTx: new Map(outcomes.filter((o) => o.swap).map((o) => [o.txHash, o.acceptedVia ?? 'direct_v4'])),
+    })
+    for (const row of vf.rows) console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, ...row })
+    for (const t of vf.tokens) console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, tokenGroup: t })
+    console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, summary: vf.summary })
     console.warn('[robinhood-fifo-coverage-audit]', { wallet, summary: coverage.summary })
     ingestion.fifoCoverage = coverage.summary
   } catch (err) {
