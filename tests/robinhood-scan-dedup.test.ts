@@ -188,3 +188,25 @@ test('8. Robinhood V4/PnL output unchanged: the stored body is the legacy route 
   assert.deepEqual(robinhoodScanResultFromBody(body), r)
   for (const f of ['lib/server/robinhoodPnlV1.ts', 'lib/server/robinhoodSwapDecoder.ts']) assert.doesNotMatch(read(f), /robinhoodScanCoordinator/)
 })
+
+test('the provider scan gets a scanId; a reused canonical result is logged as NOT having run the PnL audits', async () => {
+  const wallet = nextWallet()
+  const seen: string[] = []
+  const withRun = (w: string, scanId: string) => {
+    const f = fixture(w) as any
+    f.robinhoodPnl = { ...f.robinhoodPnl, ingestionAudit: { verifiedSwapFifoAudit: { status: 'completed', scanId } } }
+    return f as RobinhoodScanResult
+  }
+  const scan = async (w: string, _f: typeof fetch, _s?: () => void, ctx?: { scanId: string }) => { seen.push(ctx!.scanId); return withRun(w, ctx!.scanId) }
+  const logs: any[] = []
+  const w = console.warn
+  console.warn = (tag: unknown, body: unknown) => { if (tag === '[robinhood-scan-dedup-audit]') logs.push(body) }
+  try {
+    await runCanonicalRobinhoodScan(wallet, fetch, { jobId: 'job-a', owner: 'worker', scan })
+    await runCanonicalRobinhoodScan(wallet, fetch, { jobId: null, owner: 'orchestrator', reuseFreshMs: 60_000, scan })
+  } finally { console.warn = w }
+  assert.equal(seen.length, 1)
+  assert.match(seen[0], /^worker:job-a:\d+$/)
+  assert.deepEqual([logs[0].startedNewRobinhoodProviderScan, logs[0].pnlAuditsRanInThisRequest, logs[0].resultScanId, logs[0].resultFifoAuditStatus], [true, true, seen[0], 'completed'])
+  assert.deepEqual([logs[1].reusedCanonicalResult, logs[1].pnlAuditsRanInThisRequest, logs[1].resultScanId], [true, false, seen[0]])
+})

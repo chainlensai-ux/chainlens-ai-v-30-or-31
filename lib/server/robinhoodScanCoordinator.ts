@@ -15,7 +15,7 @@ import { getTokenCache, setTokenCache } from './cache/tokenCache'
 import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from './robinhoodWalletScanner'
 
 export type RobinhoodScanResult = Awaited<ReturnType<typeof scanRobinhoodWallet>>
-export type RobinhoodScanFn = (wallet: string, fetchImpl: typeof fetch, onNativePricePrefetchComplete?: () => void) => Promise<RobinhoodScanResult>
+export type RobinhoodScanFn = (wallet: string, fetchImpl: typeof fetch, onNativePricePrefetchComplete?: () => void, scanContext?: { scanId: string }) => Promise<RobinhoodScanResult>
 
 /** The exact JSON body GET /api/wallet-scan/robinhood has always returned. */
 export function buildRobinhoodRouteBody(wallet: string, r: RobinhoodScanResult) {
@@ -75,6 +75,9 @@ export const ROBINHOOD_SCAN_LEASE_MS = 120_000
 export const ROBINHOOD_ROUTE_WAIT_MS = 20_000
 const RECORD_TTL_SECONDS = 15 * 60
 const POLL_MS = 750
+
+/** Diagnostic identity of one provider scan: owner, canonical job (or none) and start time. */
+export const robinhoodScanId = (owner: RobinhoodScanOwner, jobId: string | null, startedAt: number) => `${owner}:${jobId ?? 'nojob'}:${startedAt}`
 
 const recordKey = (wallet: string) => `robinhood:scan-coord:v1:${wallet.toLowerCase()}`
 // GENERATION-AWARE IN-FLIGHT: one entry per wallet, tagged with the job (generation) that owns it. A caller of
@@ -160,10 +163,19 @@ export type RobinhoodScanDedupAudit = {
   resultAgeMs: number | null
   caller: RobinhoodScanOwner | 'route'
   outcome: 'served' | 'pending' | 'error'
+  /** The provider scan whose PnL diagnostics ([robinhood-verified-swap-fifo-audit]) produced the served result. */
+  resultScanId?: string | null
+  resultFifoAuditStatus?: string | null
+}
+/** Which scan produced a result, so a reused canonical result is never mistaken for a fresh audit run. */
+const resultProvenance = (r: Pick<RobinhoodScanResult, 'robinhoodPnl'> | null | undefined) => {
+  const run = r?.robinhoodPnl?.ingestionAudit?.verifiedSwapFifoAudit
+  return { resultScanId: run?.scanId ?? null, resultFifoAuditStatus: run?.status ?? null }
 }
 function logDedup(a: RobinhoodScanDedupAudit): RobinhoodScanDedupAudit {
-  // console.warn: next.config removeConsole strips console.log in production.
-  console.warn('[robinhood-scan-dedup-audit]', a)
+  // console.warn: next.config removeConsole strips console.log in production. Only a request that started the
+  // provider scan ran the PnL audits; reused / joined results carry the original scan's resultScanId.
+  console.warn('[robinhood-scan-dedup-audit]', { ...a, pnlAuditsRanInThisRequest: a.startedNewRobinhoodProviderScan })
   return a
 }
 
@@ -195,7 +207,7 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
     if (inFlight.get(key) === existing) inFlight.delete(key)
   }
   const now = opts.now ?? Date.now
-  const scan: RobinhoodScanFn = opts.scan ?? ((scanWallet, scanFetch, onPrefetchComplete) => scanRobinhoodWallet(scanWallet, scanFetch, undefined, onPrefetchComplete))
+  const scan: RobinhoodScanFn = opts.scan ?? ((scanWallet, scanFetch, onPrefetchComplete, scanContext) => scanRobinhoodWallet(scanWallet, scanFetch, undefined, onPrefetchComplete, scanContext))
   const run = (async () => {
     providerScanCount += 1
     const startedAt = now()
@@ -206,7 +218,8 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
       ({ v: 1, wallet: key, state, jobId, owner, queuedAt, startedAt, completedAt: null, body: null, error: null, ...extra })
     await transitionRobinhoodScanRecord(rec('running', {}), now())
     try {
-      const result = await scan(wallet, fetchImpl, opts.onNativePricePrefetchComplete)
+      // Ties this provider scan's PnL diagnostic logs to its job / owner (a reused result keeps the original id).
+      const result = await scan(wallet, fetchImpl, opts.onNativePricePrefetchComplete, { scanId: robinhoodScanId(owner, jobId, startedAt) })
       await transitionRobinhoodScanRecord(rec('done', { completedAt: now(), body: buildRobinhoodRouteBody(wallet, result) }), now())
       return result
     } catch (err) {
@@ -250,12 +263,12 @@ export async function runCanonicalRobinhoodScan(
   const live = inFlight.get(wallet.toLowerCase())
   if (live && mayJoin(live, params.jobId)) {
     const { result } = await runProviderScan(wallet, fetchImpl, params.jobId, params.owner, params)
-    logDedup({ ...base, reusedCanonicalResult: false, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: 0, outcome: 'served' })
+    logDedup({ ...base, reusedCanonicalResult: false, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: 0, outcome: 'served', ...resultProvenance(result) })
     return result
   }
   const rec = await readRobinhoodScanRecord(wallet)
   if (rec?.state === 'done' && rec.body && (params.reuseFreshMs ?? 0) > 0 && now() - (rec.completedAt ?? 0) < params.reuseFreshMs!) {
-    logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: false, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (rec.completedAt ?? 0), outcome: 'served' })
+    logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: false, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (rec.completedAt ?? 0), outcome: 'served', ...resultProvenance(rec.body) })
     return robinhoodScanResultFromBody(rec.body)
   }
   // Another instance is scanning this wallet right now (state running, not our own queued marker). Wait it
@@ -264,12 +277,12 @@ export async function runCanonicalRobinhoodScan(
     const started = rec.startedAt
     const done = await waitForRecord(wallet, (r) => r.startedAt === started, (rec.startedAt ?? now()) + ROBINHOOD_SCAN_LEASE_MS, params)
     if (params.jobId == null && done?.state === 'done' && done.body) {
-      logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (done.completedAt ?? now()), outcome: 'served' })
+      logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (done.completedAt ?? now()), outcome: 'served', ...resultProvenance(done.body) })
       return robinhoodScanResultFromBody(done.body)
     }
   }
   const { result, joined } = await runProviderScan(wallet, fetchImpl, params.jobId, params.owner, params)
-  logDedup({ ...base, reusedCanonicalResult: false, joinedInFlight: joined, startedNewRobinhoodProviderScan: !joined, providerScanCount, resultAgeMs: 0, outcome: 'served' })
+  logDedup({ ...base, reusedCanonicalResult: false, joinedInFlight: joined, startedNewRobinhoodProviderScan: !joined, providerScanCount, resultAgeMs: 0, outcome: 'served', ...resultProvenance(result) })
   return result
 }
 
@@ -293,7 +306,7 @@ export async function resolveRobinhoodRouteRequest(
     startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: null, caller: 'route', outcome, ...o,
   })
   const fromRecord = (r: RobinhoodScanRecord, joined: boolean): RobinhoodRouteOutcome => r.state === 'done' && r.body
-    ? { status: 200, body: r.body, audit: audit({ canonicalJobId: r.jobId, reusedCanonicalResult: true, joinedInFlight: joined, resultAgeMs: now() - (r.completedAt ?? now()) }, 'served') }
+    ? { status: 200, body: r.body, audit: audit({ canonicalJobId: r.jobId, reusedCanonicalResult: true, joinedInFlight: joined, resultAgeMs: now() - (r.completedAt ?? now()), ...resultProvenance(r.body) }, 'served') }
     : { status: 502, body: { error: { message: `Robinhood scan failed: ${r.error ?? 'unknown error'}`, category: 'provider' } }, audit: audit({ canonicalJobId: r.jobId, joinedInFlight: joined }, 'error') }
   const pending = (state: string, extra: Partial<RobinhoodScanDedupAudit>): RobinhoodRouteOutcome => ({
     status: 202,
@@ -316,7 +329,7 @@ export async function resolveRobinhoodRouteRequest(
     const out = await raceDeadline(local.promise)
     if (out === 'timeout') return pending('running', { joinedInFlight: true })
     if ('e' in out) return { status: 502, body: { error: { message: `Robinhood scan failed: ${out.e instanceof Error ? out.e.message : String(out.e)}`, category: 'provider' } }, audit: audit({ joinedInFlight: true }, 'error') }
-    return { status: 200, body: buildRobinhoodRouteBody(wallet, out.x), audit: audit({ joinedInFlight: true, reusedCanonicalResult: true, resultAgeMs: 0 }, 'served') }
+    return { status: 200, body: buildRobinhoodRouteBody(wallet, out.x), audit: audit({ joinedInFlight: true, reusedCanonicalResult: true, resultAgeMs: 0, ...resultProvenance(out.x) }, 'served') }
   }
 
   // 1) The page's request for a known job: serve that job's result, wait for it, or say pending. Never scan.
@@ -344,5 +357,5 @@ export async function resolveRobinhoodRouteRequest(
   const out = await raceDeadline(started)
   if (out === 'timeout') return pending('running', { startedNewRobinhoodProviderScan: true })
   if ('e' in out) return { status: 502, body: { error: { message: `Robinhood scan failed: ${out.e instanceof Error ? out.e.message : String(out.e)}`, category: 'provider' } }, audit: audit({ startedNewRobinhoodProviderScan: true }, 'error') }
-  return { status: 200, body: buildRobinhoodRouteBody(wallet, out.x.result), audit: audit({ startedNewRobinhoodProviderScan: !out.x.joined, joinedInFlight: out.x.joined, resultAgeMs: 0 }, 'served') }
+  return { status: 200, body: buildRobinhoodRouteBody(wallet, out.x.result), audit: audit({ startedNewRobinhoodProviderScan: !out.x.joined, joinedInFlight: out.x.joined, resultAgeMs: 0, ...resultProvenance(out.x.result) }, 'served') }
 }

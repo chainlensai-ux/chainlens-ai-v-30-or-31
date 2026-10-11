@@ -102,7 +102,7 @@ const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
 const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
-async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[]; hashes?: string[]; receiptUnavailableFor?: number[] } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
+async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[]; hashes?: string[]; receiptUnavailableFor?: number[]; scanId?: string } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
   __resetRobinhoodPnlV1CachesForTest() // hashes repeat across runs; receipts are cached by hash
   const hashes = txs.map((_, i) => opts.hashes?.[i] ?? `0x${(0xacc0 + i).toString(16).padStart(64, '0')}`)
   const byHash = new Map(hashes.map((h, i) => [h, { tx: txs[i], block: opts.blocks?.[i] ?? 1000 + i * 10 }]))
@@ -131,7 +131,7 @@ async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i
   try {
     const r = await computeRobinhoodPnlV1({
       wallet: WALLET, candidates: cand.map((i) => ({ txHash: hashes[i], timestampMs: txs[i].ts * 1000, hasSwapLog: true })),
-      transactionCount: txs.length, transferCount: txs.length, activityUnavailableReason: null,
+      transactionCount: txs.length, transferCount: txs.length, activityUnavailableReason: null, scanId: opts.scanId,
       inboundTokenTransfers: (opts.inbound ?? []).map(({ i, raw, token }) => ({ txHash: hashes[i], timestampMs: txs[i].ts * 1000, token: token ?? A, rawAmount: raw?.toString() ?? null })),
       deps: {
         rpc, now: Date.now, tokenHistoricalUsd: async () => null, ethUsdAt: ethAt(2600),
@@ -141,7 +141,7 @@ async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i
       },
     })
     return {
-      r, hashes, receiptCalls,
+      r, hashes, receiptCalls, lines,
       rec: lines.filter(([tag]) => tag === '[robinhood-acquisition-recovery-audit]').map(([, b]) => b),
       accept: lines.filter(([tag]) => tag === '[robinhood-mixed-route-acceptance-audit]').map(([, b]) => b),
     }
@@ -641,4 +641,64 @@ test('deep history keeps its eight-receipt proof cap without widening the normal
   assert.equal(r.deepAcquisition?.receiptsAttempted, 8)
   assert.equal(r.deepAcquisition?.verifiedBuysRecovered, 0)
   assert.equal(receiptCalls, 9) // sell plus eight bounded deep proofs
+})
+
+// ── [robinhood-verified-swap-fifo-audit] isolation + markers (diagnostics only; accounting must not move) ──
+const vfLines = (lines: Array<[string, any]>) => lines.filter(([tag]) => tag === '[robinhood-verified-swap-fifo-audit]').map(([, b]) => b)
+const accounting = (r: Awaited<ReturnType<typeof run>>['r']) => ({
+  status: r.status, exactReason: r.exactReason, structuralClosedLots: r.structuralClosedLots, verifiedClosedLots: r.verifiedClosedLots,
+  realizedPnlUsd: r.realizedPnlUsd, realizedRoiPct: r.realizedRoiPct, pricingCoverage: r.pricingCoverage, unmatchedSellCount: r.unmatchedSellCount,
+  swapsVerified: r.swapsVerified, swapsBothLegsPriced: r.swapsBothLegsPriced, priceEvidence: r.priceEvidence,
+  directV4: r.ingestionAudit.directV4VerifiedSwapCount, mixed: r.ingestionAudit.mixedRouteVerifiedSwapCount,
+})
+const pair = () => [sellShape(n(1000), n(1.5)), directBuy(n(1), n(1000)).at(TS - 3600)]
+
+test('verified-swap FIFO audit: start + complete markers carry wallet, scanId, counts and the summary', async () => {
+  const { r, lines } = await run(pair(), { candidates: [0, 1], scanId: 'worker:job-1:123' })
+  const vf = vfLines(lines)
+  const start = vf.find((b) => b.phase === 'start')
+  const done = vf.find((b) => b.phase === 'complete')
+  assert.ok(start && done, 'start and completion markers are emitted')
+  assert.ok(vf.indexOf(start) < vf.indexOf(done))
+  assert.deepEqual([start.wallet, start.scanId, start.canonicalSwapCount, start.matchedLotCount, start.verifiedClosedLotCount], [WALLET, 'worker:job-1:123', 2, 1, 1])
+  assert.deepEqual([done.scanId, done.summary.verifiedSwapCount, done.summary.conclusion, done.summary.definiteFifoDefect], ['worker:job-1:123', 2, 'closed_lots_exist', false])
+  assert.ok(vf.some((b) => b.phase === 'row') && vf.some((b) => b.phase === 'token'))
+  assert.equal(vf.some((b) => b.phase === 'error' || b.phase === 'skipped'), false)
+  assert.deepEqual(r.ingestionAudit.verifiedSwapFifoAudit, { ...r.ingestionAudit.verifiedSwapFifoAudit, status: 'completed', scanId: 'worker:job-1:123', canonicalSwapCount: 2, matchedLotCount: 1, verifiedClosedLotCount: 1, conclusion: 'closed_lots_exist' })
+  assert.equal(r.verifiedClosedLots, 1)
+})
+
+test('a coverage-audit exception no longer suppresses the verified-swap FIFO audit, and accounting is unchanged', async () => {
+  const base = await run(pair(), { candidates: [0, 1] })
+  const thrown = await run(pair(), { candidates: [0, 1] }, { fifoDiagnosticAudits: { coverage: () => { throw new Error('coverage exploded') } } })
+  const covErr = thrown.lines.filter(([tag, b]) => tag === '[robinhood-fifo-coverage-audit]' && b.error)
+  assert.equal(covErr.length, 1)
+  assert.equal(covErr[0][1].error, 'coverage exploded')
+  const vf = vfLines(thrown.lines)
+  assert.ok(vf.some((b) => b.phase === 'start'))
+  assert.equal(vf.find((b) => b.phase === 'complete')?.summary.conclusion, 'closed_lots_exist')
+  assert.equal(thrown.r.ingestionAudit.verifiedSwapFifoAudit?.status, 'completed')
+  assert.equal(thrown.r.ingestionAudit.fifoCoverage, undefined)
+  assert.deepEqual(accounting(thrown.r), accounting(base.r))
+})
+
+test('a verified-swap audit exception emits an identifiable error marker; coverage and accounting are unchanged', async () => {
+  const base = await run(pair(), { candidates: [0, 1] })
+  const thrown = await run(pair(), { candidates: [0, 1], scanId: 's-err' }, { fifoDiagnosticAudits: { verifiedSwap: () => { throw new Error('vf exploded') } } })
+  const vf = vfLines(thrown.lines)
+  const err = vf.find((b) => b.phase === 'error')
+  assert.ok(vf.some((b) => b.phase === 'start'))
+  assert.deepEqual([err?.error, err?.scanId, err?.wallet, err?.canonicalSwapCount], ['vf exploded', 's-err', WALLET, 2])
+  assert.equal(vf.some((b) => b.phase === 'complete'), false)
+  assert.deepEqual([thrown.r.ingestionAudit.verifiedSwapFifoAudit?.status, thrown.r.ingestionAudit.verifiedSwapFifoAudit?.reason], ['error', 'vf exploded'])
+  assert.ok(thrown.r.ingestionAudit.fifoCoverage, 'coverage still ran')
+  assert.deepEqual(accounting(thrown.r), accounting(base.r))
+})
+
+test('an exit before FIFO (no candidates) logs a skipped marker instead of silence', async () => {
+  const { r, lines } = await run(pair(), { candidates: [], scanId: 's-skip' })
+  const vf = vfLines(lines)
+  assert.deepEqual(vf.map((b) => b.phase), ['skipped'])
+  assert.deepEqual([vf[0].scanId, vf[0].status], ['s-skip', 'not_verified'])
+  assert.equal(r.ingestionAudit.verifiedSwapFifoAudit?.status, 'skipped')
 })

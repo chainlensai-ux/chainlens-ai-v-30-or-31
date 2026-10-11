@@ -1712,6 +1712,8 @@ export async function scanRobinhoodWallet(
   fetchImpl: FetchImpl,
   pnlV1Deps?: RobinhoodPnlV1Deps,
   onNativePricePrefetchComplete?: () => void,
+  /** Diagnostic identity of this provider scan (owner / job / start), logged by the PnL audits. Never a credential. */
+  scanContext?: { scanId: string },
 ): Promise<{
   holdings: RobinhoodWalletHoldingsResult & { wrongChainCacheRejected: boolean }
   activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
@@ -1757,6 +1759,7 @@ export async function scanRobinhoodWallet(
     ...v1Input,
     activityUnavailableReason: activity.status === 'unavailable' || activity.status === 'not_configured' ? (activity.reason ?? activity.status) : null,
     deps: v1Deps,
+    scanId: scanContext?.scanId ?? null,
   })
   const pnl = robinhoodWalletPnlFromV1(robinhoodPnl)
 

@@ -128,6 +128,20 @@ export type RhRpcLogQuery = { address: string; topics: [string, null, string]; f
 export type RhPoolKey = { currency0: string; currency1: string }
 export type RhHistoricalTokenPrice = { priceUsd: number; source: string }
 
+const VF_TAG = '[robinhood-verified-swap-fifo-audit]'
+
+export type RhVerifiedSwapFifoAuditRun = {
+  status: 'completed' | 'error' | 'skipped'
+  scanId: string | null
+  /** skipped: the exit reason; error: the error message. */
+  reason: string | null
+  canonicalSwapCount: number | null
+  fifoInputSwapCount: number | null
+  matchedLotCount: number | null
+  verifiedClosedLotCount: number | null
+  conclusion: import('./robinhoodVerifiedSwapFifoAudit').RhVerifiedFifoSummary['conclusion'] | null
+}
+
 export type RobinhoodPnlV1Deps = {
   rpc: RhRpc | null
   /** Hour-aligned historical ETH/USD points ([ms, usd], ascending) for [fromSec, toSec] — the fallback source. */
@@ -194,6 +208,8 @@ export type RobinhoodPnlV1Deps = {
     writeMarker: (wallet: string, marker: RobinhoodManifestBootstrapMarker) => Promise<{ written: boolean; reason: string | null }>
     discover: (wallet: string, cursor: string | null, caps: { maxPages: number; deadlineAt: number; stopAfterCandidates?: number }) => Promise<RobinhoodBootstrapDiscovery>
   }
+  /** Test seam for the diagnostic-only FIFO audits (defaults: the real ones). Never feeds verification, pricing or FIFO. */
+  fifoDiagnosticAudits?: { coverage?: typeof robinhoodFifoCoverageAudit; verifiedSwap?: typeof robinhoodVerifiedSwapFifoAudit }
 }
 
 export type RobinhoodPnlV1Candidate = {
@@ -354,6 +370,11 @@ export type RobinhoodPnlV1IngestionAudit = {
   traceScheduler?: RhTraceSchedulerSummary
   /** Diagnostic: FIFO coverage of verified sells ([robinhood-fifo-coverage-audit] summary). */
   fifoCoverage?: import('./robinhoodFifoCoverageAudit').RhFifoCoverageSummary
+  /**
+   * Diagnostic: whether THIS computation ran [robinhood-verified-swap-fifo-audit]. Carried in the stored body, so a
+   * reused canonical result shows the scanId (owner:job:start) of the scan that actually ran it, never the reusing request.
+   */
+  verifiedSwapFifoAudit?: RhVerifiedSwapFifoAuditRun
   relayedNativeTraceDiagnostics?: { candidates: number; verdicts: Record<RhRelayedDiagnosticVerdict, number> }
   relayedWalletVerifiedSwapCount?: number
   relayedWalletRejectedCount?: number
@@ -3475,9 +3496,12 @@ export async function computeRobinhoodPnlV1(params: {
   deps: RobinhoodPnlV1Deps
   /** Activity rows of tokens the wallet received — only read by the acquisition recovery lane. */
   inboundTokenTransfers?: readonly RhInboundTokenTransfer[]
+  /** Identifies the provider scan in diagnostic logs (owner / job / start time). Never a credential. */
+  scanId?: string | null
 }): Promise<RobinhoodPnlV1> {
   const startedAt = params.deps.now()
   const wallet = lower(params.wallet)
+  const scanId = params.scanId ?? null
   const m: RobinhoodPnlV1Metrics = { robinhoodPnlMs: 0, receiptCalls: 0, rpcCalls: 0, historicalPriceCalls: 0, cacheHits: 0, swapsVerified: 0, lotsBuilt: 0, deadlineHit: false, nativeTraceLookups: 0 }
   // The manifest is read only when receipts can actually be verified (no RPC → nothing to replay).
   const manifestRead: RobinhoodVerifiedSwapManifestRead | null = params.deps.rpc && params.deps.verifiedSwapManifest
@@ -3512,6 +3536,14 @@ export async function computeRobinhoodPnlV1(params: {
   const finish = (r: Omit<RobinhoodPnlV1, 'ingestionAudit' | 'metrics' | 'priceEvidence'> & { priceEvidence?: RhPriceEvidence[] }): RobinhoodPnlV1 => {
     signalNativePrefetchComplete()
     m.robinhoodPnlMs = params.deps.now() - startedAt
+    // Every exit that never reached the FIFO diagnostics says so, so a missing audit is never silent.
+    if (!ingestion.verifiedSwapFifoAudit) {
+      ingestion.verifiedSwapFifoAudit = {
+        status: 'skipped', scanId, reason: r.exactReason, canonicalSwapCount: null, fifoInputSwapCount: null,
+        matchedLotCount: null, verifiedClosedLotCount: null, conclusion: null,
+      }
+      console.warn(VF_TAG, { phase: 'skipped', wallet, scanId, status: r.status, reason: r.exactReason })
+    }
     // console.warn: production strips console.log (next.config removeConsole); this must log on every exit.
     const result: RobinhoodPnlV1 = { ...r, priceEvidence: r.priceEvidence ?? [], ingestionAudit: ingestion, metrics: m }
     console.warn('[robinhood-pnl-ingestion-audit]', { ...ingestion, status: result.status, exactReason: result.exactReason, metrics: m })
@@ -3646,32 +3678,53 @@ export async function computeRobinhoodPnlV1(params: {
   const { fifo, buyCount, sellCount } = deep.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
     : intermediate
-  // Diagnostic only: why each verified sell does / does not close a FIFO lot (observational universe = the full merged
-  // activity set before staged receipt truncation). Never feeds verification, pricing or FIFO.
+  // Diagnostics only (never feed verification, pricing or FIFO). Each audit has its OWN try/catch: a failure in one
+  // must never suppress the other (they used to share one, so a coverage throw silently skipped the swap audit).
+  const fifoInputSwaps = [...swaps, ...recovery.swaps, ...deep.swaps]
+  const fifoInputEvidence = [...evidence, ...recovery.evidence, ...deep.evidence]
+  const audits = params.deps.fifoDiagnosticAudits
+  // Why each verified sell does / does not close a FIFO lot (observational universe = the full merged activity set
+  // before staged receipt truncation).
   try {
-    const coverage = robinhoodFifoCoverageAudit({
+    const coverage = (audits?.coverage ?? robinhoodFifoCoverageAudit)({
       wallet, isQuote: (t) => quoteKind(t) != null,
-      swaps: [...swaps, ...recovery.swaps, ...deep.swaps], evidence: [...evidence, ...recovery.evidence, ...deep.evidence],
+      swaps: fifoInputSwaps, evidence: fifoInputEvidence,
       matchedLots: fifo.matchedLots, inbound: params.inboundTokenTransfers ?? [], candidatePool: params.candidates.map((c) => c.txHash),
       selectedStage1: selected.map((c) => c.txHash), outcomes,
       tracedTxHashes: new Set([...alloc.resolved].filter(([, t]) => t != null).map(([h]) => h)),
       recovery: recovery.summary.acquisitionRecoveryAttempted ? recovery.summary : null,
     })
     for (const row of coverage.sells) console.warn('[robinhood-fifo-coverage-audit]', { wallet, ...row })
-    // The exact canonical set behind "Verified swaps" (main lane) vs what FIFO matched, with an independent re-run.
-    const vf = robinhoodVerifiedSwapFifoAudit({
-      chain: String(ROBINHOOD_FIFO_CHAIN), isQuote: (t) => quoteKind(t) != null, canonicalSwaps: swaps,
-      extraSwaps: [...recovery.swaps.map((x) => ({ swap: x, source: 'acquisition_recovery' })), ...deep.swaps.map((x) => ({ swap: x, source: 'deep_acquisition' }))],
-      evidence: [...evidence, ...recovery.evidence, ...deep.evidence], matchedLots: fifo.matchedLots,
-      attributionByTx: new Map(outcomes.filter((o) => o.swap).map((o) => [o.txHash, o.acceptedVia ?? 'direct_v4'])),
-    })
-    for (const row of vf.rows) console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, ...row })
-    for (const t of vf.tokens) console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, tokenGroup: t })
-    console.warn('[robinhood-verified-swap-fifo-audit]', { wallet, summary: vf.summary })
     console.warn('[robinhood-fifo-coverage-audit]', { wallet, summary: coverage.summary })
     ingestion.fifoCoverage = coverage.summary
   } catch (err) {
-    console.warn('[robinhood-fifo-coverage-audit]', { wallet, error: err instanceof Error ? err.message : String(err) })
+    console.warn('[robinhood-fifo-coverage-audit]', { wallet, scanId, error: err instanceof Error ? err.message : String(err) })
+  }
+  // The exact canonical set behind "Verified swaps" (main lane) vs what FIFO matched, with an independent re-run.
+  const vfCounts = {
+    canonicalSwapCount: swaps.length, fifoInputSwapCount: fifoInputSwaps.length, matchedLotCount: fifo.matchedLots.length,
+    verifiedClosedLotCount: fifo.matchedLots.filter((l) => l.evidenceQuality === 'verified' && l.realizedPnlUsd != null && l.costBasisUsd != null).length,
+  }
+  console.warn(VF_TAG, {
+    phase: 'start', wallet, scanId, ...vfCounts,
+    recoverySwapCount: recovery.swaps.length, deepSwapCount: deep.swaps.length, evidenceCount: fifoInputEvidence.length,
+  })
+  try {
+    const vf = (audits?.verifiedSwap ?? robinhoodVerifiedSwapFifoAudit)({
+      chain: String(ROBINHOOD_FIFO_CHAIN), isQuote: (t) => quoteKind(t) != null, canonicalSwaps: swaps,
+      extraSwaps: [...recovery.swaps.map((x) => ({ swap: x, source: 'acquisition_recovery' })), ...deep.swaps.map((x) => ({ swap: x, source: 'deep_acquisition' }))],
+      evidence: fifoInputEvidence, matchedLots: fifo.matchedLots,
+      attributionByTx: new Map(outcomes.filter((o) => o.swap).map((o) => [o.txHash, o.acceptedVia ?? 'direct_v4'])),
+    })
+    // Summary first: a log reader that truncates a burst still sees the verdict.
+    console.warn(VF_TAG, { phase: 'complete', wallet, scanId, ...vfCounts, rowCount: vf.rows.length, tokenGroupCount: vf.tokens.length, summary: vf.summary })
+    for (const row of vf.rows) console.warn(VF_TAG, { phase: 'row', wallet, scanId, ...row })
+    for (const t of vf.tokens) console.warn(VF_TAG, { phase: 'token', wallet, scanId, tokenGroup: t })
+    ingestion.verifiedSwapFifoAudit = { status: 'completed', scanId, reason: null, ...vfCounts, conclusion: vf.summary.conclusion }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn(VF_TAG, { phase: 'error', wallet, scanId, ...vfCounts, error: message })
+    ingestion.verifiedSwapFifoAudit = { status: 'error', scanId, reason: message, ...vfCounts, conclusion: null }
   }
   const adm = ctx.deepAdmission
   if (adm && (adm.recoveryNeeded || deep.summary)) {

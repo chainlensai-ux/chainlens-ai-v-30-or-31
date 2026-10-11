@@ -228,6 +228,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   if (params.scanDepth === 'preview') {
     const cached = await readOrchestratorCache(cacheKey, evmChains).catch(() => null)
     if (cached) {
+      // No provider scan (and no Robinhood PnL audit) runs for this request: say so, so the absence of fresh
+      // [robinhood-verified-swap-fifo-audit] lines is attributable.
+      console.warn('[walletScanOrchestrator] preview cache hit', { walletAddress: walletAddress.toLowerCase(), chainMode: params.chainMode, providerScanStarted: false })
       const hit: CanonicalWalletScanResult = { ...cached, usedCachedCanonicalResult: true }
       return params.debug ? hit : stripDebug(hit)
     }
