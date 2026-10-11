@@ -240,7 +240,7 @@ const sellTx = (k: number, ts: number) => new Tx(ts).xfer(TOKENS[k], WALLET, PM,
 const buyTx = (k: number, ts: number) => new Tx(ts).v4(RH_NATIVE, TOKENS[k], n(0.01), n(100 + k)).xfer(TOKENS[k], PM, WALLET, n(100 + k))
 const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
 
-async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean; concurrency?: number; wrapTrace?: (inner: ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx']) => ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx'] } = {}) {
+async function scan(txs: Tx[], opts: { extraDeps?: Record<string, unknown>; honorsFilter?: boolean; rejectsFilter?: boolean; latencyMs?: number; extension?: boolean; concurrency?: number; wrapTrace?: (inner: ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx']) => ReturnType<typeof blockscoutNativeTraceSource>['transfersForTx'] } = {}) {
   __resetRobinhoodPnlV1CachesForTest()
   const byHash = new Map(txs.map((tx, i) => [hashN(100 + i), { tx, i, block: 1000 + i * 10 }]))
   const server = blockscout(new Map([...byHash].map(([h, e]) => [h, { items: e.tx.items, faults: e.tx.faults }])), { honorsFilter: opts.honorsFilter, rejectsFilter: opts.rejectsFilter, latencyMs: opts.latencyMs })
@@ -271,6 +271,7 @@ async function scan(txs: Tx[], opts: { honorsFilter?: boolean; rejectsFilter?: b
         nativeTransfersForTx: opts.wrapTrace ? opts.wrapTrace(source.transfersForTx) : source.transfersForTx,
         ...(opts.concurrency != null ? { nativeTraceConcurrency: opts.concurrency } : {}),
         nativeTracePartialProgress: partialTraceProgress,
+        ...(opts.extraDeps ?? {}),
         ...(opts.extension === false ? {} : { extendNativeTraceForTx: source.extendOversized }),
       },
     })
@@ -604,4 +605,91 @@ test('P-O. a p1 sell with partial progress is traced before a brand-new p1 sell 
     assert.deepEqual(rows.map((b) => [idx(b.txHash), b.priorityClass]), [[1, 'p0_partial_resume_sell'], [0, 'p1_native_out_sell']])
   }
   assert.equal(r.swapsVerified, 2)
+})
+
+// ── Deep-history admission (production scans 7f10f4fe / c5054234: the history page found the scan deadline spent) ──
+import { ROBINHOOD_DEEP_HISTORY_RESERVE_MS } from '../lib/server/robinhoodPnlV1.ts'
+type HistCall = { remainingMs: number; at: number }
+const storedSell = (h: string, raw = n(0.02)) => async (x: string) => (x === h ? { transfers: [{ from: PM, to: ROUTER, value: raw, success: true }, { from: ROUTER, to: WALLET, value: raw, success: true }], audit: null } : null)
+function history(calls: HistCall[], behaviour: 'fast' | 'hang' = 'fast') {
+  return async (_w: string, _t: string, _ts: number, deadlineAt: number) => {
+    calls.push({ remainingMs: deadlineAt - Date.now(), at: Date.now() })
+    if (behaviour === 'hang') await new Promise((r) => setTimeout(r, Math.max(0, deadlineAt - Date.now()) + 500))
+    // A production Blockscout history page takes ~3.5 s; with less time left it fails closed at the deadline.
+    const PAGE_MS = 3_500
+    if (deadlineAt - Date.now() < PAGE_MS) {
+      await new Promise((r) => setTimeout(r, Math.max(0, deadlineAt - Date.now())))
+      return { rows: [], pagesRequested: 1, pagesSucceeded: 0, olderInboundRowsFound: 0, historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'deadline' }
+    }
+    await new Promise((r) => setTimeout(r, PAGE_MS))
+    return { rows: [], pagesRequested: 1, pagesSucceeded: 1, olderInboundRowsFound: 0, historicalRangeStart: null, historicalRangeEnd: null, stopReason: 'history_exhausted' }
+  }
+}
+const admission = (lines: Array<[string, any]>) => lines.find(([t]) => t === '[robinhood-deep-acquisition-admission-audit]')?.[1]
+
+test('D1+D6+D7. unmatched verified sell + oversized main trace: one bounded history attempt still runs, inside the scan deadline', async () => {
+  const sold = sellTx(0, TS - 100).trace(SELL_ROWS, 10)                // proven by a stored trace (cache-satisfied)
+  const oversized = sellTx(1, TS - 50).trace(SELL_ROWS, 598)            // 12 pages at 2 s: lookup + in-slot continuation eat the whole lane
+  const calls: HistCall[] = []
+  const t0 = Date.now()
+  const { r, lines, server } = await scan([sold, oversized], {
+    latencyMs: 2000, extraDeps: { nativeTraceCached: storedSell(hashN(100)), historicalTokenInbounds: history(calls) },
+  })
+  const elapsed = Date.now() - t0
+  const a = admission(lines)
+  assert.ok(a, 'admission audit emitted')
+  assert.deepEqual([a.recoveryNeeded, a.reservedMs, a.sellTxHash], [true, ROBINHOOD_DEEP_HISTORY_RESERVE_MS, hashN(100)])
+  assert.equal(a.oversizedTraceActive || a.mainLiveTraceCount === 1, true)
+  assert.equal(calls.length, 1, 'exactly one history request (no budget expansion)')
+  assert.ok(calls[0].remainingMs >= 1_000, `history admitted with ${calls[0].remainingMs} ms`)
+  assert.deepEqual([a.admitted, a.historyRequestStarted, a.historyRequestCompleted, a.finalStopReason], [true, true, true, 'history_exhausted'])
+  assert.ok(a.scanRemainingMsAtDeepHistoryAdmission >= 3_500, 'room for one production-sized history page (without the reservation: ~2.9 s, page fails at the deadline)')
+  assert.ok(elapsed < 15_000 + 1_500, `no deadline overrun: ${elapsed} ms`)
+  assert.ok(server.traceUrls().length <= 4 + 8 + 2, 'main trace requests stay within the normal lookup + oversized caps')
+  assert.equal(r.ingestionAudit.normalizedSellCount, 1, 'the oversized trace did not complete; only the stored sell is verified')
+})
+
+test('D2. no unmatched sell: no reservation, no admission audit, main traces unchanged', async () => {
+  const buy = buyTx(2, TS - 300).trace(BUY_ROWS, 10)
+  const calls: HistCall[] = []
+  const { lines, r } = await scan([buy], { extraDeps: { historicalTokenInbounds: history(calls) } })
+  assert.equal(admission(lines), undefined)
+  assert.equal(calls.length, 0)
+  assert.equal(r.swapsVerified, 1)
+})
+
+test('D4. deep history times out: fail closed, no promotion, no overrun', async () => {
+  const sold = sellTx(0, TS - 100).trace(SELL_ROWS, 10)
+  const calls: HistCall[] = []
+  const t0 = Date.now()
+  const { r, lines } = await scan([sold], { extraDeps: { nativeTraceCached: storedSell(hashN(100)), historicalTokenInbounds: history(calls, 'hang') } })
+  const a = admission(lines)
+  assert.deepEqual([a.admitted, a.historyRequestCompleted], [true, false])
+  assert.equal(r.ingestionAudit.normalizedBuyCount, 0)
+  assert.equal(r.verifiedClosedLots, 0)
+  assert.ok(Date.now() - t0 < 15_000 + 1_500)
+})
+
+test('D3. deep history finishes early: the rest of the scan stays available to post-recovery main work', async () => {
+  const sold = sellTx(0, TS - 100).trace(SELL_ROWS, 10)
+  const calls: HistCall[] = []
+  const { lines } = await scan([sold], { extraDeps: { nativeTraceCached: storedSell(hashN(100)), historicalTokenInbounds: history(calls) } })
+  const a = admission(lines)
+  assert.equal(a.historyRequestCompleted, true)
+  assert.ok(a.scanRemainingMsAtEnd > 5_000, `unused time returned: ${a.scanRemainingMsAtEnd} ms left after recovery`)
+})
+
+test('D5+D8. stored proofs need no live trace; the admission decision is deterministic across repeated scans', async () => {
+  const run = async () => {
+    const calls: HistCall[] = []
+    const res = await scan([sellTx(0, TS - 100).trace(SELL_ROWS, 10), sellTx(3, TS - 90).trace(SELL_ROWS, 10)], {
+      extraDeps: { nativeTraceCached: async (x: string) => (await storedSell(hashN(100))(x)) ?? (await storedSell(hashN(101))(x)), historicalTokenInbounds: history(calls) },
+    })
+    return { a: admission(res.lines), live: res.server.traceUrls().length }
+  }
+  const one = await run()
+  const two = await run()
+  assert.equal(one.live, 0, 'both sells served from stored proofs: no live trace')
+  assert.deepEqual(one.a.provisionalUnmatchedSells, two.a.provisionalUnmatchedSells)
+  assert.deepEqual([one.a.reservedMs, one.a.sellTxHash], [two.a.reservedMs, two.a.sellTxHash])
 })

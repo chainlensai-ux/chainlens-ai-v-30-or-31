@@ -594,6 +594,8 @@ type Ctx = {
   traceBudget?: RhLiveTraceAllocator
   /** p1 sells resuming cross-scan partial trace progress this scan (ordering / audit only). */
   partialResumeSells?: Set<string>
+  /** Deep-history admission: the scan-time slice held back from main live traces for one bounded history attempt. */
+  deepAdmission?: RhDeepAdmission
   /** Relayed V4-only native-input receipts eligible for a DIAGNOSTIC trace only (never acceptance). */
   relayedTraceRequests?: Map<string, RhRelayedTraceRequest>
 }
@@ -1432,6 +1434,64 @@ function relayedAsTraceRequest(r: RhRelayedTraceRequest): RhNativeTraceRequest {
 }
 
 /**
+ * DEEP-HISTORY ADMISSION (scheduling only — never evidence, never a budget increase). Main live traces (incl. a p1
+ * sell's in-slot oversized continuation) run BEFORE pricing / FIFO / acquisition recovery / deep acquisition, and the
+ * deep lane's Blockscout history page comes after its RPC log lane — so an unmatched verified sell's one historical
+ * attempt could find the scan deadline already spent (production: stopReason deadline, pagesSucceeded 0). When an
+ * unmatched sell is already known before live traces start, this slice of the EXISTING scan deadline is kept from main
+ * live-trace work and from the deep RPC lane for one bounded history attempt. Unused time falls back to the post-
+ * recovery main work (reserve release, remaining oversized continuations) that already runs on the full deadline.
+ */
+export const ROBINHOOD_DEEP_HISTORY_RESERVE_MS = 4_500
+export type RhDeepAdmission = {
+  recoveryNeeded: boolean
+  reserveMs: number
+  provisionalUnmatchedSells: Array<{ sellTxHash: string; token: string; unmatchedSellRaw: string; source: 'verified' | 'stored_trace_receipt' }>
+  scanRemainingMsAtEligibility: number
+  scanRemainingMsBeforeMainTraceScheduler: number | null
+  scanRemainingMsAfterMainTraceScheduler: number | null
+  mainLiveTraceCount: number
+  oversizedTraceTxHashes: string[]
+  deepHistory?: {
+    sellTxHash: string; unmatchedSellRaw: string; scanRemainingMsAtDeepHistoryAdmission: number; rpcLaneRan: boolean
+    admitted: boolean; historyRequestStarted: boolean; historyRequestCompleted: boolean; historyDeadlineMs: number; skippedReason: string | null
+  }
+}
+
+/**
+ * Unmatched sells knowable before live traces: verified sells, plus sells whose exact trace is already stored (their
+ * replay comes after selection) read from the cached receipt's single wallet token debit. Ordering / time reservation
+ * only — a provisional sell here is never a swap, a lot or evidence.
+ */
+async function provisionalUnmatchedSells(wallet: string, outcomes: readonly CandidateOutcome[], storedSellTxHashes: readonly string[]): Promise<RhDeepAdmission['provisionalUnmatchedSells']> {
+  const verified = outcomes.filter((o) => o.swap).map((o) => o.swap!)
+  const known = new Set(verified.map((s) => s.txHash))
+  const pseudo: RhVerifiedSwap[] = []
+  for (const h of storedSellTxHashes) {
+    if (known.has(h)) continue
+    const receipt = await receiptCache.get(h)?.catch(() => null)
+    if (!receipt) continue
+    const debits = new Map<string, bigint>()
+    for (const l of receipt.logs) {
+      if (l.topics[0] !== ERC20_TRANSFER_TOPIC0 || l.topics.length !== 3 || `0x${l.topics[1].slice(-40)}`.toLowerCase() !== wallet) continue
+      const v = hexToBigInt(l.data)
+      if (v != null && v > ZERO) debits.set(lower(l.address), (debits.get(lower(l.address)) ?? ZERO) + v)
+    }
+    if (debits.size !== 1) continue
+    const [[token, raw]] = [...debits]
+    pseudo.push({
+      txHash: h, blockNumber: receipt.blockNumber, firstLogIndex: 0, timestampSec: receiptTimestamp(receipt) ?? 0, inputToken: token, outputToken: RH_NATIVE,
+      inputRaw: raw, outputRaw: BigInt(1), inputDecimals: 18, outputDecimals: 18, hops: [], intermediary: null,
+    })
+  }
+  const stored = new Set(pseudo.map((p) => p.txHash))
+  return [...robinhoodUnmatchedSellRaw([...verified, ...pseudo], (t) => quoteKind(t) != null)]
+    .filter(([, v]) => v.unmatchedRaw > ZERO)
+    .map(([h, v]) => ({ sellTxHash: h, token: v.token, unmatchedSellRaw: v.unmatchedRaw.toString(), source: stored.has(h) ? 'stored_trace_receipt' as const : 'verified' as const }))
+    .sort((a, b) => a.sellTxHash.localeCompare(b.sellTxHash))
+}
+
+/**
  * Resolves traces for the eligible receipts: stored proofs first (no live slot), then live lookups in deterministic
  * priority order (class, then timestamp ASC, then txHash ASC) up to the live cap. Logs one selection line per
  * receipt candidate plus a summary. Returns the traces to replay.
@@ -1480,14 +1540,32 @@ async function selectNativeTraces(ctx: Ctx, wallet: string, outcomes: readonly C
   }
   const live = [...liveUnordered.filter((r) => partialSell.has(r.txHash)), ...liveUnordered.filter((r) => !partialSell.has(r.txHash))]
   ctx.partialResumeSells = partialSell
+  // Deep-history admission: an unmatched sell already known now keeps a slice of the scan for one history attempt.
+  const deepWired = Boolean(ctx.deps.historicalTokenInbounds)
+  const storedSells = eligible.filter((r) => cacheHit.has(r.txHash) && r.priorityClass === 'p1_native_out_sell').map((r) => r.txHash)
+  const unmatched = deepWired ? await provisionalUnmatchedSells(lower(wallet), outcomes, storedSells) : []
+  const remainingNow = ctx.deadlineAt - Date.now()
+  const reserveMs = unmatched.length > 0 ? Math.max(0, Math.min(ROBINHOOD_DEEP_HISTORY_RESERVE_MS, remainingNow)) : 0
+  ctx.deepAdmission = {
+    recoveryNeeded: unmatched.length > 0, reserveMs, provisionalUnmatchedSells: unmatched,
+    scanRemainingMsAtEligibility: remainingNow, scanRemainingMsBeforeMainTraceScheduler: null, scanRemainingMsAfterMainTraceScheduler: null,
+    mainLiveTraceCount: 0, oversizedTraceTxHashes: [],
+  }
+  // Main live traces (and their in-slot continuations) work to the scan deadline minus the reservation.
+  const liveCtx: Ctx = reserveMs > 0 ? { ...ctx, deadlineAt: ctx.deadlineAt - reserveMs } : ctx
   // Past the PnL deadline no live trace is started (requestNativeTrace also re-checks per request).
-  const deadlineReached = Date.now() >= ctx.deadlineAt
+  const deadlineReached = Date.now() >= liveCtx.deadlineAt
   const selected = deadlineReached ? [] : live.slice(0, Math.max(0, Math.min(mainLiveCap, cap - alloc.used)))
   const ordinal = new Map(selected.map((r, i) => [r.txHash, alloc.used + i + 1]))
   alloc.used += selected.length
   alloc.mainUsed += selected.length
   // Oversized token → ETH sells continue inside their own scheduler slot (first claim on the oversized budget).
-  const results = await scheduleLiveTraces(ctx, selected)
+  ctx.deepAdmission.scanRemainingMsBeforeMainTraceScheduler = ctx.deadlineAt - Date.now()
+  const results = await scheduleLiveTraces(liveCtx, selected)
+  Object.assign(ctx.deepAdmission, {
+    scanRemainingMsAfterMainTraceScheduler: ctx.deadlineAt - Date.now(), mainLiveTraceCount: selected.length,
+    oversizedTraceTxHashes: selected.filter((_, i) => results[i].audit?.result === 'pagination_cap_exhausted' || (results[i].audit?.extension != null) || (results[i].audit?.partialTraceHit === true)).map((r) => r.txHash),
+  })
   selected.forEach((r, i) => {
     const transfers = logNativeTrace(wallet, r.txHash, results[i])
     replay.set(r.txHash, transfers)
@@ -3039,26 +3117,33 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
 async function runDeepAcquisitionRecovery(
   ctx: Ctx, wallet: string, swaps: readonly RhVerifiedSwap[], evidence: readonly RhPriceEvidence[],
   currentRecovery: RhAcquisitionRecoverySummary, inbound: readonly RhInboundTokenTransfer[], outcomes: readonly CandidateOutcome[],
-): Promise<{ summary: RhDeepAcquisitionSummary | null; swaps: RhVerifiedSwap[]; evidence: RhPriceEvidence[] }> {
+): Promise<{ summary: RhDeepAcquisitionSummary | null; swaps: RhVerifiedSwap[]; evidence: RhPriceEvidence[]; skipReason?: string }> {
   const empty = { summary: null, swaps: [] as RhVerifiedSwap[], evidence: [] as RhPriceEvidence[] }
-  if ((!ctx.deps.historicalTokenInbounds && !ctx.deps.rpcInboundTransferLogs) || currentRecovery.recoveredBuyCount !== 0) return empty
+  if (!ctx.deps.historicalTokenInbounds && !ctx.deps.rpcInboundTransferLogs) return { ...empty, skipReason: 'deep_history_not_wired' }
+  if (currentRecovery.recoveredBuyCount !== 0) return { ...empty, skipReason: 'acquisition_recovery_already_recovered' }
   const isQuote = (t: string) => quoteKind(t) != null
   const sell = [...robinhoodUnmatchedSellRaw(swaps, isQuote)]
     .filter(([hash, v]) => v.unmatchedRaw > ZERO && evidence.some((e) => e.swapTxHash === hash && e.bothLegsVerified))
     .map(([txHash, v]) => ({ txHash, ...v }))
     .sort((a, b) => b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))[0]
-  if (!sell || currentRecovery.sellTxHash !== sell.txHash) return empty
+  if (!sell) return { ...empty, skipReason: 'no_unmatched_sell_priced_on_both_legs' }
+  if (currentRecovery.sellTxHash !== sell.txHash) return { ...empty, skipReason: 'recovery_lane_sell_differs' }
   const startedAt = Date.now()
+  const adm = ctx.deepAdmission
   const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
   const sellBlock = swaps.find((s) => s.txHash === sell.txHash)?.blockNumber
   const knownInboundAnchors = sellBlock == null ? null : await knownInboundReceiptAnchors(
     inbound, sell.token, wallet, currentRecovery.candidateTxHashes, sell.txHash, sellBlock, sell.timestampSec,
   )
-  const rpcDeadlineAt = Date.now() + ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs
+  // The RPC log lane runs first; it may not consume the history slice (nor run past the scan deadline): it ends
+  // ROBINHOOD_DEEP_HISTORY_RESERVE_MS before the scan deadline when the Blockscout history fallback is wired.
+  const historySliceAt = ctx.deps.historicalTokenInbounds ? ctx.deadlineAt - ROBINHOOD_DEEP_HISTORY_RESERVE_MS : Number.POSITIVE_INFINITY
+  const rpcDeadlineAt = Math.min(Date.now() + ROBINHOOD_RPC_ACQUISITION_LIMITS.budgetMs, historySliceAt)
+  const rpcRunnable = rpcDeadlineAt - Date.now() >= 1_000
   const rpcCtx = { ...ctx, deadlineAt: rpcDeadlineAt }
   const rpcProofRows: RecoveryRow[] = []
   let rpcCovered = ZERO
-  const rpcResult = ctx.deps.rpcInboundTransferLogs && sellBlock != null
+  const rpcResult = ctx.deps.rpcInboundTransferLogs && sellBlock != null && rpcRunnable
     ? await discoverRobinhoodRpcAcquisitionHistory({
       sellTxHash: sell.txHash, sellBlock, token: sell.token, wallet, deadlineAt: rpcDeadlineAt,
       rpcLogs: ctx.deps.rpcInboundTransferLogs, rpc: ctx.rpc, knownHashes: new Set(excludedHashes),
@@ -3085,8 +3170,20 @@ async function runDeepAcquisitionRecovery(
   ctx.priceSidesUsed = rpcCtx.priceSidesUsed
   const remainingProofs = ROBINHOOD_DEEP_ACQUISITION_LIMITS.maxReceiptProofs - rpcProofRows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length
   const runFallback = rpcCovered < sell.unmatchedRaw && remainingProofs > 0 && Boolean(ctx.deps.historicalTokenInbounds)
-  const deadlineAt = Math.min(ctx.deadlineAt, startedAt + ROBINHOOD_DEEP_ACQUISITION_LIMITS.budgetMs)
-  const history = runFallback ? await withinRecoveryDeadline(deadlineAt, () => ctx.deps.historicalTokenInbounds!(wallet, sell.token, sell.timestampSec, deadlineAt)) : null
+  // The history window starts when the history attempt starts (after the RPC lane), never past the scan deadline.
+  const deadlineAt = Math.min(ctx.deadlineAt, Math.max(startedAt, Date.now()) + ROBINHOOD_DEEP_ACQUISITION_LIMITS.budgetMs)
+  const historyAdmitted = runFallback && deadlineAt - Date.now() >= 1_000
+  const scanRemainingAtAdmission = ctx.deadlineAt - Date.now()
+  const historyWindowMs = deadlineAt - Date.now()
+  const history = historyAdmitted ? await withinRecoveryDeadline(deadlineAt, () => ctx.deps.historicalTokenInbounds!(wallet, sell.token, sell.timestampSec, deadlineAt)) : null
+  if (adm) {
+    adm.deepHistory = {
+      sellTxHash: sell.txHash, unmatchedSellRaw: sell.unmatchedRaw.toString(), scanRemainingMsAtDeepHistoryAdmission: scanRemainingAtAdmission,
+      rpcLaneRan: rpcResult != null, admitted: historyAdmitted, historyRequestStarted: historyAdmitted,
+      historyRequestCompleted: history != null && history.pagesSucceeded > 0, historyDeadlineMs: historyWindowMs,
+      skippedReason: historyAdmitted ? null : !runFallback ? (rpcCovered >= sell.unmatchedRaw ? 'rpc_lane_covered_sell' : remainingProofs <= 0 ? 'proof_cap' : 'history_not_wired') : 'insufficient_scan_time',
+    }
+  }
   const rowKey = (r: RhInboundTokenTransfer): string | null => r.rawAmount != null && /^\d+$/.test(r.rawAmount)
     ? `${lower(r.txHash)}:${BigInt(r.rawAmount).toString()}` : null
   const knownRowKeys = new Set(inbound.map(rowKey).filter((key): key is string => key != null))
@@ -3564,6 +3661,23 @@ export async function computeRobinhoodPnlV1(params: {
     ingestion.fifoCoverage = coverage.summary
   } catch (err) {
     console.warn('[robinhood-fifo-coverage-audit]', { wallet, error: err instanceof Error ? err.message : String(err) })
+  }
+  const adm = ctx.deepAdmission
+  if (adm && (adm.recoveryNeeded || deep.summary)) {
+    const first = adm.provisionalUnmatchedSells[0]
+    console.warn('[robinhood-deep-acquisition-admission-audit]', {
+      wallet, sellTxHash: adm.deepHistory?.sellTxHash ?? first?.sellTxHash ?? null, unmatchedSellRaw: adm.deepHistory?.unmatchedSellRaw ?? first?.unmatchedSellRaw ?? null,
+      recoveryNeeded: adm.recoveryNeeded, provisionalUnmatchedSells: adm.provisionalUnmatchedSells, reservedMs: adm.reserveMs,
+      scanRemainingMsAtEligibility: adm.scanRemainingMsAtEligibility,
+      scanRemainingMsBeforeMainTraceScheduler: adm.scanRemainingMsBeforeMainTraceScheduler, scanRemainingMsAfterMainTraceScheduler: adm.scanRemainingMsAfterMainTraceScheduler,
+      scanRemainingMsAtDeepHistoryAdmission: adm.deepHistory?.scanRemainingMsAtDeepHistoryAdmission ?? null,
+      admitted: adm.deepHistory?.admitted ?? false, skippedReason: adm.deepHistory?.skippedReason ?? deep.skipReason ?? null,
+      mainLiveTraceCount: adm.mainLiveTraceCount, oversizedTraceActive: adm.oversizedTraceTxHashes.length > 0, oversizedTraceTxHash: adm.oversizedTraceTxHashes[0] ?? null,
+      recoveryReservationAvailable: adm.reserveMs > 0, rpcLaneRan: adm.deepHistory?.rpcLaneRan ?? false,
+      historyRequestStarted: adm.deepHistory?.historyRequestStarted ?? false, historyRequestCompleted: adm.deepHistory?.historyRequestCompleted ?? false,
+      historyDeadlineMs: adm.deepHistory?.historyDeadlineMs ?? null, finalStopReason: deep.summary?.stopReason ?? deep.skipReason ?? null,
+      scanRemainingMsAtEnd: ctx.deadlineAt - Date.now(),
+    })
   }
   if (deep.summary) {
     deep.summary.closedLotsAdded = fifo.matchedLots.length - intermediate.fifo.matchedLots.length
