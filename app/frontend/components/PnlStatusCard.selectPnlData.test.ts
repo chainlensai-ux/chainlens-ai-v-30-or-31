@@ -1236,6 +1236,28 @@ describe('verified sample vs full-history UI (buildWalletPnlViewModel)', () => {
     assert.match(vm.sampleEvidenceLine ?? '', /PARTIAL \/ VERIFIED BOUNDED SAMPLE/)
   })
 
+  it('unresolved stablecoin quote legs: ROI shows the proven-position figure with its scope, not "Unavailable"', () => {
+    const base = sampleSummary()
+    const summary = sampleSummary({
+      verifiedSamplePerformance: {
+        ...base.verifiedSamplePerformance!,
+        realizedRoiPct: null,
+        unresolvedQuoteLegLotCount: 7,
+        roiUnavailableReason: 'unresolved_quote_leg_identity',
+        provenPositionRoiPct: -18.75,
+      },
+    })
+    const vm = buildWalletPnlViewModel({ pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }), publicPnlStatus: 'unavailable', reconciliationSummary: summary })
+    assert.equal(vm.roiBox.status, 'Partial')
+    assert.equal(vm.roiBox.value, '-18.8%')
+    assert.match(vm.roiBox.reason, /excludes 7 stablecoin lots with unproven quote-leg role/)
+    assert.equal(vm.verifiedSampleRealizedBox.value, '-$70,794.97', 'sample PnL unchanged')
+    // Without a proven-position figure the honest "unresolved" label stays.
+    const none = sampleSummary({ verifiedSamplePerformance: { ...summary.verifiedSamplePerformance!, provenPositionRoiPct: null } })
+    const vm2 = buildWalletPnlViewModel({ pnlV2: pnlV2({ realizedPnlUsd: SAMPLE_PNL }), publicPnlStatus: 'unavailable', reconciliationSummary: none })
+    assert.deepEqual([vm2.roiBox.value, vm2.roiBox.reason], [null, 'Quote-leg identity unresolved'])
+  })
+
   it('HARD ASSERTION: allowed sample is not replaced by synthetic when Combined is unavailable', () => {
     assert.equal(isVerifiedSampleDisplayExempt(sampleSummary()), true)
     assert.equal(isVerifiedSampleDisplayExempt(reconciliationSummary()), false)

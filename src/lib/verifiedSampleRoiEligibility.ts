@@ -123,6 +123,9 @@ export type VerifiedSampleRoiEligibility = {
   quoteCashLegLots: MatchedLot[]
   unresolvedLots: MatchedLot[]
   roiAvailable: boolean
+  /** ROI numerator/denominator over proven economic positions only (unresolved stablecoin lots excluded). */
+  provenPositionRoiPnlUsd: number | null
+  provenPositionRoiCostBasisUsd: number | null
   roiUnavailableReason: 'unresolved_quote_leg_identity' | null
   realizedRoiPnlUsd: number | null
   realizedRoiCostBasisUsd: number | null
@@ -593,6 +596,15 @@ export function classifyVerifiedSampleRoiEligibility(params: {
     ? verifiedSampleRoiEligibleLots.reduce((sum, lot) => sum + finiteOrZero(lot.costBasisUsd), 0)
     : null
 
+  // PROVEN-POSITION ROI, DISCLOSED (wallet-scanner "Unavailable" audit): one unresolved stablecoin lot used to
+  // make ROI unavailable for the whole sample. Unresolved lots are only ever verified STABLECOIN lots (every
+  // non-stable lot is an economic position), their PnL is ~$0, and whether they are trade cash or a separate
+  // position cannot be proven. This is the ROI over the proven economic positions only — unresolved lots
+  // excluded from BOTH numerator and denominator — published separately with that scope, never as
+  // realizedRoiPnlUsd/realizedRoiCostBasisUsd (which stay null until every lot resolves).
+  const provenPositionRoiPnlUsd = verifiedSampleRoiEligibleLots.reduce((sum, lot) => sum + finiteOrZero(lot.realizedPnlUsd), 0)
+  const provenPositionRoiCostBasisUsd = verifiedSampleRoiEligibleLots.reduce((sum, lot) => sum + finiteOrZero(lot.costBasisUsd), 0)
+
   return {
     classifications,
     verifiedSampleRoiEligibleLots,
@@ -602,5 +614,7 @@ export function classifyVerifiedSampleRoiEligibility(params: {
     roiUnavailableReason: roiAvailable ? null : 'unresolved_quote_leg_identity',
     realizedRoiPnlUsd,
     realizedRoiCostBasisUsd,
+    provenPositionRoiPnlUsd: verifiedSampleRoiEligibleLots.length > 0 ? provenPositionRoiPnlUsd : null,
+    provenPositionRoiCostBasisUsd: verifiedSampleRoiEligibleLots.length > 0 ? provenPositionRoiCostBasisUsd : null,
   }
 }

@@ -139,7 +139,7 @@ test('verified swaps and verified closed trades render as separate counts', () =
   assert.ok(evidence.partial.includes('Behavioral profile'))
   assert.ok(evidence.partial.includes('Portfolio value (pricing coverage 98/204)'))
   assert.ok(!evidence.partial.includes('Robinhood PnL (real evidence, not fully verified)'))
-  assert.ok(evidence.missing.includes('Realized closed-lot PnL (no verified buy→sell lot closed yet)'))
+  assert.ok(evidence.missing.includes('Robinhood realized closed-lot PnL (no verified buy→sell lot closed yet)'))
   assert.ok(evidence.missing.includes('Closed-trade performance score'))
 })
 

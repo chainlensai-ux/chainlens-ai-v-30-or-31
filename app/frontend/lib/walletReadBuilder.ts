@@ -273,6 +273,8 @@ export function buildEvidence(params: {
   behaviorProfileAvailable?: boolean
   portfolioEvidence?: PortfolioEvidence | null
   smartMoneyStatus?: 'official' | 'not_yet_rated' | null
+  /** Optional: the verified bounded sample's realized PnL is published on the PnL card (Base/ETH). */
+  verifiedSampleRealizedShown?: boolean
 }): WalletReadEvidence {
   const verified: string[] = []
   const partial: string[] = []
@@ -288,7 +290,10 @@ export function buildEvidence(params: {
     if (rh.swapsBothLegsPriced > 0) verified.push(`${rh.swapsBothLegsPriced} swap${rh.swapsBothLegsPriced === 1 ? '' : 's'} priced on both legs`)
   }
 
-  if (params.pnlConfidence.realized === 'Partial') partial.push('Realized PnL (bounded sample)')
+  // The full-wallet figure can be locked while the PnL card publishes the verified bounded sample: list the
+  // sample as partial evidence instead of calling all realized PnL missing (contradicting the card).
+  const sampleShownWhileLocked = params.pnlConfidence.realized === 'Locked' && params.verifiedSampleRealizedShown === true
+  if (params.pnlConfidence.realized === 'Partial' || sampleShownWhileLocked) partial.push('Realized PnL (verified bounded sample)')
   if (params.pnlConfidence.unrealized === 'Partial') partial.push('Unrealized/open-position PnL')
   if (params.robinhoodPnlLane === 'not_verified' && !rh?.openPositionOnly) partial.push('Robinhood PnL (real evidence, not fully verified)')
   if (params.behaviorProfileAvailable) partial.push('Behavioral profile')
@@ -296,10 +301,10 @@ export function buildEvidence(params: {
   // Same numerator/denominator as the Portfolio card's coverage line (portfolioCoverage, recent-verified included).
   const coverage = pe && pe.status === 'partial' ? portfolioCoverage(pe) : null
   if (coverage) partial.push(`Portfolio value (pricing coverage ${coverage.priced}/${coverage.total})`)
-  if (rh?.openPositionOnly) missing.push('Realized closed-lot PnL (no verified buy→sell lot closed yet)')
+  if (rh?.openPositionOnly) missing.push('Robinhood realized closed-lot PnL (no verified buy→sell lot closed yet)')
   if (params.smartMoneyStatus === 'not_yet_rated') missing.push('Closed-trade performance score')
 
-  if (params.pnlConfidence.realized === 'Locked') missing.push('Realized PnL')
+  if (params.pnlConfidence.realized === 'Locked') missing.push(sampleShownWhileLocked ? 'Full-wallet realized PnL' : 'Realized PnL')
   if (params.pnlConfidence.unrealized === 'Unavailable') missing.push('Unrealized PnL')
   if (params.pnlConfidence.historicalCoverage === 'Not available') missing.push('Full historical coverage')
   if (params.robinhoodPnlLane === 'unavailable') missing.push('Robinhood PnL')
@@ -445,6 +450,7 @@ export function buildWalletReadV2(params: {
       behaviorProfileAvailable: rotationStyle != null && rotationStyle !== 'unknown',
       portfolioEvidence: params.portfolioEvidence ?? null,
       smartMoneyStatus: params.smartMoneyStatus ?? null,
+      verifiedSampleRealizedShown: params.pnlViewModel?.verifiedSampleRealizedBox?.value != null,
     }),
     pnlLanes: buildPnlLanes({ evmPnlLane: params.evmPnlLane, robinhoodPnlLane: params.robinhoodPnlLane, robinhoodResult: params.robinhoodResult }),
     pnlEvidenceSummary: params.pnlViewModel ? { status: params.pnlViewModel.combinedStatus, reason: params.pnlViewModel.combinedReason, sampleReason: params.pnlViewModel.sampleEvidenceLine } : null,

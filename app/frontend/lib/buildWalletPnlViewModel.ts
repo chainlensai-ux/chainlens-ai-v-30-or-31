@@ -285,6 +285,9 @@ export const FULL_WALLET_ROI_LOCKED_REASON = 'Full-wallet ROI is locked until co
 
 export const ROI_UNAVAILABLE_UNRESOLVED_QUOTE_REASON = 'Quote-leg identity unresolved'
 
+export const PROVEN_POSITION_ROI_REASON = (unresolvedStableLots: number): string =>
+  `Realized-only · proven positions · excludes ${unresolvedStableLots} stablecoin lot${unresolvedStableLots === 1 ? '' : 's'} with unproven quote-leg role`
+
 export const ROI_UNAVAILABLE_NON_POSITIVE_COST_REASON = 'Sample cost basis is not positive'
 
 
@@ -566,22 +569,30 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
   // sample must not erase this number. A caller that has not yet wired verifiedSamplePerformance
   // keeps the prior Combined-gated ROI (Verified only when Combined itself is verified).
   const sampleRoiAllowed = sampleAllowed && sample?.realizedRoiPct != null && Number.isFinite(sample.realizedRoiPct)
+  // PROVEN-POSITION ROI, DISCLOSED: when only unresolved stablecoin quote-leg lots block full-sample ROI, show
+  // the ROI over the proven economic positions, labelled with exactly what it excludes — not "Unavailable".
+  const provenRoi = !sampleRoiAllowed && sampleAllowed && sample?.roiUnavailableReason === 'unresolved_quote_leg_identity'
+    && sample.provenPositionRoiPct != null && Number.isFinite(sample.provenPositionRoiPct)
+    ? sample.provenPositionRoiPct
+    : null
   const roiStatus: WalletPnlBoxStatus = canonicalSampleUnavailable
     ? 'Unavailable'
     : sampleWired
-      ? (sampleRoiAllowed ? 'Partial' : 'Unavailable')
+      ? (sampleRoiAllowed || provenRoi != null ? 'Partial' : 'Unavailable')
       : combinedStatus === 'verified'
         ? 'Verified'
         : 'Locked'
   const roiBox = box(
     sampleWired
-      ? (sampleRoiAllowed ? fmtSignedPercent(sample!.realizedRoiPct) : null)
+      ? (sampleRoiAllowed ? fmtSignedPercent(sample!.realizedRoiPct) : provenRoi != null ? fmtSignedPercent(provenRoi) : null)
       : (roiStatus === 'Verified' && displayed.roiPercent != null ? displayed.roiLabel : null),
     roiStatus,
     canonicalSampleUnavailable
       ? CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL
       : sampleRoiAllowed
         ? VERIFIED_SAMPLE_ROI_REASON
+        : provenRoi != null
+          ? PROVEN_POSITION_ROI_REASON(sample?.unresolvedQuoteLegLotCount ?? 0)
         : sampleWired && sample?.roiUnavailableReason === 'unresolved_quote_leg_identity'
           ? ROI_UNAVAILABLE_UNRESOLVED_QUOTE_REASON
           : sampleWired && sampleAllowed && sample?.realizedCostBasisUsd != null && sample.realizedCostBasisUsd <= 0
@@ -591,7 +602,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
             : roiStatus === 'Verified'
               ? 'Realized PnL vs verified cost basis.'
               : 'Locked until combined PnL is verified.',
-    sampleRoiAllowed ? VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL : undefined,
+    sampleRoiAllowed || provenRoi != null ? VERIFIED_BOUNDED_SAMPLE_STATUS_LABEL : undefined,
   )
 
   // CHAIN ROWS, DISCLOSED: Base/ETH share pnlV2's ONE combined EVM lane status (pnlV2 has never

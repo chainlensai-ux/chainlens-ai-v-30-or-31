@@ -53,6 +53,12 @@ export type VerifiedSamplePerformance = {
   quoteCashLegExcludedLotCount: number
   unresolvedQuoteLegLotCount: number
   roiUnavailableReason: 'unresolved_quote_leg_identity' | null
+  /**
+   * Realized ROI over the PROVEN economic positions only, published when full-sample ROI is blocked by
+   * unresolved stablecoin quote-leg lots (which are excluded from numerator and denominator). Null when
+   * full-sample ROI is available (use realizedRoiPct) or no proven position has a positive cost basis.
+   */
+  provenPositionRoiPct?: number | null
 }
 
 export type FullHistoryPerformanceStatus = 'verified' | 'partial' | 'unavailable'
@@ -1305,6 +1311,11 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
   else if (!realizedPnlFinite) samplePerformanceBlockedReason = 'realized_pnl_not_finite'
 
   const samplePerformanceAllowed = samplePerformanceBlockedReason == null
+  const provenPnl = eligibility.provenPositionRoiPnlUsd
+  const provenCost = eligibility.provenPositionRoiCostBasisUsd
+  const provenPositionRoiPct = provenPnl != null && provenCost != null && Number.isFinite(provenPnl) && Number.isFinite(provenCost) && provenCost > 0
+    ? (provenPnl / provenCost) * 100
+    : null
   const roiUnavailableReason = !roiMembershipResolved ? eligibility.roiUnavailableReason : null
   const roiAllowed = samplePerformanceAllowed && realizedRoiPct != null && roiUnavailableReason == null
 
@@ -1323,6 +1334,7 @@ export function computeVerifiedSampleAndFullHistoryPerformance(params: {
     quoteCashLegExcludedLotCount: eligibility.quoteCashLegLots.length,
     unresolvedQuoteLegLotCount: eligibility.unresolvedLots.length,
     roiUnavailableReason: samplePerformanceAllowed ? roiUnavailableReason : null,
+    provenPositionRoiPct: samplePerformanceAllowed && roiUnavailableReason != null ? provenPositionRoiPct : null,
   }
 
   const fullHistoryStatus: FullHistoryPerformanceStatus = params.publicPnlStatus === 'available'

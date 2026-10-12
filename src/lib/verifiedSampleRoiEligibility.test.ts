@@ -305,6 +305,10 @@ describe('verifiedSampleRoiEligibility — quote/cash vs independent stablecoin'
     assert.equal(result.verifiedSamplePerformance.realizedPnlUsd, -1000, 'sample PnL display is unchanged')
     assert.equal(result.verifiedSamplePerformance.realizedRoiPct, null, 'ROI is unavailable, never a guessed percentage')
     assert.equal(result.verifiedSamplePerformance.roiUnavailableReason, 'unresolved_quote_leg_identity')
+    // Proven-position ROI: the unresolved stablecoin lot is excluded from numerator AND denominator, so the
+    // proven risk position alone publishes -1000 / 4000 = -25% (labelled with that scope, never realizedRoiPct).
+    assert.deepEqual([eligibility.provenPositionRoiPnlUsd, eligibility.provenPositionRoiCostBasisUsd], [-1000, 4000])
+    assert.equal(result.verifiedSamplePerformance.provenPositionRoiPct, -25)
     assert.equal(result.verifiedSamplePerformance.unresolvedQuoteLegLotCount, 1)
     assert.equal(result.fullHistoryPerformance.realizedRoiPct, null)
 

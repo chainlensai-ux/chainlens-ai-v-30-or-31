@@ -40,7 +40,7 @@ import { StatusBadge } from './StatusBadge'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
-import { buildWalletPnlViewModel, fmtSignedPercent, type WalletPnlBox, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
+import { buildWalletPnlViewModel, fmtSignedPercent, PROVEN_POSITION_ROI_REASON, type WalletPnlBox, type WalletPnlChainRow, type WalletPnlCombinedStatus, type WalletPnlRobinhoodBox } from '@/app/frontend/lib/buildWalletPnlViewModel'
 
 // COMBINED-STATUS DISPLAY MAPS, DISCLOSED: presentation only — the underlying classification comes
 // entirely from buildWalletPnlViewModel's combinedStatus, never re-derived here. "Combined "
@@ -798,6 +798,9 @@ function sampleCostAndRoi(summary: PnlReconciliationSummary | null | undefined):
   const eligibleCount = sample.verifiedSampleRoiEligibleLotCount ?? sample.verifiedLotCount
   const quoteExcluded = sample.quoteCashLegExcludedLotCount ?? 0
   const unresolvedQuote = sample.roiUnavailableReason === 'unresolved_quote_leg_identity'
+  const provenRoi = roi == null && unresolvedQuote && sample.provenPositionRoiPct != null && Number.isFinite(sample.provenPositionRoiPct)
+    ? sample.provenPositionRoiPct
+    : null
   return {
     costBasisUsd: cost,
     costBasisLabel: cost != null
@@ -805,9 +808,11 @@ function sampleCostAndRoi(summary: PnlReconciliationSummary | null | undefined):
         ? `Verified sample ROI cost basis · ${eligibleCount} eligible lots (${quoteExcluded} quote/cash legs excluded)`
         : `Verified sample cost basis · ${sample.verifiedLotCount} closed lots`)
       : 'Not available for bounded sample',
-    roiPercent: roi,
+    roiPercent: roi ?? provenRoi,
     roiLabel: roi != null
       ? (fmtSignedPercent(roi) ?? 'Not calculated for bounded sample')
+      : provenRoi != null
+        ? `${fmtSignedPercent(provenRoi) ?? ''} · ${PROVEN_POSITION_ROI_REASON(sample.unresolvedQuoteLegLotCount ?? 0)}`
       : unresolvedQuote
         ? 'Quote-leg identity unresolved'
         : 'Verified Sample ROI unavailable — sample cost basis is not positive.',
