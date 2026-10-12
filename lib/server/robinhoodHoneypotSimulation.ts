@@ -116,26 +116,41 @@ export function extractRobinhoodSimRevert(errorLike: unknown): string | null {
   return null
 }
 
+// Standard Solidity revert payloads — never the simulator's own result, whatever their length.
+const SOLIDITY_ERROR_SELECTOR = '0x08c379a0' // Error(string)
+const SOLIDITY_PANIC_SELECTOR = '0x4e487b71' // Panic(uint256)
+const SIM_RESULT_HEX_LENGTH = 2 + 4 * 64 // (uint256, uint8, uint256, uint256), no selector
+
+/**
+ * Decodes the simulator's own (tokenGot, canSell, wethBack, wethIn) revert. Strict: anything else — an
+ * Error(string)/Panic revert from a router, pool or token, or any payload of a different shape — is null
+ * (unavailable), never a buy/sell verdict. A loose decode used to read long revert strings as
+ * "buy ok, sell failed" and report a honeypot.
+ */
 export function decodeRobinhoodSimRevert(hex: string): {
   tokenGot: bigint
   canSell: number
   wethBack: bigint
   wethIn: bigint
 } | null {
-  if (!hex || hex.length < 66) return null
-  const tryDecode = (data: `0x${string}`) => {
+  if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]*$/.test(hex)) return null
+  const head = hex.slice(0, 10).toLowerCase()
+  if (head === SOLIDITY_ERROR_SELECTOR || head === SOLIDITY_PANIC_SELECTOR) return null
+  // The bare 4-word tuple, or the same tuple behind a 4-byte custom-error selector.
+  const body = hex.length === SIM_RESULT_HEX_LENGTH ? hex
+    : hex.length === SIM_RESULT_HEX_LENGTH + 8 ? `0x${hex.slice(10)}`
+    : null
+  if (!body) return null
+  try {
     const [tokenGot, canSell, wethBack, wethIn] = decodeAbiParameters(
       [{ type: 'uint256' }, { type: 'uint8' }, { type: 'uint256' }, { type: 'uint256' }],
-      data,
+      body as `0x${string}`,
     )
+    // viem does not range-check uint8; a real result is exactly 0 or 1 and spent at most the sim amount.
+    if (canSell !== 0 && canSell !== 1) return null
+    if (wethIn <= BigInt(0) || wethIn > ROBINHOOD_SIM_AMOUNT_IN_WEI) return null
     return { tokenGot, canSell: Number(canSell), wethBack, wethIn }
-  }
-  try {
-    return tryDecode(hex as `0x${string}`)
   } catch {
-    if (hex.length >= 10) {
-      try { return tryDecode(`0x${hex.slice(10)}` as `0x${string}`) } catch { return null }
-    }
     return null
   }
 }
@@ -314,7 +329,9 @@ async function detectV3Fee(
     const found = hexAddress(call.result)
     if (found && found === poolAddress.toLowerCase()) return fee
   }
-  return 3000
+  // No token/WETH V3 pool at any fee tier is the selected pool: there is no venue to simulate. Guessing a
+  // fee routed the buy through a pool that does not exist, and the failed buy was reported as a honeypot.
+  return null
 }
 
 async function resolveVenue(
@@ -335,7 +352,8 @@ async function resolveVenue(
   }
   if (isV3Hint) {
     const fee = await detectV3Fee(rpcUrl, token, poolAddress, rpcFetch)
-    return { isV3: true, fee: fee ?? 3000, router: ROBINHOOD_SIM_V3_ROUTER, pair: poolAddress }
+    if (fee == null) return { unsupported: 'Selected Robinhood V3 pool is not a token/WETH pool — no simulation venue' }
+    return { isV3: true, fee, router: ROBINHOOD_SIM_V3_ROUTER, pair: poolAddress }
   }
 
   // Unknown pool type: ScanHood factory lookup only to choose V2 vs V3, still using ChainLens pool.
@@ -531,11 +549,21 @@ export async function simulateRobinhoodHoneypot(
   const buySucceeded = decoded.tokenGot > BigInt(0)
   const sellSucceeded = decoded.canSell === 1 && decoded.wethBack > BigInt(0)
   const sellable = buySucceeded && sellSucceeded
-  const honeypotStatus: RobinhoodHoneypotStatus = !buySucceeded
-    ? 'blocked'
-    : sellable
-      ? 'sellable'
-      : 'blocked'
+  // Only a successful buy followed by a failed sell is a blocked sell path. A buy that returned no tokens
+  // never tested the sell (no liquidity, wrong venue, transfer restriction on buy): unavailable, not a honeypot.
+  if (!buySucceeded) {
+    const result = emptyResult({
+      tokenAddress,
+      attempted: true,
+      supported: true,
+      simulationRouter: venue.router,
+      simulationPair: venue.pair,
+      honeypotStatus: 'unavailable',
+      failureReason: 'Simulated buy returned no tokens — the sell path could not be tested',
+    })
+    return pack(result, poolAddress, false)
+  }
+  const honeypotStatus: RobinhoodHoneypotStatus = sellable ? 'sellable' : 'blocked'
 
   let buyTaxPct: number | null = null
   let sellTaxPct = sellable ? roundTripLossPct(decoded.wethBack, decoded.wethIn) : null

@@ -50,7 +50,7 @@ async function debugAllEngines({
       chain: chains[0],
       tokenAddress: '0x4200000000000000000000000000000000000006', // real canonical WETH, Base/Optimism
       timestamp: historicalTimestamp,
-    }),
+    }, debugEnginesHeaders), // admin-gated in production, same as /api/debug-engines
   ])
 
   for (const r of results) {

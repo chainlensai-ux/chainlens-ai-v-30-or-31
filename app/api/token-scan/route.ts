@@ -10,6 +10,12 @@
 // SupportedChain list (the same type getPriceAtTime's request declares) rather than accepted as an
 // arbitrary string, so an unsupported chain fails fast with a clear 400 instead of silently
 // returning a "none confidence" result indistinguishable from a real "no price found" case.
+//
+// ACCESS, DISCLOSED: getPriceAtTime spends paid historical-price provider calls and no product page
+// calls this route (only the admin console snippet in app/api/debug-engines/console-snippet.md). It
+// therefore follows /api/debug-engines' gate: in production it answers 404 unless the request carries
+// `x-chainlens-admin` matching CHAINLENS_ADMIN_KEY (server-only env, never NEXT_PUBLIC_). It also has no
+// wildcard CORS entry in vercel.json any more.
 
 import { NextResponse } from 'next/server'
 import { SUPPORTED_CHAINS } from '@/src/pipeline/types'
@@ -22,11 +28,20 @@ type TokenScanRequestBody = {
   timestamp?: number
 }
 
+function isAdminOverride(req: Request): boolean {
+  const adminKey = process.env.CHAINLENS_ADMIN_KEY
+  if (!adminKey) return false
+  return req.headers.get('x-chainlens-admin') === adminKey
+}
+
 function isSupportedChain(chain: string): chain is SupportedChain {
   return (SUPPORTED_CHAINS as readonly string[]).includes(chain)
 }
 
 export async function POST(req: Request) {
+  if (process.env.NODE_ENV === 'production' && !isAdminOverride(req)) {
+    return NextResponse.json({ error: 'token-scan is disabled in production' }, { status: 404 })
+  }
   let body: TokenScanRequestBody
   try {
     body = await req.json()
