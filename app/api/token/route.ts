@@ -7,6 +7,7 @@ import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
+import { classifyConcentratedLpRisk, applySellCheckLabelFloor, sellCheckRan, NO_SELL_CHECK_OPEN_CHECK } from "@/lib/server/tokenRiskLpAndSellCheck";
 import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
@@ -6807,13 +6808,24 @@ export async function POST(req: Request) {
     }
     // lpProofStatus: never "unverified" — use "partial" or "inferred" instead
     // team_controlled = LP holder identity confirmed, but lock/burn proof is NOT verified → 'partial'
+    // Concentrated / protocol pools: lock/burn proof does not apply, so the position-ownership proof decides
+    // (a single-wallet-owned V3/V4 position is team control, unproven ownership is an open check) — see
+    // lib/server/tokenRiskLpAndSellCheck.ts. It used to be a +3 "protocol-managed" verified signal regardless.
+    const _concentratedLpRisk = (lpState === 'protocol' || lpState === 'concentrated_liquidity')
+      ? classifyConcentratedLpRisk({ lpState, proof: concentratedPositionProof })
+      : null
     const lpProofStatus: 'not_applicable' | 'verified' | 'partial' | 'inferred' =
-      (lpState === 'protocol' || lpState === 'concentrated_liquidity') ? 'not_applicable' :
+      _concentratedLpRisk ? _concentratedLpRisk.lpProofStatus :
       (lpState === 'burned' || lpState === 'locked') ? 'verified' :
       (lpState === 'team_controlled') ? 'partial' :
       (lpState === 'partial') ? 'partial' : 'inferred'
     if (lpState === 'burned' || lpState === 'locked') { riskVerifiedSignals.push(`LP Control shows ${lpState}.`); riskScore -= 12 }
-    else if (lpState === 'protocol' || lpState === 'concentrated_liquidity') { riskVerifiedSignals.push('LP Control indicates protocol-managed liquidity structure.'); riskScore += 3 }
+    else if (_concentratedLpRisk) {
+      if (_concentratedLpRisk.verifiedSignal) riskVerifiedSignals.push(_concentratedLpRisk.verifiedSignal)
+      if (_concentratedLpRisk.riskDriver) riskDrivers.push(_concentratedLpRisk.riskDriver)
+      if (_concentratedLpRisk.openCheck) openChecks.push(_concentratedLpRisk.openCheck)
+      riskScore += _concentratedLpRisk.scoreDelta
+    }
     else if (lpState === 'team_controlled') { riskDrivers.push('LP Control indicates a dominant team wallet can control liquidity.'); riskScore += 28 }
     else if (lpProofStatus === 'inferred') { openChecks.push('LP lock/burn not confirmed — liquidity exit risk should be assumed.'); riskScore += 10 }
     else { riskScore += 5 }
@@ -6869,7 +6881,7 @@ export async function POST(req: Request) {
     const majorMissingCount = [
       marketCapFromGt == null,
       holderDistributionStatus.status !== 'ok',
-      !(lpState === 'burned' || lpState === 'locked' || lpState === 'protocol' || lpState === 'concentrated_liquidity' || lpState === 'team_controlled'),
+      _concentratedLpRisk ? _concentratedLpRisk.lpEvidenceMissing : !(lpState === 'burned' || lpState === 'locked' || lpState === 'team_controlled'),
       !hpResult.ok,
     ].filter(Boolean).length
     // Only withhold a score when ALL core providers returned null — i.e. zero usable data.
@@ -6896,6 +6908,12 @@ export async function POST(req: Request) {
     else if (rugRiskScore >= 40) rugRiskLabel = 'watch'
     else if (rugRiskScore < 40) rugRiskLabel = majorMissingCount >= 2 ? 'watch' : 'low_visible_risk'
     if (!anyProviderData) rugRiskLabel = 'partial_data'
+    // "Low visible risk" needs a sell check: with no buy/sell verdict the floor is "watch".
+    const _sellFloor = applySellCheckLabelFloor(rugRiskLabel, sellCheckRan(hpResult))
+    if (_sellFloor.floored) {
+      rugRiskLabel = _sellFloor.label
+      if (!openChecks.includes(NO_SELL_CHECK_OPEN_CHECK)) openChecks.push(NO_SELL_CHECK_OPEN_CHECK)
+    }
     const riskConfidence: RiskEngine["confidence"] = majorMissingCount >= 3 ? 'low' : majorMissingCount >= 2 ? 'medium' : 'high'
 
     // ── Sniper Activity — multi-signal (pool age + volume pressure + holder concentration) ──
