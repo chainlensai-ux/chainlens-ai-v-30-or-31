@@ -166,11 +166,26 @@ export type RobinhoodScanDedupAudit = {
   /** The provider scan whose PnL diagnostics ([robinhood-verified-swap-fifo-audit]) produced the served result. */
   resultScanId?: string | null
   resultFifoAuditStatus?: string | null
+  resultFifoAuditConclusion?: string | null
+  resultFifoAuditReason?: string | null
+  resultCanonicalSwapCount?: number | null
+  resultFifoInputSwapCount?: number | null
+  resultMatchedLotCount?: number | null
+  resultVerifiedClosedLotCount?: number | null
 }
-/** Which scan produced a result, so a reused canonical result is never mistaken for a fresh audit run. */
+/** Audit provenance and verdict travel with the result, including when a route reuses a completed scan. */
 const resultProvenance = (r: Pick<RobinhoodScanResult, 'robinhoodPnl'> | null | undefined) => {
   const run = r?.robinhoodPnl?.ingestionAudit?.verifiedSwapFifoAudit
-  return { resultScanId: run?.scanId ?? null, resultFifoAuditStatus: run?.status ?? null }
+  return {
+    resultScanId: run?.scanId ?? null,
+    resultFifoAuditStatus: run?.status ?? null,
+    resultFifoAuditConclusion: run?.conclusion ?? null,
+    resultFifoAuditReason: run?.reason ?? null,
+    resultCanonicalSwapCount: run?.canonicalSwapCount ?? null,
+    resultFifoInputSwapCount: run?.fifoInputSwapCount ?? null,
+    resultMatchedLotCount: run?.matchedLotCount ?? null,
+    resultVerifiedClosedLotCount: run?.verifiedClosedLotCount ?? null,
+  }
 }
 function logDedup(a: RobinhoodScanDedupAudit): RobinhoodScanDedupAudit {
   // console.warn: next.config removeConsole strips console.log in production. Only a request that started the
@@ -219,7 +234,23 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
     await transitionRobinhoodScanRecord(rec('running', {}), now())
     try {
       // Ties this provider scan's PnL diagnostic logs to its job / owner (a reused result keeps the original id).
-      const result = await scan(wallet, fetchImpl, opts.onNativePricePrefetchComplete, { scanId: robinhoodScanId(owner, jobId, startedAt) })
+      const scanId = robinhoodScanId(owner, jobId, startedAt)
+      const result = await scan(wallet, fetchImpl, opts.onNativePricePrefetchComplete, { scanId })
+      const fifoAudit = result.robinhoodPnl?.ingestionAudit?.verifiedSwapFifoAudit
+      // Durable verdict at the coordinator boundary: users often see route/worker logs separately, so the result
+      // itself must emit the audit status, verdict and provenance even if the detailed PnL log stream is absent.
+      console.warn('[robinhood-verified-swap-fifo-audit]', {
+        phase: 'result', wallet: key, requestedScanId: scanId,
+        status: fifoAudit?.status ?? 'missing',
+        scanId: fifoAudit?.scanId ?? null,
+        provenanceMatches: fifoAudit?.scanId === scanId,
+        conclusion: fifoAudit?.conclusion ?? null,
+        reason: fifoAudit?.reason ?? null,
+        canonicalSwapCount: fifoAudit?.canonicalSwapCount ?? null,
+        fifoInputSwapCount: fifoAudit?.fifoInputSwapCount ?? null,
+        matchedLotCount: fifoAudit?.matchedLotCount ?? null,
+        verifiedClosedLotCount: fifoAudit?.verifiedClosedLotCount ?? null,
+      })
       await transitionRobinhoodScanRecord(rec('done', { completedAt: now(), body: buildRobinhoodRouteBody(wallet, result) }), now())
       return result
     } catch (err) {
