@@ -94,6 +94,23 @@ export function buildLots(
   return lots.sort((a, b) => a.openedAt - b.openedAt)
 }
 
+// EXACT RAW AMOUNTS, DISCLOSED (found in the wallet-scanner FIFO audit): `amount` is a float, and for
+// 18-decimal tokens with large balances it cannot hold every wei — converting it back to atomic units
+// is off by up to ~1e7 wei. Two buys summing exactly to a later full sell then left a phantom dust
+// "unmatched sell" (68 of 200 realistic cases), which also triggered acquisition recovery for a buy that
+// never existed. Every event already carries its exact on-chain `amountRaw`; it is used whenever it is
+// a plain integer AND agrees with the float amount at these decimals (relative gap <= 1e-9), which
+// proves both describe the same quantity at the same scale. Otherwise (no raw, a merged/derived amount,
+// a different decimals scale) the float conversion is used exactly as before.
+function exactAtomicUnits(amount: number, amountRaw: string | null | undefined, decimals: number): bigint | null {
+  if (typeof amountRaw !== 'string' || !/^\d{1,78}$/.test(amountRaw)) return null
+  const raw = BigInt(amountRaw)
+  if (raw <= BigInt(0)) return null
+  const approx = numberToAtomicUnits(amount, decimals)
+  const gap = approx > raw ? approx - raw : raw - approx
+  return gap * BigInt(1_000_000_000) <= raw ? raw : null
+}
+
 type MatchResult = {
   matchedLots: MatchedLot[]
   remainingOpenLots: OpenLot[]
@@ -124,8 +141,10 @@ export function matchLotsFIFO(
   }
   const workingLots: WorkingLot[] = lots.map((lot) => {
     const decimals = decimalsByToken.get(tokenKey(lot.token, lot.chain)) ?? tokenCanonicalDecimals(lot.chain, lot.token)
-    const remainingAtomic = numberToAtomicUnits(lot.amountRemaining, decimals)
-    const openedAtomic = numberToAtomicUnits(lot.amountOpened, decimals)
+    // An untouched lot (remaining === opened) carries its event's exact raw amount: use it when it agrees.
+    const exactOpened = lot.amountRemaining === lot.amountOpened ? exactAtomicUnits(lot.amountOpened, lot.sourceAmountRaw, decimals) : null
+    const remainingAtomic = exactOpened ?? numberToAtomicUnits(lot.amountRemaining, decimals)
+    const openedAtomic = exactOpened ?? numberToAtomicUnits(lot.amountOpened, decimals)
     return {
       ...lot,
       decimals,
@@ -153,7 +172,7 @@ export function matchLotsFIFO(
   for (const sell of sortedSells) {
     const decimals = decimalsByToken.get(`${sell.chain}:${sell.contract.toLowerCase()}`)
       ?? tokenCanonicalDecimals(sell.chain, sell.contract, sell.tokenDecimals)
-    let remainingToMatchAtomic = numberToAtomicUnits(sell.amount, decimals)
+    let remainingToMatchAtomic = exactAtomicUnits(sell.amount, sell.amountRaw, decimals) ?? numberToAtomicUnits(sell.amount, decimals)
     if (remainingToMatchAtomic <= BigInt(0)) continue
     const key = `${sell.chain}:${sell.contract.toLowerCase()}`
     const tokenLots = (lotsByToken.get(key) ?? []).filter((l) => l.remainingAtomic > BigInt(0))

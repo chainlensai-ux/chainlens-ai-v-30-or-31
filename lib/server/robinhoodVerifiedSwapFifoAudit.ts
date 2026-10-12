@@ -3,7 +3,7 @@
 // Takes the exact canonical verified-swap set behind the "Verified swaps" count (main lane), plus the recovery /
 // deep-acquisition swaps that also feed FIFO, and re-runs FIFO INDEPENDENTLY on raw integer quantities with the
 // engine's own rules: token key = lowercase contract (chain-scoped), quote legs (ETH / WETH / stables) never open or
-// close lots, input ordered by (timestamp, block, log index, tx hash), a sell only consumes lots opened at or before it
+// close lots, input ordered by (timestamp, block, log index, tx hash), a sell only consumes lots opened before it
 // (chronology guard), exact-duplicate legs counted once. Matching does NOT depend on pricing in the engine; pricing only
 // decides whether a matched lot is "verified" (both cost basis and proceeds known) or "unpriced". Comparing the
 // simulation with the engine's actual matched lots separates "no overlap exists" from a real matching defect.
@@ -118,7 +118,7 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
     let need = sell.raw
     for (const lot of lots.get(sell.token) ?? []) {
       if (need <= ZERO) break
-      if (lot.leg.ts > sell.ts) break // chronology guard
+      if (lot.leg.i > sell.i) break // chronology guard: engine order (timestamp, block, log index), not whole seconds
       if (lot.left <= ZERO) continue
       const take = lot.left < need ? lot.left : need
       lot.left -= take
@@ -137,8 +137,8 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
     const tokenPriceUsd = e ? (l.side === 'sell' ? e.inputPriceUsd : e.outputPriceUsd) : null
     const nativePriceUsd = e ? (l.side === 'sell' ? e.outputPriceUsd : e.inputPriceUsd) : null
     const sameToken = live.filter((x) => x.token === l.token)
-    const earlierBuys = sameToken.filter((x) => x.side === 'buy' && x.ts <= l.ts && x.tx !== l.tx)
-    const laterSells = sameToken.filter((x) => x.side === 'sell' && x.ts >= l.ts && x.tx !== l.tx)
+    const earlierBuys = sameToken.filter((x) => x.side === 'buy' && x.i < l.i && x.tx !== l.tx)
+    const laterSells = sameToken.filter((x) => x.side === 'sell' && x.i > l.i && x.tx !== l.tx)
     // Token identity: the engine keys lots by chain + LOWERCASE contract, so checksum vs lowercase never splits a
     // token. token_key_mismatch is reserved for a leg whose lowercase key differs from the engine's (none today).
     let blocker: RhVerifiedFifoBlocker
@@ -204,7 +204,7 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
       verifiedBuyCount: buys.length, verifiedSellCount: sells.length,
       verifiedBuyRaw: buys.reduce((t, b) => t + b.raw, ZERO).toString(), verifiedSellRaw: sells.reduce((t, s) => t + s.raw, ZERO).toString(),
       earliestVerifiedBuyTs: ts(buys, 'min'), latestVerifiedBuyTs: ts(buys, 'max'), earliestVerifiedSellTs: ts(sells, 'min'), latestVerifiedSellTs: ts(sells, 'max'),
-      buyBeforeSellExists: buys.some((b) => sells.some((s) => b.ts <= s.ts)),
+      buyBeforeSellExists: buys.some((b) => sells.some((s) => b.i < s.i)),
       bothSidesPriced: buys.some((b) => priced(b.tx)) && sells.some((s) => priced(s.tx)),
       fifoMatchableRaw: matchable.toString(),
       actualClosedAmount: actual.reduce((t, l) => t + l.amount, 0), closedLotCount: actual.length,

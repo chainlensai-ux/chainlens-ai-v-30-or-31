@@ -126,7 +126,8 @@ export type RhRpc = (calls: RhRpcCall[]) => Promise<Array<unknown | null>>
 export type RhRpcLogResult = { status: 'ok'; logs: unknown[] } | { status: 'range_limit' | 'unavailable'; logs: null }
 export type RhRpcLogQuery = { address: string; topics: [string, null, string]; fromBlock: string; toBlock: string }
 export type RhPoolKey = { currency0: string; currency1: string }
-export type RhHistoricalTokenPrice = { priceUsd: number; source: string }
+/** `granularity: 'daily'` = one price for the whole UTC day (never the trade's own execution price). */
+export type RhHistoricalTokenPrice = { priceUsd: number; source: string; granularity?: 'daily' | 'execution' }
 
 const VF_TAG = '[robinhood-verified-swap-fifo-audit]'
 
@@ -319,6 +320,12 @@ export type RhPriceEvidence = {
   outputSource: string | null
   bothLegsVerified: boolean
   rejectionReason: string | null
+  /**
+   * Set when both legs are priced but only from a provider's DAILY token price (token↔token swap with no
+   * ETH/stable leg and no ETH intermediary). For a volatile token that can be far from the trade's real
+   * price, so it is never verified: these lots are reported as estimated, outside verified realized PnL.
+   */
+  dailyEstimate?: { inputUsd: number; outputUsd: number }
 }
 
 export type RobinhoodPnlV1Status = 'verified_bounded_sample' | 'partial' | 'not_verified' | 'unavailable'
@@ -492,6 +499,12 @@ export type RobinhoodPnlV1 = {
   deepAcquisition?: RhDeepAcquisitionSummary | null
   /** Candidate coverage behind swapsVerified + verified buy/sell legs (absent on early exits). */
   verificationCoverage?: RobinhoodSwapVerificationCoverage | null
+  /**
+   * Closed lots priced only from daily token prices on at least one side (never verified). Reported
+   * separately and NEVER included in realizedPnlUsd / verifiedClosedLots / status. Absent on early exits.
+   */
+  estimatedClosedLots?: number
+  estimatedRealizedPnlUsd?: number | null
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -2635,13 +2648,18 @@ export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSw
       if (pOut) { outUsd = outputAmount * pOut.priceUsd; outSrc = pOut.source }
       if (!pIn || !pOut) reason = !pIn && !pOut ? 'no trusted historical price for either leg' : `no trusted historical price for the ${pIn ? 'output' : 'input'} leg`
     }
-    const bothLegsVerified = inUsd != null && outUsd != null && Number.isFinite(inUsd) && Number.isFinite(outUsd) && inUsd > 0 && outUsd > 0
+    const legsPriced = inUsd != null && outUsd != null && Number.isFinite(inUsd) && Number.isFinite(outUsd) && inUsd > 0 && outUsd > 0
+    // Daily provider prices on both legs are an estimate, not the execution price — never verified.
+    const dailyOnly = legsPriced && !quoteKind(s.inputToken) && !quoteKind(s.outputToken) && !s.intermediary
+    const bothLegsVerified = legsPriced && !dailyOnly
+    if (dailyOnly) reason = 'daily_provider_price_estimate_only: no ETH/stable leg, so both legs carry only a daily token price'
     out.push({
       swapTxHash: s.txHash, inputToken: s.inputToken, outputToken: s.outputToken, inputAmount, outputAmount,
       inputPriceUsd: inUsd != null && inputAmount > 0 ? inUsd / inputAmount : null,
       outputPriceUsd: outUsd != null && outputAmount > 0 ? outUsd / outputAmount : null,
       inputSource: inSrc, outputSource: outSrc, bothLegsVerified,
       rejectionReason: bothLegsVerified ? null : (reason ?? 'one or both legs unpriced'),
+      ...(dailyOnly ? { dailyEstimate: { inputUsd: inUsd!, outputUsd: outUsd! } } : {}),
     })
   }
   return out
@@ -2676,9 +2694,17 @@ export function buildRobinhoodPnlV1Fifo(wallet: string, swaps: readonly RhVerifi
   const ordered = [...swaps].sort((a, b) => a.timestampSec - b.timestampSec || a.blockNumber - b.blockNumber || a.firstLogIndex - b.firstLogIndex || a.txHash.localeCompare(b.txHash))
   const events: NormalizedEvent[] = []
   const usdByEvent = new Map<string, number>()
+  // SUB-SECOND ORDER, DISCLOSED (wallet-scanner FIFO audit): Robinhood Chain makes several blocks per
+  // second, and FIFO compares millisecond timestamps with an inclusive chronology guard — a sell in block
+  // N used to close a lot opened by a buy in block N+2 of the same second (a fabricated "verified" lot).
+  // Each swap gets its (block, log index) rank within its second as the millisecond offset, so a later
+  // swap is strictly later. Both legs of one swap share it (they are different tokens, never matched).
+  const rankInSecond = new Map<number, number>()
   for (const s of ordered) {
     const e = byTx.get(s.txHash)
-    const ts = new Date(s.timestampSec * 1000).toISOString()
+    const rank = rankInSecond.get(s.timestampSec) ?? 0
+    rankInSecond.set(s.timestampSec, rank + 1)
+    const ts = new Date(s.timestampSec * 1000 + Math.min(rank, 999)).toISOString()
     // Quote legs (ETH/WETH/stable) are the price, not a position: only token legs open or close lots.
     if (!quoteKind(s.inputToken)) {
       events.push({ provider: 'alchemy', chain: ROBINHOOD_FIFO_CHAIN, txHash: s.txHash, timestamp: ts, fromAddress: wallet, toAddress: ROBINHOOD_V4_POOL_MANAGER, contract: s.inputToken, symbol: s.inputToken, amount: toUnits(s.inputRaw, s.inputDecimals), amountRaw: s.inputRaw.toString(), tokenDecimals: s.inputDecimals, direction: 'outbound' })
@@ -2696,7 +2722,24 @@ export function buildRobinhoodPnlV1Fifo(wallet: string, swaps: readonly RhVerifi
     priceUsdLookup: (ev) => usdByEvent.get(`${ev.txHash}:${ev.contract}:${ev.direction}`) ?? null,
     currentPriceUsdLookup: () => null,
   })
-  return { fifo, buyCount: events.filter((e) => e.direction === 'inbound').length, sellCount: events.filter((e) => e.direction === 'outbound').length }
+  // Estimated lots: structurally closed but unpriced only because a leg carries a daily token price.
+  let estimatedClosedLots = 0
+  let estimatedRealizedPnlUsd = 0
+  for (const lot of fifo.matchedLots) {
+    if (lot.evidenceQuality === 'verified') continue
+    const open = byTx.get(lot.openedTxHash)
+    const close = byTx.get(lot.closedTxHash)
+    if (!open || !close || !(open.dailyEstimate || close.dailyEstimate)) continue
+    const openPx = lower(open.outputToken) === lower(lot.token) ? open.outputPriceUsd : null
+    const closePx = lower(close.inputToken) === lower(lot.token) ? close.inputPriceUsd : null
+    if (openPx == null || closePx == null || !Number.isFinite(openPx) || !Number.isFinite(closePx)) continue
+    estimatedClosedLots += 1
+    estimatedRealizedPnlUsd += lot.amount * (closePx - openPx)
+  }
+  return {
+    fifo, buyCount: events.filter((e) => e.direction === 'inbound').length, sellCount: events.filter((e) => e.direction === 'outbound').length,
+    estimated: { closedLots: estimatedClosedLots, realizedPnlUsd: estimatedClosedLots > 0 ? Math.round(estimatedRealizedPnlUsd * 100) / 100 : null },
+  }
 }
 
 // ── Acquisition recovery (verified sell left unmatched by FIFO) ─────────────────────────────────────
@@ -3683,7 +3726,7 @@ export async function computeRobinhoodPnlV1(params: {
   for (const e of evidence) console.warn('[robinhood-price-evidence-audit]', e)
   const bothLegs = evidence.filter((e) => e.bothLegsVerified).length
   ingestion.acquisitionRecovery = recovery.summary
-  const { fifo, buyCount, sellCount } = deep.swaps.length > 0
+  const { fifo, buyCount, sellCount, estimated } = deep.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
     : intermediate
   // Diagnostics only (never feed verification, pricing or FIFO). Each audit has its OWN try/catch: a failure in one
@@ -3786,6 +3829,8 @@ export async function computeRobinhoodPnlV1(params: {
   const cost = verifiedLots.reduce((s, l) => s + l.costBasisUsd!, 0)
   const coverage = structural > 0 ? Math.round((verifiedLots.length / structural) * 10_000) / 100 : null
   const base = {
+    estimatedClosedLots: estimated.closedLots,
+    estimatedRealizedPnlUsd: estimated.realizedPnlUsd,
     structuralClosedLots: structural,
     verifiedClosedLots: verifiedLots.length,
     pricingCoverage: coverage,
@@ -3814,7 +3859,7 @@ export async function computeRobinhoodPnlV1(params: {
       ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} found / 0 had both-leg historical price proof.`
       : structural === 0
         ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} proven, ${bothLegs} priced on both legs, but no buy→sell pair closed a lot in this sample.${recovery.summary.acquisitionRecoveryAttempted ? ` Acquisition recovery checked ${recovery.summary.candidatesAttempted} earlier inbound${recovery.summary.candidatesAttempted === 1 ? '' : 's'} of the sold token; none was a provable buy.` : ''}`
-        : `${structural} lots closed, but none had verified prices on both the buy and the sell.`
+        : `${structural} lots closed, but none had verified prices on both the buy and the sell.${estimated.closedLots > 0 ? ` ${estimated.closedLots} ${estimated.closedLots === 1 ? 'is' : 'are'} priced only from daily token prices (estimate, not verified).` : ''}`
   return finish({ ...base, status: 'not_verified', exactReason })
 }
 
@@ -3995,24 +4040,34 @@ export function robinhoodRpcInboundLogsFromUrl(rpcUrl: string | null, fetchImpl:
 }
 
 /** GoldRush historical token price for the exact token and the swap's own UTC day; null on any doubt. */
+/** GoldRush identifiers for Robinhood Chain: the slug first, then the numeric chain id (same order as balances/holders). */
+const GOLDRUSH_ROBINHOOD_CHAIN_PATHS = ['robinhood-mainnet', '4663'] as const
+
 export function goldrushRobinhoodTokenHistoricalUsd(fetchImpl: FetchLike): RobinhoodPnlV1Deps['tokenHistoricalUsd'] {
   return async (token, timestampSec) => {
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey || !/^0x[0-9a-f]{40}$/.test(token)) return null
     const day = new Date(timestampSec * 1000).toISOString().slice(0, 10)
-    try {
-      const res = await fetchImpl(`https://api.covalenthq.com/v1/pricing/historical_by_addresses_v2/robinhood-mainnet/USD/${token}/?from=${day}&to=${day}`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(ROBINHOOD_PNL_V1_LIMITS.providerTimeoutMs),
-      })
-      if (!res.ok) return null
-      const json = await res.json().catch(() => null) as { data?: Array<{ contract_address?: string; items?: Array<{ date?: string; price?: number }> }> } | null
-      const row = json?.data?.find((d) => lower(d.contract_address) === token)
-      const item = row?.items?.find((it) => typeof it.date === 'string' && it.date.slice(0, 10) === day)
-      return item && typeof item.price === 'number' && Number.isFinite(item.price) && item.price > 0 ? { priceUsd: item.price, source: 'goldrush_historical_exact_token_day' } : null
-    } catch {
-      return null
+    // CHAIN-PATH FALLBACK, DISCLOSED: 'robinhood-mainnet' was never confirmed for the pricing endpoint (the
+    // balances/holders callers already fall back to '4663'); a 404, error or empty answer tries the next path.
+    for (const chainPath of GOLDRUSH_ROBINHOOD_CHAIN_PATHS) {
+      try {
+        const res = await fetchImpl(`https://api.covalenthq.com/v1/pricing/historical_by_addresses_v2/${chainPath}/USD/${token}/?from=${day}&to=${day}`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(ROBINHOOD_PNL_V1_LIMITS.providerTimeoutMs),
+        })
+        if (!res.ok) continue
+        const json = await res.json().catch(() => null) as { data?: Array<{ contract_address?: string; items?: Array<{ date?: string; price?: number }> }> } | null
+        const row = json?.data?.find((d) => lower(d.contract_address) === token)
+        const item = row?.items?.find((it) => typeof it.date === 'string' && it.date.slice(0, 10) === day)
+        if (item && typeof item.price === 'number' && Number.isFinite(item.price) && item.price > 0) {
+          return { priceUsd: item.price, source: 'goldrush_historical_exact_token_day', granularity: 'daily' }
+        }
+      } catch {
+        // try the next chain path
+      }
     }
+    return null
   }
 }
 

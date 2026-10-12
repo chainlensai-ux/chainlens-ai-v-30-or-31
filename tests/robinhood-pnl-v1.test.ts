@@ -239,15 +239,20 @@ test('6. one leg priced -> not verified (no lot is valued from half the evidence
   assert.equal(r.exactReason, '1 swap found / 0 had both-leg historical price proof.')
 })
 
-test('7. both legs priced by the trusted historical provider -> eligible', async () => {
+// POLICY CHANGE, DISCLOSED (wallet-scanner pricing audit): a token↔token swap with no ETH/stable leg can only
+// be priced from a provider's DAILY token price, which is not the trade's execution price. Both legs are
+// still priced (kept as a daily estimate) but the swap is no longer verified, so it never feeds verified PnL.
+test('7. both legs priced only by the daily historical provider -> daily estimate, not verified', async () => {
   const c = chain()
   tokenToToken(c, 11)
   const r = await run(c, [11], { tokenHistoricalUsd: async (t) => ({ priceUsd: t === TOKEN_A ? 3 : 1.4, source: 'goldrush_historical_exact_token_day' }) })
-  assert.equal(r.swapsBothLegsPriced, 1)
+  assert.equal(r.swapsBothLegsPriced, 0)
   const e = r.priceEvidence[0]
-  assert.equal(e.bothLegsVerified, true)
+  assert.equal(e.bothLegsVerified, false)
+  assert.match(e.rejectionReason ?? '', /daily_provider_price_estimate_only/)
   assert.equal(e.inputPriceUsd, 3)
   assert.equal(e.outputPriceUsd, 1.4)
+  assert.ok(e.dailyEstimate)
 })
 
 test('8. FIFO buy -> sell gives the exact realized PnL and ROI as a verified bounded sample', async () => {
