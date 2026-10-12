@@ -3154,7 +3154,7 @@ async function runDeepAcquisitionRecovery(
   // Do not let that consume the one deep-history lane for this independently selected priced unmatched sell.
   const currentLaneCoveredThisSell = currentRecovery.sellTxHash === sell.txHash
     && currentRecovery.unmatchedSellRawAfter != null
-    && /^\\d+$/.test(currentRecovery.unmatchedSellRawAfter)
+    && /^\d+$/.test(currentRecovery.unmatchedSellRawAfter)
     && BigInt(currentRecovery.unmatchedSellRawAfter) === ZERO
   if (currentLaneCoveredThisSell) return { ...empty, skipReason: 'acquisition_recovery_already_covered_sell' }
   const startedAt = Date.now()
