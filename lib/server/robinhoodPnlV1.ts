@@ -359,6 +359,8 @@ export type RobinhoodPnlV1IngestionAudit = {
   mixedRouteRejectedReasons?: Record<string, number>
   acquisitionRecovery?: RhAcquisitionRecoverySummary | null
   deepAcquisition?: RhDeepAcquisitionSummary | null
+  /** Why bounded deep acquisition history was skipped; null means the lane ran or had no skip. */
+  deepAcquisitionSkipReason?: string | null
   nativeTraceSelection?: RhNativeTraceSelectionSummary
   nativeTraceGlobalBudget?: {
     totalCap: number; mainLiveUsed: number; recoveryLiveUsed: number; totalLiveUsed: number
@@ -3142,14 +3144,19 @@ async function runDeepAcquisitionRecovery(
 ): Promise<{ summary: RhDeepAcquisitionSummary | null; swaps: RhVerifiedSwap[]; evidence: RhPriceEvidence[]; skipReason?: string }> {
   const empty = { summary: null, swaps: [] as RhVerifiedSwap[], evidence: [] as RhPriceEvidence[] }
   if (!ctx.deps.historicalTokenInbounds && !ctx.deps.rpcInboundTransferLogs) return { ...empty, skipReason: 'deep_history_not_wired' }
-  if (currentRecovery.recoveredBuyCount !== 0) return { ...empty, skipReason: 'acquisition_recovery_already_recovered' }
   const isQuote = (t: string) => quoteKind(t) != null
   const sell = [...robinhoodUnmatchedSellRaw(swaps, isQuote)]
     .filter(([hash, v]) => v.unmatchedRaw > ZERO && evidence.some((e) => e.swapTxHash === hash && e.bothLegsVerified))
     .map(([txHash, v]) => ({ txHash, ...v }))
     .sort((a, b) => b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))[0]
   if (!sell) return { ...empty, skipReason: 'no_unmatched_sell_priced_on_both_legs' }
-  if (currentRecovery.sellTxHash !== sell.txHash) return { ...empty, skipReason: 'recovery_lane_sell_differs' }
+  // The current-sample lane may have selected a newer unpriced sell (or recovered a buy for another token).
+  // Do not let that consume the one deep-history lane for this independently selected priced unmatched sell.
+  const currentLaneCoveredThisSell = currentRecovery.sellTxHash === sell.txHash
+    && currentRecovery.unmatchedSellRawAfter != null
+    && /^\\d+$/.test(currentRecovery.unmatchedSellRawAfter)
+    && BigInt(currentRecovery.unmatchedSellRawAfter) === ZERO
+  if (currentLaneCoveredThisSell) return { ...empty, skipReason: 'acquisition_recovery_already_covered_sell' }
   const startedAt = Date.now()
   const adm = ctx.deepAdmission
   const excludedHashes = new Set([...inbound.map((r) => lower(r.txHash)), ...outcomes.map((o) => o.txHash)])
@@ -3628,6 +3635,7 @@ export async function computeRobinhoodPnlV1(params: {
   if (manifestRead) ingestion.verifiedSwapManifest = await replayAndRecordManifest(ctx, wallet, selected, outcomes, relayed.tracedTxHashes, manifestRead)
   if (boot) await settleManifestBootstrap(ctx, wallet, boot, selected, outcomes, relayed.tracedTxHashes, ingestion.verifiedSwapManifest)
   const { swaps, evidence, recovery, intermediate, deep } = ds
+  ingestion.deepAcquisitionSkipReason = deep.skipReason ?? null
   console.warn('[robinhood-native-trace-global-budget-audit]', {
     totalCap: alloc.cap, mainLiveUsed: alloc.mainUsed, recoveryLiveUsed: alloc.recoveryUsed, totalLiveUsed: alloc.used,
     storedProofHitsMain: alloc.storedProofHitsMain, storedProofHitsRecovery: alloc.storedProofHitsRecovery,
