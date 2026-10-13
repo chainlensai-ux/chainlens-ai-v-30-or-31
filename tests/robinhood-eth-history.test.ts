@@ -101,7 +101,9 @@ async function run(txs: Tx[], over: Partial<RobinhoodPnlV1Deps> = {}) {
       transactionCount: txs.length, transferCount: txs.length, activityUnavailableReason: null,
       deps: {
         rpc, now: Date.now, tokenHistoricalUsd: async () => null,
-        ethUsdRange: async () => { throw new Error('range must not be called') },
+        // The hourly range is now also asked after a daily-bucket answer (an upgrade attempt). Default: no range data,
+        // so a daily price stays an estimate unless a test supplies an hourly point.
+        ethUsdRange: async () => ({ points: [], httpStatus: 200, failure: 'empty' }),
         nativeTransfersForTx: async (h) => byHash.get(h)?.tx.trace ?? null,
         ...over,
       },
@@ -157,7 +159,10 @@ test('native-day reservation receives only verified swaps and releases broad pri
     ethUsdAt: async (ts) => { order.push('price'); return resolverAt(2600)(ts) },
   })
   assert.deepEqual(order.slice(0, 3), ['prefetch', 'release', 'price'])
-  assert.equal(r.priceEvidence[0].bothLegsVerified, true)
+  // The resolver's one-price-per-UTC-day answer prices the swap, but only as an estimate (no hourly point here).
+  assert.equal(r.priceEvidence[0].ethPriceGranularity, 'daily_bucket')
+  assert.equal(r.priceEvidence[0].bothLegsVerified, false)
+  assert.match(r.priceEvidence[0].rejectionReason ?? '', /^daily_eth_price_estimate_only/)
 })
 
 test('2. seconds -> ms conversion through the shared resolver is correct', async () => {
@@ -217,18 +222,31 @@ test('7. no current/spot ETH fallback anywhere in the Robinhood pricing path', a
   assert.match(eth[0].rejectionReason, /^resolver_point_outside_day/)
 })
 
-test('8. the 53353 shape becomes both-leg priced', async () => {
-  const { r, accept } = await run([shape53353(OUT_WEI)], { ethUsdAt: resolverAt(2600) })
+test('8. the 53353 shape: a daily ETH price is an estimate; an hourly point makes it both-leg priced', async () => {
+  // Daily bucket only: same USD math, but never verified (the day's single ETH price is not the swap-time price).
+  const daily = await run([shape53353(OUT_WEI)], { ethUsdAt: resolverAt(2600) })
+  assert.equal(daily.r.swapsBothLegsPriced, 0)
+  assert.match(daily.accept[0].priceEvidenceStatus, /^daily_eth_price_estimate_only/)
+  assert.ok(daily.r.priceEvidence[0].dailyEstimate)
+  assert.ok(Math.abs(daily.r.priceEvidence[0].outputAmount * daily.r.priceEvidence[0].outputPriceUsd! - 0.032288571310109712 * 2600) < 1e-9)
+  // An hourly point 30 min from the swap upgrades it to verified.
+  const { r, accept, eth } = await run([shape53353(OUT_WEI)], { ethUsdAt: resolverAt(2600), ethUsdRange: rangeWith([[TS * 1000 - 1_800_000, 2600]]) })
   assert.equal(r.swapsBothLegsPriced, 1)
   assert.equal(accept[0].priceEvidenceStatus, 'both_legs_priced')
   assert.equal(accept[0].nativeProofStatus, 'proven_target_tx_native_transfer')
+  assert.equal(r.priceEvidence[0].ethPriceGranularity, 'hourly_within_45m')
+  assert.equal(eth[0].granularity, 'hourly_within_45m')
   assert.ok(Math.abs(r.priceEvidence[0].outputAmount * r.priceEvidence[0].outputPriceUsd! - 0.032288571310109712 * 2600) < 1e-9)
 })
 
 test('9. FIFO receives the verified USD sell value', async () => {
   const buy = directBuy(n(1), n(1000)); buy.ts = TS - 3600 // same UTC day: $2,600 cost
   const sell = shape53353(n(1.5))                         // $3,900 proceeds
-  const { r } = await run([buy, sell], { ethUsdAt: resolverAt(2600) })
+  // Daily bucket only: the lot closes as an ESTIMATE, outside verified realized PnL.
+  const daily = await run([buy, sell], { ethUsdAt: resolverAt(2600) })
+  assert.deepEqual([daily.r.verifiedClosedLots, daily.r.realizedPnlUsd, daily.r.estimatedClosedLots, daily.r.estimatedRealizedPnlUsd], [0, null, 1, 1300])
+  // Hourly points at both swaps: verified.
+  const { r } = await run([buy, sell], { ethUsdAt: resolverAt(2600), ethUsdRange: rangeWith([[(TS - 3600) * 1000, 2600], [TS * 1000, 2600]]) })
   assert.equal(r.verifiedClosedLots, 1)
   assert.equal(r.realizedPnlUsd, 1300)
   assert.equal(r.realizedRoiPct, 50)

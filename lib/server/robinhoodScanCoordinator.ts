@@ -63,8 +63,18 @@ export type RobinhoodScanRecord = {
   queuedAt: number
   startedAt: number | null
   completedAt: number | null
+  /** The finished route body. Stored under its own key (see writeRecord) and re-attached on read for a done record. */
   body: RobinhoodRouteBody | null
   error: string | null
+  /**
+   * DONE MARKER, DISCLOSED: the record key holds only this small marker; the body lives at `bodyKey`. `bodyStored` false
+   * means the body never reached the shared store (e.g. over the KV payload limit) — the scan still finished, and the
+   * job's own report carries its result. Absent on records written before the split (body inline).
+   */
+  bodyStored?: boolean
+  bodyKey?: string | null
+  /** Set by readRobinhoodScanRecord: a done record whose body is not available from the shared store. */
+  bodyUnavailable?: boolean
 }
 
 /** A finished result younger than this is served as-is to a request with no job of its own. */
@@ -85,6 +95,14 @@ const POLL_MS = 750
 export const robinhoodScanId = (owner: RobinhoodScanOwner, jobId: string | null, startedAt: number) => `${owner}:${jobId ?? 'nojob'}:${startedAt}`
 
 const recordKey = (wallet: string) => `robinhood:scan-coord:v1:${wallet.toLowerCase()}`
+// The shared store behind records and bodies (token cache: KV + per-process memory). Tests swap it to model a value
+// that never reached the shared store (__setRobinhoodScanStoreForTest); production never does.
+type ScanStore = { get: <T>(key: string) => Promise<T | null>; set: (key: string, value: unknown, ttlSeconds: number) => Promise<boolean> }
+const defaultScanStore: ScanStore = { get: (key) => getTokenCache(key), set: (key, value, ttl) => setTokenCache(key, value, ttl) }
+let scanStore: ScanStore = defaultScanStore
+export function __setRobinhoodScanStoreForTest(store: ScanStore | null): void { scanStore = store ?? defaultScanStore }
+const bodyKeyFor = (rec: Pick<RobinhoodScanRecord, 'wallet' | 'jobId' | 'startedAt' | 'queuedAt'>) =>
+  `robinhood:scan-coord:v1:body:${rec.wallet.toLowerCase()}:${rec.jobId ?? 'nojob'}:${rec.startedAt ?? rec.queuedAt}`
 // GENERATION-AWARE IN-FLIGHT: one entry per wallet, tagged with the job (generation) that owns it. A caller of
 // the same generation joins it; a caller for a DIFFERENT job (a newer Rescan) never adopts it as its own
 // result — it waits for that scan to settle, then runs its own (see runProviderScan). jobId null = a
@@ -99,12 +117,29 @@ export function getRobinhoodProviderScanCount(): number { return providerScanCou
 /** Test hook. */
 export function __resetRobinhoodScanCoordinatorForTest(): void { providerScanCount = 0; inFlight.clear(); transitionChains.clear() }
 
-export async function readRobinhoodScanRecord(wallet: string): Promise<RobinhoodScanRecord | null> {
-  const r = await getTokenCache<RobinhoodScanRecord>(recordKey(wallet)).catch(() => null)
-  return r && r.v === 1 && r.wallet === wallet.toLowerCase() ? r : null
+/** The marker, with a done record's body re-attached from its own key (`bodyUnavailable` when it cannot be). */
+export async function readRobinhoodScanRecord(wallet: string, opts: { withBody?: boolean } = {}): Promise<RobinhoodScanRecord | null> {
+  const r = await scanStore.get<RobinhoodScanRecord>(recordKey(wallet)).catch(() => null)
+  if (!(r && r.v === 1 && r.wallet === wallet.toLowerCase())) return null
+  if (r.state !== 'done' || r.body != null || opts.withBody === false) return r
+  // Legacy records carried the body inline (handled above); split records point at it.
+  const body = r.bodyStored && r.bodyKey ? await scanStore.get<RobinhoodRouteBody>(r.bodyKey).catch(() => null) : null
+  return body ? { ...r, body } : { ...r, body: null, bodyUnavailable: true }
 }
+/**
+ * Body first (its own key), then the small marker, so a done marker never points at a body that was not written.
+ * The marker always fits the shared store; whether the body did is recorded as `bodyStored`.
+ */
 async function writeRecord(rec: RobinhoodScanRecord): Promise<void> {
-  await setTokenCache(recordKey(rec.wallet), rec, RECORD_TTL_SECONDS).catch(() => {})
+  let marker: RobinhoodScanRecord = { ...rec, body: null }
+  delete marker.bodyUnavailable
+  if (rec.body != null) {
+    const bodyKey = bodyKeyFor(rec)
+    const bodyStored = await scanStore.set(bodyKey, rec.body, RECORD_TTL_SECONDS).catch(() => false)
+    if (!bodyStored) console.warn('[robinhood-scan-body-not-shared]', { wallet: rec.wallet, jobId: rec.jobId, startedAt: rec.startedAt, reason: 'body did not reach the shared cache (size limit / KV unavailable); the job report carries the result' })
+    marker = { ...marker, bodyStored, bodyKey }
+  }
+  await scanStore.set(recordKey(rec.wallet), marker, RECORD_TTL_SECONDS).catch(() => false)
 }
 
 // ── Monotonic transitions ─────────────────────────────────────────────────────────────────────────
@@ -143,7 +178,7 @@ export async function transitionRobinhoodScanRecord(next: RobinhoodScanRecord, n
   const key = next.wallet
   const prev = transitionChains.get(key) ?? Promise.resolve()
   const step = prev.catch(() => {}).then(async (): Promise<RobinhoodScanTransition> => {
-    const current = await readRobinhoodScanRecord(key)
+    const current = await readRobinhoodScanRecord(key, { withBody: false })
     const d = decideRobinhoodScanTransition(current, next, nowMs)
     if (d.applied) await writeRecord(next)
     else console.warn('[robinhood-scan-transition-rejected]', { wallet: key, jobId: next.jobId, next: next.state, current: current?.state ?? null, currentJobId: current?.jobId ?? null, reason: d.reason })
@@ -160,11 +195,18 @@ export async function transitionRobinhoodScanRecord(next: RobinhoodScanRecord, n
 export type RobinhoodScanDedupAudit = {
   wallet: string
   canonicalJobId: string | null
+  /** The request came through GET /api/wallet-scan/robinhood (job-backed or not). NOT a "force a fresh scan" flag. */
   standaloneRouteRequested: boolean
   reusedCanonicalResult: boolean
+  /** True only when this request actually waited on a queued / running scan (in this process or another). */
   joinedInFlight: boolean
+  /** Served a record that was already done when this request first read it (nothing was in flight). */
+  servedCompletedRecord?: boolean
   startedNewRobinhoodProviderScan: boolean
+  /** DEPRECATED alias of processProviderScanCount (kept for one release). */
   providerScanCount: number
+  /** Provider scans started by THIS server process since it started — not a count for this wallet or job. */
+  processProviderScanCount?: number
   resultAgeMs: number | null
   caller: RobinhoodScanOwner | 'route'
   outcome: 'served' | 'pending' | 'error'
@@ -198,7 +240,7 @@ const resultProvenance = (r: Pick<RobinhoodScanResult, 'robinhoodPnl'> | null | 
 function logDedup(a: RobinhoodScanDedupAudit): RobinhoodScanDedupAudit {
   // console.warn: next.config removeConsole strips console.log in production. Only a request that started the
   // provider scan ran the PnL audits; reused / joined results carry the original scan's resultScanId.
-  console.warn('[robinhood-scan-dedup-audit]', { ...a, pnlAuditsRanInThisRequest: a.startedNewRobinhoodProviderScan })
+  console.warn('[robinhood-scan-dedup-audit]', { ...a, processProviderScanCount: a.processProviderScanCount ?? a.providerScanCount, servedCompletedRecord: a.servedCompletedRecord ?? false, pnlAuditsRanInThisRequest: a.startedNewRobinhoodProviderScan })
   return a
 }
 
@@ -275,16 +317,22 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
   }
 }
 
-/** Waits (bounded) for the record to reach done/error for `match`; null on timeout. */
-async function waitForRecord(wallet: string, match: (r: RobinhoodScanRecord) => boolean, deadline: number, opts: Opts): Promise<RobinhoodScanRecord | null> {
+/**
+ * Waits (bounded) for the record to reach done/error for `match`; null on timeout. `waited` is true when the record was
+ * not yet settled at the first read — i.e. the caller really joined a queued / running scan.
+ */
+async function waitForSettledRecord(wallet: string, match: (r: RobinhoodScanRecord) => boolean, deadline: number, opts: Opts): Promise<{ rec: RobinhoodScanRecord | null; waited: boolean }> {
   const now = opts.now ?? Date.now
   const sleep = opts.sleep ?? defaultSleep
-  for (;;) {
+  for (let first = true; ; first = false) {
     const r = await readRobinhoodScanRecord(wallet)
-    if (r && match(r) && (r.state === 'done' || r.state === 'error')) return r
-    if (now() + POLL_MS > deadline) return null
+    if (r && match(r) && (r.state === 'done' || r.state === 'error')) return { rec: r, waited: !first }
+    if (now() + POLL_MS > deadline) return { rec: null, waited: true }
     await sleep(POLL_MS)
   }
+}
+async function waitForRecord(wallet: string, match: (r: RobinhoodScanRecord) => boolean, deadline: number, opts: Opts): Promise<RobinhoodScanRecord | null> {
+  return (await waitForSettledRecord(wallet, match, deadline, opts)).rec
 }
 
 /**
@@ -307,7 +355,7 @@ export async function runCanonicalRobinhoodScan(
   }
   const rec = await readRobinhoodScanRecord(wallet)
   if (rec?.state === 'done' && rec.body && (params.reuseFreshMs ?? 0) > 0 && now() - (rec.completedAt ?? 0) < params.reuseFreshMs!) {
-    logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: false, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (rec.completedAt ?? 0), outcome: 'served', ...resultProvenance(rec.body) })
+    logDedup({ ...base, reusedCanonicalResult: true, joinedInFlight: false, servedCompletedRecord: true, startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: now() - (rec.completedAt ?? 0), outcome: 'served', ...resultProvenance(rec.body) })
     return robinhoodScanResultFromBody(rec.body)
   }
   // Another instance is scanning this wallet right now (state running, not our own queued marker). Wait it
@@ -329,6 +377,8 @@ export type RobinhoodRouteOutcome =
   | { status: 200; body: RobinhoodRouteBody; audit: RobinhoodScanDedupAudit }
   | { status: 202; body: { ok: false; pending: true; wallet: string; jobId: string | null; state: string; retryAfterMs: number; refreshSince?: number }; audit: RobinhoodScanDedupAudit }
   | { status: 502; body: { error: { message: string; category: 'provider' } }; audit: RobinhoodScanDedupAudit }
+  /** The scan finished, but its body never reached the shared store: a job's own report carries it; never re-scanned. */
+  | { status: 409; body: { ok: false; resultNotShared: true; resultInJobReport: boolean; wallet: string; jobId: string | null; state: 'done'; message: string }; audit: RobinhoodScanDedupAudit }
 
 /** GET /api/wallet-scan/robinhood. Bounded by ROBINHOOD_ROUTE_WAIT_MS; never starts a scan for a known job. */
 export async function resolveRobinhoodRouteRequest(
@@ -350,11 +400,23 @@ export async function resolveRobinhoodRouteRequest(
   const deadline = now() + (params.waitMs ?? ROBINHOOD_ROUTE_WAIT_MS)
   const audit = (o: Partial<RobinhoodScanDedupAudit>, outcome: RobinhoodScanDedupAudit['outcome']): RobinhoodScanDedupAudit => logDedup({
     wallet: key, canonicalJobId: jobId, standaloneRouteRequested: true, reusedCanonicalResult: false, joinedInFlight: false,
-    startedNewRobinhoodProviderScan: false, providerScanCount, resultAgeMs: null, caller: 'route', outcome, ...o,
+    startedNewRobinhoodProviderScan: false, providerScanCount, processProviderScanCount: providerScanCount, servedCompletedRecord: false, resultAgeMs: null, caller: 'route', outcome, ...o,
   })
+  // `joined` = this request actually waited on the scan; otherwise the record was already done (servedCompletedRecord).
   const fromRecord = (r: RobinhoodScanRecord, joined: boolean): RobinhoodRouteOutcome => r.state === 'done' && r.body
-    ? { status: 200, body: r.body, audit: audit({ canonicalJobId: r.jobId, reusedCanonicalResult: true, joinedInFlight: joined, resultAgeMs: now() - (r.completedAt ?? now()), ...resultProvenance(r.body) }, 'served') }
-    : { status: 502, body: { error: { message: `Robinhood scan failed: ${r.error ?? 'unknown error'}`, category: 'provider' } }, audit: audit({ canonicalJobId: r.jobId, joinedInFlight: joined }, 'error') }
+    ? { status: 200, body: r.body, audit: audit({ canonicalJobId: r.jobId, reusedCanonicalResult: true, joinedInFlight: joined, servedCompletedRecord: !joined, resultAgeMs: now() - (r.completedAt ?? now()), ...resultProvenance(r.body) }, 'served') }
+    : r.state === 'done'
+      ? {
+          status: 409,
+          body: {
+            ok: false, resultNotShared: true, resultInJobReport: r.jobId != null, wallet: key, jobId: r.jobId, state: 'done',
+            message: r.jobId != null
+              ? 'Robinhood scan finished; its result is available in the Wallet Scanner job report.'
+              : 'Robinhood scan finished, but its result could not be shared between servers. Run a Wallet Scanner scan to see it.',
+          },
+          audit: audit({ canonicalJobId: r.jobId, joinedInFlight: joined, servedCompletedRecord: !joined, resultAgeMs: now() - (r.completedAt ?? now()) }, 'served'),
+        }
+      : { status: 502, body: { error: { message: `Robinhood scan failed: ${r.error ?? 'unknown error'}`, category: 'provider' } }, audit: audit({ canonicalJobId: r.jobId, joinedInFlight: joined }, 'error') }
   // FRESHNESS FLOOR, DISCLOSED (wallet 0x7895… report: a Rescan was answered from an older canonical result). An
   // explicit refresh carries a server-issued `refreshSince` across its polls: only a scan that started at or
   // after (refreshSince − join window) may satisfy it — never a finished result or a live scan from before.
@@ -393,8 +455,8 @@ export async function resolveRobinhoodRouteRequest(
   if (jobId) {
     const joined = await joinLocal()
     if (joined) return joined
-    const r = await waitForRecord(wallet, (x) => x.jobId === jobId, deadline, params)
-    if (r) return fromRecord(r, true)
+    const { rec: r, waited } = await waitForSettledRecord(wallet, (x) => x.jobId === jobId, deadline, params)
+    if (r) return fromRecord(r, waited)
     // The job's scan must actually be live to keep the page waiting on it: a queued/running record whose lease
     // expired (its function was killed) will never complete — say so instead of reporting "pending" forever.
     const cur = await readRobinhoodScanRecord(wallet)
@@ -412,7 +474,9 @@ export async function resolveRobinhoodRouteRequest(
   // A refresh is served only by a result whose scan started inside its freshness floor (e.g. the scan its own
   // first poll started); a plain request keeps the 5-minute fresh-result reuse.
   const rec = await readRobinhoodScanRecord(wallet)
-  if (rec?.state === 'done' && rec.body && (refreshFloor != null
+  // A done marker answers the request even when its body could not be shared (fromRecord → 409): a scan that finished
+  // inside the refresh floor / freshness window is never restarted just because its body is process-local.
+  if (rec?.state === 'done' && (rec.body != null || rec.bodyUnavailable === true) && (refreshFloor != null
     ? satisfiesRefresh(rec.startedAt)
     : now() - (rec.completedAt ?? 0) < ROBINHOOD_SCAN_RESULT_FRESH_MS)) return fromRecord(rec, false)
   const joined = await joinLocal()
@@ -420,7 +484,8 @@ export async function resolveRobinhoodRouteRequest(
   const recLive = rec != null && leaseLive(rec, now())
   if (rec && recLive && satisfiesRefresh(rec.startedAt ?? rec.queuedAt)) {
     const marker = { jobId: rec.jobId, queuedAt: rec.queuedAt, startedAt: rec.startedAt }
-    const r = await waitForRecord(wallet, (x) => (marker.jobId != null ? x.jobId === marker.jobId : x.startedAt === marker.startedAt), deadline, params)
+    const { rec: r } = await waitForSettledRecord(wallet, (x) => (marker.jobId != null ? x.jobId === marker.jobId : x.startedAt === marker.startedAt), deadline, params)
+    // `rec` was queued / running at its read, so this request genuinely waited on that scan.
     return r ? fromRecord(r, true) : pending(rec.state, { canonicalJobId: rec.jobId, joinedInFlight: true })
   }
   // A refresh that finds an OLDER scan still live (this process or another instance) neither adopts its result

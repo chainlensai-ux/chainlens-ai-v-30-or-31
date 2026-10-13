@@ -121,6 +121,25 @@ export type RobinhoodPnlSummary = {
   swapsBothLegsPriced: number
   /** How much of the known candidate set was actually checked this scan (null on older payloads). */
   verificationCoverage?: RobinhoodSwapVerificationCoverage | null
+  /** Whether the verified sample can stand for the wallet's complete Robinhood history (absent on older payloads). */
+  historyCoverage?: RobinhoodHistoryCoverage | null
+}
+
+export type RobinhoodHistoryCoverage = { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] }
+
+/** "History coverage incomplete — earlier acquisitions may be outside this sample"; null only when proven complete. */
+export function robinhoodHistoryCoverageLabel(c: RobinhoodHistoryCoverage | null | undefined): string | null {
+  if (c?.status === 'complete') return null
+  if (c?.status === 'incomplete') return 'History coverage incomplete — earlier acquisitions may be outside this sample'
+  return 'History coverage unknown — not proven complete'
+}
+
+/**
+ * "Open position only" is a claim that nothing was sold without an acquisition and that the searched history is
+ * complete. Zero closed lots with an unmatched verified sell, or with incomplete / unknown coverage, is not that.
+ */
+export function robinhoodZeroLotsIsOpenPositionOnly(pnl: Pick<RobinhoodPnlSummary, 'unmatchedSellCount' | 'historyCoverage'> | null | undefined): boolean {
+  return pnl != null && pnl.unmatchedSellCount === 0 && pnl.historyCoverage?.status === 'complete'
 }
 
 /**
@@ -177,8 +196,9 @@ export function robinhoodPnlCardView(pnl: RobinhoodPnlSummary | null | undefined
       coverageLine: pnl.pricingCoverage != null ? `${pnl.pricingCoverage.toFixed(1)}% coverage` : null,
     }
   }
-  // Every swap verified and priced on both legs, but no buy→sell lot closed: an open position, not missing evidence.
-  if (pnl.swapsVerified > 0 && pnl.swapsBothLegsPriced === pnl.swapsVerified && pnl.structuralClosedLots === 0 && pnl.verifiedClosedLots === 0) {
+  // Every swap verified and priced on both legs, no buy→sell lot closed, no unmatched sell and complete history: an
+  // open position, not missing evidence. Otherwise the exact reason (with its coverage caveat) stays the blocker.
+  if (pnl.swapsVerified > 0 && pnl.swapsBothLegsPriced === pnl.swapsVerified && pnl.structuralClosedLots === 0 && pnl.verifiedClosedLots === 0 && robinhoodZeroLotsIsOpenPositionOnly(pnl)) {
     return {
       kind: 'blocker', title: 'ROBINHOOD PNL', statusLabel: 'OPEN POSITION ONLY',
       blocker: `${pnl.swapsVerified} swap${pnl.swapsVerified === 1 ? '' : 's'} verified · ${pnl.swapsBothLegsPriced}/${pnl.swapsVerified} priced on both legs · no verified buy→sell lot closed yet.`,
@@ -213,6 +233,8 @@ export type RobinhoodSwapEvidence = {
   reason: string | null
   /** Candidate coverage of this scan's verification; null when the payload predates it. */
   coverage: RobinhoodSwapVerificationCoverage | null
+  /** Whether the verified sample covers the wallet's complete history; null when the payload predates it. */
+  historyCoverage: RobinhoodHistoryCoverage | null
 }
 
 export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodSwapEvidence | null {
@@ -223,15 +245,19 @@ export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScan
   const swapsBothLegsPriced = v1 ? v1.swapsBothLegsPriced : audit?.priceEvidenceBothLegsCount ?? 0
   const closedLots = v1 ? Math.max(v1.structuralClosedLots, v1.verifiedClosedLots) : audit?.fifoClosedLots ?? 0
   const verified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
-  const openPositionOnly = !verified && swapsVerified > 0 && swapsBothLegsPriced === swapsVerified && closedLots === 0
+  const historyCoverage = v1?.historyCoverage ?? null
+  // Zero closed lots is "open position only" only with no unmatched verified sell AND complete history coverage.
+  const openPositionOnly = !verified && swapsVerified > 0 && swapsBothLegsPriced === swapsVerified && closedLots === 0 && robinhoodZeroLotsIsOpenPositionOnly(v1)
   const coverage = v1?.verificationCoverage ?? null
   const coverageLabel = robinhoodCoverageLabel(coverage)
+  const historyLabel = robinhoodHistoryCoverageLabel(historyCoverage)
+  const exact = v1?.exactReason ?? robinhoodResult.pnl.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
   const reason = verified ? null
     : openPositionOnly
       ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet${coverageLabel ? ` · ${coverageLabel}` : ''}.`
-      : v1?.exactReason ?? robinhoodResult.pnl.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON
+      : v1 && historyLabel && !/coverage is (incomplete|unknown)/.test(exact) ? `${exact.replace(/\.\s*$/, '')} · ${historyLabel}.` : exact
   const decodedSwapCandidates = v1 ? v1.swapsFound : null
-  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason, coverage }
+  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason, coverage, historyCoverage }
 }
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'

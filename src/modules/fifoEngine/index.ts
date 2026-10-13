@@ -637,6 +637,8 @@ export function computePnl(
     }
     const reconciledPricedQuantity = Math.min(pricedOpenQuantity, canonicalCurrentBalance)
     const pricedQuantityScale = pricedOpenQuantity > 0 ? reconciledPricedQuantity / pricedOpenQuantity : 0
+    // Restored (Wallet PnL Item 3): the counter increment was lost in a later merge, so capped positions read as 0.
+    const quantityCapped = reconciledPricedQuantity < pricedOpenQuantity
     // 6/7. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
     if (rawCurrentPrice == null) {
       exclude('missing_verified_current_price')
@@ -648,6 +650,7 @@ export function computePnl(
     }
 
     reconciledOpenPositions += 1
+    if (quantityCapped) cappedOpenPositions += 1
     // Scoped to pricedOpenQuantity (not openQuantityFromFifo) — see this position's own
     // AGGREGATE-ARITHMETIC FIX comment above. Consistent with reconciledCostBasisUsd/
     // unrealizedTerms: an unpriced lot contributes to neither, so it must not inflate this either.

@@ -1112,6 +1112,13 @@ export default function WalletScannerPage() {
       }
       // Superseded: a job-backed response for an older job never replaces a newer scan's Robinhood lane.
       if (opts.jobId && latestScanJobRef.current !== opts.jobId) return
+      // 409 resultNotShared: the scan finished but its body never reached the shared store. A job-backed lane gets it
+      // from the job's final report (never an error, never a re-scan); a Rescan keeps what is on screen and says why.
+      const notShared = json as { resultNotShared?: boolean; message?: string } | null
+      if (res.status === 409 && notShared?.resultNotShared) {
+        if (!opts.jobId) setRobinhoodError(notShared.message ?? 'Robinhood scan finished, but its result could not be shared. Run a Wallet Scanner scan to see it.')
+        return
+      }
       if (!res.ok || !json?.ok) {
         setRobinhoodResult(null)
         robinhoodResultJobRef.current = null

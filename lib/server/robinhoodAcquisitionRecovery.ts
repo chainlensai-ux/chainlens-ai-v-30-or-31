@@ -253,16 +253,20 @@ export function classifyRobinhoodAcquisition(input: {
  */
 export function robinhoodUnmatchedSellRaw(swaps: ReadonlyArray<{ txHash: string; timestampSec: number; blockNumber: number; firstLogIndex: number; inputToken: string; outputToken: string; inputRaw: bigint; outputRaw: bigint }>, isQuote: (token: string) => boolean): Map<string, { token: string; sellRaw: bigint; unmatchedRaw: bigint; timestampSec: number }> {
   const ordered = [...swaps].sort((a, b) => a.timestampSec - b.timestampSec || a.blockNumber - b.blockNumber || a.firstLogIndex - b.firstLogIndex || a.txHash.localeCompare(b.txHash))
-  const lots = new Map<string, Array<{ ts: number; left: bigint }>>()
+  // SAME ORDER AS FIFO, DISCLOSED: a lot covers a sell only when it is not strictly later in (timestampSec,
+  // blockNumber, firstLogIndex) — the FIFO engine ranks swaps inside one second the same way, so a buy in a later
+  // block of the sell's second never makes this lane report a sell as covered that FIFO left unmatched.
+  const rank = new Map(ordered.map((s, i) => [s, i]))
+  const lots = new Map<string, Array<{ rank: number; left: bigint }>>()
   const out = new Map<string, { token: string; sellRaw: bigint; unmatchedRaw: bigint; timestampSec: number }>()
-  // Buys first within the walk, exactly as the FIFO engine builds all lots before matching (openedAt <= sell time).
-  for (const s of ordered) if (!isQuote(s.outputToken)) { const q = lots.get(s.outputToken) ?? []; q.push({ ts: s.timestampSec, left: s.outputRaw }); lots.set(s.outputToken, q) }
+  // Buys first within the walk, exactly as the FIFO engine builds all lots before matching.
+  for (const s of ordered) if (!isQuote(s.outputToken)) { const q = lots.get(s.outputToken) ?? []; q.push({ rank: rank.get(s)!, left: s.outputRaw }); lots.set(s.outputToken, q) }
   for (const s of ordered) {
     if (isQuote(s.inputToken)) continue
     let need = s.inputRaw
     for (const lot of lots.get(s.inputToken) ?? []) {
       if (need <= ZERO) break
-      if (lot.ts > s.timestampSec) break
+      if (lot.rank > rank.get(s)!) break
       const take = lot.left < need ? lot.left : need
       lot.left -= take
       need -= take

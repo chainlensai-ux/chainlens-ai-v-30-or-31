@@ -250,6 +250,11 @@ export type RobinhoodWalletActivityResult = {
   fromCache: boolean
   /** Where the structural activity came from. Absent on results built before this field existed. */
   activityProvenance?: RobinhoodActivityProvenance
+  /**
+   * True when a provider page this activity was read from was full or reported a further page (cursor) — the activity
+   * is one bounded window, not the wallet's whole history. Absent on cached results written before this field.
+   */
+  activityWindowTruncated?: boolean
 }
 
 export type RobinhoodActivityProvenance = {
@@ -1150,7 +1155,9 @@ type CovalentTransaction = {
   log_events?: CovalentTxLogEvent[]
 }
 
-export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: FetchImpl): Promise<{ items: CovalentTransaction[] | null; reason: string | null }> {
+/** GoldRush transactions_v3 returns one page (≤100 rows); a full page or a prev/next link means more history exists. */
+export const ROBINHOOD_GOLDRUSH_TX_PAGE_SIZE = 100
+export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: FetchImpl): Promise<{ items: CovalentTransaction[] | null; reason: string | null; truncated?: boolean }> {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   if (!apiKey) return { items: null, reason: 'no_api_key' }
   const attempt = async (chainPath: string) => {
@@ -1159,11 +1166,13 @@ export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: Fetc
         `https://${GOLDRUSH_HOST}/v1/${chainPath}/address/${wallet}/transactions_v3/`,
         { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(TRANSACTIONS_TIMEOUT_MS) },
       )
-      if (!res.ok) return { items: null as CovalentTransaction[] | null, reason: res.status === 429 ? 'rate_limited' : 'http_error', httpStatus: res.status }
-      const json = await res.json().catch(() => null) as { data?: { items?: CovalentTransaction[] } } | null
+      if (!res.ok) return { items: null as CovalentTransaction[] | null, reason: res.status === 429 ? 'rate_limited' : 'http_error', httpStatus: res.status, truncated: false }
+      const json = await res.json().catch(() => null) as { data?: { items?: CovalentTransaction[]; links?: { prev?: string | null; next?: string | null } | null } } | null
       const items = Array.isArray(json?.data?.items) ? json!.data!.items! : null
-      if (!items) return { items: null as CovalentTransaction[] | null, reason: 'no_data', httpStatus: 200 }
-      return { items, reason: null as string | null, httpStatus: 200 }
+      if (!items) return { items: null as CovalentTransaction[] | null, reason: 'no_data', httpStatus: 200, truncated: false }
+      const links = json?.data?.links
+      const truncated = items.length >= ROBINHOOD_GOLDRUSH_TX_PAGE_SIZE || Boolean(links?.prev) || Boolean(links?.next)
+      return { items, reason: null as string | null, httpStatus: 200, truncated }
     } catch (err) {
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
       return { items: null as CovalentTransaction[] | null, reason: timedOut ? 'timeout' : 'http_error', httpStatus: null }
@@ -1171,7 +1180,7 @@ export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: Fetc
   }
   for (const chainPath of ROBINHOOD_CHAIN_PATHS) {
     const result = await attempt(chainPath)
-    if (result.items) return { items: result.items, reason: null }
+    if (result.items) return { items: result.items, reason: null, truncated: result.truncated === true }
     if (result.httpStatus !== 404 && result.reason !== 'no_data') return { items: null, reason: result.reason }
   }
   return { items: null, reason: 'no_data' }
@@ -1188,7 +1197,7 @@ const ERC20_TRANSFER_EVENT_NAME = 'Transfer'
 async function fetchRobinhoodTransactionsViaBlockscout(
   wallet: string,
   fetchImpl: FetchImpl,
-): Promise<{ items: CovalentTransaction[] | null; audits: BlockscoutEvidenceAudit[] }> {
+): Promise<{ items: CovalentTransaction[] | null; audits: BlockscoutEvidenceAudit[]; truncated?: boolean }> {
   const [txResult, transfersResult] = await Promise.all([
     getBlockscoutAddressTransactions(wallet, fetchImpl),
     getBlockscoutAddressTokenTransfers(wallet, fetchImpl),
@@ -1248,7 +1257,9 @@ async function fetchRobinhoodTransactionsViaBlockscout(
     ]
     byTxHash.set(transfer.transaction_hash, existing)
   }
-  return { items: Array.from(byTxHash.values()), audits }
+  // One page per endpoint: a next_page_params cursor means older rows were not read.
+  const truncated = txResult.data?.next_page_params != null || transfersResult.data?.next_page_params != null
+  return { items: Array.from(byTxHash.values()), audits, truncated }
 }
 
 // ── Blockscout fallback: per-transaction logs for the swap decoder, DISCLOSED ───────────────────
@@ -1306,7 +1317,9 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
   }
   const blockscoutAudits: BlockscoutEvidenceAudit[] = []
   let blockscoutSkippedReason: string | null = null
-  let { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
+  const primary = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
+  let { items: txs, reason } = primary
+  let activityWindowTruncated = primary.truncated === true
   const primaryReason = txs ? null : (reason ?? 'no_data')
   const primaryRowsReturned = txs?.length ?? 0
   const provenance: RobinhoodActivityProvenance = {
@@ -1359,6 +1372,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
       }
       txs = [...byHash.values()]
       reason = null
+      if (fallback.truncated) activityWindowTruncated = true
     } else {
       provenance.fallbackStatus = 'failed'
       const failed = fallback.audits.find((a) => a.blockscoutError || a.blockscoutRejectedReason)
@@ -1394,7 +1408,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
       wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0,
       blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
       blockscoutAudits, blockscoutSkippedReason, blockscoutFallbackDecisionAudit: decision,
-      reason: blocker, fromCache: false, activityProvenance: provenance,
+      reason: blocker, fromCache: false, activityProvenance: provenance, activityWindowTruncated,
     }
   }
   const resolvePoolCurrencies = deps.resolvePoolCurrencies ?? ((poolId: string) => resolvePoolCurrenciesViaRpc(poolId, deps.fetchImpl))
@@ -1535,6 +1549,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
       : items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
     fromCache: false,
     activityProvenance: provenance,
+    activityWindowTruncated,
   }
 }
 

@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { clearWalletScanTestAuth, installWalletScanTestAuth, walletScanTestAuthHeaders } from './walletScanTestAuth'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
 import { publishFinal, verifyWalletScanKvConnection, toSerializableResult } from '@/src/modules/walletScanWorker'
@@ -39,8 +40,14 @@ async function publishFinalResultForTest(jobId: string, result: unknown): Promis
 
 async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
   const { GET } = await import('./[jobId]/route.ts')
-  const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`), { params: Promise.resolve({ jobId }) })
-  return { status: res.status, body: await res.json() }
+  // The poll route is account-required (job ownership); the caller is the job's owner, user-a.
+  installWalletScanTestAuth('user-a')
+  try {
+    const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`, { headers: walletScanTestAuthHeaders }), { params: Promise.resolve({ jobId }) })
+    return { status: res.status, body: await res.json() }
+  } finally {
+    clearWalletScanTestAuth()
+  }
 }
 
 describe('wallet-scan final publish and poll key alignment', () => {
@@ -145,7 +152,8 @@ describe('wallet-scan final publish and poll key alignment', () => {
 
   it('poll surfaces the safe stage error code for a failed job', async () => {
     const store = installMemoryKv()
-    store.set(walletScanJobKey('job-failed'), { value: { status: 'failed', error: 'worker_result_publish_failed' } })
+    // Owned by the polling user: the poll route answers only the job's owner (anyone else gets 404).
+    store.set(walletScanJobKey('job-failed'), { value: { userId: 'user-a', status: 'failed', error: 'worker_result_publish_failed' } })
 
     const response = await poll('job-failed')
 

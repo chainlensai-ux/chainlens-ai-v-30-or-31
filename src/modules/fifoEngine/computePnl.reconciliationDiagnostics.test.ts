@@ -178,12 +178,20 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
     // Missing price — still unreconcilable even after Item 3's quantity cap (no current price to value the held qty).
     const { unrealizedPnlUsd, unrealizedReconciliation } = computePnl([], lots, () => null, () => 1)
 
-    assert.ok(Math.abs((unrealizedPnlUsd ?? 0) - 1.998) < 1e-12)
+    // TRIAGED (wallet-scanner audit P2-7): merge 7f0ae0a0 changed this call's price lookup to `() => null` (and the
+    // comment above) but kept the priced assertions (1.998 / ok / 2 reconciled). The engine is fail-closed on a missing
+    // current price, as the comment says, so both positions are excluded and nothing is valued.
+    assert.equal(unrealizedPnlUsd, null)
     assert.equal(unrealizedReconciliation.officialUnrealizedPnlUsd, unrealizedPnlUsd)
-    assert.equal(unrealizedReconciliation.reconciliationStatus, 'ok')
+    assert.equal(unrealizedReconciliation.reconciliationStatus, 'failed')
     assert.equal(unrealizedReconciliation.totalOpenPositions, 2)
-    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 2)
-    assert.equal(unrealizedReconciliation.excludedOpenPositions, 0)
+    assert.equal(unrealizedReconciliation.reconciledOpenPositions, 0)
+    assert.equal(unrealizedReconciliation.excludedOpenPositions, 2)
+    assert.deepEqual(unrealizedReconciliation.excludedPositions.map((p) => p.exclusionReason), ['missing_verified_current_price', 'missing_verified_current_price'])
+    // With a price, the known smaller balance (1) caps both positions instead of excluding them.
+    const priced = computePnl([], lots, () => 1, () => 1)
+    assert.ok(Math.abs((priced.unrealizedPnlUsd ?? 0) - 1.998) < 1e-12)
+    assert.deepEqual([priced.unrealizedReconciliation.reconciliationStatus, priced.unrealizedReconciliation.reconciledOpenPositions, priced.unrealizedReconciliation.cappedOpenPositions], ['ok', 2, 2])
   })
 
   it('reports "partial" when some positions reconcile and some do not, and "ok" when all reconcile', () => {
@@ -196,10 +204,13 @@ describe('computePnl reconciliation diagnostics — scan-level totals', () => {
       (token) => (token.toLowerCase() === SHARED_ADDRESS ? 1 : null),
       (token) => (token.toLowerCase() === SHARED_ADDRESS ? 10 : 1),
     )
-    assert.equal(mixed.unrealizedReconciliation.reconciliationStatus, 'ok')
-    assert.equal(mixed.unrealizedReconciliation.reconciledOpenPositions, 2)
-    assert.equal(mixed.unrealizedReconciliation.excludedOpenPositions, 0)
-    assert.ok(Math.abs((mixed.unrealizedPnlUsd ?? 0) - 5.9995) < 1e-12)
+    // TRIAGED (wallet-scanner audit P2-7): this test's title is "partial when some reconcile and some do not"; the 'bad'
+    // position has no current price (the lookup returns null for it), so it is excluded and the status is partial. The
+    // old 'ok' / 2 reconciled / 5.9995 assertions survived merge 7f0ae0a0 and contradicted the title and the engine.
+    assert.equal(mixed.unrealizedReconciliation.reconciliationStatus, 'partial')
+    assert.equal(mixed.unrealizedReconciliation.reconciledOpenPositions, 1)
+    assert.equal(mixed.unrealizedReconciliation.excludedOpenPositions, 1)
+    assert.equal(mixed.unrealizedPnlUsd, 5)
 
     const allGood = computePnl([], [openLot({ amountRemaining: 10, costBasisUsd: 5 })], () => 1, () => 10)
     assert.equal(allGood.unrealizedReconciliation.reconciliationStatus, 'ok')

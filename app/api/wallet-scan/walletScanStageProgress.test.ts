@@ -10,6 +10,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { clearWalletScanTestAuth, installWalletScanTestAuth, walletScanTestAuthHeaders } from './walletScanTestAuth'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, updateWalletScanJobProgress, type WalletScanJobMetadata } from '@/src/modules/walletScanQueue'
 import { publishFinal } from '@/src/modules/walletScanWorker'
@@ -40,8 +41,14 @@ function installMemoryKv(): Map<string, Stored> {
 
 async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
   const { GET } = await import('./[jobId]/route.ts')
-  const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`), { params: Promise.resolve({ jobId }) })
-  return { status: res.status, body: await res.json() }
+  // The poll route is account-required (job ownership); the caller is the job's owner, user-a.
+  installWalletScanTestAuth('user-a')
+  try {
+    const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`, { headers: walletScanTestAuthHeaders }), { params: Promise.resolve({ jobId }) })
+    return { status: res.status, body: await res.json() }
+  } finally {
+    clearWalletScanTestAuth()
+  }
 }
 
 function runningJob(overrides: Partial<WalletScanJobMetadata> = {}): WalletScanJobMetadata {
@@ -116,10 +123,11 @@ describe('updateWalletScanJobProgress — real stage checkpoints, wired to the l
 
   it('a queued job (not yet running) can also carry a real stage update', async () => {
     const store = installMemoryKv()
-    store.set(walletScanJobKey('job-progress'), { value: runningJob({ status: 'queued' }) })
+    // Its own job id: an earlier test finalized 'job-progress', and a finalized id refuses further writes (by design).
+    store.set(walletScanJobKey('job-progress-queued'), { value: runningJob({ jobId: 'job-progress-queued', status: 'queued' }) })
 
-    await updateWalletScanJobProgress('job-progress', { stage: 'core', label: 'Replaying verified PnL...', elapsedMs: 50 })
-    const response = await poll('job-progress')
+    await updateWalletScanJobProgress('job-progress-queued', { stage: 'core', label: 'Replaying verified PnL...', elapsedMs: 50 })
+    const response = await poll('job-progress-queued')
 
     assert.deepEqual(response.body, { status: 'queued', progress: { stage: 'core', label: 'Replaying verified PnL...', elapsedMs: 50 } })
   })

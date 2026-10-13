@@ -364,7 +364,7 @@ export type BlockscoutTransaction = {
   value?: string
   status?: string
 }
-export type BlockscoutTransactionsResponse = { items?: BlockscoutTransaction[] }
+export type BlockscoutTransactionsResponse = { items?: BlockscoutTransaction[]; next_page_params?: unknown }
 
 export async function getBlockscoutAddressTransactions(address: string, fetchImpl: FetchImpl) {
   return fetchBlockscout<BlockscoutTransactionsResponse>(
@@ -385,7 +385,7 @@ export type BlockscoutTokenTransfer = {
   total?: { value?: string; decimals?: string } | null
   token?: { address?: string; address_hash?: string; symbol?: string; type?: string } | null
 }
-export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[] }
+export type BlockscoutTokenTransfersResponse = { items?: BlockscoutTokenTransfer[]; next_page_params?: unknown }
 
 /** Current balances, not transfer history. Explorer exchange_rate is deliberately not consumed. */
 export type BlockscoutAddressTokenBalance = {

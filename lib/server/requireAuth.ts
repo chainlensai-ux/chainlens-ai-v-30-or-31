@@ -29,11 +29,19 @@ function bearerToken(req: Request): string {
  * Verifies the request's bearer token against Supabase. Returns null for any missing/invalid/
  * expired token — the caller must then respond 401 (see unauthorizedResponse below). Never throws.
  */
+// TEST SEAM, DISCLOSED: route tests replace the Supabase token verifier (never the guard itself — a request still needs a
+// bearer token, and a token the verifier does not recognise is still a 401). Production never calls the setter.
+type TokenVerifier = typeof getCurrentUserPlanFromBearerToken
+let verifyBearerToken: TokenVerifier = getCurrentUserPlanFromBearerToken
+export function __setAuthTokenVerifierForTest(verifier: TokenVerifier | null): void {
+  verifyBearerToken = verifier ?? getCurrentUserPlanFromBearerToken
+}
+
 export async function requireAuthenticatedUser(req: Request): Promise<AuthedRequestUser | null> {
   const token = bearerToken(req)
   if (!token) return null
   try {
-    const result = await getCurrentUserPlanFromBearerToken(token)
+    const result = await verifyBearerToken(token)
     if (!result.userId) return null
     return { userId: result.userId, email: result.email, plan: result.plan }
   } catch {

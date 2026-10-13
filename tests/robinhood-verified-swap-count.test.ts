@@ -35,7 +35,9 @@ function summary(over: Partial<RobinhoodPnlSummary> = {}): RobinhoodPnlSummary {
   return {
     status: 'not_verified', structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null,
     unmatchedSellCount: 0, exactReason: '3 swaps proven, 3 priced on both legs, but no buy→sell pair closed a lot in this sample.',
-    swapsFound: 7, swapsVerified: 3, swapsBothLegsPriced: 3, ...over,
+    swapsFound: 7, swapsVerified: 3, swapsBothLegsPriced: 3,
+    // Genuine open position: complete history coverage, no unmatched sell (required for "open position only").
+    historyCoverage: { status: 'complete', reasons: [] }, ...over,
   }
 }
 function result(over: { pnl?: Partial<RobinhoodPnlSummary>; activityVerified?: number; audit?: RobinhoodPnlVerificationAudit | null; legacyPnlVerified?: number } = {}): RobinhoodWalletScanResponse {
@@ -204,7 +206,9 @@ async function runV1(specs: Array<[string, Tx]>, opts: { activity: string[]; sto
   })
   const deps: RobinhoodPnlV1Deps = {
     rpc, now: () => 1_800_000_000_000, tokenHistoricalUsd: async () => null, ethUsdRange: async () => null,
-    ethUsdAt: async (ts) => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: 0, maxAllowedGapMs: 86_400_000 }),
+    // Hourly-grade ETH point (≤45 min): a one-per-UTC-day ETH price is now an estimate (daily_eth_price_estimate_only); this file tests
+    // verification / recovery, not price granularity, so its fixture supplies swap-time-grade evidence.
+    ethUsdAt: async (ts) => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 45 * 60_000 }),
     nativeTransfersForTx: async (h) => chain.get(h)!.tx.trace,
     nativeTraceCached: async (h) => { const e = chain.get(h); return e && opts.stored?.has(e.name) && e.tx.trace ? { transfers: e.tx.trace, audit: null } : null },
     ...(opts.manifest ? { verifiedSwapManifest: { read: readRobinhoodVerifiedSwapManifest, record: recordRobinhoodVerifiedSwaps } } : {}),

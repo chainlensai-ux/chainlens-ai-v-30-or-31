@@ -95,11 +95,20 @@ test('token↔token swap priced only by daily token prices is an estimate: not v
   assert.equal(typeof estimated.realizedPnlUsd, 'number')
 })
 
-test('a swap with an ETH leg keeps exact execution pricing and stays verified (unchanged)', async () => {
-  const ctx = ctxWith(async () => null)
-  ;(ctx as unknown as { deps: Record<string, unknown> }).deps.ethUsdAt = async (ts: number) => ({ priceUsd: 2600, provider: 'p', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 86_400_000 })
-  const [e] = await priceRobinhoodSwaps(ctx, [swap('0x2b', 1_790_000_000, 1, RH_NATIVE, T, E18 / BigInt(100), E18)])
-  assert.deepEqual([e.bothLegsVerified, e.dailyEstimate, e.outputSource], [true, undefined, 'v4_exact_swap_execution'])
+test('a swap with an ETH leg: exact execution pricing; verified only with an hourly-grade ETH price (a daily bucket is an estimate)', async () => {
+  // Daily bucket (the shared resolver's one-price-per-UTC-day): priced, but an estimate — reversed deliberately from
+  // the earlier "stays verified" rule (wallet-scanner audit P1-3).
+  const daily = ctxWith(async () => null)
+  ;(daily as unknown as { deps: Record<string, unknown> }).deps.ethUsdAt = async (ts: number) => ({ priceUsd: 2600, provider: 'p', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 86_400_000 })
+  const [d] = await priceRobinhoodSwaps(daily, [swap('0x2b', 1_790_000_000, 1, RH_NATIVE, T, E18 / BigInt(100), E18)])
+  assert.deepEqual([d.bothLegsVerified, d.ethPriceGranularity, d.outputSource], [false, 'daily_bucket', 'v4_exact_swap_execution'])
+  assert.match(d.rejectionReason ?? '', /^daily_eth_price_estimate_only/)
+  assert.ok(d.dailyEstimate)
+  // Hourly point within 45 minutes: verified, unchanged execution pricing.
+  const hourly = ctxWith(async () => null)
+  ;(hourly as unknown as { deps: Record<string, unknown> }).deps.ethUsdAt = async (ts: number) => ({ priceUsd: 2600, provider: 'p', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 45 * 60_000 })
+  const [e] = await priceRobinhoodSwaps(hourly, [swap('0x2b', 1_790_000_000, 1, RH_NATIVE, T, E18 / BigInt(100), E18)])
+  assert.deepEqual([e.bothLegsVerified, e.dailyEstimate, e.outputSource, e.ethPriceGranularity], [true, undefined, 'v4_exact_swap_execution', 'hourly_within_45m'])
 })
 
 test("GoldRush historical token price: 'robinhood-mainnet' miss falls back to '4663'; a hit never makes a second call", async () => {

@@ -7,6 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { clearWalletScanTestAuth, installWalletScanTestAuth, walletScanTestAuthHeaders } from './walletScanTestAuth'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, publishWalletScanPartialSnapshot, type WalletScanJobMetadata, type WalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { publishFinal } from '@/src/modules/walletScanWorker'
@@ -37,8 +38,14 @@ function installMemoryKv(): Map<string, Stored> {
 
 async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
   const { GET } = await import('./[jobId]/route.ts')
-  const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`), { params: Promise.resolve({ jobId }) })
-  return { status: res.status, body: await res.json() }
+  // The poll route is account-required (job ownership); the caller is the job's owner, user-a.
+  installWalletScanTestAuth('user-a')
+  try {
+    const res = await GET(new Request(`http://localhost/api/wallet-scan/${encodeURIComponent(jobId)}`, { headers: walletScanTestAuthHeaders }), { params: Promise.resolve({ jobId }) })
+    return { status: res.status, body: await res.json() }
+  } finally {
+    clearWalletScanTestAuth()
+  }
 }
 
 function runningJob(overrides: Partial<WalletScanJobMetadata> = {}): WalletScanJobMetadata {
@@ -89,10 +96,12 @@ describe('publishWalletScanPartialSnapshot — real early portfolio/holdings, wi
 
   it('progress and partial can coexist on the same running job — both surfaced together', async () => {
     const store = installMemoryKv()
-    store.set(walletScanJobKey('job-partial'), { value: runningJob({ progress: { stage: 'portfolio', label: 'Loading portfolio...', elapsedMs: 800 } }) })
+    // Its own job id: an earlier test finalized 'job-partial', and a finalized job id refuses further writes for the
+    // life of the process (correct for production, where every job id is a fresh UUID).
+    store.set(walletScanJobKey('job-partial-coexist'), { value: runningJob({ jobId: 'job-partial-coexist', progress: { stage: 'portfolio', label: 'Loading portfolio...', elapsedMs: 800 } }) })
 
-    await publishWalletScanPartialSnapshot('job-partial', snapshot())
-    const response = await poll('job-partial')
+    await publishWalletScanPartialSnapshot('job-partial-coexist', snapshot())
+    const response = await poll('job-partial-coexist')
 
     const body = response.body as { progress?: unknown; partial?: unknown }
     assert.ok(body.progress)

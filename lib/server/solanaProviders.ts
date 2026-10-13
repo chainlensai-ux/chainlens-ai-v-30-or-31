@@ -568,7 +568,7 @@ export type HeliusOwnerCountCacheIO = {
 
 const defaultOwnerCountCache: HeliusOwnerCountCacheIO = {
   get: (key) => getTokenCache<unknown>(key),
-  set: (key, value, ttl) => setTokenCache(key, value, ttl),
+  set: async (key, value, ttl) => { await setTokenCache(key, value, ttl) },
 }
 
 function emptyHolderResult(called: boolean, errorReason: string | null): SolanaHeliusHolderResult {

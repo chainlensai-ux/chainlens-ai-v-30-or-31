@@ -78,7 +78,9 @@ function directBuy(eth: bigint, tokens: bigint) {
 }
 
 
-const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: Math.floor(ts / 86_400) * 86_400_000, gapMs: (ts % 86_400) * 1000, maxAllowedGapMs: 86_400_000 })
+// Hourly-grade ETH point (≤45 min): a one-per-UTC-day ETH price is now an estimate (daily_eth_price_estimate_only); this file tests
+// verification / recovery, not price granularity, so its fixture supplies swap-time-grade evidence.
+const ethAt = async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: 2600, provider: 'x', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 45 * 60_000 })
 const sell = (token: string, amount: bigint, ethOut: bigint, ts: number) => new Tx().xfer(token, WALLET, PM, amount).v4(token, RH_NATIVE, amount, ethOut).paysWallet(ethOut).at(ts)
 const buy = (token: string, eth: bigint, amount: bigint, ts: number) => { const tx = new Tx().v4(RH_NATIVE, token, eth, amount).xfer(token, PM, WALLET, amount).at(ts); tx.txValue = eth; return tx }
 const selfCallBuy = (token: string, eth: bigint, amount: bigint, ts: number) => { const tx = buy(token, eth, amount, ts); tx.to = WALLET; tx.trace = [{ from: WALLET, to: ROUTER, value: eth, success: true }]; return tx }

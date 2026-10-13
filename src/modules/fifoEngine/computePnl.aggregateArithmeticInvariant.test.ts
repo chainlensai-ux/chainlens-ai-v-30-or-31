@@ -129,10 +129,14 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
     assert.equal(unrealizedReconciliation.reconciledOpenPositions, 5)
     assert.equal(perPosition.length, 5)
 
-    // Full-precision (exact float) equality — this is what the production symptom actually broke.
+    // Full-precision (exact float) equality for the aggregate columns — this is what the production symptom broke.
     assert.equal(unrealizedReconciliation.reconciledMarketValueUsd, tracedMarketValue)
     assert.equal(unrealizedReconciliation.reconciledCostBasisUsd, tracedCostBasis)
-    assert.equal(unrealizedPnlUsd, tracedUnrealized)
+    // TRIAGED (wallet-scanner audit P2-7): since dd00598d (Item 5) the official unrealized IS market value − cost basis
+    // (exact identity, asserted below); summing per-position terms in a different order can differ by one ulp, so the
+    // per-position sum is compared within float tolerance instead of exact equality.
+    assert.ok(Math.abs((unrealizedPnlUsd as number) - tracedUnrealized) < 1e-9)
+    assert.equal(unrealizedPnlUsd, unrealizedReconciliation.reconciledMarketValueUsd - unrealizedReconciliation.reconciledCostBasisUsd)
 
     // Cent-level (2-decimal) rounded check too, matching how this would actually be displayed.
     const round2 = (n: number) => Math.round(n * 100) / 100
@@ -165,11 +169,15 @@ describe('computePnl — reconciled-aggregate arithmetic invariants (production 
 
     const result = computePnl([], lots, currentPriceUsdLookup, canonicalBalanceLookup)
 
-    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 0)
-    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 2)
+    // TRIAGED (wallet-scanner audit P2-7): the assertions here expected the no-balance token to be reconciled, which
+    // contradicted this test's own comments ("still excluded"; "tokenA … unrealized 8") and the engine's fail-closed
+    // missing-balance rule. They now assert what the comments describe.
+    assert.equal(result.unrealizedReconciliation.excludedOpenPositions, 1)
+    assert.equal(result.unrealizedReconciliation.excludedPositions[0].exclusionReason, 'missing_canonical_balance')
+    assert.equal(result.unrealizedReconciliation.reconciledOpenPositions, 1)
     // tokenA: market value from priced lot only (5*2=10), cost basis 2, unrealized 8.
-    assert.equal(result.unrealizedReconciliation.reconciledMarketValueUsd, 30)
-    assert.equal(result.unrealizedReconciliation.reconciledCostBasisUsd, 2.00001)
-    assert.ok(Math.abs((result.unrealizedPnlUsd ?? 0) - 27.99999) < 1e-9)
+    assert.equal(result.unrealizedReconciliation.reconciledMarketValueUsd, 10)
+    assert.equal(result.unrealizedReconciliation.reconciledCostBasisUsd, 2)
+    assert.ok(Math.abs((result.unrealizedPnlUsd ?? 0) - 8) < 1e-9)
   })
 })

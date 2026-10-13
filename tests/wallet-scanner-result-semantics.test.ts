@@ -19,10 +19,14 @@ import type { RobinhoodPnlV1 } from '../lib/server/robinhoodPnlV1.ts'
 const OPEN_COPY = '3 swaps verified · 3/3 priced on both legs · no verified buy→sell lot closed yet.'
 const V1_EXACT = '3 swaps proven, 3 priced on both legs, but no buy→sell pair closed a lot in this sample.'
 
+// "Open position only" now also requires zero unmatched verified sells AND complete history coverage
+// (tests/robinhood-pnl-coverage-semantics.test.ts covers the incomplete / unknown cases), so the default fixture is the
+// genuine open-position shape: complete coverage, no unmatched sell.
 function v1Summary(over: Partial<RobinhoodPnlSummary> = {}): RobinhoodPnlSummary {
   return {
     status: 'not_verified', structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null,
-    unmatchedSellCount: 0, exactReason: V1_EXACT, swapsFound: 3, swapsVerified: 3, swapsBothLegsPriced: 3, ...over,
+    unmatchedSellCount: 0, exactReason: V1_EXACT, swapsFound: 3, swapsVerified: 3, swapsBothLegsPriced: 3,
+    historyCoverage: { status: 'complete', reasons: [] }, ...over,
   }
 }
 // The production shape for 0x9d69…: 3 proven swaps, 3/3 both-leg priced, 0 FIFO closed lots.

@@ -23,7 +23,7 @@ import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleM
 import { fmtSignedUsd, fmtChainLabel } from '@/app/frontend/lib/holdingsHeuristics'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
-import { robinhoodCoverageLabel, selectRobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
+import { robinhoodCoverageLabel, robinhoodHistoryCoverageLabel, selectRobinhoodSwapEvidence, type RobinhoodPnlSummary } from '@/lib/walletScan/canonicalWalletSelectors'
 import {
   selectVerifiedPnlData,
   selectDisplayedPnl,
@@ -130,6 +130,19 @@ export const COMBINED_PNL_LOCKED_ROBINHOOD_VERIFIED_MESSAGE =
 export const CHAIN_PNL_PARTIAL_REASON = 'Partial — realized PnL is not independently verified.'
 export const CHAIN_PNL_UNAVAILABLE_REASON = 'No verified PnL evidence for this chain.'
 export const CHAIN_PNL_VERIFIED_REASON = 'Verified closed-lot realized PnL.'
+
+/**
+ * The qualifier a verified Robinhood figure always carries unless it is the whole story: verified / structural closed
+ * lots and the history coverage. Null only when coverage is proven complete AND every structural lot is verified —
+ * the one case plain "Verified" wording is honest. A bounded sample (≥50% of lots verified) never reads as complete.
+ */
+export function robinhoodVerifiedQualifier(v1: Pick<RobinhoodPnlSummary, 'verifiedClosedLots' | 'structuralClosedLots' | 'historyCoverage'> | null | undefined): string | null {
+  if (!v1) return null
+  const allLotsVerified = v1.structuralClosedLots > 0 && v1.verifiedClosedLots === v1.structuralClosedLots
+  const historyLabel = robinhoodHistoryCoverageLabel(v1.historyCoverage)
+  if (allLotsVerified && historyLabel == null) return null
+  return `${v1.verifiedClosedLots}/${v1.structuralClosedLots} closed lots verified · ${historyLabel ?? 'History coverage complete'}`
+}
 
 export function chainPnlRowReason(status: WalletPnlChainRowStatus): string {
   if (status === 'Verified') return CHAIN_PNL_VERIFIED_REASON
@@ -628,6 +641,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     })
 
   let robinhoodProof: WalletRobinhoodPnlProof | null = null
+  const robinhoodVerifiedQualifierText = robinhoodLane === 'verified' ? robinhoodVerifiedQualifier(robinhoodResult?.robinhoodPnl) : null
   if (robinhoodResult) {
     const audit = robinhoodResult.robinhoodPnlVerificationAudit
     chainRows.push({
@@ -635,7 +649,9 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
       label: fmtChainLabel('robinhood'),
       status: robinhoodBoxStatus,
       value: robinhoodLane === 'verified' ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
-      reason: robinhoodBoxStatus === 'Verified' || robinhoodBoxStatus === 'Unavailable' ? chainPnlRowReason(robinhoodBoxStatus) : robinhoodNotVerifiedReason,
+      reason: robinhoodBoxStatus === 'Verified'
+        ? (robinhoodVerifiedQualifierText ? `Bounded verified sample — ${robinhoodVerifiedQualifierText}.` : chainPnlRowReason(robinhoodBoxStatus))
+        : robinhoodBoxStatus === 'Unavailable' ? chainPnlRowReason(robinhoodBoxStatus) : robinhoodNotVerifiedReason,
     })
     if (robinhoodLane === 'verified' && audit) {
       robinhoodProof = {
@@ -652,7 +668,7 @@ export function buildWalletPnlViewModel(params: BuildWalletPnlViewModelParams): 
     status: robinhoodBoxStatus,
     value: robinhoodLane === 'verified' && robinhoodResult ? fmtSignedUsd(robinhoodResult.pnl.realizedPnlUsd) : null,
     reason: robinhoodBoxStatus === 'Verified'
-      ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL.`
+      ? `${robinhoodProof?.verifiedSwaps ?? 0} verified swap${robinhoodProof?.verifiedSwaps === 1 ? '' : 's'} — Phase 3 sidecar realized PnL${robinhoodVerifiedQualifierText ? ` (bounded verified sample: ${robinhoodVerifiedQualifierText})` : ''}.`
       : robinhoodBoxStatus === 'Not verified' || robinhoodBoxStatus === 'Open position only'
         ? robinhoodNotVerifiedReason
         : 'No Robinhood scan for this wallet.',

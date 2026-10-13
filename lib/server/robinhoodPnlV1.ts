@@ -326,7 +326,14 @@ export type RhPriceEvidence = {
    * price, so it is never verified: these lots are reported as estimated, outside verified realized PnL.
    */
   dailyEstimate?: { inputUsd: number; outputUsd: number }
+  /**
+   * Granularity of the ETH/USD price behind this swap's USD values, when one was used: 'daily_bucket' (the shared
+   * resolver's one-price-per-UTC-day) or 'hourly_within_45m' (the range series, nearest point ≤45 min away).
+   */
+  ethPriceGranularity?: RhEthPriceGranularity | null
 }
+
+export type RhEthPriceGranularity = 'daily_bucket' | 'hourly_within_45m'
 
 export type RobinhoodPnlV1Status = 'verified_bounded_sample' | 'partial' | 'not_verified' | 'unavailable'
 
@@ -477,6 +484,10 @@ export type RhAcquisitionRecoverySummary = {
   unmatchedSellRawAfter: string | null
   closedLotsAdded: number
   classifications: Partial<Record<RhAcquisitionClass, number>>
+  /** Unmatched verified sells this scan's recovery did not attempt because only `maxSellLanes` sell(s) get a lane. */
+  sellsNotAttemptedByLaneCap?: number
+  /** Earlier inbound candidates of the attempted sell never classified because of `maxCandidatesPerSell`. */
+  candidatesSkippedByCap?: number
 }
 
 export type RobinhoodPnlV1 = {
@@ -2509,6 +2520,10 @@ type EthHistoryAudit = {
   priceUsd: number | null
   persistentCacheHit: boolean
   rejectionReason: string | null
+  /** Granularity of the accepted price (null when unpriced). */
+  granularity: RhEthPriceGranularity | null
+  /** Why a daily-bucket price could not be upgraded to an hourly point (it then stays an estimate); null otherwise. */
+  hourlyUpgradeFailure: string | null
 }
 
 /**
@@ -2516,13 +2531,14 @@ type EthHistoryAudit = {
  * (ethUsdAt). Fallback: the hourly CoinGecko range series, nearest point within ROBINHOOD_ETH_USD_MAX_GAP_MS.
  * Never a current price. Every timestamp logs one [robinhood-eth-history-audit] line, priced or not.
  */
-async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Promise<Map<number, number>> {
-  const out = new Map<number, number>()
+async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Promise<Map<number, { priceUsd: number; granularity: RhEthPriceGranularity }>> {
+  const out = new Map<number, { priceUsd: number; granularity: RhEthPriceGranularity }>()
   const pricingDeadline = Math.max(ctx.deadlineAt, Date.now() + ETH_PRICING_BUDGET_MS)
   const sorted = [...new Set(timestampsSec)].sort((a, b) => a - b)
   const audits = new Map<number, EthHistoryAudit>(sorted.map((t) => [t, {
     requestedTimestampSec: t, requestedFromSec: null, requestedToSec: null, provider: null, endpoint: null, httpStatus: null, pointsReturned: null,
     earliestPointMs: null, latestPointMs: null, nearestPointMs: null, nearestGapMs: null, maxAllowedGapMs: null, priceUsd: null, persistentCacheHit: false, rejectionReason: null,
+    granularity: null, hourlyUpgradeFailure: null,
   }]))
   const budgetLeft = () => ctx.priceSidesUsed < ROBINHOOD_PNL_V1_LIMITS.maxHistoricalPriceSides
   // 1) Shared verified resolver: one call per distinct UTC day (its own bucket), cached by the resolver.
@@ -2544,14 +2560,16 @@ async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Pr
       a.persistentCacheHit = hit?.persistentCacheHit === true
       if (hit && Number.isFinite(hit.priceUsd) && hit.priceUsd > 0 && hit.gapMs <= hit.maxAllowedGapMs) {
         Object.assign(a, { nearestPointMs: hit.pointMs, nearestGapMs: hit.gapMs, maxAllowedGapMs: hit.maxAllowedGapMs, pointsReturned: 1, earliestPointMs: hit.pointMs, latestPointMs: hit.pointMs, priceUsd: hit.priceUsd, rejectionReason: null })
-        out.set(t, hit.priceUsd)
+        // One price for the whole UTC day: an estimate of the swap-time ETH price, never treated as exact.
+        out.set(t, { priceUsd: hit.priceUsd, granularity: hit.maxAllowedGapMs <= ROBINHOOD_ETH_USD_MAX_GAP_MS && hit.gapMs <= ROBINHOOD_ETH_USD_MAX_GAP_MS ? 'hourly_within_45m' : 'daily_bucket' })
       } else {
         a.rejectionReason = hit ? 'resolver_point_outside_day' : 'resolver_no_verified_price'
       }
     }
   }
-  // 2) Fallback: hourly range series for the timestamps the resolver could not answer.
-  const missing = sorted.filter((t) => !out.has(t))
+  // 2) Hourly range series for every timestamp without an hourly-or-better price — the ones the resolver could not
+  // answer, and the ones it answered only with its daily bucket (which stays as the estimate if this fails).
+  const missing = sorted.filter((t) => out.get(t)?.granularity !== 'hourly_within_45m')
   const windows: Array<[number, number]> = []
   for (const t of missing) {
     const last = windows[windows.length - 1]
@@ -2563,16 +2581,41 @@ async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Pr
     const fromSec = from - 3_600
     const toSec = to + 3_600
     if (Date.now() >= pricingDeadline || !budgetLeft()) {
-      for (const t of members) audits.get(t)!.rejectionReason ??= Date.now() >= pricingDeadline ? 'not_attempted_pricing_deadline' : 'not_attempted_side_budget_exhausted'
+      const why = Date.now() >= pricingDeadline ? 'not_attempted_pricing_deadline' : 'not_attempted_side_budget_exhausted'
+      for (const t of members) {
+        const a = audits.get(t)!
+        if (out.has(t)) a.hourlyUpgradeFailure = why // the daily price stands, as an estimate
+        else a.rejectionReason ??= why
+      }
       continue
     }
     ctx.priceSidesUsed += 1
     ctx.m.historicalPriceCalls += 1
-    const raw = await ctx.deps.ethUsdRange(fromSec, toSec).catch(() => ({ points: null, httpStatus: null, failure: 'provider_threw' as string | null }))
+    // Now also asked after a daily-bucket answer, so a missing / synchronously-throwing range source must not take
+    // down the whole pricing pass (the daily price then simply stays an estimate).
+    const raw = typeof ctx.deps.ethUsdRange === 'function'
+      ? await Promise.resolve().then(() => ctx.deps.ethUsdRange(fromSec, toSec)).catch(() => ({ points: null, httpStatus: null, failure: 'provider_threw' as string | null }))
+      : { points: null, httpStatus: null, failure: 'range_source_not_wired' as string | null }
     const res = Array.isArray(raw) || raw == null ? { points: raw, httpStatus: null as number | null, failure: raw == null ? 'provider_failed_or_empty' : null as string | null } : { points: raw.points, httpStatus: raw.httpStatus ?? null, failure: raw.failure ?? null }
     const series = [...(res.points ?? [])].filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] > 0).sort((x, y) => x[0] - y[0])
     for (const t of members) {
       const a = audits.get(t)!
+      // A daily-bucket price already accepted for t: the range is only an upgrade attempt. Its audit fields describe
+      // the accepted daily price unless the upgrade succeeds; a failed upgrade is never a rejection of that price.
+      if (out.has(t)) {
+        const within = series.length > 0 ? nearestPriceWithGap(series, t * 1000, ROBINHOOD_ETH_USD_MAX_GAP_MS) : null
+        if (within) {
+          out.set(t, { priceUsd: within.price, granularity: 'hourly_within_45m' })
+          Object.assign(a, {
+            requestedFromSec: fromSec, requestedToSec: toSec, provider: 'coingecko_market_chart_range', endpoint: '/coins/ethereum/market_chart/range',
+            httpStatus: res.httpStatus, pointsReturned: series.length, earliestPointMs: series[0]?.[0] ?? null, latestPointMs: series[series.length - 1]?.[0] ?? null,
+            nearestGapMs: within.gapMs, maxAllowedGapMs: ROBINHOOD_ETH_USD_MAX_GAP_MS, priceUsd: within.price, persistentCacheHit: false, rejectionReason: null, hourlyUpgradeFailure: null,
+          })
+        } else {
+          a.hourlyUpgradeFailure = series.length === 0 ? `range_${res.failure ?? 'empty'}` : 'range_nearest_point_outside_gap'
+        }
+        continue
+      }
       const prior = a.rejectionReason
       Object.assign(a, {
         requestedFromSec: fromSec, requestedToSec: toSec, provider: 'coingecko_market_chart_range',
@@ -2584,14 +2627,17 @@ async function resolveEthUsdForTimestamps(ctx: Ctx, timestampsSec: number[]): Pr
       a.nearestPointMs = nearest ? series.find((p) => p[1] === nearest.price && Math.abs(p[0] - t * 1000) === nearest.gapMs)?.[0] ?? null : null
       a.nearestGapMs = nearest?.gapMs ?? null
       const within = nearestPriceWithGap(series, t * 1000, ROBINHOOD_ETH_USD_MAX_GAP_MS)
-      if (within) { out.set(t, within.price); a.priceUsd = within.price; a.rejectionReason = null }
+      if (within) { out.set(t, { priceUsd: within.price, granularity: 'hourly_within_45m' }); a.priceUsd = within.price; a.rejectionReason = null }
       else {
         const covered = series[0][0] <= t * 1000 && t * 1000 <= series[series.length - 1][0]
         a.rejectionReason = `${prior ? `${prior}; ` : ''}${covered ? 'range_nearest_point_outside_gap' : 'range_timestamp_not_covered'}`
       }
     }
   }
-  for (const a of audits.values()) console.warn('[robinhood-eth-history-audit]', a)
+  for (const [t, a] of audits) {
+    a.granularity = out.get(t)?.granularity ?? null
+    console.warn('[robinhood-eth-history-audit]', a)
+  }
   return out
 }
 
@@ -2614,14 +2660,15 @@ function swapNeedsNativeEthPrice(s: RhVerifiedSwap): boolean {
 
 export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSwap[]): Promise<RhPriceEvidence[]> {
   const needsEth = swaps.filter(swapNeedsNativeEthPrice)
-  const ethAt = needsEth.length > 0 ? await resolveEthUsdForTimestamps(ctx, needsEth.map((s) => s.timestampSec)) : new Map<number, number>()
-  const quoteUsd = (currency: string, raw: bigint, decimals: number, ts: number): { usd: number; source: string } | null => {
+  const ethAt = needsEth.length > 0 ? await resolveEthUsdForTimestamps(ctx, needsEth.map((s) => s.timestampSec)) : new Map<number, { priceUsd: number; granularity: RhEthPriceGranularity }>()
+  // `granularity` null = an exact anchor (a stablecoin amount); otherwise the ETH/USD price's granularity.
+  const quoteUsd = (currency: string, raw: bigint, decimals: number, ts: number): { usd: number; source: string; granularity: RhEthPriceGranularity | null } | null => {
     const kind = quoteKind(currency)
     const qty = toUnits(raw, decimals)
-    if (kind === 'stable') return { usd: qty, source: 'verified_stablecoin_exact_address' }
+    if (kind === 'stable') return { usd: qty, source: 'verified_stablecoin_exact_address', granularity: null }
     if (kind === 'native') {
       const price = ethAt.get(ts)
-      return price != null ? { usd: qty * price, source: currency === RH_WETH ? 'weth_historical_eth_usd' : 'native_historical_eth_usd' } : null
+      return price != null ? { usd: qty * price.priceUsd, source: currency === RH_WETH ? 'weth_historical_eth_usd' : 'native_historical_eth_usd', granularity: price.granularity } : null
     }
     return null
   }
@@ -2634,17 +2681,19 @@ export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSw
     let inSrc: string | null = null
     let outSrc: string | null = null
     let reason: string | null = null
+    // Every USD anchor this swap's values rest on (null = exact stablecoin amount).
+    const anchors: Array<RhEthPriceGranularity | null> = []
     const qIn = quoteKind(s.inputToken) ? quoteUsd(s.inputToken, s.inputRaw, s.inputDecimals, s.timestampSec) : null
     const qOut = quoteKind(s.outputToken) ? quoteUsd(s.outputToken, s.outputRaw, s.outputDecimals, s.timestampSec) : null
     if (quoteKind(s.inputToken) || quoteKind(s.outputToken)) {
-      if (qIn) { inUsd = qIn.usd; inSrc = qIn.source }
-      if (qOut) { outUsd = qOut.usd; outSrc = qOut.source }
+      if (qIn) { inUsd = qIn.usd; inSrc = qIn.source; anchors.push(qIn.granularity) }
+      if (qOut) { outUsd = qOut.usd; outSrc = qOut.source; anchors.push(qOut.granularity) }
       if (qIn && !qOut) { outUsd = qIn.usd; outSrc = 'v4_exact_swap_execution' }
       if (qOut && !qIn) { inUsd = qOut.usd; inSrc = 'v4_exact_swap_execution' }
       if (!qIn && !qOut) reason = 'historical ETH/USD unavailable at the swap timestamp'
     } else if (s.intermediary) {
       const q = quoteUsd(s.intermediary.currency, s.intermediary.raw, s.intermediary.decimals, s.timestampSec)
-      if (q) { inUsd = q.usd; outUsd = q.usd; inSrc = outSrc = `v4_exact_route_quote_via_${q.source}` }
+      if (q) { inUsd = q.usd; outUsd = q.usd; inSrc = outSrc = `v4_exact_route_quote_via_${q.source}`; anchors.push(q.granularity) }
       else reason = 'route passes through ETH, but historical ETH/USD is unavailable at the swap timestamp'
     } else {
       const [pIn, pOut] = [await providerPrice(ctx, s.inputToken, s.timestampSec), await providerPrice(ctx, s.outputToken, s.timestampSec)]
@@ -2655,15 +2704,21 @@ export async function priceRobinhoodSwaps(ctx: Ctx, swaps: readonly RhVerifiedSw
     const legsPriced = inUsd != null && outUsd != null && Number.isFinite(inUsd) && Number.isFinite(outUsd) && inUsd > 0 && outUsd > 0
     // Daily provider prices on both legs are an estimate, not the execution price — never verified.
     const dailyOnly = legsPriced && !quoteKind(s.inputToken) && !quoteKind(s.outputToken) && !s.intermediary
-    const bothLegsVerified = legsPriced && !dailyOnly
+    // An ETH anchor priced only from the shared resolver's UTC-day bucket is an estimate of the swap-time price — the
+    // same treatment as daily token prices. Any exact (stablecoin) or hourly anchor keeps the swap verified.
+    const dailyEthOnly = legsPriced && !dailyOnly && anchors.length > 0 && anchors.every((g) => g === 'daily_bucket')
+    const ethGranularity: RhEthPriceGranularity | null = anchors.includes('hourly_within_45m') ? 'hourly_within_45m' : anchors.includes('daily_bucket') ? 'daily_bucket' : null
+    const bothLegsVerified = legsPriced && !dailyOnly && !dailyEthOnly
     if (dailyOnly) reason = 'daily_provider_price_estimate_only: no ETH/stable leg, so both legs carry only a daily token price'
+    if (dailyEthOnly) reason = 'daily_eth_price_estimate_only: the only USD anchor is a one-per-UTC-day ETH price, not the swap-time price'
     out.push({
       swapTxHash: s.txHash, inputToken: s.inputToken, outputToken: s.outputToken, inputAmount, outputAmount,
       inputPriceUsd: inUsd != null && inputAmount > 0 ? inUsd / inputAmount : null,
       outputPriceUsd: outUsd != null && outputAmount > 0 ? outUsd / outputAmount : null,
       inputSource: inSrc, outputSource: outSrc, bothLegsVerified,
       rejectionReason: bothLegsVerified ? null : (reason ?? 'one or both legs unpriced'),
-      ...(dailyOnly ? { dailyEstimate: { inputUsd: inUsd!, outputUsd: outUsd! } } : {}),
+      ...(dailyOnly || dailyEthOnly ? { dailyEstimate: { inputUsd: inUsd!, outputUsd: outUsd! } } : {}),
+      ...(ethGranularity ? { ethPriceGranularity: ethGranularity } : {}),
     })
   }
   return out
@@ -2928,6 +2983,7 @@ async function recoverAcquisitionsForSell(
 const emptyRecoverySummary = (): RhAcquisitionRecoverySummary => ({
   acquisitionRecoveryAttempted: false, sellTxHash: null, token: null, candidatesFound: 0, candidatesAttempted: 0, recoveredBuyCount: 0,
   candidateTxHashes: [], recoveredBuyRaw: '0', unmatchedSellRawBefore: null, unmatchedSellRawAfter: null, closedLotsAdded: 0, classifications: {},
+  sellsNotAttemptedByLaneCap: 0, candidatesSkippedByCap: 0,
 })
 
 /** Runs the recovery lane for the most recent verified sell the FIFO left unmatched; logs one audit line per candidate. */
@@ -2938,10 +2994,11 @@ async function runAcquisitionRecovery(
   const summary = emptyRecoverySummary()
   if (unmatchedSells === 0) return { summary, swaps: [], evidence: [] }
   const isQuote = (t: string) => quoteKind(t) != null
-  const lanes = [...robinhoodUnmatchedSellRaw(swaps, isQuote)].filter(([, v]) => v.unmatchedRaw > ZERO)
+  const allLanes = [...robinhoodUnmatchedSellRaw(swaps, isQuote)].filter(([, v]) => v.unmatchedRaw > ZERO)
     .map(([txHash, v]) => ({ txHash, ...v }))
     .sort((a, b) => b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))
-    .slice(0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxSellLanes)
+  const lanes = allLanes.slice(0, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxSellLanes)
+  summary.sellsNotAttemptedByLaneCap = allLanes.length - lanes.length
   if (lanes.length === 0) return { summary, swaps: [], evidence: [] }
   const sell = lanes[0]
   const recoveryDeadlineAt = robinhoodAcquisitionRecoveryDeadline(ctx.deadlineAt, Date.now())
@@ -2954,6 +3011,7 @@ async function runAcquisitionRecovery(
   const attempted = rows.filter((r) => r.rejectionReason !== 'not_attempted_recovery_deadline').length
   Object.assign(summary, {
     acquisitionRecoveryAttempted: true, sellTxHash: sell.txHash, token: sell.token, candidatesFound: found, candidatesAttempted: attempted,
+    candidatesSkippedByCap: Math.max(0, found - ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell),
     candidateTxHashes: [...new Set(rows.map((row) => lower(row.candidateTxHash)).filter((hash) => /^0x[0-9a-f]{64}$/.test(hash)))].sort(),
     recoveredBuyCount: recovered.length, recoveredBuyRaw: recovered.reduce((t, x) => t + x.outputRaw, ZERO).toString(),
     unmatchedSellRawBefore: sell.unmatchedRaw.toString(), unmatchedSellRawAfter: after.toString(),
@@ -3920,7 +3978,7 @@ export async function computeRobinhoodPnlV1(params: {
       ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} found / 0 had both-leg historical price proof.`
       : structural === 0
         ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} proven, ${bothLegs} priced on both legs, but no buy→sell pair closed a lot in this sample.${recovery.summary.acquisitionRecoveryAttempted ? ` Acquisition recovery checked ${recovery.summary.candidatesAttempted} earlier inbound${recovery.summary.candidatesAttempted === 1 ? '' : 's'} of the sold token; none was a provable buy.` : ''}`
-        : `${structural} lots closed, but none had verified prices on both the buy and the sell.${estimated.closedLots > 0 ? ` ${estimated.closedLots} ${estimated.closedLots === 1 ? 'is' : 'are'} priced only from daily token prices (estimate, not verified).` : ''}`
+        : `${structural} lots closed, but none had verified prices on both the buy and the sell.${estimated.closedLots > 0 ? ` ${estimated.closedLots} ${estimated.closedLots === 1 ? 'is' : 'are'} priced only from daily prices — a daily token price or a one-per-day ETH price (estimate, not verified).` : ''}`
   // Zero closed lots is a statement about this verified sample only, unless coverage is proven complete.
   const coverageNote = structural === 0 && swaps.length > 0 && historyCoverage.status !== 'complete'
     ? ` Wallet history coverage is ${historyCoverage.status} — earlier acquisitions may lie outside this sample, so this is not proof the wallet has no closed trades.`

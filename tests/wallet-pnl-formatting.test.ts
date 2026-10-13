@@ -33,7 +33,9 @@ function rh(pnl: Partial<RobinhoodPnlSummary> = {}): RobinhoodWalletScanResponse
     activity: { status: 'ok', items: [], skippedSwapLogs: 0, verifiedSwapCount: 0, reason: null, blockscoutEvidence: { blockscoutAttempted: false, blockscoutSucceeded: false, blockscoutFallbackUsed: false, blockscoutStatus: 'not_attempted', blockscoutError: null, blockscoutVerifiedSwap: false } },
     pnl: { status: 'disabled', message: '', realizedPnlUsd: null, matchedLotsCount: 0, verifiedSwapCount: 3, reason: null },
     robinhoodWalletScannerAudit: {},
-    robinhoodPnl: { status: 'not_verified', structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null, unmatchedSellCount: 0, exactReason: 'x', swapsFound: 3, swapsVerified: 3, swapsBothLegsPriced: 3, ...pnl },
+    robinhoodPnl: { status: 'not_verified', structuralClosedLots: 0, verifiedClosedLots: 0, pricingCoverage: null, realizedPnlUsd: null, realizedRoiPct: null, unmatchedSellCount: 0, exactReason: 'x', swapsFound: 3, swapsVerified: 3, swapsBothLegsPriced: 3,
+      // Genuine open position: complete history coverage, no unmatched sell (required for "open position only").
+      historyCoverage: { status: 'complete', reasons: [] }, ...pnl },
   }
 }
 

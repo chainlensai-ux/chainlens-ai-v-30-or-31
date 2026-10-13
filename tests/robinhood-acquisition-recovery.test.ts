@@ -98,8 +98,9 @@ function relayedBuy(weth: bigint, aOut: bigint, ts = TS - 86_400) {
   return tx.at(ts)
 }
 const relayed = (tx: Tx, ts = TS - 86_400) => { tx.sender = RELAYER; tx.trace = null; return tx.at(ts) }
-const dayStart = (ts: number) => Math.floor(ts * 1000 / 86_400_000) * 86_400_000
-const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: dayStart(ts), gapMs: ts * 1000 - dayStart(ts), maxAllowedGapMs: 86_400_000 })
+// Hourly-grade ETH point (≤45 min): a one-per-UTC-day ETH price is now an estimate (daily_eth_price_estimate_only); this file tests
+// verification / recovery, not price granularity, so its fixture supplies swap-time-grade evidence.
+const ethAt = (price: number) => async (ts: number): Promise<RhEthUsdPoint | null> => ({ priceUsd: price, provider: 'chainlens_native_price_resolver:goldrush_historical', endpoint: null, pointMs: ts * 1000, gapMs: 0, maxAllowedGapMs: 45 * 60_000 })
 
 /** txs[0..] get hashes; `candidates` are the indexes in the 20-receipt sample; every other tx is only reachable as an inbound activity row. */
 async function run(txs: Tx[], opts: { candidates?: number[]; inbound?: Array<{ i: number; raw: bigint | null; token?: string }>; txResponse?: (tx: Tx) => unknown; onRelayedValueLookup?: () => Promise<void>; blocks?: number[]; hashes?: string[]; receiptUnavailableFor?: number[]; scanId?: string } = {}, over: Partial<RobinhoodPnlV1Deps> = {}) {
@@ -168,7 +169,19 @@ test('1. a plain inbound transfer is not a buy (and the lane is bounded)', async
   const capped = await run([sell, ...many, after], { inbound: [...many.map((_, k) => ({ i: k + 1, raw: n(1) })), { i: 11, raw: n(1) }] })
   assert.equal(capped.r.acquisitionRecovery!.candidatesFound, 10)
   assert.equal(capped.r.acquisitionRecovery!.candidatesAttempted, ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)
+  // The cap is now visible: 10 found − 8 per-sell cap = 2 never classified.
+  assert.equal(capped.r.acquisitionRecovery!.candidatesSkippedByCap, 10 - ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxCandidatesPerSell)
+  assert.equal(capped.r.acquisitionRecovery!.sellsNotAttemptedByLaneCap, 0)
   assert.ok(capped.rec.every((x) => x.candidateTxHash !== capped.hashes[11]))
+})
+
+test('lane cap is visible: a second unmatched verified sell is reported as not attempted, never silently dropped', async () => {
+  const older = sellShape(n(1000), n(1.5)).at(TS - 600)
+  const newer = sellShape(n(1000), n(1.5))
+  const { r } = await run([older, newer], { candidates: [0, 1] })
+  assert.equal(r.unmatchedSellCount, 2)
+  assert.equal(r.acquisitionRecovery!.acquisitionRecoveryAttempted, true)
+  assert.equal(r.acquisitionRecovery!.sellsNotAttemptedByLaneCap, 2 - ROBINHOOD_ACQUISITION_RECOVERY_LIMITS.maxSellLanes)
 })
 
 test('2. a distribution / claim stays a non-trade', async () => {

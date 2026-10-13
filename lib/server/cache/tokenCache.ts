@@ -350,13 +350,18 @@ export async function getTokenCache<T = unknown>(key: string): Promise<T | null>
 // already being returned to the client. Always writes through to the in-memory fallback layer
 // first (cheap, synchronous), so a KV failure never loses the value for the rest of this process's
 // lifetime, only the cross-instance sharing benefit.
-export async function setTokenCache<T = unknown>(key: string, value: T, ttlSeconds: number): Promise<void> {
+//
+// RETURN VALUE, DISCLOSED: whether the value reached this cache's backing store — true when the KV write succeeded, or
+// when no KV is configured (the in-memory layer IS the store then); false when KV is configured but the value stayed
+// process-local (circuit breaker open, payload over MAX_COMPRESSED_BYTES, or every KV attempt failed). Existing callers
+// ignore it; a caller that must share a value across instances (lib/server/robinhoodScanCoordinator.ts) reads it.
+export async function setTokenCache<T = unknown>(key: string, value: T, ttlSeconds: number): Promise<boolean> {
   memoryFallbackSet(key, value, ttlSeconds)
 
-  if (!kvConfigured()) return
+  if (!kvConfigured()) return true
   if (circuitBreakerOpen(key)) {
     // Logging (rate-limited) now happens inside circuitBreakerOpen() itself — see its own header.
-    return
+    return false
   }
 
   const serialized = JSON.stringify(value)
@@ -378,8 +383,8 @@ export async function setTokenCache<T = unknown>(key: string, value: T, ttlSecon
     const itemCount = Array.isArray(value) ? value.length : undefined
     // eslint-disable-next-line no-console
     console.warn('kv_skip_large_payload', { key, payloadBytes, maxCompressedBytes: MAX_COMPRESSED_BYTES, itemCount, truncated: true })
-    return
+    return false
   }
 
-  await withRetries(() => kv.set(key, compressed, { ex: ttlSeconds }), undefined, `set:${key}`)
+  return withRetries(() => kv.set(key, compressed, { ex: ttlSeconds }).then(() => true), false, `set:${key}`)
 }
