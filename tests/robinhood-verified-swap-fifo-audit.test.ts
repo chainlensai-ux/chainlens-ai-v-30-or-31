@@ -21,17 +21,30 @@ const sell = (txHash: string, ts: number, raw: bigint, token = TOKEN) => swap(tx
 const priced = (s: RhVerifiedSwap): RhPriceEvidence => ({ swapTxHash: s.txHash, inputToken: s.inputToken, outputToken: s.outputToken, inputAmount: Number(s.inputRaw) / 1e18, outputAmount: Number(s.outputRaw) / 1e18, inputPriceUsd: 1, outputPriceUsd: 1, inputSource: 'x', outputSource: 'x', bothLegsVerified: true, rejectionReason: null })
 const unpriced = (s: RhVerifiedSwap): RhPriceEvidence => ({ ...priced(s), inputPriceUsd: null, bothLegsVerified: false, rejectionReason: 'no_price' })
 
-function run(canonical: RhVerifiedSwap[], evidence: RhPriceEvidence[] = canonical.map(priced), extra: RhVerifiedSwap[] = []) {
+type Coverage = { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] }
+const COMPLETE: Coverage = { status: 'complete', reasons: [] }
+function run(canonical: RhVerifiedSwap[], evidence: RhPriceEvidence[] = canonical.map(priced), extra: RhVerifiedSwap[] = [], coverage: Coverage | null = COMPLETE) {
+  const historyCoverage = coverage ?? undefined
   const { fifo } = buildRobinhoodPnlV1Fifo(WALLET, [...canonical, ...extra], evidence)
   const audit = robinhoodVerifiedSwapFifoAudit({
     chain: 'robinhood', isQuote: (t) => t === RH_NATIVE || t === '0x0000000000000000000000000000000000000000', canonicalSwaps: canonical,
-    extraSwaps: extra.map((swap) => ({ swap, source: 'acquisition_recovery' })), evidence, matchedLots: fifo.matchedLots,
+    extraSwaps: extra.map((swap) => ({ swap, source: 'acquisition_recovery' })), evidence, matchedLots: fifo.matchedLots, historyCoverage,
   })
   return { fifo, ...audit }
 }
 const rowOf = (rows: ReturnType<typeof run>['rows'], tx: string, side: string) => rows.find((r) => r.txHash === tx && r.side === side)!
 
-test('9 verified buys only → 0 closed lots is correct (no overlap)', () => {
+test('zero closed lots with INCOMPLETE or UNKNOWN coverage is never the complete-history verdict', () => {
+  const two = [buy(1, 1000, E18), buy(2, 1100, E18, OTHER_SAME_SYMBOL)]
+  const incomplete = run(two, two.map(priced), [], { status: 'incomplete', reasons: ['candidates_not_checked_by_budget:38'] })
+  assert.equal(incomplete.summary.conclusion, 'zero_closed_lots_no_overlap_in_sample_coverage_incomplete')
+  assert.deepEqual([incomplete.summary.historyCoverage, incomplete.summary.historyCoverageReasons], ['incomplete', ['candidates_not_checked_by_budget:38']])
+  assert.equal(run(two, two.map(priced), [], { status: 'unknown', reasons: ['x'] }).summary.conclusion, 'zero_closed_lots_no_overlap_in_sample_coverage_unknown')
+  // Not provided at all → unknown, never assumed complete.
+  assert.equal(run(two, two.map(priced), [], null).summary.conclusion, 'zero_closed_lots_no_overlap_in_sample_coverage_unknown')
+})
+
+test('9 verified buys only, coverage proven complete → 0 closed lots is correct (no overlap)', () => {
   const nine = Array.from({ length: 9 }, (_, i) => buy(i + 1, 1000 + i, E18, `0x${(0xaa00 + i).toString(16)}${'0'.repeat(36)}`))
   const r = run(nine)
   assert.equal(r.fifo.matchedLots.length, 0)

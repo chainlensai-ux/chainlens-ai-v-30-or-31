@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { isAddress } from 'viem'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
@@ -13,7 +13,12 @@ import { resolveRobinhoodRouteRequest } from '@/lib/server/robinhoodScanCoordina
 // the deep multi-chain FIFO/PnL scan the queue exists for. Never touches wallet-scan's queue,
 // worker, or V2 pipeline files.
 export const runtime = 'nodejs'
-export const maxDuration = 30
+// RESPONSE vs SCAN BUDGET, DISCLOSED: the response is still bounded by ROBINHOOD_ROUTE_WAIT_MS (20s, returns 202
+// pending); a standalone scan this request starts is kept alive with next/server `after` so it can finish and
+// record its result. `after` runs within this route's maxDuration, so it must cover a full scan (~60s observed
+// in the worker); 300s matches the wallet-scan routes. At 30s the scan was frozen with the response and never
+// recorded, so a Rescan could never complete.
+export const maxDuration = 300
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 10 })
 
@@ -47,6 +52,13 @@ export async function GET(req: Request): Promise<Response> {
   // serves a fresh result, joins a live scan, or runs one bounded standalone scan (direct navigation).
   // `refresh=1` (the section's Rescan button) skips a fresh finished result but still joins a live scan.
   const jobId = searchParams.get('jobId')
-  const outcome = await resolveRobinhoodRouteRequest(wallet, fetch, { jobId: jobId && /^[\w-]{1,64}$/.test(jobId) ? jobId : null, refresh: searchParams.get('refresh') === '1' })
+  const refreshSinceRaw = Number(searchParams.get('refreshSince'))
+  const outcome = await resolveRobinhoodRouteRequest(wallet, fetch, {
+    jobId: jobId && /^[\w-]{1,64}$/.test(jobId) ? jobId : null,
+    refresh: searchParams.get('refresh') === '1',
+    // Echoed back from this route's own 202 body so every poll of one Rescan shares one freshness floor.
+    refreshSince: Number.isSafeInteger(refreshSinceRaw) && refreshSinceRaw > 0 ? refreshSinceRaw : null,
+    keepAlive: (work) => after(() => work),
+  })
   return NextResponse.json(outcome.body, { status: outcome.status })
 }

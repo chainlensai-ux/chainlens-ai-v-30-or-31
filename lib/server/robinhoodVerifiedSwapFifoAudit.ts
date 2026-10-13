@@ -62,8 +62,21 @@ export type RhVerifiedFifoSummary = {
   verifiedPairsExcludedBeforeFifo: number
   /** True when the simulation closes raw quantity for a token the engine closed nothing for. */
   definiteFifoDefect: boolean
-  conclusion: 'zero_closed_lots_correct_no_overlap' | 'closed_lots_exist_but_unpriced' | 'closed_lots_exist' | 'fifo_defect'
+  /**
+   * "No overlap" is only a statement about the VERIFIED SAMPLE. It is the complete-history verdict
+   * ('zero_closed_lots_correct_no_overlap') only when the scan's history coverage is proven complete; otherwise
+   * the qualified form says coverage is incomplete / unknown (earlier acquisitions may lie outside the sample).
+   */
+  conclusion:
+    | 'zero_closed_lots_correct_no_overlap'
+    | 'zero_closed_lots_no_overlap_in_sample_coverage_incomplete'
+    | 'zero_closed_lots_no_overlap_in_sample_coverage_unknown'
+    | 'closed_lots_exist_but_unpriced' | 'closed_lots_exist' | 'fifo_defect'
+  historyCoverage: RhHistoryCoverageStatus
+  historyCoverageReasons: string[]
 }
+
+export type RhHistoryCoverageStatus = 'complete' | 'incomplete' | 'unknown'
 
 const ZERO = BigInt(0)
 const lower = (s: string) => s.toLowerCase()
@@ -79,6 +92,8 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
   evidence: readonly Evidence[]
   matchedLots: readonly Lot[]
   attributionByTx?: ReadonlyMap<string, string>
+  /** The scan's wallet-history coverage (robinhoodHistoryCoverage). Absent = unknown, never assumed complete. */
+  historyCoverage?: { status: RhHistoryCoverageStatus; reasons: string[] }
 }): { rows: RhVerifiedSwapFifoRow[]; tokens: RhVerifiedFifoTokenGroup[]; summary: RhVerifiedFifoSummary } {
   const ev = new Map(input.evidence.map((e) => [lower(e.swapTxHash), e]))
   const all = [
@@ -217,6 +232,7 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
   const buyRows = canonicalRows.filter((r) => r.side === 'buy')
   const sellRows = canonicalRows.filter((r) => r.side === 'sell')
   const defect = tokens.some((t) => t.definiteFifoDefect)
+  const coverage = input.historyCoverage ?? { status: 'unknown' as const, reasons: ['history_coverage_not_provided'] }
   const closed = input.matchedLots.length
   const verifiedClosed = input.matchedLots.filter((l) => l.evidenceQuality === 'verified').length
   return {
@@ -239,7 +255,14 @@ export function robinhoodVerifiedSwapFifoAudit(input: {
       verifiedPairsBlockedByOrdering: rows.filter((r) => r.exactFifoBlocker === 'ordering_issue').length,
       verifiedPairsExcludedBeforeFifo: rows.filter((r) => r.exactFifoBlocker === 'excluded_by_fifo_source_filter' || r.exactFifoBlocker === 'duplicate_or_deduped_swap').length,
       definiteFifoDefect: defect,
-      conclusion: defect ? 'fifo_defect' : closed === 0 ? 'zero_closed_lots_correct_no_overlap' : verifiedClosed === 0 ? 'closed_lots_exist_but_unpriced' : 'closed_lots_exist',
+      conclusion: defect ? 'fifo_defect'
+        : closed === 0
+          ? (coverage.status === 'complete' ? 'zero_closed_lots_correct_no_overlap'
+            : coverage.status === 'incomplete' ? 'zero_closed_lots_no_overlap_in_sample_coverage_incomplete'
+            : 'zero_closed_lots_no_overlap_in_sample_coverage_unknown')
+          : verifiedClosed === 0 ? 'closed_lots_exist_but_unpriced' : 'closed_lots_exist',
+      historyCoverage: coverage.status,
+      historyCoverageReasons: coverage.reasons,
     },
   }
 }

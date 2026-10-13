@@ -236,7 +236,10 @@ test('6. one leg priced -> not verified (no lot is valued from half the evidence
   assert.equal(r.priceEvidence[0].bothLegsVerified, false)
   assert.equal(r.priceEvidence[0].outputPriceUsd, null)
   assert.match(r.priceEvidence[0].rejectionReason!, /output leg/)
-  assert.equal(r.exactReason, '1 swap found / 0 had both-leg historical price proof.')
+  // Zero closed lots from a sample whose history coverage is not proven complete is qualified as such.
+  assert.ok(r.exactReason.startsWith('1 swap found / 0 had both-leg historical price proof.'))
+  assert.match(r.exactReason, /Wallet history coverage is (unknown|incomplete) — earlier acquisitions may lie outside this sample/)
+  assert.notEqual(r.historyCoverage?.status, 'complete')
 })
 
 // POLICY CHANGE, DISCLOSED (wallet-scanner pricing audit): a token↔token swap with no ETH/stable leg can only

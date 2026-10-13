@@ -71,8 +71,13 @@ export type RobinhoodScanRecord = {
 export const ROBINHOOD_SCAN_RESULT_FRESH_MS = 5 * 60_000
 /** A queued/running record older than this is treated as abandoned (its function was killed). */
 export const ROBINHOOD_SCAN_LEASE_MS = 120_000
-/** The route's own budget: well inside its 30s maxDuration. */
+/** The route's own response budget (the scan itself may continue after the response, see keepAlive). */
 export const ROBINHOOD_ROUTE_WAIT_MS = 20_000
+/**
+ * An explicit refresh (Rescan) is satisfied only by a scan that started at or after the refresh — or at most
+ * this long before it, so near-simultaneous refreshes (two tabs, a double click) still share one provider scan.
+ */
+export const ROBINHOOD_REFRESH_JOIN_WINDOW_MS = 10_000
 const RECORD_TTL_SECONDS = 15 * 60
 const POLL_MS = 750
 
@@ -84,7 +89,7 @@ const recordKey = (wallet: string) => `robinhood:scan-coord:v1:${wallet.toLowerC
 // the same generation joins it; a caller for a DIFFERENT job (a newer Rescan) never adopts it as its own
 // result — it waits for that scan to settle, then runs its own (see runProviderScan). jobId null = a
 // standalone/orchestrator scan, which any jobless caller may join.
-type InFlightScan = { jobId: string | null; promise: Promise<RobinhoodScanResult> }
+type InFlightScan = { jobId: string | null; startedAt: number; promise: Promise<RobinhoodScanResult> }
 const inFlight = new Map<string, InFlightScan>()
 /** A caller may adopt an in-flight scan only if it belongs to the same job; jobless callers may join any. */
 const mayJoin = (entry: InFlightScan, jobId: string | null) => jobId == null || entry.jobId === jobId
@@ -172,6 +177,8 @@ export type RobinhoodScanDedupAudit = {
   resultFifoInputSwapCount?: number | null
   resultMatchedLotCount?: number | null
   resultVerifiedClosedLotCount?: number | null
+  /** Whether the served result's verified sample covers complete wallet history ('incomplete'/'unknown' otherwise). */
+  resultHistoryCoverage?: string | null
 }
 /** Audit provenance and verdict travel with the result, including when a route reuses a completed scan. */
 const resultProvenance = (r: Pick<RobinhoodScanResult, 'robinhoodPnl'> | null | undefined) => {
@@ -185,6 +192,7 @@ const resultProvenance = (r: Pick<RobinhoodScanResult, 'robinhoodPnl'> | null | 
     resultFifoInputSwapCount: run?.fifoInputSwapCount ?? null,
     resultMatchedLotCount: run?.matchedLotCount ?? null,
     resultVerifiedClosedLotCount: run?.verifiedClosedLotCount ?? null,
+    resultHistoryCoverage: r?.robinhoodPnl?.ingestionAudit?.historyCoverage?.status ?? null,
   }
 }
 function logDedup(a: RobinhoodScanDedupAudit): RobinhoodScanDedupAudit {
@@ -258,7 +266,7 @@ async function runProviderScan(wallet: string, fetchImpl: typeof fetch, jobId: s
       throw err
     }
   })()
-  const entry: InFlightScan = { jobId, promise: run }
+  const entry: InFlightScan = { jobId, startedAt: now(), promise: run }
   inFlight.set(key, entry)
   try {
     return { result: await run, joined: false }
@@ -319,14 +327,22 @@ export async function runCanonicalRobinhoodScan(
 
 export type RobinhoodRouteOutcome =
   | { status: 200; body: RobinhoodRouteBody; audit: RobinhoodScanDedupAudit }
-  | { status: 202; body: { ok: false; pending: true; wallet: string; jobId: string | null; state: string; retryAfterMs: number }; audit: RobinhoodScanDedupAudit }
+  | { status: 202; body: { ok: false; pending: true; wallet: string; jobId: string | null; state: string; retryAfterMs: number; refreshSince?: number }; audit: RobinhoodScanDedupAudit }
   | { status: 502; body: { error: { message: string; category: 'provider' } }; audit: RobinhoodScanDedupAudit }
 
 /** GET /api/wallet-scan/robinhood. Bounded by ROBINHOOD_ROUTE_WAIT_MS; never starts a scan for a known job. */
 export async function resolveRobinhoodRouteRequest(
   wallet: string,
   fetchImpl: typeof fetch,
-  params: { jobId?: string | null; refresh?: boolean; waitMs?: number } & Opts,
+  params: {
+    jobId?: string | null
+    refresh?: boolean
+    /** Server time the refresh began (echoed back by the client from a 202 body); absent = this request. */
+    refreshSince?: number | null
+    waitMs?: number
+    /** Keeps a standalone scan running after the response is sent (route: next/server `after`). */
+    keepAlive?: (work: Promise<unknown>) => void
+  } & Opts,
 ): Promise<RobinhoodRouteOutcome> {
   const now = params.now ?? Date.now
   const key = wallet.toLowerCase()
@@ -339,9 +355,18 @@ export async function resolveRobinhoodRouteRequest(
   const fromRecord = (r: RobinhoodScanRecord, joined: boolean): RobinhoodRouteOutcome => r.state === 'done' && r.body
     ? { status: 200, body: r.body, audit: audit({ canonicalJobId: r.jobId, reusedCanonicalResult: true, joinedInFlight: joined, resultAgeMs: now() - (r.completedAt ?? now()), ...resultProvenance(r.body) }, 'served') }
     : { status: 502, body: { error: { message: `Robinhood scan failed: ${r.error ?? 'unknown error'}`, category: 'provider' } }, audit: audit({ canonicalJobId: r.jobId, joinedInFlight: joined }, 'error') }
+  // FRESHNESS FLOOR, DISCLOSED (wallet 0x7895… report: a Rescan was answered from an older canonical result). An
+  // explicit refresh carries a server-issued `refreshSince` across its polls: only a scan that started at or
+  // after (refreshSince − join window) may satisfy it — never a finished result or a live scan from before.
+  // Without the floor, every poll re-sent refresh=1, skipped the scan it had itself started, and started another.
+  const refreshSince = params.refresh
+    ? (params.refreshSince != null && Number.isFinite(params.refreshSince) && params.refreshSince <= now() ? params.refreshSince : now())
+    : null
+  const refreshFloor = refreshSince != null ? refreshSince - ROBINHOOD_REFRESH_JOIN_WINDOW_MS : null
+  const satisfiesRefresh = (startedAt: number | null | undefined) => refreshFloor == null || (startedAt != null && startedAt >= refreshFloor)
   const pending = (state: string, extra: Partial<RobinhoodScanDedupAudit>): RobinhoodRouteOutcome => ({
     status: 202,
-    body: { ok: false, pending: true, wallet: key, jobId, state, retryAfterMs: 2_500 },
+    body: { ok: false, pending: true, wallet: key, jobId, state, retryAfterMs: 2_500, ...(refreshSince != null ? { refreshSince } : {}) },
     audit: audit(extra, 'pending'),
   })
   const raceDeadline = async <T,>(p: Promise<T>): Promise<{ x: T } | { e: unknown } | 'timeout'> => {
@@ -355,8 +380,9 @@ export async function resolveRobinhoodRouteRequest(
   }
   const joinLocal = async (): Promise<RobinhoodRouteOutcome | null> => {
     const local = inFlight.get(key)
-    // A job-backed request only ever reads its own job's scan, never an older generation's result.
-    if (!local || !mayJoin(local, jobId)) return null
+    // A job-backed request only ever reads its own job's scan, never an older generation's result; a refresh
+    // only joins a scan that started inside its freshness floor.
+    if (!local || !mayJoin(local, jobId) || !satisfiesRefresh(local.startedAt)) return null
     const out = await raceDeadline(local.promise)
     if (out === 'timeout') return pending('running', { joinedInFlight: true })
     if ('e' in out) return { status: 502, body: { error: { message: `Robinhood scan failed: ${out.e instanceof Error ? out.e.message : String(out.e)}`, category: 'provider' } }, audit: audit({ joinedInFlight: true }, 'error') }
@@ -368,23 +394,49 @@ export async function resolveRobinhoodRouteRequest(
     const joined = await joinLocal()
     if (joined) return joined
     const r = await waitForRecord(wallet, (x) => x.jobId === jobId, deadline, params)
-    return r ? fromRecord(r, true) : pending('queued_or_running', { joinedInFlight: true })
+    if (r) return fromRecord(r, true)
+    // The job's scan must actually be live to keep the page waiting on it: a queued/running record whose lease
+    // expired (its function was killed) will never complete — say so instead of reporting "pending" forever.
+    const cur = await readRobinhoodScanRecord(wallet)
+    if (cur && cur.jobId === jobId && (cur.state === 'queued' || cur.state === 'running') && !leaseLive(cur, now())) {
+      return {
+        status: 502,
+        body: { error: { message: 'Robinhood scan for this job did not complete (its worker stopped before finishing). Rescan to start a fresh scan.', category: 'provider' } },
+        audit: audit({ canonicalJobId: jobId, joinedInFlight: false }, 'error'),
+      }
+    }
+    return pending('queued_or_running', { joinedInFlight: true })
   }
 
   // 2) No job: a fresh finished result is served; a live scan is joined/waited on.
+  // A refresh is served only by a result whose scan started inside its freshness floor (e.g. the scan its own
+  // first poll started); a plain request keeps the 5-minute fresh-result reuse.
   const rec = await readRobinhoodScanRecord(wallet)
-  if (rec?.state === 'done' && rec.body && !params.refresh && now() - (rec.completedAt ?? 0) < ROBINHOOD_SCAN_RESULT_FRESH_MS) return fromRecord(rec, false)
+  if (rec?.state === 'done' && rec.body && (refreshFloor != null
+    ? satisfiesRefresh(rec.startedAt)
+    : now() - (rec.completedAt ?? 0) < ROBINHOOD_SCAN_RESULT_FRESH_MS)) return fromRecord(rec, false)
   const joined = await joinLocal()
   if (joined) return joined
-  if (rec && leaseLive(rec, now())) {
+  const recLive = rec != null && leaseLive(rec, now())
+  if (rec && recLive && satisfiesRefresh(rec.startedAt ?? rec.queuedAt)) {
     const marker = { jobId: rec.jobId, queuedAt: rec.queuedAt, startedAt: rec.startedAt }
     const r = await waitForRecord(wallet, (x) => (marker.jobId != null ? x.jobId === marker.jobId : x.startedAt === marker.startedAt), deadline, params)
     return r ? fromRecord(r, true) : pending(rec.state, { canonicalJobId: rec.jobId, joinedInFlight: true })
   }
+  // A refresh that finds an OLDER scan still live (this process or another instance) neither adopts its result
+  // nor starts a duplicate provider scan beside it: it reports pending; once that scan settles, the next poll
+  // (same refreshSince) starts the refresh's own scan.
+  const localOlder = inFlight.get(key)
+  if (refreshFloor != null && ((rec && recLive) || localOlder)) {
+    return pending('previous_scan_running', { canonicalJobId: rec?.jobId ?? localOlder?.jobId ?? null })
+  }
 
   // 3) Nothing queued, running or fresh (direct navigation / explicit refresh): one bounded standalone scan.
+  // The response is bounded by the route budget; the scan itself is kept alive past it (keepAlive) so it
+  // completes and records its result instead of being frozen with the response.
   const started = runProviderScan(wallet, fetchImpl, null, 'standalone', params)
   started.catch(() => {})
+  params.keepAlive?.(started.catch(() => {}))
   const out = await raceDeadline(started)
   if (out === 'timeout') return pending('running', { startedNewRobinhoodProviderScan: true })
   if ('e' in out) return { status: 502, body: { error: { message: `Robinhood scan failed: ${out.e instanceof Error ? out.e.message : String(out.e)}`, category: 'provider' } }, audit: audit({ startedNewRobinhoodProviderScan: true }, 'error') }

@@ -377,6 +377,8 @@ export type RobinhoodPnlV1IngestionAudit = {
   }
   oversizedTraceBudget?: RhOversizedTraceSummary
   traceScheduler?: RhTraceSchedulerSummary
+  /** Whether the verified sample can stand for complete wallet history (robinhoodHistoryCoverage). */
+  historyCoverage?: { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] }
   /** Diagnostic: FIFO coverage of verified sells ([robinhood-fifo-coverage-audit] summary). */
   fifoCoverage?: import('./robinhoodFifoCoverageAudit').RhFifoCoverageSummary
   /**
@@ -505,6 +507,8 @@ export type RobinhoodPnlV1 = {
    */
   estimatedClosedLots?: number
   estimatedRealizedPnlUsd?: number | null
+  /** Complete only when the scan proved it saw the wallet's whole Robinhood history; absent on early exits. */
+  historyCoverage?: { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] }
 }
 
 // ── Small helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -3180,7 +3184,28 @@ export async function discoverRobinhoodRpcAcquisitionHistory(input: {
   return { rows, audit }
 }
 
-/** One deeper lane, only after the current-sample lane found no buy for a priced unmatched sell. */
+/**
+ * PURE. The one sell the deep acquisition lane targets. Priority: a sell priced on both legs (it can yield a
+ * verified lot), then one priced from daily estimates, then any verified unmatched sell — newest first within
+ * a tier. Matching is pricing-independent, so an earlier acquisition of the EXACT sold token (by address) is
+ * worth finding even when it cannot become verified PnL: it closes the lot structurally and stops the sell
+ * reading as "no acquisition". (It used to require both-leg pricing, so a daily-estimate or unpriced sell was
+ * never recovered.) Only the one lane runs; budgets are unchanged.
+ */
+export function selectRobinhoodDeepAcquisitionSell(
+  swaps: readonly RhVerifiedSwap[], evidence: readonly RhPriceEvidence[], isQuote: (token: string) => boolean,
+): { txHash: string; tier: number; token: string; sellRaw: bigint; unmatchedRaw: bigint; timestampSec: number } | undefined {
+  const tier = (hash: string) => {
+    const e = evidence.find((x) => x.swapTxHash === hash)
+    return e?.bothLegsVerified ? 0 : e?.dailyEstimate ? 1 : 2
+  }
+  return [...robinhoodUnmatchedSellRaw(swaps, isQuote)]
+    .filter(([, v]) => v.unmatchedRaw > ZERO)
+    .map(([txHash, v]) => ({ txHash, ...v, tier: tier(txHash) }))
+    .sort((a, b) => a.tier - b.tier || b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))[0]
+}
+
+/** One deeper lane, only after the current-sample lane found no buy for an unmatched sell (priced first). */
 async function runDeepAcquisitionRecovery(
   ctx: Ctx, wallet: string, swaps: readonly RhVerifiedSwap[], evidence: readonly RhPriceEvidence[],
   currentRecovery: RhAcquisitionRecoverySummary, inbound: readonly RhInboundTokenTransfer[], outcomes: readonly CandidateOutcome[],
@@ -3188,11 +3213,8 @@ async function runDeepAcquisitionRecovery(
   const empty = { summary: null, swaps: [] as RhVerifiedSwap[], evidence: [] as RhPriceEvidence[] }
   if (!ctx.deps.historicalTokenInbounds && !ctx.deps.rpcInboundTransferLogs) return { ...empty, skipReason: 'deep_history_not_wired' }
   const isQuote = (t: string) => quoteKind(t) != null
-  const sell = [...robinhoodUnmatchedSellRaw(swaps, isQuote)]
-    .filter(([hash, v]) => v.unmatchedRaw > ZERO && evidence.some((e) => e.swapTxHash === hash && e.bothLegsVerified))
-    .map(([txHash, v]) => ({ txHash, ...v }))
-    .sort((a, b) => b.timestampSec - a.timestampSec || a.txHash.localeCompare(b.txHash))[0]
-  if (!sell) return { ...empty, skipReason: 'no_unmatched_sell_priced_on_both_legs' }
+  const sell = selectRobinhoodDeepAcquisitionSell(swaps, evidence, isQuote)
+  if (!sell) return { ...empty, skipReason: 'no_unmatched_verified_sell' }
   // The current-sample lane may have selected a newer unpriced sell (or recovered a buy for another token).
   // Do not let that consume the one deep-history lane for this independently selected priced unmatched sell.
   const currentLaneCoveredThisSell = currentRecovery.sellTxHash === sell.txHash
@@ -3518,6 +3540,35 @@ async function runStagedVerification(
 }
 
 /** Verification coverage: of the candidates this scan knew about, how many receipts were actually classified. */
+/**
+ * PURE. Whether this scan's verified sample can stand for the wallet's COMPLETE Robinhood history. Only
+ * 'complete' licenses a complete-history conclusion (e.g. "zero closed lots is correct"): it needs manifest
+ * bootstrap discovery to have walked the wallet's transfer history to the end ('history_exhausted') with no
+ * pending hints, and every candidate receipt checked, with no verified sell left unmatched. Any concrete gap
+ * is 'incomplete' (with reasons); no gap but no exhaustion proof is 'unknown' — never assumed complete.
+ */
+export function robinhoodHistoryCoverage(input: {
+  candidatesDroppedByBudget: number
+  stagedComplete: boolean | null
+  uncheckedReceipts: number
+  unmatchedVerifiedSells: number
+  bootstrap: Pick<RhManifestBootstrapAudit, 'attempted' | 'completed' | 'stopReason' | 'pendingRemaining' | 'reason'> | null
+}): { status: 'complete' | 'incomplete' | 'unknown'; reasons: string[] } {
+  const reasons: string[] = []
+  if (input.candidatesDroppedByBudget > 0) reasons.push(`candidates_not_checked_by_budget:${input.candidatesDroppedByBudget}`)
+  if (input.stagedComplete === false) reasons.push('staged_verification_incomplete')
+  if (input.uncheckedReceipts > 0) reasons.push(`receipts_unchecked:${input.uncheckedReceipts}`)
+  if (input.unmatchedVerifiedSells > 0) reasons.push(`verified_sells_without_verified_acquisition:${input.unmatchedVerifiedSells}`)
+  const b = input.bootstrap
+  const historyExhausted = b != null && b.completed && b.stopReason === 'history_exhausted' && b.pendingRemaining === 0
+  if (b && !historyExhausted && (b.attempted || b.completed || b.pendingRemaining > 0)) {
+    reasons.push(`history_discovery_not_exhausted:${b.stopReason ?? 'in_progress'}${b.pendingRemaining > 0 ? `:pending_${b.pendingRemaining}` : ''}`)
+  }
+  if (reasons.length > 0) return { status: 'incomplete', reasons }
+  if (historyExhausted) return { status: 'complete', reasons: [] }
+  return { status: 'unknown', reasons: [b ? `history_discovery_unavailable:${b.reason ?? 'not_run'}` : 'history_discovery_not_configured'] }
+}
+
 export function robinhoodVerificationCoverage(candidatesConsidered: number, candidatesChecked: number): { candidatesConsidered: number; candidatesChecked: number; candidatesDroppedByBudget: number; verificationCoveragePct: number | null; complete: boolean } {
   const considered = Math.max(0, candidatesConsidered)
   const checked = Math.min(Math.max(0, candidatesChecked), considered)
@@ -3729,6 +3780,14 @@ export async function computeRobinhoodPnlV1(params: {
   const { fifo, buyCount, sellCount, estimated } = deep.swaps.length > 0
     ? buildRobinhoodPnlV1Fifo(wallet, [...swaps, ...recovery.swaps, ...deep.swaps], [...evidence, ...recovery.evidence, ...deep.evidence])
     : intermediate
+  const historyCoverage = robinhoodHistoryCoverage({
+    candidatesDroppedByBudget: ingestion.candidatesDroppedByBudget ?? 0,
+    stagedComplete: ingestion.stagedVerification ? ingestion.stagedVerification.stage2StopReason === 'complete' : null,
+    uncheckedReceipts: outcomes.filter((o) => o.rejection === 'deadline_exceeded' || o.rejection === 'receipt_unavailable').length,
+    unmatchedVerifiedSells: fifo.unmatchedSells,
+    bootstrap: ingestion.manifestBootstrap ?? null,
+  })
+  ingestion.historyCoverage = historyCoverage
   // Diagnostics only (never feed verification, pricing or FIFO). Each audit has its OWN try/catch: a failure in one
   // must never suppress the other (they used to share one, so a coverage throw silently skipped the swap audit).
   const fifoInputSwaps = [...swaps, ...recovery.swaps, ...deep.swaps]
@@ -3766,6 +3825,7 @@ export async function computeRobinhoodPnlV1(params: {
       extraSwaps: [...recovery.swaps.map((x) => ({ swap: x, source: 'acquisition_recovery' })), ...deep.swaps.map((x) => ({ swap: x, source: 'deep_acquisition' }))],
       evidence: fifoInputEvidence, matchedLots: fifo.matchedLots,
       attributionByTx: new Map(outcomes.filter((o) => o.swap).map((o) => [o.txHash, o.acceptedVia ?? 'direct_v4'])),
+      historyCoverage,
     })
     // Summary first: a log reader that truncates a burst still sees the verdict.
     console.warn(VF_TAG, { phase: 'complete', wallet, scanId, ...vfCounts, rowCount: vf.rows.length, tokenGroupCount: vf.tokens.length, summary: vf.summary })
@@ -3829,6 +3889,7 @@ export async function computeRobinhoodPnlV1(params: {
   const cost = verifiedLots.reduce((s, l) => s + l.costBasisUsd!, 0)
   const coverage = structural > 0 ? Math.round((verifiedLots.length / structural) * 10_000) / 100 : null
   const base = {
+    historyCoverage,
     estimatedClosedLots: estimated.closedLots,
     estimatedRealizedPnlUsd: estimated.realizedPnlUsd,
     structuralClosedLots: structural,
@@ -3860,7 +3921,11 @@ export async function computeRobinhoodPnlV1(params: {
       : structural === 0
         ? `${swaps.length} swap${swaps.length === 1 ? '' : 's'} proven, ${bothLegs} priced on both legs, but no buy→sell pair closed a lot in this sample.${recovery.summary.acquisitionRecoveryAttempted ? ` Acquisition recovery checked ${recovery.summary.candidatesAttempted} earlier inbound${recovery.summary.candidatesAttempted === 1 ? '' : 's'} of the sold token; none was a provable buy.` : ''}`
         : `${structural} lots closed, but none had verified prices on both the buy and the sell.${estimated.closedLots > 0 ? ` ${estimated.closedLots} ${estimated.closedLots === 1 ? 'is' : 'are'} priced only from daily token prices (estimate, not verified).` : ''}`
-  return finish({ ...base, status: 'not_verified', exactReason })
+  // Zero closed lots is a statement about this verified sample only, unless coverage is proven complete.
+  const coverageNote = structural === 0 && swaps.length > 0 && historyCoverage.status !== 'complete'
+    ? ` Wallet history coverage is ${historyCoverage.status} — earlier acquisitions may lie outside this sample, so this is not proof the wallet has no closed trades.`
+    : ''
+  return finish({ ...base, status: 'not_verified', exactReason: `${exactReason}${coverageNote}` })
 }
 
 type ManifestBootstrapRun = { marker: RobinhoodManifestBootstrapMarker | null; audit: RhManifestBootstrapAudit }

@@ -1091,13 +1091,16 @@ export default function WalletScannerPage() {
       if (opts.jobId) qs.set('jobId', opts.jobId)
       if (opts.refresh) qs.set('refresh', '1')
       let res: Response | null = null
-      let json: (RobinhoodWalletScanResponse & { error?: { message?: string }; pending?: boolean; retryAfterMs?: number }) | null = null
+      let json: (RobinhoodWalletScanResponse & { error?: { message?: string }; pending?: boolean; retryAfterMs?: number; refreshSince?: number }) | null = null
       for (let attempt = 0; attempt < ROBINHOOD_JOB_POLL_MAX_ATTEMPTS; attempt++) {
         res = await fetch(`/api/wallet-scan/robinhood?${qs.toString()}`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
         json = await res.json().catch(() => null)
         if (res.status !== 202) break
+        // A Rescan keeps the server's freshness floor across polls, so the scan its first poll started is the
+        // one that answers it (never an older result, never a new scan per poll).
+        if (opts.refresh && typeof json?.refreshSince === 'number') qs.set('refreshSince', String(json.refreshSince))
         // Superseded scan, or the job's final report already supplied the Robinhood result.
         if (opts.jobId && robinhoodJobRef.current !== opts.jobId) return
         await new Promise((r) => globalThis.setTimeout(r, Math.min(Math.max(json?.retryAfterMs ?? 2_500, 1_000), 5_000)))
