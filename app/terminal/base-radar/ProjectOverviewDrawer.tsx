@@ -9,7 +9,7 @@ import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEv
 import { buildBaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
 import { buildRadarSignals, buildWhyItMatters, buildRadarTimeline, buildNextFiveMinuteRead } from '@/lib/baseRadarSignals'
 import { buildReceiptDashboard } from '@/lib/radarReceiptDashboard'
-import { EvidenceChip, RECEIPT_DASHBOARD_CSS, ReceiptActions, ReceiptChecksMatrix, ReceiptFindings, ReceiptSummaryStrip } from './ReceiptDashboard'
+import { RECEIPT_DASHBOARD_CSS, ReceiptActions, ReceiptChecksMatrix, ReceiptFindings, ReceiptSummaryStrip } from './ReceiptDashboard'
 import WhyItMattersBox from './WhyItMattersBox'
 import TimelineMiniChart from './TimelineMiniChart'
 import SignalsSidebar from './SignalsSidebar'
@@ -693,6 +693,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const isFull = mode === 'full'
   // UI-only: brief "Copied" confirmation for the tertiary Copy CA action (copy behaviour unchanged).
   const [caCopied, setCaCopied] = useState(false)
+  // "+N more" expansion is remembered per token, so opening another token starts collapsed.
+  const [chipsExpandedFor, setChipsExpandedFor] = useState<string | null>(null)
+  const showAllHeroChips = chipsExpandedFor != null && chipsExpandedFor === token?.contract
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
@@ -1120,7 +1123,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #3bcfc0 !important; border-color: #3bcfc0 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; } ${RECEIPT_DASHBOARD_CSS}`}</style>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 14px 12px !important; gap: 14px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } } .receipt-telemetry > div > * { box-shadow: 1px 0 0 rgba(148,163,184,0.09), 0 1px 0 rgba(148,163,184,0.09); } .receipt-why-row { transition: background-color .15s ease; } .receipt-why-row:hover { background: rgba(255,255,255,0.025); } .receipt-btn { transition: background-color .15s ease, border-color .15s ease, color .15s ease; } .receipt-btn-primary:hover { background: #5eead4 !important; border-color: #5eead4 !important; } .receipt-btn-secondary:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.38) !important; } .receipt-btn-tertiary:hover { color: #cbd5e1 !important; } .receipt-btn-ghost:hover { background: rgba(255,255,255,0.05) !important; border-color: rgba(255,255,255,0.22) !important; } .receipt-copy-icon:hover { color: #e2e8f0 !important; } .receipt-close:hover { color: #e2e8f0 !important; background: rgba(255,255,255,0.06) !important; } ${RECEIPT_DASHBOARD_CSS}`}</style>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(2,6,23,0.78)' : 'rgba(2,6,23,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
       {/* FULL-REPORT-MODE, DISCLOSED: see the DrawerProps.mode comment above — only this element's
           own style object branches on mode; everything rendered inside (all children below) is
@@ -1161,51 +1164,62 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             so CJK/other wide-script names don't get the same negative Latin tracking that looks
             cramped on those glyphs. Same chips, same summary line, same actions — nothing removed
             or restructured. */}
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 16px', padding: '16px 18px 14px', background: 'linear-gradient(180deg, rgba(5,9,18,0.97), rgba(4,8,16,0.93))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.10)' }}>
-          {/* RECEIPT HEADER (receipt polish): identity is the focal point; chain / age / score / risk are one
-              quiet metadata row; the address is secondary; the top-right holds only a subtle close button.
-              Same values as before (CHAIN_LABEL, fmtAge, effectiveScore, publicStatus(severityLabel),
-              shortAddr, cortexSevereLine) — presentation only. */}
+        {/* RECEIPT BANNER (banner redesign): row 1 identity + close · row 2 one mono meta line (chain · age ·
+            contract + copy) · row 3 verdict + limited-evidence pills · summary (2 lines) · risk chips (max 3,
+            "+N more" expands) · actions. The Radar score pill was removed — the RADAR SCORE card below shows it.
+            Same values and handlers as before. */}
+        <header className="radar-drawer-header receipt-banner" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 16px', padding: '20px 18px', display: 'grid', gap: 20, background: 'linear-gradient(180deg, rgba(45,212,191,0.06), rgba(45,212,191,0) 100%), rgba(5,9,18,0.97)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
               <p style={{ margin: '0 0 6px', color: '#475569', fontSize: 9, fontWeight: 700, letterSpacing: '.2em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
-              <h2 style={{ margin: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 10px', fontSize: 24, fontWeight: 700, color: '#f8fafc', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.025em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.15 }}>
+              <h2 style={{ margin: 0, display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 10px', fontSize: 28, fontWeight: 800, color: '#ffffff', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.025em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.1 }}>
                 <span>{token.name}</span>
-                <span style={{ color: '#7c8da1', fontWeight: 600, fontSize: 13, letterSpacing: '.04em', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+                <span style={{ color: '#64748b', fontWeight: 500, fontSize: 14, letterSpacing: '.04em', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
               </h2>
             </div>
             <button onClick={onClose} aria-label="Close project overview" className="receipt-close" style={{ flex: '0 0 auto', border: 0, background: 'transparent', color: '#64748b', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', fontSize: 18, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 8px', color: '#64748b', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>
             {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): driven off the real chain key. */}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#cbd5e1', fontSize: 11.5, fontWeight: 600 }}><span aria-hidden style={{ width: 6, height: 6, borderRadius: 2, background: '#2dd4bf' }} />{CHAIN_LABEL[chain]}</span>
-            <span aria-hidden style={{ color: '#334155' }}>·</span>
-            <span style={{ color: '#a5a0d6', fontSize: 11.5, fontFamily: 'var(--font-plex-mono)' }}>{fmtAge(token.ageMinutes)}</span>
-            <span aria-hidden style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.08)', margin: '0 2px' }} />
-            {/* Mini score block */}
-            <span title={`Radar score ${effectiveScore}/100`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 10px 4px 9px', borderRadius: 8, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)' }}>
-              <span style={{ color: '#64748b', fontSize: 8.5, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Radar</span>
-              <span style={{ color: '#f1f5f9', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-plex-mono)' }}>{effectiveScore}<span style={{ color: '#475569', fontSize: 10, fontWeight: 500 }}>/100</span></span>
-              <span aria-hidden style={{ width: 34, height: 3, borderRadius: 3, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}><span style={{ display: 'block', height: '100%', width: `${Math.max(0, Math.min(100, Number(effectiveScore) || 0))}%`, background: verdictColor, opacity: 0.85 }} /></span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: '#2dd4bf' }} />{CHAIN_LABEL[chain]}</span>
+            <span aria-hidden>·</span>
+            <span>{fmtAge(token.ageMinutes)}</span>
+            <span aria-hidden>·</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span title={token.contract}>{shortAddr(token.contract)}</span>
+              <button type="button" onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} aria-label="Copy contract address" title={caCopied ? 'Copied' : 'Copy contract address'} className="receipt-copy-icon" style={{ border: 0, background: 'transparent', padding: 2, cursor: 'pointer', color: caCopied ? '#2dd4bf' : '#64748b', display: 'inline-grid', placeItems: 'center', borderRadius: 4 }}>
+                {caCopied
+                  ? <svg aria-hidden width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8.5l3.2 3L13 4.5" /></svg>
+                  : <svg aria-hidden width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5" /><path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" /></svg>}
+              </button>
             </span>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 6, background: `${verdictColor}12`, border: `1px solid ${verdictColor}33`, color: verdictColor, fontSize: 9.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span aria-hidden style={{ width: 5, height: 5, borderRadius: 999, background: verdictColor }} />{publicStatus(severityLabel)}</span>
-            {/* Confidence badge — same evidenceQualityLabel bucketing the old verdict chip showed. */}
-            <span title={`${receipt.summary.openChecks.count} open evidence gap(s)`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 6, border: '1px solid rgba(148,163,184,0.16)', color: evidenceQualityTone === 'mint' ? '#99f6e4' : evidenceQualityTone === 'amber' ? '#fde68a' : '#fecaca', fontSize: 9.5, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{evidenceQualityLabel}</span>
-            <span title={token.contract} style={{ color: '#475569', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
-          <p style={{ margin: '10px 0 0', color: '#94a3b8', fontSize: 12.5, lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
-          {receipt.heroChips.length > 0 ? (
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
-              {receipt.heroChips.map(c => <EvidenceChip key={c.label} label={c.label} status={c.status} />)}
+
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ ...bannerPillStyle, background: `${verdictColor}14`, border: `1px solid ${verdictColor}40`, color: verdictColor }}><span aria-hidden style={{ width: 5, height: 5, borderRadius: 999, background: verdictColor }} />{publicStatus(severityLabel)}</span>
+              {evidenceQualityLabel === 'Limited Evidence'
+                ? <span title={`${receipt.summary.openChecks.count} open evidence gap(s)`} style={{ ...bannerPillStyle, border: '1px solid rgba(148,163,184,0.22)', color: '#94a3b8' }}>Limited Evidence</span>
+                : null}
             </div>
-          ) : null}
-          {/* ACTION HIERARCHY (receipt polish): primary = Add Watchlist (the only state-changing action here;
-              Deep/Scan Token was removed from this panel earlier), secondary = Open Explorer, tertiary =
-              Copy CA (quiet text action with a brief "Copied" confirmation). Same handlers as before. */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
-            {onTrackToggle ? <button onClick={onTrackToggle} className={`receipt-btn btn-instant ${tracking ? '' : 'receipt-btn-primary'}`} style={tracking ? activeButtonStyle : primaryButtonStyle}>{tracking ? '✓ Watching' : 'Add Watchlist'}</button> : null}
-            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" className="receipt-btn btn-instant receipt-btn-secondary" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer ↗</a>
-            <button onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} className="receipt-btn btn-instant receipt-btn-tertiary" style={tertiaryButtonStyle}>{caCopied ? 'Copied ✓' : 'Copy CA'}</button>
+            <p style={{ margin: 0, maxWidth: 720, color: '#94a3b8', fontSize: 15, lineHeight: 1.5, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
+            {receipt.heroChips.length > 0 ? (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {(showAllHeroChips ? receipt.heroChips : receipt.heroChips.slice(0, 3)).map(c => (
+                  <span key={c.label} style={{ ...bannerChipStyle, ...(c.status === 'confirmed' ? { border: '1px solid rgba(45,212,191,0.3)', color: '#99f6e4' } : null) }}>{c.label}</span>
+                ))}
+                {!showAllHeroChips && receipt.heroChips.length > 3
+                  ? <button type="button" onClick={() => setChipsExpandedFor(token.contract)} style={{ ...bannerChipStyle, border: '1px solid rgba(255,255,255,0.12)', color: '#94a3b8', cursor: 'pointer' }}>+{receipt.heroChips.length - 3} more</button>
+                  : null}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {onTrackToggle ? <button onClick={onTrackToggle} className={`receipt-btn btn-instant ${tracking ? '' : 'receipt-btn-primary'}`} style={tracking ? activeButtonStyle : bannerPrimaryButtonStyle}>{tracking ? '✓ Watching' : 'Add Watchlist'}</button> : null}
+            <a href={explorer ?? '#'} target="_blank" rel="noreferrer" className="receipt-btn btn-instant receipt-btn-ghost" style={{ ...bannerGhostButtonStyle, textDecoration: 'none' }}>Open Explorer ↗</a>
+            <button onClick={() => { void copyText(token.contract); setCaCopied(true); window.setTimeout(() => setCaCopied(false), 1500) }} className="receipt-btn btn-instant receipt-btn-ghost" style={bannerGhostButtonStyle}>{caCopied ? 'Copied ✓' : 'Copy CA'}</button>
           </div>
         </header>
 
@@ -1448,21 +1462,33 @@ const buttonStyle: React.CSSProperties = {
   alignItems: 'center',
 }
 
-const primaryButtonStyle: React.CSSProperties = {
+// RECEIPT BANNER styles (banner redesign): small pills/chips, filled-teal primary, ghost secondary actions.
+const bannerPillStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 8px', borderRadius: 6,
+  fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
+}
+
+const bannerChipStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', padding: '3px 9px', borderRadius: 999,
+  border: '1px solid rgba(244,63,94,0.3)', background: 'transparent', color: '#cbd5e1', fontSize: 12, lineHeight: 1.4,
+}
+
+const bannerPrimaryButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  border: '1px solid #2cc1b2',
-  background: '#2cc1b2',
+  border: '1px solid #2DD4BF',
+  background: '#2DD4BF',
   color: '#04211e',
-  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.22), 0 1px 2px rgba(0,0,0,0.4)',
+  minHeight: '32px',
   textDecoration: 'none',
 }
 
-const tertiaryButtonStyle: React.CSSProperties = {
+const bannerGhostButtonStyle: React.CSSProperties = {
   ...buttonStyle,
-  border: '1px solid transparent',
+  border: '1px solid rgba(255,255,255,0.12)',
   background: 'transparent',
-  color: '#7c8da1',
-  padding: '0 8px',
+  color: '#cbd5e1',
+  minHeight: '30px',
+  padding: '0 11px',
 }
 
 const activeButtonStyle: React.CSSProperties = {
