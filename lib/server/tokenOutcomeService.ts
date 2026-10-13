@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import type { TrackScannerRecheck } from './trackScannerRecheck'
 import { compareTrackReceipt, currentTrackSnapshot, enrichTrackSnapshot, mergeTrackEvents, originalTrackSnapshot } from '../trackIntelligence'
 import {
   OUTCOME_POLICY, classifyOutcome, comparableOutcomeBaselinePrice, displayableCurrentPrice, incomparableBaselineReasons, numberOrNull, observationCheckedAtMs, pendingUnavailableReasons,
@@ -413,7 +414,20 @@ export function applyRefreshObservationOverlay(
   })
 }
 
-export type RefreshOutcomesOptions = { force?: boolean; ids?: string[]; now?: number }
+export type RefreshOutcomesOptions = {
+  force?: boolean; ids?: string[]; now?: number
+  /** Re-runs the real Token Scanner for a tracked token (Scan vs Now risk / top 10 / dev). Absent = no recheck. */
+  scannerRecheck?: TrackScannerRecheck
+}
+
+/** At most this many scanner rechecks per refresh call (each is a full token scan). */
+export const TRACK_SCANNER_RECHECKS_PER_REFRESH = 3
+
+/** Scanner evidence (risk / top 10 / dev) older than the Track freshness window, or never recorded. */
+export function trackScannerEvidenceStale(row: TrackedOutcome, now: number): boolean {
+  const at = row.market_observation_json?.trackIntelligence?.snapshot?.scannerObservedAt
+  return !at || !Number.isFinite(Date.parse(at)) || now - Date.parse(at) > OUTCOME_POLICY.staleMs
+}
 export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptions = {}, db: ReturnType<typeof outcomeDb> = outcomeDb()): Promise<TrackedOutcome[]> {
   const now = opts.now ?? Date.now()
   const stale = new Date(now - OUTCOME_POLICY.priceStaleMs).toISOString()
@@ -437,6 +451,7 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
   }
   if (error) throw new Error('Outcome storage unavailable. Check the tracked-token-outcomes migration.')
   const overlays = new Map<string, ReturnType<typeof buildOutcomeRefreshUpdate>>()
+  let rechecksLeft = TRACK_SCANNER_RECHECKS_PER_REFRESH
   const resolutions = new Map<string, Promise<Awaited<ReturnType<typeof resolveOutcomeQuoteDetailed>>>>()
   await Promise.all(((data ?? []) as TrackedOutcome[]).filter(row => outcomeNeedsRefresh(row, now, opts.force === true)).map(async row => {
     const claimedAt = new Date(now).toISOString()
@@ -451,7 +466,16 @@ export async function refreshOutcomes(userId: string, opts: RefreshOutcomesOptio
     const resolved = await resolution.catch(() => null)
     const quote = resolved?.quote ?? null
     const chainId = chainIdBySlug[row.chain]
-    const laterScan = chainId ? await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(row.chain as EvmChainSlug, chainId, row.token_address)) : null
+    let laterScan = chainId ? await getTokenCache<Record<string, unknown>>(buildTokenScanCacheKey(row.chain as EvmChainSlug, chainId, row.token_address)) : null
+    // Scan vs Now: when the stored scanner evidence is stale and no newer cached scan exists, re-run the real
+    // Token Scanner (EVM and Solana), bounded per refresh call. A failed recheck leaves the values unavailable.
+    const cachedIsNewer = typeof laterScan?.scanRequestStartedAt === 'number' && laterScan.scanRequestStartedAt > Date.parse(row.baseline_snapshot_json.scannedAt)
+    if (!cachedIsNewer && opts.scannerRecheck && trackScannerEvidenceStale(row, now) && rechecksLeft > 0) {
+      rechecksLeft -= 1
+      const rechecked = await opts.scannerRecheck(row).catch(() => null)
+      // This refresh's clock is fixed at its start; the recheck ran inside it, so it is observed as of `now`.
+      if (rechecked) laterScan = { ...rechecked, scanRequestStartedAt: Math.min(Number(rechecked.scanRequestStartedAt) || now, now) }
+    }
     const proof = afterScanProof(row, laterScan, now) ?? row.after_evidence_json ?? null
     const checkedAt = new Date(now).toISOString()
     const update = buildOutcomeRefreshUpdate(row, quote, proof, checkedAt, now, laterScan)

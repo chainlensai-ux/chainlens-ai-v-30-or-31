@@ -126,7 +126,8 @@ export function originalTrackSnapshot(row: TrackedOutcome): TrackOriginal {
   return {
     id: row.id, observedAt: s.scannedAt, priceUsd: comparableOutcomeBaselinePrice(row),
     marketCapUsd: frozenBaselineMarketCapUsd(row), liquidityUsd: numberOrNull(row.baseline_liquidity_usd),
-    top10Pct: boundedPct(object(s.baselineHolderSignals).top10), riskScore: row.baseline_risk_semantics === 'legacy_unverified' ? null : numberOrNull(s.baselineRiskScore),
+    // Solana receipts recorded top-N as `top10Percent` (token accounts); EVM as `top10`.
+    top10Pct: boundedPct(object(s.baselineHolderSignals).top10 ?? object(s.baselineHolderSignals).top10Percent), riskScore: row.baseline_risk_semantics === 'legacy_unverified' ? null : numberOrNull(s.baselineRiskScore),
     liquidityBasis: meta?.liquidityBasis, holderBasis: meta?.holderBasis, riskMethodologyVersion: meta?.riskMethodologyVersion,
     deployerActivity: null, outcome: 'watching',
   }
@@ -174,7 +175,9 @@ export function enrichTrackSnapshot(row: TrackedOutcome, snapshot: TrackSnapshot
     top10Pct: boundedPct(holder.top10), holderBasis: text(holder.denominator),
     riskScore: scan.riskScoreType === 'risk_score' && scan.riskScoreDirection === 'higher_is_riskier' ? boundedPct(scan.riskScore) : null,
     riskMethodologyVersion: text(scan.riskMethodologyVersion),
-    deployerActivity: direct.length ? [...(snapshot.deployerActivity ?? []), ...direct].slice(-100) : snapshot.deployerActivity,
+    // A confirmed deployer with no direct token transfers is CHECKED-AND-NONE ([]), not "unknown" (null).
+    deployerActivity: direct.length ? [...(snapshot.deployerActivity ?? []), ...direct].slice(-100)
+      : dev.deployerStatus === 'confirmed' && text(dev.creationTxHash) && text(dev.deployerAddress) ? (snapshot.deployerActivity ?? []) : snapshot.deployerActivity,
     // Ordinary holder transfers and graph edges do not establish deployer activity.
   }
 }

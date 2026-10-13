@@ -1,6 +1,7 @@
 import type { SolanaBetaScanResult } from './solanaTokenScannerBeta'
 import { computeSolanaCortexRisk } from '../solanaCortexRisk'
 import { signOutcomeSnapshot, snapshotFromScan } from './tokenOutcomeReceipt'
+import { SOLANA_HOLDER_BASIS, SOLANA_RISK_METHODOLOGY_VERSION } from './trackScannerRecheck'
 
 export function solanaOutcomeReceipt(scan: SolanaBetaScanResult, userId: string, scanId: string, startedAt: number): string | null {
   try {
@@ -20,7 +21,13 @@ export function solanaOutcomeReceipt(scan: SolanaBetaScanResult, userId: string,
       scanRequestId: scanId, scanRequestStartedAt: startedAt, riskScore: risk.riskScore,
       riskScoreType: 'risk_score', riskScoreDirection: 'higher_is_riskier', riskLabel: risk.riskLabel,
       riskBreakdown: risk.factors, security: risk.securityRead,
-      lpControl: scan.poolProgram, holderDistribution: scan.topAccountConcentration,
+      lpControl: scan.poolProgram,
+      // top10 + denominator recorded so Track's Scan→Now Top 10 delta can be computed against a later recheck.
+      holderDistribution: scan.topAccountConcentration ? {
+        ...scan.topAccountConcentration, top10: scan.topAccountConcentration.top10Percent,
+        denominator: scan.topAccountConcentration.top10Percent != null ? SOLANA_HOLDER_BASIS : null,
+      } : null,
+      riskMethodologyVersion: SOLANA_RISK_METHODOLOGY_VERSION,
       devIntel: scan.deepCreator, contractFlags: { mintAuthority: scan.mintAuthority, freezeAuthority: scan.freezeAuthority, authorityReadSucceeded: scan.authorityReadSucceeded },
       priceUsd: scan.marketData?.priceUsd, liquidityUsd: scan.marketData?.liquidityUsd,
       marketCapUsd: scan.marketData?.marketCapUsd, riskInputsUsed: risk.modules,

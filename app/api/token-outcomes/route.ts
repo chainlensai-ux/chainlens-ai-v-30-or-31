@@ -5,9 +5,11 @@ import { verifyOutcomeReceipt } from '@/lib/server/tokenOutcomeReceipt'
 import { verifyRadarTrackReceipt } from '@/lib/server/radarTrackReceipt'
 import { outcomeDb, refreshOutcomes, refreshLiveOutcomes, sanitizeTrackedOutcome, listTrackedOutcomes, logOutcomeStorageError, sanitizeOutcomeStorageError, logTrackedOutcomeLiveBatch, isRadarReceiptSchemaError } from '@/lib/server/tokenOutcomeService'
 import { createRateLimiter } from '@/lib/server/rateLimit'
+import { trackScannerRecheck } from '@/lib/server/trackScannerRecheck'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+// A refresh may run up to TRACK_SCANNER_RECHECKS_PER_REFRESH concurrent token scans (25s timeout each).
+export const maxDuration = 120
 const limiter = createRateLimiter({ windowMs: OUTCOME_POLICY.postLimiterWindowMs, max: OUTCOME_POLICY.postLimiterMax })
 const json = (body: unknown, status = 200) => NextResponse.json(body, { status, headers: { 'Cache-Control': 'private, no-store' } })
 const OUTCOME_ID_RE = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i
@@ -68,7 +70,11 @@ export async function POST(req: Request) {
     }
     if (body.action === 'refresh') {
       const ids = Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string') : undefined
-      const outcomes = await refreshOutcomes(user.userId, { force: body.force === true, ids })
+      const outcomes = await refreshOutcomes(user.userId, {
+        force: body.force === true, ids,
+        // Scan vs Now risk / top 10 / dev: re-run the real Token Scanner for stale tracked tokens (signed, no quota debit).
+        scannerRecheck: trackScannerRecheck({ origin: new URL(req.url).origin, authorization: req.headers.get('authorization'), userId: user.userId }),
+      })
       return json({ refreshed: true, batchLimit: OUTCOME_POLICY.refreshBatch, force: body.force === true, outcomes, limit: OUTCOME_POLICY.limits[user.plan] })
     }
     // RADAR → TRACK, ADDITIVE: a Base Radar receipt (signed by /api/radar for this user) goes through the

@@ -139,10 +139,13 @@ test('scanner accepts direct proven creator transfers, never ordinary holder gra
   const next = enrichTrackSnapshot(row, current(), scan, now)
   assert.equal(next.deployerActivity?.length, 1)
   assert.equal(next.deployerActivity?.[0].supplyPct, undefined)
-  for (const invalid of [{ ...dev, creationTxHash: null }, { ...dev, deployerStatus: 'possible_match' },
-    { ...dev, linkedWallets: [{ reason: 'top_holder_direct_transfer', txHash: 'tx', firstSeen: '2026-10-01T12:00:00Z' }] }]) {
+  // Without a proven creator, dev activity stays unknown (null) — never "none".
+  for (const invalid of [{ ...dev, creationTxHash: null }, { ...dev, deployerStatus: 'possible_match' }]) {
     assert.equal(enrichTrackSnapshot(row, current(), { ...scan, devIntel: invalid }, now).deployerActivity, null)
   }
+  // A proven creator whose only links are ordinary holder edges was CHECKED: no direct transfers ([]), not unknown.
+  // Holder graph links are still never counted as dev activity.
+  assert.deepEqual(enrichTrackSnapshot(row, current(), { ...scan, devIntel: { ...dev, linkedWallets: [{ reason: 'top_holder_direct_transfer', txHash: 'tx', firstSeen: '2026-10-01T12:00:00Z' }] } }, now).deployerActivity, [])
 })
 test('stale reused scanner numbers expire without erasing their historical events', () => {
   const snap = current({ scannerObservedAt: '2026-10-01T00:00:00Z', top10Pct: 39, riskScore: 74 })

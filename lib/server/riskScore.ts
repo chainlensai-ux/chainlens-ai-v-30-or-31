@@ -516,6 +516,12 @@ function hasHardCriticalFlag(input: RiskScoreInput): boolean {
   )
 }
 
+/**
+ * Identity of the EVM token risk-score methodology. Track compares a scan's score with a later recheck only
+ * when both carry the SAME version; bump it whenever calculateTokenRiskScore's inputs/weights change.
+ */
+export const TOKEN_RISK_METHODOLOGY_VERSION = 'evm_token_risk_score:v1'
+
 export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult {
   const marketMaturity = scoreMarketMaturity(input)
   const liquiditySafety = scoreLiquiditySafety(input)

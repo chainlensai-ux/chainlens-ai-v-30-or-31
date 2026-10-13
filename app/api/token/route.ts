@@ -6,7 +6,8 @@ import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
-import { calculateTokenRiskScore } from "@/lib/server/riskScore";
+import { calculateTokenRiskScore, TOKEN_RISK_METHODOLOGY_VERSION } from "@/lib/server/riskScore";
+import { TRACK_RECHECK_HEADER, verifyTrackRecheck } from "@/lib/server/trackScannerRecheck";
 import { classifyConcentratedLpRisk, applySellCheckLabelFloor, sellCheckRan, NO_SELL_CHECK_OPEN_CHECK } from "@/lib/server/tokenRiskLpAndSellCheck";
 import { buildTokenScannerPipelineAudit } from "@/lib/tokenScannerPipelineAudit";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
@@ -3700,7 +3701,14 @@ export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
   const _tokenScanIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
-  const _tokenScanQuota = await consumeTokenScan(_requestPlan, _tokenScanIp)
+  // TRACK RECHECK, DISCLOSED: a Track refresh re-scans an already-tracked token for its "Scan vs Now" values.
+  // When the request carries a valid server-signed recheck HMAC for THIS user + chain + token (see
+  // lib/server/trackScannerRecheck.ts) it does not debit a token-scan credit. Authentication above and the
+  // rate limiter still apply; an absent/invalid signature is an ordinary, metered scan.
+  const _recheckSig = req.headers.get(TRACK_RECHECK_HEADER)
+  const _recheckBody = _recheckSig ? await req.clone().json().catch(() => null) as { contract?: unknown; chain?: unknown } | null : null
+  const _isTrackRecheck = _recheckSig != null && verifyTrackRecheck(_recheckSig, outcomeUser.userId, String(_recheckBody?.chain ?? 'base').toLowerCase(), _recheckBody?.contract)
+  const _tokenScanQuota = _isTrackRecheck ? { allowed: true as const, limit: null } : await consumeTokenScan(_requestPlan, _tokenScanIp)
   if (!_tokenScanQuota.allowed) {
     return NextResponse.json({
       error: tokenScanLimitReachedMessage(_requestPlan, _tokenScanQuota.limit),
@@ -9291,6 +9299,14 @@ export async function POST(req: Request) {
     ;(responsePayload as any).riskBreakdown = tokenRiskScoreResult.riskBreakdown
     ;(responsePayload as any).safetyScore = tokenRiskScoreResult.safetyScore
     ;(responsePayload as any).riskScoreType = 'risk_score'
+    // Methodology identity + holder denominator: Track only computes a Scan→Now delta when both match.
+    ;(responsePayload as any).riskMethodologyVersion = TOKEN_RISK_METHODOLOGY_VERSION
+    if ((responsePayload as any).holderDistribution && typeof (responsePayload as any).holderDistribution === 'object' && holderDistribution.top10 != null) {
+      ;(responsePayload as any).holderDistribution = {
+        ...(responsePayload as any).holderDistribution,
+        denominator: _holderPctTotalSupplySource ? `total_supply:${_holderPctTotalSupplySource}` : 'provider_reported_percent',
+      }
+    }
     ;(responsePayload as any).riskScoreDirection = tokenRiskScoreResult.scoreDirection
     ;(responsePayload as any).riskScoreDirectionAudit = tokenRiskScoreResult.riskScoreDirectionAudit
     ;(responsePayload as any).riskScoreSource = tokenRiskScoreResult.riskScoreSource

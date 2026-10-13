@@ -38,8 +38,9 @@ export function TrackIntelligence({ row }: { row: TrackedOutcome }) {
       <div className={styles.trackComparisons}>{result.comparisons.map(c => <div className={styles.trackMetric} key={c.key} data-tone={deltaTone(c)}>
         <span className={styles.trackMetricLabel}>{c.key === 'top10Pct' ? 'Top 10' : c.label}</span>
         {c.key === 'deployerActivity' ? <>
-          <strong className={styles.trackActivity}>{c.current == null || c.current === 0 ? 'No verified dev activity' : `${c.current} verified transfer${c.current === 1 ? '' : 's'}`}</strong>
-          <small className={styles.trackMetricStatus}>Coverage incomplete</small>
+          {/* null = dev wallet not identified / not rechecked; 0 = rechecked against a confirmed deployer, none found. */}
+          <strong className={styles.trackActivity}>{c.current == null ? 'Not rechecked' : c.current === 0 ? 'No verified dev transfers' : `${c.current} verified transfer${c.current === 1 ? '' : 's'}`}</strong>
+          <small className={styles.trackMetricStatus}>{c.current == null ? 'Deployer not confirmed or recheck unavailable' : 'Since scan · confirmed deployer · direct token transfers only'}</small>
         </> : <>
           <div className={styles.trackValues}>
             <span className={styles.trackOriginal} title={c.original == null ? 'Original unavailable' : `Original: ${c.original}`} aria-label={`Original: ${c.original == null ? 'unavailable' : value(c.original, c)}`}>{value(c.original, c)}</span>

@@ -33,8 +33,9 @@ const render = (r = row()) => renderToStaticMarkup(createElement(Component, { ro
 test('four compact cards preserve unavailable current values without implying zero', () => {
   const html = render()
   assert.equal((html.match(/class="trackMetric"/g) ?? []).length, 4)
-  assert.match(html, /No verified dev activity/)
-  assert.match(html, /Coverage incomplete/)
+  // Dev activity not rechecked is stated as such — never as "no activity".
+  assert.match(html, /Not rechecked/)
+  assert.match(html, /Deployer not confirmed or recheck unavailable/)
   assert.match(html, /Current unavailable/)
   assert.doesNotMatch(html, /0 verified transfers|No activity →/)
 })
