@@ -12,7 +12,8 @@ import { RADAR_LAST_VERIFIED_MAX_AGE_MS, chooseRadarRecoveryProbe, classifyRadar
 import { getBlockscoutAddressLogs } from '@/lib/server/robinhoodBlockscoutEvidence'
 import { ROBINHOOD_V4_POOL_MANAGER } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
-import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
+import { type HolderCountResult } from '@/lib/server/goldrushHolderCount'
+import { fetchRadarHolderCount, robinhoodRadarHoneypot } from '@/lib/server/robinhoodRadarEvidence'
 import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID } from '@/lib/server/robinhoodChainConfig'
 import { resolveBaseRadarHolderConcentration } from '@/lib/server/baseRadarHolderConcentration'
 
@@ -141,6 +142,9 @@ export interface RadarToken {
   simulationLabel: string
   simulationCortexLine: string
   clarkVerdict: string | null
+  // Robinhood only: the pool the feed's sell check ran against (V4 pools are a bytes32 PoolId).
+  poolAddress?: string | null
+  poolDexId?: string | null
   marketCapDiagnostics?: {
     selectedMarketCapUsd: number | null
     selectedMarketCapStatus: 'verified' | 'unavailable'
@@ -338,7 +342,7 @@ const BASE_RADAR_HOLDER_CONCENTRATION_CONCURRENCY = 4
 // lib/server/goldrushHolderCount.ts so app/api/base-radar/enrichment/route.ts can use the identical
 // logic as a fallback, without touching Token Scanner's engine at all — see that file's header
 // comment for the full rationale.
-const fetchBaseHolderCount = fetchGoldRushHolderCount
+const fetchBaseHolderCount = fetchRadarHolderCount
 
 // TOKEN-AGE SIGNAL RETIRED, DISCLOSED (explicit product reset: "Base Radar deterministic valuation
 // band only" — no soft caps, no maybe logic). This fuzzy async signal (fetchBaseTokenAgeDays, an
@@ -364,7 +368,12 @@ const ABSOLUTE_MIN_LIQUIDITY_USD = 500
 // the same provider_unavailable shape a genuine honeypot.is outage already produces; Robinhood
 // candidates get the same honest simulationStatus: 'open_check' / capped-risk treatment as any real
 // provider failure, never a fabricated result.
-async function fetchHoneypot(contract: string, chain: 'base' | 'robinhood'): Promise<HoneypotResult | null> {
+// ROBINHOOD SELL CHECK: Robinhood now runs ChainLens's own Robinhood buy/sell simulation against the
+// candidate's exact pool (lib/server/robinhoodRadarEvidence.ts) — still never honeypot.is with a guessed
+// chainID. V4 pools and unresolvable venues stay open checks with their real reason.
+type RadarPoolRef = { address: string | null; dexId: string | null }
+async function fetchHoneypot(contract: string, chain: 'base' | 'robinhood', pool?: RadarPoolRef): Promise<HoneypotResult | null> {
+  if (chain === 'robinhood') return robinhoodRadarHoneypot({ contract, poolAddress: pool?.address ?? null, dexId: pool?.dexId ?? null })
   if (chain !== 'base') return { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'provider_unavailable' }
   const ac = new AbortController()
   const tid = setTimeout(() => ac.abort(), 2500)
@@ -582,7 +591,7 @@ const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
 const dexMarketCapRescueInflight = new Map<string, Promise<DexScreenerMarketCapRescueResult>>()
 
-async function getCachedHoneypot(contract: string, chain: 'base' | 'robinhood', retry = false): Promise<HoneypotResult | null> {
+async function getCachedHoneypot(contract: string, chain: 'base' | 'robinhood', retry = false, pool?: RadarPoolRef): Promise<HoneypotResult | null> {
   const key = `${chain}:${contract.toLowerCase()}`
   const now = Date.now()
   const cached = honeypotCache.get(key)
@@ -590,9 +599,9 @@ async function getCachedHoneypot(contract: string, chain: 'base' | 'robinhood', 
   const existing = honeypotInflight.get(key)
   if (existing) return existing
   const promise = (async () => {
-    const first = await fetchHoneypot(contract, chain)
+    const first = await fetchHoneypot(contract, chain, pool)
     if (first || !retry) return first
-    return withTimeout(fetchHoneypot(contract, chain), 2500, { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'timeout_after_retry' })
+    return withTimeout(fetchHoneypot(contract, chain, pool), 2500, { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'timeout_after_retry' })
   })()
   honeypotInflight.set(key, promise)
   try {
@@ -1506,7 +1515,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
     // session).
     const POOL_AGE_WINDOW_MS = 20 * DAY_MS
 
-    type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
+    type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null; poolDexId?: string | null }
     const candidates: Candidate[] = []
     const allDay24h:  number[]    = []
     const seenContracts = new Set<string>()
@@ -1528,7 +1537,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       baseToken: NonNullable<ReturnType<typeof tokenMap.get>>
       ageMinutes: number; liquidityUsd: number; volume24h: number
       fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
-      needsRescue: boolean; isV4Pool: boolean; quoteTokenAddress: string | null
+      needsRescue: boolean; isV4Pool: boolean; dexId: string; quoteTokenAddress: string | null
       // NORMALIZED-CANDIDATE-SHAPE FIX, DISCLOSED: carried from pass 1 (where the raw pool attrs are
       // in scope) through to pass 2's candidate construction (which only has drafts[i], not the
       // original attrs).
@@ -1699,7 +1708,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
 
       drafts.push({
         baseToken, ageMinutes, liquidityUsd, volume24h,
-        fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool,
+        fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool, dexId,
         quoteTokenAddress,
         priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt: createdAt,
       })
@@ -1749,7 +1758,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
 
     const nearMissSample: { symbol: string; contract: string; liquidityUsd: number; valuationUsd: number | null; marketCapStatus: 'verified' | 'unavailable' }[] = []
     for (let i = 0; i < drafts.length; i++) {
-      const { baseToken, ageMinutes, volume24h, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool, priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt } = drafts[i]
+      const { baseToken, ageMinutes, volume24h, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool, dexId, priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt } = drafts[i]
       const rescue = rescueResults[i]
       // WRONG-POOL LIQUIDITY FIX, DISCLOSED (reported: DexScreener showed "$0 / unknown liquidity"
       // and a real-liquidity warning banner for the exact pool this route displayed, while the radar
@@ -1779,8 +1788,17 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
       // one live pair for the token, which one is genuinely this V4 pool is still unresolvable, so it
       // still fails closed exactly as before — the wrong-pool protection is preserved for the
       // ambiguous case, only the previously-impossible unambiguous case is now unblocked.
+      // V4 EXACT POOL ID: DexScreener reports a V4 pair by its bytes32 PoolId — the same identifier
+      // GeckoTerminal uses — so an exact id match proves this is the pool even when the token has
+      // several live pairs (the normal case on Robinhood, where most tokens trade on V4). The
+      // single-pair rule still covers responses without a comparable id.
+      const v4ExactPoolIdMatch = isV4Pool
+        && !!rescue?.selectedPairAddress
+        && !!primaryPoolAddress
+        && /^0x[0-9a-fA-F]{64}$/.test(primaryPoolAddress)
+        && rescue.selectedPairAddress.toLowerCase() === primaryPoolAddress.toLowerCase()
       const rescueMatchesThisPool = isV4Pool
-        ? rescue?.sortedPairCount === 1
+        ? rescue?.sortedPairCount === 1 || v4ExactPoolIdMatch
         : !!rescue?.selectedPairAddress
           && !!primaryPoolAddress
           && rescue.selectedPairAddress.toLowerCase() === primaryPoolAddress.toLowerCase()
@@ -1903,7 +1921,7 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
         chainSlug: requestedChain, chainId: requestedChain === 'robinhood' ? ROBINHOOD_CHAIN_ID : 8453,
         tokenAddress: baseToken.address, priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(), isEstablished, holderVerified: false, evidenceGaps, riskLevel: 'SAFE', honeypot: null,
-        simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
+        simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress, poolDexId: dexId || null,
         ...(debug ? { marketCapDiagnostics: {
           selectedMarketCapUsd: marketCapUsd,
           selectedMarketCapStatus: marketCapStatus,
@@ -2073,7 +2091,9 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
           // Single-attempt, cache-backed, tight-timeout check for the feed — the drawer runs the
           // thorough retry version on demand. Successive polls hit the warm honeypot cache, so this
           // real cost is only paid on a cold cache once per payload-cache window.
-          const hp = await withTimeout(getCachedHoneypot(t.contract, requestedChain, false), 2600, null)
+          // Robinhood's own simulation resolves the venue over RPC first, so it gets a slightly longer
+          // budget; a late answer still lands in the honeypot cache for the next poll.
+          const hp = await withTimeout(getCachedHoneypot(t.contract, requestedChain, false, { address: t.pairAddress ?? null, dexId: t.poolDexId ?? null }), requestedChain === 'robinhood' ? 5000 : 2600, null)
           hpByContract.set(t.contract.toLowerCase(), hp)
         }
       }
@@ -2134,8 +2154,10 @@ async function radarGet(req: NextRequest, ctx: RadarRequestContext) {
 
     // 4. Final output — newest first for live feed
     const toRadarToken = (t: Candidate): RadarToken => {
-      const { pairAddress: _pairAddress, ...rest } = t
-      return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }
+      const { pairAddress: _pairAddress, poolDexId: _poolDexId, ...rest } = t
+      // Robinhood rows carry their pool so the drawer re-runs the sell check on the same pool.
+      const pool = requestedChain === 'robinhood' ? { poolAddress: t.pairAddress ?? null, poolDexId: t.poolDexId ?? null } : {}
+      return { ...rest, ...pool, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }
     }
     const tokens: RadarToken[] = [...scored]
       .sort((a, b) => a.ageMinutes - b.ageMinutes)

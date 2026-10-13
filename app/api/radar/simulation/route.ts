@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason } from '@/lib/baseRadarSimulation'
 import { fetchHoneypotSecurity } from '@/lib/server/honeypotSecurity'
+import { robinhoodRadarHoneypot } from '@/lib/server/robinhoodRadarEvidence'
 
 const VALID_ADDRESS = /^0x[a-fA-F0-9]{40}$/
 
@@ -54,6 +55,28 @@ export async function GET(req: NextRequest) {
 
   if (!VALID_ADDRESS.test(address)) {
     return NextResponse.json({ error: 'Invalid token address' }, { status: 400 })
+  }
+
+  // ROBINHOOD: ChainLens's own Robinhood buy/sell simulation on the feed row's exact pool — the same
+  // check the feed ran, so opening the drawer never replaces a real result with "unsupported".
+  if (chain.toLowerCase() === 'robinhood') {
+    const honeypot = await robinhoodRadarHoneypot({ contract: address, poolAddress: url.searchParams.get('poolAddress'), dexId: url.searchParams.get('dexId') })
+    const simulation = getRadarSimulationDisplay({ contract: address, liquidityUsd, pairAddress, honeypot })
+    const passed = simulation.status === 'passed'
+    return NextResponse.json({
+      address,
+      chain,
+      simulationStatus: simulation.status,
+      simulationReason: simulation.reason,
+      simulationLabel: simulation.label,
+      simulationCortexLine: simulation.cortexLine,
+      buySellSimulation: { buyTax: honeypot.buyTax, sellTax: honeypot.sellTax, slippage: null, failureRate: passed ? 0 : null, isHoneypot: honeypot.isHoneypot, simulationSuccess: honeypot.simulationSuccess, providerStatus: passed ? 'confirmed' : honeypot.failureReason === 'unsupported_pool_model' ? 'not_supported' : 'unavailable' },
+      riskFlags: tradingRiskFlags(honeypot),
+      security: {
+        honeypot: { ...honeypot, failureReason: simulation.reason },
+        openChecks: passed ? [] : [`Robinhood buy/sell simulation: ${simulation.label}. Treat tax and honeypot status as unconfirmed.`],
+      },
+    })
   }
 
   const honeypotChainId = HONEYPOT_SUPPORTED_CHAIN_IDS[chain.toLowerCase()]

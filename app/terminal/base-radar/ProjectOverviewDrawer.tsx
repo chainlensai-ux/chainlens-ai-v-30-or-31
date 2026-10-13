@@ -696,7 +696,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
-  const simulationQuery = address ? `address=${encodeURIComponent(address)}&chain=${chain}&liquidityUsd=${encodeURIComponent(String(token?.liquidityUsd ?? ''))}` : ''
+  const rhPool = chain === 'robinhood' ? (token as { poolAddress?: string | null; poolDexId?: string | null } | null) : null
+  const rhPoolQuery = rhPool?.poolAddress ? `&poolAddress=${encodeURIComponent(rhPool.poolAddress)}&dexId=${encodeURIComponent(rhPool.poolDexId ?? '')}` : ''
+  const simulationQuery = address ? `address=${encodeURIComponent(address)}&chain=${chain}&liquidityUsd=${encodeURIComponent(String(token?.liquidityUsd ?? ''))}${rhPoolQuery}` : ''
 
   const simulation = useQuery({
     queryKey: ['base-radar-drawer-simulation', chain, address, token?.liquidityUsd ?? null],

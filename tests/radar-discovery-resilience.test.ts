@@ -318,7 +318,9 @@ test('no provider-call explosion in a total outage', async () => {
   assert.ok(gtListCalls().length <= 8, `GT list attempts ${gtListCalls().length} (4 pages × first try + one retry)`)
   assert.ok(gtSupplementaryCalls().length <= 8, 'existing DexScreener-seeded token lookups stay within their cap of 4 (+ one retry each)')
   assert.ok(calls.filter(c => c.kind === 'ds' && c.url.includes('/latest/dex/tokens/')).length <= 1)
-  assert.ok(calls.filter(c => c.kind === 'blockscout').length <= 1)
+  // Discovery fallback: one address-logs call. Holder counts: one /api/v2/tokens/{token} lookup per candidate.
+  assert.ok(calls.filter(c => c.kind === 'blockscout' && !c.url.includes('/api/v2/tokens/')).length <= 1)
+  assert.ok(calls.filter(c => c.kind === 'blockscout' && c.url.includes('/api/v2/tokens/')).length <= 1)
   resetCalls()
   await reset({ keepBackoff: true, keepLastVerified: true })
   await run({})

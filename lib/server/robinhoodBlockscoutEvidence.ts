@@ -63,15 +63,17 @@ const RATE_LIMIT_MAX_CALLS = 4
 // unit is one target-tx LOOKUP (the community attempt plus, on 401/403, its one gateway alternate), capped
 // at NATIVE_TRACE_MAX_LOOKUPS per window — every other lane counts individual HTTP calls.
 export const NATIVE_TRACE_MAX_LOOKUPS = 5 // = ROBINHOOD_NATIVE_TRACE_LIVE_CAP (one scan's live traces fit one window)
-export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history' | 'holdings' | 'manifest_bootstrap'
+// radar_holders: Robinhood Radar's per-token holder count (/api/v2/tokens/{address}), 10-minute cached.
+export type BlockscoutBudgetLane = 'activity' | 'evidence' | 'native_trace' | 'deep_acquisition' | 'token_history' | 'holdings' | 'manifest_bootstrap' | 'radar_holders'
 // One empty filtered probe may precede four unfiltered history pages; each is one logical lookup.
-const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4, holdings: 2, manifest_bootstrap: 4 }
+const LANE_MAX: Record<BlockscoutBudgetLane, number> = { activity: RATE_LIMIT_MAX_CALLS, evidence: RATE_LIMIT_MAX_CALLS, native_trace: NATIVE_TRACE_MAX_LOOKUPS, deep_acquisition: 5, token_history: 4, holdings: 2, manifest_bootstrap: 4, radar_holders: 20 }
 const rateLimitState: Record<BlockscoutBudgetLane, { windowStart: number; count: number }> = {
   native_trace: { windowStart: 0, count: 0 },
   deep_acquisition: { windowStart: 0, count: 0 },
   token_history: { windowStart: 0, count: 0 },
   holdings: { windowStart: 0, count: 0 },
   manifest_bootstrap: { windowStart: 0, count: 0 },
+  radar_holders: { windowStart: 0, count: 0 },
   activity: { windowStart: 0, count: 0 },
   evidence: { windowStart: 0, count: 0 },
 }
@@ -731,6 +733,24 @@ export async function getBlockscoutAddressTokenTransfers(address: string, fetchI
     30,
     fetchImpl,
     'activity',
+  )
+}
+
+export type BlockscoutTokenInfo = {
+  address_hash?: string
+  address?: string
+  holders_count?: string | number | null
+  holders?: string | number | null
+}
+
+/** Token counters from the Robinhood Chain explorer's own indexer — the chain-native holder count. */
+export async function getBlockscoutTokenInfo(address: string, fetchImpl: FetchImpl) {
+  return fetchBlockscout<BlockscoutTokenInfo>(
+    `/api/v2/tokens/${address}`,
+    `robinhood:blockscout:token-info:${address.toLowerCase()}`,
+    600,
+    fetchImpl,
+    'radar_holders',
   )
 }
 
