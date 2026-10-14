@@ -117,6 +117,9 @@ export type RunWalletScanResult = FinalReport & {
   // settle) and reconciles the sum against the real scan total, reporting any residue explicitly as
   // `unexplainedMs`. See src/pipeline/scanStageProfiler.ts for the measurement contract.
   scanStageProfile?: import('./scanStageProfiler').ScanStageProfile
+  // UNMATCHED SELL FORENSICS: per-sell bucket, receipt proof, targeted-recovery outcome and final
+  // disposition (max 100 rows) — see src/lib/unmatchedSellForensics.ts.
+  unmatchedSellForensics?: import('../lib/unmatchedSellForensics').UnmatchedSellForensics
 }
 
 export type ScanPerformanceSummary = {

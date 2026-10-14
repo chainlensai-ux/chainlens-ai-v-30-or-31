@@ -31,16 +31,23 @@ function provenAudit(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('pnlReconciliation', () => {
-  it('corrects mismatched lots by router inference', async () => {
+  it('accepted router addresses are not sell evidence: the unmatched-sell count is never reduced by the router count', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    const summary = await r.reconcile({
-      fifoEngineResult: fifo({ unmatchedSells: 1 }), pnlEngineResult: pnl(),
-      routerInferenceOutput: { highConfidenceRouters: new Set(['0xrouter']) }, syntheticPnlAssemblyOutput: null,
+    const routers = { highConfidenceRouters: new Set(['0xrouter', '0xrouter2', '0xrouter3']) }
+    const withAudit = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 2 }), pnlEngineResult: pnl(),
+      routerInferenceOutput: routers, syntheticPnlAssemblyOutput: null,
       structuralCoverageDenominatorAudit: provenAudit(),
     })
-    assert.equal(summary.routerCorrectedCount, 1)
-    assert.equal(summary.unmatchedSells, 0)
-    assert.equal(summary.publicPnlStatus, 'available')
+    assert.equal(withAudit.routerCorrectedCount, 0)
+    assert.equal(withAudit.unmatchedSells, 2)
+    // The structural audit (0 genuine unmatched sells) still decides the gate.
+    assert.equal(withAudit.publicPnlStatus, 'available')
+    // No structural audit: the raw FIFO count reaches the gate, never raw minus the router count.
+    const raw = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 2 }), pnlEngineResult: pnl(), routerInferenceOutput: routers, syntheticPnlAssemblyOutput: null })
+    const noRouters = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 2 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    assert.equal(raw.unmatchedSells, 2)
+    assert.equal(raw.publicPnlStatus, noRouters.publicPnlStatus)
   })
 
   it('corrects mismatched lots by price recovery', async () => {

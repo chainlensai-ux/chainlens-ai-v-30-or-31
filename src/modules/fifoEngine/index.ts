@@ -248,6 +248,8 @@ export function matchLotsFIFO(
         fromAddress: sell.fromAddress,
         toAddress: sell.toAddress,
         amountRaw: sell.amountRaw,
+        unmatchedRaw: remainingToMatchAtomic.toString(),
+        sellRaw: sellAtomic.toString(),
       })
     }
   }

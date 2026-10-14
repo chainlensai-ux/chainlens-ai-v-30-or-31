@@ -76,7 +76,9 @@ import { computeMissingClosedLotSides, type SwapLegGroupSummary } from '../modul
 import {
   seedPermanentReceiptsIntoRequestScope, recordPermanentReceiptsFromRequestScope,
 } from '../modules/receiptSwapDecoder/permanentReceiptCache'
-import { createReceiptRequestScopeCache, receiptCacheKey } from '../modules/receiptSwapDecoder/receiptAcquisition'
+import { createReceiptRequestScopeCache, receiptCacheKey, createLiveBaseReceiptFetcher } from '../modules/receiptSwapDecoder/receiptAcquisition'
+import { fillUnmatchedSellReceiptProofs } from '../modules/receiptSwapDecoder/unmatchedSellReceiptProof'
+import { buildUnmatchedSellForensics } from '../lib/unmatchedSellForensics'
 import {
   auditCachedReceipt, buildReceiptPhase2ForensicsDiagnostic, type CachedReceiptAuditInput,
 } from '../modules/receiptSwapDecoder/receiptPhase2Forensics'
@@ -97,7 +99,7 @@ import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
 import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, buildCriticalTradeEvidenceGapAudit, type EventClassification } from '../modules/eventClassification/index'
-import { resolveBoundaryDependentSells, unmatchedSellProofKey } from '../modules/eventClassification/boundaryDependentSellResolution'
+import { resolveBoundaryDependentSells, unmatchedSellProofKey, type PreResolverBucket } from '../modules/eventClassification/boundaryDependentSellResolution'
 import { fetchAlchemyTokenHistoryStrict } from '../modules/recoveryPolicy/utils'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
@@ -3322,11 +3324,44 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // receipt non-trade proof) can drop those sells from the blocking denominator; it never flips
   // `windowBoundaryProven` / `historyCoverageStatus`. FIFO, pricing, and the 98-lot sample are
   // untouched.
+  // SHORTFALL ROUTING: `earlier_buy_in_window` sells are routed too. An in-window buy covered part of
+  // the sell; the resolver checks only the unmatched remainder (`unmatchedRaw`) against pre-window
+  // inventory and returns them via `provenPreWindowShortfalls`, never as plain pre-window exits.
   const boundaryRequiredSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryRequiredSells
-  const boundaryRequiredKeys = new Set(boundaryRequiredSells.map((sell) => unmatchedSellProofKey(sell)))
-  const preResolverBuckets = new Map(boundaryRequiredSells.map((sell) => [unmatchedSellProofKey(sell), sell.reason] as const))
+  const shortfallSells = unmatchedEvidenceAudit.boundaryProofDiagnostics.boundaryIndependentSells
+    .filter((sell) => sell.reason === 'earlier_buy_in_window')
+  const preResolverBuckets = new Map<string, PreResolverBucket>([
+    ...boundaryRequiredSells.map((sell) => [unmatchedSellProofKey(sell), sell.reason] as const),
+    ...shortfallSells.map((sell) => [unmatchedSellProofKey(sell), 'earlier_buy_in_window'] as const),
+  ])
   const boundaryDependentSellsToResolve = fifoAndPnl.unmatchedSellEvents.filter((sell) =>
-    boundaryRequiredKeys.has(unmatchedSellProofKey(sell)))
+    preResolverBuckets.has(unmatchedSellProofKey(sell)))
+  // RECEIPT RACE: with canonical promotion off, the shadow receipt block runs after the response, so
+  // its proofs never reached the resolver. Fetch receipts (capped, cached) only for unmatched sells
+  // that still have no proof; the deferred block itself is never awaited. Flag on: unchanged.
+  if (!receiptSwapCanonicalPromotionEnabled && process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED !== 'true') {
+    const resolveKeys = new Set(boundaryDependentSellsToResolve.map((sell) => unmatchedSellProofKey(sell)))
+    const receiptTargets = [
+      ...boundaryDependentSellsToResolve,
+      ...fifoAndPnl.unmatchedSellEvents.filter((sell) => !resolveKeys.has(unmatchedSellProofKey(sell))),
+    ]
+    const unmatchedSellReceiptProofAudit = await stageProfiler.stage(
+      'unmatchedSellReceiptProof', { awaitedSerially: true },
+      () => fillUnmatchedSellReceiptProofs({
+        sells: receiptTargets,
+        walletAddress: params.walletAddress,
+        receiptProofByTxHash,
+        fetchReceipt: createLiveBaseReceiptFetcher(),
+        validator: createLiveBaseDexPoolValidator(),
+        uniswapV3Validator: createCachedUniswapV3PoolValidator(
+          createLiveUniswapV3PoolValidator(),
+          createUniswapV3ValidationRequestScope(),
+        ).validator,
+      }).catch(() => null),
+    )
+    // eslint-disable-next-line no-console
+    console.warn('[unmatched-sell-receipt-proof]', unmatchedSellReceiptProofAudit)
+  }
   const boundaryDependentSellResolutionAudit = await stageProfiler.stage(
     'boundaryDependentSellResolution', { awaitedSerially: true },
     () => resolveBoundaryDependentSells({
@@ -3339,6 +3374,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       receiptProofByTx: receiptProofByTxHash,
       fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
       preResolverBuckets,
+      allUnmatchedSells: fifoAndPnl.unmatchedSellEvents,
     }),
   )
   if (boundaryDependentSellResolutionAudit.sellsConsidered > 0) {
@@ -3349,10 +3385,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         provenPreWindowInventoryExits: new Set(boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits),
         provenNonTradeTransfers: new Set(boundaryDependentSellResolutionAudit.provenNonTradeTransfers),
         provenGenuineUnmatchedSells: new Set(boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells),
+        provenPreWindowShortfalls: new Set(boundaryDependentSellResolutionAudit.provenPreWindowShortfalls),
       },
       recoveredClassifiedForJoin,
     )
   }
+  const unmatchedSellForensics = buildUnmatchedSellForensics({
+    unmatchedSellEvents: fifoAndPnl.unmatchedSellEvents,
+    boundaryProofDiagnostics: unmatchedEvidenceAudit.boundaryProofDiagnostics,
+    resolverRows: boundaryDependentSellResolutionAudit.rows,
+    receiptProofByTxHash,
+    historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
+    tokensSkippedByFetchCap: boundaryDependentSellResolutionAudit.tokensSkippedByFetchCap,
+  })
   // eslint-disable-next-line no-console
   console.warn('[boundary-dependent-sell-resolution-audit]', {
     sellsConsidered: boundaryDependentSellResolutionAudit.sellsConsidered,
@@ -3362,6 +3407,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     provenPreWindowInventoryExits: boundaryDependentSellResolutionAudit.provenPreWindowInventoryExits.length,
     provenNonTradeTransfers: boundaryDependentSellResolutionAudit.provenNonTradeTransfers.length,
     provenGenuineUnmatchedSells: boundaryDependentSellResolutionAudit.provenGenuineUnmatchedSells.length,
+    provenPreWindowShortfalls: boundaryDependentSellResolutionAudit.provenPreWindowShortfalls.length,
+    tokensSkippedByFetchCap: boundaryDependentSellResolutionAudit.tokensSkippedByFetchCap,
     windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
     historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
     sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
@@ -3379,6 +3426,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       targetedRecoveryOutcome: row.targetedRecoveryOutcome,
       finalDisposition: row.finalDisposition,
       blockingAfterResolution: row.blockingAfterResolution,
+      unmatchedRaw: row.unmatchedRaw,
+      preWindowAmountCheck: row.preWindowAmountCheck,
+      tokenSkippedByFetchCap: row.tokenSkippedByFetchCap,
     })),
   })
   // eslint-disable-next-line no-console
@@ -4654,6 +4704,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
+    unmatchedSellForensics,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
     goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,

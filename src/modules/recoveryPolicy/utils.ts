@@ -110,6 +110,9 @@ export type AlchemyTokenHistoryStrictResult = {
   inboundPageCapped: boolean
   inboundPageExhausted: boolean
   providerCalls: number
+  // Order the inbound page was requested in. 'asc' (the default) returns the OLDEST inbounds first,
+  // so a capped page still holds the earliest acquisitions; absent on hand-built results.
+  order?: 'asc' | 'desc'
 }
 
 const requestScopedAlchemyTokenHistoryStrict = new Map<string, Promise<AlchemyTokenHistoryStrictResult>>()
@@ -306,11 +309,12 @@ export async function fetchAlchemyTokenHistoryStrict(
   chain: SupportedChain,
   walletAddress: string,
   token: string,
+  order: 'asc' | 'desc' = 'asc',
 ): Promise<AlchemyTokenHistoryStrictResult> {
-  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${token.trim().toLowerCase()}:inbound`
+  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${token.trim().toLowerCase()}:inbound:${order}`
   const existing = requestScopedAlchemyTokenHistoryStrict.get(key)
   if (existing) return existing
-  const promise = fetchAlchemyTokenHistoryInboundLive(chain, walletAddress, token)
+  const promise = fetchAlchemyTokenHistoryInboundLive(chain, walletAddress, token, order)
   requestScopedAlchemyTokenHistoryStrict.set(key, promise)
   promise.catch(() => {
     if (requestScopedAlchemyTokenHistoryStrict.get(key) === promise) requestScopedAlchemyTokenHistoryStrict.delete(key)
@@ -322,10 +326,11 @@ async function fetchAlchemyTokenHistoryInboundLive(
   chain: SupportedChain,
   walletAddress: string,
   token: string,
+  order: 'asc' | 'desc',
 ): Promise<AlchemyTokenHistoryStrictResult> {
   const failed: AlchemyTokenHistoryStrictResult = {
     ok: false, inboundQueryOk: false, outboundQueryOk: false, events: [],
-    inboundPageCapped: false, inboundPageExhausted: false, providerCalls: 0,
+    inboundPageCapped: false, inboundPageExhausted: false, providerCalls: 0, order,
   }
   const url = alchemyBaseUrl(chain)
   const apiKey = alchemyApiKey(chain)
@@ -346,7 +351,7 @@ async function fetchAlchemyTokenHistoryInboundLive(
         jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
         params: [{
           fromBlock: '0x0', category: ['erc20'], contractAddresses: [token],
-          withMetadata: true, maxCount: '0x64', order: 'desc', toAddress: walletAddress,
+          withMetadata: true, maxCount: '0x64', order, toAddress: walletAddress,
         }],
       }),
       signal: AbortSignal.timeout(12_000),
@@ -366,6 +371,7 @@ async function fetchAlchemyTokenHistoryInboundLive(
       inboundPageCapped,
       inboundPageExhausted: !inboundPageCapped,
       providerCalls: 1,
+      order,
     }
   } catch {
     return { ...failed, providerCalls: 1 }

@@ -2380,11 +2380,13 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       for (const key of config.dustSuppressedKeys ?? []) mismatches.set(`dust:${key}`, 'dustSuppressedToken')
 
-      let routerCorrectedCount = 0
+      // ROUTER COUNT IS NOT SELL EVIDENCE: the number of accepted router ADDRESSES says nothing about
+      // which (or how many) unmatched SELLS were router legs, so it is no longer subtracted from the
+      // unmatched-sell count. Kept at 0 for the summary shape; the routers are still logged.
+      const routerCorrectedCount = 0
       const acceptedRouters = input.routerInferenceOutput?.highConfidenceRouters ?? new Set<string>()
       if (acceptedRouters.size > 0 && input.fifoEngineResult.unmatchedSells > 0) {
-        routerCorrectedCount = Math.min(input.fifoEngineResult.unmatchedSells, acceptedRouters.size)
-        logger.warn('[pnl-reconciliation] routerCorrected', { routerCorrectedCount, acceptedRouters: [...acceptedRouters].sort() })
+        logger.warn('[pnl-reconciliation] acceptedRoutersNotSubtracted', { acceptedRouters: [...acceptedRouters].sort(), unmatchedSells: input.fifoEngineResult.unmatchedSells })
       }
 
       const recovery = await recoverPrices(fifoLots)

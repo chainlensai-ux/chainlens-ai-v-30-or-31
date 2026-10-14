@@ -17,6 +17,7 @@ import type { ClassifiedEvent, EventClassification } from './index'
 
 export type BoundaryDependentSellDisposition =
   | 'pre_window_inventory_exit_proven'
+  | 'pre_window_inventory_insufficient'
   | 'non_trade_transfer_proven'
   | 'supported_swap_with_missing_pre_window_buy'
   | 'genuine_unmatched_sell'
@@ -29,7 +30,14 @@ export type TargetedRecoveryOutcome =
   | 'page_capped'
   | 'empty_exhausted'
 
-export type PreResolverBucket = 'history_truncated_at_provider' | 'window_boundary_unproven'
+// `earlier_buy_in_window` sells are shortfalls: an in-window buy covered part of the sell and only
+// the unmatched remainder (`unmatchedRaw`) needs pre-window inventory.
+export type PreResolverBucket = 'history_truncated_at_provider' | 'window_boundary_unproven' | 'earlier_buy_in_window'
+
+// AMOUNT CHECK: pre-window inbound raw (local + provider, de-duplicated by txHash and amount) minus
+// visible pre-window outbounds, against the cumulative unmatched raw of this and every earlier
+// unmatched sell of the same chain and token. Unknown amounts never prove anything.
+export type PreWindowAmountCheck = 'covered' | 'insufficient' | 'unknown' | 'not_applicable'
 
 export type BoundaryDependentSellResolutionRow = {
   identity: string
@@ -54,6 +62,13 @@ export type BoundaryDependentSellResolutionRow = {
   timestamp: number
   rawAmount: string | null
   normalizedAmount: number
+  unmatchedRaw: string | null
+  sellRaw: string | null
+  preWindowAmountCheck: PreWindowAmountCheck
+  preWindowInboundRaw: string | null
+  preWindowOutboundRaw: string | null
+  requiredRaw: string | null
+  tokenSkippedByFetchCap: boolean
   from: string
   to: string
   classification: EventClassification | null
@@ -76,8 +91,12 @@ export type BoundaryDependentSellResolutionAudit = {
   providerCalls: number
   rows: BoundaryDependentSellResolutionRow[]
   provenPreWindowInventoryExits: string[]
+  // Shortfall sells (preResolverBucket `earlier_buy_in_window`) whose unmatched remainder is covered.
+  provenPreWindowShortfalls: string[]
   provenNonTradeTransfers: string[]
   provenGenuineUnmatchedSells: string[]
+  // `${chain}:${token}` keys that needed a provider fetch but fell outside the per-scan cap.
+  tokensSkippedByFetchCap: string[]
   remainingBlockers: number
 }
 
@@ -101,10 +120,14 @@ const NON_TRADE_CLASSIFICATIONS = new Set<EventClassification>([
   'lp_staking',
 ])
 
-const MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES = 8
+export const MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES = 8
 
 export function unmatchedSellProofKey(identity: { chain: string; txHash: string; token: string }): string {
   return `${identity.chain}:${identity.txHash.toLowerCase()}:${identity.token.toLowerCase()}`
+}
+
+function tokenKeyOf(identity: { chain: string; token: string }): string {
+  return `${identity.chain}:${identity.token.toLowerCase()}`
 }
 
 function parseTs(value: string | null | undefined): number | null {
@@ -113,13 +136,40 @@ function parseTs(value: string | null | undefined): number | null {
   return Number.isFinite(ts) ? ts : null
 }
 
-type InboundHit = {
+function parseRaw(value: string | null | undefined): bigint | null {
+  if (value == null || !/^\d+$/.test(value.trim())) return null
+  return BigInt(value.trim())
+}
+
+/** The raw amount the sell still needs covered: its unmatched remainder, else (conservatively) the full sell. */
+function requiredRawOf(sell: UnmatchedEventIdentity): bigint | null {
+  return parseRaw(sell.unmatchedRaw ?? sell.sellRaw ?? sell.amountRaw)
+}
+
+type TransferHit = {
   txHash: string
   timestamp: number
   source: string
+  amountRaw: bigint | null
 }
 
-function collectLocalInbounds(params: {
+function compareHits(a: TransferHit, b: TransferHit): number {
+  return a.timestamp - b.timestamp || a.txHash.toLowerCase().localeCompare(b.txHash.toLowerCase())
+}
+
+function dedupeHits(hits: readonly TransferHit[]): TransferHit[] {
+  const seen = new Set<string>()
+  const out: TransferHit[] = []
+  for (const hit of [...hits].sort(compareHits)) {
+    const key = `${hit.txHash.toLowerCase()}:${hit.amountRaw == null ? '?' : hit.amountRaw.toString()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(hit)
+  }
+  return out
+}
+
+function collectLocalTransfers(params: {
   walletAddress: string
   chain: string
   token: string
@@ -127,23 +177,24 @@ function collectLocalInbounds(params: {
   classified: readonly ClassifiedEvent[]
   recoveredClassified: readonly ClassifiedEvent[]
   recoveredRawEvents: readonly RawProviderEvent[]
-}): InboundHit[] {
+}): { inbounds: TransferHit[]; outbounds: TransferHit[] } {
   const wallet = params.walletAddress.toLowerCase()
   const token = params.token.toLowerCase()
   const sellTx = params.sellTxHash.toLowerCase()
-  const hits: InboundHit[] = []
+  const inbounds: TransferHit[] = []
+  const outbounds: TransferHit[] = []
 
   const considerClassified = (events: readonly ClassifiedEvent[], source: string) => {
     for (const c of events) {
       if (c.event.chain !== params.chain) continue
-      if (c.event.direction !== 'inbound') continue
       if (c.event.contract.toLowerCase() !== token) continue
       if (c.event.txHash.toLowerCase() === sellTx) continue
-      const to = (c.event.toAddress ?? '').toLowerCase()
-      if (to !== '' && to !== wallet) continue
       const ts = parseTs(c.event.timestamp)
       if (ts == null) continue
-      hits.push({ txHash: c.event.txHash, timestamp: ts, source })
+      const hit = { txHash: c.event.txHash, timestamp: ts, source, amountRaw: parseRaw(c.event.amountRaw) }
+      // The wallet must be the named counterparty; an empty address proves nothing.
+      if (c.event.direction === 'inbound' && (c.event.toAddress ?? '').toLowerCase() === wallet) inbounds.push(hit)
+      else if (c.event.direction === 'outbound' && (c.event.fromAddress ?? '').toLowerCase() === wallet) outbounds.push(hit)
     }
   }
   considerClassified(params.classified, 'classified_canonical')
@@ -153,20 +204,51 @@ function collectLocalInbounds(params: {
     if (event.chain !== params.chain) continue
     if ((event.contract ?? '').toLowerCase() !== token) continue
     if ((event.txHash ?? '').toLowerCase() === sellTx) continue
-    if ((event.toAddress ?? '').toLowerCase() !== wallet) continue
     const ts = parseTs(event.timestamp)
     if (ts == null) continue
-    hits.push({ txHash: event.txHash ?? '0x', timestamp: ts, source: 'recovered_raw' })
+    const hit = { txHash: event.txHash ?? '0x', timestamp: ts, source: 'recovered_raw', amountRaw: parseRaw(event.amountRaw) }
+    const to = (event.toAddress ?? '').toLowerCase()
+    const from = (event.fromAddress ?? '').toLowerCase()
+    if (to === wallet && from !== wallet) inbounds.push(hit)
+    else if (from === wallet && to !== wallet) outbounds.push(hit)
   }
-  hits.sort((a, b) => a.timestamp - b.timestamp)
-  return hits
+  return { inbounds: inbounds.sort(compareHits), outbounds: outbounds.sort(compareHits) }
 }
 
-function earliestBefore(hits: readonly InboundHit[], boundExclusive: number): InboundHit | null {
-  for (const hit of hits) {
-    if (hit.timestamp < boundExclusive) return hit
+type AmountEvaluation = {
+  check: PreWindowAmountCheck
+  preWindowHits: TransferHit[]
+  inboundRaw: bigint | null
+  outboundRaw: bigint | null
+}
+
+// Pre-window = strictly before the window start (and so strictly before the in-window sell).
+function evaluatePreWindowAmount(
+  inbounds: readonly TransferHit[],
+  outbounds: readonly TransferHit[],
+  windowStart: number,
+  sellTimestamp: number,
+  required: bigint | null,
+): AmountEvaluation {
+  const bound = Math.min(windowStart, sellTimestamp)
+  const preIn = dedupeHits(inbounds).filter((h) => h.timestamp < bound)
+  const preOut = dedupeHits(outbounds).filter((h) => h.timestamp < bound)
+  if (preIn.length === 0) return { check: 'not_applicable', preWindowHits: [], inboundRaw: null, outboundRaw: null }
+  let inboundRaw = BigInt(0)
+  let anyInboundUnknown = false
+  for (const h of preIn) {
+    if (h.amountRaw == null) anyInboundUnknown = true
+    else inboundRaw += h.amountRaw
   }
-  return null
+  let outboundRaw: bigint | null = BigInt(0)
+  for (const h of preOut) {
+    if (h.amountRaw == null) { outboundRaw = null; break }
+    outboundRaw += h.amountRaw
+  }
+  // Known inbounds are a lower bound; an unknown outbound or required amount proves nothing.
+  if (outboundRaw == null || required == null) return { check: 'unknown', preWindowHits: preIn, inboundRaw, outboundRaw }
+  if (inboundRaw - outboundRaw >= required) return { check: 'covered', preWindowHits: preIn, inboundRaw, outboundRaw }
+  return { check: anyInboundUnknown ? 'unknown' : 'insufficient', preWindowHits: preIn, inboundRaw, outboundRaw }
 }
 
 function gateImpactFor(disposition: BoundaryDependentSellDisposition): 'non_blocking' | 'blocking' {
@@ -182,6 +264,28 @@ function emptyFailedHistory(): AlchemyTokenHistoryStrictResult {
   }
 }
 
+function compareSells(a: UnmatchedEventIdentity, b: UnmatchedEventIdentity): number {
+  return a.timestamp - b.timestamp
+    || a.txHash.toLowerCase().localeCompare(b.txHash.toLowerCase())
+    || a.token.toLowerCase().localeCompare(b.token.toLowerCase())
+}
+
+// Cumulative raw each sell needs from pre-window inventory: its own unmatched remainder plus that of
+// every earlier unmatched sell of the same chain and token (they drained the same inventory first).
+function cumulativeRequiredBySell(drainSells: readonly UnmatchedEventIdentity[]): Map<string, bigint | null> {
+  const out = new Map<string, bigint | null>()
+  const runningByToken = new Map<string, bigint | null>()
+  for (const sell of [...drainSells].sort(compareSells)) {
+    const tokenKey = tokenKeyOf(sell)
+    const prior = runningByToken.has(tokenKey) ? runningByToken.get(tokenKey)! : BigInt(0)
+    const own = requiredRawOf(sell)
+    const next = prior == null || own == null ? null : prior + own
+    runningByToken.set(tokenKey, next)
+    out.set(unmatchedSellProofKey(sell), next)
+  }
+  return out
+}
+
 export async function resolveBoundaryDependentSells(params: {
   sells: readonly UnmatchedEventIdentity[]
   classified: readonly ClassifiedEvent[]
@@ -192,22 +296,35 @@ export async function resolveBoundaryDependentSells(params: {
   receiptProofByTx?: ReadonlyMap<string, string>
   fetchTokenHistory?: TokenHistoryFetcher
   preResolverBuckets?: ReadonlyMap<string, PreResolverBucket>
+  // Every unmatched sell of the scan (defaults to `sells`); used only to charge earlier sells of the
+  // same token against the shared pre-window inventory before this one.
+  allUnmatchedSells?: readonly UnmatchedEventIdentity[]
 }): Promise<BoundaryDependentSellResolutionAudit> {
   const recoveredClassified = params.recoveredClassified ?? []
   const recoveredRawEvents = params.recoveredRawEvents ?? []
   const receiptProofByTx = params.receiptProofByTx ?? new Map<string, string>()
   const preResolverBuckets = params.preResolverBuckets ?? new Map<string, PreResolverBucket>()
-  const rows: BoundaryDependentSellResolutionRow[] = []
+  const sells = [...params.sells].sort(compareSells)
+  const drainSells = [...(params.allUnmatchedSells ?? []), ...params.sells]
+  const seenDrain = new Set<string>()
+  const cumulativeRequired = cumulativeRequiredBySell(drainSells.filter((s) => {
+    const key = unmatchedSellProofKey(s)
+    if (seenDrain.has(key)) return false
+    seenDrain.add(key)
+    return true
+  }))
+  const rowsByKey = new Map<string, BoundaryDependentSellResolutionRow>()
   const provenPreWindowInventoryExits: string[] = []
+  const provenPreWindowShortfalls: string[] = []
   const provenNonTradeTransfers: string[] = []
   const provenGenuineUnmatchedSells: string[] = []
+  const allClassified = [...params.classified, ...recoveredClassified]
 
-  const tokensNeedingFetch = new Map<string, { chain: SupportedChain; token: string }>()
-  const localInboundBySell = new Map<string, InboundHit[]>()
-
-  for (const sell of params.sells) {
+  const localBySell = new Map<string, { inbounds: TransferHit[]; outbounds: TransferHit[] }>()
+  const classificationBySell = new Map<string, EventClassification | null>()
+  for (const sell of sells) {
     const key = unmatchedSellProofKey(sell)
-    localInboundBySell.set(key, collectLocalInbounds({
+    localBySell.set(key, collectLocalTransfers({
       walletAddress: params.walletAddress,
       chain: sell.chain,
       token: sell.token,
@@ -216,139 +333,162 @@ export async function resolveBoundaryDependentSells(params: {
       recoveredClassified,
       recoveredRawEvents,
     }))
-  }
-
-  // First pass: dispositions that need no provider call.
-  const pendingProvider: UnmatchedEventIdentity[] = []
-  for (const sell of params.sells) {
-    const key = unmatchedSellProofKey(sell)
-    const classifiedMatch = [...params.classified, ...recoveredClassified].find((c) =>
+    const classifiedMatch = allClassified.find((c) =>
       c.event.chain === sell.chain
       && c.event.txHash.toLowerCase() === sell.txHash.toLowerCase()
       && c.event.contract.toLowerCase() === sell.token.toLowerCase()
       && c.event.direction === 'outbound',
     )
-    const classification = classifiedMatch?.classification ?? null
+    classificationBySell.set(key, classifiedMatch?.classification ?? null)
+  }
+
+  const isShortfall = (key: string) => preResolverBuckets.get(key) === 'earlier_buy_in_window'
+  const recordProven = (key: string) => {
+    if (isShortfall(key)) provenPreWindowShortfalls.push(key)
+    else provenPreWindowInventoryExits.push(key)
+  }
+  const inWindowHitOf = (inbounds: readonly TransferHit[], sell: UnmatchedEventIdentity) =>
+    inbounds.find((hit) => hit.timestamp >= params.windowStartTimestamp && hit.timestamp < sell.timestamp) ?? null
+
+  // First pass: dispositions that need no provider call.
+  const pendingProvider: UnmatchedEventIdentity[] = []
+  for (const sell of sells) {
+    const key = unmatchedSellProofKey(sell)
+    const classification = classificationBySell.get(key) ?? null
     const receiptProof = receiptProofByTx.get(sell.txHash.toLowerCase()) ?? null
-    const localHits = localInboundBySell.get(key) ?? []
-    const preWindowHit = earliestBefore(localHits, params.windowStartTimestamp)
-    const inWindowHit = localHits.find((hit) => hit.timestamp >= params.windowStartTimestamp && hit.timestamp < sell.timestamp) ?? null
+    const local = localBySell.get(key)!
+    const inWindowHit = inWindowHitOf(local.inbounds, sell)
+    const required = cumulativeRequired.get(key) ?? null
+    const base = {
+      sell, classification, receiptProof, hits: local.inbounds, inWindowHit, required,
+      preResolverBucket: preResolverBuckets.get(key) ?? null, tokenSkippedByFetchCap: false,
+    }
 
     if (classification != null && NON_TRADE_CLASSIFICATIONS.has(classification)) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
+      rowsByKey.set(key, buildRow({
+        ...base, preWindowHit: null, amount: null,
         disposition: 'non_trade_transfer_proven',
         preWindowRecoveryAttempted: false, providerSource: null, providerBoundaryDependency: false,
         targetedRecoveryOutcome: 'not_attempted',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenNonTradeTransfers.push(key)
       continue
     }
     if (receiptProof != null && NON_TRADE_RECEIPT_REASONS.has(receiptProof)) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
+      rowsByKey.set(key, buildRow({
+        ...base, preWindowHit: null, amount: null,
         disposition: 'non_trade_transfer_proven',
         preWindowRecoveryAttempted: false, providerSource: 'receipt', providerBoundaryDependency: false,
         targetedRecoveryOutcome: 'not_attempted',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       provenNonTradeTransfers.push(key)
       continue
     }
-    if (preWindowHit != null) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: localHits, preWindowHit, inWindowHit,
+    const amount = evaluatePreWindowAmount(local.inbounds, local.outbounds, params.windowStartTimestamp, sell.timestamp, required)
+    if (amount.check === 'covered') {
+      rowsByKey.set(key, buildRow({
+        ...base, preWindowHit: amount.preWindowHits[0] ?? null, amount,
         disposition: 'pre_window_inventory_exit_proven',
-        preWindowRecoveryAttempted: false, providerSource: preWindowHit.source, providerBoundaryDependency: false,
+        preWindowRecoveryAttempted: false, providerSource: amount.preWindowHits[0]?.source ?? null, providerBoundaryDependency: false,
         targetedRecoveryOutcome: 'not_attempted',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
-      provenPreWindowInventoryExits.push(key)
+      recordProven(key)
       continue
     }
     pendingProvider.push(sell)
-    if (tokensNeedingFetch.size < MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES) {
-      const tokenKey = `${sell.chain}:${sell.token.toLowerCase()}`
-      if (!tokensNeedingFetch.has(tokenKey)) {
-        tokensNeedingFetch.set(tokenKey, { chain: sell.chain, token: sell.token })
-      }
-    }
   }
+
+  // Prioritised cap: most blocking sells first, then largest unmatched raw, then token address.
+  const pendingByToken = new Map<string, { chain: SupportedChain; token: string; count: number; raw: bigint }>()
+  for (const sell of pendingProvider) {
+    const tokenKey = tokenKeyOf(sell)
+    const entry = pendingByToken.get(tokenKey) ?? { chain: sell.chain, token: sell.token, count: 0, raw: BigInt(0) }
+    entry.count += 1
+    entry.raw += requiredRawOf(sell) ?? BigInt(0)
+    pendingByToken.set(tokenKey, entry)
+  }
+  const rankedTokens = [...pendingByToken.entries()].sort(([ak, a], [bk, b]) =>
+    b.count - a.count || (b.raw > a.raw ? 1 : b.raw < a.raw ? -1 : 0) || ak.localeCompare(bk))
+  const tokensNeedingFetch = rankedTokens.slice(0, MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES)
+  const tokensSkippedByFetchCap = rankedTokens.slice(MAX_BOUNDARY_DEPENDENT_TOKEN_FETCHES).map(([k]) => k)
+  const skippedSet = new Set(tokensSkippedByFetchCap)
 
   const historyByToken = new Map<string, AlchemyTokenHistoryStrictResult>()
   let providerCalls = 0
-  if (params.fetchTokenHistory) {
-    for (const { chain, token } of tokensNeedingFetch.values()) {
+  for (const [tokenKey, { chain, token }] of tokensNeedingFetch) {
+    if (params.fetchTokenHistory) {
       const result = await params.fetchTokenHistory(chain, params.walletAddress, token)
-      historyByToken.set(`${chain}:${token.toLowerCase()}`, result)
+      historyByToken.set(tokenKey, result)
       providerCalls += result.providerCalls
-    }
-  } else {
-    for (const { chain, token } of tokensNeedingFetch.values()) {
-      historyByToken.set(`${chain}:${token.toLowerCase()}`, emptyFailedHistory())
+    } else {
+      historyByToken.set(tokenKey, emptyFailedHistory())
     }
   }
 
   for (const sell of pendingProvider) {
     const key = unmatchedSellProofKey(sell)
-    const classifiedMatch = [...params.classified, ...recoveredClassified].find((c) =>
-      c.event.chain === sell.chain
-      && c.event.txHash.toLowerCase() === sell.txHash.toLowerCase()
-      && c.event.contract.toLowerCase() === sell.token.toLowerCase()
-      && c.event.direction === 'outbound',
-    )
-    const classification = classifiedMatch?.classification ?? null
+    const tokenKey = tokenKeyOf(sell)
+    const classification = classificationBySell.get(key) ?? null
     const receiptProof = receiptProofByTx.get(sell.txHash.toLowerCase()) ?? null
-    const localHits = localInboundBySell.get(key) ?? []
-    const inWindowHit = localHits.find((hit) => hit.timestamp >= params.windowStartTimestamp && hit.timestamp < sell.timestamp) ?? null
-    const history = historyByToken.get(`${sell.chain}:${sell.token.toLowerCase()}`)
+    const local = localBySell.get(key)!
+    const inWindowHit = inWindowHitOf(local.inbounds, sell)
+    const required = cumulativeRequired.get(key) ?? null
+    const history = historyByToken.get(tokenKey)
     const fetchAttempted = history != null
+    const base = {
+      sell, classification, receiptProof, inWindowHit, required,
+      preResolverBucket: preResolverBuckets.get(key) ?? null, tokenSkippedByFetchCap: skippedSet.has(tokenKey),
+    }
 
     if (history == null || history.ok !== true || history.inboundQueryOk !== true) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: localHits, preWindowHit: null, inWindowHit,
-        disposition: 'still_unresolved_boundary',
+      // Local pre-window evidence alone was not enough by amount; without a completed provider
+      // query that stays an insufficient (blocking) proof, never a resolution.
+      const localAmount = evaluatePreWindowAmount(local.inbounds, local.outbounds, params.windowStartTimestamp, sell.timestamp, required)
+      const localEvidence = localAmount.check !== 'not_applicable'
+      rowsByKey.set(key, buildRow({
+        ...base, hits: local.inbounds, preWindowHit: localAmount.preWindowHits[0] ?? null, amount: localEvidence ? localAmount : null,
+        disposition: localEvidence ? 'pre_window_inventory_insufficient' : 'still_unresolved_boundary',
         preWindowRecoveryAttempted: fetchAttempted, providerSource: fetchAttempted ? 'alchemy' : null,
         providerBoundaryDependency: true,
         targetedRecoveryOutcome: fetchAttempted ? 'timeout_or_failed' : 'not_attempted',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       continue
     }
 
-    const providerHits: InboundHit[] = []
+    const providerInbounds: TransferHit[] = []
     for (const event of history.events) {
+      if (event.chain != null && event.chain !== sell.chain) continue
       if ((event.contract ?? '').toLowerCase() !== sell.token.toLowerCase()) continue
       if ((event.toAddress ?? '').toLowerCase() !== params.walletAddress.toLowerCase()) continue
       if ((event.txHash ?? '').toLowerCase() === sell.txHash.toLowerCase()) continue
       const ts = parseTs(event.timestamp)
       if (ts == null) continue
-      providerHits.push({ txHash: event.txHash ?? '0x', timestamp: ts, source: 'alchemy_inbound' })
+      providerInbounds.push({ txHash: event.txHash ?? '0x', timestamp: ts, source: 'alchemy_inbound', amountRaw: parseRaw(event.amountRaw) })
     }
-    const allHits = [...localHits, ...providerHits].sort((a, b) => a.timestamp - b.timestamp)
-    const preWindowHit = earliestBefore(allHits, params.windowStartTimestamp)
-    if (preWindowHit != null) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: allHits, preWindowHit, inWindowHit,
-        disposition: 'pre_window_inventory_exit_proven',
-        preWindowRecoveryAttempted: true, providerSource: preWindowHit.source, providerBoundaryDependency: true,
-        targetedRecoveryOutcome: 'inbound_found',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
+    const allInbounds = dedupeHits([...local.inbounds, ...providerInbounds])
+    const amount = evaluatePreWindowAmount(allInbounds, local.outbounds, params.windowStartTimestamp, sell.timestamp, required)
+    if (amount.check !== 'not_applicable') {
+      // A pre-window inbound exists. An oldest-first page holds the earliest inbounds even when
+      // capped, so the existence proof is conclusive; the amount check decides the disposition.
+      const covered = amount.check === 'covered'
+      rowsByKey.set(key, buildRow({
+        ...base, hits: allInbounds, preWindowHit: amount.preWindowHits[0] ?? null, amount,
+        disposition: covered ? 'pre_window_inventory_exit_proven' : 'pre_window_inventory_insufficient',
+        preWindowRecoveryAttempted: true, providerSource: amount.preWindowHits[0]?.source ?? 'alchemy', providerBoundaryDependency: true,
+        targetedRecoveryOutcome: !covered && history.inboundPageCapped ? 'page_capped' : 'inbound_found',
       }))
-      provenPreWindowInventoryExits.push(key)
+      if (covered) recordProven(key)
       continue
     }
 
     // Completed inbound query found no pre-window inbound. A capped page cannot prove that older
     // history does not exist — timeout-equivalent for "no history", fail closed.
     if (history.inboundPageCapped) {
-      rows.push(buildRow({
-        sell, classification, receiptProof, hits: allHits, preWindowHit: null, inWindowHit,
+      rowsByKey.set(key, buildRow({
+        ...base, hits: allInbounds, preWindowHit: null, amount: null,
         disposition: 'still_unresolved_boundary',
         preWindowRecoveryAttempted: true, providerSource: 'alchemy', providerBoundaryDependency: true,
         targetedRecoveryOutcome: 'page_capped',
-        preResolverBucket: preResolverBuckets.get(key) ?? null,
       }))
       continue
     }
@@ -357,16 +497,17 @@ export async function resolveBoundaryDependentSells(params: {
     const disposition: BoundaryDependentSellDisposition = swapProven
       ? 'supported_swap_with_missing_pre_window_buy'
       : 'genuine_unmatched_sell'
-    rows.push(buildRow({
-      sell, classification, receiptProof, hits: allHits, preWindowHit: null, inWindowHit,
+    rowsByKey.set(key, buildRow({
+      ...base, hits: allInbounds, preWindowHit: null, amount: null,
       disposition,
       preWindowRecoveryAttempted: true, providerSource: 'alchemy', providerBoundaryDependency: true,
       targetedRecoveryOutcome: 'empty_exhausted',
-      preResolverBucket: preResolverBuckets.get(key) ?? null,
     }))
-    provenGenuineUnmatchedSells.push(key)
+    if (!isShortfall(key)) provenGenuineUnmatchedSells.push(key)
   }
 
+  // Rows keep the caller's sell order.
+  const rows = params.sells.map((sell) => rowsByKey.get(unmatchedSellProofKey(sell))!).filter((row) => row != null)
   const remainingBlockers = rows.filter((row) => row.gateImpact === 'blocking').length
   return {
     sellsConsidered: params.sells.length,
@@ -374,8 +515,10 @@ export async function resolveBoundaryDependentSells(params: {
     providerCalls,
     rows,
     provenPreWindowInventoryExits,
+    provenPreWindowShortfalls,
     provenNonTradeTransfers,
     provenGenuineUnmatchedSells,
+    tokensSkippedByFetchCap,
     remainingBlockers,
   }
 }
@@ -384,17 +527,20 @@ function buildRow(params: {
   sell: UnmatchedEventIdentity
   classification: EventClassification | null
   receiptProof: string | null
-  hits: readonly InboundHit[]
-  preWindowHit: InboundHit | null
-  inWindowHit: InboundHit | null
+  hits: readonly TransferHit[]
+  preWindowHit: TransferHit | null
+  inWindowHit: TransferHit | null
+  amount: AmountEvaluation | null
+  required: bigint | null
   disposition: BoundaryDependentSellDisposition
   preWindowRecoveryAttempted: boolean
   providerSource: string | null
   providerBoundaryDependency: boolean
   targetedRecoveryOutcome: TargetedRecoveryOutcome
   preResolverBucket: PreResolverBucket | null
+  tokenSkippedByFetchCap: boolean
 }): BoundaryDependentSellResolutionRow {
-  const { sell, classification, receiptProof, hits, preWindowHit, inWindowHit, disposition } = params
+  const { sell, classification, receiptProof, hits, preWindowHit, inWindowHit, disposition, amount } = params
   const earliest = hits[0] ?? null
   const gateImpact = gateImpactFor(disposition)
   return {
@@ -420,12 +566,19 @@ function buildRow(params: {
     timestamp: sell.timestamp,
     rawAmount: sell.amountRaw,
     normalizedAmount: sell.amount,
+    unmatchedRaw: sell.unmatchedRaw ?? null,
+    sellRaw: sell.sellRaw ?? sell.amountRaw ?? null,
+    preWindowAmountCheck: amount?.check ?? 'not_applicable',
+    preWindowInboundRaw: amount?.inboundRaw?.toString() ?? null,
+    preWindowOutboundRaw: amount?.outboundRaw?.toString() ?? null,
+    requiredRaw: params.required?.toString() ?? null,
+    tokenSkippedByFetchCap: params.tokenSkippedByFetchCap,
     from: sell.fromAddress,
     to: sell.toAddress,
     classification,
     receiptClassification: receiptProof,
     earlierBuyInCurrentWindow: inWindowHit != null,
-    acceptedPreWindowInventoryEvidence: preWindowHit != null,
+    acceptedPreWindowInventoryEvidence: disposition === 'pre_window_inventory_exit_proven',
     recoveryHistoryFound: hits.length > 0,
     earliestRecoveredBuy: earliest == null ? null : { txHash: earliest.txHash, timestamp: earliest.timestamp, source: earliest.source },
     providerSource: params.providerSource,

@@ -612,6 +612,10 @@ export type UnmatchedEvidenceAuditContext = {
   provenPreWindowInventoryExits?: ReadonlySet<string>
   provenNonTradeTransfers?: ReadonlySet<string>
   provenGenuineUnmatchedSells?: ReadonlySet<string>
+  // SHORTFALL PROOFS, ADDITIVE: sells with an earlier in-window buy whose UNMATCHED remainder is
+  // covered, by amount, by proven pre-window inventory for the same chain and token. Only these
+  // leave the `earlier_buy_in_window` bucket; every other shortfall keeps blocking. No cost basis.
+  provenPreWindowShortfalls?: ReadonlySet<string>
 }
 
 export type UnmatchedEvidenceAudit = {
@@ -628,6 +632,9 @@ export type UnmatchedEvidenceAudit = {
   // attribute the population to page-cap truncation rather than a join failure.
 
   preWindowInventoryExitsUnprovenDueToTruncation: number
+  // Subset of preWindowInventoryExits: shortfall sells (earlier in-window buy) whose unmatched
+  // remainder was proven covered by pre-window inventory. Optional so hand-built audits stay valid.
+  preWindowShortfallsProven?: number
   transferDistributionSells: Partial<Record<EventClassification, number>>
   structurallyInvalidSells: number
   unknownSells: number
@@ -787,6 +794,7 @@ export function computeUnmatchedEvidenceAudit(
 
   let preWindowInventoryExits = 0
   let preWindowInventoryExitsUnprovenDueToTruncation = 0
+  let preWindowShortfallsProven = 0
   let unknownSells = 0
   // DIAGNOSTIC ONLY, ADDITIVE: split the `else` branch below by its real cause without changing
   // which branch is taken — see WindowBoundaryProofDiagnostics' own header.
@@ -823,7 +831,12 @@ export function computeUnmatchedEvidenceAudit(
     // or invalid evidence must still block"): an earlier in-window buy for the same token directly
     // contradicts the pre-window hypothesis — this is never a coverage question, so it blocks
     // unconditionally, regardless of historyCoverageStatus.
-    if (earlierBuyExists) {
+    if (earlierBuyExists && context.provenPreWindowShortfalls?.has(proofKey)) {
+      // The in-window buy covered part of the sell; the resolver proved, by amount, that pre-window
+      // inventory covers the rest. Non-blocking, no cost basis, coverage status unchanged.
+      preWindowInventoryExits += 1
+      preWindowShortfallsProven += 1
+    } else if (earlierBuyExists) {
       unknownSells += 1
       sellsWithEarlierBuyInWindow += 1
       boundaryIndependentSells.push({ chain: identity.chain, txHash: identity.txHash, token: identity.token, reason: 'earlier_buy_in_window' })
@@ -864,6 +877,7 @@ export function computeUnmatchedEvidenceAudit(
     unknownBuys,
     preWindowInventoryExits,
     preWindowInventoryExitsUnprovenDueToTruncation,
+    preWindowShortfallsProven,
     transferDistributionSells,
     structurallyInvalidSells: 0,
     unknownSells,

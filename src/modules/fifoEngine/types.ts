@@ -76,6 +76,10 @@ export type UnmatchedEventIdentity = {
   fromAddress: string
   toAddress: string
   amountRaw: string | null
+  // Atomic-unit strings for sells (additive; absent on buys and on identities built elsewhere):
+  // unmatchedRaw = the portion no open lot covered, sellRaw = the full outbound amount of the event.
+  unmatchedRaw?: string
+  sellRaw?: string
 }
 
 export type FifoOutput = {
