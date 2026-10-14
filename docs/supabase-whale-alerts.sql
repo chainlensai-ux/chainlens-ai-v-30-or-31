@@ -59,7 +59,8 @@ alter table public.tracked_wallets
   add column if not exists tags text[] not null default '{}',
   add column if not exists fomo_handle text,
   add column if not exists fomo_rank integer,
-  add column if not exists fomo_window text;
+  add column if not exists fomo_window text,
+  add column if not exists last_scanned_at timestamptz;
 
 -- Existing installations created `address text unique`. Remove that global uniqueness before
 -- enabling user-scoped tracking, then backfill canonical address/chain fields for seeded rows.

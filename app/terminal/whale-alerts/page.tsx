@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, canAccessFomoBoard, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
-import { createLatestRequestGate, describeWhaleAction } from '@/lib/whaleAlertAction'
+import { createLatestRequestGate, describeWhaleAction, FILTER_OPTION_LABELS, SEVERITY_OPTIONS, TRADE_SIDE_OPTIONS, TRADE_TYPE_OPTIONS, whaleRowReason } from '@/lib/whaleAlertAction'
 import FomoBoardPanel, { FomoBoardLockedCard } from '@/components/whale-alerts/FomoBoardPanel'
 import type { WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 
@@ -43,6 +43,10 @@ type AlertItem = {
   /** Set by the feed for fake-ticker stablecoins / spam airdrops (lib/server/whaleTokenTrust.ts). */
   token_risk?: 'spoofed_stablecoin' | 'spam_airdrop' | null
   token_risk_label?: string | null
+  /** Feed classification from the tx's own legs (lib/server/whaleTradeClassify.ts). */
+  trade_kind?: 'buy' | 'sell' | 'exit' | 'swap' | 'in' | 'out' | null
+  trade_token_symbol?: string | null
+  trade_token_address?: string | null
   signal_score?: string | null
   summary?: string | null
   token_image_url?: string | null
@@ -93,20 +97,19 @@ type SyncResponse = {
 // One-line reason for a sync that saved nothing, from the sync route's always-on counters.
 function syncZeroReason(s: SyncResponse | null | undefined): string | null {
   if (!s || s.ok === false || Number(s.inserted ?? 0) > 0) return null
+  // Plain-language summary; raw codes stay in the response for the Diagnostics panel.
   if (Number(s.dbInsertFailed ?? 0) > 0) {
-    const sample = s.dbInsertErrorSamples?.[0]
-    const detail = sample?.message ? ` — ${sample.message.slice(0, 140)}` : ''
-    return `db write failed: ${sample?.code ?? 'unknown'}${detail}`
+    return `Found ${s.dbInsertFailed} alert${s.dbInsertFailed === 1 ? '' : 's'} but couldn't save them. Retry in a moment — if it keeps happening, the alert database needs attention.`
   }
   const parts: string[] = []
   if (typeof s.fetchedTxCount === 'number') {
-    parts.push(`fetched ${s.fetchedTxCount} txs, ${Number(s.alertCandidateCount ?? 0)} token transfers`)
+    parts.push(`Checked ${s.fetchedTxCount} recent transaction${s.fetchedTxCount === 1 ? '' : 's'}; none were large enough to alert on`)
   }
   if (Number(s.providerErrors ?? 0) > 0) {
-    const codes = [...new Set((s.providerErrorSamples ?? []).map(e => e.statusCode ?? e.reason ?? 'error'))].slice(0, 3).join(', ')
-    parts.push(`${s.providerErrors} provider error${s.providerErrors === 1 ? '' : 's'}${codes ? ` (${codes})` : ''}`)
+    const rateLimited = (s.providerErrorSamples ?? []).some(e => e.statusCode === 429)
+    parts.push(`${s.providerErrors} wallet${s.providerErrors === 1 ? '' : 's'} couldn't be reached${rateLimited ? ' (data provider busy)' : ''} — they'll be retried first next sync`)
   }
-  return parts.length > 0 ? parts.join(' · ') : null
+  return parts.length > 0 ? parts.join('. ') + '.' : null
 }
 type EnrichmentBudget = { liveEnrichmentEnabled?: boolean; trigger?: string; rpcCallsAttempted?: number; cacheHits?: number; skippedForDefaultLoad?: number }
 type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number; enrichmentBudget?: EnrichmentBudget }
@@ -183,6 +186,16 @@ const timeAgo = (iso?: string | null) => {
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
 }
+
+// Exact time in the viewer's own timezone (browser locale), shown on hover/long-press.
+const localTimestamp = (iso?: string | null) => {
+  if (!iso) return undefined
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? undefined : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZoneName: 'short' })
+}
+
+const FEED_PAGE_SIZE = 50
+const FEED_MAX_LIMIT = 200
 
 const fmtUsd = (n?: number | null) => {
   if (n == null) return '—'
@@ -290,9 +303,6 @@ function buildWhaleRowClarkPrompt(alert: {
     `No token contract on this row — do not scan the trader wallet.`,
   ].join('\n')
 }
-
-// side is direction relative to the tracked wallet, not proof of a trade (lib/whaleAlertAction.ts).
-const SIDE_OPTION_LABELS: Record<string, string> = { buy: 'In (received)', sell: 'Out (sent)' }
 
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
@@ -482,6 +492,12 @@ export default function WhaleAlertsPage() {
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState<string | null>(null)
+  // LOAD MORE: the feed API returns up to `feedLimit` rows (max 200) and says whether more exist.
+  // The limit is remembered per filter set, so changing a filter starts again at one page.
+  const [feedPage, setFeedPage]       = useState<{ key: string; limit: number }>({ key: '', limit: FEED_PAGE_SIZE })
+  const [feedHasMore, setFeedHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const loadingMoreRef = useRef(false)
   const [syncError, setSyncError]     = useState<string | null>(null)
 
   useEffect(() => {
@@ -528,6 +544,9 @@ export default function WhaleAlertsPage() {
     } catch {}
   }, [baseCooldownMs])
 
+  const feedFilterKey = [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter].join('|')
+  const feedLimit = feedPage.key === feedFilterKey ? feedPage.limit : FEED_PAGE_SIZE
+
   // Only the newest feed request may write state (filters can change while one is in flight).
   const feedRequestGate = useRef(createLatestRequestGate())
   const loadAlerts = useCallback(async (opts?: { enrich?: boolean; fresh?: boolean }) => {
@@ -537,11 +556,15 @@ export default function WhaleAlertsPage() {
       setFeedSettled(true)
       return
     }
+    // "Load more" keeps the current rows on screen instead of swapping in the loading skeleton.
+    const isLoadMore = loadingMoreRef.current
+    loadingMoreRef.current = false
     if (opts?.enrich) setEnrichLoading(true)
+    else if (isLoadMore) setLoadingMore(true)
     else setLoading(true)
     setFeedError(null)
     try {
-      const p = new URLSearchParams({ window: windowValue, limit: '100' })
+      const p = new URLSearchParams({ window: windowValue, limit: String(feedLimit) })
       if (feedMode === 'all') p.set('interesting', 'false')
       if (valueRange !== 'all') p.set('valueRange', valueRange)
       if (typeFilter !== 'all') p.set('type', typeFilter)
@@ -578,6 +601,7 @@ export default function WhaleAlertsPage() {
         return
       }
       setAlerts(Array.isArray(json?.alerts) ? json.alerts : [])
+      setFeedHasMore(json?.hasMore === true)
       setStats(json?.stats ?? { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
       setFeedDiagnostics(json?.diagnostics ?? null)
       setIntelligence(json?.intelligence ?? null)
@@ -590,11 +614,13 @@ export default function WhaleAlertsPage() {
     } finally {
       if (feedRequestGate.current.isLatest(ticket)) {
         setLoading(false)
+        setLoadingMore(false)
         setEnrichLoading(false)
         setFeedSettled(true)
       }
     }
-  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess])
+  }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess, feedLimit])
+
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
 
@@ -729,9 +755,11 @@ export default function WhaleAlertsPage() {
     setSyncState(null)
   }
 
-  const types = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.alert_type).filter(Boolean) as string[]))], [alerts])
-  const sevs  = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.severity).filter(Boolean) as string[]))], [alerts])
-  const sides = useMemo(() => ['all', ...Array.from(new Set(alerts.map(a => a.side).filter(Boolean) as string[]))], [alerts])
+  // Fixed option lists the feed API filters on (after grouping and pricing) — previously derived
+  // from the loaded alerts, so Type only ever offered "token_transfer" and Severity was empty.
+  const types: readonly string[] = TRADE_TYPE_OPTIONS
+  const sevs: readonly string[] = SEVERITY_OPTIONS
+  const sides: readonly string[] = TRADE_SIDE_OPTIONS
   const missingUsdCount = useMemo(() => alerts.filter((alert) => {
     const audit = alert.whaleAlertUsdAudit ?? alert.whaleAlertUsdAudits?.[0] ?? alert.whaleUsdPricingAudit ?? alert.whaleUsdPricingAudits?.[0] ?? null
     return alert.amount_usd == null || (alert.amount_usd === 0 && audit?.finalValueStatus !== 'zero')
@@ -744,6 +772,9 @@ export default function WhaleAlertsPage() {
     ? Math.min(100, Math.round((effectiveProcessed / (syncState.trackedWalletsTotal ?? 1)) * 100)) : null
   const scannedCount = effectiveProcessed
   const trackedCount = syncState?.trackedWalletsTotal ?? 0
+  // Real tracked-wallet count (was hardcoded "60+"): the feed's deduped count, else the last sync's.
+  const walletCountTotal = stats.trackedWallets || trackedCount
+  const walletCountLabel = walletCountTotal > 0 ? walletCountTotal.toLocaleString() : '—'
   const isPartial = trackedCount > 0 && scannedCount < trackedCount
   const fullNeedsContinue = syncState?.mode === 'full' && trackedCount > 0 && scannedCount < trackedCount
   const isFullInProgress = Boolean(syncState?.mode === 'full' && (syncState?.hasMore || fullNeedsContinue))
@@ -776,7 +807,7 @@ export default function WhaleAlertsPage() {
   }
 
   const buildClarkPrompt = () => {
-    const publicWalletLabel = '60+'
+    const publicWalletLabel = walletCountLabel
     const syncProgress = syncState
       ? `${syncState.processedTotal ?? 0}/${syncState.trackedWalletsTotal ?? 0} wallets scanned${syncState.done ? ' (complete)' : ' (partial)'}`
       : 'No sync run yet'
@@ -837,13 +868,12 @@ export default function WhaleAlertsPage() {
   // ZERO-STATE COPY, DISCLOSED (final polish): a bare "0" with a generic "Rolling" caption reads as
   // broken. `zeroSub` gives each counter an intentional, factual line for the 0 case — it states
   // only what a 0 in that window literally means (no signal recorded), never a claim about sync
-  // health or upcoming data. Tracked wallets has no zeroSub: its value is the fixed "60+" label,
-  // so it can never be 0.
+  // health or upcoming data. Tracked wallets shows the real deduped count from the feed/sync.
   const metrics = [
     { label: 'Alerts',          unit: '15m', val: stats.alerts15m, sub: 'Rolling', zeroSub: 'Quiet this window',   color: '#2dd4bf' },
     { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,  sub: 'Rolling', zeroSub: 'No signal past hour',  color: '#2dd4bf' },
     { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling', zeroSub: 'None in last 24h',     color: '#8b5cf6' },
-    { label: 'Tracked wallets', unit: null,  val: '60+',           sub: 'Smart money + manual', zeroSub: null,      color: '#94a3b8' },
+    { label: 'Tracked wallets', unit: null,  val: walletCountLabel,  sub: 'Smart money + manual', zeroSub: null,      color: '#94a3b8' },
   ]
 
   // SURFACE SYSTEM, DISCLOSED (Whale Alerts UI redesign): three flat, neutral surfaces + two border
@@ -973,6 +1003,14 @@ export default function WhaleAlertsPage() {
           .wa-sync-btns { flex-wrap: wrap !important; }
           .wa-feed-actions { width: 100%; justify-content: flex-start !important; flex-wrap: wrap; }
         }
+        /* PHONE (≤640px, e.g. 390px): the signal badge + actions column used to squeeze the row text
+           to ~130px. It now drops below the text as a full-width row; long tickers/labels wrap. */
+        @media (max-width: 640px) {
+          .wa-row-main    { flex-wrap: wrap; padding: 12px 14px !important; gap: 10px !important; }
+          .wa-row-main > .flex-1 { flex-basis: calc(100% - 48px); }
+          .wa-row-actions { width: 100%; flex-direction: row !important; align-items: center !important; justify-content: space-between; margin-top: 0 !important; padding-left: 46px; }
+          .wa-row-main span { overflow-wrap: anywhere; }
+        }
       `}</style>
 
       <div className="wa-main-wrap mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 16, padding: '20px 16px 40px' }}>
@@ -992,7 +1030,7 @@ export default function WhaleAlertsPage() {
           </div>
           <div className="flex flex-wrap items-center justify-end" style={{ gap: 6 }}>
             <Pill color="cyan" dot>Base Mainnet</Pill>
-            <Pill color="slate">60+ wallets</Pill>
+            <Pill color="slate">{walletCountLabel} wallets</Pill>
             <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing' : 'On-demand sync'}</Pill>
             <Pill color="purple" dot>CORTEX</Pill>
           </div>
@@ -1103,7 +1141,7 @@ export default function WhaleAlertsPage() {
 
             <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 8 }}>
               {[
-                { label: 'Alert type', val: typeFilter, set: setTypeFilter, opts: types },
+                { label: 'Action',     val: typeFilter, set: setTypeFilter, opts: types },
                 { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
                 { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
               ].map(({ label, val, set, opts }) => (
@@ -1113,7 +1151,7 @@ export default function WhaleAlertsPage() {
                     <select value={val} onChange={e => set(e.target.value)}
                       className="wa-select w-full appearance-none rounded-[8px]"
                       style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
-                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : SIDE_OPTION_LABELS[o] ?? o}</option>)}
+                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : FILTER_OPTION_LABELS[o] ?? o}</option>)}
                     </select>
                     <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
                       <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
@@ -1145,7 +1183,7 @@ export default function WhaleAlertsPage() {
             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
                 <FieldLabel>Tracked set</FieldLabel>
-                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: '#e8eef7', margin: '7px 0 0' }}>60+</p>
+                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: '#e8eef7', margin: '7px 0 0' }}>{walletCountLabel}</p>
               </div>
               <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
                 <FieldLabel>Signals</FieldLabel>
@@ -1485,7 +1523,7 @@ export default function WhaleAlertsPage() {
                 <div className="flex flex-wrap items-center justify-center tabular-nums"
                   style={{ gap: '6px 14px', marginTop: 22, paddingTop: 16, borderTop: bdrInner, maxWidth: 480, width: '100%', fontSize: 11 }}>
                   {[
-                    { k: 'Tracked', v: '60+ wallets' },
+                    { k: 'Tracked', v: `${walletCountLabel} wallets` },
                     { k: 'Scanned', v: syncState ? `${scanned} of ${total || stats.trackedWallets}` : 'No sync yet' },
                     ...(syncState && insertedSoFar > 0 ? [{ k: 'Found', v: `${insertedSoFar} signals` }] : []),
                     ...(syncState ? [{ k: 'Skipped', v: String(syncState.skipped ?? 0) }] : []),
@@ -1550,12 +1588,8 @@ export default function WhaleAlertsPage() {
             const accentColor = ACCENT_ALPHA[sideStyle.line]?.[tier] ?? sideStyle.line
             const accentWidth = tier === 'strong' ? 3 : 2
 
-            const signalReason =
-              alert.token_risk_label ? alert.token_risk_label
-              : signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
-              : signal === 'WATCH' ? 'Repeated activity from tracked wallet'
-              : signal === 'NOISE' ? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-signal movement')
-              : (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-value token movement')
+            // Built only from facts on the row (lib/whaleAlertAction.ts) — never empty, never invented.
+            const signalReason = whaleRowReason(alert)
 
             // COMPACT METADATA CHIPS, DISCLOSED (feed polish): replaces the old run-on subline
             // ("Tracked wallet · Base · 2 legs · Repeated activity from tracked wallet") plus the
@@ -1637,7 +1671,7 @@ export default function WhaleAlertsPage() {
                     {/* Time + signal reason — the two quiet descriptive facts stay as one readable
                         line; time leads as the anchor a live feed is scanned by. */}
                     <p style={{ marginTop: 5, fontSize: 11, color: '#4a5769' }}>
-                      <span style={{ color: '#7c8ba1', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</span>
+                      <time dateTime={alert.occurred_at ?? undefined} title={localTimestamp(alert.occurred_at)} style={{ color: '#7c8ba1', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</time>
                       {' · '}{signalReason}
                     </p>
                     {/* Compact metadata — chain / legs / repeats / wallet-behavior stats, one
@@ -1694,6 +1728,20 @@ export default function WhaleAlertsPage() {
               </div>
             )
           })}
+
+          {/* load more */}
+          {!feedError && alerts.length > 0 && feedHasMore && feedLimit < FEED_MAX_LIMIT && (
+            <div className="flex justify-center" style={{ padding: '12px 18px' }}>
+              <button type="button" className="wa-btn wa-btn-secondary"
+                disabled={loading || loadingMore}
+                onClick={() => {
+                  loadingMoreRef.current = true
+                  setFeedPage({ key: feedFilterKey, limit: Math.min(FEED_MAX_LIMIT, feedLimit + FEED_PAGE_SIZE) })
+                }}>
+                {loadingMore ? 'Loading…' : 'Load more alerts'}
+              </button>
+            </div>
+          )}
 
           {/* feed footer */}
           {alerts.length > 0 && (

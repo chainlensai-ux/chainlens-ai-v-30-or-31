@@ -4,6 +4,8 @@ import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 import { cronNextOffset, cronRotationStart } from '@/lib/server/whaleCronRotation'
+import { selectWalletBatch } from '@/lib/server/whaleWalletOrder'
+import { classifyWallets, MINT_BURN_ADDRESSES } from '@/lib/server/whaleWalletKind'
 import { alertOwnerForWallet, BASE_WETH_ADDRESS, NATIVE_ETH_SENTINEL } from '@/lib/server/whaleAlertIdentity'
 import { persistWhaleAlerts, type WhaleAlertsDb, type WhaleAlertWritePath } from '@/lib/server/whaleAlertPersist'
 import { BASE_WHALE_CHAIN_ID, dedupeTrackedWallets, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
@@ -16,6 +18,7 @@ type TrackedWallet = {
   confidence: number | null
   source: string | null
   is_active: boolean
+  last_scanned_at?: string | null
 }
 
 type CovalentLogEvent = {
@@ -67,6 +70,8 @@ const WALLET_TX_SYNC_CACHE_TTL_MS = 60 * 1000
 // while the wallet is inside WALLET_PAGE_BUDGET_MS, so one wallet costs at most budget + one page
 // (2 hosts x PER_WALLET_TIMEOUT_MS), keeping a batch well under the 60s maxDuration.
 const MAX_PROVIDER_PAGES = 3
+const RATE_LIMIT_BASE_BACKOFF_MS = 600
+const RATE_LIMIT_MAX_BACKOFF_MS = 2_000
 const WALLET_PAGE_BUDGET_MS = 8_000
 // Native ETH movements (tx.value) use NATIVE_ETH_SENTINEL; WETH on Base is BASE_WETH_ADDRESS.
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
@@ -120,6 +125,7 @@ type SkipReason =
   | 'duplicate'
   | 'unclassified'
   | 'dbSkipped'
+  | 'mintBurnNoise'
   | 'other'
 
 type SkipSummary = Record<SkipReason, number>
@@ -158,6 +164,7 @@ function makeSkipSummary(): SkipSummary {
     duplicate: 0,
     unclassified: 0,
     dbSkipped: 0,
+    mintBurnNoise: 0,
     other: 0,
   }
 }
@@ -413,18 +420,33 @@ async function fetchProviderPage(address: string, apiKey: string, pageUrl: strin
   // common case where the first host works.
   for (const host of COVALENT_HOSTS) {
     const url = buildProviderUrl(host, address, pageUrl)
-    let response: Response
-    try {
-      logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
-      response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          Accept: 'application/json',
-        },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(PER_WALLET_TIMEOUT_MS),
-      })
-    } catch {
+    let response: Response | null = null
+    // RATE-LIMIT RETRY: a 429 gets ONE retry on the same host after a short backoff (Retry-After
+    // when given, capped; else jittered), then falls through to the next host. Bounded so a single
+    // wallet can never stall the batch past its time budget.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
+        response = await fetch(url, {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: 'application/json',
+          },
+          cache: 'no-store',
+          signal: AbortSignal.timeout(PER_WALLET_TIMEOUT_MS),
+        })
+      } catch {
+        response = null
+        break
+      }
+      if (response.status !== 429 || attempt === 1) break
+      const retryAfterSec = Number(response.headers.get('retry-after'))
+      const waitMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+        ? Math.min(RATE_LIMIT_MAX_BACKOFF_MS, retryAfterSec * 1000)
+        : RATE_LIMIT_BASE_BACKOFF_MS + Math.floor(Math.random() * RATE_LIMIT_BASE_BACKOFF_MS)
+      await new Promise(resolve => setTimeout(resolve, waitMs))
+    }
+    if (!response) {
       lastError = new ProviderRequestError(null, 'network_error', [])
       continue
     }
@@ -496,6 +518,7 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
       tokenSymbol: string | null
       amountToken: number
       side: 'buy' | 'sell'
+      counterparties: Set<string>
     }>()
 
     for (const event of tx.log_events ?? []) {
@@ -521,16 +544,19 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
       if (!Number.isFinite(amountToken) || amountToken <= 0) continue
 
       const side: 'buy' | 'sell' = isReceive ? 'buy' : 'sell'
+      const counterparty = isReceive ? fromParam : toParam
       const key = `${tokenAddress}::${side}`
       const existing = movements.get(key)
       if (existing) {
         existing.amountToken += amountToken
+        existing.counterparties.add(counterparty)
       } else {
         movements.set(key, {
           tokenAddress,
           tokenSymbol: event.sender_contract_ticker_symbol ?? null,
           amountToken,
           side,
+          counterparties: new Set([counterparty]),
         })
       }
     }
@@ -553,7 +579,28 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
           tokenSymbol: 'ETH',
           amountToken: amountEth,
           side: nativeSide,
+          counterparties: new Set([nativeSide === 'sell' ? toLower : fromLower]),
         })
+      }
+    }
+
+    // MINT/BURN NOISE: a leg whose only counterparty is the zero/burn address is a mint or burn,
+    // not a trade with anyone. Dropped when the tx proves it is not a trade: it is the only
+    // movement (bridge mint/burn, airdrop mint), an LP-token mint while two+ tokens went out (add
+    // liquidity), or an LP-token burn while two+ tokens came in (remove liquidity). A mint paired
+    // with a single payment (bonding-curve style buy) is kept.
+    const legs = [...movements.entries()]
+    const outCount = legs.filter(([, m]) => m.side === 'sell').length
+    const inCount = legs.filter(([, m]) => m.side === 'buy').length
+    for (const [key, m] of legs) {
+      const isMintBurn = [...m.counterparties].every(c => MINT_BURN_ADDRESSES.has(c))
+      if (!isMintBurn) continue
+      const lone = legs.length === 1
+      const lpAdd = m.side === 'buy' && outCount >= 2
+      const lpRemove = m.side === 'sell' && inCount >= 2
+      if (lone || lpAdd || lpRemove) {
+        movements.delete(key)
+        skipSummary.mintBurnNoise += 1
       }
     }
 
@@ -612,7 +659,9 @@ export async function GET(request: Request) {
   const baseUrl = new URL(request.url)
   const runCron = (offset: number, limit: number) => {
     const url = new URL(baseUrl.toString())
-    url.searchParams.set('mode', 'full')
+    // Batch mode: stalest wallets first when last_scanned_at exists (offset only counts progress);
+    // otherwise the same offset slicing as before, driven by the daily rotation below.
+    url.searchParams.set('mode', 'batch')
     url.searchParams.set('window', '7d')
     url.searchParams.set('minUsd', url.searchParams.get('minUsd') ?? '0')
     url.searchParams.set('offset', String(offset))
@@ -718,17 +767,27 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   const supabase = createClient(supabaseUrl, serviceRole)
   // Fetch all active wallets up-front so trackedWalletsTotal is exact and
   // progress math never depends on Supabase's count field (which can be null).
-  const walletQuery = supabase
-    .from('tracked_wallets')
-    .select('address,user_id,label,category,confidence,source,is_active')
-    .eq('chain_id', BASE_WHALE_CHAIN_ID)
-    .eq('is_active', true)
-    .order('created_at', { ascending: true })
-  const scopedWalletResult = actor.kind === 'user'
-    ? await walletQuery.or(userOrSystemScope('user_id', actor.userId))
-    : await walletQuery.is('user_id', null)
+  // last_scanned_at (docs/migrations/20261015_tracked_wallets_last_scanned.sql) drives stalest-first
+  // batches. If the column is not there yet, the same query runs without it (offset slicing).
+  const loadWallets = (columns: string) => {
+    const walletQuery = supabase
+      .from('tracked_wallets')
+      .select(columns)
+      .eq('chain_id', BASE_WHALE_CHAIN_ID)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+    return actor.kind === 'user'
+      ? walletQuery.or(userOrSystemScope('user_id', actor.userId))
+      : walletQuery.is('user_id', null)
+  }
+  let lastScannedAvailable = true
+  let scopedWalletResult = await loadWallets('address,user_id,label,category,confidence,source,is_active,last_scanned_at')
+  if (isMissingOwnershipColumn(scopedWalletResult.error, ['last_scanned_at'])) {
+    lastScannedAvailable = false
+    scopedWalletResult = await loadWallets('address,user_id,label,category,confidence,source,is_active')
+  }
   let walletError = scopedWalletResult.error
-  let allWalletRows = (scopedWalletResult.data ?? []) as TrackedWallet[]
+  let allWalletRows = (scopedWalletResult.data ?? []) as unknown as TrackedWallet[]
 
   if (isMissingOwnershipColumn(walletError, ['user_id', 'chain_id'])) {
     // Pre-migration compatibility. A schema without user_id cannot contain private FOMO rows, so
@@ -765,7 +824,18 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     })
   }
 
-  const walletBatch = allWallets.slice(offset, offset + limit)
+  // Batch mode (the "Sync wallets"/"Continue refresh" button and the cron) takes the stalest wallets;
+  // offset then only counts progress. Full mode keeps stable created_at order + offsets.
+  const stalestFirst = lastScannedAvailable && mode === 'batch'
+  const selectedBatch = selectWalletBatch(allWallets, { offset, limit, stalestFirst })
+
+  // Routers, bridges and other contracts are not whales: skip them (lookup failure = scan anyway).
+  const walletKinds = await classifyWallets(selectedBatch.map(w => w.address))
+  const skippedNonWallets = selectedBatch.filter(w => {
+    const kind = walletKinds.get(w.address.toLowerCase())
+    return kind === 'contract' || kind === 'infra'
+  })
+  const walletBatch = selectedBatch.filter(w => !skippedNonWallets.includes(w))
 
   const startedAt = Date.now()
   let processed = 0
@@ -1034,8 +1104,37 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     skipSummary.dbSkipped = skipped
   }
 
-  // walletsChecked = actual wallets attempted; equals walletBatch.length unless safety timeout fired
-  const walletsChecked = processed
+  // LAST SCANNED: stamp every wallet this batch actually covered — fetched OK, or skipped as a
+  // contract/infra address — so the next batch moves on to staler wallets. Provider failures and a
+  // failed alert write are NOT stamped: those wallets stay stalest and are retried first.
+  let lastScannedUpdated = 0
+  let lastScannedError: string | null = null
+  if (lastScannedAvailable) {
+    const coveredAddresses = finalPipelineSummary.dbInsertFailed > 0
+      ? skippedNonWallets.map(w => w.address)
+      : [
+          ...fetchResults.filter(r => r.ok).map(r => r.wallet.address),
+          ...skippedNonWallets.map(w => w.address),
+        ]
+    if (coveredAddresses.length > 0) {
+      const stamp = await supabase
+        .from('tracked_wallets')
+        .update({ last_scanned_at: new Date().toISOString() })
+        .in('address', [...new Set(coveredAddresses)])
+        .eq('chain_id', BASE_WHALE_CHAIN_ID)
+        .select('address')
+      if (stamp.error) {
+        lastScannedError = stamp.error.code ?? 'update_failed'
+        console.error('[whale-alerts-sync] last_scanned_at update failed', stamp.error.code, stamp.error.message)
+      } else {
+        lastScannedUpdated = stamp.data?.length ?? 0
+      }
+    }
+  }
+
+  // walletsChecked = wallets this batch covered: attempted fetches (fewer than the batch only when
+  // the safety timeout fired) plus contract/infra addresses skipped without a provider call.
+  const walletsChecked = processed + skippedNonWallets.length
   syncDebug.walletsProcessed = walletsChecked
   const processedTotal = offset + walletsChecked
   const done = processedTotal >= trackedWalletsTotal
@@ -1080,6 +1179,12 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     dbInsertFailed: finalPipelineSummary.dbInsertFailed,
     dbInsertErrorSamples: dbInsertErrorSamples.slice(0, 3).map(e => ({ code: e.code ?? null, message: e.message ?? null })),
     providerErrorSamples: providerErrorSamples.slice(0, 5).map(e => ({ statusCode: e.statusCode ?? null, reason: e.reason })),
+    // Wallet rotation: 'stalest_first' when tracked_wallets.last_scanned_at exists, else 'offset'.
+    walletOrdering: stalestFirst ? 'stalest_first' : 'offset',
+    lastScannedAvailable,
+    lastScannedUpdated,
+    lastScannedError,
+    skippedNonWallets: skippedNonWallets.map(w => ({ wallet: shortAddress(w.address), kind: walletKinds.get(w.address.toLowerCase()) ?? null })),
     // Which write path persisted this batch. 'legacy_no_owner' means whale_alerts has no
     // owner_user_id column: docs/migrations/20260904_fomo_user_scoped_tracked_wallets.sql is unapplied.
     dbWritePath,

@@ -15,6 +15,8 @@ import { BASE_WHALE_CHAIN_ID, isMissingOwnershipColumn, userOrSystemScope } from
 import { dedupeMovementLegs, pricingAddressFor } from '@/lib/server/whaleAlertIdentity'
 import { filterByValueRange, parseValueRange, passesQualityFloor } from '@/lib/server/whaleFeedFilters'
 import { tokenRisk, tokenRiskLabel } from '@/lib/server/whaleTokenTrust'
+import { classifyTrade, isBaseAsset, matchesTradeFilters, severityFromPricedUsd, type TradeKind } from '@/lib/server/whaleTradeClassify'
+import { checkZeroBalances } from '@/lib/server/whaleExitCheck'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -34,7 +36,7 @@ function parseWindow(value: string | null): WindowKey {
 function parseLimit(value: string | null): number {
   const n = Number(value ?? 50)
   if (!Number.isFinite(n) || n <= 0) return 50
-  return Math.min(100, Math.floor(n))
+  return Math.min(200, Math.floor(n))
 }
 
 // A misconfigured backend is a failure, not an empty feed: 503 so the page shows an error state.
@@ -45,6 +47,18 @@ function emptyUnavailable(reason: string) {
     unavailable: reason,
     error: 'Whale feed is unavailable: the alert store is not configured.',
   }, { status: 503, headers: { 'Cache-Control': 'no-store' } })
+}
+
+// BUY / SELL / SWAP / IN / OUT from the tx's own legs (lib/server/whaleTradeClassify.ts).
+function tradeFields(legs: RawRow[]): RawRow {
+  const { kind, token } = classifyTrade(legs)
+  const symbol = typeof token?.token_symbol === 'string' ? token.token_symbol : null
+  return {
+    trade_kind: kind,
+    trade_token_symbol: symbol,
+    trade_token_address: typeof token?.token_address === 'string' ? token.token_address : null,
+    ...(symbol && token && !isBaseAsset(token) ? { focus_token_symbol: symbol } : {}),
+  }
 }
 
 // Group raw rows by (tx_hash, wallet_address) so one on-chain transaction
@@ -64,7 +78,7 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
   const result: RawRow[] = []
   for (const legs of groups.values()) {
     if (legs.length === 1) {
-      result.push({ ...legs[0], legs: 1 })
+      result.push({ ...legs[0], legs: 1, ...tradeFields(legs) })
       continue
     }
 
@@ -90,6 +104,7 @@ function groupAlertsByTx(rows: RawRow[]): RawRow[] {
       amount_token: null,
       severity,
       legs:         legs.length,
+      ...tradeFields(legs),
       whaleUsdPricingAudits: legs
         .flatMap(leg => {
           if (Array.isArray(leg.whaleUsdPricingAudits)) return leg.whaleUsdPricingAudits
@@ -841,12 +856,14 @@ export async function GET(req: NextRequest) {
       'and(token_symbol.is.null,amount_token.gt.0)'
 
     // Fetch more rows than the display limit so grouping still yields a full page.
-    const internalLimit = Math.min(300, limit * 3)
+    // Type / side / severity are applied AFTER grouping and pricing (a DB-level side filter split
+    // swaps into single legs, and stored severity is empty because sync has no USD), so fetch wider.
+    const internalLimit = Math.min(600, limit * 3)
     // Legacy system alerts remain visible; alerts created from a user's FOMO tracker are visible
     // only to that same user. This prevents a personal add from becoming another user's feed row.
     const ownerScope = userOrSystemScope('owner_user_id', userId)
 
-    let query = supabase
+    const query = supabase
       .from('whale_alerts')
       .select('*')
       .gte('occurred_at', windowStartIso)
@@ -854,9 +871,6 @@ export async function GET(req: NextRequest) {
       .or(ownerScope)
       .order('occurred_at', { ascending: false })
       .limit(internalLimit)
-    if (type) query = query.eq('alert_type', type)
-    if (side) query = query.eq('side', side)
-    if (severity) query = query.eq('severity', severity)
 
     // Stats queries: include token_symbol, amount_token, amount_usd so each row
     // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
@@ -875,16 +889,13 @@ export async function GET(req: NextRequest) {
       // Safe legacy compatibility: when owner_user_id does not exist, private FOMO alert rows
       // cannot exist either. Read the pre-migration system feed instead of taking the page down.
       ownerScopeApplied = false
-      let legacyQuery = supabase
+      const legacyQuery = supabase
         .from('whale_alerts')
         .select('*')
         .gte('occurred_at', windowStartIso)
         .or(meaningfulFilter)
         .order('occurred_at', { ascending: false })
         .limit(internalLimit)
-      if (type) legacyQuery = legacyQuery.eq('alert_type', type)
-      if (side) legacyQuery = legacyQuery.eq('side', side)
-      if (severity) legacyQuery = legacyQuery.eq('severity', severity)
       ;[alertsRes, stats15m, stats1h, stats24h] = await Promise.all([
         legacyQuery,
         supabase.from('whale_alerts').select(STATS_SELECT).gte('occurred_at', new Date(Date.now() - 15 * 60 * 1000).toISOString()).or(meaningfulFilter).not('tx_hash', 'is', null).limit(5000),
@@ -895,9 +906,10 @@ export async function GET(req: NextRequest) {
     }
 
     let trackedScopeApplied = true
+    // Unique addresses — the same deduped set the sync scans, so both counts agree.
     let trackedCount = await supabase
       .from('tracked_wallets')
-      .select('id', { count: 'exact', head: true })
+      .select('address')
       .or(userOrSystemScope('user_id', userId))
       .eq('chain_id', BASE_WHALE_CHAIN_ID)
       .eq('is_active', true)
@@ -905,7 +917,7 @@ export async function GET(req: NextRequest) {
       trackedScopeApplied = false
       trackedCount = await supabase
         .from('tracked_wallets')
-        .select('id', { count: 'exact', head: true })
+        .select('address')
         .eq('is_active', true)
       console.warn('[whale-alerts] tracked-wallet ownership columns unavailable; used legacy system count')
     }
@@ -1003,7 +1015,30 @@ export async function GET(req: NextRequest) {
       if (interestingMode) { hiddenAsSpam += 1; return [] }
       return [{ ...row, amount_usd: null, token_risk: risk, token_risk_label: tokenRiskLabel(risk) }]
     })
-    const scored   = groupAlertsByTx(trusted).map(row => ({
+    const tradeRows: RawRow[] = groupAlertsByTx(trusted).map((row): RawRow => ({
+      ...row,
+      // Severity from the priced USD only (sync stores none); unpriced rows have no severity.
+      severity: severityFromPricedUsd(row.amount_usd),
+    }))
+    // EXIT evidence: sells whose wallet now holds 0 of the sold token (largest sells first, capped).
+    const sellChecks = tradeRows
+      .filter(row => row.trade_kind === 'sell' && typeof row.trade_token_address === 'string' && typeof row.wallet_address === 'string')
+      .sort((a, b) => getRowUsdValue(b) - getRowUsdValue(a))
+      .map(row => ({ wallet: row.wallet_address as string, token: row.trade_token_address as string }))
+    const zeroBalances = sellChecks.length > 0 ? await checkZeroBalances(sellChecks) : new Map<string, boolean>()
+    let exitsConfirmed = 0
+    const classified = tradeRows.map((row): RawRow => {
+      if (row.trade_kind !== 'sell') return row
+      const key = `${String(row.wallet_address).toLowerCase()}:${String(row.trade_token_address).toLowerCase()}`
+      if (zeroBalances.get(key) !== true) return row
+      exitsConfirmed += 1
+      return { ...row, trade_kind: 'exit' as TradeKind }
+    })
+    const tradeFiltered = classified.filter(row => matchesTradeFilters(
+      { trade_kind: row.trade_kind as TradeKind | null, severity: row.severity as string | null },
+      { type, side, severity },
+    ))
+    const scored   = tradeFiltered.map(row => ({
       ...row,
       signal_score: computeSignalScore(row),
       interesting_score: computeInterestScore(row),
@@ -1017,7 +1052,9 @@ export async function GET(req: NextRequest) {
     const interestSorted = [...diversityCapped].sort(
       (a, b) => ((b.interesting_score as number) ?? 0) - ((a.interesting_score as number) ?? 0),
     )
-    const grouped  = collapseRapidRepeats(interestSorted).slice(0, limit)
+    const collapsed = collapseRapidRepeats(interestSorted)
+    const hasMore = collapsed.length > limit
+    const grouped  = collapsed.slice(0, limit)
 
     // ─── Wallet behavior analysis ─────────────────────────────────────────────
     const walletAddrs = [...new Set(
@@ -1198,6 +1235,8 @@ export async function GET(req: NextRequest) {
       .filter((audit): audit is WhaleUsdPricingAudit => Boolean(audit))
     const payload = {
       alerts: alertsWithContext,
+      hasMore,
+      limit,
       whaleAlertUsdAudits: whaleUsdPricingAudits,
       whaleUsdPricingAudits,
       lastSyncedAt: rawAlertRows
@@ -1210,7 +1249,8 @@ export async function GET(req: NextRequest) {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
         alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
         alerts24h:      countStatsFiltered(stats24h.data, majorPrices, 0, tokenPrices),
-        trackedWallets: trackedCount.count ?? 0,
+        trackedWallets: new Set(((trackedCount.data ?? []) as Array<{ address?: string | null }>)
+          .map(row => (row.address ?? '').trim().toLowerCase()).filter(Boolean)).size,
       },
       diagnostics: {
         returnedCount:            grouped.length,
@@ -1237,6 +1277,9 @@ export async function GET(req: NextRequest) {
         randomTokenPriceMisses,
         duplicateLegsRemoved,
         hiddenAsSpam,
+        hiddenByTradeFilters: classified.length - tradeFiltered.length,
+        exitsConfirmed,
+        exitChecks: Math.min(sellChecks.length, 20),
         cacheHit: false,
         providerStatus: 'ok',
         ownerScopeApplied,
