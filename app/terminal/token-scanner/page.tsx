@@ -4999,6 +4999,8 @@ export default function TerminalTokenScanner() {
   const [trackedLoggedOut, setTrackedLoggedOut] = useState(false)
   const [trackedUnavailable, setTrackedUnavailable] = useState(false)
   const [trackedSaveError, setTrackedSaveError] = useState<string | null>(null)
+  // Right-rail list shows the first 3 tracked tokens until "View all" is pressed (display only).
+  const [showAllTracked, setShowAllTracked] = useState(false)
   const [walletConnected, setWalletConnected] = useState(false)
 
   async function refreshTrackedTokens() {
@@ -5780,10 +5782,10 @@ export default function TerminalTokenScanner() {
         .cortex-chip:hover{transform:translateY(-2px);}
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
-        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);min-height:100vh;align-items:start;overflow-x:hidden;color:#e2e8f0;background-image:linear-gradient(rgba(45,212,191,.020) 1px,transparent 1px),linear-gradient(90deg,rgba(45,212,191,.020) 1px,transparent 1px),radial-gradient(circle at 18% 4%,rgba(34,211,238,.10),transparent 38%),radial-gradient(circle at 86% 92%,rgba(217,70,239,.09),transparent 42%),radial-gradient(circle at 88% 14%,rgba(139,92,246,.08),transparent 36%),radial-gradient(circle at 22% 0%,rgba(20,35,68,.52),rgba(2,6,23,1) 56%);background-size:52px 52px,52px 52px,100% 100%,100% 100%,100% 100%,100% 100%;background-color:rgba(2,6,23,1);background-attachment:fixed,fixed,fixed,fixed,fixed,fixed;}
+        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);min-height:100vh;align-items:start;overflow-x:hidden;color:#e2e8f0;font-family:var(--font-inter,Inter,sans-serif);background-color:#06060a;background-image:radial-gradient(circle at 0% 0%,rgba(45,212,191,.07),transparent 42%),radial-gradient(circle at 100% 100%,rgba(139,92,246,.06),transparent 44%);background-attachment:fixed,fixed;}
         @media (max-width:1279px){.token-shell{background-attachment:scroll !important;}}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
-        .token-main{max-width:none;}
+        .token-main{max-width:1100px;margin:0 auto;box-sizing:border-box;}
         .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
         /* PREMIUM POLISH, DISCLOSED (Token Scanner UI polish task): the old search-card stacked
            five box-shadow layers (up to 140px blur) — replaced with a calmer, static two-layer
@@ -5795,10 +5797,14 @@ export default function TerminalTokenScanner() {
            strengthened + given a faint cyan tint so the card reads as its own surface at a glance,
            plus a tiny ambient cyan/violet glow just outside the border (very low alpha, static, no
            bloom) for depth without flashiness. */
-        .search-card{background:linear-gradient(160deg,rgba(15,24,44,.98) 0%,rgba(7,13,28,.97) 100%);border:1px solid rgba(148,180,200,.27);border-radius:16px;box-shadow:0 16px 40px rgba(2,6,23,.60),0 0 0 1px rgba(45,212,191,.06),0 0 46px rgba(139,92,246,.06),inset 0 1px 0 rgba(255,255,255,.05),inset 0 0 40px rgba(2,6,23,.30);}
-        .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);gap:2px;}
-        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#63798e;}
-        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#9fb2c4;}
+        .search-card{background:rgba(255,255,255,.03);border-radius:16px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 18px 48px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.04);}
+        .search-card::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(45,212,191,.42),rgba(139,92,246,.34));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2;}
+        .search-card-glow{position:absolute;inset:-28px -12px;border-radius:32px;background:radial-gradient(ellipse at 50% 45%,rgba(45,212,191,.13),transparent 68%);filter:blur(22px);pointer-events:none;z-index:0;}
+        .chain-seg{display:flex;max-width:100%;overflow-x:auto;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px;scrollbar-width:none;-ms-overflow-style:none;}
+        .chain-seg::-webkit-scrollbar{display:none;}
+        .token-shell .chain-seg{flex-wrap:nowrap !important;}
+        .chain-seg-btn{flex-shrink:0;padding:8px 16px;border-radius:7px;font-size:11px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#64748b;white-space:nowrap;}
+        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#cbd5e1;}
         /* LOADING-AFFORDANCE FIX, DISCLOSED (audit: chain pills stayed fully clickable during a
            scan and silently no-opped via the re-entry guard, giving zero feedback that the click
            did nothing). */
@@ -5809,11 +5815,7 @@ export default function TerminalTokenScanner() {
            branded "selected" state than one generic indigo for both. Base's active contrast raised
            (explicitly requested, "active Base tab should have stronger contrast") since it's the
            default/most-used chain. */
-        .chain-seg-btn--active-base{background:rgba(34,211,238,.22);color:#e7feff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.55);}
-        .chain-seg-btn--active-eth{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
-        .chain-seg-btn--active-bnb{background:rgba(240,185,11,.18);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(240,185,11,.40);}
-        .chain-seg-btn--active-robinhood{background:rgba(52,211,153,.18);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.40);}
-        .chain-seg-btn--active-solana{background:rgba(153,69,255,.20);color:#ddd0ff;box-shadow:inset 0 0 0 1px rgba(153,69,255,.42);}
+        .chain-seg-btn[class*="chain-seg-btn--active"]{background:rgba(45,212,191,.15);color:#2DD4BF;box-shadow:inset 0 -2px 0 #2DD4BF;}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
@@ -5822,19 +5824,18 @@ export default function TerminalTokenScanner() {
            gradient that fades at both edges, same static (no animation) treatment. Background
            lightened one step (same reasoning as .search-card above) so these cards separate from
            the page background instead of blending in. */
-        .preview-module-card{background:linear-gradient(160deg,rgba(15,25,43,.82),rgba(8,15,29,.78));border:1px solid rgba(255,255,255,.13);border-radius:12px;padding:22px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
-        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.22);}
+        .preview-module-card{display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.18);}
+        .preview-module-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;margin-bottom:14px;flex-shrink:0;}
         /* AFTER-SCAN-CARDS, DISCLOSED (Token Scanner final-polish task, explicitly requested: "the
            plain full-width rows read as filler" — redesigned into a compact 3-card strip, same
            visual language/restraint as .preview-module-card above (subtle dark fill, static border,
            small dot instead of a numbered accent bar, no glow bloom) so the two sections read as one
            system. Static hover lift only, no color animation. */
-        .after-scan-card{position:relative;background:rgba(10,18,32,.62);border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:16px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
-        .after-scan-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.17);}
+        .after-scan-card{display:flex;align-items:center;gap:10px;min-width:0;background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 14px;transition:border-color .18s ease;cursor:default;}
+        .after-scan-card:hover{border-color:rgba(255,255,255,.18);}
         .after-scan-dot{display:inline-block;width:6px;height:6px;border-radius:50%;}
-        .token-scan-input::placeholder{color:rgba(148,163,184,0.58);}
-        .scan-helper-row{flex-wrap:wrap;}
-        @media (max-width:640px){.scan-helper-row{flex-direction:column;align-items:flex-start;gap:8px;}}
+        .token-scan-input::placeholder{color:#64748b;}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
         /* SCAN-BUTTON, DISCLOSED (Token Scanner active-state polish task — literal spec values this
            round: border rgba(83,243,195,.65) at rest, brighter on hover; verified via a Playwright
@@ -5845,12 +5846,19 @@ export default function TerminalTokenScanner() {
            near-black or grey), soft permanent glow, brighter glow + border on hover, slight press on
            :active. Disabled: dim flat fill, faded border/text, no glow, not-allowed cursor. No
            purple gradient either state. */
-        .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;gap:8px;height:62px;padding:0 28px;border-radius:13px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;}
-        .scan-btn-live{cursor:pointer;color:#ffffff;border:1px solid rgba(83,243,195,.65);background:linear-gradient(180deg,rgba(20,70,72,.82),rgba(9,38,42,.90));box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 0 20px rgba(83,243,195,.20);transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease;}
-        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(120,255,220,.95) !important;background:linear-gradient(180deg,rgba(26,90,92,.88),rgba(12,48,52,.92)) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 30px rgba(83,243,195,.34) !important;}
-        .scan-btn-live:focus-visible{border-color:rgba(120,255,220,.95) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 0 0 3px rgba(83,243,195,.22) !important;}
-        .scan-btn-live:active{transform:translateY(1px) scale(.99) !important;}
-        .scan-btn-off{cursor:not-allowed;color:rgba(148,163,184,.38);border:1px solid rgba(148,163,184,.14);background:rgba(11,17,28,.50);}
+        .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:56px;padding:0 26px;border-radius:12px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;color:#04201c;border:1px solid rgba(45,212,191,.9);background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%);}
+        .scan-btn-live{cursor:pointer;box-shadow:0 8px 24px rgba(45,212,191,.22),inset 0 1px 0 rgba(255,255,255,.35);transition:transform .15s ease,box-shadow .15s ease,filter .15s ease;}
+        .scan-btn-live:hover{transform:translateY(-1px);filter:brightness(1.06);box-shadow:0 10px 30px rgba(45,212,191,.32),inset 0 1px 0 rgba(255,255,255,.4);}
+        .scan-btn-live:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(45,212,191,.35),0 8px 24px rgba(45,212,191,.22);}
+        .scan-btn-live:active{transform:translateY(1px) scale(.99);}
+        .scan-btn-off{cursor:not-allowed;opacity:.5;}
+        .tracked-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:#080c14;border:1px solid rgba(255,255,255,.08);min-width:0;}
+        .tracked-scan-btn{padding:6px 12px;border-radius:8px;background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.32);color:#2DD4BF;font-size:10.5px;font-weight:700;font-family:var(--font-plex-mono);letter-spacing:.08em;cursor:pointer;transition:background .14s,border-color .14s;}
+        .tracked-scan-btn:hover{background:rgba(45,212,191,.20);border-color:rgba(45,212,191,.55);}
+        .tracked-remove-btn{padding:4px 2px;background:none;border:none;color:#64748b;font-size:10.5px;font-family:var(--font-plex-mono);cursor:pointer;}
+        .tracked-remove-btn:hover{color:#cbd5e1;}
+        .tracked-view-all{background:none;border:none;padding:0;color:#2DD4BF;font-size:11px;font-weight:600;font-family:var(--font-plex-mono);cursor:pointer;}
+        .tracked-view-all:hover{text-decoration:underline;}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
         .result-tabs-scroll{scrollbar-width:none;-ms-overflow-style:none;}
@@ -5864,72 +5872,63 @@ export default function TerminalTokenScanner() {
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         .sol-holder-stats{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:10px;max-width:460px;}
         @media (max-width:480px){.sol-holder-stats{grid-template-columns:1fr;max-width:none;}}
-        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1180px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
-        @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1120px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
+        @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1100px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
+        @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1100px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;} .result-tabs-wrap{position:static !important;background:none !important;backdrop-filter:none !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
-        @media (max-width:768px){.token-main{padding:16px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;min-height:44px;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{display:flex !important;padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;} .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .sol-cluster-split{grid-template-columns:1fr !important;}}
+        @media (max-width:480px){.preview-module-grid{grid-template-columns:1fr !important;}}
+        @media (max-width:768px){.token-main{padding:64px 16px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;min-height:44px;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{display:flex !important;padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;} .ts-hero-sub{white-space:normal !important;} .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .sol-cluster-split{grid-template-columns:1fr !important;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
-        <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
+        <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px clamp(16px, 2.2vw, 32px) 120px', width: '100%' }}>
 
           {/* ── Hero area ─────────────────────────────────────────── */}
-          <div style={{ marginBottom: '22px', maxWidth: '820px' }}>
-
-            {/* Badge row */}
-            <div style={{ marginBottom: '14px' }}>
+          {/* HERO, PREMIUM-FOCUS REDESIGN: badge row carries the TOKEN SCANNER badge, the
+              No Financial Advice pill and the weekly-quota pill inline; 40px heading; one-line
+              14px subtitle. Same quota/plan data as before, layout only. */}
+          <div style={{ marginBottom: '24px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
               <div style={{
                 display: 'inline-flex', alignItems: 'center', gap: '7px',
                 background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.26)',
-                borderRadius: '99px', padding: '5px 14px',
+                borderRadius: '99px', padding: '5px 12px',
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.15em',
                 color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
               }}>
                 <span className="live-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,.8)', flexShrink: 0 }} />
                 TOKEN SCANNER
               </div>
-            </div>
-
-            {/* Heading */}
-            <h1 style={{ fontSize: 'clamp(26px,3.6vw,38px)', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.12, margin: '0 0 10px', letterSpacing: '-0.02em' }}>
-              Token Scanner
-            </h1>
-            <p style={{ margin: '0 0 16px', color: '#64748b', fontSize: '13px', lineHeight: 1.65, maxWidth: '560px' }}>
-              Scan Base tokens for market read, LP/liquidity control, holder concentration, security/tax checks where available, and dev/deployer risk where available.
-            </p>
-
-            {/* Status pills — same chips, less crowded, DISCLOSED (Token Scanner UI polish task):
-                tighter/dimmer inactive tones plus explicit row-gap so wrapped rows on narrower
-                widths don't feel jammed together. */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '7px', rowGap: '8px' }}>
-              {[
-                { label: 'No Financial Advice',     color: '#64748b', bg: 'rgba(100,116,139,0.05)', border: 'rgba(100,116,139,0.16)' },
-              ].map(p => (
-                <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.09em', padding: '4px 11px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
-                  {p.label}
-                </span>
-              ))}
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', padding: '5px 11px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                No Financial Advice
+              </span>
               {!planLoading && tokenScanQuota && tokenScanQuota.limit != null ? (() => {
                 const atLimit = (tokenScanQuota.remaining ?? 0) <= 0
                 return (
                   <span style={{
-                    fontSize: '9px', fontWeight: 700, letterSpacing: '0.09em', padding: '4px 11px', borderRadius: '99px',
-                    color: atLimit ? '#f87171' : '#67e8f9',
-                    background: atLimit ? 'rgba(248,113,113,0.08)' : 'rgba(103,232,249,0.06)',
-                    border: `1px solid ${atLimit ? 'rgba(248,113,113,0.28)' : 'rgba(103,232,249,0.20)'}`,
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', padding: '5px 11px', borderRadius: '99px',
+                    color: atLimit ? '#f87171' : '#2DD4BF',
+                    background: atLimit ? 'rgba(248,113,113,0.08)' : 'rgba(45,212,191,0.06)',
+                    border: `1px solid ${atLimit ? 'rgba(248,113,113,0.28)' : 'rgba(45,212,191,0.22)'}`,
                     fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
                   }}>
                     {tokenScanQuota.used} / {tokenScanQuota.limit} scans this week ({plan.toUpperCase()})
                   </span>
                 )
               })() : null}
-              <span style={{ fontSize: '10px', color: '#253340', fontFamily: 'var(--font-plex-mono)', marginLeft: '2px' }}>
-                {planLoading ? 'Checking access…' : ''}
-              </span>
+              {planLoading && (
+                <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>Checking access…</span>
+              )}
             </div>
+
+            <h1 style={{ fontSize: '40px', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.1, margin: '0 0 8px', letterSpacing: '-0.02em' }}>
+              Token Scanner
+            </h1>
+            <p className="ts-hero-sub" style={{ margin: 0, color: '#94a3b8', fontSize: '14px', lineHeight: 1.5, maxWidth: '640px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              Market, liquidity, holder, LP-control and dev-risk checks for any token, in one scan.
+            </p>
           </div>
 
           {/* ── Search card ───────────────────────────────────────── */}
@@ -5945,27 +5944,21 @@ export default function TerminalTokenScanner() {
               shrinks its padding/margin slightly and dims a touch via opacity — same input/button/
               onKeyDown/onChange wiring, still fully usable, just visually secondary to the result
               below it. No change when there is no result yet (first-load state is untouched). */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: result ? '14px' : '22px', transition: 'margin 0.2s ease' }}>
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: result ? '13px 18px' : '18px 20px', overflow: 'hidden', opacity: result ? 0.92 : 1, transition: 'padding 0.2s ease, opacity 0.2s ease' }}>
-              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55), rgba(99,102,241,0.38), transparent)' }} />
-              {/* RADIAL-DEPTH, DISCLOSED (Token Scanner premium command-bar task): a static, very
-                  low-opacity radial glow behind the input row — no animation, no purple bloom, just
-                  enough depth so the card doesn't read as flat/empty. Purely decorative (pointer-
-                  events none, zIndex 0, behind all interactive content). */}
-              <span aria-hidden="true" style={{ position: 'absolute', left: '50%', top: '58px', transform: 'translateX(-50%)', width: '460px', height: '140px', background: 'radial-gradient(ellipse at center, rgba(45,212,191,0.06), transparent 72%)', pointerEvents: 'none', zIndex: 0 }} />
-
+          <div style={{ position: 'relative', marginBottom: '24px' }}>
+            {!result && <span aria-hidden="true" className="search-card-glow" />}
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: result ? '16px' : '20px', opacity: result ? 0.94 : 1, transition: 'padding 0.2s ease, opacity 0.2s ease' }}>
               {/* Command-label strip — tiny uppercase metadata, DISCLOSED (explicitly requested: a
                   small label, not a title/heading — "the old big 'Scan a token' heading/logo" stays
                   removed). Purely a label above the chain selector, same size class as other small
                   uppercase metadata already used elsewhere on this page (status pills). */}
-              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 10px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.14em', color: '#5b7c94', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 12px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 Token Lookup
               </p>
 
               {/* Chain selector — compact segmented control, DISCLOSED (Token Scanner UI polish
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
-              <div className="chain-seg" style={{ position: 'relative', zIndex: 1, marginBottom: '14px' }}>
+              <div className="chain-seg" style={{ position: 'relative', zIndex: 1, marginBottom: '16px' }}>
                 {/* SOLANA BETA, DISCLOSED: appended only when the server reports the flag AND an
                     RPC URL are both configured, so it never appears as a dead option. The four
                     existing EVM segments are unchanged. */}
@@ -6006,9 +5999,9 @@ export default function TerminalTokenScanner() {
                   removes. */}
               <div className="token-input-row" style={{ position: 'relative', zIndex: 1, display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                    <circle cx="11" cy="11" r="7" stroke="rgba(180,220,230,0.85)" strokeWidth="1.8" />
-                    <path d="M20 20l-3.2-3.2" stroke="rgba(180,220,230,0.85)" strokeWidth="1.8" strokeLinecap="round" />
+                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                    <circle cx="11" cy="11" r="7" stroke="#64748b" strokeWidth="1.8" />
+                    <path d="M20 20l-3.2-3.2" stroke="#64748b" strokeWidth="1.8" strokeLinecap="round" />
                   </svg>
                   <input
                     value={input}
@@ -6018,25 +6011,25 @@ export default function TerminalTokenScanner() {
                     placeholder={chain === 'solana' ? 'Paste Solana mint address…' : 'Enter contract address, ticker, or token name…'}
                     className="token-scan-input"
                     style={{
-                      width: '100%', height: '62px', padding: '0 18px 0 44px', boxSizing: 'border-box',
-                      background: 'rgba(3,8,16,0.92)',
-                      border: '1px solid rgba(148,163,184,0.32)',
-                      borderRadius: '13px',
-                      color: '#f8fafc', fontSize: '15px',
-                      fontFamily: 'var(--font-plex-mono)',
+                      width: '100%', height: '56px', padding: '0 18px 0 46px', boxSizing: 'border-box',
+                      background: 'rgba(6,6,10,0.72)',
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      borderRadius: '12px',
+                      color: '#f8fafc', fontSize: '16px',
+                      fontFamily: 'var(--font-inter,Inter,sans-serif)',
                       outline: 'none',
                       opacity: loading ? 0.6 : 1,
                       transition: 'border-color 0.15s, box-shadow 0.15s',
                       minWidth: 0,
-                      boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.35)',
+                      boxShadow: 'none',
                     }}
                     onFocus={e => {
-                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.80)'
-                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 3px rgba(83,243,195,0.16)'
+                      e.currentTarget.style.borderColor = 'rgba(45,212,191,0.85)'
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.20)'
                     }}
                     onBlur={e => {
-                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.32)'
-                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35)'
+                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+                      e.currentTarget.style.boxShadow = 'none'
                     }}
                   />
                 </div>
@@ -6048,31 +6041,19 @@ export default function TerminalTokenScanner() {
                   {loading || resolving ? 'SCANNING…' : (
                     <>
                       SCAN TOKEN
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </>
                   )}
                 </button>
               </div>
 
-              {/* Enter-to-scan hint, DISCLOSED (Token Scanner final-polish task): onKeyDown above
-                  already submits on Enter (unchanged) — this just makes that existing behavior
-                  discoverable. Compact, muted, left-aligned under the input so it doesn't add real
-                  vertical weight. */}
-              <p style={{ position: 'relative', zIndex: 1, margin: '7px 0 0', fontSize: '10px', color: '#3d5468', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
-                Press Enter to scan
-              </p>
-
-              {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
-                  scan checks" section below — not a fake link). */}
-              <div style={{ position: 'relative', zIndex: 1, height: '1px', background: 'rgba(148,163,184,0.16)', margin: '12px 0 0' }} />
-              <div className="scan-helper-row" style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0 2px' }}>
-                <p style={{ margin: 0, fontSize: '11px', color: '#5d7994', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
-                  Checks liquidity, holders, LP control, dev activity, market signals, and risk patterns.
+              {/* One muted hint under the input (replaces the old Enter line and helper row).
+                  Enter still submits via the input's onKeyDown above. */}
+              {!result && (
+                <p style={{ position: 'relative', zIndex: 1, margin: '10px 0 0', fontSize: '12px', color: '#64748b', lineHeight: 1.5 }}>
+                  Paste a contract address or search by ticker or name.
                 </p>
-                <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(94,246,209,0.90)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                  How CORTEX works →
-                </a>
-              </div>
+              )}
             </div>
           </div>
 
@@ -7603,66 +7584,55 @@ export default function TerminalTokenScanner() {
           })()}
 
           {/* ── What this scan checks ─────────────────────────────── */}
+          {/* PRE-SCAN SECTIONS, PREMIUM-FOCUS REDESIGN: four equal-height module cards (icon,
+              mono accent title, 14px body) and a compact single-row "After scan" strip. Still a
+              static explanation of what a scan covers — no numbers, verdicts or sample data. */}
           {!loading && !resolving && !result && !error && !solanaResult && (
-            <div id="how-cortex-works" style={{ maxWidth: '820px' }}>
-              <div style={{ marginBottom: '20px' }}>
-                <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
-                  What this scan checks
-                </p>
-                <p style={{ margin: 0, fontSize: '12px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.65 }}>
-                  A structured pre-trade intelligence pass with no fake values and no simulated certainty.
-                </p>
-              </div>
-
-              {/* Module cards, DISCLOSED (Token Scanner UI polish task): now share the single
-                  .preview-module-card class (static border, no per-item colored glow bloom, no
-                  inline JS hover handlers) — the small colored dot still identifies each module,
-                  just without the boxy per-card tinted background/border/shadow. */}
-              {/* Intelligence-module framing, DISCLOSED (Token Scanner final polish task): each
-                  card now shows a numbered index (01–04) and a thin static top accent bar instead
-                  of just a dot, so the four cards read as sequential engine modules rather than
-                  generic feature tiles — no new glow, both additions are static/cheap. Accent line
-                  thinned to 1px and fades at both edges (explicitly requested again: "thinner/
-                  sharper"), and card padding raised once more for a touch more breathing room. */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '30px' }}>
-                {[
-                  { n: '01', label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { n: '02', label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
-                  { n: '03', label: 'LP Safety',     color: '#34d399', desc: 'Pool lock status, LP control, and exit risk.' },
-                  { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
-                ].map(mod => (
-                  <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
-                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.95 }} />
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '15px' }}>
-                      <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.46)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
-                    </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#bdccdf', lineHeight: 1.7 }}>{mod.desc}</p>
-                  </div>
-                ))}
-              </div>
-
-              {/* ── After scan, CORTEX builds ─────────────────────────
-                  DISCLOSED (Token Scanner final-polish task, explicitly requested: the plain
-                  full-width rows read as filler — redesigned into the same card-grid language as
-                  "What this scan checks" above, so the two sections read as one deliberate system
-                  instead of a feature grid followed by a bolted-on list. Still a STATIC explanation
-                  of what a completed scan produces — no numbers, verdicts, addresses, or sample
-                  data; the small dot is a static bullet, not a status indicator. */}
+            <div id="how-cortex-works" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               <div>
-                <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: 700, color: '#9fb3c8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>
+                <div style={{ marginBottom: '16px' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: 700, color: '#f1f5f9', lineHeight: 1.3, letterSpacing: '-0.01em' }}>
+                    What this scan checks
+                  </h2>
+                  <p style={{ margin: 0, fontSize: '13px', color: '#64748b', lineHeight: 1.5 }}>
+                    A structured pre-trade pass with no fake values and no simulated certainty.
+                  </p>
+                </div>
+                <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '16px', alignItems: 'stretch' }}>
+                  {[
+                    { label: 'Market Pulse', color: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.', icon: <path d="M3 17l5-6 4 4 8-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
+                    { label: 'Holder Map',   color: '#8b5cf6', desc: 'Top-holder concentration and supply distribution.', icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="2" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 4.5a3.2 3.2 0 010 6.4M21 20c0-2.6-1.6-4.8-4-5.6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
+                    { label: 'LP Safety',    color: '#ec4899', desc: 'Pool lock status, LP control, and exit risk.', icon: <><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" /><path d="M8 10V7a4 4 0 018 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
+                    { label: 'Dev Activity', color: '#f59e0b', desc: 'Contract ownership, dev wallets, and recent activity.', icon: <path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
+                  ].map(mod => (
+                    <div key={mod.label} className="preview-module-card">
+                      <span aria-hidden="true" className="preview-module-icon" style={{ color: mod.color, background: `${mod.color}1a`, border: `1px solid ${mod.color}33` }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">{mod.icon}</svg>
+                      </span>
+                      <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</p>
+                      <p style={{ margin: 0, fontSize: '14px', color: '#94a3b8', lineHeight: 1.55 }}>{mod.desc}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── After scan, CORTEX builds — compact single row ──── */}
+              <div>
+                <p style={{ margin: '0 0 12px', fontSize: '11px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
                   After scan, CORTEX builds
                 </p>
-                <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '10px' }}>
+                <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px' }}>
                   {[
-                    { label: 'Risk receipt', desc: 'Verdict, confidence, evidence gaps, and next action.', color: '#2dd4bf' },
-                    { label: 'Holder + LP read', desc: 'Top-holder concentration, LP control, lock/burn status.', color: '#a78bfa' },
-                    { label: 'Dev control', desc: 'Deployer evidence, ownership/admin checks, recent activity.', color: '#fb923c' },
+                    { label: 'Risk receipt', desc: 'Verdict, confidence, next action', color: '#2DD4BF' },
+                    { label: 'Holder + LP read', desc: 'Concentration, LP control, locks', color: '#8b5cf6' },
+                    { label: 'Dev control', desc: 'Deployer, ownership, activity', color: '#ec4899' },
                   ].map(row => (
                     <div key={row.label} className="after-scan-card">
-                      <span aria-hidden="true" className="after-scan-dot" style={{ background: row.color, boxShadow: `0 0 6px ${row.color}66` }} />
-                      <p style={{ margin: '10px 0 6px', fontSize: '12px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.01em' }}>{row.label}</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#7e93a9', lineHeight: 1.65 }}>{row.desc}</p>
+                      <span aria-hidden="true" className="after-scan-dot" style={{ background: row.color, boxShadow: `0 0 6px ${row.color}66`, flexShrink: 0 }} />
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.label}</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.desc}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -10318,13 +10288,13 @@ export default function TerminalTokenScanner() {
           width: 'clamp(300px, 22vw, 380px)',
           minWidth: 0,
           flexShrink: 0,
-          borderLeft: '1px solid rgba(99,102,241,0.18)',
-          background: 'linear-gradient(180deg, rgba(7,11,24,.98), rgba(5,8,18,.98))',
+          borderLeft: '1px solid rgba(255,255,255,0.08)',
+          background: 'rgba(8,12,20,0.72)',
           overflowY: 'auto',
-          padding: '26px 18px',
+          padding: '24px 16px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '16px',
+          gap: '24px',
           position: 'sticky',
           top: 0,
           height: '100vh',
@@ -10376,19 +10346,17 @@ export default function TerminalTokenScanner() {
                "the right receipt looks like a real waiting system, not faded/dead" — brighter
                checklist labels/separators and a more readable AWAITING SCAN badge, still honestly a
                preview: hollow pending dots, no fake completed state, no invented content). */
-            <div style={{ background: 'rgba(9,16,30,.75)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: '14px', padding: '15px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(34,211,238,.70)', flexShrink: 0 }} />
-                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7690a8', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX Receipt</p>
-                </div>
-                <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '.10em', padding: '3px 8px', borderRadius: '999px', color: 'rgba(34,211,238,.85)', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.28)', fontFamily: 'var(--font-plex-mono)' }}>
+            <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
+              {/* The panel heading above already says CORTEX RECEIPT; this card only carries the
+                  status pill and the six pending sections (hollow circles, never shown as done). */}
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px', marginBottom: '4px' }}>
+                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>
+                  Scan a token to generate a structured risk receipt.
+                </p>
+                <span style={{ flexShrink: 0, fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '3px 8px', borderRadius: '999px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.28)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                   AWAITING SCAN
                 </span>
               </div>
-              <p style={{ margin: '0 0 14px', fontSize: '10px', color: '#4a5f78', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
-                Scan a token to generate a structured risk receipt.
-              </p>
               {[
                 { label: 'Verdict' },
                 { label: 'Market Read' },
@@ -10397,9 +10365,9 @@ export default function TerminalTokenScanner() {
                 { label: 'Dev Control' },
                 { label: 'Next Action' },
               ].map((sec, idx) => (
-                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.09)' : 'none' }}>
-                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.50)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
+                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: idx === 5 ? '12px 0 0' : '12px 0', borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+                  <span aria-hidden="true" style={{ width: '10px', height: '10px', borderRadius: '50%', border: '1.5px solid rgba(148,163,184,0.45)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
@@ -10707,13 +10675,18 @@ export default function TerminalTokenScanner() {
           })()}
 
           {/* ── Tracked Tokens panel ──────────────────────────────── */}
-          <div style={{ borderTop: '1px solid rgba(99,102,241,0.15)', paddingTop: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-              <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, color: '#e2e8f0' }}>
+          {/* COMPACT TRACKED CARDS: avatar + symbol + chain pill on one row, address/date below,
+              Scan (ghost teal) and Remove (text) on the right. First 3 shown; "View all (N)"
+              expands the rest. Same Scan/Remove handlers as before. */}
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 Tracked Tokens
               </p>
-              {trackedTokens.length > 0 && (
-                <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)', padding: '2px 8px', borderRadius: '99px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>{trackedTokens.length} saved</span>
+              {trackedTokens.length > 3 && (
+                <button type="button" className="tracked-view-all" onClick={() => setShowAllTracked(v => !v)}>
+                  {showAllTracked ? 'Show less' : `View all (${trackedTokens.length})`}
+                </button>
               )}
             </div>
 
@@ -10725,45 +10698,41 @@ export default function TerminalTokenScanner() {
 
             {!trackedLoggedOut && !trackedUnavailable && trackedLoading && (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center', paddingTop: '4px' }}>
-                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#22d3ee', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
+                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#2DD4BF', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
               </div>
             )}
 
             {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length === 0 && (
-              <p style={{ margin: 0, fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+              <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>
                 No tracked tokens yet. Scan a token and press Track This Token.
               </p>
             )}
 
             {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {trackedTokens.map(t => {
+                {(showAllTracked ? trackedTokens : trackedTokens.slice(0, 3)).map(t => {
                   const initials = (t.symbol ?? '?').slice(0, 2).toUpperCase()
                   const addr = t.address ?? ''
                   const short = addr.length >= 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
-                  const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g,'/') : null
+                  const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : null
                   return (
-                    <div key={t.id ?? t.address} style={{ padding: '10px', borderRadius: '11px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.08)' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '9px' }}>
-                        <div style={{ width: '30px', height: '30px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(99,102,241,0.25),rgba(167,139,250,0.20))', border: '1px solid rgba(167,139,250,0.32)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>
-                          {initials}
+                    <div key={t.id ?? t.address} className="tracked-card">
+                      <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(45,212,191,0.20),rgba(139,92,246,0.22))', border: '1px solid rgba(255,255,255,0.10)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '10px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+                        {initials}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.symbol ?? 'Tracked Token'}</span>
+                          <span style={{ flexShrink: 0, fontSize: '8px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
                         </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
-                            <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? 'Tracked Token'}</span>
-                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
-                          </div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)' }}>{short}</span>
-                            {savedDate && <span style={{ fontSize: '9px', color: '#253340', fontFamily: 'var(--font-plex-mono)' }}>{savedDate}</span>}
-                          </div>
+                        <div style={{ marginTop: '2px', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {short}{savedDate ? ` · ${savedDate}` : ''}
                         </div>
                       </div>
-                      {/* Scan/Remove hierarchy, DISCLOSED (Token Scanner final polish task): Scan
-                          is now the visually primary action (filled teal), Remove stays a quiet
-                          ghost action — same onClick handlers/behavior, just clearer priority. */}
-                      <div style={{ display: 'flex', gap: '6px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                         <button
+                          type="button"
+                          className="tracked-scan-btn"
                           onClick={() => {
                             // CHAIN-STRICT SCAN FIX, DISCLOSED (audit: watchlist Scan hardcoded 'base',
                             // so rescanning a saved ETH/BNB/Robinhood/Solana token always scanned it on
@@ -10775,16 +10744,13 @@ export default function TerminalTokenScanner() {
                             setChain(rowChain)
                             handleScan(t.address, rowChain)
                           }}
-                          style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.32)', color: '#67e8f9', fontSize: '10.5px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.10em', cursor: 'pointer', transition: 'background .14s, border-color .14s' }}
-                          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.16)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.50)' }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.10)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.32)' }}
                         >
                           Scan
                         </button>
                         <button
+                          type="button"
+                          className="tracked-remove-btn"
                           onClick={() => removeTrackedToken(t.address, t.chain)}
-                          className="cmd-chip"
-                          style={{ padding: '7px 12px', color: '#8291a3', borderColor: 'rgba(255,255,255,0.08)' }}
                         >
                           Remove
                         </button>
@@ -10795,6 +10761,7 @@ export default function TerminalTokenScanner() {
               </div>
             )}
           </div>
+
         </aside>
 
       </div>
