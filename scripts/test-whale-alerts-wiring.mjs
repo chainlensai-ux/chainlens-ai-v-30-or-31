@@ -70,4 +70,9 @@ assert.match(page, /title=\{localTimestamp\(alert\.occurred_at\)\}/)
 assert.match(page, /Load more alerts/)
 assert.match(page, /@media \(max-width: 640px\)/)
 
+// Crash regression: Intl throws when dateStyle/timeStyle are combined with timeZoneName — that ran
+// for every feed row and took the whole page down.
+assert.doesNotMatch(page, /(dateStyle|timeStyle):[^}\n]*timeZoneName:|timeZoneName:[^}\n]*(dateStyle|timeStyle):/)
+assert.match(page, /const localTimestamp = [\s\S]*?try \{[\s\S]*?\} catch \{/)
+
 console.log('whale alerts wiring: ok')

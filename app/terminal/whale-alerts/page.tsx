@@ -191,7 +191,14 @@ const timeAgo = (iso?: string | null) => {
 const localTimestamp = (iso?: string | null) => {
   if (!iso) return undefined
   const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? undefined : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZoneName: 'short' })
+  if (Number.isNaN(d.getTime())) return undefined
+  // Component options only: Intl throws if dateStyle/timeStyle are mixed with timeZoneName, and a
+  // throw here (run for every row) took down the whole page. Never let formatting crash a render.
+  try {
+    return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+  } catch {
+    return d.toISOString()
+  }
 }
 
 const FEED_PAGE_SIZE = 50
