@@ -66,7 +66,7 @@ const now = Date.now()
 {
   assert.match(src, /walletTransactionInFlight\.get\(cacheKey\)/)
   assert.match(src, /providerCallsSavedByDedupe \+= 1/)
-  assert.match(src, /walletTransactionCacheKey\(address\)/)
+  assert.match(src, /walletTransactionCacheKey\(address, windowMs\)/)
   // Cache key is chain-scoped:
   assert.match(src, /PROVIDER_CHAIN}:\$\{address\.toLowerCase\(\)\}/)
 }
@@ -83,11 +83,12 @@ const now = Date.now()
 
 // ── Batched DB writes + deterministic dedupe keys ────────────────────────────
 {
-  // Exactly ONE upsert call for all filtered alerts of the batch:
-  assert.equal((src.match(/\.upsert\(allFilteredAlerts/g) ?? []).length, 1)
-  assert.match(src, /onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id'/,
+  // Exactly ONE batched write for all filtered alerts of the batch (via lib/server/whaleAlertPersist):
+  assert.equal((src.match(/persistWhaleAlerts\([^)]*allFilteredAlerts/g) ?? []).length, 1)
+  const persist = readFileSync(new URL('../lib/server/whaleAlertPersist.ts', import.meta.url), 'utf8')
+  assert.match(persist, /OWNER_KEY = \['tx_hash', 'wallet_address', 'token_address', 'alert_type', 'owner_user_id'\]/,
     'deterministic user-scoped dedupe keys')
-  assert.match(src, /ignoreDuplicates: true/)
+  assert.match(persist, /ignoreDuplicates: true/)
 }
 
 // ── whaleSyncPerformanceAudit contract ──────────────────────────────────────

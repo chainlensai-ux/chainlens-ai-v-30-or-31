@@ -81,6 +81,8 @@ type SyncResponse = {
   alertCandidateCount?: number
   dbInsertFailed?: number
   dbInsertErrorSamples?: Array<{ code?: string | null; message?: string | null }>
+  dbWritePath?: 'upsert' | 'dedupe_insert' | 'legacy_no_owner' | null
+  dbWritePrivateDropped?: number
   providerErrorSamples?: Array<{ statusCode?: number | null; reason?: string }>
 }
 
@@ -88,7 +90,9 @@ type SyncResponse = {
 function syncZeroReason(s: SyncResponse | null | undefined): string | null {
   if (!s || s.ok === false || Number(s.inserted ?? 0) > 0) return null
   if (Number(s.dbInsertFailed ?? 0) > 0) {
-    return `db write failed: ${s.dbInsertErrorSamples?.[0]?.code ?? 'unknown'}`
+    const sample = s.dbInsertErrorSamples?.[0]
+    const detail = sample?.message ? ` — ${sample.message.slice(0, 140)}` : ''
+    return `db write failed: ${sample?.code ?? 'unknown'}${detail}`
   }
   const parts: string[] = []
   if (typeof s.fetchedTxCount === 'number') {

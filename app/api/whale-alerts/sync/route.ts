@@ -3,6 +3,7 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { persistWhaleAlerts, type WhaleAlertsDb, type WhaleAlertWritePath } from '@/lib/server/whaleAlertPersist'
 import { BASE_WHALE_CHAIN_ID, dedupeTrackedWallets, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
 
 type TrackedWallet = {
@@ -773,6 +774,10 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
   const skipSamples: SkipSample[] = []
   const finalPipelineSummary = makeFinalPipelineSummary()
   const dbInsertErrorSamples: Array<Record<string, string | null>> = []
+  // Alerts from a user's private (FOMO) wallet — never written without their owner column.
+  const privateAlerts = new WeakSet<object>()
+  let dbWritePath: WhaleAlertWritePath | null = null
+  let dbWritePrivateDropped = 0
 
   // ── Phase 1: Parallel fetch — CONCURRENCY wallets at a time ─────────────────
   type FetchResult =
@@ -936,7 +941,9 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
       }
 
       const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
-      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity, owner_user_id: actor.kind === 'user' ? actor.userId : null })
+      const row = { ...alert, amount_usd: usd, severity, owner_user_id: actor.kind === 'user' ? actor.userId : null }
+      if (result.wallet.user_id) privateAlerts.add(row)
+      allFilteredAlerts.push(row)
       if (timeToFirstAlertMs == null) timeToFirstAlertMs = Date.now() - syncStartedAtMs
     }
   }
@@ -974,58 +981,18 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     }
 
     finalPipelineSummary.attemptedInsert += allFilteredAlerts.length
-    const { data, error } = await supabase
-      .from('whale_alerts')
-      .upsert(allFilteredAlerts, {
-        onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id',
-        ignoreDuplicates: true,
-      })
-      .select('id')
-
-    let insertError = error
-    if (!error) {
-      inserted = data?.length ?? 0
-      skipped  = Math.max(allFilteredAlerts.length - inserted, 0)
-    } else if (
-      error.code === '42P10' ||
-      /no unique or exclusion constraint/i.test(error.message ?? '')
-    ) {
-      // CONSTRAINT FALLBACK: the DB lacks the unique constraint the onConflict target names.
-      // Dedupe in code on the same key tuple against existing rows, then plain insert.
-      console.error('[whale-alerts-sync] upsert onConflict failed; using dedupe+insert fallback', error.code, error.message)
-      const dedupeKey = (a: Record<string, unknown>) => [a.tx_hash, a.wallet_address, a.token_address, a.alert_type, a.owner_user_id ?? null]
-        .map(v => (v == null ? '' : String(v).toLowerCase())).join('|')
-      const txHashes = [...new Set(allFilteredAlerts.map(a => String(a.tx_hash ?? '')).filter(Boolean))]
-      const existing = await supabase
-        .from('whale_alerts')
-        .select('tx_hash,wallet_address,token_address,alert_type,owner_user_id')
-        .in('tx_hash', txHashes)
-      if (existing.error) {
-        insertError = existing.error
-      } else {
-        const seen = new Set((existing.data ?? []).map(r => dedupeKey(r as Record<string, unknown>)))
-        const fresh = allFilteredAlerts.filter(a => {
-          const k = dedupeKey(a)
-          if (seen.has(k)) return false
-          seen.add(k)
-          return true
-        })
-        if (fresh.length === 0) {
-          insertError = null
-          inserted = 0
-          skipped = allFilteredAlerts.length
-        } else {
-          const plain = await supabase.from('whale_alerts').insert(fresh).select('id')
-          insertError = plain.error
-          if (!plain.error) {
-            inserted = plain.data?.length ?? 0
-            skipped = Math.max(allFilteredAlerts.length - inserted, 0)
-          }
-        }
-      }
+    const write = await persistWhaleAlerts(supabase as unknown as WhaleAlertsDb, allFilteredAlerts, {
+      isPrivate: row => privateAlerts.has(row),
+    })
+    inserted = write.inserted
+    skipped = write.skipped
+    dbWritePath = write.path
+    dbWritePrivateDropped = write.privateDropped
+    for (const recovered of write.recovered) {
+      console.warn('[whale-alerts-sync] whale_alerts write degraded', write.path, recovered.code, recovered.message)
     }
-    if (insertError) {
-      const error = insertError
+    if (write.error) {
+      const error = write.error
       console.error('[whale-alerts-sync] whale_alerts insert failed', error.code, error.message)
       finalPipelineSummary.dbInsertFailed += allFilteredAlerts.length
       skipped = allFilteredAlerts.length
@@ -1091,8 +1058,14 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     dbInsertFailed: finalPipelineSummary.dbInsertFailed,
     dbInsertErrorSamples: dbInsertErrorSamples.slice(0, 3).map(e => ({ code: e.code ?? null, message: e.message ?? null })),
     providerErrorSamples: providerErrorSamples.slice(0, 5).map(e => ({ statusCode: e.statusCode ?? null, reason: e.reason })),
+    // Which write path persisted this batch. 'legacy_no_owner' means whale_alerts has no
+    // owner_user_id column: docs/migrations/20260904_fomo_user_scoped_tracked_wallets.sql is unapplied.
+    dbWritePath,
+    dbWritePrivateDropped,
     message: walletsChecked === 0
       ? 'No active wallets were scanned in this batch.'
+      : finalPipelineSummary.dbInsertFailed > 0
+        ? `Found ${finalPipelineSummary.dbInsertFailed} qualifying alert${finalPipelineSummary.dbInsertFailed === 1 ? '' : 's'} but saving failed (${dbInsertErrorSamples[0]?.code ?? 'db error'}).`
       : inserted > 0
         ? `Checked ${walletsChecked} wallet${walletsChecked === 1 ? '' : 's'}. Found ${inserted} qualifying alert${inserted === 1 ? '' : 's'}.`
         : done

@@ -14,7 +14,7 @@ const page = readFileSync(new URL('../app/terminal/whale-alerts/page.tsx', impor
 
 assert.match(feed, /userOrSystemScope\('owner_user_id', userId\)/)
 assert.match(feed, /owner_user_id unavailable; used legacy system-feed read/)
-assert.match(sync, /userOrSystemScope\('user_id', authenticatedUser\.userId\)/)
+assert.match(sync, /userOrSystemScope\('user_id', actor\.userId\)/)
 assert.match(sync, /dedupeTrackedWallets/)
 assert.match(page, /if \(!res\.ok \|\| !json \|\| json\.ok === false\) \{[\s\S]*?setSyncError[\s\S]*?return/)
 assert.match(page, /whale_alerts_last_sync_state_v2/)

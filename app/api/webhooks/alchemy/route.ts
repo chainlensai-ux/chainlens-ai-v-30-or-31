@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createHmac, timingSafeEqual } from 'crypto'
+import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
+import { persistWhaleAlerts, type WhaleAlertsDb } from '@/lib/server/whaleAlertPersist'
 
 type AlchemyActivity = {
   fromAddress?: string | null
@@ -203,22 +205,20 @@ async function handleWebhook(payload: AlchemyPayload) {
     return NextResponse.json({ ok: true, received, inserted: 0 })
   }
 
-  const { data, error: insertError } = await supabase
-    .from('whale_alerts')
-    .upsert(candidates, {
-      onConflict: 'tx_hash,wallet_address,token_address,alert_type,owner_user_id',
-      ignoreDuplicates: true,
-    })
-    .select('id')
+  // System wallets only (user_id IS NULL), so every row is shareable — the legacy no-owner
+  // write path is safe here when the ownership migration has not been applied.
+  const write = await persistWhaleAlerts(supabase as unknown as WhaleAlertsDb, candidates)
 
-  if (insertError) {
-    return NextResponse.json({ ok: false, error: 'insert_failed' }, { status: 500 })
+  if (write.error) {
+    console.error('[alchemy-webhook] whale_alerts insert failed', write.error.code, write.error.message)
+    return NextResponse.json({ ok: false, error: 'insert_failed', code: write.error.code ?? null }, { status: 500 })
   }
 
-  const inserted = data?.length ?? 0
+  const inserted = write.inserted
   duplicateSkipped += Math.max(0, candidates.length - inserted)
 
-  console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched, inserted })
+  if (inserted > 0) clearWhaleFeedCache()
+  console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched, inserted, writePath: write.path })
   return NextResponse.json({ ok: true, received, inserted })
 }
 
