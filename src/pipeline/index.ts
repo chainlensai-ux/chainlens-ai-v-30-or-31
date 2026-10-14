@@ -79,6 +79,7 @@ import {
 import { createReceiptRequestScopeCache, receiptCacheKey, createLiveBaseReceiptFetcher } from '../modules/receiptSwapDecoder/receiptAcquisition'
 import { fillUnmatchedSellReceiptProofs } from '../modules/receiptSwapDecoder/unmatchedSellReceiptProof'
 import { buildUnmatchedSellForensics } from '../lib/unmatchedSellForensics'
+import { buildWalletDebugFunnel, isWalletDebugEnabled, logWalletDebugFunnel } from '../lib/walletDebugFunnel'
 import {
   auditCachedReceipt, buildReceiptPhase2ForensicsDiagnostic, type CachedReceiptAuditInput,
 } from '../modules/receiptSwapDecoder/receiptPhase2Forensics'
@@ -2617,6 +2618,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   //   - event ordering            -> identical multisets but different orderInstability fingerprints
   //   - a real input change       -> everything above is self-consistent and the wallet simply had
   //                                  different on-chain activity in the window
+  // TEMPORARY (WALLET_DEBUG=1 only): per-stage count funnel for the missed buys/sells
+  // investigation — read-only, see src/lib/walletDebugFunnel.ts.
+  if (isWalletDebugEnabled()) {
+    try {
+      const debugClassificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
+      logWalletDebugFunnel(buildWalletDebugFunnel({
+        walletAddress: params.walletAddress,
+        windowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+        providerResults,
+        stabilizedRawEventCount: allRawEvents.length,
+        normalizedEvents,
+        normalizationErrors,
+        timelines,
+        fifo: fifoAndPnl,
+        fifoEligibleEvents: filterToFifoEligible(normalizedEvents, debugClassificationContext),
+        classificationContext: debugClassificationContext,
+      }))
+    } catch (error) {
+      console.warn('[wallet-debug-funnel] failed to build', error instanceof Error ? error.message : error)
+    }
+  }
+
   {
     const mergedForAudit = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
     // Same identity a duplicate event would collapse under. Deterministic and side-effect free.
