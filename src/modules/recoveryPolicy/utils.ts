@@ -102,17 +102,59 @@ function goldrushChainName(chain: SupportedChain): string | null {
 // resetRecoveryHistoricalPageRequestCache, called from walletScanWorker.ts).
 const requestScopedHistoricalPages = new Map<string, Promise<RawProviderEvent[]>>()
 
+// Per-direction outcome of a strict token-history query, kept explicit so a caller can never read a
+// partial or failed fetch as complete history:
+//   complete         every page was read (provider returned no further cursor) and it held events
+//   empty            the query completed and the wallet has no such transfers at all
+//   covered_to_bound oldest-first pages reached `coverUntilTimestamp`; later pages were not needed
+//   capped           more pages exist and the page/time budget stopped before the bound
+//   failed           HTTP/RPC error or timeout (partial earlier pages may still be returned)
+//   budget_exhausted the per-scan provider budget refused the (next) call
+//   unsupported      Alchemy has no transfer index configured for this chain
+//   not_requested    the caller did not ask for this direction
+export type StrictHistoryDirectionStatus =
+  | 'complete' | 'empty' | 'covered_to_bound' | 'capped' | 'failed' | 'budget_exhausted' | 'unsupported' | 'not_requested'
+
+// A provider transfer with its on-chain position, when Alchemy returns it (`blockNum`, and
+// `uniqueId` = `<txHash>:log:<logIndex>` for ERC-20 transfers). Optional so plain events still fit.
+export type StrictTransferEvent = RawProviderEvent & {
+  blockNumber?: number | null
+  logIndex?: number | null
+  uniqueId?: string | null
+}
+
 export type AlchemyTokenHistoryStrictResult = {
   ok: boolean
   inboundQueryOk: boolean
   outboundQueryOk: boolean
-  events: RawProviderEvent[]
+  // Inbound (to the wallet) transfers — unchanged meaning.
+  events: StrictTransferEvent[]
   inboundPageCapped: boolean
   inboundPageExhausted: boolean
   providerCalls: number
   // Order the inbound page was requested in. 'asc' (the default) returns the OLDEST inbounds first,
   // so a capped page still holds the earliest acquisitions; absent on hand-built results.
   order?: 'asc' | 'desc'
+  // ADDITIVE (historical outbound recovery). Absent on hand-built / inbound-only results, which a
+  // caller must treat as "outbound history unknown".
+  inboundStatus?: StrictHistoryDirectionStatus
+  outboundStatus?: StrictHistoryDirectionStatus
+  outboundEvents?: StrictTransferEvent[]
+  inboundPagesFetched?: number
+  outboundPagesFetched?: number
+  // Timestamp (ms) of the last event read in each direction. With order 'asc' and pages read
+  // contiguously from block 0, every transfer strictly before this instant has been seen.
+  inboundCoveredUntil?: number | null
+  outboundCoveredUntil?: number | null
+}
+
+export type AlchemyTokenHistoryStrictOptions = {
+  // Also query transfers FROM the wallet (a separate fromAddress query; Alchemy ANDs from/to filters).
+  includeOutbound?: boolean
+  // Pages per direction (100 transfers each). Default 1 = the previous single-page behaviour.
+  maxPagesPerDirection?: number
+  // Oldest-first only: stop paging a direction once a page reaches this timestamp (ms).
+  coverUntilTimestamp?: number | null
 }
 
 const requestScopedAlchemyTokenHistoryStrict = new Map<string, Promise<AlchemyTokenHistoryStrictResult>>()
@@ -310,11 +352,17 @@ export async function fetchAlchemyTokenHistoryStrict(
   walletAddress: string,
   token: string,
   order: 'asc' | 'desc' = 'asc',
+  options: AlchemyTokenHistoryStrictOptions = {},
 ): Promise<AlchemyTokenHistoryStrictResult> {
-  const key = `${chain}:${walletAddress.trim().toLowerCase()}:${token.trim().toLowerCase()}:inbound:${order}`
+  const maxPages = Math.max(1, Math.floor(options.maxPagesPerDirection ?? 1))
+  const bound = order === 'asc' ? options.coverUntilTimestamp ?? null : null
+  const key = [
+    chain, walletAddress.trim().toLowerCase(), token.trim().toLowerCase(), 'strict', order,
+    options.includeOutbound ? 'in+out' : 'in', maxPages, bound ?? '-',
+  ].join(':')
   const existing = requestScopedAlchemyTokenHistoryStrict.get(key)
   if (existing) return existing
-  const promise = fetchAlchemyTokenHistoryInboundLive(chain, walletAddress, token, order)
+  const promise = fetchAlchemyTokenHistoryStrictLive(chain, walletAddress, token, order, maxPages, bound, options.includeOutbound === true)
   requestScopedAlchemyTokenHistoryStrict.set(key, promise)
   promise.catch(() => {
     if (requestScopedAlchemyTokenHistoryStrict.get(key) === promise) requestScopedAlchemyTokenHistoryStrict.delete(key)
@@ -322,59 +370,154 @@ export async function fetchAlchemyTokenHistoryStrict(
   return promise
 }
 
-async function fetchAlchemyTokenHistoryInboundLive(
+const STRICT_HISTORY_PAGE_TIMEOUT_MS = 12_000
+// Total wall-clock allowance per direction across all of its pages.
+const STRICT_HISTORY_DIRECTION_DEADLINE_MS = 20_000
+
+type StrictDirectionResult = {
+  status: StrictHistoryDirectionStatus
+  events: StrictTransferEvent[]
+  pages: number
+  providerCalls: number
+  coveredUntil: number | null
+}
+
+function parseHexInt(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^0x[0-9a-fA-F]+$/.test(value)) return null
+  const n = Number.parseInt(value, 16)
+  return Number.isSafeInteger(n) ? n : null
+}
+
+function logIndexFromUniqueId(uniqueId: string | null): number | null {
+  const match = uniqueId?.match(/:log:(\d+)$/)
+  return match ? Number(match[1]) : null
+}
+
+async function fetchStrictDirection(
+  chain: SupportedChain,
+  url: string,
+  walletAddress: string,
+  token: string,
+  order: 'asc' | 'desc',
+  maxPages: number,
+  bound: number | null,
+  direction: 'inbound' | 'outbound',
+): Promise<StrictDirectionResult> {
+  const out: StrictDirectionResult = { status: 'failed', events: [], pages: 0, providerCalls: 0, coveredUntil: null }
+  const deadline = Date.now() + STRICT_HISTORY_DIRECTION_DEADLINE_MS
+  let pageKey: string | null = null
+  for (;;) {
+    if (out.pages >= maxPages || Date.now() >= deadline) { out.status = 'capped'; return out }
+    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'recovery' })) {
+      out.status = 'budget_exhausted'
+      return out
+    }
+    out.providerCalls += 1
+    logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
+    const filter = direction === 'inbound' ? { toAddress: walletAddress } : { fromAddress: walletAddress }
+    auditRPC('alchemy_getAssetTransfers', { ...filter, contractAddresses: [token], probe: `${direction}_strict`, page: out.pages + 1 })
+    let result: Record<string, unknown>
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
+          params: [{
+            fromBlock: '0x0', category: ['erc20'], contractAddresses: [token],
+            withMetadata: true, maxCount: '0x64', order, ...filter,
+            ...(pageKey ? { pageKey } : {}),
+          }],
+        }),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(STRICT_HISTORY_PAGE_TIMEOUT_MS, deadline - Date.now()))),
+      })
+      if (!res.ok) return out
+      const json = await res.json() as { result?: Record<string, unknown> | null; error?: unknown }
+      if (json?.error != null || json?.result == null || typeof json.result !== 'object') return out
+      result = json.result
+    } catch {
+      return out
+    }
+    out.pages += 1
+    recordPageFetched('alchemy')
+    const transfers = Array.isArray(result.transfers) ? (result.transfers as Record<string, unknown>[]) : []
+    const pageEvents = collectAlchemyAssetTransfers(result, chain)
+    pageEvents.forEach((event, i) => {
+      const uniqueId = typeof transfers[i]?.uniqueId === 'string' ? transfers[i]!.uniqueId as string : null
+      out.events.push({ ...event, blockNumber: parseHexInt(transfers[i]?.blockNum), logIndex: logIndexFromUniqueId(uniqueId), uniqueId })
+    })
+    for (const event of pageEvents) {
+      const ts = event.timestamp ? Date.parse(event.timestamp) : NaN
+      if (Number.isFinite(ts) && (out.coveredUntil == null || ts > out.coveredUntil)) out.coveredUntil = ts
+    }
+    const nextKey = typeof result.pageKey === 'string' && result.pageKey !== '' ? result.pageKey : null
+    // A cursor means more pages. A FULL page without a cursor is still not read as exhausted (it
+    // cannot be followed, so it ends as `capped` unless the bound was already reached).
+    const moreAvailable = nextKey != null || pageEvents.length >= ALCHEMY_TOKEN_HISTORY_MAX_COUNT
+    if (!moreAvailable) {
+      out.status = out.events.length === 0 ? 'empty' : 'complete'
+      return out
+    }
+    if (bound != null && out.coveredUntil != null && out.coveredUntil >= bound) {
+      out.status = 'covered_to_bound'
+      return out
+    }
+    if (nextKey == null) { out.status = 'capped'; return out }
+    pageKey = nextKey
+  }
+}
+
+async function fetchAlchemyTokenHistoryStrictLive(
   chain: SupportedChain,
   walletAddress: string,
   token: string,
   order: 'asc' | 'desc',
+  maxPages: number,
+  bound: number | null,
+  includeOutbound: boolean,
 ): Promise<AlchemyTokenHistoryStrictResult> {
-  const failed: AlchemyTokenHistoryStrictResult = {
-    ok: false, inboundQueryOk: false, outboundQueryOk: false, events: [],
-    inboundPageCapped: false, inboundPageExhausted: false, providerCalls: 0, order,
-  }
+  const notRequested: StrictDirectionResult = { status: 'not_requested', events: [], pages: 0, providerCalls: 0, coveredUntil: null }
   const url = alchemyBaseUrl(chain)
   const apiKey = alchemyApiKey(chain)
-  if (!url || !apiKey) return failed
-  try {
-    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'recovery' })) {
-      return failed
-    }
-    logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
-    auditRPC('alchemy_getAssetTransfers', {
-      toAddress: walletAddress, contractAddresses: [token], probe: 'inbound_strict',
-    })
-    const res = await fetch(url, {
-      method: 'POST',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
-        params: [{
-          fromBlock: '0x0', category: ['erc20'], contractAddresses: [token],
-          withMetadata: true, maxCount: '0x64', order, toAddress: walletAddress,
-        }],
-      }),
-      signal: AbortSignal.timeout(12_000),
-    })
-    if (!res.ok) return { ...failed, providerCalls: 1 }
-    const json = await res.json() as { result?: Record<string, unknown> | null; error?: unknown }
-    if (json?.error != null || json?.result == null || typeof json.result !== 'object') {
-      return { ...failed, providerCalls: 1 }
-    }
-    const events = collectAlchemyAssetTransfers(json.result, chain)
-    const inboundPageCapped = events.length >= ALCHEMY_TOKEN_HISTORY_MAX_COUNT
-    return {
-      ok: true,
-      inboundQueryOk: true,
-      outboundQueryOk: false,
-      events,
-      inboundPageCapped,
-      inboundPageExhausted: !inboundPageCapped,
-      providerCalls: 1,
-      order,
-    }
-  } catch {
-    return { ...failed, providerCalls: 1 }
+  let inbound: StrictDirectionResult
+  let outbound: StrictDirectionResult
+  if (!url) {
+    inbound = { ...notRequested, status: 'unsupported' }
+    outbound = includeOutbound ? { ...notRequested, status: 'unsupported' } : notRequested
+  } else if (!apiKey) {
+    inbound = { ...notRequested, status: 'failed' }
+    outbound = includeOutbound ? { ...notRequested, status: 'failed' } : notRequested
+  } else {
+    // Two separate queries: Alchemy ANDs fromAddress and toAddress, so one combined query would only
+    // return self-transfers.
+    [inbound, outbound] = await Promise.all([
+      fetchStrictDirection(chain, url, walletAddress, token, order, maxPages, bound, 'inbound'),
+      includeOutbound
+        ? fetchStrictDirection(chain, url, walletAddress, token, order, maxPages, bound, 'outbound')
+        : Promise.resolve(notRequested),
+    ])
+  }
+  const returned = (status: StrictHistoryDirectionStatus) =>
+    status === 'complete' || status === 'empty' || status === 'covered_to_bound' || status === 'capped'
+  const inboundOk = returned(inbound.status)
+  const inboundExhausted = inbound.status === 'complete' || inbound.status === 'empty'
+  return {
+    ok: inboundOk,
+    inboundQueryOk: inboundOk,
+    outboundQueryOk: returned(outbound.status),
+    events: inboundOk ? inbound.events : [],
+    inboundPageCapped: inboundOk && !inboundExhausted,
+    inboundPageExhausted: inboundExhausted,
+    providerCalls: inbound.providerCalls + outbound.providerCalls,
+    order,
+    inboundStatus: inbound.status,
+    outboundStatus: outbound.status,
+    outboundEvents: outbound.events,
+    inboundPagesFetched: inbound.pages,
+    outboundPagesFetched: outbound.pages,
+    inboundCoveredUntil: inbound.coveredUntil,
+    outboundCoveredUntil: outbound.coveredUntil,
   }
 }
 

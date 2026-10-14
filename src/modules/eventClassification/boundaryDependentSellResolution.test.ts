@@ -91,6 +91,15 @@ function historyResult(overrides: Partial<AlchemyTokenHistoryStrictResult> = {})
   }
 }
 
+// Outbound history read to exhaustion and empty: the wallet never sent this token before the sell.
+// Without it (the plain historyResult above, inbound only) a pre-window inbound cannot prove inventory.
+function withEmptyOutbound(overrides: Partial<AlchemyTokenHistoryStrictResult> = {}): AlchemyTokenHistoryStrictResult {
+  return historyResult({
+    order: 'asc', inboundStatus: 'complete', outboundStatus: 'empty', outboundQueryOk: true, outboundEvents: [],
+    ...overrides,
+  })
+}
+
 const partialCtx = {
   windowStartTimestamp: WINDOW_START,
   scanWindowDays: WINDOW_DAYS,
@@ -112,7 +121,7 @@ test('HARD ASSERTION (1): unmatched sell + earlier inbound outside the window is
   const fetchCalls: string[] = []
   const fetchTokenHistory: TokenHistoryFetcher = async (chain, _wallet, token) => {
     fetchCalls.push(`${chain}:${token}`)
-    return historyResult()
+    return withEmptyOutbound()
   }
   const resolution = await resolveBoundaryDependentSells({
     sells: [sellId],
@@ -127,7 +136,9 @@ test('HARD ASSERTION (1): unmatched sell + earlier inbound outside the window is
   assert.equal(resolution.rows[0]!.gateImpact, 'non_blocking')
   assert.equal(resolution.rows[0]!.preWindowEvidenceFound, true)
   assert.equal(resolution.rows[0]!.inboundTx, '0xbuy-pre')
-  assert.equal(fetchCalls.length, 0, 'local inbound proof must not spend a provider call')
+  // Local window/recovered data never holds the full pre-window OUTBOUND history, so even a local
+  // inbound needs the provider's outbound query before it can prove inventory.
+  assert.equal(fetchCalls.length, 1, 'outbound history must be read before local inbound evidence can prove inventory')
 
   const before = computeUnmatchedEvidenceAudit(classified, 98, [], [sellId], partialCtx)
   assert.equal(before.windowBoundaryProven, false)
@@ -236,7 +247,9 @@ test('a proven pre-window exit for one token does not waive the boundary for a d
     classified,
     windowStartTimestamp: WINDOW_START,
     walletAddress: WALLET,
-    fetchTokenHistory: async () => historyResult({ ok: false, inboundQueryOk: false, inboundPageExhausted: false, providerCalls: 1 }),
+    fetchTokenHistory: async (_chain, _wallet, token) => token === TOKEN_A
+      ? withEmptyOutbound()
+      : historyResult({ ok: false, inboundQueryOk: false, inboundPageExhausted: false, providerCalls: 1 }),
   })
   assert.equal(resolution.rows.find((row) => row.token === TOKEN_A)!.disposition, 'pre_window_inventory_exit_proven')
   assert.equal(resolution.rows.find((row) => row.token === TOKEN_B)!.disposition, 'still_unresolved_boundary')
@@ -318,7 +331,7 @@ test('capped inbound page with no pre-window hit stays still_unresolved_boundary
   assert.equal(resolution.provenGenuineUnmatchedSells.length, 0)
 })
 
-test('recovered raw inbound before the window proves pre-window inventory without a provider call', async () => {
+test('recovered raw inbound before the window proves pre-window inventory once outbound history is read', async () => {
   const sell = event({ txHash: '0xsell-rec', direction: 'outbound', contract: TOKEN_A, fromAddress: WALLET })
   const classified = classifyEvents([sell], noRouters)
   const sellId = identity({ txHash: '0xsell-rec', token: TOKEN_A })
@@ -328,9 +341,7 @@ test('recovered raw inbound before the window proves pre-window inventory withou
     recoveredRawEvents: [rawInbound({ txHash: '0xrecovered-buy' })],
     windowStartTimestamp: WINDOW_START,
     walletAddress: WALLET,
-    fetchTokenHistory: async () => {
-      throw new Error('must not fetch when recovered history already proves the inbound')
-    },
+    fetchTokenHistory: async () => withEmptyOutbound(),
   })
   assert.equal(resolution.rows[0]!.disposition, 'pre_window_inventory_exit_proven')
   assert.equal(resolution.rows[0]!.inboundTx, '0xrecovered-buy')
@@ -362,7 +373,7 @@ test('alchemy inbound before window start is accepted as pre-window proof', asyn
     classified,
     windowStartTimestamp: WINDOW_START,
     walletAddress: WALLET,
-    fetchTokenHistory: async () => historyResult({
+    fetchTokenHistory: async () => withEmptyOutbound({
       events: [rawInbound({ txHash: '0xalc-buy', timestamp: new Date(PRE_WINDOW_TS).toISOString() })],
     }),
   })
@@ -459,7 +470,7 @@ test('HARD ASSERTION: truncation + per-sell inbound proof drops only the proven 
     windowStartTimestamp: WINDOW_START,
     walletAddress: WALLET,
     preResolverBuckets: new Map([[unmatchedSellProofKey(sellId), 'history_truncated_at_provider']]),
-    fetchTokenHistory: async () => historyResult({
+    fetchTokenHistory: async () => withEmptyOutbound({
       events: [rawInbound({ txHash: '0xpre-buy', timestamp: new Date(PRE_WINDOW_TS).toISOString() })],
     }),
   })

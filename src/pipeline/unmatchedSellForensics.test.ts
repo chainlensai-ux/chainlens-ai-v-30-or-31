@@ -53,7 +53,10 @@ async function runChain(input: NormalizedEvent[]) {
     sells: fifo.unmatchedSellEvents.filter((s) => buckets.has(unmatchedSellProofKey(s))),
     classified, recoveredRawEvents: recoveredRaw, windowStartTimestamp: WINDOW_START, walletAddress: WALLET,
     receiptProofByTx: receiptProofByTxHash, preResolverBuckets: buckets, allUnmatchedSells: fifo.unmatchedSellEvents,
-    fetchTokenHistory: async () => ({ ok: true, inboundQueryOk: true, outboundQueryOk: false, events: [], inboundPageCapped: false, inboundPageExhausted: true, providerCalls: 1 }),
+    fetchTokenHistory: async () => ({
+      ok: true, inboundQueryOk: true, outboundQueryOk: true, events: [], inboundPageCapped: false, inboundPageExhausted: true, providerCalls: 2,
+      order: 'asc' as const, inboundStatus: 'complete' as const, outboundStatus: 'empty' as const, outboundEvents: [],
+    }),
   })
   const final = computeUnmatchedEvidenceAudit(classified, fifo.matchedLots.length, [], fifo.unmatchedSellEvents, {
     ...ctx,

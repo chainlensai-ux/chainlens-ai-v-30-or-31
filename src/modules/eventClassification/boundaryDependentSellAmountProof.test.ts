@@ -56,7 +56,12 @@ function rawIn(overrides: Partial<RawProviderEvent> = {}): RawProviderEvent {
   }
 }
 function history(overrides: Partial<AlchemyTokenHistoryStrictResult> = {}): AlchemyTokenHistoryStrictResult {
-  return { ok: true, inboundQueryOk: true, outboundQueryOk: false, events: [], inboundPageCapped: false, inboundPageExhausted: true, providerCalls: 1, order: 'asc', ...overrides }
+  // Default: both directions read to exhaustion, no outbound transfers (the wallet never sent the token).
+  return {
+    ok: true, inboundQueryOk: true, outboundQueryOk: true, events: [], inboundPageCapped: false, inboundPageExhausted: true, providerCalls: 2, order: 'asc',
+    inboundStatus: 'complete', outboundStatus: 'empty', outboundEvents: [],
+    ...overrides,
+  }
 }
 const fetcherFor = (byToken: Record<string, AlchemyTokenHistoryStrictResult>, calls: string[] = []): TokenHistoryFetcher =>
   async (chain, _wallet, token) => { calls.push(`${chain}:${token.toLowerCase()}`); return byToken[token.toLowerCase()] ?? history() }

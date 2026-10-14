@@ -4,7 +4,8 @@
 
 import type { UnmatchedEventIdentity } from '../modules/fifoEngine/types'
 import type { HistoryCoverageStatus, WindowBoundaryProofDiagnostics } from '../modules/eventClassification/index'
-import type { BoundaryDependentSellResolutionRow, TargetedRecoveryOutcome, BoundaryDependentSellDisposition } from '../modules/eventClassification/boundaryDependentSellResolution'
+import type { BoundaryDependentSellResolutionRow, TargetedRecoveryOutcome, BoundaryDependentSellDisposition, PreWindowAmountBlocker } from '../modules/eventClassification/boundaryDependentSellResolution'
+import type { StrictHistoryDirectionStatus } from '../modules/recoveryPolicy/utils'
 import { unmatchedSellProofKey } from '../modules/eventClassification/boundaryDependentSellResolution'
 
 export const MAX_UNMATCHED_SELL_FORENSIC_ROWS = 100
@@ -27,6 +28,10 @@ export type UnmatchedSellForensicRow = {
   targetedRecoveryOutcome: TargetedRecoveryOutcome | null
   finalDisposition: BoundaryDependentSellDisposition | null
   tokenSkippedByFetchCap: boolean
+  // Outbound token history status for this sell's token (null when the resolver never fetched it)
+  // and why the inventory amount check stopped short of `covered`, if it did.
+  outboundHistoryStatus: StrictHistoryDirectionStatus | null
+  preWindowAmountBlocker: PreWindowAmountBlocker | null
   historyCoverageStatus: HistoryCoverageStatus
 }
 
@@ -75,6 +80,8 @@ export function buildUnmatchedSellForensics(params: {
       targetedRecoveryOutcome: resolved?.targetedRecoveryOutcome ?? null,
       finalDisposition: resolved?.finalDisposition ?? null,
       tokenSkippedByFetchCap: resolved?.tokenSkippedByFetchCap ?? false,
+      outboundHistoryStatus: resolved?.outboundHistoryStatus ?? null,
+      preWindowAmountBlocker: resolved?.preWindowAmountBlocker ?? null,
       historyCoverageStatus: params.historyCoverageStatus,
     }
   })

@@ -150,6 +150,8 @@ export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 export { buildFifoBackedPnlResolvers } from './fifoBackedPnlResolvers'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
+// Per direction (100 transfers per page) for the boundary resolver's strict token history.
+const BOUNDARY_HISTORY_MAX_PAGES_PER_DIRECTION = 2
 
 // REPEAT-SCAN CACHE TTL, DISCLOSED (perf-sprint task: "cache provider history windows for repeat
 // scans (5-10 min TTL)"), NARROWED (perf-guardrails follow-up task: "Keep the 300s cache only for
@@ -3372,7 +3374,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       windowStartTimestamp: requestedWindowStart,
       walletAddress: params.walletAddress,
       receiptProofByTx: receiptProofByTxHash,
-      fetchTokenHistory: fetchAlchemyTokenHistoryStrict,
+      // Inbound AND outbound (separate from/to queries), oldest-first, up to 2 pages per direction,
+      // stopping once a page reaches the window start — outflows before the window are what the
+      // inventory proof subtracts. Spend stays inside the per-scan 'recovery' Alchemy budget.
+      fetchTokenHistory: (chain, wallet, token, options) => fetchAlchemyTokenHistoryStrict(chain, wallet, token, 'asc', {
+        includeOutbound: true,
+        maxPagesPerDirection: BOUNDARY_HISTORY_MAX_PAGES_PER_DIRECTION,
+        coverUntilTimestamp: options?.coverUntilTimestamp ?? null,
+      }),
       preResolverBuckets,
       allUnmatchedSells: fifoAndPnl.unmatchedSellEvents,
     }),
@@ -3428,6 +3437,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       blockingAfterResolution: row.blockingAfterResolution,
       unmatchedRaw: row.unmatchedRaw,
       preWindowAmountCheck: row.preWindowAmountCheck,
+      preWindowAmountBlocker: row.preWindowAmountBlocker,
+      outboundHistoryStatus: row.outboundHistoryStatus,
+      ledgerCheck: row.ledgerCheck,
       tokenSkippedByFetchCap: row.tokenSkippedByFetchCap,
     })),
   })
