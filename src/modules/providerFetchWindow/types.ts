@@ -57,6 +57,8 @@ export type SingleProviderFetchResult = {
   // the provider positively omitted/cleared its continuation marker; it is never inferred from a
   // small event count. This lets downstream code prove a bounded window for a young/quiet wallet
   // without falsely claiming that the wallet's complete lifetime history was traversed.
+  // Alchemy only: the separate native-ETH (external/internal) history pull merged into `events`.
+  nativeHistory?: { events: number; calls: number; failedCalls: number; moreAvailable: boolean }
   pagination?: {
     pagesRequested: number
     pagesSucceeded: number
@@ -134,4 +136,6 @@ export const PROVIDER_FETCH_WINDOW_DAYS_DEFAULT = 90
 // Architecture Step 1/8: base fetch never deep-pages. One bounded page per provider per chain.
 // Doubled alongside the window expansion (35->90 days) so the single page can still plausibly
 // reach across a wallet's full base window rather than truncating earlier within it.
-export const MAX_RAW_EVENTS_PER_PROVIDER = 400
+// Raised from 400 with Alchemy pagination (up to 4 token pages per direction + native pages):
+// 400 cut a busy wallet's history before the window was covered.
+export const MAX_RAW_EVENTS_PER_PROVIDER = 2400

@@ -356,6 +356,10 @@ export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | n
 // resetProviderFetchWindowRequestCache() (the same per-job reset point already used for this
 // module's other request-scoped state), not left to accumulate across unrelated jobs.
 export const ALCHEMY_HISTORY_MAX_CONCURRENCY = 1
+// Page caps for the paginated history fetch (each page = 200 rows, one budgeted call). Pagination
+// stops earlier once the fetch window is covered, which is the common case.
+export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 4
+export const ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION = 2
 // Short pause after ANY 429 before the next QUEUED call gets its turn — deliberately short since
 // the goal is de-bursting, not stalling a normal 4-call job for seconds.
 const ALCHEMY_HISTORY_429_COOLDOWN_MS = 400
@@ -755,11 +759,53 @@ export async function fetchAlchemyRawEvents(
       return null
     })
 
+  // PAGINATION (Wallet Scanner missed-trades fix): previously ONE page (200 rows) per direction and
+  // the pageKey was never followed, so a busy wallet's history stopped after its latest 200 transfers
+  // in each direction — buys without their sells and sells without their buys. Pages are now followed
+  // newest-first until the fetch window is covered, no pageKey remains, or the per-direction page cap
+  // is hit (each page still goes through the shared per-scan Alchemy budget in rpc()). A failed LATER
+  // page keeps every earlier page.
+  const cutoff = windowCutoffMs(windowDays)
+  const pageOldestMs = (result: Record<string, unknown>): number | null => {
+    const transfers = Array.isArray(result.transfers) ? result.transfers as Record<string, unknown>[] : []
+    const last = transfers[transfers.length - 1]
+    const ts = (last?.metadata as Record<string, unknown> | undefined)?.blockTimestamp
+    const ms = typeof ts === 'string' ? Date.parse(ts) : Number.NaN
+    return Number.isFinite(ms) ? ms : null
+  }
+  type DirectionPages = { results: Record<string, unknown>[]; moreAvailable: boolean }
+  const fetchPages = async (
+    direction: 'from' | 'to',
+    category: string[],
+    maxPages: number,
+  ): Promise<DirectionPages> => {
+    const results: Record<string, unknown>[] = []
+    let pageKey: string | undefined
+    let moreAvailable = false
+    for (let page = 0; page < maxPages; page += 1) {
+      const result = await rpc(direction, {
+        fromBlock: '0x0', category, withMetadata: true, maxCount: '0xC8', order: 'desc',
+        [direction === 'from' ? 'fromAddress' : 'toAddress']: walletAddress,
+        ...(pageKey ? { pageKey } : {}),
+      })
+      if (!result) { moreAvailable = page > 0; break }
+      results.push(result)
+      const next = typeof result.pageKey === 'string' && result.pageKey.length > 0 ? result.pageKey : undefined
+      const oldest = pageOldestMs(result)
+      if (!next || (oldest !== null && oldest < cutoff)) { moreAvailable = false; break }
+      pageKey = next
+      moreAvailable = true
+    }
+    return { results, moreAvailable }
+  }
+
   try {
-    const [fromResult, toResult] = await Promise.all([
-      rpc('from', { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
-      rpc('to', { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', toAddress: walletAddress }),
+    const [fromPages, toPages] = await Promise.all([
+      fetchPages('from', ['erc20'], ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION),
+      fetchPages('to', ['erc20'], ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION),
     ])
+    const fromResult = fromPages.results[0] ?? null
+    const toResult = toPages.results[0] ?? null
     const diagnostics = {
       liveCalls, budgetRefusals, malformedResponses, nullResponses,
       httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
@@ -824,7 +870,6 @@ export async function fetchAlchemyRawEvents(
                       : 'no_usable_response'
       return { provider: 'alchemy', ok: false, events: [], errorReason, diagnostics }
     }
-    const cutoff = windowCutoffMs(windowDays)
     const events: RawProviderEvent[] = []
     const collect = (result: Record<string, unknown> | null) => {
       const transfers = Array.isArray(result?.transfers) ? (result!.transfers as Record<string, unknown>[]) : []
@@ -850,15 +895,16 @@ export async function fetchAlchemyRawEvents(
         })
       }
     }
-    collect(fromResult)
-    collect(toResult)
-    const nextPageKeyPresent = [fromResult, toResult].some((result) =>
-      typeof result?.pageKey === 'string' && result.pageKey.length > 0)
+    for (const result of fromPages.results) collect(result)
+    for (const result of toPages.results) collect(result)
+    // More history exists beyond what was read (page cap reached, or a later page failed).
+    const nextPageKeyPresent = fromPages.moreAvailable || toPages.moreAvailable
+    const pagesSucceeded = fromPages.results.length + toPages.results.length
     return {
       provider: 'alchemy', ok: true, events, errorReason: null, diagnostics,
       pagination: {
-        pagesRequested: 2,
-        pagesSucceeded: Number(fromResult !== null) + Number(toResult !== null),
+        pagesRequested: Math.max(2, pagesSucceeded),
+        pagesSucceeded,
         paginationExhausted: fromResult !== null && toResult !== null && !nextPageKeyPresent,
         nextPageKeyPresent,
         providerCapReached: nextPageKeyPresent || events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
@@ -874,6 +920,90 @@ export async function fetchAlchemyRawEvents(
       },
     }
   }
+}
+
+// NATIVE ETH (Wallet Scanner missed-trades fix): the token-only history query never saw native
+// ETH, so a token→ETH sell (the ETH comes back as an INTERNAL transfer) had no inbound leg and was
+// not recognised as a sell. This fetches the ETH the wallet sends (external — e.g. paying for a buy)
+// and the ETH it receives from contracts (internal — e.g. sale proceeds, WETH unwraps), newest-first
+// within the window, through the same budget/circuit-breaker-gated Alchemy helper. Called by
+// fetchProviderWindowLive only after the token history succeeded; any failure (including a chain
+// without internal-transfer support) yields no native rows and never affects the token result.
+export async function fetchAlchemyNativeRawEvents(
+  chain: SupportedChain,
+  walletAddress: string,
+  windowDays: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ events: RawProviderEvent[]; calls: number; failedCalls: number; moreAvailable: boolean }> {
+  const baseUrl = alchemyBaseUrl(chain)
+  if (!baseUrl) return { events: [], calls: 0, failedCalls: 0, moreAvailable: false }
+  const cutoff = windowCutoffMs(windowDays)
+  const events: RawProviderEvent[] = []
+  let calls = 0
+  let failedCalls = 0
+  let moreAvailable = false
+  const one = async (direction: 'from' | 'to', category: string, pageKey?: string): Promise<Record<string, unknown> | null> => {
+    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) return null
+    calls += 1
+    logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
+    try {
+      const res = await fetchImpl(baseUrl, {
+        method: 'POST',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers', params: [{
+          fromBlock: '0x0', category: [category], withMetadata: true, maxCount: '0xC8', order: 'desc',
+          [direction === 'from' ? 'fromAddress' : 'toAddress']: walletAddress,
+          ...(pageKey ? { pageKey } : {}),
+        }] }),
+        signal: AbortSignal.timeout(12_000),
+      })
+      if (!res.ok) { failedCalls += 1; return null }
+      const json = await res.json().catch(() => null) as { result?: Record<string, unknown> } | null
+      if (!json?.result || !Array.isArray(json.result.transfers)) { failedCalls += 1; return null }
+      return json.result
+    } catch {
+      failedCalls += 1
+      return null
+    }
+  }
+  const run = async (direction: 'from' | 'to', category: string) => {
+    let pageKey: string | undefined
+    for (let page = 0; page < ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION; page += 1) {
+      const result = await one(direction, category, pageKey)
+      if (!result) { if (page > 0) moreAvailable = true; return }
+      let oldest: number | null = null
+      for (const t of result.transfers as Record<string, unknown>[]) {
+        if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) return
+        const meta = t.metadata as Record<string, unknown> | undefined
+        const timestamp = typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null
+        const ms = timestamp ? Date.parse(timestamp) : Number.NaN
+        if (Number.isFinite(ms)) oldest = ms
+        if (timestamp && ms < cutoff) continue
+        const rawContract = t.rawContract as Record<string, unknown> | undefined
+        events.push({
+          provider: 'alchemy',
+          chain,
+          txHash: typeof t.hash === 'string' ? t.hash : null,
+          timestamp,
+          fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
+          toAddress: typeof t.to === 'string' ? t.to.toLowerCase() : null,
+          contract: NATIVE_ASSET_ADDRESS,
+          symbol: typeof t.asset === 'string' ? t.asset : 'ETH',
+          amountRaw: alchemyHexAmountToDecimalString(typeof rawContract?.value === 'string' ? rawContract.value : null),
+          tokenDecimals: alchemyHexDecimalToNumber(typeof rawContract?.decimal === 'string' ? rawContract.decimal : null) ?? 18,
+        })
+      }
+      const next = typeof result.pageKey === 'string' && result.pageKey.length > 0 ? result.pageKey : undefined
+      if (!next || (oldest !== null && oldest < cutoff)) return
+      pageKey = next
+      moreAvailable = page + 1 >= ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION
+    }
+  }
+  // Sequential: the history path runs at concurrency 1 to stay clear of Alchemy rate limits.
+  await run('from', 'external')
+  await run('to', 'internal')
+  return { events, calls, failedCalls, moreAvailable }
 }
 
 export function dedupeRawEventKey(event: RawProviderEvent): string {

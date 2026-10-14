@@ -63,8 +63,8 @@ test('funnel counts every stage and attributes drops', () => {
   assert.deepEqual(
     [f.stage5_txPairing.pairedSwapTxs, f.stage5_txPairing.inboundOnlyTxs, f.stage5_txPairing.outboundOnlyTxs, f.stage5_txPairing.outboundOnlyNativeQuoteInvisible],
     [1, 1, 1, 1])
-  // Current behaviour, recorded as found: the USDC payment leg of the buy is counted as a "sell"
-  // (outbound paired with a different inbound token), while the real token→ETH sell is not.
-  assert.deepEqual([f.stage7_timelines.buyTimeline, f.stage7_timelines.sellTimeline, f.stage7_timelines.outboundNotSellShaped], [2, 1, 1])
-  assert.deepEqual([f.dropReasons.one_legged, f.dropReasons.cost_gate, f.dropReasons.depth_limit, f.dropReasons.unmatched_sell_no_prior_buy], [1, 1, 1, 1])
+  // The USDC paid for the buy is no longer counted as a sell (src/lib/tradeLegRole.ts). The
+  // token→router sell has no visible return leg in this synthetic data, so it stays one-legged.
+  assert.deepEqual([f.stage7_timelines.buyTimeline, f.stage7_timelines.sellTimeline, f.stage7_timelines.outboundNotSellShaped], [2, 0, 2])
+  assert.deepEqual([f.dropReasons.one_legged, f.dropReasons.cost_gate, f.dropReasons.depth_limit, f.dropReasons.unmatched_sell_no_prior_buy], [2, 1, 1, 1])
 })

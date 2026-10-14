@@ -7,6 +7,10 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { fetchProviderWindow, resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters } from './index'
 
+// One live fetch on success = goldrush (1) + alchemy token history (from + to) + alchemy native
+// ETH history (external + internal, fetched only after the token history succeeded).
+const LIVE_FETCH_CALLS = 5
+
 const originalFetch = global.fetch
 const originalGoldrushKey = process.env.GOLDRUSH_API_KEY
 const originalAlchemyBaseKey = process.env.ALCHEMY_BASE_KEY
@@ -62,7 +66,7 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     ])
 
     // One goldrush call + one alchemy call = 2 real fetch() invocations total, not 4x that.
-    assert.equal(getCallCount(), 3, 'expected exactly one real goldrush call and one real (2-batch) alchemy call across all 4 concurrent callers')
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS, 'expected exactly one real goldrush call and one real (2-batch) alchemy call across all 4 concurrent callers')
     for (const r of results) {
       assert.deepEqual(r, results[0], 'every concurrent caller must receive the exact same resolved result')
     }
@@ -93,22 +97,22 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
 
     await fetchProviderWindow('base', '0xwallet', 90)
     const callsAfterBase = getCallCount()
-    assert.equal(callsAfterBase, 3)
+    assert.equal(callsAfterBase, LIVE_FETCH_CALLS)
 
     await fetchProviderWindow('eth', '0xwallet', 90)
-    assert.equal(getCallCount(), callsAfterBase + 3, 'a different chain must trigger its own real fetch, not be coalesced with base')
+    assert.equal(getCallCount(), callsAfterBase + LIVE_FETCH_CALLS, 'a different chain must trigger its own real fetch, not be coalesced with base')
   })
 
   it('resetProviderFetchWindowRequestCache clears coalescing between scan jobs — a new job for the same wallet fetches live again', async () => {
     const { getCallCount } = mockFetch({ delayMs: 5 })
 
     await fetchProviderWindow('base', '0xwallet', 90)
-    assert.equal(getCallCount(), 3)
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS)
 
     resetProviderFetchWindowRequestCache()
 
     await fetchProviderWindow('base', '0xwallet', 90)
-    assert.equal(getCallCount(), 6, 'a fresh job (after reset) must not reuse a coalesced result from a prior, unrelated job')
+    assert.equal(getCallCount(), 2 * LIVE_FETCH_CALLS, 'a fresh job (after reset) must not reuse a coalesced result from a prior, unrelated job')
   })
 
   it('mixed 30/60/90-day consumers reuse ONE 90-day live fetch, in any order among the narrower consumers, once the canonical (widest) window is established', async () => {
@@ -124,11 +128,11 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
       const { getCallCount } = mockFetch({ delayMs: 5 })
 
       const canonical = await fetchProviderWindow('base', '0xwallet', 90, 'old-pipeline')
-      assert.equal(getCallCount(), 3, 'the canonical 90-day fetch must be the only real call so far')
+      assert.equal(getCallCount(), LIVE_FETCH_CALLS, 'the canonical 90-day fetch must be the only real call so far')
 
       const laterResults = await Promise.all(laterOrder.map((d) => fetchProviderWindow('base', '0xwallet', d, 'v2-engine')))
 
-      assert.equal(getCallCount(), 3, `later order ${laterOrder.join(',')}: narrower consumers must reuse the canonical fetch, never re-fetch`)
+      assert.equal(getCallCount(), LIVE_FETCH_CALLS, `later order ${laterOrder.join(',')}: narrower consumers must reuse the canonical fetch, never re-fetch`)
       assert.equal(canonical.providerFetchWindowDays, 90)
       for (const r of laterResults) {
         assert.ok(r.providerFetchWindowDays <= 90, `later order ${laterOrder.join(',')}: a narrower consumer must never receive a window wider than what it asked for`)
@@ -149,7 +153,7 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
       fetchProviderWindow('base', '0xwallet', 85),
     ])
 
-    assert.equal(getCallCount(), 3, 'only ONE real 2-provider fetch (at the wider 90d window) should ever fire, not two')
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS, 'only ONE real 2-provider fetch (at the wider 90d window) should ever fire, not two')
     assert.equal(ninetyDay.providerFetchWindowDays, 90)
     assert.equal(eightyFiveDay.providerFetchWindowDays, 85, 'the narrower caller must get back a result honestly labeled as its OWN requested window, not the wider one')
   })
@@ -160,7 +164,7 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     // 90d requested first (wider) — establishes the entry other callers can reuse.
     await fetchProviderWindow('base', '0xwallet', 90)
     const callsAfterWide = getCallCount()
-    assert.equal(callsAfterWide, 3)
+    assert.equal(callsAfterWide, LIVE_FETCH_CALLS)
 
     // A LATER, narrower 85d caller for the SAME wallet+chain must reuse the already-settled 90d
     // result (sliced locally), never fire its own live call.
@@ -171,7 +175,7 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     // A caller requesting something WIDER than anything seen so far must still trigger its own
     // fresh, real fetch — a narrower prior result can never be silently reused as if it were wider.
     await fetchProviderWindow('base', '0xwallet', 120)
-    assert.equal(getCallCount(), callsAfterWide + 3, 'a request wider than any known entry must trigger its own real fetch')
+    assert.equal(getCallCount(), callsAfterWide + LIVE_FETCH_CALLS, 'a request wider than any known entry must trigger its own real fetch')
   })
 
   it('resetProviderFetchWindowRequestCache runs exactly once per job — counters reflect real per-job activity, not cumulative drift', async () => {
@@ -199,7 +203,7 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
       fetchProviderWindow('base', '0XWALLET', 90),
     ])
 
-    assert.equal(getCallCount(), 3, 'all three canonically-identical wallet variants must coalesce into one real fetch')
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS, 'all three canonically-identical wallet variants must coalesce into one real fetch')
     for (const r of results) {
       assert.deepEqual(r, results[0], 'every canonical-variant caller must receive the exact same resolved result')
     }

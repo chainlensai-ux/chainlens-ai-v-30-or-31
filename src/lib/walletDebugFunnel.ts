@@ -47,6 +47,8 @@ type ProviderStageRow = {
   }
   budgetRefusals: number
   http429Count: number
+  /** Alchemy only: the native ETH (external/internal) pull added by the missed-trades fix. */
+  nativeHistory: { events: number; calls: number; failedCalls: number; moreAvailable: boolean } | null
 }
 
 export type WalletDebugFunnel = {
@@ -148,6 +150,7 @@ export function buildWalletDebugFunnel(input: WalletDebugFunnelInput): WalletDeb
         },
         budgetRefusals,
         http429Count: (p.diagnostics as { http429Count?: number } | undefined)?.http429Count ?? 0,
+        nativeHistory: p.nativeHistory ?? null,
       })
     }
   }

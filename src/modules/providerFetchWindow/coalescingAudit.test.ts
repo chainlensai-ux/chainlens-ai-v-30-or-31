@@ -30,6 +30,10 @@ import {
 } from './index'
 import type { ProviderFetchWindowResult } from './types'
 
+// One live fetch on success = goldrush (1) + alchemy token history (from + to) + alchemy native
+// ETH history (external + internal, fetched only after the token history succeeded).
+const LIVE_FETCH_CALLS = 5
+
 const originalFetch = global.fetch
 const originalGoldrushKey = process.env.GOLDRUSH_API_KEY
 const originalAlchemyBaseKey = process.env.ALCHEMY_BASE_KEY
@@ -82,7 +86,7 @@ describe('fetchProviderWindow — per-key audit fields (1: two concurrent identi
       fetchProviderWindow('base', '0xwallet', 90),
       fetchProviderWindow('base', '0xwallet', 90),
     ])
-    assert.equal(getCallCount(), 3, 'exactly one real goldrush + one real (2-batch) alchemy call, not two of each')
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS, 'exactly one real goldrush + one real (2-batch) alchemy call, not two of each')
     const audits = getProviderFetchWindowKeyAudits()
     const baseAudit = audits.find((a) => a.key === 'base:0xwallet')
     assert.equal(baseAudit?.liveFetches, 1)
@@ -148,6 +152,7 @@ describe('fetchProviderWindow — (4) a generically-failed later duplicate also 
       fetchProviderWindow('base', '0xwallet', 90),
       fetchProviderWindow('base', '0xwallet', 90),
     ])
+    // A failed token history skips the native-ETH pull, so a failed live fetch is 3 calls.
     assert.equal(getCallCount(), 3, 'two genuinely concurrent callers must still share ONE real in-flight fetch')
     assert.deepEqual(a, b, 'concurrent callers receive the identical in-flight result, regardless of eviction afterward')
   })
@@ -225,7 +230,7 @@ describe('fetchProviderWindow — (9) no provider-call budgets or window sizes c
   it('goldrush + alchemy(2-batch) = exactly 3 real fetch() calls for one live fetch, unchanged', async () => {
     const { getCallCount } = mockFetch({})
     await fetchProviderWindow('base', '0xwallet', 90)
-    assert.equal(getCallCount(), 3)
+    assert.equal(getCallCount(), LIVE_FETCH_CALLS)
   })
 
   it('the requested 90-day window is unchanged and unclamped for the default case', async () => {

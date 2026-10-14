@@ -44,7 +44,7 @@ import type {
   SingleProviderFetchResult,
   SupportedChain,
 } from './types'
-import { clampWindowDays, dedupeRawEventKey, fetchAlchemyRawEvents, fetchGoldrushRawEvents, resetAlchemyHistoryConcurrencyState } from './utils'
+import { clampWindowDays, dedupeRawEventKey, fetchAlchemyNativeRawEvents, fetchAlchemyRawEvents, fetchGoldrushRawEvents, resetAlchemyHistoryConcurrencyState } from './utils'
 import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
 export type {
@@ -102,10 +102,22 @@ async function fetchProviderWindowLive(
   walletAddress: string,
   resolvedWindowDays: number,
 ): Promise<ProviderFetchWindowResult> {
-  const [goldrushResult, alchemyResult] = await Promise.all([
+  const [goldrushResult, tokenAlchemyResult] = await Promise.all([
     fetchGoldrushRawEvents(chain, walletAddress, resolvedWindowDays),
     fetchAlchemyRawEvents(chain, walletAddress, resolvedWindowDays),
   ])
+
+  // Native ETH legs (sale proceeds as internal transfers, ETH paid for buys) — only once the token
+  // history succeeded; failure-isolated, it can only ADD rows. See fetchAlchemyNativeRawEvents.
+  let alchemyResult = tokenAlchemyResult
+  if (tokenAlchemyResult.ok && process.env.WALLET_NATIVE_HISTORY !== '0') {
+    const native = await fetchAlchemyNativeRawEvents(chain, walletAddress, resolvedWindowDays)
+    alchemyResult = {
+      ...tokenAlchemyResult,
+      events: [...tokenAlchemyResult.events, ...native.events],
+      nativeHistory: { events: native.events.length, calls: native.calls, failedCalls: native.failedCalls, moreAvailable: native.moreAvailable },
+    }
+  }
 
   const providerStatus = detectProviderUnavailable(goldrushResult, alchemyResult)
   const rawEvents = providerStatus === 'provider_unavailable'

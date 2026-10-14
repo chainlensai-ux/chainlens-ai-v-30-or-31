@@ -34,6 +34,7 @@
 //                                 asserting a sell transaction with a guessed timestamp/txHash from
 //                                 a balance delta alone would be fabrication, not reconstruction.
 
+import { isBuyPaymentLeg } from '../../lib/tradeLegRole'
 import type { ChainSelectionResult } from '../chainSelection/types'
 import type { NormalizedEvent } from '../normalization/types'
 import { normalizeEvents } from '../normalization/index'
@@ -92,6 +93,8 @@ function buildEntriesFromOutboundEvents(
     if (!activeChains.has(event.chain)) continue // respects chainSelection gating
 
     const sameTxEvents = byTx.get(event.txHash) ?? [event]
+    // The USDC/ETH paid for a buy (often sent to a router) is not a sell of USDC/ETH.
+    if (isBuyPaymentLeg(event, sameTxEvents)) continue
     const sameTxPaired = isSellShaped(event, sameTxEvents)
     const counterpartyIsKnownRouter = knownDexRouterAddresses.has(event.toAddress.toLowerCase())
     const receiptProvesSwap = verifiedSwapTxKeys.has(`${event.chain}:${event.txHash.toLowerCase()}`)

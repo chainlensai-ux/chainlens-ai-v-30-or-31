@@ -33,6 +33,7 @@ import type {
 } from './types'
 import { ZERO_ADDRESS } from './types'
 import { KNOWN_LABELS, activeChainSet, buildChainContext, chainSelectionRefFor, groupEventsByTx } from './utils'
+import { isBuyPaymentLeg, isQuoteRefundLeg, isSellProceedsLeg } from '../../lib/tradeLegRole'
 
 export type {
   BuyTimeline,
@@ -88,7 +89,9 @@ export function classifyRecipientType(
 // inbound leg of a DIFFERENT token (the same swap-shape signal classifySourceType uses for buys).
 // This is the single decision point that also enforces mutual exclusivity with distributions —
 // every outbound event passes through this exact check exactly once.
+// The USDC/ETH paid for a buy is not a sell of USDC/ETH (src/lib/tradeLegRole.ts).
 function isSellShaped(event: NormalizedEvent, sameTxEvents: NormalizedEvent[]): boolean {
+  if (isBuyPaymentLeg(event, sameTxEvents)) return false
   return sameTxEvents.some(
     (e) => e.direction === 'inbound' && e.contract.toLowerCase() !== event.contract.toLowerCase(),
   )
@@ -110,6 +113,9 @@ export function buildBuyTimeline(normalizedEvents: NormalizedEvent[], chainSelec
     if (!activeChains.has(event.chain)) continue
 
     const sameTxEvents = byTx.get(event.txHash) ?? [event]
+    // The USDC/ETH received from a sale is that sale's proceeds, and ETH a router hands back on a
+    // buy is a refund — neither is a buy of USDC/ETH.
+    if (isSellProceedsLeg(event, sameTxEvents) || isQuoteRefundLeg(event, sameTxEvents)) continue
     entries.push({
       timestamp: Date.parse(event.timestamp),
       chain: event.chain,
