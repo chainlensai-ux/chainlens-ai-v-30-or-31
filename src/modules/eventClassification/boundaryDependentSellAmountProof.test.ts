@@ -264,11 +264,11 @@ test('R1: a shortfall sell (earlier in-window buy) is resolved only by amount, v
   assert.equal(notShortfall.structurallyInvalidOrUnknownSells, 1)
 })
 
-test('receipt proof reaching the resolver: plain transfer / LP proof is non-trade; exact_swap stays blocking', async () => {
+test('receipt proof reaching the resolver: one-way transfer proof is non-trade; exact_swap stays blocking', async () => {
   const classified = classifyEvents([event({ txHash: '0xsell1' }), event({ txHash: '0xsell2', contract: TOKEN_B })], noRouters)
   const r = await resolveBoundaryDependentSells({
     sells: [sellId({ txHash: '0xsell1' }), sellId({ txHash: '0xsell2', token: TOKEN_B })], classified,
-    receiptProofByTx: new Map([['0xsell1', 'plain_transfer_no_swap_event'], ['0xsell2', 'exact_swap']]),
+    receiptProofByTx: new Map([['0xsell1', 'one_way_transfer_only'], ['0xsell2', 'exact_swap']]),
     windowStartTimestamp: WINDOW_START, walletAddress: WALLET, fetchTokenHistory: fetcherFor({}),
   })
   const byTx = new Map(r.rows.map((row) => [row.txHash, row]))

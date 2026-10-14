@@ -106,8 +106,11 @@ export type TokenHistoryFetcher = (
   token: string,
 ) => Promise<AlchemyTokenHistoryStrictResult>
 
+// `plain_transfer_no_swap_event` is deliberately absent: it only means no Swap topic the decoder
+// recognises (V4, other forks and RFQ fills look the same), so on its own it never proves non-trade.
+// `one_way_transfer_only` is the receipt-level proof that the wallet only sent tokens.
 const NON_TRADE_RECEIPT_REASONS = new Set([
-  'plain_transfer_no_swap_event',
+  'one_way_transfer_only',
   'lp_add_or_remove_detected',
   'ordinary_transfer',
 ])

@@ -15,6 +15,7 @@ const WALLET = '0x4dbb3835744b2976560e0259cb218cab89abef96'
 const A = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 const B = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const C = '0xcccccccccccccccccccccccccccccccccccccccc'
+const D = '0xdddddddddddddddddddddddddddddddddddddddd'
 const DAY = 86_400_000
 const WINDOW_START = Date.parse('2026-06-14T00:00:00.000Z')
 const iso = (ts: number) => new Date(ts).toISOString()
@@ -29,8 +30,10 @@ const events: NormalizedEvent[] = [
   ev({ txHash: '0xa-sell', contract: A }),
   // B: no buy at all, pre-window inventory of 1 wei only → insufficient.
   ev({ txHash: '0xb-sell', contract: B, amount: 7, amountRaw: '7000000', timestamp: iso(WINDOW_START + 11 * DAY) }),
-  // C: no buy, receipt proves a plain transfer → non-trade.
+  // C: no buy, receipt proves a one-way transfer → non-trade.
+  // D: no buy, receipt has Transfers plus an unrecognised event (e.g. a V4 swap) → still blocking.
   ev({ txHash: '0xc-sell', contract: C, amount: 9, amountRaw: '9000000', timestamp: iso(WINDOW_START + 12 * DAY) }),
+  ev({ txHash: '0xd-sell', contract: D, amount: 11, amountRaw: '11000000', timestamp: iso(WINDOW_START + 13 * DAY) }),
 ]
 const recoveredRaw: RawProviderEvent[] = [
   { provider: 'alchemy', chain: 'base', txHash: '0xa-pre', timestamp: iso(WINDOW_START - 3 * DAY), fromAddress: '0xother', toAddress: WALLET, contract: A, symbol: 'T', amountRaw: '2000000', tokenDecimals: 6 },
@@ -40,7 +43,7 @@ const recoveredRaw: RawProviderEvent[] = [
 async function runChain(input: NormalizedEvent[]) {
   const classified = classifyEvents(input, { knownDexRouterAddresses: new Set() })
   const fifo = matchLotsFIFO(buildLots(input.filter((e) => e.direction === 'inbound'), []), input.filter((e) => e.direction === 'outbound'))
-  const receiptProofByTxHash = new Map([['0xc-sell', 'plain_transfer_no_swap_event']])
+  const receiptProofByTxHash = new Map([['0xc-sell', 'one_way_transfer_only'], ['0xd-sell', 'transfer_with_unrecognised_events']])
   const first = computeUnmatchedEvidenceAudit(classified, fifo.matchedLots.length, [], fifo.unmatchedSellEvents, ctx)
   const buckets = new Map<string, PreResolverBucket>([
     ...first.boundaryProofDiagnostics.boundaryRequiredSells.map((s) => [unmatchedSellProofKey(s), s.reason] as const),
@@ -69,24 +72,26 @@ async function runChain(input: NormalizedEvent[]) {
 
 test('forensics: one row per unmatched sell with raw amounts, bucket, receipt proof, recovery outcome and final disposition', async () => {
   const { first, final, forensics } = await runChain(events)
-  assert.equal(first.structurallyInvalidOrUnknownSells, 3)
-  assert.equal(final.structurallyInvalidOrUnknownSells, 1, 'only the 1-wei-backed B sell still blocks')
+  assert.equal(first.structurallyInvalidOrUnknownSells, 4)
+  assert.equal(final.structurallyInvalidOrUnknownSells, 2, 'the 1-wei-backed B sell and the unrecognised-venue D sell still block')
   assert.equal(final.historyCoverageStatus, first.historyCoverageStatus, 'per-sell proof never flips coverage')
   const byTx = new Map(forensics.rows.map((r) => [r.txHash, r]))
-  assert.deepEqual(forensics.rows.map((r) => r.txHash), ['0xa-sell', '0xb-sell', '0xc-sell'])
+  assert.deepEqual(forensics.rows.map((r) => r.txHash), ['0xa-sell', '0xb-sell', '0xc-sell', '0xd-sell'])
   const a = byTx.get('0xa-sell')!
   assert.deepEqual([a.unmatchedRaw, a.sellRaw, a.bucket, a.finalDisposition], ['2000000', '5000000', 'non_blocking', 'pre_window_inventory_exit_proven'])
   const b = byTx.get('0xb-sell')!
   assert.deepEqual([b.unmatchedRaw, b.bucket, b.finalDisposition, b.targetedRecoveryOutcome], ['7000000', 'window_boundary_unproven', 'pre_window_inventory_insufficient', 'inbound_found'])
   const c = byTx.get('0xc-sell')!
-  assert.deepEqual([c.receiptProof, c.bucket, c.finalDisposition], ['plain_transfer_no_swap_event', 'non_blocking', 'non_trade_transfer_proven'])
+  assert.deepEqual([c.receiptProof, c.bucket, c.finalDisposition], ['one_way_transfer_only', 'non_blocking', 'non_trade_transfer_proven'])
+  const d = byTx.get('0xd-sell')!
+  assert.deepEqual([d.receiptProof, d.bucket, d.finalDisposition], ['transfer_with_unrecognised_events', 'genuine_unmatched_sell', 'genuine_unmatched_sell'])
   assert.ok(forensics.rows.every((r) => r.historyCoverageStatus === 'partial' && r.chain === 'base'))
-  assert.deepEqual([forensics.totalUnmatchedSells, forensics.truncated], [3, false])
+  assert.deepEqual([forensics.totalUnmatchedSells, forensics.truncated], [4, false])
 })
 
 test('forensics determinism: shuffled provider event order gives byte-identical forensics', async () => {
   const a = await runChain(events)
-  const b = await runChain([events[3]!, events[2]!, events[0]!, events[1]!])
+  const b = await runChain([events[4]!, events[3]!, events[2]!, events[0]!, events[1]!])
   assert.equal(JSON.stringify(a.forensics), JSON.stringify(b.forensics))
 })
 

@@ -252,7 +252,7 @@ test('a proven pre-window exit for one token does not waive the boundary for a d
   assert.equal(after.structuralCoverageDenominator, 99)
 })
 
-test('plain_transfer_no_swap_event receipt proof is non_trade_transfer_proven — never inferred from a missing buy', async () => {
+test('one_way_transfer_only receipt proof is non_trade_transfer_proven — never inferred from a missing buy', async () => {
   const sell = event({ txHash: '0xsell-xfer', direction: 'outbound', contract: TOKEN_A, fromAddress: WALLET })
   const classified = classifyEvents([sell], noRouters)
   const sellId = identity({ txHash: '0xsell-xfer', token: TOKEN_A })
@@ -261,14 +261,14 @@ test('plain_transfer_no_swap_event receipt proof is non_trade_transfer_proven �
     classified,
     windowStartTimestamp: WINDOW_START,
     walletAddress: WALLET,
-    receiptProofByTx: new Map([['0xsell-xfer', 'plain_transfer_no_swap_event']]),
+    receiptProofByTx: new Map([['0xsell-xfer', 'one_way_transfer_only']]),
     fetchTokenHistory: async () => {
       throw new Error('must not fetch when receipt already proves non-trade')
     },
   })
   assert.equal(resolution.rows[0]!.disposition, 'non_trade_transfer_proven')
   assert.equal(resolution.rows[0]!.gateImpact, 'non_blocking')
-  assert.equal(resolution.rows[0]!.receiptProof, 'plain_transfer_no_swap_event')
+  assert.equal(resolution.rows[0]!.receiptProof, 'one_way_transfer_only')
 
   const after = computeUnmatchedEvidenceAudit(classified, 98, [], [sellId], {
     ...partialCtx,
@@ -490,4 +490,29 @@ test('pipeline feeds ALL boundaryRequiredSells, not only window_boundary_unprove
   )
   assert.match(src, /const boundaryRequiredSells = unmatchedEvidenceAudit\.boundaryProofDiagnostics\.boundaryRequiredSells/)
   assert.match(src, /boundaryDependentRemainingBlockers: boundaryDependentSellResolutionAudit\.remainingBlockers/)
+})
+
+test('flag-on shadow forensics: plain_transfer_no_swap_event alone (no recognised Swap topic) stays blocking', async () => {
+  const sell = event({ txHash: '0xsell-noswap', direction: 'outbound', contract: TOKEN_A, fromAddress: WALLET })
+  const classified = classifyEvents([sell], noRouters)
+  const sellId = identity({ txHash: '0xsell-noswap', token: TOKEN_A })
+  for (const reason of ['plain_transfer_no_swap_event', 'transfer_with_unrecognised_events']) {
+    const resolution = await resolveBoundaryDependentSells({
+      sells: [sellId], classified, windowStartTimestamp: WINDOW_START, walletAddress: WALLET,
+      receiptProofByTx: new Map([['0xsell-noswap', reason]]),
+      fetchTokenHistory: async () => historyResult(),
+    })
+    const row = resolution.rows[0]!
+    assert.notEqual(row.disposition, 'non_trade_transfer_proven', reason)
+    assert.equal(row.gateImpact, 'blocking', reason)
+    assert.equal(row.receiptProof, reason)
+    assert.deepEqual(resolution.provenNonTradeTransfers, [])
+    const after = computeUnmatchedEvidenceAudit(classified, 98, [], [sellId], {
+      ...partialCtx,
+      provenNonTradeTransfers: new Set(resolution.provenNonTradeTransfers),
+      provenGenuineUnmatchedSells: new Set(resolution.provenGenuineUnmatchedSells),
+    })
+    assert.equal(after.unknownSells, 1, reason)
+    assert.equal(after.windowBoundaryProven, false)
+  }
 })
