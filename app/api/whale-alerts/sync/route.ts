@@ -512,9 +512,54 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
   return { alerts, skipSummary, parsedMovementCount }
 }
 
+type SyncActor =
+  | { kind: 'user'; userId: string; plan: 'free' | 'pro' | 'elite' }
+  | { kind: 'system' }
+
 export async function POST(request: Request) {
   const authenticatedUser = await requireAuthenticatedUser(request)
   if (!authenticatedUser) return unauthorizedResponse()
+  return runWhaleSync(request, { kind: 'user', userId: authenticatedUser.userId, plan: authenticatedUser.plan })
+}
+
+// Vercel Cron entry point (see vercel.json). Vercel sends `Authorization: Bearer ${CRON_SECRET}`.
+// Scans only the shared system wallet set (tracked_wallets.user_id IS NULL) on Base and writes
+// system-owned alerts (owner_user_id NULL). Loops batches until done or the time budget runs out.
+const CRON_TIME_BUDGET_MS = 50_000
+export async function GET(request: Request) {
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret || request.headers.get('authorization') !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 })
+  }
+  const startedAt = Date.now()
+  const baseUrl = new URL(request.url)
+  let offset = 0
+  let batches = 0
+  let inserted = 0
+  let last: Record<string, unknown> | null = null
+  let status = 200
+  while (Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
+    const url = new URL(baseUrl.toString())
+    url.searchParams.set('mode', 'full')
+    url.searchParams.set('minUsd', url.searchParams.get('minUsd') ?? '0')
+    url.searchParams.set('offset', String(offset))
+    const res = await runWhaleSync(new Request(url.toString(), { method: 'GET', headers: request.headers }), { kind: 'system' })
+    status = res.status
+    last = (await res.json().catch(() => null)) as Record<string, unknown> | null
+    batches += 1
+    if (!res.ok || !last || last.ok === false) break
+    inserted += Number(last.inserted ?? 0)
+    if (last.done === true || !last.hasMore || last.nextOffset == null) break
+    offset = Number(last.nextOffset)
+  }
+  const ok = status < 400 && !!last && last.ok !== false
+  return NextResponse.json(
+    { ok, source: 'cron', batches, inserted, lastOffset: offset, done: last?.done === true || last?.hasMore === false, last },
+    { status: ok ? 200 : status },
+  )
+}
+
+async function runWhaleSync(request: Request, actor: SyncActor) {
   const requestUrl = new URL(request.url)
   const mode = requestUrl.searchParams.get('mode') === 'full' ? 'full' : 'batch'
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
@@ -556,13 +601,15 @@ export async function POST(request: Request) {
   const isFullContinuation = mode === 'full' && offset > 0
   const isBatchContinuation = mode === 'batch' && offset > 0
   const isContinuation = isFullContinuation || isBatchContinuation
-  const verifiedPlan = authenticatedUser.plan
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
+  if (actor.kind === 'user') {
+    const verifiedPlan = actor.plan
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`[sync] route=/api/whale-alerts/sync verifiedPlan=${verifiedPlan}`)
+    }
+    if (verifiedPlan === 'free') return NextResponse.json({ ok: false, mode, error: 'Included in Pro and Elite.', planGate: { verifiedPlan, requiredPlan: 'pro' } }, { status: 403 })
+    const allow = syncAllowed(verifiedPlan, request, mode, isContinuation)
+    if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly.", retryAfterMs: allow.retryAfterMs ?? null }, { status: 429 })
   }
-  if (verifiedPlan === 'free') return NextResponse.json({ ok: false, mode, error: 'Included in Pro and Elite.', planGate: { verifiedPlan, requiredPlan: 'pro' } }, { status: 403 })
-  const allow = syncAllowed(verifiedPlan, request, mode, isContinuation)
-  if (!allow.ok) return NextResponse.json({ ok: false, mode, error: allow.cooldown ? "Sync cooldown active. Try again later." : "Rate limit reached. Try again shortly.", retryAfterMs: allow.retryAfterMs ?? null }, { status: 429 })
   const usingAutomaticBatch = queryOffset === null && bodyOffset === null
   void usingAutomaticBatch  // retained for compatibility — wallet fetch now uses explicit slicing
 
@@ -576,13 +623,15 @@ export async function POST(request: Request) {
   const supabase = createClient(supabaseUrl, serviceRole)
   // Fetch all active wallets up-front so trackedWalletsTotal is exact and
   // progress math never depends on Supabase's count field (which can be null).
-  const scopedWalletResult = await supabase
+  const walletQuery = supabase
     .from('tracked_wallets')
     .select('address,user_id,label,category,confidence,source,is_active')
-    .or(userOrSystemScope('user_id', authenticatedUser.userId))
     .eq('chain_id', BASE_WHALE_CHAIN_ID)
     .eq('is_active', true)
     .order('created_at', { ascending: true })
+  const scopedWalletResult = actor.kind === 'user'
+    ? await walletQuery.or(userOrSystemScope('user_id', actor.userId))
+    : await walletQuery.is('user_id', null)
   let walletError = scopedWalletResult.error
   let allWalletRows = (scopedWalletResult.data ?? []) as TrackedWallet[]
 
@@ -812,7 +861,7 @@ export async function POST(request: Request) {
       }
 
       const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
-      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity, owner_user_id: authenticatedUser.userId })
+      allFilteredAlerts.push({ ...alert, amount_usd: usd, severity, owner_user_id: actor.kind === 'user' ? actor.userId : null })
       if (timeToFirstAlertMs == null) timeToFirstAlertMs = Date.now() - syncStartedAtMs
     }
   }

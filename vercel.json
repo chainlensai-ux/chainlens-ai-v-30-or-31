@@ -91,6 +91,7 @@
     "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60 },
     "app/api/scan-v2/full-scan/route.ts": { "maxDuration": 300 },
     "app/api/base-radar/cron/route.ts": { "maxDuration": 60 },
+    "app/api/whale-alerts/sync/route.ts": { "maxDuration": 60 },
     "app/api/radar/route.ts": { "maxDuration": 60 },
     "app/api/token/route.ts": { "maxDuration": 60 },
     "app/api/dev-wallet/route.ts": { "maxDuration": 60 },
@@ -101,6 +102,7 @@
     "app/api/resolve/route.ts": { "maxDuration": 30 }
   },
   "crons": [
-    { "path": "/api/base-radar/cron", "schedule": "0 6 * * *" }
+    { "path": "/api/base-radar/cron", "schedule": "0 6 * * *" },
+    { "path": "/api/whale-alerts/sync", "schedule": "30 6 * * *" }
   ]
 }
