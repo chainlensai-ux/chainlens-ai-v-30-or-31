@@ -168,3 +168,33 @@ test('overlapping feed requests: an older response can never replace a newer one
   assert.equal(gate.isLatest(older), false)
   assert.equal(gate.isLatest(newer), true)
 })
+
+// ── Token trust (fake-ticker stablecoins, spam airdrops) ─────────────────────
+import { tokenRisk } from '../lib/server/whaleTokenTrust'
+import { describeFomoRowShape, normalizeFomoTrader } from '../lib/server/fomoApi'
+
+test('a "USDC" that is not the real Base USDC contract is flagged, never priced at $1', () => {
+  assert.equal(tokenRisk('0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', 'USDC'), null)
+  assert.equal(tokenRisk('0x833589FCD6EDB6E08F4C7C32D4F71B54BDA02913', 'usdc'), null)
+  assert.equal(tokenRisk('0xc995060000000000000000000000000000d7b66a', 'USDC'), 'spoofed_stablecoin')
+  assert.equal(tokenRisk('0x947a160000000000000000000000000000008ade', 'USDT'), 'spoofed_stablecoin')
+  assert.equal(tokenRisk('0x1111111111111111111111111111111111111111', 'AERO'), null)
+})
+
+test('URL / checkmark airdrop tickers are flagged as spam; normal tickers are not', () => {
+  assert.equal(tokenRisk('0x340c540000000000000000000000000000534348', 'WWW.AFOMO.TOP✅'), 'spam_airdrop')
+  assert.equal(tokenRisk(null, 'Visit claim-base.xyz'), 'spam_airdrop')
+  for (const sym of ['AEON', 'WIRE', 'DEGEN', 'cbBTC', 'WETH']) assert.equal(tokenRisk('0x1111111111111111111111111111111111111111', sym), null)
+})
+
+// ── FOMO board USD metrics ───────────────────────────────────────────────────
+test('FOMO PnL/volume are read from flat, nested and {usd} shapes; absent stays null (never invented)', () => {
+  assert.deepEqual([normalizeFomoTrader({ pnlUsd: 1200, volumeUsd: 5000 }, 0).pnlUsd, normalizeFomoTrader({ pnlUsd: 1200, volumeUsd: 5000 }, 0).volumeUsd], [1200, 5000])
+  const nested = normalizeFomoTrader({ handle: 'a', stats: { realizedPnl: '345.5', totalVolume: 9000 } }, 0)
+  assert.deepEqual([nested.pnlUsd, nested.volumeUsd], [345.5, 9000])
+  const wrapped = normalizeFomoTrader({ handle: 'b', pnl: { usd: -42 }, volume: { value: 10 } }, 0)
+  assert.deepEqual([wrapped.pnlUsd, wrapped.volumeUsd], [-42, 10])
+  const missing = normalizeFomoTrader({ handle: 'c', followers: 3 }, 0)
+  assert.deepEqual([missing.pnlUsd, missing.volumeUsd], [null, null])
+  assert.deepEqual(describeFomoRowShape({ handle: 'x', stats: { pnl: 1 } }), ['handle', 'stats', 'stats.pnl'])
+})

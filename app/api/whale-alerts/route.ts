@@ -14,6 +14,7 @@ import { getPriceAtTime } from '@/src/modules/pricingAtTimeEngine/sources/multiP
 import { BASE_WHALE_CHAIN_ID, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
 import { dedupeMovementLegs, pricingAddressFor } from '@/lib/server/whaleAlertIdentity'
 import { filterByValueRange, parseValueRange, passesQualityFloor } from '@/lib/server/whaleFeedFilters'
+import { tokenRisk, tokenRiskLabel } from '@/lib/server/whaleTokenTrust'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -355,6 +356,7 @@ function countStatsFiltered(
   if (!rows || rows.length === 0) return 0
   const txHashes = new Set<string>()
   for (const r of rows) {
+    if (tokenRisk(r.token_address, r.token_symbol)) continue
     let enriched = enrichRowUsd(r as RawRow, prices)
     if (tokenPrices && tokenPrices.size > 0) enriched = enrichRowWithTokenPrice(enriched, tokenPrices)
     const passes   = minUsd > 0
@@ -992,7 +994,16 @@ export async function GET(req: NextRequest) {
       }
     })
 
-    const scored   = groupAlertsByTx(enriched).map(row => ({
+    // Fake-ticker stablecoins and URL-named airdrops have no real USD value. Interesting mode hides
+    // them; "All activity" keeps them, flagged, so they never read as an ordinary unpriced transfer.
+    let hiddenAsSpam = 0
+    const trusted = (enriched as RawRow[]).flatMap((row): RawRow[] => {
+      const risk = tokenRisk(row.token_address, row.token_symbol)
+      if (!risk) return [row]
+      if (interestingMode) { hiddenAsSpam += 1; return [] }
+      return [{ ...row, amount_usd: null, token_risk: risk, token_risk_label: tokenRiskLabel(risk) }]
+    })
+    const scored   = groupAlertsByTx(trusted).map(row => ({
       ...row,
       signal_score: computeSignalScore(row),
       interesting_score: computeInterestScore(row),
@@ -1225,6 +1236,7 @@ export async function GET(req: NextRequest) {
         randomTokenPriceHits,
         randomTokenPriceMisses,
         duplicateLegsRemoved,
+        hiddenAsSpam,
         cacheHit: false,
         providerStatus: 'ok',
         ownerScopeApplied,

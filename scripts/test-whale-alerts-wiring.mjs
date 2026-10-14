@@ -12,7 +12,10 @@ const seed = read('../docs/whale-wallets-seed.sql')
 
 // Feed: one visible alert per movement, deduped BEFORE grouping (else a duplicate becomes a fake swap).
 assert.ok(feed.indexOf('dedupeMovementLegs(') > 0)
-assert.ok(feed.indexOf('dedupeMovementLegs(') < feed.indexOf('groupAlertsByTx(enriched)'))
+assert.ok(feed.indexOf('dedupeMovementLegs(') < feed.indexOf('groupAlertsByTx(trusted)'))
+// Feed: fake-ticker / spam tokens are filtered or flagged before grouping, never priced.
+assert.ok(feed.indexOf('tokenRisk(row.token_address, row.token_symbol)') < feed.indexOf('groupAlertsByTx(trusted)'))
+assert.match(feed, /hiddenAsSpam,/)
 assert.match(feed, /duplicateLegsRemoved,/)
 // Feed: misconfiguration is a failure, not an empty 200.
 assert.match(feed, /function emptyUnavailable[\s\S]*?status: 503/)

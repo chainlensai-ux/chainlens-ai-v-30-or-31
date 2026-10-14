@@ -79,6 +79,9 @@ export async function GET(request: Request) {
     walletPendingCount,
     durationMs: Date.now() - startedAt,
     errorReason: result.errorReason,
+    rowShape: result.rowShape ?? [],
+    pnlMissingCount: result.pnlMissingCount ?? null,
+    volumeMissingCount: result.volumeMissingCount ?? null,
   };
 
   // A hard failure with nothing to show (no traders at all, including no stale cache to fall back

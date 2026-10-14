@@ -40,6 +40,9 @@ type AlertItem = {
   occurred_at?: string | null
   legs?: number | null
   repeats?: number | null
+  /** Set by the feed for fake-ticker stablecoins / spam airdrops (lib/server/whaleTokenTrust.ts). */
+  token_risk?: 'spoofed_stablecoin' | 'spam_airdrop' | null
+  token_risk_label?: string | null
   signal_score?: string | null
   summary?: string | null
   token_image_url?: string | null
@@ -1518,7 +1521,8 @@ export default function WhaleAlertsPage() {
             const amtUnverified = alert.amount_usd == null || (alert.amount_usd === 0 && !isTrueZero)
             const amtU    = alert.amount_usd != null && (alert.amount_usd > 0 || isTrueZero) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU ?? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : null)
+            const riskShort = alert.token_risk === 'spoofed_stablecoin' ? 'Fake token — no USD value' : alert.token_risk === 'spam_airdrop' ? 'Spam token — no USD value' : null
+            const amtShow = amtU ?? riskShort ?? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : null)
             const tokenAmtShow = !isMultiTok && amtTNum ? `${amtTNum} ${primarySym}` : null
 
             // Verb and preposition split so amount fits between them for swaps
@@ -1547,7 +1551,8 @@ export default function WhaleAlertsPage() {
             const accentWidth = tier === 'strong' ? 3 : 2
 
             const signalReason =
-              signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
+              alert.token_risk_label ? alert.token_risk_label
+              : signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
               : signal === 'WATCH' ? 'Repeated activity from tracked wallet'
               : signal === 'NOISE' ? (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-signal movement')
               : (amtUnverified ? `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}` : 'Low-value token movement')

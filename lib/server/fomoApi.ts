@@ -54,6 +54,47 @@ function asFiniteNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// USD metric field names seen across leaderboard APIs. The FOMO API's exact leaderboard schema is
+// not documented in this repo, so values are read from the row itself or from a nested stats-like
+// object; a value that is genuinely absent still stays null (rendered "—"), never invented.
+const PNL_KEYS = ["pnlUsd", "pnl_usd", "pnlUSD", "pnl", "realizedPnlUsd", "realized_pnl_usd", "realizedPnl", "realized_pnl", "totalPnlUsd", "total_pnl_usd", "totalPnl", "total_pnl", "profitUsd", "profit_usd", "profit"];
+const VOLUME_KEYS = ["volumeUsd", "volume_usd", "volumeUSD", "volume", "totalVolumeUsd", "total_volume_usd", "totalVolume", "total_volume", "tradingVolume", "trading_volume"];
+const NESTED_METRIC_KEYS = ["stats", "metrics", "performance", "summary", "pnlStats"];
+
+function pickMetric(raw: Record<string, unknown>, keys: readonly string[]): number | null {
+  const containers: Record<string, unknown>[] = [raw];
+  for (const nested of NESTED_METRIC_KEYS) {
+    const value = raw[nested];
+    if (value && typeof value === "object" && !Array.isArray(value)) containers.push(value as Record<string, unknown>);
+  }
+  for (const container of containers) {
+    for (const key of keys) {
+      const value = container[key];
+      // A metric may itself be an object such as { usd: 123 } or { value: 123 }.
+      const candidate = value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>).usd ?? (value as Record<string, unknown>).value ?? (value as Record<string, unknown>).amount
+        : value;
+      const n = asFiniteNumber(candidate);
+      if (n != null) return n;
+    }
+  }
+  return null;
+}
+
+/** Field names (never values) of a raw leaderboard row, for diagnosing schema mismatches. */
+export function describeFomoRowShape(raw: unknown): string[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const r = raw as Record<string, unknown>;
+  const keys: string[] = [];
+  for (const [key, value] of Object.entries(r)) {
+    keys.push(key);
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const inner of Object.keys(value as Record<string, unknown>)) keys.push(`${key}.${inner}`);
+    }
+  }
+  return keys.slice(0, 40);
+}
+
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -110,8 +151,8 @@ export function normalizeFomoTrader(raw: unknown, fallbackIndex: number): FomoTr
     rank: asFiniteNumber(r.rank) ?? fallbackIndex + 1,
     handle: asString(r.handle) ?? asString(r.username) ?? `trader_${fallbackIndex + 1}`,
     displayName: asString(r.displayName) ?? asString(r.display_name) ?? asString(r.name),
-    pnlUsd: asFiniteNumber(r.pnlUsd ?? r.pnl_usd ?? r.pnl),
-    volumeUsd: asFiniteNumber(r.volumeUsd ?? r.volume_usd ?? r.volume),
+    pnlUsd: pickMetric(r, PNL_KEYS),
+    volumeUsd: pickMetric(r, VOLUME_KEYS),
     trades: asFiniteNumber(r.trades ?? r.tradeCount ?? r.trade_count),
     followers: asFiniteNumber(r.followers ?? r.followerCount ?? r.follower_count),
     holdingsCount: readHoldingsCount(r),
@@ -135,6 +176,10 @@ export type FomoLeaderboardFetchResult = {
   rateRemaining: number | null;
   durationMs: number;
   errorReason: string | null;
+  /** Field names of the first raw row (no values) — shows the real upstream schema. */
+  rowShape?: string[];
+  pnlMissingCount?: number;
+  volumeMissingCount?: number;
 };
 
 type CacheEntry = { at: number; result: FomoLeaderboardFetchResult };
@@ -239,7 +284,13 @@ async function fetchFomoLeaderboardUncached(
     const result: FomoLeaderboardFetchResult = {
       ok: true, traders, cacheHit: false, cacheAgeMs: 0, apiCalled: true, status: res.status,
       rateLimit, rateRemaining, durationMs: Date.now() - startedAt, errorReason: null,
+      rowShape: describeFomoRowShape(rawList[0]),
+      pnlMissingCount: traders.filter((t) => t.pnlUsd == null).length,
+      volumeMissingCount: traders.filter((t) => t.volumeUsd == null).length,
     };
+    if (traders.length > 0 && (result.pnlMissingCount ?? 0) === traders.length) {
+      console.warn("[fomo] leaderboard rows carry no recognised PnL field", result.rowShape);
+    }
     leaderboardCache.set(cacheKey, { at: Date.now(), result });
     return result;
   } catch (err) {
