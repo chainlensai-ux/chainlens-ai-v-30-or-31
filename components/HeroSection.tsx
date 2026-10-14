@@ -1,14 +1,10 @@
 'use client'
 
 import { useState } from 'react'
+import { QUICK_PROMPTS } from '@/lib/clark/knowledge'
 import ClarkOrb from '@/components/ClarkOrb'
 
-const CHIPS = [
-  "What's pumping on Base?",
-  'Scan BRETT',
-  'What does wallet scanning show?',
-  'Explain liquidity risk',
-]
+const CHIPS = QUICK_PROMPTS.heroChips
 
 
 interface HeroSectionProps {

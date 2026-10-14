@@ -8,14 +8,10 @@ import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as ge
 import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
 import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
 import ClarkWhaleIntelligence from '@/components/ClarkWhaleIntelligence'
+import { QUICK_PROMPTS } from '@/lib/clark/knowledge'
 import { parseClarkWhaleIntelligenceUi, type ClarkWhaleIntelligenceUi } from '@/lib/clarkWhaleUi'
 
-const HINT_CHIPS = [
-  'Scan BRETT',
-  "What's pumping on Base?",
-  'Analyze this wallet',
-  'Liquidity check AERO',
-]
+const HINT_CHIPS = QUICK_PROMPTS.radarHintChips
 
 interface MoverItem {
   rank?: number

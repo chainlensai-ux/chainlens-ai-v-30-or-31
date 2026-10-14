@@ -1,3 +1,5 @@
+import { QUICK_PROMPTS } from '@/lib/clark/knowledge'
+
 // Static Clark AI page config extracted so page.tsx stays under the GitHub MCP write limit.
 
 export type Mode = { key: 'token' | 'wallet' | 'contract' | 'radar'; label: string; helper: string; prompt: string; icon: string }
@@ -37,20 +39,10 @@ export const START_WITH_CHIPS = [
 // ONE ROW of suggested actions under the command bar. `command` entries go through applyCommandChip (they reuse the
 // last token/wallet in context, or prime the input); `prompt` entries are sent as typed.
 export type SuggestedAction = { label: string; command?: string; prompt?: string }
-export const SUGGESTED_ACTIONS: SuggestedAction[] = [
-  { label: 'Token scan', command: '/token' },
-  { label: 'Wallet read', command: '/wallet' },
-  { label: 'LP safety', command: '/lp' },
-  { label: 'Market movers', prompt: "What's pumping on Base?" },
-  { label: 'Explain risk', prompt: 'Explain the risk' },
-]
+export const SUGGESTED_ACTIONS: SuggestedAction[] = QUICK_PROMPTS.suggestedActions
 
 // Empty-state examples: clicking one fills the composer (never auto-sends, so it costs no usage until sent).
-export const EXAMPLE_PROMPTS = [
-  'Is this token safe to ape?',
-  'What is this wallet doing?',
-  "Who controls this token's liquidity?",
-]
+export const EXAMPLE_PROMPTS = QUICK_PROMPTS.examplePrompts
 
 export { CLARK_DAILY_LIMITS, CLARK_DAILY_UNAUTH as CLARK_LIMIT_UNAUTH } from '@/lib/pricingPlans'
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
