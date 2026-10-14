@@ -34,7 +34,17 @@ const fmtUSD = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionD
 const fmtPrice = (v: number | null) => v == null || v <= 0 ? 'Unpriced' : v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(6)}`
 const fmtBalance = (v: number) => v >= 1_000_000 ? `${(v / 1_000_000).toFixed(2)}M` : v >= 1000 ? `${(v / 1000).toFixed(2)}K` : v.toFixed(v < 1 ? 4 : 2)
 const formatShortAddress = (address?: string | null) => !address ? 'No wallet' : address.length <= 10 ? address : `${address.slice(0, 6)}...${address.slice(-4)}`
-const spark = (seed: string, up: boolean) => { let x = seed.split('').reduce((s, c) => s + c.charCodeAt(0), 0) % 93; return Array.from({ length: 20 }, (_, i) => { x = (x * 31 + 11) % 97; const y = (up ? 32 - i * 0.8 : 15 + i * 0.7) + (x % 11) - 5; return `${(i / 19) * 100},${Math.max(5, Math.min(36, y))}` }).join(' ') }
+const HOLDINGS_PREVIEW_ROWS = 8
+
+function WalletIcon({ size = 18, color = '#64748b' }: { size?: number; color?: string }) {
+  return (
+    <svg aria-hidden='true' width={size} height={size} viewBox='0 0 24 24' fill='none'>
+      <path d='M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v1.5' stroke={color} strokeWidth='1.8' strokeLinecap='round' />
+      <rect x='4' y='7.5' width='16' height='11.5' rx='2.5' stroke={color} strokeWidth='1.8' />
+      <circle cx='16' cy='13.25' r='1.25' fill={color} />
+    </svg>
+  )
+}
 
 const rangeToCount: Record<Range, number> = { '24H': 25, '7D': 8, '30D': 10, '90D': 14, ALL: 12 }
 
@@ -42,7 +52,7 @@ const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
 
 export default function PortfolioPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
-  const { address: connectedAddress, isConnected } = useAccount()
+  const { address: connectedAddress, isConnected, isReconnecting } = useAccount()
 
   const [manualAddress, setManualAddress] = useState('')
   const [loading, setLoading] = useState(false)
@@ -61,6 +71,9 @@ export default function PortfolioPage() {
   const [nowTs] = useState(() => Date.now())
   const [lastScanAt, setLastScanAt] = useState<number>(0)
   const [cooldownLeftMs, setCooldownLeftMs] = useState(0)
+  // Display-only toggles for the redesigned layout (holdings "View all", Clark text expansion).
+  const [showAllHoldings, setShowAllHoldings] = useState(false)
+  const [clarkExpanded, setClarkExpanded] = useState(false)
 
   const CLIENT_SCAN_COOLDOWN_MS = 12 * 1000
 
@@ -264,84 +277,390 @@ export default function PortfolioPage() {
     ready: '',
   }
 
-  return <div className="portfolio-page" style={{ height: '100%', overflow: 'auto', background: 'radial-gradient(circle at 18% -10%, rgba(34,211,238,.12), transparent 34%), radial-gradient(circle at 86% 2%, rgba(217,70,239,.13), transparent 34%), #05070d', color: '#e2e8f0', padding: 18 }}>
-    <style>{`.glass{background:linear-gradient(165deg,rgba(8,16,32,.9),rgba(5,10,20,.84));border:1px solid rgba(125,211,252,.14);border-radius:18px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.02)}.sk{background:linear-gradient(90deg,rgba(148,163,184,.12),rgba(148,163,184,.22),rgba(148,163,184,.12));background-size:180% 100%;animation:sh 1.45s infinite}@keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}@media (max-width: 768px){.portfolio-page{padding:12px 12px 96px!important}.pf-main-grid{grid-template-columns:1fr!important}.pf-row4{grid-template-columns:repeat(2,minmax(0,1fr))!important}.pf-search-row{flex-direction:column;align-items:stretch!important;gap:8px}.pf-search-row input{width:100%}.pf-holdings-wrap{overflow-x:auto}.pf-holdings-wrap table{min-width:640px}.pf-side{grid-template-columns:1fr!important}.pf-wallet-row{flex-direction:column;align-items:stretch!important}.pf-wallet-row input{width:100%!important}.pf-range-row{flex-wrap:wrap;width:100%}}`}</style>
+  // ── Presentation helpers (layout/styling only — every number comes from viewModel as before) ──
+  const ready = viewModel.finalUiState === 'ready'
+  const signColor = (v: number) => (v >= 0 ? '#2DD4BF' : '#f43f5e')
+  // Verdict colour scale: BULLISH teal, NEUTRAL amber, CAUTIOUS red, NEEDS_DATA muted.
+  const verdictColor = { BULLISH: '#2DD4BF', NEUTRAL: '#f59e0b', CAUTIOUS: '#f43f5e', NEEDS_DATA: '#64748b' }[viewModel.verdict]
+  const sortedHoldings = [...filtered].sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+  const visibleHoldings = showAllHoldings ? sortedHoldings : sortedHoldings.slice(0, HOLDINGS_PREVIEW_ROWS)
+  const clarkText = clarkAnalysis ?? viewModel.summary
+  const loadStatus = viewSource === 'wallet_scanner_cache'
+    ? 'Loaded instantly from a recent Wallet Scanner scan of this wallet.'
+    : scannedAddress === address ? 'Portfolio scan loaded for current wallet.' : 'Portfolio not loaded yet. Press View to fetch data.'
+  // The page keeps ONE ConnectWallet instance (top bar). The other Connect buttons click it, or
+  // focus the address field when it isn't clickable (e.g. while reconnecting).
+  const openConnect = () => {
+    const btn = document.querySelector<HTMLButtonElement>('.pf-connect-slot button:not(:disabled)')
+    if (btn) btn.click()
+    else document.querySelector<HTMLInputElement>('.pf-address-input')?.focus()
+  }
+  const chainPill = (chain: string) => {
+    const c = chain.toLowerCase()
+    const tone = c === 'base' ? '#2DD4BF' : c === 'eth' || c === 'ethereum' ? '#8b5cf6' : c === 'bsc' || c === 'bnb' ? '#ec4899' : '#94a3b8'
+    const label = c === 'eth' ? 'Ethereum' : c === 'bsc' || c === 'bnb' ? 'BSC' : chain.charAt(0).toUpperCase() + chain.slice(1)
+    return <span className='pf-chain-pill' style={{ color: tone, background: `${tone}1a`, borderColor: `${tone}40` }}>{label}</span>
+  }
+  const unverifiedPill = (title?: string) => <span className='pf-unverified' title={title}>Unverified</span>
 
-    <div className='pf-wallet-row glass' style={{ marginBottom: 12, padding: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-      <div style={{ color: '#94a3b8', fontSize: 12, minWidth: 120 }}>Wallet address</div>
-      <input
-        value={manualAddress}
-        onChange={(e) => setManualAddress(e.target.value)}
-        placeholder={connectedAddress ? `Connected: ${formatShortAddress(connectedAddress)} (or paste a different address)` : '0x… wallet address'}
-        style={{ flex: '1 1 260px', borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', background: 'rgba(10,14,26,.75)', color: '#e2e8f0', padding: '8px 10px' }}
-      />
-      {!isConnected && !manualAddress && <ConnectWallet className='active:scale-[0.98]' />}
-    </div>
+  const stats: Array<{ label: string; value: string | null; color?: string; sub: React.ReactNode }> = [
+    { label: 'Portfolio Value', value: hasWallet ? fmtUSD(totalValue) : null, sub: totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : '' },
+    {
+      label: '24H PnL',
+      value: !hasWallet ? null : hasPnl ? `${(totalPnL ?? 0) >= 0 ? '+' : ''}${fmtUSD(totalPnL ?? 0)}` : '—',
+      color: hasPnl ? signColor(totalPnL ?? 0) : undefined,
+      sub: hasWallet && !hasPnl ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>{unverifiedPill(viewModel.pnl?.reason ?? 'not verified')}<span className='pf-ellipsis'>{viewModel.pnl?.reason ?? 'not verified'}</span></span> : '',
+    },
+    { label: 'Tokens', value: hasWallet ? `${viewModel.pricedTokenCount}/${viewModel.tokenCount}` : null, sub: 'Priced / total' },
+    {
+      label: 'Wallet',
+      value: hasWallet && address ? formatShortAddress(address) : null,
+      sub: hasWallet && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ color: '#2DD4BF', textDecoration: 'none' }}>View on Explorer ↗</a> : '',
+    },
+    {
+      label: 'Network',
+      value: hasWallet ? networkLabel : null,
+      sub: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,.7)' }} />{chainCount > 1 ? `${chainCount} chains` : 'Healthy'}</span>,
+    },
+  ]
 
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10, marginBottom: 12 }}>
-      {[
-        ['PORTFOLIO VALUE', hasWallet ? fmtUSD(totalValue) : '—', totalValue > 0 ? `≈ ${(totalValue / 2600).toFixed(4)} ETH` : ''],
-        ['24H PNL', !hasWallet ? '—' : hasPnl ? `${(totalPnL ?? 0) >= 0 ? '+' : ''}${fmtUSD(totalPnL ?? 0)}` : `Unavailable: ${viewModel.pnl?.reason ?? 'not verified'}`],
-        ['TOKENS', hasWallet ? `${viewModel.pricedTokenCount}/${viewModel.tokenCount}` : '—', 'Priced / total'],
-        ['WALLET', hasWallet && address ? formatShortAddress(address) : 'Not connected', hasWallet && explorerUrl ? 'View on Explorer ↗' : ''],
-        ['NETWORK', networkLabel, chainCount > 1 ? `${chainCount} chains` : 'Healthy'],
-      ].map(([k, v, s], i) => <div key={String(k)} className='glass' style={{ padding: 14, minHeight: 96 }}>{loading ? <div className='sk' style={{ height: 54, borderRadius: 12 }} /> : <><div style={{ fontSize: 10, letterSpacing: '.15em', color: '#94a3b8' }}>{k}</div><div style={{ fontSize: i === 3 ? 24 : 22, fontWeight: 800, marginTop: 4, color: i === 1 && hasPnl ? ((totalPnL ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : i === 1 ? '#fbbf24' : '#f8fafc' }}>{v}</div>{i === 3 && explorerUrl ? <a href={explorerUrl} target='_blank' rel='noopener noreferrer' style={{ fontSize: 12, color: '#67e8f9', textDecoration: 'none' }}>{s}</a> : <div style={{ fontSize: 12, color: '#67e8f9' }}>{s}</div>}</>}</div>)}
-    </div>
+  const tiles: Array<[string, string]> = [
+    ['Highest Holding', topHolding ? `${topHolding.symbol} • ${fmtUSD(topHolding.value ?? 0)}` : '—'],
+    ['Best Performer', bestPerformer && typeof bestPerformer.change24h === 'number' ? `${bestPerformer.symbol} • +${bestPerformer.change24h.toFixed(2)}%` : '—'],
+    ['Realized PnL', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : 'Unverified'],
+    ['Concentration', ready ? `${Math.round(viewModel.concentrationPercent)}%` : 'Unverified'],
+  ]
 
-    {hasWallet && (
-      <div className='glass' style={{ marginBottom: 12, padding: 12, display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap' }}>
-        <div style={{ color: '#94a3b8', fontSize: 12 }}>
-          {viewSource === 'wallet_scanner_cache' ? 'Loaded instantly from a recent Wallet Scanner scan of this wallet.' : scannedAddress === address ? 'Portfolio scan loaded for current wallet.' : 'Portfolio not loaded yet. Click Load Portfolio to fetch data.'}
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button onClick={() => { void runPortfolioScan() }} disabled={!canScan} style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', padding: '8px 12px', background: canScan ? 'rgba(34,211,238,.2)' : 'rgba(100,116,139,.18)', color: canScan ? '#67e8f9' : '#94a3b8', fontWeight: 700 }}>
-            {loading ? 'Loading…' : scannedAddress === address ? 'Rescan' : 'Load Portfolio'}
-          </button>
-          {cooldownLeftMs > 0 && <span style={{ fontSize: 12, color: '#94a3b8' }}>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
-          {viewModel.finalUiState === 'ready' && (
-            <button onClick={() => { void runClark() }} disabled={clarkLoading || loading} style={{ borderRadius: 10, border: '1px solid rgba(168,85,247,.35)', padding: '8px 12px', background: 'rgba(168,85,247,.18)', color: '#c4b5fd', fontWeight: 700 }}>
-              {clarkLoading ? 'Analyzing…' : 'Ask Clark'}
+  return <div className="portfolio-page">
+    <style>{`
+      .portfolio-page{height:100%;overflow:auto;color:#e2e8f0;padding:32px 24px 96px;font-family:var(--font-inter,Inter,sans-serif);background-color:#06060a;background-image:radial-gradient(circle at 0% 0%,rgba(45,212,191,.07),transparent 42%),radial-gradient(circle at 100% 100%,rgba(139,92,246,.06),transparent 44%);background-attachment:fixed,fixed;box-sizing:border-box}
+      .pf-inner{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:24px;min-width:0}
+      .pf-card{background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:20px;min-width:0;box-sizing:border-box}
+      .pf-label{font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#64748b}
+      .pf-muted{color:#94a3b8}
+      .pf-ellipsis{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .sk{background:linear-gradient(90deg,rgba(148,163,184,.10),rgba(148,163,184,.20),rgba(148,163,184,.10));background-size:180% 100%;animation:sh 1.45s infinite}
+      @keyframes sh{from{background-position:180% 0}to{background-position:-180% 0}}
+      @keyframes pfspin{to{transform:rotate(360deg)}}
+      .pf-spinner{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:pfspin .7s linear infinite;flex-shrink:0}
+      /* top bar */
+      .pf-topbar{padding:16px}
+      .pf-topbar-row{display:flex;gap:10px;align-items:center}
+      .pf-address-wrap{position:relative;flex:1;min-width:0}
+      .pf-address-wrap svg{position:absolute;left:14px;top:50%;transform:translateY(-50%);pointer-events:none}
+      .pf-address-input{width:100%;height:48px;box-sizing:border-box;padding:0 14px 0 42px;border-radius:12px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#f8fafc;font-size:14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);outline:none;transition:border-color .15s,box-shadow .15s}
+      .pf-address-input::placeholder{color:#64748b}
+      .pf-address-input:focus{border-color:rgba(45,212,191,.85);box-shadow:0 0 0 3px rgba(45,212,191,.20)}
+      .pf-topbar-hint{margin-top:8px;font-size:12px;color:#64748b;display:flex;gap:10px;flex-wrap:wrap}
+      .pf-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:48px;padding:0 20px;border-radius:12px;border:1px solid rgba(45,212,191,.9);background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%);color:#04201c;font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer;white-space:nowrap;flex-shrink:0;transition:filter .15s,transform .15s}
+      .pf-btn-primary:hover:not(:disabled){filter:brightness(1.06);transform:translateY(-1px)}
+      .pf-btn-primary:disabled{opacity:.5;cursor:not-allowed}
+      .pf-btn-ghost{display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:10px;border:1px solid rgba(139,92,246,.40);background:rgba(139,92,246,.12);color:#c4b5fd;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
+      .pf-btn-ghost:disabled{opacity:.5;cursor:not-allowed}
+      .pf-connect-slot{flex-shrink:0}
+      .pf-connect-slot > div{display:flex!important;gap:0!important}
+      .pf-connect-slot > div > div{display:none!important}
+      .pf-connect-slot button{width:auto!important;height:48px!important;padding:0 20px!important;border-radius:12px!important;font-size:12px!important;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)!important;background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%)!important;color:#04201c!important;box-shadow:0 8px 24px rgba(45,212,191,.22)!important;transform:none!important}
+      .pf-connect-slot button:disabled::before{content:'';display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-top-color:transparent;animation:pfspin .7s linear infinite}
+      /* stats */
+      .pf-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:16px}
+      .pf-stat{padding:16px 18px;display:flex;flex-direction:column;min-height:112px}
+      .pf-stat-value{font-size:24px;font-weight:700;color:#f8fafc;margin-top:8px;line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .pf-stat-sub{margin-top:auto;padding-top:8px;font-size:12px;color:#94a3b8;display:flex;min-width:0}
+      .pf-unverified{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;letter-spacing:.06em;color:#fbbf24;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.28);font-family:var(--font-plex-mono,IBM Plex Mono,monospace);white-space:nowrap;flex-shrink:0}
+      /* main grid */
+      .pf-grid{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:24px;align-items:start}
+      .pf-left,.pf-side{display:flex;flex-direction:column;gap:24px;min-width:0}
+      .pf-range{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px}
+      .pf-range button{padding:6px 12px;border-radius:7px;border:none;background:transparent;color:#64748b;font-size:11px;font-weight:700;letter-spacing:.08em;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);cursor:pointer}
+      .pf-range button:hover{color:#cbd5e1}
+      .pf-range button.on{background:rgba(45,212,191,.15);color:#2DD4BF;box-shadow:inset 0 -2px 0 #2DD4BF}
+      .pf-hero-value{font-size:40px;font-weight:800;line-height:1.1;letter-spacing:-.02em;background:linear-gradient(90deg,#2DD4BF,#8b5cf6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+      .pf-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
+      .pf-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:48px 16px;gap:10px}
+      .pf-empty-icon{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:16px;background:rgba(45,212,191,.08);border:1px solid rgba(45,212,191,.22);margin-bottom:4px}
+      .pf-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:20px}
+      .pf-tile{padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);min-width:0}
+      /* clark */
+      .pf-clark{position:relative;padding:20px;border-radius:16px;background:rgba(255,255,255,.03);-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 18px 48px rgba(0,0,0,.40),0 0 40px rgba(139,92,246,.10);overflow:hidden;min-width:0}
+      .pf-clark::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(139,92,246,.45),rgba(45,212,191,.38));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none}
+      .pf-clark-text{font-size:14px;color:#94a3b8;line-height:1.6;margin:10px 0 0}
+      .pf-clamp3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+      .pf-link-btn{background:none;border:none;padding:0;color:#2DD4BF;font-size:12px;cursor:pointer;font-family:inherit}
+      /* holdings */
+      .pf-search{position:relative;width:260px;max-width:100%}
+      .pf-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);pointer-events:none}
+      .pf-search input{width:100%;height:40px;box-sizing:border-box;padding:0 12px 0 36px;border-radius:10px;border:1px solid rgba(255,255,255,.10);background:rgba(6,6,10,.72);color:#e2e8f0;font-size:13px;outline:none}
+      .pf-search input:focus{border-color:rgba(45,212,191,.85);box-shadow:0 0 0 3px rgba(45,212,191,.18)}
+      .pf-table-wrap{overflow:auto;max-height:560px;border-radius:12px;border:1px solid rgba(255,255,255,.06)}
+      .pf-table{width:100%;border-collapse:collapse;min-width:520px}
+      .pf-table th{position:sticky;top:0;z-index:1;background:#0b111c;text-align:right;padding:10px 14px;font-family:var(--font-plex-mono,IBM Plex Mono,monospace);font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#64748b;border-bottom:1px solid rgba(255,255,255,.08)}
+      .pf-table th:first-child,.pf-table td:first-child{text-align:left}
+      .pf-table td{height:56px;padding:0 14px;text-align:right;border-bottom:1px solid rgba(255,255,255,.05);font-size:14px;white-space:nowrap}
+      .pf-table tbody tr:hover{background:rgba(255,255,255,.02)}
+      .pf-avatar{width:32px;height:32px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;font-weight:800;color:#e2e8f0;background:linear-gradient(135deg,rgba(45,212,191,.22),rgba(139,92,246,.24));border:1px solid rgba(255,255,255,.10);font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
+      .pf-chain-pill{display:inline-flex;align-items:center;padding:1px 7px;border-radius:999px;border:1px solid;font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;font-family:var(--font-plex-mono,IBM Plex Mono,monospace)}
+      @media (max-width:1023px){
+        .pf-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+        .pf-grid{display:flex;flex-direction:column;align-items:stretch}
+        .pf-left{display:contents}
+        .pf-chart-card{order:1}.pf-side{order:2}.pf-holdings-card{order:3}
+      }
+      @media (max-width:768px){
+        .portfolio-page{padding:64px 16px 96px!important}
+        .pf-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+        .pf-stat{min-height:96px;padding:14px}
+        .pf-stat-value{font-size:20px}
+        .pf-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .pf-chart-head{flex-direction:column;align-items:flex-start!important}
+        .pf-hero-value{font-size:32px}
+        .pf-holdings-head{flex-direction:column;align-items:stretch!important}
+        .pf-search{width:100%}
+        .pf-stat:last-child{grid-column:span 2}
+      }
+      @media (max-width:640px){
+        .pf-topbar-row{flex-direction:column;align-items:stretch}
+        .pf-topbar-row > .pf-btn-primary,.pf-connect-slot,.pf-connect-slot button{width:100%!important}
+      }
+    `}</style>
+
+    <div className='pf-inner'>
+      {/* ── Top bar: address + one compact action ─────────────────────────── */}
+      <section className='pf-card pf-topbar'>
+        <div className='pf-topbar-row'>
+          <div className='pf-address-wrap'>
+            <WalletIcon />
+            <input
+              className='pf-address-input'
+              value={manualAddress}
+              onChange={(e) => setManualAddress(e.target.value)}
+              placeholder={connectedAddress ? `Connected: ${formatShortAddress(connectedAddress)} (or paste a different address)` : '0x… wallet address'}
+              spellCheck={false}
+            />
+          </div>
+          {hasWallet ? (
+            <button className='pf-btn-primary' onClick={handleScan} disabled={!canScan}>
+              {loading && <span className='pf-spinner' />}
+              {loading ? 'Loading' : scannedAddress === address ? 'Rescan' : 'View'}
             </button>
+          ) : isReconnecting && !manualAddress ? (
+            <button className='pf-btn-primary' disabled><span className='pf-spinner' />Connect</button>
+          ) : !isConnected ? (
+            <div className='pf-connect-slot'><ConnectWallet className='active:scale-[0.98]' /></div>
+          ) : (
+            <button className='pf-btn-primary' disabled>View</button>
           )}
         </div>
-      </div>
-    )}
+        <div className='pf-topbar-hint'>
+          <span>{hasWallet ? loadStatus : 'Paste address or connect wallet'}</span>
+          {cooldownLeftMs > 0 && <span>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
+        </div>
+      </section>
 
-    {viewModel.finalUiState === 'provider_failed' && (
-      <div className='glass' style={{ marginBottom: 12, padding: 12, border: '1px solid rgba(251,113,133,.35)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-        <div style={{ color: '#fecdd3', fontSize: 13 }}>{stateMessage.provider_failed}</div>
-        <button onClick={() => { void runPortfolioScan() }} disabled={!canScan} style={{ borderRadius: 8, border: '1px solid rgba(251,113,133,.35)', padding: '6px 10px', background: 'rgba(251,113,133,.12)', color: '#fecdd3', fontWeight: 700 }}>Retry</button>
-      </div>
-    )}
-
-    <div className='pf-main-grid' style={{ display: 'grid', gridTemplateColumns: 'minmax(0,2.1fr) minmax(320px,1fr)', gap: 12 }}>
-      <div style={{ display: 'grid', gap: 12 }}>
-        <section className='glass' style={{ padding: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}><div><div style={{ fontSize: 32, fontWeight: 800 }}>{fmtUSD(totalValue)}</div><div style={{ color: '#94a3b8', fontSize: 12 }}>{rangeCaption}</div><div style={{ color: hasPnl ? ((pnlPct ?? 0) >= 0 ? '#2dd4bf' : '#fb7185') : '#94a3b8' }}>{hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}% (realized)` : 'Not enough verified PnL history yet'}</div></div><div>{(['24H', '7D', '30D', '90D', 'ALL'] as const).map((r) => <button key={r} onClick={() => setRange(r)} style={{ marginLeft: 6, borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', padding: '6px 11px', background: range === r ? 'rgba(34,211,238,.2)' : 'transparent', color: range === r ? '#67e8f9' : '#94a3b8' }}>{r}</button>)}</div></div>
-          {loading ? <div className='sk' style={{ height: 320, borderRadius: 14 }} /> : viewModel.finalUiState !== 'ready' || !chart ? <div style={{ height: 320, borderRadius: 14, display: 'grid', placeItems: 'center', textAlign: 'center', border: '1px dashed rgba(125,211,252,.22)', color: '#94a3b8' }}><div><div style={{ fontWeight: 700, color: '#e2e8f0' }}>{stateMessage[viewModel.finalUiState] || 'Not enough portfolio history yet'}</div>{viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div>Connect or load a wallet with supported assets to build a stronger history.</div>}</div></div> : <div style={{ position: 'relative' }}><svg viewBox={`0 0 ${chart.w} ${chart.h}`} style={{ width: '100%', height: 320, borderRadius: 14, background: 'radial-gradient(circle at 50% 0%, rgba(56,189,248,.08), rgba(6,10,22,.96) 58%)' }} onMouseMove={(e) => { const rect=(e.currentTarget as SVGElement).getBoundingClientRect(); const ratio=(e.clientX-rect.left)/rect.width; setHoverIdx(Math.max(0,Math.min(series.length-1,Math.round(ratio*(series.length-1))))); }} onMouseLeave={() => setHoverIdx(null)}>
-            <defs><linearGradient id='pl' x1='0' x2='1'><stop offset='0%' stopColor='#22d3ee'/><stop offset='40%' stopColor='#60a5fa'/><stop offset='72%' stopColor='#a78bfa'/><stop offset='100%' stopColor='#ec4899'/></linearGradient></defs>
-            {[0,1,2,3].map((i)=><line key={i} x1={chart.px} y1={chart.py+((chart.h-chart.py*2)/3)*i} x2={chart.w-chart.px} y2={chart.py+((chart.h-chart.py*2)/3)*i} stroke='rgba(148,163,184,.15)' strokeDasharray='4 5'/>)}
-            <polyline fill='url(#pl)' opacity='0.16' points={chart.area} /><polyline fill='none' stroke='url(#pl)' strokeWidth='4' points={chart.points} strokeLinecap='round' strokeLinejoin='round' />
-            {hoverIdx !== null && series[hoverIdx] && <><line x1={chart.x(hoverIdx)} y1={chart.py} x2={chart.x(hoverIdx)} y2={chart.h-chart.py} stroke='rgba(103,232,249,.35)' /><circle cx={chart.x(hoverIdx)} cy={chart.y(series[hoverIdx].value)} r='6' fill='#67e8f9' /></>}
-            {chart.ticks.map((t)=><text key={t.i} x={t.x} y={chart.h-4} fill='rgba(148,163,184,.8)' fontSize='18' textAnchor='middle'>{t.label}</text>)}
-          </svg>
-          {hoverIdx !== null && series[hoverIdx] && <div style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(7,12,22,.88)', border: '1px solid rgba(125,211,252,.28)', borderRadius: 10, padding: '6px 10px', fontSize: 12 }}><div>{new Date(series[hoverIdx].ts).toLocaleString()}</div><div style={{ color: '#67e8f9', fontWeight: 700 }}>{fmtUSD(series[hoverIdx].value)}</div></div>}</div>}
-          <div className='pf-row4' style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: 8, marginTop: 10 }}>{[['Highest Holding', topHolding ? `${topHolding.symbol} • ${fmtUSD(topHolding.value ?? 0)}` : '—'], ['Best Performer', bestPerformer && typeof bestPerformer.change24h === 'number' ? `${bestPerformer.symbol} • +${bestPerformer.change24h.toFixed(2)}%` : '—'], ['Realized PnL', hasPnl ? `${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}%` : 'Unverified'], ['Concentration', viewModel.finalUiState === 'ready' ? `${Math.round(viewModel.concentrationPercent)}%` : 'Unverified']].map(([k,v]) => <div key={String(k)} className='glass' style={{ padding: 10, borderRadius: 12 }}><div style={{ fontSize: 10, color: '#94a3b8' }}>{k}</div><div style={{ fontWeight: 700, marginTop: 4 }}>{v}</div></div>)}</div>
-        </section>
-
-        <section className='glass' style={{ padding: 14 }}>
-          <div className='pf-search-row' style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}><h3 style={{ margin: 0 }}>Your Holdings</h3><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search tokens...' style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,.24)', background: 'rgba(10,14,26,.75)', color: '#e2e8f0', padding: '8px 10px' }} /></div>
-          {loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : viewModel.finalUiState !== 'ready' ? <div style={{ border: '1px dashed rgba(125,211,252,.24)', borderRadius: 12, padding: 28, textAlign: 'center' }}><div style={{ fontWeight: 700 }}>{stateMessage[viewModel.finalUiState] || 'No supported assets found.'}</div>{hasWallet && <button onClick={handleScan} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(34,211,238,.3)', background: 'transparent', color: '#67e8f9', padding: '8px 18px', cursor: 'pointer' }}>Rescan</button>}</div> : <div className='pf-holdings-wrap' style={{ overflowX: 'auto' }}><table style={{ width: '100%', borderCollapse: 'collapse' }}><thead><tr style={{ color: '#94a3b8', fontSize: 12 }}><th align='left'>Asset</th><th align='left'>Chain</th><th align='right'>Balance</th><th align='right'>Price</th><th align='right'>Value</th><th align='right'>24H %</th><th align='center'>Trend</th><th align='right'>Allocation</th></tr></thead><tbody>{filtered.map((h: PortfolioHolding) => {const up=(h.change24h??0)>=0; const alloc=totalValue>0?((h.value??0)/totalValue)*100:0; return <tr key={`${h.chain}-${h.contract ?? h.symbol}`} style={{ borderTop: '1px solid rgba(148,163,184,.12)' }}><td style={{ padding: '11px 0' }}><div style={{ fontWeight: 700 }}>{h.symbol}</div><div style={{ color: '#94a3b8', fontSize: 12 }}>{h.name ?? h.symbol}</div></td><td style={{ color: '#94a3b8', fontSize: 12, textTransform: 'capitalize' }}>{h.chain}</td><td align='right'>{fmtBalance(h.balance)}</td><td align='right'>{fmtPrice(h.price)}</td><td align='right'>{fmtUSD(h.value ?? 0)}</td><td align='right' style={{ color: typeof h.change24h === 'number' ? (up ? '#2dd4bf' : '#fb7185') : '#94a3b8' }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td><td align='center'><svg width='76' height='24' viewBox='0 0 100 40'><polyline fill='none' stroke={up ? '#2dd4bf' : '#f43f5e'} strokeWidth='3' points={spark(h.symbol, up)} /></svg></td><td align='right'><div>{alloc.toFixed(1)}%</div><div style={{ height: 6, borderRadius: 999, background: 'rgba(100,116,139,.25)', marginTop: 4 }}><div style={{ height: '100%', width: `${alloc}%`, borderRadius: 999, background: 'linear-gradient(90deg,#22d3ee,#a855f7)' }} /></div></td></tr>})}</tbody></table></div>}
-        </section>
+      {/* ── Stat cards ────────────────────────────────────────────────────── */}
+      <div className='pf-stats'>
+        {stats.map((s) => (
+          <div key={s.label} className='pf-card pf-stat'>
+            {loading ? <div className='sk' style={{ height: 64, borderRadius: 10 }} /> : <>
+              <div className='pf-label'>{s.label}</div>
+              {s.value == null
+                ? <><div className='pf-stat-value' style={{ color: '#334155' }}>—</div><div className='sk' style={{ height: 4, width: '60%', borderRadius: 2, marginTop: 10 }} /></>
+                : <div className='pf-stat-value' style={{ color: s.color ?? '#f8fafc' }} title={s.value}>{s.value}</div>}
+              {s.sub ? <div className='pf-stat-sub'>{s.sub}</div> : null}
+            </>}
+          </div>
+        ))}
       </div>
 
-      <aside className='pf-side' style={{ display: 'grid', gap: 12, alignContent: 'start' }}>
-        <section className='glass' style={{ padding: 16, position: 'relative', overflow: 'hidden' }}><div style={{position:'absolute',right:-30,top:-30,width:150,height:150,borderRadius:'50%',background:'radial-gradient(circle,rgba(103,232,249,.22),rgba(168,85,247,.14),transparent 68%)'}} /><h3 style={{ marginTop: 0, marginBottom: 10, position:'relative' }}>Clark AI Insights</h3>{loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} /> : <><div style={{ fontSize: 12, color: '#94a3b8' }}>Portfolio Verdict</div><div style={{ fontSize: 32, fontWeight: 900, color: viewModel.verdict === 'BULLISH' ? '#2dd4bf' : viewModel.verdict === 'NEUTRAL' ? '#67e8f9' : viewModel.verdict === 'CAUTIOUS' ? '#f59e0b' : '#94a3b8' }}>{viewModel.verdict.replace('_', ' ')}</div><p style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.6, marginTop: 6, marginBottom: 10 }}>{clarkAnalysis ?? viewModel.summary}</p>{viewModel.finalUiState === 'ready' && (<><div style={{height:1,background:'rgba(148,163,184,.18)',margin:'8px 0 10px'}} />{viewModel.riskNotes.length > 0 && <div style={{ marginBottom: 10 }}><div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Risk Notes</div>{viewModel.riskNotes.map((n, i) => <div key={i} style={{ fontSize: 12, color: '#fecdd3', marginTop: 4 }}>• {n}</div>)}</div>}<div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 4 }}>Chain Exposure</div><div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>{viewModel.chainExposure.filter((c) => c.valueUsd > 0).map((c) => <span key={c.chain} style={{ fontSize: 11, padding: '3px 8px', borderRadius: 999, background: 'rgba(103,232,249,.1)', border: '1px solid rgba(103,232,249,.2)', textTransform: 'capitalize' }}>{c.chain} {c.percent.toFixed(0)}%</span>)}</div><div className='glass' style={{ padding: 10, borderRadius: 12 }}><div style={{ color: '#67e8f9', fontSize: 11 }}>Top Opportunity</div><div>{viewModel.topOpportunity ?? 'No clear opportunity yet.'}</div></div></>)}{viewModel.finalUiState !== 'ready' && viewModel.missingDataReasons.length > 0 && <div style={{ fontSize: 12, color: '#94a3b8' }}>Missing: {viewModel.missingDataReasons.join(' ')}</div>}</>}</section>
-        <section className='glass' style={{ padding: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><h3 style={{ marginTop: 0 }}>Recent Activity</h3></div>{loading ? <div className='sk' style={{ height: 170, borderRadius: 12 }} /> : <div style={{ border: '1px dashed rgba(125,211,252,.2)', borderRadius: 12, padding: 18, color: '#94a3b8', textAlign: 'center' }}>Recent wallet activity will appear here once transactions are detected.</div>}</section>
-      </aside>
+      {viewModel.finalUiState === 'provider_failed' && (
+        <div className='pf-card' style={{ padding: 14, borderColor: 'rgba(244,63,94,.35)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ color: '#fecdd3', fontSize: 13 }}>{stateMessage.provider_failed}</div>
+          <button onClick={() => { void runPortfolioScan() }} disabled={!canScan} style={{ borderRadius: 10, border: '1px solid rgba(244,63,94,.35)', padding: '7px 12px', background: 'rgba(244,63,94,.10)', color: '#fecdd3', fontWeight: 700, cursor: canScan ? 'pointer' : 'not-allowed', flexShrink: 0 }}>Retry</button>
+        </div>
+      )}
+
+      <div className='pf-grid'>
+        <div className='pf-left'>
+          {/* ── Main chart card ─────────────────────────────────────────── */}
+          <section className='pf-card pf-chart-card'>
+            {hasWallet && (
+              <div className='pf-chart-head' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 16 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div className='pf-label' style={{ marginBottom: 6 }}>Portfolio value</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span className='pf-hero-value'>{fmtUSD(totalValue)}</span>
+                    {hasPnl
+                      ? <span className='pf-pill' style={{ color: signColor(pnlPct ?? 0), background: `${signColor(pnlPct ?? 0)}1a`, border: `1px solid ${signColor(pnlPct ?? 0)}40` }}>{`${(pnlPct ?? 0) >= 0 ? '+' : ''}${(pnlPct ?? 0).toFixed(2)}% realized`}</span>
+                      : <span className='pf-pill' style={{ color: '#94a3b8', background: 'rgba(148,163,184,.08)', border: '1px solid rgba(148,163,184,.18)', fontSize: 11 }}>Not enough verified PnL history yet</span>}
+                  </div>
+                  {rangeCaption && <div style={{ color: '#64748b', fontSize: 12, marginTop: 6 }}>{rangeCaption}</div>}
+                </div>
+                <div className='pf-range' role='group' aria-label='Chart range'>
+                  {(['24H', '7D', '30D', '90D', 'ALL'] as const).map((r) => <button key={r} type='button' className={range === r ? 'on' : ''} onClick={() => setRange(r)}>{r}</button>)}
+                </div>
+              </div>
+            )}
+
+            {loading ? <div className='sk' style={{ height: 320, borderRadius: 14 }} />
+              : !hasWallet ? (
+                <div className='pf-empty'>
+                  <span className='pf-empty-icon'><WalletIcon size={24} color='#2DD4BF' /></span>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: '#f8fafc' }}>Connect a wallet to view your portfolio</div>
+                  <div style={{ fontSize: 14, color: '#94a3b8', maxWidth: 420 }}>Holdings, value and PnL across Base, Ethereum and Robinhood Chain — paste any address or connect your own.</div>
+                  <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={openConnect}>Connect Wallet</button>
+                </div>
+              ) : showScanPrompt ? (
+                <div className='pf-empty'>
+                  <span className='pf-empty-icon'><WalletIcon size={24} color='#2DD4BF' /></span>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: '#f8fafc' }}>Wallet ready — load your portfolio.</div>
+                  <div style={{ fontSize: 14, color: '#94a3b8', maxWidth: 440 }}>Click below to load holdings across Base, Ethereum, and Robinhood Chain. Data is only fetched when you request it.</div>
+                  <button className='pf-btn-primary' style={{ marginTop: 8, height: 44 }} onClick={handleScan} disabled={!canScan}>Load Portfolio</button>
+                </div>
+              ) : !ready || !chart ? (
+                <div className='pf-empty'>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: '#e2e8f0' }}>{stateMessage[viewModel.finalUiState] || 'Not enough portfolio history yet'}</div>
+                  {viewModel.finalUiState !== 'no_wallet' && viewModel.finalUiState !== 'loading' && <div style={{ fontSize: 13, color: '#94a3b8' }}>Connect or load a wallet with supported assets to build a stronger history.</div>}
+                </div>
+              ) : (
+                <div style={{ position: 'relative' }}>
+                  <svg viewBox={`0 0 ${chart.w} ${chart.h}`} style={{ width: '100%', height: 300, display: 'block' }} onMouseMove={(e) => { const rect=(e.currentTarget as SVGElement).getBoundingClientRect(); const ratio=(e.clientX-rect.left)/rect.width; setHoverIdx(Math.max(0,Math.min(series.length-1,Math.round(ratio*(series.length-1))))); }} onMouseLeave={() => setHoverIdx(null)}>
+                    <defs>
+                      <linearGradient id='pl' x1='0' x2='1'><stop offset='0%' stopColor='#2DD4BF'/><stop offset='100%' stopColor='#8b5cf6'/></linearGradient>
+                      <linearGradient id='pla' x1='0' x2='0' y1='0' y2='1'><stop offset='0%' stopColor='#2DD4BF' stopOpacity='0.22'/><stop offset='100%' stopColor='#8b5cf6' stopOpacity='0'/></linearGradient>
+                    </defs>
+                    {[0,1,2,3].map((i)=><line key={i} x1={chart.px} y1={chart.py+((chart.h-chart.py*2)/3)*i} x2={chart.w-chart.px} y2={chart.py+((chart.h-chart.py*2)/3)*i} stroke='rgba(148,163,184,.10)' />)}
+                    <polyline fill='url(#pla)' points={chart.area} /><polyline fill='none' stroke='url(#pl)' strokeWidth='3' points={chart.points} strokeLinecap='round' strokeLinejoin='round' />
+                    {hoverIdx !== null && series[hoverIdx] && <><line x1={chart.x(hoverIdx)} y1={chart.py} x2={chart.x(hoverIdx)} y2={chart.h-chart.py} stroke='rgba(45,212,191,.35)' /><circle cx={chart.x(hoverIdx)} cy={chart.y(series[hoverIdx].value)} r='6' fill='#2DD4BF' /></>}
+                    {chart.ticks.map((t)=><text key={t.i} x={t.x} y={chart.h-4} fill='rgba(148,163,184,.75)' fontSize='16' textAnchor='middle'>{t.label}</text>)}
+                  </svg>
+                  {hoverIdx !== null && series[hoverIdx] && <div style={{ position: 'absolute', right: 10, top: 10, background: 'rgba(8,12,20,.92)', border: '1px solid rgba(45,212,191,.28)', borderRadius: 10, padding: '6px 10px', fontSize: 12 }}><div>{new Date(series[hoverIdx].ts).toLocaleString()}</div><div style={{ color: '#2DD4BF', fontWeight: 700 }}>{fmtUSD(series[hoverIdx].value)}</div></div>}
+                </div>
+              )}
+
+            {hasWallet && (
+              <div className='pf-tiles'>
+                {tiles.map(([k, v]) => (
+                  <div key={k} className='pf-tile'>
+                    <div className='pf-label' style={{ fontSize: 10 }}>{k}</div>
+                    <div style={{ marginTop: 6, fontSize: 14, fontWeight: 600, color: '#e2e8f0' }} className='pf-ellipsis'>{v === 'Unverified' ? unverifiedPill() : v}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* ── Holdings ────────────────────────────────────────────────── */}
+          <section className='pf-card pf-holdings-card'>
+            <div className='pf-holdings-head' style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>Your Holdings</h3>
+                {ready && <span className='pf-label' style={{ fontSize: 10 }}>{sortedHoldings.length} tokens</span>}
+              </div>
+              <div className='pf-search'>
+                <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none'><circle cx='11' cy='11' r='7' stroke='#64748b' strokeWidth='2' /><path d='M20 20l-3.2-3.2' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+                <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search tokens...' />
+              </div>
+            </div>
+            {loading ? <div className='sk' style={{ height: 220, borderRadius: 12 }} />
+              : !ready ? (
+                <div style={{ padding: '20px 0', textAlign: 'center' }}>
+                  <div style={{ fontSize: 14, color: '#94a3b8' }}>{stateMessage[viewModel.finalUiState] || 'No supported assets found.'}</div>
+                  {hasWallet && <button onClick={handleScan} style={{ marginTop: 10, borderRadius: 10, border: '1px solid rgba(45,212,191,.32)', background: 'rgba(45,212,191,.10)', color: '#2DD4BF', padding: '7px 16px', cursor: 'pointer', fontWeight: 600 }}>Rescan</button>}
+                </div>
+              ) : sortedHoldings.length === 0 ? (
+                <div style={{ padding: '20px 0', textAlign: 'center', fontSize: 14, color: '#94a3b8' }}>No tokens match “{search}”.</div>
+              ) : (
+                <>
+                  <div className='pf-table-wrap'>
+                    <table className='pf-table'>
+                      <thead><tr><th>Token</th><th>Balance</th><th>Value</th><th>24H</th></tr></thead>
+                      <tbody>
+                        {visibleHoldings.map((h: PortfolioHolding) => {
+                          const up = (h.change24h ?? 0) >= 0
+                          const alloc = totalValue > 0 ? ((h.value ?? 0) / totalValue) * 100 : 0
+                          return (
+                            <tr key={`${h.chain}-${h.contract ?? h.symbol}`}>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <span className='pf-avatar'>{h.symbol.slice(0, 2).toUpperCase()}</span>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ fontWeight: 700, color: '#f1f5f9' }}>{h.symbol}</span>{chainPill(h.chain)}</div>
+                                    <div style={{ fontSize: 12, color: '#64748b', maxWidth: 200 }} className='pf-ellipsis'>{h.name ?? h.symbol}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td><div>{fmtBalance(h.balance)}</div><div style={{ fontSize: 12, color: '#64748b' }}>{fmtPrice(h.price)}</div></td>
+                              <td><div style={{ fontWeight: 600 }}>{fmtUSD(h.value ?? 0)}</div><div style={{ fontSize: 12, color: '#64748b' }}>{alloc.toFixed(1)}% of portfolio</div></td>
+                              <td style={{ color: typeof h.change24h === 'number' ? signColor(h.change24h) : '#64748b', fontWeight: 600 }}>{typeof h.change24h === 'number' ? `${up ? '+' : ''}${h.change24h.toFixed(2)}%` : '—'}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {sortedHoldings.length > HOLDINGS_PREVIEW_ROWS && (
+                    <div style={{ marginTop: 12, textAlign: 'center' }}>
+                      <button type='button' className='pf-link-btn' onClick={() => setShowAllHoldings((v) => !v)}>
+                        {showAllHoldings ? 'Show less' : `View all (${sortedHoldings.length})`}
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+          </section>
+        </div>
+
+        <aside className='pf-side'>
+          {/* ── Clark AI Insights ─────────────────────────────────────────── */}
+          <section className='pf-clark'>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16 }}>
+              <span className='pf-label' style={{ color: '#c4b5fd' }}>Clark AI Insights</span>
+              {ready && (
+                <button type='button' className='pf-btn-ghost' onClick={() => { void runClark() }} disabled={clarkLoading || loading}>
+                  {clarkLoading && <span className='pf-spinner' />}{clarkLoading ? 'Analyzing…' : 'Ask Clark'}
+                </button>
+              )}
+            </div>
+            {loading ? <div className='sk' style={{ height: 200, borderRadius: 12 }} /> : <>
+              <svg aria-hidden='true' width='44' height='44' viewBox='0 0 44 44' fill='none'>
+                <circle cx='22' cy='22' r='17' stroke='rgba(148,163,184,0.16)' strokeWidth='4' />
+                <path d='M22 5a17 17 0 0116.2 11.8' stroke={viewModel.verdict === 'NEEDS_DATA' ? 'rgba(148,163,184,0.35)' : verdictColor} strokeWidth='4' strokeLinecap='round' />
+              </svg>
+              <div className='pf-label' style={{ marginTop: 12, fontSize: 10 }}>Portfolio verdict</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: verdictColor, lineHeight: 1.2, marginTop: 4 }}>{viewModel.verdict.replace('_', ' ')}</div>
+              <p className={`pf-clark-text${clarkExpanded ? '' : ' pf-clamp3'}`}>{clarkText}</p>
+              {clarkText && clarkText.length > 160 && (
+                <button type='button' className='pf-link-btn' style={{ marginTop: 4 }} onClick={() => setClarkExpanded((v) => !v)}>{clarkExpanded ? 'Show less' : 'Read more'}</button>
+              )}
+              {ready && (<>
+                <div style={{ height: 1, background: 'rgba(255,255,255,.08)', margin: '16px 0' }} />
+                {viewModel.riskNotes.length > 0 && <div style={{ marginBottom: 14 }}><div className='pf-label' style={{ fontSize: 10, marginBottom: 6 }}>Risk notes</div>{viewModel.riskNotes.map((n, i) => <div key={i} style={{ fontSize: 13, color: '#fecdd3', marginTop: 4 }}>• {n}</div>)}</div>}
+                <div className='pf-label' style={{ fontSize: 10, marginBottom: 6 }}>Chain exposure</div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>{viewModel.chainExposure.filter((c) => c.valueUsd > 0).map((c) => <span key={c.chain} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)', color: '#cbd5e1', textTransform: 'capitalize' }}>{c.chain} {c.percent.toFixed(0)}%</span>)}</div>
+                <div style={{ padding: 12, borderRadius: 12, background: 'rgba(255,255,255,.02)', border: '1px solid rgba(255,255,255,.08)' }}><div className='pf-label' style={{ fontSize: 10, color: '#2DD4BF' }}>Top opportunity</div><div style={{ fontSize: 13, color: '#e2e8f0', marginTop: 4 }}>{viewModel.topOpportunity ?? 'No clear opportunity yet.'}</div></div>
+              </>)}
+              {!ready && viewModel.missingDataReasons.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginTop: 14, fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
+                  <svg aria-hidden='true' width='14' height='14' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0, marginTop: 2 }}><circle cx='12' cy='12' r='9' stroke='#64748b' strokeWidth='2' /><path d='M12 11v5M12 8h.01' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+                  <span>Missing: {viewModel.missingDataReasons.join(' ')}</span>
+                </div>
+              )}
+              {!hasWallet && <button type='button' className='pf-btn-primary' style={{ width: '100%', height: 44, marginTop: 16 }} onClick={openConnect}>Connect to Unlock</button>}
+            </>}
+          </section>
+
+          {/* ── Recent activity ─────────────────────────────────────────────── */}
+          <section className='pf-card'>
+            <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700, color: '#f1f5f9' }}>Recent Activity</h3>
+            {loading ? <div className='sk' style={{ height: 120, borderRadius: 12 }} /> : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#64748b' }}>
+                <svg aria-hidden='true' width='16' height='16' viewBox='0 0 24 24' fill='none' style={{ flexShrink: 0 }}><circle cx='12' cy='12' r='9' stroke='#64748b' strokeWidth='2' /><path d='M12 7v5l3 2' stroke='#64748b' strokeWidth='2' strokeLinecap='round' /></svg>
+                <span>Recent wallet activity will appear here once transactions are detected.</span>
+              </div>
+            )}
+          </section>
+        </aside>
+      </div>
     </div>
-
-    {showScanPrompt && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>Wallet ready — load your portfolio.</div><div style={{ color: '#94a3b8', marginTop: 6 }}>Click below to load holdings across Base, Ethereum, and Robinhood Chain. Data is only fetched when you request it.</div><div style={{ marginTop: 10, display: 'flex', justifyContent: 'center' }}><button onClick={handleScan} style={{ borderRadius: 12, border: '1px solid rgba(34,211,238,.4)', background: 'linear-gradient(135deg,rgba(34,211,238,.18),rgba(168,85,247,.18))', color: '#67e8f9', fontWeight: 700, fontSize: 15, padding: '12px 28px', cursor: 'pointer' }}>Load Portfolio</button></div></div>}
-    {!hasWallet && <div className='glass' style={{ marginTop: 12, padding: 18, textAlign: 'center' }}><div style={{ fontWeight: 700, fontSize: 18 }}>{stateMessage.no_wallet}</div><div style={{ color: '#94a3b8', marginTop: 6 }}>Connect a wallet or paste an address above to load portfolio data.</div><div style={{ marginTop: 10, display: 'flex', justifyContent: 'center' }}><ConnectWallet className='active:scale-[0.98]' /></div></div>}
   </div>
 }
