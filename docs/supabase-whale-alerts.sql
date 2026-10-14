@@ -89,6 +89,18 @@ create index if not exists idx_whale_alerts_severity on public.whale_alerts (sev
 alter table public.whale_alerts add column if not exists owner_user_id uuid references auth.users(id) on delete cascade;
 drop index if exists public.uq_whale_alerts_tx_wallet_token_type;
 alter table public.whale_alerts drop constraint if exists uq_whale_alerts_tx_wallet_token_type_owner;
+-- Pre-existing rows can repeat the dedupe key (nothing enforced it before), which makes the
+-- constraint below fail with 23505. Keep the earliest row of each key (PARTITION BY treats NULLs as
+-- equal, matching NULLS NOT DISTINCT) and delete the rest.
+delete from public.whale_alerts w
+using (
+  select id, row_number() over (
+    partition by tx_hash, wallet_address, token_address, alert_type, owner_user_id
+    order by created_at asc, id asc
+  ) as rn
+  from public.whale_alerts
+) d
+where w.id = d.id and d.rn > 1;
 alter table public.whale_alerts add constraint uq_whale_alerts_tx_wallet_token_type_owner
   unique nulls not distinct (tx_hash, wallet_address, token_address, alert_type, owner_user_id);
 create index if not exists idx_whale_alerts_owner_user_id on public.whale_alerts (owner_user_id, occurred_at desc);
