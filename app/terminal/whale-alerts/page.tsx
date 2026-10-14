@@ -77,6 +77,28 @@ type SyncResponse = {
   offset?: number
   skipReasons?: Record<string, number>
   message?: string
+  fetchedTxCount?: number
+  alertCandidateCount?: number
+  dbInsertFailed?: number
+  dbInsertErrorSamples?: Array<{ code?: string | null; message?: string | null }>
+  providerErrorSamples?: Array<{ statusCode?: number | null; reason?: string }>
+}
+
+// One-line reason for a sync that saved nothing, from the sync route's always-on counters.
+function syncZeroReason(s: SyncResponse | null | undefined): string | null {
+  if (!s || s.ok === false || Number(s.inserted ?? 0) > 0) return null
+  if (Number(s.dbInsertFailed ?? 0) > 0) {
+    return `db write failed: ${s.dbInsertErrorSamples?.[0]?.code ?? 'unknown'}`
+  }
+  const parts: string[] = []
+  if (typeof s.fetchedTxCount === 'number') {
+    parts.push(`fetched ${s.fetchedTxCount} txs, ${Number(s.alertCandidateCount ?? 0)} token transfers`)
+  }
+  if (Number(s.providerErrors ?? 0) > 0) {
+    const codes = [...new Set((s.providerErrorSamples ?? []).map(e => e.statusCode ?? e.reason ?? 'error'))].slice(0, 3).join(', ')
+    parts.push(`${s.providerErrors} provider error${s.providerErrors === 1 ? '' : 's'}${codes ? ` (${codes})` : ''}`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 type EnrichmentBudget = { liveEnrichmentEnabled?: boolean; trigger?: string; rpcCallsAttempted?: number; cacheHits?: number; skippedForDefaultLoad?: number }
 type FeedDiagnostics = { rawRows?: number; afterDiversityCap?: number; hiddenAsBoring?: number; hiddenByFilter?: number; hiddenAsDust?: number; enrichmentBudget?: EnrichmentBudget }
@@ -1382,6 +1404,11 @@ export default function WhaleAlertsPage() {
                 <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
                   {body}
                 </p>
+                {!filterBlocked && syncZeroReason(syncState) && (
+                  <p style={{ marginTop: 4, maxWidth: 420, fontSize: 11, lineHeight: 1.5, color: '#4a5568' }}>
+                    {syncZeroReason(syncState)}
+                  </p>
+                )}
 
                 {/* ACTIONS, DISCLOSED (final polish): all three routes out of an empty feed are
                     always offered — sync (produce data), broaden (stop hiding data), Ask Clark

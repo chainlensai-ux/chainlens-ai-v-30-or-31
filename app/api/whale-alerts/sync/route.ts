@@ -29,6 +29,9 @@ type CovalentTx = {
   tx_hash?: string
   block_signed_at?: string
   successful?: boolean
+  from_address?: string | null
+  to_address?: string | null
+  value?: string | null
   log_events?: CovalentLogEvent[]
 }
 
@@ -56,6 +59,15 @@ const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
 const DEV_SYNC_COOLDOWN_MS = 10 * 1000
 const WALLET_TX_SYNC_CACHE_TTL_MS = 60 * 1000
+// PAGINATION: up to MAX_PROVIDER_PAGES pages per wallet (newest first, following links.prev to
+// older pages), stopping once the oldest tx is outside the window. A further page is only started
+// while the wallet is inside WALLET_PAGE_BUDGET_MS, so one wallet costs at most budget + one page
+// (2 hosts x PER_WALLET_TIMEOUT_MS), keeping a batch well under the 60s maxDuration.
+const MAX_PROVIDER_PAGES = 3
+const WALLET_PAGE_BUDGET_MS = 8_000
+// Native ETH movements (tx.value) use the conventional native sentinel; WETH on Base is 0x4200..06.
+const NATIVE_ETH_SENTINEL = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+const BASE_WETH_ADDRESS = '0x4200000000000000000000000000000000000006'
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
@@ -220,6 +232,7 @@ function makeFinalPipelineSummary(): FinalPipelineSummary {
 type ProviderPayload = {
   data?: {
     items?: CovalentTx[]
+    links?: { prev?: string | null; next?: string | null } | null
   }
 }
 
@@ -261,8 +274,8 @@ function checkpointKey(address: string) {
   return `${PROVIDER_CHAIN}:${address.toLowerCase()}`
 }
 
-function walletTransactionCacheKey(address: string) {
-  return `${PROVIDER_CHAIN}:${address.toLowerCase()}:page-size=${PROVIDER_PAGE_SIZE}`
+function walletTransactionCacheKey(address: string, windowMs: number) {
+  return `${PROVIDER_CHAIN}:${address.toLowerCase()}:page-size=${PROVIDER_PAGE_SIZE}:window=${windowMs}`
 }
 
 class ProviderRequestError extends Error {
@@ -290,8 +303,9 @@ async function fetchWalletTransactions(
   address: string,
   apiKey: string,
   syncDebug: SyncProviderDebug,
+  windowMs: number,
 ): Promise<WalletFetchOutcome> {
-  const cacheKey = walletTransactionCacheKey(address)
+  const cacheKey = walletTransactionCacheKey(address, windowMs)
   const now = Date.now()
   const cached = walletTransactionCache.get(cacheKey)
 
@@ -311,7 +325,7 @@ async function fetchWalletTransactions(
   }
 
   syncDebug.providerCallsAttempted += 1
-  const fetchPromise = fetchWalletTransactionsFromProvider(address, apiKey)
+  const fetchPromise = fetchWalletTransactionsFromProvider(address, apiKey, Date.now() - windowMs)
     .then((payload): WalletFetchOutcome => {
       walletTransactionCache.set(cacheKey, {
         payload,
@@ -335,7 +349,15 @@ async function fetchWalletTransactions(
   return fetchPromise
 }
 
-function buildProviderUrl(host: string, address: string): string {
+function buildProviderUrl(host: string, address: string, pageUrl?: string | null): string {
+  if (pageUrl) {
+    // Older page (links.prev). Same path on both hosts; only the hostname differs.
+    const paged = new URL(pageUrl, `https://${host}`)
+    paged.protocol = 'https:'
+    paged.host = host
+    paged.searchParams.set('with-logs', 'true')
+    return paged.toString()
+  }
   const base = host === 'api.covalenthq.com' ? COVALENT_BASE : `https://${host}/v1/base-mainnet`
   const url = new URL(`${base}/address/${address}/transactions_v3/`)
   url.searchParams.set('page-number', '0')
@@ -351,7 +373,35 @@ function buildProviderUrl(host: string, address: string): string {
   return url.toString()
 }
 
-async function fetchWalletTransactionsFromProvider(address: string, apiKey: string): Promise<ProviderPayload> {
+async function fetchWalletTransactionsFromProvider(address: string, apiKey: string, sinceMs: number): Promise<ProviderPayload> {
+  const walletStartedAt = Date.now()
+  const first = await fetchProviderPage(address, apiKey, null)
+  const items: CovalentTx[] = [...(first.data?.items ?? [])]
+  let prevLink = first.data?.links?.prev ?? null
+  for (let page = 1; page < MAX_PROVIDER_PAGES; page += 1) {
+    if (!prevLink || items.length === 0) break
+    if (Date.now() - walletStartedAt >= WALLET_PAGE_BUDGET_MS) break
+    let oldest = Number.POSITIVE_INFINITY
+    for (const tx of items) {
+      const t = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
+      if (Number.isFinite(t) && t < oldest) oldest = t
+    }
+    if (oldest < sinceMs) break
+    try {
+      const next = await fetchProviderPage(address, apiKey, prevLink)
+      const nextItems = next.data?.items ?? []
+      if (nextItems.length === 0) break
+      items.push(...nextItems)
+      prevLink = next.data?.links?.prev ?? null
+    } catch {
+      // A failed older page never fails the wallet; keep what the newer pages returned.
+      break
+    }
+  }
+  return { data: { items } }
+}
+
+async function fetchProviderPage(address: string, apiKey: string, pageUrl: string | null): Promise<ProviderPayload> {
   let lastError: ProviderRequestError = new ProviderRequestError(null, 'network_error', [])
 
   // HOST FALLBACK FIX, DISCLOSED (whale-alerts "no alerts loading" diagnosis): see COVALENT_HOSTS's
@@ -359,7 +409,7 @@ async function fetchWalletTransactionsFromProvider(address: string, apiKey: stri
   // a successful response short-circuits immediately, so this never doubles latency/cost for the
   // common case where the first host works.
   for (const host of COVALENT_HOSTS) {
-    const url = buildProviderUrl(host, address)
+    const url = buildProviderUrl(host, address, pageUrl)
     let response: Response
     try {
       logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
@@ -482,6 +532,28 @@ function extractAlerts(wallet: TrackedWallet, txs: CovalentTx[], windowMs: numbe
       }
     }
 
+    // NATIVE ETH: tx.value moved by/to the tracked wallet. Skipped when a WETH Transfer for the same
+    // side is already in this tx's logs, so a wrap/unwrap or WETH-routed swap is not double-counted.
+    const nativeWei = Number(tx.value ?? 0)
+    if (Number.isFinite(nativeWei) && nativeWei > 0) {
+      const fromLower = (tx.from_address ?? '').toLowerCase()
+      const toLower = (tx.to_address ?? '').toLowerCase()
+      const nativeSide: 'buy' | 'sell' | null = fromLower === walletLower ? 'sell' : toLower === walletLower ? 'buy' : null
+      const amountEth = nativeWei / 1e18
+      const hasWethSameSide = nativeSide !== null && (
+        movements.has(`${BASE_WETH_ADDRESS}::${nativeSide}`) ||
+        [...movements.values()].some(m => m.side === nativeSide && (m.tokenSymbol ?? '').toUpperCase() === 'WETH')
+      )
+      if (nativeSide && !hasWethSameSide && Number.isFinite(amountEth) && amountEth > 0) {
+        movements.set(`${NATIVE_ETH_SENTINEL}::${nativeSide}`, {
+          tokenAddress: NATIVE_ETH_SENTINEL,
+          tokenSymbol: 'ETH',
+          amountToken: amountEth,
+          side: nativeSide,
+        })
+      }
+    }
+
     if (movements.size === 0) {
       skipSummary.noTokenMovements += 1
       continue
@@ -525,7 +597,9 @@ export async function POST(request: Request) {
 // Vercel Cron entry point (see vercel.json). Vercel sends `Authorization: Bearer ${CRON_SECRET}`.
 // Scans only the shared system wallet set (tracked_wallets.user_id IS NULL) on Base and writes
 // system-owned alerts (owner_user_id NULL). Loops batches until done or the time budget runs out.
-const CRON_TIME_BUDGET_MS = 50_000
+// Only START another batch inside this budget: one batch is bounded (~20s safety + one wallet's
+// page budget + a page), so the whole invocation stays under the 60s maxDuration.
+const CRON_TIME_BUDGET_MS = 10_000
 export async function GET(request: Request) {
   const cronSecret = process.env.CRON_SECRET
   if (!cronSecret || request.headers.get('authorization') !== `Bearer ${cronSecret}`) {
@@ -541,6 +615,7 @@ export async function GET(request: Request) {
   while (Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
     const url = new URL(baseUrl.toString())
     url.searchParams.set('mode', 'full')
+    url.searchParams.set('window', '7d')
     url.searchParams.set('minUsd', url.searchParams.get('minUsd') ?? '0')
     url.searchParams.set('offset', String(offset))
     const res = await runWhaleSync(new Request(url.toString(), { method: 'GET', headers: request.headers }), { kind: 'system' })
@@ -718,7 +793,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
 
     const settled = await Promise.allSettled(
       chunk.map(wallet =>
-        fetchWalletTransactions(wallet.address, providerKey, syncDebug)
+        fetchWalletTransactions(wallet.address, providerKey, syncDebug, windowMs)
           .then(result => result.ok
             ? {
                 wallet,
@@ -907,10 +982,51 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
       })
       .select('id')
 
+    let insertError = error
     if (!error) {
       inserted = data?.length ?? 0
       skipped  = Math.max(allFilteredAlerts.length - inserted, 0)
-    } else {
+    } else if (
+      error.code === '42P10' ||
+      /no unique or exclusion constraint/i.test(error.message ?? '')
+    ) {
+      // CONSTRAINT FALLBACK: the DB lacks the unique constraint the onConflict target names.
+      // Dedupe in code on the same key tuple against existing rows, then plain insert.
+      console.error('[whale-alerts-sync] upsert onConflict failed; using dedupe+insert fallback', error.code, error.message)
+      const dedupeKey = (a: Record<string, unknown>) => [a.tx_hash, a.wallet_address, a.token_address, a.alert_type, a.owner_user_id ?? null]
+        .map(v => (v == null ? '' : String(v).toLowerCase())).join('|')
+      const txHashes = [...new Set(allFilteredAlerts.map(a => String(a.tx_hash ?? '')).filter(Boolean))]
+      const existing = await supabase
+        .from('whale_alerts')
+        .select('tx_hash,wallet_address,token_address,alert_type,owner_user_id')
+        .in('tx_hash', txHashes)
+      if (existing.error) {
+        insertError = existing.error
+      } else {
+        const seen = new Set((existing.data ?? []).map(r => dedupeKey(r as Record<string, unknown>)))
+        const fresh = allFilteredAlerts.filter(a => {
+          const k = dedupeKey(a)
+          if (seen.has(k)) return false
+          seen.add(k)
+          return true
+        })
+        if (fresh.length === 0) {
+          insertError = null
+          inserted = 0
+          skipped = allFilteredAlerts.length
+        } else {
+          const plain = await supabase.from('whale_alerts').insert(fresh).select('id')
+          insertError = plain.error
+          if (!plain.error) {
+            inserted = plain.data?.length ?? 0
+            skipped = Math.max(allFilteredAlerts.length - inserted, 0)
+          }
+        }
+      }
+    }
+    if (insertError) {
+      const error = insertError
+      console.error('[whale-alerts-sync] whale_alerts insert failed', error.code, error.message)
       finalPipelineSummary.dbInsertFailed += allFilteredAlerts.length
       skipped = allFilteredAlerts.length
       if (dbInsertErrorSamples.length < 3) {
@@ -969,6 +1085,12 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     refreshStatus,
     providerErrors,
     skipReasons: skipSummary,
+    // Always-on pipeline diagnostics (codes/counts only; no keys, hints or row data).
+    fetchedTxCount,
+    alertCandidateCount,
+    dbInsertFailed: finalPipelineSummary.dbInsertFailed,
+    dbInsertErrorSamples: dbInsertErrorSamples.slice(0, 3).map(e => ({ code: e.code ?? null, message: e.message ?? null })),
+    providerErrorSamples: providerErrorSamples.slice(0, 5).map(e => ({ statusCode: e.statusCode ?? null, reason: e.reason })),
     message: walletsChecked === 0
       ? 'No active wallets were scanned in this batch.'
       : inserted > 0
