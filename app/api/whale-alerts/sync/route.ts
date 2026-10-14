@@ -3,6 +3,8 @@ import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { createClient } from '@supabase/supabase-js'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { cronNextOffset, cronRotationStart } from '@/lib/server/whaleCronRotation'
+import { alertOwnerForWallet, BASE_WETH_ADDRESS, NATIVE_ETH_SENTINEL } from '@/lib/server/whaleAlertIdentity'
 import { persistWhaleAlerts, type WhaleAlertsDb, type WhaleAlertWritePath } from '@/lib/server/whaleAlertPersist'
 import { BASE_WHALE_CHAIN_ID, dedupeTrackedWallets, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
 
@@ -66,9 +68,7 @@ const WALLET_TX_SYNC_CACHE_TTL_MS = 60 * 1000
 // (2 hosts x PER_WALLET_TIMEOUT_MS), keeping a batch well under the 60s maxDuration.
 const MAX_PROVIDER_PAGES = 3
 const WALLET_PAGE_BUDGET_MS = 8_000
-// Native ETH movements (tx.value) use the conventional native sentinel; WETH on Base is 0x4200..06.
-const NATIVE_ETH_SENTINEL = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
-const BASE_WETH_ADDRESS = '0x4200000000000000000000000000000000000006'
+// Native ETH movements (tx.value) use NATIVE_ETH_SENTINEL; WETH on Base is BASE_WETH_ADDRESS.
 const syncRate = new Map<string, { count: number; resetAt: number; lastRunAt: number }>()
 const SYNC_RATE_BY_PLAN: Record<string, number> = { free: 2, pro: 6, elite: 15 }
 function syncIp(req: Request): string { return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown' }
@@ -271,8 +271,10 @@ const walletTransactionInFlight = new Map<string, Promise<WalletFetchOutcome>>()
 const walletLastSeenActivityMs = new Map<string, number>()
 let adaptiveConcurrency = CONCURRENCY
 
-function checkpointKey(address: string) {
-  return `${PROVIDER_CHAIN}:${address.toLowerCase()}`
+// Keyed by scan window: a checkpoint only proves the txs before it were classified against THIS
+// window. A 24h scan never classified a 3-day-old tx, so a later 7d batch must not skip it.
+function checkpointKey(address: string, windowMs: number) {
+  return `${PROVIDER_CHAIN}:${address.toLowerCase()}:window=${windowMs}`
 }
 
 function walletTransactionCacheKey(address: string, windowMs: number) {
@@ -608,29 +610,46 @@ export async function GET(request: Request) {
   }
   const startedAt = Date.now()
   const baseUrl = new URL(request.url)
-  let offset = 0
-  let batches = 0
-  let inserted = 0
-  let last: Record<string, unknown> | null = null
-  let status = 200
-  while (Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
+  const runCron = (offset: number, limit: number) => {
     const url = new URL(baseUrl.toString())
     url.searchParams.set('mode', 'full')
     url.searchParams.set('window', '7d')
     url.searchParams.set('minUsd', url.searchParams.get('minUsd') ?? '0')
     url.searchParams.set('offset', String(offset))
-    const res = await runWhaleSync(new Request(url.toString(), { method: 'GET', headers: request.headers }), { kind: 'system' })
+    url.searchParams.set('limit', String(limit))
+    return runWhaleSync(new Request(url.toString(), { method: 'GET', headers: request.headers }), { kind: 'system' })
+  }
+  // Rotate today's starting slice (see lib/server/whaleCronRotation.ts). The size probe is the
+  // route's cheap "offset beyond the list" path: one wallet-list query, no provider calls.
+  const probe = await runCron(Number.MAX_SAFE_INTEGER, MAX_LIMIT)
+  const probeJson = (await probe.json().catch(() => null)) as Record<string, unknown> | null
+  if (!probe.ok || !probeJson || probeJson.ok === false) {
+    return NextResponse.json({ ok: false, source: 'cron', batches: 0, inserted: 0, last: probeJson }, { status: probe.ok ? 500 : probe.status })
+  }
+  const start = cronRotationStart(Date.now(), Number(probeJson.trackedWalletsTotal ?? 0))
+  let offset = start
+  let wrapped = false
+  let batches = 0
+  let inserted = 0
+  let last: Record<string, unknown> | null = null
+  let status = 200
+  while (Date.now() - startedAt < CRON_TIME_BUDGET_MS) {
+    const limit = wrapped ? Math.max(1, Math.min(MAX_LIMIT, start - offset)) : MAX_LIMIT
+    const res = await runCron(offset, limit)
     status = res.status
     last = (await res.json().catch(() => null)) as Record<string, unknown> | null
     batches += 1
     if (!res.ok || !last || last.ok === false) break
     inserted += Number(last.inserted ?? 0)
-    if (last.done === true || !last.hasMore || last.nextOffset == null) break
-    offset = Number(last.nextOffset)
+    const next = cronNextOffset(start, last.done === true || !last.hasMore || last.nextOffset == null ? null : Number(last.nextOffset), wrapped)
+    if (!next) break
+    offset = next.offset
+    wrapped = next.wrapped
   }
+  console.log('[whale-alerts-cron]', { start, lastOffset: offset, wrapped, batches, inserted, status, durationMs: Date.now() - startedAt })
   const ok = status < 400 && !!last && last.ok !== false
   return NextResponse.json(
-    { ok, source: 'cron', batches, inserted, lastOffset: offset, done: last?.done === true || last?.hasMore === false, last },
+    { ok, source: 'cron', rotationStart: start, batches, inserted, lastOffset: offset, wrapped, last },
     { status: ok ? 200 : status },
   )
 }
@@ -859,7 +878,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
     // parse/classify stage is skipped. Checkpoint is bypassed entirely when absent or stale
     // (older than the scan window), so coverage is never reduced and no alert can be missed.
     let effectiveTxItems = txItems
-    const ck = checkpointKey(result.wallet.address)
+    const ck = checkpointKey(result.wallet.address, windowMs)
     const checkpointMs = mode === 'full' ? null : (walletLastSeenActivityMs.get(ck) ?? null)
     const checkpointValid =
       checkpointMs != null &&
@@ -941,7 +960,10 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
       }
 
       const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
-      const row = { ...alert, amount_usd: usd, severity, owner_user_id: actor.kind === 'user' ? actor.userId : null }
+      // Owner follows the wallet, not the caller: a system wallet's movement is one shared row
+      // whoever synced it (previously each user stored a private copy, which the feed then merged
+      // with the cron/webhook row into a fake two-leg swap). Private FOMO wallets stay private.
+      const row = { ...alert, amount_usd: usd, severity, owner_user_id: alertOwnerForWallet(result.wallet) }
       if (result.wallet.user_id) privateAlerts.add(row)
       allFilteredAlerts.push(row)
       if (timeToFirstAlertMs == null) timeToFirstAlertMs = Date.now() - syncStartedAtMs
@@ -964,7 +986,7 @@ async function runWhaleSync(request: Request, actor: SyncActor) {
         if (Number.isFinite(t) && t > newest) newest = t
       }
       if (newest > 0) {
-        const ck2 = checkpointKey(wallet.address)
+        const ck2 = checkpointKey(wallet.address, windowMs)
         const prev = walletLastSeenActivityMs.get(ck2) ?? 0
         if (newest > prev) walletLastSeenActivityMs.set(ck2, newest)
       }

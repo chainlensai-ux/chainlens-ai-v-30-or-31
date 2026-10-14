@@ -3,20 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { createHmac, timingSafeEqual } from 'crypto'
 import { clearWhaleFeedCache } from '@/lib/server/whaleAlertCache'
 import { persistWhaleAlerts, type WhaleAlertsDb } from '@/lib/server/whaleAlertPersist'
-
-type AlchemyActivity = {
-  fromAddress?: string | null
-  toAddress?: string | null
-  hash?: string | null
-  value?: number | null
-  asset?: string | null
-  category?: string | null
-  rawContract?: {
-    address?: string | null
-    decimals?: number | null
-    rawValue?: string | null
-  } | null
-}
+import { buildWebhookCandidates, SUPPORTED_WEBHOOK_NETWORKS, type WebhookTrackedWallet } from '@/lib/server/whaleWebhookCandidates'
 
 type AlchemyPayload = {
   createdAt?: string | null
@@ -27,12 +14,6 @@ type AlchemyPayload = {
   }
 }
 
-type TrackedWallet = {
-  address: string
-  label: string | null
-}
-
-const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 const WEBHOOK_EVENT_CAP_PER_MINUTE = 150
 
 const minuteBuckets = new Map<string, number>()
@@ -53,39 +34,6 @@ function consumeMinuteBudget(requested: number): { allowed: number; deferred: nu
   return { allowed, deferred: Math.max(0, requested - allowed) }
 }
 
-function isBelowSymbolThreshold(symbol: string | null, amount: number | null): boolean {
-  if (amount === null) return false
-  const sym = symbol?.toUpperCase() ?? ''
-  if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC' || sym === 'EURC') return amount < 100
-  if (sym === 'WETH' || sym === 'ETH') return amount < 0.01
-  return amount <= 0
-}
-
-function isLikelyApproval(category: string | null, rawValue: string | null, amountToken: number | null): boolean {
-  const cat = (category ?? '').toLowerCase()
-  if (cat.includes('approval') || cat.includes('allowance')) return true
-  if (amountToken !== null) return false
-  return rawValue === '0' || rawValue === '0x0'
-}
-
-function shouldEnrichCandidate(symbol: string | null, amountToken: number | null, category: string | null): boolean {
-  const sym = symbol?.toUpperCase() ?? null
-  const cat = (category ?? '').toLowerCase()
-  const nonRouting = sym !== null && !ROUTING_ONLY_SYMBOLS.has(sym)
-  const aboveThreshold = amountToken !== null && !isBelowSymbolThreshold(sym, amountToken)
-  const meaningfulType = cat.includes('swap') || cat.includes('transfer') || cat.includes('erc20')
-  return nonRouting || aboveThreshold || meaningfulType
-}
-
-function severityFromUsd(usd: number | null): string | null {
-  if (usd === null) return null
-  if (usd >= 25000) return 'major'
-  if (usd >= 10000) return 'large'
-  if (usd >= 5000) return 'medium'
-  if (usd >= 1000) return 'small'
-  return null
-}
-
 async function handleWebhook(payload: AlchemyPayload) {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL
   const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -98,6 +46,13 @@ async function handleWebhook(payload: AlchemyPayload) {
   if (!Array.isArray(rawActivity) || rawActivity.length === 0) {
     console.log('[alchemy-webhook]', { received: 0, earlySkipped: 1, duplicateSkipped: 0, relevantForEnrichment: 0, enriched: 0, inserted: 0 })
     return NextResponse.json({ ok: true, received: 0, inserted: 0 })
+  }
+
+  // Every stored row is chain 'base': events from any other network must not become Base alerts.
+  const network = payload?.event?.network ?? null
+  if (network && !SUPPORTED_WEBHOOK_NETWORKS.has(network)) {
+    console.warn('[alchemy-webhook] unsupported network ignored', network)
+    return NextResponse.json({ ok: true, received: rawActivity.length, inserted: 0, ignored: 'unsupported_network', network })
   }
 
   const received = rawActivity.length
@@ -114,94 +69,26 @@ async function handleWebhook(payload: AlchemyPayload) {
     return NextResponse.json({ ok: false, error: 'wallet_load_failed' }, { status: 500 })
   }
 
-  const walletMap = new Map<string, string | null>()
-  for (const w of (wallets ?? []) as TrackedWallet[]) {
-    walletMap.set(w.address.toLowerCase(), w.label)
-  }
-
   const occurredAt = payload.createdAt ? new Date(payload.createdAt).toISOString() : new Date().toISOString()
-  const dedupePairs = new Set<string>()
-  const candidates: Record<string, unknown>[] = []
-
-  let duplicateSkipped = 0
-  let earlySkipped = budget.deferred
-  let relevantForEnrichment = 0
-
-  for (let i = 0; i < budget.allowed; i += 1) {
-    const item = rawActivity[i] as AlchemyActivity
-    const txHash = item.hash?.trim() ?? null
-    if (!txHash) {
-      earlySkipped += 1
-      continue
-    }
-
-    const tokenSymbol = item.asset?.toUpperCase() ?? null
-    const tokenAddress = item.rawContract?.address ?? null
-    const rawValue = item.rawContract?.rawValue ?? null
-    const amountToken = typeof item.value === 'number' && Number.isFinite(item.value) ? item.value : null
-
-    if (isLikelyApproval(item.category ?? null, rawValue, amountToken)) {
-      earlySkipped += 1
-      continue
-    }
-
-    const isInternal = item.category === 'internal'
-    const isZeroValue = amountToken !== null && amountToken <= 0
-    const isNativeDust = tokenAddress === null && (tokenSymbol === 'ETH' || tokenSymbol === null) && (amountToken === null || amountToken < 0.01)
-    if (isZeroValue || isInternal || isNativeDust) {
-      earlySkipped += 1
-      continue
-    }
-
-    const fromKey = item.fromAddress?.toLowerCase() ?? null
-    const toKey = item.toAddress?.toLowerCase() ?? null
-
-    const matches: Array<{ walletKey: string; storedAddress: string; side: 'buy' | 'sell' }> = []
-    if (fromKey && walletMap.has(fromKey)) matches.push({ walletKey: fromKey, storedAddress: item.fromAddress ?? fromKey, side: 'sell' })
-    if (toKey && walletMap.has(toKey)) matches.push({ walletKey: toKey, storedAddress: item.toAddress ?? toKey, side: 'buy' })
-
-    if (matches.length === 0) {
-      earlySkipped += 1
-      continue
-    }
-
-    for (const match of matches) {
-      const pairKey = `${txHash}::${match.walletKey}`
-      if (dedupePairs.has(pairKey)) {
-        duplicateSkipped += 1
-        continue
-      }
-      dedupePairs.add(pairKey)
-      if (!shouldEnrichCandidate(tokenSymbol, amountToken, item.category ?? null)) {
-        earlySkipped += 1
-        continue
-      }
-      relevantForEnrichment += 1
-
-      candidates.push({
-        wallet_address: match.storedAddress,
-        wallet_label: walletMap.get(match.walletKey) ?? null,
-        token_address: tokenAddress,
-        token_symbol: tokenSymbol,
-        token_name: null,
-        owner_user_id: null,
-        alert_type: 'token_transfer',
-        side: match.side,
-        amount_usd: null,
-        amount_token: amountToken,
-        tx_hash: txHash,
-        chain: 'base',
-        severity: severityFromUsd(null),
-        summary: `Alchemy webhook: ${match.side} ${tokenSymbol ?? 'token'} via ${item.category ?? 'transaction'}`,
-        occurred_at: occurredAt,
-      })
-    }
-  }
+  const built = buildWebhookCandidates(rawActivity.slice(0, budget.allowed), (wallets ?? []) as WebhookTrackedWallet[], occurredAt)
+  const candidates = built.candidates
+  let duplicateSkipped = built.duplicateSkipped
+  const earlySkipped = built.earlySkipped
+  const relevantForEnrichment = built.relevantForEnrichment
+  const deferred = budget.deferred
 
   const enriched = candidates.length
 
+  // Events over the per-minute cap were NOT processed. Answer 429 so Alchemy re-delivers the
+  // payload later (writes are idempotent on the movement key) instead of acknowledging and losing them.
+  const deferredResponse = (inserted: number) => {
+    console.warn('[alchemy-webhook] budget deferred events; requesting redelivery', { received, deferred, inserted })
+    return NextResponse.json({ ok: false, error: 'rate_limited_deferred', received, deferred, inserted }, { status: 429, headers: { 'Retry-After': '60' } })
+  }
+
   if (candidates.length === 0) {
-    console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched: 0, inserted: 0 })
+    console.log('[alchemy-webhook]', { received, earlySkipped, deferred, duplicateSkipped, relevantForEnrichment, enriched: 0, inserted: 0 })
+    if (deferred > 0) return deferredResponse(0)
     return NextResponse.json({ ok: true, received, inserted: 0 })
   }
 
@@ -218,7 +105,8 @@ async function handleWebhook(payload: AlchemyPayload) {
   duplicateSkipped += Math.max(0, candidates.length - inserted)
 
   if (inserted > 0) clearWhaleFeedCache()
-  console.log('[alchemy-webhook]', { received, earlySkipped, duplicateSkipped, relevantForEnrichment, enriched, inserted, writePath: write.path })
+  console.log('[alchemy-webhook]', { received, earlySkipped, deferred, duplicateSkipped, relevantForEnrichment, enriched, inserted, writePath: write.path })
+  if (deferred > 0) return deferredResponse(inserted)
   return NextResponse.json({ ok: true, received, inserted })
 }
 

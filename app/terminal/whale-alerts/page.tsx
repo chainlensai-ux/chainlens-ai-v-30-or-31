@@ -1,9 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, canAccessFomoBoard, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
+import { createLatestRequestGate, describeWhaleAction } from '@/lib/whaleAlertAction'
 import FomoBoardPanel, { FomoBoardLockedCard } from '@/components/whale-alerts/FomoBoardPanel'
 import type { WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 
@@ -258,9 +259,7 @@ function buildWhaleRowClarkPrompt(alert: {
       ? '$0 (zero movement)'
       : `USD unavailable: ${valueAudit?.failureReason ?? 'price missing'}`
   const tokenAmt = alert.amount_token != null ? `${alert.amount_token} ${tok}` : null
-  const s = (alert.side ?? '').toLowerCase()
-  const isMultiTok = (alert.token_symbol || '').includes(' / ')
-  const alertType = isMultiTok ? 'swap' : s === 'buy' ? 'buy' : s === 'sell' ? 'sell' : 'transfer'
+  const alertType = describeWhaleAction(alert).verb
   const context = [
     `[ChainLens Whale Alert — Row Context]`,
     `Chain: Base`,
@@ -289,10 +288,13 @@ function buildWhaleRowClarkPrompt(alert: {
   ].join('\n')
 }
 
+// side is direction relative to the tracked wallet, not proof of a trade (lib/whaleAlertAction.ts).
+const SIDE_OPTION_LABELS: Record<string, string> = { buy: 'In (received)', sell: 'Out (sent)' }
+
 const getSide = (s: string | null | undefined) => {
   const k = (s ?? '').toLowerCase()
-  if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'BUY'      }
-  if (k === 'sell') return { line: '#f43f5e', avatarBg: '#3d0d1a', chipBg: 'rgba(244,63,94,0.12)',   chipBd: 'rgba(244,63,94,0.32)',   chipTx: '#fda4af', label: 'SELL'     }
+  if (k === 'buy')  return { line: '#2dd4bf', avatarBg: '#0d3b35', chipBg: 'rgba(45,212,191,0.12)',  chipBd: 'rgba(45,212,191,0.32)',  chipTx: '#5eead4', label: 'IN'       }
+  if (k === 'sell') return { line: '#f43f5e', avatarBg: '#3d0d1a', chipBg: 'rgba(244,63,94,0.12)',   chipBd: 'rgba(244,63,94,0.32)',   chipTx: '#fda4af', label: 'OUT'      }
   return               { line: '#8b5cf6', avatarBg: '#1e0d3b', chipBg: 'rgba(139,92,246,0.12)',  chipBd: 'rgba(139,92,246,0.32)',  chipTx: '#c4b5fd', label: 'Activity' }
 }
 
@@ -523,7 +525,10 @@ export default function WhaleAlertsPage() {
     } catch {}
   }, [baseCooldownMs])
 
-  const loadAlerts = useCallback(async (opts?: { enrich?: boolean }) => {
+  // Only the newest feed request may write state (filters can change while one is in flight).
+  const feedRequestGate = useRef(createLatestRequestGate())
+  const loadAlerts = useCallback(async (opts?: { enrich?: boolean; fresh?: boolean }) => {
+    const ticket = feedRequestGate.current.next()
     if (!hasWhaleAccess) {
       setLoading(false)
       setFeedSettled(true)
@@ -540,6 +545,10 @@ export default function WhaleAlertsPage() {
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
       if (opts?.enrich) p.set('enrich', 'true')
+      // After a sync wrote alerts: skip the feed's 45s server cache. The sync route clears only its
+      // own instance's copy, so without this a different serverless instance keeps serving the
+      // pre-sync (often empty) feed.
+      if (opts?.fresh) p.set('t', String(Date.now()))
       let token: string | undefined
       try {
         const sessionResult = await Promise.race([
@@ -560,6 +569,7 @@ export default function WhaleAlertsPage() {
         signal: AbortSignal.timeout(20_000),
       })
       const json = await res.json().catch(() => null)
+      if (!feedRequestGate.current.isLatest(ticket)) return
       if (!res.ok) {
         setFeedError(apiFailureMessage(json, res.status, 'The server could not read the whale feed. Retry in a moment.'))
         return
@@ -570,13 +580,16 @@ export default function WhaleAlertsPage() {
       setIntelligence(json?.intelligence ?? null)
       setFeedLastSyncedAt(typeof json?.lastSyncedAt === 'string' ? json.lastSyncedAt : null)
     } catch (error) {
+      if (!feedRequestGate.current.isLatest(ticket)) return
       setFeedError(error instanceof DOMException && error.name === 'TimeoutError'
         ? 'The whale feed timed out. Retry in a moment.'
         : 'The whale feed could not be reached. Check your connection and retry.')
     } finally {
-      setLoading(false)
-      setEnrichLoading(false)
-      setFeedSettled(true)
+      if (feedRequestGate.current.isLatest(ticket)) {
+        setLoading(false)
+        setEnrichLoading(false)
+        setFeedSettled(true)
+      }
     }
   }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter, hasWhaleAccess])
 
@@ -598,6 +611,7 @@ export default function WhaleAlertsPage() {
     }
     setSyncing(true)
     setSyncError(null)
+    let syncWroteAlerts = false
     try {
       if (mode === 'full') {
         // Auto-loop: run batches until done=true or error — no manual Continue needed
@@ -617,6 +631,7 @@ export default function WhaleAlertsPage() {
             return
           }
           cumulativeInserted += Number(json.inserted ?? 0)
+          if (Number(json.inserted ?? 0) > 0) syncWroteAlerts = true
           const merged: SyncResponse = {
             ...json,
             mode: 'full',
@@ -631,7 +646,7 @@ export default function WhaleAlertsPage() {
           // alerts found in this batch appear immediately while remaining wallets are still being
           // scanned — the sync banner already shows "Scanning X/Y" as the syncing label. The feed
           // is never blanked (loadAlerts only replaces state on a successful response).
-          if (Number(json.inserted ?? 0) > 0) void loadAlerts({ enrich: false })
+          if (Number(json.inserted ?? 0) > 0) void loadAlerts({ enrich: false, fresh: true })
           if (json.done === true || !json.hasMore || json.nextOffset == null) {
             window.localStorage.setItem(cacheKey, String(Date.now()))
             setFullSyncCooldownLeftMs(cooldownMs)
@@ -659,6 +674,7 @@ export default function WhaleAlertsPage() {
         const processedTotal = Number(prev?.processedTotal ?? 0) + Number(json.processed ?? 0)
         const insertedTotal = Number(prev?.insertedTotal ?? 0) + Number(json.inserted ?? 0)
         const merged: SyncResponse = { ...json, mode: 'batch', processedTotal, insertedTotal, savedAt: Date.now() }
+        if (Number(json.inserted ?? 0) > 0) syncWroteAlerts = true
         setSyncState(merged)
         window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
         if (!isBatchContinuation) {
@@ -666,7 +682,7 @@ export default function WhaleAlertsPage() {
           setSyncCooldownLeftMs(cooldownMs)
         }
       }
-      await loadAlerts()
+      await loadAlerts({ fresh: syncWroteAlerts })
     } finally {
       setSyncing(false)
     }
@@ -1094,7 +1110,7 @@ export default function WhaleAlertsPage() {
                     <select value={val} onChange={e => set(e.target.value)}
                       className="wa-select w-full appearance-none rounded-[8px]"
                       style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
-                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : o}</option>)}
+                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : SIDE_OPTION_LABELS[o] ?? o}</option>)}
                     </select>
                     <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
                       <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
@@ -1492,7 +1508,8 @@ export default function WhaleAlertsPage() {
             const primarySym = tok.split(' / ')[0]
             const lbl        = primarySym.slice(0, 4).toUpperCase()
             const s          = alert.side?.toLowerCase() ?? ''
-            const chipLabel  = isMultiTok ? 'SWAP' : sideStyle.label
+            const action     = describeWhaleAction(alert)
+            const chipLabel  = action.chip
 
             // Amount: USD is the primary value. Token quantity is secondary context. A zero value
             // is only rendered when the pricing receipt explicitly proves a zero movement.
@@ -1505,8 +1522,9 @@ export default function WhaleAlertsPage() {
             const tokenAmtShow = !isMultiTok && amtTNum ? `${amtTNum} ${primarySym}` : null
 
             // Verb and preposition split so amount fits between them for swaps
-            const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
-            const baseVerb = isSwap ? 'swapped' : s === 'buy' ? 'bought' : s === 'sell' ? 'sold' : 'moved'
+            // A one-direction transfer is not evidence of a trade: see lib/whaleAlertAction.ts.
+            const isSwap   = action.kind === 'swap'
+            const baseVerb = action.verb
 
             const logoUrl = alert.token_image_url ?? alert.logo_url ?? alert.image ?? alert.token_logo ?? null
 
@@ -1678,7 +1696,7 @@ export default function WhaleAlertsPage() {
               style={{ gap: 10, padding: '10px 18px', borderTop: '1px solid rgba(148,163,184,0.09)', background: 'rgba(148,163,184,0.015)' }}>
               <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, letterSpacing: '0.04em', color: '#3a4557' }}>base.alerts.v2</span>
               <div className="flex items-center" style={{ gap: 14, fontSize: 10.5 }}>
-                {[{ c: '#2dd4bf', l: 'Buy' }, { c: '#f43f5e', l: 'Sell' }, { c: '#8b5cf6', l: 'Transfer' }].map(({ c, l }) => (
+                {[{ c: '#2dd4bf', l: 'In' }, { c: '#f43f5e', l: 'Out' }, { c: '#8b5cf6', l: 'Swap / other' }].map(({ c, l }) => (
                   <span key={l} className="flex items-center" style={{ gap: 5 }}>
                     <span className="inline-block rounded-full" style={{ width: 5, height: 5, background: c, opacity: 0.85 }}/>
                     <span style={{ color: '#55647d' }}>{l}</span>

@@ -12,6 +12,8 @@ import { collapseRapidWhaleAlertRepeats } from '@/lib/server/whaleAlertDedup'
 import { getBaseStablecoinShortcut, priceWhaleMovement, type WhalePriceQuote, type WhaleUsdPricingAudit } from '@/lib/server/whaleUsdPricing'
 import { getPriceAtTime } from '@/src/modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { BASE_WHALE_CHAIN_ID, isMissingOwnershipColumn, userOrSystemScope } from '@/lib/server/whaleAlertScope'
+import { dedupeMovementLegs, pricingAddressFor } from '@/lib/server/whaleAlertIdentity'
+import { filterByValueRange, parseValueRange, passesQualityFloor } from '@/lib/server/whaleFeedFilters'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -34,12 +36,14 @@ function parseLimit(value: string | null): number {
   return Math.min(100, Math.floor(n))
 }
 
+// A misconfigured backend is a failure, not an empty feed: 503 so the page shows an error state.
 function emptyUnavailable(reason: string) {
   return NextResponse.json({
     alerts: [],
     stats: { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 },
     unavailable: reason,
-  })
+    error: 'Whale feed is unavailable: the alert store is not configured.',
+  }, { status: 503, headers: { 'Cache-Control': 'no-store' } })
 }
 
 // Group raw rows by (tx_hash, wallet_address) so one on-chain transaction
@@ -129,14 +133,12 @@ const WHALE_CACHE_TTL_MS = 45_000
 const whaleCache = whaleFeedCache
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
-const BASE_WETH = '0x4200000000000000000000000000000000000006'
 const historicalWhalePriceCache = new Map<string, { expiresAt: number; promise: Promise<WhalePriceQuote> }>()
 const currentWhalePriceCache = new Map<string, { expiresAt: number; priceUsd: number }>()
 
+// Native ETH rows (sentinel address) price as WETH instead of querying providers with a fake token.
 function pricingTokenAddress(row: RawRow): string | null {
-  const address = typeof row.token_address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(row.token_address) ? row.token_address.toLowerCase() : null
-  const symbol = String(row.token_symbol ?? '').toUpperCase().trim()
-  return address ?? (symbol === 'ETH' || symbol === 'WETH' ? BASE_WETH : null)
+  return pricingAddressFor(row.token_address, row.token_symbol)
 }
 
 function stablecoinShortcut(row: RawRow): WhalePriceQuote | null {
@@ -338,70 +340,6 @@ function computeSignalScore(row: RawRow): string {
   if (stableOnly && amt < 100) return 'NOISE'
   if (amt < 50) return 'LOW SIGNAL'
   return 'LOW SIGNAL'
-}
-
-// Returns true if a post-enrichment row meets the "All" quality floor.
-// Shared by filterByValueFloor (feed) and countStatsFiltered (stats cards).
-function passesQualityFloor(row: RawRow): boolean {
-  const usd  = row.amount_usd as number | null
-  const sym  = ((row.token_symbol as string | null) ?? '').toUpperCase().trim()
-  const amt  = row.amount_token as number | null
-  const legs = (row.legs as number | null) ?? 1
-
-  // Multi-leg swaps always pass — the swap itself is notable regardless of leg size.
-  if (legs >= 2) return true
-
-  // Primary check: known USD value must be >= $100.
-  if (usd !== null) return usd >= 100
-
-  // Fallback for rows where enrichment produced no USD (unknown tokens):
-  // apply per-symbol token amount floors.
-  if (sym === 'USDC' || sym === 'USDT' || sym === 'DAI' || sym === 'USDBC') return amt === null || amt >= 100
-  if (sym === 'WETH' || sym === 'ETH') return amt === null || amt >= 0.01
-  if (sym === 'CBBTC' || sym === 'WBTC') return amt === null || amt >= 0.0005
-
-  // Unknown / other tokens: keep (amount > 0 guaranteed by meaningfulFilter).
-  return true
-}
-
-// Parsed value range spec: null = "All" (quality floor), otherwise numeric bounds.
-type ValueRangeSpec = { min: number; max: number | null } | null
-
-function parseValueRange(value: string | null): ValueRangeSpec {
-  if (!value || value === 'all') return null
-  if (value === '10000+') return { min: 10000, max: null }
-  const m = value.match(/^(\d+)-(\d+)$/)
-  if (m) return { min: Number(m[1]), max: Number(m[2]) }
-  return null
-}
-
-// Post-enrichment, post-grouping value filter.
-// null ("All"): quality floor — hide known-tiny moves, keep unpriced rows.
-//   skipFloor=true (feedMode=all): bypass the quality floor entirely, keep all rows.
-// range: require known amount_usd within [min, max).
-function filterByValueRange(
-  rows: RawRow[],
-  range: ValueRangeSpec,
-  skipFloor = false,
-): { rows: RawRow[]; hiddenByFilter: number; hiddenAsDust: number } {
-  if (range === null) {
-    if (skipFloor) return { rows, hiddenByFilter: 0, hiddenAsDust: 0 }
-    let hiddenAsDust = 0
-    const result = rows.filter(row => {
-      if (!passesQualityFloor(row)) { hiddenAsDust++; return false }
-      return true
-    })
-    return { rows: result, hiddenByFilter: 0, hiddenAsDust }
-  }
-  let hiddenByFilter = 0
-  const result = rows.filter(row => {
-    const usd = row.amount_usd as number | null
-    if (usd === null) { hiddenByFilter++; return false }
-    if (usd < range.min) { hiddenByFilter++; return false }
-    if (range.max !== null && usd >= range.max) { hiddenByFilter++; return false }
-    return true
-  })
-  return { rows: result, hiddenByFilter, hiddenAsDust: 0 }
 }
 
 // Count distinct tx_hash values from a stats query result, applying per-row enrichment
@@ -985,7 +923,9 @@ export async function GET(req: NextRequest) {
     //   5.  Drop stablecoin-only dust as a secondary safety net
     //   6.  Collapse rapid repeats
     //   7.  Limit
-    const rawAlertRows = (alertsRes.data ?? []) as RawRow[]
+    // One visible alert per on-chain movement: the same leg stored twice (shared row + a per-user
+    // copy, or two producers) must not become a fake two-leg swap with doubled USD.
+    const { rows: rawAlertRows, removed: duplicateLegsRemoved } = dedupeMovementLegs((alertsRes.data ?? []) as RawRow[])
     const historicalQuotes = await fetchHistoricalWhaleQuotes(rawAlertRows.filter(row => {
       const stored = Number(row.amount_usd)
       return !(Number.isFinite(stored) && stored > 0) && Number(row.amount_token) > 0
@@ -1284,6 +1224,7 @@ export async function GET(req: NextRequest) {
         randomTokenPriceLookups:  randomAddresses.length,
         randomTokenPriceHits,
         randomTokenPriceMisses,
+        duplicateLegsRemoved,
         cacheHit: false,
         providerStatus: 'ok',
         ownerScopeApplied,

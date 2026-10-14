@@ -108,7 +108,7 @@ const now = Date.now()
 
 // ── UI early streaming ──────────────────────────────────────────────────────
 {
-  assert.match(pageSrc, /EARLY STREAMING[\s\S]*?loadAlerts\(\{ enrich: false \}\)/,
+  assert.match(pageSrc, /EARLY STREAMING[\s\S]*?loadAlerts\(\{ enrich: false(, fresh: true)? \}\)/,
     'feed must refresh after each productive batch during full sync')
   // Feed loads cached alerts immediately on mount (existing behavior):
   assert.match(pageSrc, /useEffect\(\(\) => \{ void loadAlerts\(\) \}/)

@@ -1,7 +1,12 @@
--- ChainLens AI Whale Alerts seed wallets
--- Run after docs/supabase-whale-alerts.sql creates tracked_wallets
+-- ChainLens AI Whale Alerts seed wallets (shared system set: user_id NULL, Base chain 8453)
+-- Run after docs/supabase-whale-alerts.sql creates tracked_wallets.
+--
+-- The schema dropped the global unique(address) constraint (wallets are unique per user+chain), so
+-- `on conflict (address)` no longer has a target. Upsert manually instead, and always set chain_id
+-- and wallet_address: sync and the feed's tracked count select `chain_id = 8453`, so a seeded row
+-- without chain_id would silently never be scanned.
 
-insert into tracked_wallets (address, label, category, confidence, source)
+with seed (address, label, category, confidence, source) as (
 values
 ('0x749fe1885440ba5ec7381c9fde06fd05b83c4c5c', 'Cortex Bot Operator', 'bot', 0.82, 'manual'),
 ('0x57f7dca134fdd36e5d73460f51ed1b12c11a0065', 'Legacy Base Whale', 'whale', 0.87, 'manual'),
@@ -75,11 +80,20 @@ values
 ('0x62a50fcef3985d1620aedd7b4e36f47ba74e6974', 'Volume Grinder', 'trader', 0.84, 'manual'),
 ('0x012ed994df76022637f79ff9e209d7d44a4d1c8e', 'Ex-Smart Money Wallet', 'trader', 0.71, 'manual'),
 ('0x2b4ddac882b0ab94be6dbe3ac864e84331cb75de', 'Stealth Operator', 'stealth', 0.85, 'manual')
-on conflict (address) do update set
-  label = excluded.label,
-  category = excluded.category,
-  confidence = excluded.confidence,
-  source = excluded.source,
-  updated_at = now();
+),
+updated as (
+  update public.tracked_wallets t
+  set label = s.label, category = s.category, confidence = s.confidence, source = s.source,
+      wallet_address = lower(s.address), chain_id = 8453, updated_at = now()
+  from seed s
+  where t.user_id is null and lower(t.address) = lower(s.address)
+  returning t.address
+)
+insert into public.tracked_wallets (address, wallet_address, chain_id, label, category, confidence, source)
+select lower(s.address), lower(s.address), 8453, s.label, s.category, s.confidence, s.source
+from seed s
+where not exists (
+  select 1 from public.tracked_wallets t where t.user_id is null and lower(t.address) = lower(s.address)
+);
 
 select count(*) as tracked_wallet_count from tracked_wallets;
