@@ -75,4 +75,13 @@ assert.match(page, /@media \(max-width: 640px\)/)
 assert.doesNotMatch(page, /(dateStyle|timeStyle):[^}\n]*timeZoneName:|timeZoneName:[^}\n]*(dateStyle|timeStyle):/)
 assert.match(page, /const localTimestamp = [\s\S]*?try \{[\s\S]*?\} catch \{/)
 
+// KPI windows 1h / 6h / 24h; auto-update is real and Pause works; 20-wallet sync batches.
+assert.match(feed, /alerts6h:\s+countStatsFiltered\(rowsSince\(stats24h\.data, WINDOW_MS\['6h'\]\)/)
+assert.match(page, /unit: '6h',\s+val: stats\.alerts6h/)
+assert.doesNotMatch(page, /unit: '15m'/)
+assert.match(page, /window\.setInterval\(\(\) => \{\s*if \(document\.visibilityState === 'visible'\) void loadAlerts\(\{ silent: true \}\)/)
+assert.match(page, /onClick=\{\(\) => setAutoUpdatePaused\(p => !p\)\}/)
+assert.match(page, /limit: String\(SYNC_BATCH_SIZE\)/)
+assert.match(sync, /const MAX_LIMIT = 20/)
+
 console.log('whale alerts wiring: ok')

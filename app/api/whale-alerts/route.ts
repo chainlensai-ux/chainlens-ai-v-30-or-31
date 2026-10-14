@@ -43,7 +43,7 @@ function parseLimit(value: string | null): number {
 function emptyUnavailable(reason: string) {
   return NextResponse.json({
     alerts: [],
-    stats: { alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 },
+    stats: { alerts15m: 0, alerts1h: 0, alerts6h: 0, alerts24h: 0, trackedWallets: 0 },
     unavailable: reason,
     error: 'Whale feed is unavailable: the alert store is not configured.',
   }, { status: 503, headers: { 'Cache-Control': 'no-store' } })
@@ -380,6 +380,14 @@ function countStatsFiltered(
     if (passes && r.tx_hash) txHashes.add(r.tx_hash)
   }
   return txHashes.size
+}
+
+function rowsSince(data: unknown, windowMs: number): unknown[] {
+  const cutoff = Date.now() - windowMs
+  return (Array.isArray(data) ? data : []).filter(row => {
+    const t = Date.parse(String((row as { occurred_at?: unknown }).occurred_at ?? ''))
+    return Number.isFinite(t) && t >= cutoff
+  })
 }
 
 function asPositiveNumber(v: unknown): number | null {
@@ -874,7 +882,7 @@ export async function GET(req: NextRequest) {
 
     // Stats queries: include token_symbol, amount_token, amount_usd so each row
     // can be enriched and value-filtered JS-side — keeping stats in sync with the feed.
-    const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd, token_address'
+    const STATS_SELECT = 'tx_hash, token_symbol, amount_token, amount_usd, token_address, occurred_at'
     const majorPricesPromise = fetchMajorPrices()
 
     let ownerScopeApplied = true
@@ -1248,6 +1256,8 @@ export async function GET(req: NextRequest) {
       stats: {
         alerts15m:      countStatsFiltered(stats15m.data, majorPrices, 0, tokenPrices),
         alerts1h:       countStatsFiltered(stats1h.data,  majorPrices, 0, tokenPrices),
+        // 6h is derived from the 24h rows (same filters), no extra query.
+        alerts6h:       countStatsFiltered(rowsSince(stats24h.data, WINDOW_MS['6h']), majorPrices, 0, tokenPrices),
         alerts24h:      countStatsFiltered(stats24h.data, majorPrices, 0, tokenPrices),
         trackedWallets: new Set(((trackedCount.data ?? []) as Array<{ address?: string | null }>)
           .map(row => (row.address ?? '').trim().toLowerCase()).filter(Boolean)).size,

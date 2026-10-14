@@ -64,7 +64,7 @@ type AlertItem = {
   whaleAlertUsdAudit?: WhaleUsdPricingAudit | null
   whaleAlertUsdAudits?: WhaleUsdPricingAudit[] | null
 }
-type AlertStats = { alerts15m: number; alerts1h: number; alerts24h: number; trackedWallets: number }
+type AlertStats = { alerts15m: number; alerts1h: number; alerts6h?: number; alerts24h: number; trackedWallets: number }
 type ValueRange = 'all' | '100-500' | '500-1000' | '1000-5000' | '5000-10000' | '10000+'
 type SyncResponse = {
   ok?: boolean
@@ -202,6 +202,10 @@ const localTimestamp = (iso?: string | null) => {
 }
 
 const FEED_PAGE_SIZE = 50
+// Wallets per sync request (server max). 148 wallets ≈ 8 batches instead of 15.
+const SYNC_BATCH_SIZE = 20
+// Background feed refresh while the tab is visible (feed reads are cheap: 45s server cache).
+const AUTO_UPDATE_MS = 60_000
 const FEED_MAX_LIMIT = 200
 
 const fmtUsd = (n?: number | null) => {
@@ -556,7 +560,7 @@ export default function WhaleAlertsPage() {
 
   // Only the newest feed request may write state (filters can change while one is in flight).
   const feedRequestGate = useRef(createLatestRequestGate())
-  const loadAlerts = useCallback(async (opts?: { enrich?: boolean; fresh?: boolean }) => {
+  const loadAlerts = useCallback(async (opts?: { enrich?: boolean; fresh?: boolean; silent?: boolean }) => {
     const ticket = feedRequestGate.current.next()
     if (!hasWhaleAccess) {
       setLoading(false)
@@ -566,10 +570,12 @@ export default function WhaleAlertsPage() {
     // "Load more" keeps the current rows on screen instead of swapping in the loading skeleton.
     const isLoadMore = loadingMoreRef.current
     loadingMoreRef.current = false
-    if (opts?.enrich) setEnrichLoading(true)
+    // Silent = background auto-update: no skeleton, and a transient failure keeps the current rows.
+    if (opts?.silent) { /* no loading state */ }
+    else if (opts?.enrich) setEnrichLoading(true)
     else if (isLoadMore) setLoadingMore(true)
     else setLoading(true)
-    setFeedError(null)
+    if (!opts?.silent) setFeedError(null)
     try {
       const p = new URLSearchParams({ window: windowValue, limit: String(feedLimit) })
       if (feedMode === 'all') p.set('interesting', 'false')
@@ -603,6 +609,7 @@ export default function WhaleAlertsPage() {
       })
       const json = await res.json().catch(() => null)
       if (!feedRequestGate.current.isLatest(ticket)) return
+      if (!res.ok && opts?.silent) return
       if (!res.ok) {
         setFeedError(apiFailureMessage(json, res.status, 'The server could not read the whale feed. Retry in a moment.'))
         return
@@ -614,7 +621,7 @@ export default function WhaleAlertsPage() {
       setIntelligence(json?.intelligence ?? null)
       setFeedLastSyncedAt(typeof json?.lastSyncedAt === 'string' ? json.lastSyncedAt : null)
     } catch (error) {
-      if (!feedRequestGate.current.isLatest(ticket)) return
+      if (!feedRequestGate.current.isLatest(ticket) || opts?.silent) return
       setFeedError(error instanceof DOMException && error.name === 'TimeoutError'
         ? 'The whale feed timed out. Retry in a moment.'
         : 'The whale feed could not be reached. Check your connection and retry.')
@@ -630,6 +637,18 @@ export default function WhaleAlertsPage() {
 
 
   useEffect(() => { void loadAlerts() }, [loadAlerts])
+
+  // AUTO-UPDATE: the header always claimed "Auto-update" but nothing refreshed and Pause did
+  // nothing. Now the feed re-reads every minute while the tab is visible, not paused and no sync is
+  // running (a sync reloads the feed itself when it saves alerts).
+  const [autoUpdatePaused, setAutoUpdatePaused] = useState(false)
+  useEffect(() => {
+    if (autoUpdatePaused || syncing || !hasWhaleAccess) return
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void loadAlerts({ silent: true })
+    }, AUTO_UPDATE_MS)
+    return () => window.clearInterval(id)
+  }, [autoUpdatePaused, syncing, hasWhaleAccess, loadAlerts])
 
   const runSync = async (offset?: number, mode: 'batch' | 'full' = 'batch') => {
     const now = Date.now()
@@ -654,7 +673,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: '10', minUsd: '0', mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: String(SYNC_BATCH_SIZE), minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -693,7 +712,7 @@ export default function WhaleAlertsPage() {
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: '10', minUsd: '0', mode: 'batch' })
+        const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: String(SYNC_BATCH_SIZE), minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token
@@ -877,8 +896,8 @@ export default function WhaleAlertsPage() {
   // only what a 0 in that window literally means (no signal recorded), never a claim about sync
   // health or upcoming data. Tracked wallets shows the real deduped count from the feed/sync.
   const metrics = [
-    { label: 'Alerts',          unit: '15m', val: stats.alerts15m, sub: 'Rolling', zeroSub: 'Quiet this window',   color: '#2dd4bf' },
-    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,  sub: 'Rolling', zeroSub: 'No signal past hour',  color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,       sub: 'Rolling', zeroSub: 'No signal past hour',     color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '6h',  val: stats.alerts6h ?? 0,  sub: 'Rolling', zeroSub: 'No signal past 6 hours',  color: '#2dd4bf' },
     { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling', zeroSub: 'None in last 24h',     color: '#8b5cf6' },
     { label: 'Tracked wallets', unit: null,  val: walletCountLabel,  sub: 'Smart money + manual', zeroSub: null,      color: '#94a3b8' },
   ]
@@ -1325,8 +1344,8 @@ export default function WhaleAlertsPage() {
               <h2 className="wa-sec-title" style={{ fontSize: 14 }}>Alert feed</h2>
               <span aria-hidden style={{ width: 1, height: 12, background: 'rgba(148,163,184,0.16)' }} />
               <span className="flex items-center" style={{ gap: 5, fontSize: 11, fontWeight: 600, color: '#5eead4' }}>
-                <span className="rounded-full" style={{ width: 5, height: 5, background: '#2dd4bf', display: 'inline-block' }} />
-                Auto-update
+                <span className="rounded-full" style={{ width: 5, height: 5, background: autoUpdatePaused ? '#64748b' : '#2dd4bf', display: 'inline-block' }} />
+                <span style={{ color: autoUpdatePaused ? '#7c8ba1' : undefined }}>{autoUpdatePaused ? 'Auto-update paused' : 'Auto-update · 1 min'}</span>
               </span>
               {feedDiagnostics != null && (
                 <span style={{ fontSize: 11, color: feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? '#5eead4' : '#8b7a4a' }}>
@@ -1340,11 +1359,13 @@ export default function WhaleAlertsPage() {
               )}
             </div>
             <div className="wa-feed-actions flex items-center" style={{ gap: 6 }}>
-              <button className="wa-btn wa-btn-quiet" title="Pause auto-update">
-                <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
-                  <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
-                </svg>
-                Pause
+              <button type="button" className="wa-btn wa-btn-quiet" aria-pressed={autoUpdatePaused}
+                title={autoUpdatePaused ? 'Resume auto-update' : 'Pause auto-update'}
+                onClick={() => setAutoUpdatePaused(p => !p)}>
+                {autoUpdatePaused
+                  ? <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 4 20 12 6 20"/></svg>
+                  : <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>}
+                {autoUpdatePaused ? 'Resume' : 'Pause'}
               </button>
               <button onClick={goClark} className="wa-btn wa-btn-secondary">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

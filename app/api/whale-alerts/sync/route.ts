@@ -55,12 +55,13 @@ const COVALENT_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
 const PROVIDER_CHAIN = 'base'
 const PROVIDER_PAGE_SIZE = 100
 const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}&with-logs=true`
-const DEFAULT_LIMIT = 10
-const MAX_LIMIT = 10
+// 20 wallets per request (2 waves at concurrency 10); the safety timeout still bounds a batch.
+const DEFAULT_LIMIT = 20
+const MAX_LIMIT = 20
 const DEFAULT_OFFSET = 0
 const SAFETY_TIMEOUT_MS = 19_500
 const PER_WALLET_TIMEOUT_MS = 6_000
-const CONCURRENCY = 8
+const CONCURRENCY = 10
 const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
 const DEV_SYNC_COOLDOWN_MS = 10 * 1000
