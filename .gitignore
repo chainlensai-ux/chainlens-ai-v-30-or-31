@@ -51,3 +51,4 @@ scan.json
 # perf benchmark — real wallet addresses and locally-measured run data, never committed
 /scripts/perfBenchmark/wallets.json
 /scripts/perfBenchmark/baseline.json
+wallets-raw.txt
