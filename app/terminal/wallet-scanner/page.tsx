@@ -189,6 +189,19 @@ type WatchlistWallet = {
   chain_mode?: string | null
 }
 
+// Example wallets for the pre-scan "Try an example" chips — public, well-known addresses; a chip
+// only fills the input, it never starts a scan on its own.
+const EXAMPLE_WALLETS: ReadonlyArray<{ label: string; address: string }> = [
+  { label: 'vitalik.eth', address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' },
+  { label: 'Vitalik (legacy)', address: '0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B' },
+]
+
+// Watchlist size tag from the saved portfolio value — same thresholds as the scan's own
+// walletCategory (lib/server/v2Adapters.ts): < $10k Small, < $250k Mid, otherwise Whale.
+function watchlistSizeTag(valueUsd: number): 'Small' | 'Mid' | 'Whale' {
+  return valueUsd >= 250_000 ? 'Whale' : valueUsd >= 10_000 ? 'Mid' : 'Small'
+}
+
 // FEATURE ROLLOUT, DISCLOSED (Wallet Scanner V3 layout task): a plain module-level constant, not a
 // new environment variable or feature-flag service — this codebase has no existing feature-flag
 // pattern (confirmed by search before adding this). Flip to `false` for an instant rollback to the
@@ -575,6 +588,15 @@ export default function WalletScannerPage() {
   const [watchlistStatus, setWatchlistStatus] = useState<'idle' | 'saving' | 'success' | 'exists' | 'error'>('idle')
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
   const [watchlistWallets, setWatchlistWallets] = useState<WatchlistWallet[]>([])
+  // ONE-CLICK WATCHLIST SCAN: the row's Scan button records the address and sets the input; once the
+  // input state actually holds it, the effect below runs the unchanged handleScan() (which reads `input`).
+  const pendingScanAddressRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (pendingScanAddressRef.current == null || input !== pendingScanAddressRef.current) return
+    pendingScanAddressRef.current = null
+    void handleScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input])
   const [watchlistLoading, setWatchlistLoading] = useState(false)
   // ROBINHOOD CHAIN WALLET SCANNER, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
   // Phase 1+2 UI): deliberately its OWN state, own handler, own results card — never mixed into
@@ -1165,8 +1187,8 @@ export default function WalletScannerPage() {
       <style>{`
         .ws-row:hover { background: rgba(255,255,255,0.030) !important; }
         .ws-scan-btn:hover:not(:disabled) {
-          background: linear-gradient(135deg, #2DD4BF, #22c5ae) !important;
-          box-shadow: 0 0 28px rgba(45,212,191,0.50), 0 4px 16px rgba(0,0,0,0.30) !important;
+          filter: brightness(1.06);
+          box-shadow: 0 10px 30px rgba(45,212,191,0.32) !important;
           transform: translateY(-1px);
         }
         .ws-scan-btn { transition: background 0.15s, box-shadow 0.18s, color 0.15s, transform 0.12s !important; }
@@ -1179,116 +1201,171 @@ export default function WalletScannerPage() {
           padding: 18px 20px; margin-bottom: 16px;
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18);
         }
-        .ws-content-col { max-width: 1180px; margin: 0 auto; }
+        .ws-content-col { max-width: 1000px; margin: 0 auto; }
+        .wallet-shell { background-color: #06060a; background-image: radial-gradient(circle at 0% 0%, rgba(45,212,191,0.07), transparent 42%), radial-gradient(circle at 100% 100%, rgba(139,92,246,0.06), transparent 44%); }
+        .ws-scanbox { position: relative; z-index: 1; padding: 20px; border-radius: 16px; background: rgba(255,255,255,0.03); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px); box-shadow: 0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.04); }
+        .ws-scanbox::before { content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; background: linear-gradient(135deg, rgba(45,212,191,0.42), rgba(139,92,246,0.34)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+        .ws-scanbox-glow { position: absolute; inset: -28px -12px; border-radius: 32px; background: radial-gradient(ellipse at 50% 45%, rgba(45,212,191,0.13), transparent 68%); filter: blur(22px); pointer-events: none; z-index: 0; }
+        .ws-wallet-input { width: 100%; height: 56px; padding: 0 84px 0 46px; box-sizing: border-box; background: rgba(6,6,10,0.72); border: 1px solid rgba(255,255,255,0.10); border-radius: 12px; color: #f8fafc; font-size: 16px; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
+        .ws-wallet-input::placeholder { color: #64748b; }
+        .ws-wallet-input:focus { border-color: rgba(45,212,191,0.85); box-shadow: 0 0 0 3px rgba(45,212,191,0.20); }
+        .ws-wallet-input:disabled { opacity: 0.6; }
+        .ws-paste-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.04); color: #94a3b8; font-size: 11px; font-weight: 600; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: color 0.14s, border-color 0.14s; }
+        .ws-paste-btn:hover:not(:disabled) { color: #2DD4BF; border-color: rgba(45,212,191,0.40); }
+        .ws-paste-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+        .ws-get-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+        .ws-get-card { background: #080c14; border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 16px; transition: transform 0.18s ease, border-color 0.18s ease; }
+        .ws-get-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.18); }
+        .ws-get-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 9px; margin-bottom: 12px; }
+        .ws-example-chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: #080c14; border: 1px solid rgba(255,255,255,0.08); font-size: 12px; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: border-color 0.14s, background 0.14s; }
+        .ws-example-chip:hover { border-color: rgba(45,212,191,0.40); background: rgba(45,212,191,0.06); }
+        .ws-skeleton { height: 10px; border-radius: 5px; background: rgba(148,163,184,0.12); }
+        .ws-wl-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 12px; background: rgba(6,6,10,0.6); border: 1px solid rgba(255,255,255,0.06); min-width: 0; }
+        .ws-wl-save, .ws-wl-scan { border: 1px solid rgba(45,212,191,0.32); background: rgba(45,212,191,0.10); color: #2DD4BF; border-radius: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; font-family: var(--font-plex-mono, IBM Plex Mono, monospace); cursor: pointer; transition: background 0.14s, border-color 0.14s; flex-shrink: 0; }
+        .ws-wl-save { padding: 6px 12px; font-size: 10px; }
+        .ws-wl-scan { padding: 6px 10px; font-size: 10px; }
+        .ws-wl-save:hover:not(:disabled), .ws-wl-scan:hover:not(:disabled) { background: rgba(45,212,191,0.20); border-color: rgba(45,212,191,0.55); }
+        .ws-wl-save:disabled, .ws-wl-scan:disabled { opacity: 0.5; cursor: not-allowed; }
+        .ws-wl-del { width: 30px; height: 30px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid transparent; background: transparent; color: #64748b; cursor: pointer; transition: color 0.14s, background 0.14s, border-color 0.14s; }
+        .ws-wl-del:hover:not(:disabled) { color: #f87171; background: rgba(248,113,113,0.08); border-color: rgba(248,113,113,0.25); }
+        .ws-wl-del:disabled { cursor: wait; opacity: 0.5; }
+        @media (max-width: 1023px) { .ws-get-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
         @media (max-width: 768px) {
-          .wallet-main { padding: 16px 16px 100px !important; }
+          .wallet-main { padding: 64px 16px 100px !important; }
           .wallet-input-row { flex-direction: column; max-width: 100% !important; }
-          .wallet-input-row button { width: 100%; justify-content: center; min-height: 44px; }
+          .wallet-input-row > button { width: 100%; justify-content: center; min-height: 44px; }
           .wallet-title-row { flex-wrap: wrap; }
+          .ws-get-grid { grid-template-columns: 1fr; }
+          .ws-hero-sub { white-space: normal !important; }
         }
       `}</style>
 
       <div className="flex h-full overflow-hidden wallet-shell" style={{ color: '#e2e8f0' }}>
         {/* ── Left: scrollable main area ─────────────────────────────────── */}
-        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '36px 40px 120px', background: 'radial-gradient(ellipse 80% 35% at 50% 0%, rgba(45,212,191,0.035) 0%, transparent 65%)' }}>
+        <div className="mob-scan-main wallet-main" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '32px 32px 120px' }}>
           <div className="ws-content-col">
 
-          {/* Header */}
-          <div style={{ marginBottom: '36px' }}>
-            <div className="wallet-title-row" style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '12px', flexWrap: 'wrap' }}>
-              <h1 style={{
-                fontSize: '32px', fontWeight: 900, lineHeight: 1.05,
-                margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)',
-                letterSpacing: '-0.03em',
-                background: 'linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%)',
-                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-                backgroundClip: 'text',
-              }}>
+          {/* ── Hero ─────────────────────────────────────────────────────────── */}
+          {/* PRE-SCAN REDESIGN: 40px heading with the ELITE pill and the 180-Day engine as a muted
+              pill beside it; one-line subtitle. Layout only. */}
+          <div style={{ marginBottom: '24px' }}>
+            <div className="wallet-title-row" style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
+              <h1 style={{ fontSize: '40px', fontWeight: 800, lineHeight: 1.1, margin: 0, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
                 Wallet Scanner
               </h1>
               <span style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-                padding: '4px 12px', borderRadius: '99px',
-                background: 'linear-gradient(135deg, rgba(139,92,246,0.22), rgba(168,85,247,0.14))',
-                border: '1px solid rgba(139,92,246,0.45)',
-                color: '#c4b5fd',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                padding: '4px 11px', borderRadius: '99px',
+                background: 'rgba(139,92,246,0.14)', border: '1px solid rgba(139,92,246,0.40)',
+                color: '#c4b5fd', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
                 textTransform: 'uppercase', flexShrink: 0,
-                boxShadow: '0 0 16px rgba(139,92,246,0.15)',
               }}>
                 Elite
               </span>
+              <span style={{
+                fontSize: '10px', fontWeight: 600, letterSpacing: '0.06em',
+                padding: '4px 10px', borderRadius: '99px',
+                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)',
+                color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                whiteSpace: 'nowrap', flexShrink: 0,
+              }}>
+                180-Day Intelligence Engine
+              </span>
             </div>
-            <p style={{ fontSize: '14px', color: 'rgba(148,163,184,0.80)', margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '0.01em' }}>
-              Advanced on-chain intelligence · AI-powered wallet analysis · 180-Day Intelligence Engine
+            <p className="ws-hero-sub" style={{ fontSize: '14px', color: '#94a3b8', margin: 0, lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              On-chain wallet intelligence with AI-powered analysis
             </p>
           </div>
 
-          {/* Input */}
-          <div className="wallet-input-row" style={{ display: 'flex', gap: '10px', maxWidth: '700px', marginBottom: '20px' }}>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void handleScan() }}
-              disabled={loading && !limitedEvidenceMode}
-              placeholder="0x… wallet address"
-              spellCheck={false}
-              style={{
-                flex: 1, padding: '14px 16px', background: 'rgba(255,255,255,0.035)',
-                border: '1px solid rgba(255,255,255,0.09)', borderRadius: '13px', color: '#e2e8f0',
-                fontSize: '15px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                outline: 'none', boxSizing: 'border-box', boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.18)',
-              }}
-            />
-            <button
-              className="ws-scan-btn"
-              onClick={() => void handleScan()}
-              disabled={(loading && !limitedEvidenceMode) || !input.trim()}
-              style={{
-                padding: '14px 24px', borderRadius: '13px', border: 'none',
-                background: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'rgba(45,212,191,0.20)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
-                color: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'rgba(255,255,255,0.30)' : '#03121e',
-                fontSize: '11px', fontWeight: 900, letterSpacing: '0.12em', textTransform: 'uppercase',
-                cursor: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'not-allowed' : 'pointer',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: '8px',
-              }}
-            >
-              {/* SCAN-BUTTON-NEVER-STUCK FIX, DISCLOSED (stuck-scanning-lifecycle fix): once
-                  limitedEvidenceMode is true the button is live again even while the background poll
-                  for the previous scan is still running — it reads "Rescan" since a completed (if
-                  limited) result already exists to refresh. */}
-              {loading && !limitedEvidenceMode ? 'Scanning…' : loading && limitedEvidenceMode ? 'Rescan' : result ? 'Rescan' : 'Scan'}
-            </button>
-          </div>
+          {/* ── Scan box ─────────────────────────────────────────────────────── */}
+          {/* Same input value/onChange/onKeyDown/disabled wiring, same handleScan('normal' | 'deep')
+              calls and the same Deep Scan quota/limit guards as before — restyled into one card. */}
+          <div style={{ position: 'relative', marginBottom: '24px' }}>
+            {!result && <span aria-hidden="true" className="ws-scanbox-glow" />}
+            <div className="ws-scanbox">
+              <div className="wallet-input-row" style={{ display: 'flex', gap: '10px' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                  <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                    <path d="M4 7.5A2.5 2.5 0 016.5 5H18a2 2 0 012 2v1.5" stroke="#64748b" strokeWidth="1.8" strokeLinecap="round" />
+                    <rect x="4" y="7.5" width="16" height="11.5" rx="2.5" stroke="#64748b" strokeWidth="1.8" />
+                    <circle cx="16" cy="13.25" r="1.25" fill="#64748b" />
+                  </svg>
+                  <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') void handleScan() }}
+                    disabled={loading && !limitedEvidenceMode}
+                    placeholder="0x… wallet address"
+                    spellCheck={false}
+                    className="ws-wallet-input"
+                  />
+                  <button
+                    type="button"
+                    className="ws-paste-btn"
+                    disabled={loading && !limitedEvidenceMode}
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText()
+                        if (text) setInput(text.trim())
+                      } catch { /* clipboard permission denied — the field stays editable */ }
+                    }}
+                  >
+                    Paste
+                  </button>
+                </div>
+                <button
+                  className="ws-scan-btn"
+                  onClick={() => void handleScan()}
+                  disabled={(loading && !limitedEvidenceMode) || !input.trim()}
+                  style={{
+                    height: '56px', padding: '0 26px', borderRadius: '12px',
+                    border: '1px solid rgba(45,212,191,0.9)',
+                    background: 'linear-gradient(135deg, #5eead4 0%, #2DD4BF 55%, #14b8a6 100%)',
+                    color: '#04201c', opacity: ((loading && !limitedEvidenceMode) || !input.trim()) ? 0.5 : 1,
+                    fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
+                    cursor: ((loading && !limitedEvidenceMode) || !input.trim()) ? 'not-allowed' : 'pointer',
+                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                    whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', flexShrink: 0,
+                  }}
+                >
+                  {/* SCAN-BUTTON-NEVER-STUCK FIX, DISCLOSED (stuck-scanning-lifecycle fix): once
+                      limitedEvidenceMode is true the button is live again even while the background poll
+                      for the previous scan is still running — it reads "Rescan" since a completed (if
+                      limited) result already exists to refresh. */}
+                  {loading && !limitedEvidenceMode ? 'Scanning…' : loading && limitedEvidenceMode ? 'Rescan' : result ? 'Rescan' : 'Scan'}
+                  {!(loading && !limitedEvidenceMode) && (
+                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  )}
+                </button>
+              </div>
 
-          {/* Deep Scan and admin-only recovery controls */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
-            <button
-              onClick={() => void handleScan('deep')}
-              disabled={(loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit}
-              title={deepScanAtLimit ? scanDailyLimitReachedMessage(plan, deepScanQuota?.limit ?? null) : 'Deep scan — holdings and portfolio first, then recovery and PnL.'}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.45)',
-                background: 'rgba(45,212,191,0.08)', color: '#2DD4BF',
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
-                cursor: ((loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
-                opacity: deepScanAtLimit ? 0.45 : 1,
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-              }}
-            >
-              {limitedEvidenceMode ? 'Retry Deep Scan' : 'Deep Scan'}
-            </button>
-            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
-              Holdings + portfolio first · PnL and recovery follow
-              {deepScanQuotaLabel ? ` · ${deepScanQuotaLabel}` : ''}
-            </span>
-            {/* ROBINHOOD SEPARATE BUTTON REMOVED, DISCLOSED (multi-chain integration task): Robinhood
-                Chain is no longer a separate, bolt-on action — handleScan() above now fires
-                handleRobinhoodScan() automatically as part of a normal multi-chain scan (chainSlug
-                'robinhood', chainId 4663, alongside Base/ETH). Explicit re-scanning stays possible
-                via the "Rescan" control inside the Robinhood card itself, once results exist. */}
+              {/* Deep Scan and admin-only recovery controls — same row, inside the card. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => void handleScan('deep')}
+                  disabled={(loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit}
+                  title={deepScanAtLimit ? scanDailyLimitReachedMessage(plan, deepScanQuota?.limit ?? null) : 'Deep scan — holdings and portfolio first, then recovery and PnL.'}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(45,212,191,0.40)',
+                    background: 'rgba(45,212,191,0.08)', color: '#2DD4BF',
+                    fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
+                    cursor: ((loading && !limitedEvidenceMode) || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
+                    opacity: deepScanAtLimit ? 0.45 : 1,
+                    fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+                  }}
+                >
+                  {limitedEvidenceMode ? 'Retry Deep Scan' : 'Deep Scan'}
+                </button>
+                <span style={{ fontSize: '12px', color: '#64748b', fontFamily: 'var(--font-inter, Inter, sans-serif)', lineHeight: 1.5 }}>
+                  Holdings + portfolio first · PnL and recovery follow
+                  {deepScanQuotaLabel ? ` · ${deepScanQuotaLabel}` : ''}
+                </span>
+                {/* ROBINHOOD SEPARATE BUTTON REMOVED, DISCLOSED (multi-chain integration task): Robinhood
+                    Chain is scanned automatically by handleScan() as part of a normal multi-chain scan;
+                    explicit re-scanning stays inside the Robinhood card once results exist. */}
+              </div>
+            </div>
           </div>
 
           {/* Loading state — hidden once limitedEvidenceMode kicks in (stuck-scanning-lifecycle
@@ -1464,13 +1541,40 @@ export default function WalletScannerPage() {
             </div>
           )}
 
-          {/* Idle placeholder */}
+          {/* Idle — "What you get" + example wallets (static explanation; no numbers or sample data). */}
           {!loading && !error && !result && (
-            <div className="ws-card ws-card-hover" style={{ textAlign: 'center', padding: '48px 24px', color: 'rgba(255,255,255,0.30)' }}>
-              <div className="ws-section-header" style={{ color: 'rgba(45,212,191,0.55)', marginBottom: '10px' }}>CORTEX · Wallet Intelligence</div>
-              <p style={{ fontSize: '13px', lineHeight: 1.7, margin: 0, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-                Enter a wallet address above to generate a CORTEX wallet read — portfolio value, holdings, and on-chain behavior via the 180-Day Intelligence Engine.
-              </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+              <div>
+                <p className="ws-section-header" style={{ color: '#64748b', margin: '0 0 12px', fontSize: '11px' }}>What you get</p>
+                <div className="ws-get-grid">
+                  {[
+                    { label: 'Portfolio Value', color: '#2DD4BF', desc: 'Live USD value across supported chains.', icon: <path d="M4 19h16M7 15l3-4 3 2 4-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
+                    { label: 'Holdings', color: '#8b5cf6', desc: 'Every token held, priced and ranked.', icon: <><ellipse cx="12" cy="6.5" rx="7" ry="2.5" stroke="currentColor" strokeWidth="2" /><path d="M5 6.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5M5 11.5v5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-5" stroke="currentColor" strokeWidth="2" /></> },
+                    { label: 'PnL + Win Rate', color: '#ec4899', desc: 'Realized PnL and win rate from verified trades.', icon: <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /> },
+                    { label: 'CORTEX Personality', color: '#f59e0b', desc: 'Trading style, risk score and biggest flags.', icon: <><circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" /><path d="M9 10h.01M15 10h.01M9 15c1.7 1.3 4.3 1.3 6 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
+                  ].map((item) => (
+                    <div key={item.label} className="ws-get-card">
+                      <span aria-hidden="true" className="ws-get-icon" style={{ color: item.color, background: `${item.color}1a`, border: `1px solid ${item.color}33` }}>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">{item.icon}</svg>
+                      </span>
+                      <p style={{ margin: '0 0 6px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: item.color, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{item.label}</p>
+                      <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8', lineHeight: 1.5, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{item.desc}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="ws-section-header" style={{ color: '#64748b', margin: '0 0 12px', fontSize: '11px' }}>Try an example</p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {EXAMPLE_WALLETS.map((example) => (
+                    <button key={example.address} type="button" className="ws-example-chip" onClick={() => setInput(example.address)} title={`Fill ${example.address}`}>
+                      <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{example.label}</span>
+                      <span style={{ color: '#64748b' }}>{example.address.slice(0, 6)}…{example.address.slice(-4)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -1617,7 +1721,7 @@ export default function WalletScannerPage() {
         <aside className="mob-verdict-panel" style={{
           width: '360px', flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.07)',
-          background: 'linear-gradient(180deg, #070b14 0%, #060a12 100%)',
+          background: 'rgba(8,12,20,0.72)',
           display: 'flex', flexDirection: 'column',
         }}>
           <div style={{ height: '2px', flexShrink: 0, background: 'linear-gradient(90deg, transparent 0%, #2DD4BF 40%, #8b5cf6 70%, transparent 100%)', opacity: cortexRead ? 0.85 : 0.15, transition: 'opacity 0.5s' }} />
@@ -1636,7 +1740,7 @@ export default function WalletScannerPage() {
             )}
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {/* CORTEX-PANEL-NEVER-STUCK FIX, DISCLOSED (stuck-scanning-lifecycle fix): "reading…"
                 is now gated on `loading && !limitedEvidenceMode` instead of `loading` alone, so it
                 can never sit forever once holdings/pricing/portfolio are ready and the grace period
@@ -1652,9 +1756,28 @@ export default function WalletScannerPage() {
               </p>
             )}
             {!loading && !cortexRead && (
-              <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.18)', lineHeight: 1.7, fontFamily: 'var(--font-inter, Inter, sans-serif)', margin: 0 }}>
-                Scan a wallet to generate a CORTEX wallet read.
-              </p>
+              /* Pre-scan placeholder: clearly a preview (AWAITING SCAN, skeleton bars), never a fake read. */
+              <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '16px' }}>
+                  <svg aria-hidden="true" width="44" height="44" viewBox="0 0 44 44" fill="none">
+                    <circle cx="22" cy="22" r="17" stroke="rgba(148,163,184,0.16)" strokeWidth="4" />
+                    <path d="M22 5a17 17 0 0116.2 11.8" stroke="rgba(45,212,191,0.35)" strokeWidth="4" strokeLinecap="round" />
+                  </svg>
+                  <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '3px 8px', borderRadius: '999px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.28)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>
+                    AWAITING SCAN
+                  </span>
+                </div>
+                {[
+                  { label: 'Personality', width: '62%' },
+                  { label: 'Risk score', width: '38%' },
+                  { label: 'Biggest flag', width: '78%' },
+                ].map((row, idx) => (
+                  <div key={row.label} style={{ padding: '12px 0', borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none', ...(idx === 2 ? { paddingBottom: 0 } : {}) }}>
+                    <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#64748b', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{row.label}</p>
+                    <div className="ws-skeleton" style={{ width: row.width }} />
+                  </div>
+                ))}
+              </div>
             )}
             {/* PREMIUM WALLET READ, DISCLOSED (Wallet Read / CORTEX sidebar redesign task): the old
                 flat verdict/read/keySignals/risks/nextAction card stack is replaced by
@@ -1664,17 +1787,17 @@ export default function WalletScannerPage() {
                 app/frontend/lib/walletReadBuilder.ts's own header for the full disclosure. */}
             {(!loading || limitedEvidenceMode) && cortexRead && <WalletReadPanel read={cortexRead} />}
 
-            <div style={{ marginTop: '4px', background: 'rgba(45,212,191,0.035)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '14px', padding: '14px' }}>
+            <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
                 <div>
-                  <p style={{ margin: 0, fontSize: '9px', fontWeight: 800, color: 'rgba(45,212,191,0.70)', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Wallet Watchlist</p>
-                  <p style={{ margin: '5px 0 0', fontSize: '11px', color: 'rgba(148,163,184,0.68)', lineHeight: 1.4 }}>Saved wallets stay here until you remove them.</p>
+                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Wallet Watchlist</p>
+                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#64748b', lineHeight: 1.4 }}>Saved wallets stay here until you remove them.</p>
                 </div>
                 <button
                   type="button"
+                  className="ws-wl-save"
                   onClick={handleAddWalletToWatchlist}
                   disabled={!result?.scanMetadata?.walletAddress || watchlistStatus === 'saving'}
-                  style={{ border: '1px solid rgba(45,212,191,0.30)', background: result?.scanMetadata?.walletAddress ? 'rgba(45,212,191,0.10)' : 'rgba(148,163,184,0.06)', color: result?.scanMetadata?.walletAddress ? '#2DD4BF' : 'rgba(148,163,184,0.35)', borderRadius: '999px', padding: '7px 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', cursor: result?.scanMetadata?.walletAddress && watchlistStatus !== 'saving' ? 'pointer' : 'not-allowed' }}
                 >
                   {watchlistStatus === 'saving' ? 'Saving…' : 'Save'}
                 </button>
@@ -1687,21 +1810,42 @@ export default function WalletScannerPage() {
               )}
 
               {watchlistLoading ? (
-                <p style={{ margin: 0, fontSize: '12px', color: 'rgba(148,163,184,0.55)' }}>Loading saved wallets…</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#64748b' }}>Loading saved wallets…</p>
               ) : watchlistWallets.length === 0 ? (
-                <p style={{ margin: 0, fontSize: '12px', color: 'rgba(148,163,184,0.45)', lineHeight: 1.55 }}>No saved wallets yet. Scan a wallet, then click Save.</p>
+                <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.55 }}>No saved wallets yet. Scan a wallet, then click Save.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   {watchlistWallets.map((wallet) => {
                     const deleting = watchlistDeleting?.toLowerCase() === wallet.address.toLowerCase()
+                    const hasValue = wallet.portfolio_value != null && Number.isFinite(wallet.portfolio_value)
+                    const sizeTag = hasValue ? watchlistSizeTag(wallet.portfolio_value as number) : null
                     return (
-                      <div key={wallet.id ?? wallet.address} style={{ display: 'flex', alignItems: 'center', gap: '9px', padding: '10px', borderRadius: '11px', background: 'rgba(6,10,18,0.72)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <div key={wallet.id ?? wallet.address} className="ws-wl-row">
                         <button type="button" onClick={() => setInput(wallet.address)} title="Load wallet address" style={{ minWidth: 0, flex: 1, textAlign: 'left', border: 0, background: 'transparent', padding: 0, cursor: 'pointer' }}>
-                          <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 8)}…{wallet.address.slice(-6)}</p>
-                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: 'rgba(148,163,184,0.55)' }}>{wallet.portfolio_value != null && Number.isFinite(wallet.portfolio_value) ? `Portfolio ${fmtUSD(wallet.portfolio_value)}` : 'Portfolio value not saved'}{wallet.label ? ` · ${wallet.label}` : ''}</p>
+                          <p style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px', color: '#e2e8f0', fontWeight: 600, fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{wallet.address.slice(0, 6)}…{wallet.address.slice(-4)}</p>
+                          <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#64748b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {hasValue ? fmtUSD(wallet.portfolio_value as number) : 'Value not saved'}
+                            {sizeTag ? ` · ${sizeTag}` : ''}
+                            {wallet.label ? ` · ${wallet.label}` : ''}
+                          </p>
                         </button>
-                        <button type="button" aria-label="Remove wallet from watchlist" disabled={deleting} onClick={() => handleRemoveWalletFromWatchlist(wallet.address)} style={{ width: '30px', height: '30px', flexShrink: 0, borderRadius: '9px', border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.08)', color: deleting ? 'rgba(248,113,113,0.45)' : '#f87171', cursor: deleting ? 'wait' : 'pointer', fontSize: '14px', lineHeight: 1 }}>
-                          🗑
+                        <button
+                          type="button"
+                          className="ws-wl-scan"
+                          disabled={loading && !limitedEvidenceMode}
+                          onClick={() => {
+                            // One click: fill the input, then the pendingScanAddressRef effect runs the
+                            // normal handleScan() once the input state holds this address.
+                            pendingScanAddressRef.current = wallet.address
+                            setInput(wallet.address)
+                            // Input already holds this address: no state change, so scan directly.
+                            if (input === wallet.address) { pendingScanAddressRef.current = null; void handleScan() }
+                          }}
+                        >
+                          Scan
+                        </button>
+                        <button type="button" className="ws-wl-del" aria-label="Remove wallet from watchlist" title="Remove from watchlist" disabled={deleting} onClick={() => handleRemoveWalletFromWatchlist(wallet.address)}>
+                          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V5h6v2M7 7l1 12h8l1-12" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>
                         </button>
                       </div>
                     )
