@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
+import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, describeKvError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { consumeDailyScan, snapshotDailyScan } from '@/lib/scanQuota'
@@ -52,6 +52,16 @@ function checkWalletScanRate(ip: string): boolean {
 }
 
 export async function POST(req: Request): Promise<Response> {
+  // Any unexpected throw (plan/quota/auth lookups) answers with JSON the client can show, never a bare 500.
+  try {
+    return await enqueueScan(req)
+  } catch (err) {
+    console.error('[wallet-scan] unexpected enqueue route error', { error: describeKvError(err) })
+    return NextResponse.json({ error: { message: 'Scan could not be started. Please try again.', category: 'server' } }, { status: 500 })
+  }
+}
+
+async function enqueueScan(req: Request): Promise<Response> {
   const body = await req.json().catch(() => null) as { walletAddress?: unknown; wallet?: unknown; chains?: unknown; scanMode?: unknown } | null
   const wallet = typeof body?.walletAddress === 'string'
     ? body.walletAddress.trim()
@@ -132,15 +142,24 @@ export async function POST(req: Request): Promise<Response> {
   const robinhoodMarked = includeRobinhoodRequested && robinhoodAvailable
   if (robinhoodMarked) await markRobinhoodScanQueued(wallet, jobId, robinhoodQueuedAt).catch(() => {})
 
+  const jobPayload = { jobId, userId: authUser.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested }
   try {
     // WORKER-LEVEL ROBINHOOD FIX, DISCLOSED: `includeRobinhoodRequested` (computed above from the
     // caller's original, unfiltered `chains`) now rides along with the job payload so the worker
     // (workers/walletScanV2.ts's runWalletScanV2Worker, via src/modules/walletScanWorker.ts) can
     // run the one Robinhood provider scan for this job (lib/server/robinhoodScanCoordinator.ts) as part
     // of processing the queued deep-scan job.
-    await enqueueWalletScanJob(jobId, { jobId, userId: authUser.userId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
+    await enqueueWalletScanJob(jobId, jobPayload)
   } catch (err) {
-    console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
+    // Underlying cause, server-side only: which enqueue step failed, the KV/Redis error, job id, size.
+    console.error('[wallet-scan] failed to enqueue job', {
+      jobId,
+      wallet: wallet.toLowerCase(),
+      scanMode,
+      stage: err instanceof WalletScanQueueUnavailableError ? err.stage ?? null : 'unexpected',
+      kvError: err instanceof WalletScanQueueUnavailableError ? err.detail ?? err.message : describeKvError(err),
+      payloadBytes: JSON.stringify(jobPayload).length,
+    })
     if (robinhoodMarked) await markRobinhoodScanEnqueueFailed(wallet, jobId, robinhoodQueuedAt).catch(() => {})
     if (err instanceof WalletScanQueueUnavailableError) {
       return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })

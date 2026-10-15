@@ -987,15 +987,15 @@ export default function WalletScannerPage() {
           }
         })
       }
+      if (response.degraded) {
+        setResultEnvelope(null)
+        setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment. Previous results were cleared — they may no longer reflect this wallet\'s current value.')
+        return
+      }
       // TIMED OUT AFTER THE SNAPSHOT: the holdings/portfolio snapshot already on screen stays, labelled
       // "PnL still processing", while the follow-up job finishes PnL — no error banner.
       if (!response.success && response.pnlStillProcessing && response.pnlFollowUpJobId && scanSession?.access_token) {
         startPnlFollowUp(response.pnlFollowUpJobId, scanSession.access_token)
-        return
-      }
-      if (response.degraded) {
-        setResultEnvelope(null)
-        setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment. Previous results were cleared — they may no longer reflect this wallet\'s current value.')
         return
       }
       if (!response.success || !response.data) {

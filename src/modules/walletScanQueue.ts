@@ -1,3 +1,4 @@
+import { after } from 'next/server'
 import { kv } from '@/lib/server/kv'
 import {
   walletScanJobKey,
@@ -90,11 +91,29 @@ const JOB_TTL_SECONDS = 30 * 60
 export const WALLET_SCAN_QUEUE_UNAVAILABLE = { error: 'scan-queue-unavailable' } as const
 export const WALLET_SCAN_STATUS_UNAVAILABLE = { error: 'scan-status-unavailable' } as const
 
+export type EnqueueStage = 'kv_not_configured' | 'write_job_record' | 'write_pending_flag' | 'read_pending_list' | 'write_pending_list'
+
 export class WalletScanQueueUnavailableError extends Error {
-  constructor(message = 'scan-queue-unavailable') {
+  /** Which enqueue/claim step failed, and the underlying KV/Redis error text (logged, never sent to the client). */
+  stage?: EnqueueStage
+  detail?: string
+  constructor(message = 'scan-queue-unavailable', info: { stage?: EnqueueStage; detail?: string } = {}) {
     super(message)
     this.name = 'WalletScanQueueUnavailableError'
+    this.stage = info.stage
+    this.detail = info.detail
   }
+}
+
+/** The underlying KV/Redis error as text: message plus any status/code/body the client attached. */
+export function describeKvError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const extra = err as Error & { status?: unknown; code?: unknown; cause?: unknown; response?: unknown }
+  const parts = [`${err.name}: ${err.message}`]
+  if (extra.status != null) parts.push(`status=${String(extra.status)}`)
+  if (extra.code != null) parts.push(`code=${String(extra.code)}`)
+  if (extra.cause != null) parts.push(`cause=${extra.cause instanceof Error ? extra.cause.message : String(extra.cause)}`)
+  return parts.join(' | ').slice(0, 1000)
 }
 
 export class WalletScanStatusUnavailableError extends Error {
@@ -110,14 +129,14 @@ export function walletScanRedisConfigured(): boolean {
 
 function assertWalletScanRedisConfigured(kind: 'queue' | 'status'): void {
   if (walletScanRedisConfigured()) return
-  if (kind === 'queue') throw new WalletScanQueueUnavailableError('KV is not configured')
+  if (kind === 'queue') throw new WalletScanQueueUnavailableError('KV is not configured', { stage: 'kv_not_configured' })
   throw new WalletScanStatusUnavailableError('KV is not configured')
 }
 
-function queueUnavailable(err: unknown): WalletScanQueueUnavailableError {
+function queueUnavailable(err: unknown, stage?: EnqueueStage): WalletScanQueueUnavailableError {
   return err instanceof WalletScanQueueUnavailableError
     ? err
-    : new WalletScanQueueUnavailableError(err instanceof Error ? err.message : String(err))
+    : new WalletScanQueueUnavailableError(err instanceof Error ? err.message : String(err), { stage, detail: describeKvError(err) })
 }
 
 function statusUnavailable(err: unknown): WalletScanStatusUnavailableError {
@@ -136,7 +155,7 @@ export async function writeWalletScanJob(job: WalletScanJobMetadata): Promise<vo
     await kv.set(walletScanJobKey(job.jobId), { ...job, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] write-job-failure', err)
-    throw queueUnavailable(err)
+    throw queueUnavailable(err, 'write_job_record')
   }
 }
 
@@ -164,7 +183,7 @@ export async function updateWalletScanJobProgress(jobId: string, progress: Walle
     try {
       const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
       if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
-      await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() })
+      await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
     } catch (err) {
       logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
     }
@@ -222,7 +241,7 @@ export async function publishWalletScanPartialSnapshot(jobId: string, partial: W
       if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
       // Monotonic: an older partial snapshot never replaces a newer one already on the record.
       if (job.partial && job.partial.publishedAtElapsedMs > partial.publishedAtElapsedMs) return
-      await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() })
+      await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
     } catch (err) {
       logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
     }
@@ -268,7 +287,7 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
   if (job.status === 'done' || job.status === 'failed') return null
 
   try {
-    await kv.set(jobKey, { ...job, status: 'running', updatedAt: Date.now() })
+    await kv.set(jobKey, { ...job, status: 'running', updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
     await kv.set(pendingJobKey, false, { ex: 60 })
     const pending = (await kv.get<string[]>(walletScanPendingKey())) ?? []
     await kv.set(walletScanPendingKey(), pending.filter((pendingJobId) => pendingJobId !== jobId), { ex: JOB_TTL_SECONDS })
@@ -308,7 +327,7 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
 
   try { await kv.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-job-failure', err); throw queueUnavailable(err) }
 
-  try { await kv.set(walletScanJobKey(jobId), { ...job, status: 'running', updatedAt: Date.now() }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
+  try { await kv.set(walletScanJobKey(jobId), { ...job, status: 'running', updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
 
   return {
     jobId,
@@ -322,28 +341,59 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
   }
 }
 
-async function triggerWalletScanWorker(jobId: string): Promise<void> {
-  try {
-    const base = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000'
+export type WorkerTriggerOutcome =
+  | { kind: 'dispatched'; waitedMs: number }
+  | { kind: 'responded'; status: number; waitedMs: number }
+  | { kind: 'error'; message: string; waitedMs: number }
+  | { kind: 'not_configured' }
 
-    const workerSecret = process.env.WALLET_SCAN_WORKER_SECRET
-    if (!workerSecret) {
-      console.error('[walletScanQueue] WALLET_SCAN_WORKER_SECRET is not configured; worker trigger denied')
-      return
-    }
+// The worker route only responds when its whole job has finished (up to ~300s). Awaiting that response
+// here held the enqueue request open for the entire scan — and, for a follow-up queued from inside a
+// worker, held THAT worker past its maxDuration before it could publish (a killed job left 'running',
+// the enqueue request a non-JSON 504 → the client's 'scan-enqueue-failed'). Now the request is sent,
+// we wait only until it is dispatched (or answers quickly, e.g. 401/503), and after() keeps the
+// in-flight request alive past this response without blocking it.
+export const WORKER_TRIGGER_DISPATCH_WAIT_MS = 1_500
 
-    await fetch(`${base}/api/wallet-scan/worker`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${workerSecret}` },
-      body: JSON.stringify({ jobId }),
-    })
-  } catch (err) {
-    // Enqueue must stay lightweight and never run the scan inline. If the trigger fails, the
-    // persisted pending job remains in KV for the next worker invocation/retry.
-    console.warn('[walletScanQueue] failed to trigger background worker', { err: err instanceof Error ? err.message : String(err) })
+export async function triggerWalletScanWorker(jobId: string, deps: { fetchImpl?: typeof fetch; keepAlive?: (work: Promise<unknown>) => void; dispatchWaitMs?: number } = {}): Promise<WorkerTriggerOutcome> {
+  const base = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : 'http://localhost:3000'
+  const workerSecret = process.env.WALLET_SCAN_WORKER_SECRET
+  if (!workerSecret) {
+    console.error('[walletScanQueue] WALLET_SCAN_WORKER_SECRET is not configured; worker trigger denied')
+    return { kind: 'not_configured' }
   }
+  const startedAt = Date.now()
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const request: Promise<WorkerTriggerOutcome> = fetchImpl(`${base}/api/wallet-scan/worker`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${workerSecret}` },
+    body: JSON.stringify({ jobId }),
+  }).then(
+    (res) => ({ kind: 'responded' as const, status: res.status, waitedMs: Date.now() - startedAt }),
+    (err) => ({ kind: 'error' as const, message: err instanceof Error ? err.message : String(err), waitedMs: Date.now() - startedAt }),
+  )
+  const keepAlive = deps.keepAlive ?? ((work: Promise<unknown>) => {
+    // Outside a request scope (scripts, tests) after() throws; the request simply runs to completion.
+    try { after(() => work.then(() => undefined)) } catch { /* no request scope */ }
+  })
+  keepAlive(request.then((outcome) => {
+    if (outcome.kind !== 'responded' || outcome.status >= 400) {
+      console.warn('[walletScanQueue] worker trigger finished unsuccessfully', { jobId, ...outcome })
+    }
+  }))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const dispatched = new Promise<WorkerTriggerOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'dispatched', waitedMs: Date.now() - startedAt }), deps.dispatchWaitMs ?? WORKER_TRIGGER_DISPATCH_WAIT_MS)
+  })
+  const outcome = await Promise.race([request, dispatched])
+  if (timer) clearTimeout(timer)
+  // Enqueue never fails on the trigger: the persisted pending job stays in KV for the next worker run.
+  if (outcome.kind === 'error' || (outcome.kind === 'responded' && outcome.status >= 400)) {
+    console.warn('[walletScanQueue] failed to trigger background worker', { jobId, ...outcome })
+  }
+  return outcome
 }
 
 export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJobPayload): Promise<void> {
@@ -362,13 +412,25 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     includeRobinhoodRequested: payload.includeRobinhoodRequested ?? false,
     ...(payload.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
   })
+  let stage: EnqueueStage = 'write_pending_flag'
+  let pendingCount = 0
   try {
     await kv.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
-    const pending = (await kv.get<string[]>(walletScanPendingKey())) ?? []
-    await kv.set(walletScanPendingKey(), [...new Set([...pending, jobId])], { ex: JOB_TTL_SECONDS })
+    stage = 'read_pending_list'
+    const stored = await kv.get<unknown>(walletScanPendingKey())
+    // A malformed or oversized list (ids of jobs that were never claimed) can never block a new job:
+    // keep only string ids, dedupe, and cap to the newest MAX_PENDING_JOB_IDS.
+    const pending = Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []
+    const next = [...new Set([...pending, jobId])].slice(-MAX_PENDING_JOB_IDS)
+    pendingCount = next.length
+    stage = 'write_pending_list'
+    await kv.set(walletScanPendingKey(), next, { ex: JOB_TTL_SECONDS })
   } catch (err) {
-    logQueueFailure('[wallet-scan-queue] enqueue-pending-failure', err)
-    throw queueUnavailable(err)
+    logQueueFailure('[wallet-scan-queue] enqueue-pending-failure', { jobId, stage, error: describeKvError(err) })
+    throw queueUnavailable(err, stage)
   }
-  await triggerWalletScanWorker(jobId)
+  const trigger = await triggerWalletScanWorker(jobId)
+  console.warn('[wallet-scan-queue] enqueued', { jobId, followUp: payload.heavyWalletFollowUp === true, pendingCount, trigger })
 }
+
+export const MAX_PENDING_JOB_IDS = 200

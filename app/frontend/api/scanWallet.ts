@@ -154,6 +154,17 @@ export type ScanWalletStatusUpdate = {
   walletChainSelectionAudit?: WalletChainSelectionAudit
 }
 
+// The enqueue route answers { error: { message } } for auth/plan/rate/quota/validation, but
+// { error: 'scan-queue-unavailable' } (a string) when KV/Redis fails, and a platform timeout has no JSON
+// body at all — both previously collapsed into the opaque 'scan-enqueue-failed'.
+export function enqueueFailureMessage(httpStatus: number, body: { error?: unknown } | null): string {
+  const error = body?.error
+  if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') return (error as { message: string }).message
+  if (error === 'scan-queue-unavailable') return 'The scan queue is temporarily unavailable. Please try again in a moment.'
+  if (httpStatus === 504 || httpStatus === 408) return 'Starting the scan timed out. Please try again in a moment.'
+  return `scan-enqueue-failed (HTTP ${httpStatus})`
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
 }
@@ -210,7 +221,7 @@ export async function scanWalletV2(
     }
 
     if (!startRes.ok || !startBody?.jobId || !startBody.status) {
-      return toErrorResponse(startBody?.error && typeof startBody.error === 'object' && startBody.error.message ? startBody.error.message : 'scan-enqueue-failed')
+      return toErrorResponse(enqueueFailureMessage(startRes.status, startBody), [`HTTP ${startRes.status}`])
     }
 
     onUpdate?.({ jobId: startBody.jobId, status: startBody.status, walletChainSelectionAudit: startBody.walletChainSelectionAudit })
