@@ -38,3 +38,9 @@ export const WETH_DEPOSIT_TOPIC0 = '0xe1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c
 export const WETH_WITHDRAWAL_TOPIC0 = '0x7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65'
 
 export const WETH_BASE_ADDRESS = '0x4200000000000000000000000000000000000006'
+// Canonical WETH9 on Ethereum mainnet (same Deposit/Withdrawal events).
+export const WETH_ETH_ADDRESS = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
+
+export function wethAddressFor(chain: 'base' | 'eth'): string {
+  return chain === 'eth' ? WETH_ETH_ADDRESS : WETH_BASE_ADDRESS.toLowerCase()
+}

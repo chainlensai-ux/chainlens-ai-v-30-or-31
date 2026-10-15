@@ -34,7 +34,7 @@
 import type { DecodedLogs } from './decodeLogs'
 import { decodeLogs } from './decodeLogs'
 import type { PoolValidator } from './poolValidator'
-import { WETH_BASE_ADDRESS } from './signatures'
+import { wethAddressFor } from './signatures'
 import type {
   DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics, UniswapV3Diagnostics,
 } from './types'
@@ -47,8 +47,8 @@ import { canonicalTokenDecimals } from '../normalization/canonicalDecimals'
 export type { DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle } from './types'
 export { decodeLogs } from './decodeLogs'
 
-function tokenMetaFor(meta: Record<string, TokenMeta> | undefined, address: string): TokenMeta {
-  const canonical = canonicalTokenDecimals('base', address)
+function tokenMetaFor(meta: Record<string, TokenMeta> | undefined, address: string, chain: ReceiptTxBundle['chain'] = 'base'): TokenMeta {
+  const canonical = canonicalTokenDecimals(chain, address)
   const fromMap = meta?.[address.toLowerCase()]
   if (fromMap) return { symbol: fromMap.symbol, decimals: canonical ?? fromMap.decimals }
   if (canonical != null) return { symbol: '?', decimals: canonical }
@@ -196,9 +196,10 @@ function logContradictoryLegsAudit(tx: ReceiptTxBundle, decoded: DecodedLogs): v
   })
 }
 
-function classifyDirection(tokenIn: string, tokenOut: string): WalletDirection {
-  const inIsBase = tokenIn === WETH_BASE_ADDRESS.toLowerCase()
-  const outIsBase = tokenOut === WETH_BASE_ADDRESS.toLowerCase()
+function classifyDirection(tokenIn: string, tokenOut: string, chain: ReceiptTxBundle['chain'] = 'base'): WalletDirection {
+  const weth = wethAddressFor(chain)
+  const inIsBase = tokenIn === weth
+  const outIsBase = tokenOut === weth
   if (inIsBase && !outIsBase) return 'wallet_bought_tokenOut'
   if (!inIsBase && outIsBase) return 'wallet_sold_tokenIn'
   return 'wallet_swapped'
@@ -225,8 +226,8 @@ function buildUniswapV3Swap(
     (t) => t.token === leg.tokenIn && t.to === walletAddress && t.value > BigInt('0'),
   )
 
-  const tokenInMeta = tokenMetaFor(tx.tokenMeta, leg.tokenIn)
-  const tokenOutMeta = tokenMetaFor(tx.tokenMeta, leg.tokenOut)
+  const tokenInMeta = tokenMetaFor(tx.tokenMeta, leg.tokenIn, tx.chain)
+  const tokenOutMeta = tokenMetaFor(tx.tokenMeta, leg.tokenOut, tx.chain)
 
   const swap: DecodedReceiptSwap = {
     chain: tx.chain,
@@ -240,7 +241,7 @@ function buildUniswapV3Swap(
     decimals: { tokenIn: tokenInMeta.decimals, tokenOut: tokenOutMeta.decimals },
     normalizedAmountIn: toNormalized(leg.amountIn, tokenInMeta.decimals),
     normalizedAmountOut: toNormalized(leg.amountOut, tokenOutMeta.decimals),
-    walletDirection: classifyDirection(leg.tokenIn, leg.tokenOut),
+    walletDirection: classifyDirection(leg.tokenIn, leg.tokenOut, tx.chain),
     evidenceSource: 'receipt_pool_swap_event',
     confidence: 'exact',
     meta: {
@@ -274,7 +275,7 @@ export async function decodeReceiptSwap(
     return { ok: false, rejection: { txHash: tx.txHash, reason: 'no_logs' } }
   }
 
-  const decoded = decodeLogs(tx.logs)
+  const decoded = decodeLogs(tx.logs, tx.chain)
 
   if (decoded.malformed > 0 && decoded.swaps.length === 0) {
     return { ok: false, rejection: { txHash: tx.txHash, reason: 'malformed_log_data' } }
@@ -336,7 +337,7 @@ export async function decodeReceiptSwap(
   // custom/forked pool never deployed by the canonical factory) fails closed to inference rather
   // than being trusted on log shape alone.
   for (const leg of dedupeExactLegs(legs)) {
-    const isValid = await validator.isValidPool(leg.swap.protocol, leg.swap.poolAddress, leg.tokenIn, leg.tokenOut)
+    const isValid = await validator.isValidPool(leg.swap.protocol, leg.swap.poolAddress, leg.tokenIn, leg.tokenOut, tx.chain)
     if (!isValid) {
       // UNISWAP V3 FALLBACK, DISCLOSED: only reachable for a single concentrated-liquidity-shaped
       // Swap event whose Aerodrome Slipstream validation just genuinely failed — see this
@@ -347,7 +348,8 @@ export async function decodeReceiptSwap(
       // one economic leg (dedupeExactLegs); use that same exact-only view for fallback eligibility
       // rather than rejecting an otherwise single-emitter receipt before the canonical V3 factory
       // gets a chance to prove it. Distinct legs still fail closed.
-      if (uniswapV3Validator && dedupeExactLegs(legs).length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
+      // The V3 fallback validator is Base's Uniswap V3 factory; Ethereum's validator already checks Uniswap V3 itself.
+      if (tx.chain === 'base' && uniswapV3Validator && dedupeExactLegs(legs).length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
         const v3 = resolveUniswapV3Leg(leg.swap, decoded)
         if (!v3.ok) {
           return { ok: false, rejection: { txHash: tx.txHash, reason: v3.reason, uniswapV3: v3.diagnostics } }
@@ -411,13 +413,14 @@ export async function decodeReceiptSwap(
   const multiTransfer = mergeMultiTransferDiagnostics(multiTransferDiagnosticsList)
   if (multiTransfer && refundDetected) multiTransfer.refundNetted = true
 
-  const tokenInMeta = tokenMetaFor(tx.tokenMeta, first.tokenIn)
-  const tokenOutMeta = tokenMetaFor(tx.tokenMeta, last.tokenOut)
+  const tokenInMeta = tokenMetaFor(tx.tokenMeta, first.tokenIn, tx.chain)
+  const tokenOutMeta = tokenMetaFor(tx.tokenMeta, last.tokenOut, tx.chain)
 
   const swap: DecodedReceiptSwap = {
     chain: tx.chain,
     txHash: tx.txHash,
-    protocol: first.swap.protocol,
+    // The log decoder tags pools by event shape; on Ethereum those shapes are Uniswap V2 / V3.
+    protocol: tx.chain === 'eth' ? (first.swap.protocol === 'aerodrome_classic' ? 'uniswap_v2' : 'uniswap_v3') : first.swap.protocol,
     poolAddress: first.swap.poolAddress,
     tokenIn: { address: first.tokenIn, symbol: tokenInMeta.symbol, decimals: tokenInMeta.decimals },
     tokenOut: { address: last.tokenOut, symbol: tokenOutMeta.symbol, decimals: tokenOutMeta.decimals },
@@ -426,7 +429,7 @@ export async function decodeReceiptSwap(
     decimals: { tokenIn: tokenInMeta.decimals, tokenOut: tokenOutMeta.decimals },
     normalizedAmountIn: toNormalized(first.amountIn, tokenInMeta.decimals),
     normalizedAmountOut: toNormalized(last.amountOut, tokenOutMeta.decimals),
-    walletDirection: classifyDirection(first.tokenIn, last.tokenOut),
+    walletDirection: classifyDirection(first.tokenIn, last.tokenOut, tx.chain),
     evidenceSource: legs.length > 1 ? 'receipt_pool_swap_event_multi_hop' : 'receipt_pool_swap_event',
     confidence: 'exact',
     meta: {

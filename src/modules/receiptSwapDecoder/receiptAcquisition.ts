@@ -13,9 +13,9 @@
 // available — it is counted under its own real reason and simply excluded from `logsByTxHash`,
 // exactly like "receipt genuinely absent" in every prior pass.
 
-import type { RawReceiptLog } from './types'
+import type { RawReceiptLog, ReceiptSwapChain } from './types'
 import type { SelectedCandidate } from './candidateSelector'
-import { getSharedBaseClient } from './rpcClient'
+import { getSharedBaseClient, getSharedEthereumClient } from './rpcClient'
 import { decodeLogs } from './decodeLogs'
 
 export type ReceiptFetchOutcome =
@@ -25,7 +25,7 @@ export type ReceiptFetchOutcome =
   | { status: 'malformed' }
   | { status: 'timeout' }
 
-export type ReceiptFetcher = (chain: 'base', txHash: string) => Promise<ReceiptFetchOutcome>
+export type ReceiptFetcher = (chain: ReceiptSwapChain, txHash: string) => Promise<ReceiptFetchOutcome>
 
 export type ReceiptRequestScopeCache = {
   // Keyed by `${chain}:${txHash.toLowerCase()}`. Pre-seeding an entry here (e.g. a receipt already
@@ -440,8 +440,9 @@ function toRawLogs(logs: readonly { address: string; topics: readonly string[]; 
 // retry-avoidance is the caller's (acquireReceiptsForCandidates') responsibility, and it never
 // retries either.
 export function createLiveBaseReceiptFetcher(): ReceiptFetcher {
-  return async (_chain, txHash) => {
-    const client = getSharedBaseClient()
+  return async (chain, txHash) => {
+    // Base by default (every existing caller); Ethereum receipts come from the Ethereum client.
+    const client = chain === 'eth' ? getSharedEthereumClient() : getSharedBaseClient()
     if (!client) return { status: 'malformed' }
     try {
       const receipt = await client.getTransactionReceipt({ hash: txHash as `0x${string}` })

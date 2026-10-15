@@ -27,8 +27,8 @@
 // (basedex.ts's own STABLE-POOL SKIP) — untouched by this file, and not something this fix can or
 // should paper over.
 
-import type { ReceiptSwapProtocol } from './types'
-import { getSharedBaseClient } from './rpcClient'
+import type { ReceiptSwapChain, ReceiptSwapProtocol } from './types'
+import { getSharedBaseClient, getSharedEthereumClient } from './rpcClient'
 
 // Same canonical, previously-verified addresses as basedex.ts — see that file's own header for the
 // full provenance/verification disclosure. Not re-derived here; imported by value would create a
@@ -62,7 +62,8 @@ const CL_POOL_FACTORY_ABI = [{
 const SLIPSTREAM_TICK_SPACINGS = [1, 50, 100, 200, 2000] as const
 
 export type PoolValidator = {
-  isValidPool(protocol: ReceiptSwapProtocol, poolAddress: string, token0: string, token1: string): Promise<boolean>
+  // `chain` is optional and defaults to Base; only createLiveChainPoolValidator dispatches on it.
+  isValidPool(protocol: ReceiptSwapProtocol, poolAddress: string, token0: string, token1: string, chain?: ReceiptSwapChain): Promise<boolean>
 }
 
 // PURE, DISCLOSED: the (tokenA, tokenB, stable) key-space search, independent of how `fetchPool` is
@@ -180,6 +181,88 @@ export function createLiveBaseDexPoolValidator(): PoolValidator {
         logPoolValidationAudit(protocol, protocol === 'aerodrome_classic' ? AERODROME_CLASSIC_FACTORY : AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, false)
         return false
       }
+    },
+  }
+}
+
+// ETHEREUM: canonical Uniswap factories. The log decoder tags a pool by event shape — the V2-shaped
+// Swap ('aerodrome_classic' tag) is checked with UniswapV2Factory.getPair, the V3-shaped Swap with the
+// pool's own fee() and UniswapV3Factory.getPool(token0, token1, fee). Both must return this exact pool.
+export const UNISWAP_V2_FACTORY_ETH = '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f'
+export const UNISWAP_V3_FACTORY_ETH = '0x1F98431c8aD98523631AE4a59f267346ea31F984'
+
+const UNISWAP_V2_FACTORY_ABI = [{
+  type: 'function', name: 'getPair', stateMutability: 'view',
+  inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }],
+  outputs: [{ name: 'pair', type: 'address' }],
+}] as const
+const UNISWAP_V3_FACTORY_ABI = [{
+  type: 'function', name: 'getPool', stateMutability: 'view',
+  inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }, { name: 'fee', type: 'uint24' }],
+  outputs: [{ name: 'pool', type: 'address' }],
+}] as const
+const UNISWAP_V3_POOL_FEE_ABI = [{
+  type: 'function', name: 'fee', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint24' }],
+}] as const
+
+export type EthereumPoolReads = {
+  getV2Pair(tokenA: string, tokenB: string): Promise<string | null>
+  getV3PoolFee(pool: string): Promise<number | null>
+  getV3Pool(tokenA: string, tokenB: string, fee: number): Promise<string | null>
+}
+
+/** PURE over its reads (injectable for tests). Fails closed on any missing/failed read. */
+export function createEthereumDexPoolValidator(reads: EthereumPoolReads): PoolValidator {
+  const cache = new Map<string, Promise<boolean>>()
+  return {
+    isValidPool(protocol, poolAddress, token0, token1) {
+      const target = poolAddress.toLowerCase()
+      const key = `${protocol}:${target}:${[token0.toLowerCase(), token1.toLowerCase()].sort().join(':')}`
+      const hit = cache.get(key)
+      if (hit) return hit
+      const run = (async () => {
+        try {
+          if (protocol === 'aerodrome_classic' || protocol === 'uniswap_v2') {
+            const pair = await reads.getV2Pair(token0, token1)
+            return typeof pair === 'string' && pair.toLowerCase() === target
+          }
+          const fee = await reads.getV3PoolFee(poolAddress)
+          if (fee == null) return false
+          const pool = await reads.getV3Pool(token0, token1, fee)
+          return typeof pool === 'string' && pool.toLowerCase() === target
+        } catch {
+          return false
+        }
+      })()
+      cache.set(key, run)
+      return run
+    },
+  }
+}
+
+export function createLiveEthereumDexPoolValidator(): PoolValidator {
+  const client = () => getSharedEthereumClient()
+  return createEthereumDexPoolValidator({
+    async getV2Pair(tokenA, tokenB) {
+      const c = client(); if (!c) return null
+      return await c.readContract({ address: UNISWAP_V2_FACTORY_ETH as `0x${string}`, abi: UNISWAP_V2_FACTORY_ABI, functionName: 'getPair', args: [tokenA as `0x${string}`, tokenB as `0x${string}`] }) as string
+    },
+    async getV3PoolFee(pool) {
+      const c = client(); if (!c) return null
+      return Number(await c.readContract({ address: pool as `0x${string}`, abi: UNISWAP_V3_POOL_FEE_ABI, functionName: 'fee' }))
+    },
+    async getV3Pool(tokenA, tokenB, fee) {
+      const c = client(); if (!c) return null
+      return await c.readContract({ address: UNISWAP_V3_FACTORY_ETH as `0x${string}`, abi: UNISWAP_V3_FACTORY_ABI, functionName: 'getPool', args: [tokenA as `0x${string}`, tokenB as `0x${string}`, fee] }) as string
+    },
+  })
+}
+
+/** Routes each validation to its chain's validator (Base when no chain is given). */
+export function createChainPoolValidator(validators: { base: PoolValidator; eth: PoolValidator }): PoolValidator {
+  return {
+    isValidPool(protocol, poolAddress, token0, token1, chain = 'base') {
+      return (chain === 'eth' ? validators.eth : validators.base).isValidPool(protocol, poolAddress, token0, token1, chain)
     },
   }
 }

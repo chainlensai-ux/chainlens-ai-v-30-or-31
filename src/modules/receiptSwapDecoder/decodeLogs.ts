@@ -9,7 +9,7 @@ import { decodeAbiParameters } from 'viem'
 import {
   CLASSIC_SWAP_TOPIC0, CLASSIC_MINT_TOPIC0, CLASSIC_BURN_TOPIC0,
   SLIPSTREAM_SWAP_TOPIC0, SLIPSTREAM_MINT_TOPIC0, SLIPSTREAM_BURN_TOPIC0,
-  ERC20_TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, WETH_BASE_ADDRESS,
+  ERC20_TRANSFER_TOPIC0, WETH_DEPOSIT_TOPIC0, WETH_WITHDRAWAL_TOPIC0, wethAddressFor,
 } from './signatures'
 import type { RawReceiptLog, ReceiptSwapProtocol } from './types'
 
@@ -57,7 +57,8 @@ function topicAddress(topic: string | undefined): string | null {
   return `0x${topic.slice(-40)}`.toLowerCase()
 }
 
-export function decodeLogs(logs: RawReceiptLog[]): DecodedLogs {
+export function decodeLogs(logs: RawReceiptLog[], chain: 'base' | 'eth' = 'base'): DecodedLogs {
+  const weth = wethAddressFor(chain)
   const swaps: DecodedPoolSwap[] = []
   const lpEvents: DecodedPoolLpEvent[] = []
   const transfers: DecodedTransfer[] = []
@@ -96,12 +97,12 @@ export function decodeLogs(logs: RawReceiptLog[]): DecodedLogs {
         const [value] = decodeAbiParameters([{ type: 'uint256' }], log.data as `0x${string}`) as [bigint]
         if (!from || !to) { malformed += 1; continue }
         transfers.push({ logIndex: log.logIndex, token: address, from, to, value })
-      } else if (address === WETH_BASE_ADDRESS.toLowerCase() && topic0 === WETH_DEPOSIT_TOPIC0) {
+      } else if (address === weth && topic0 === WETH_DEPOSIT_TOPIC0) {
         const account = topicAddress(log.topics[1])
         const [amount] = decodeAbiParameters([{ type: 'uint256' }], log.data as `0x${string}`) as [bigint]
         if (!account) { malformed += 1; continue }
         nativeWraps.push({ logIndex: log.logIndex, kind: 'deposit', account, amount })
-      } else if (address === WETH_BASE_ADDRESS.toLowerCase() && topic0 === WETH_WITHDRAWAL_TOPIC0) {
+      } else if (address === weth && topic0 === WETH_WITHDRAWAL_TOPIC0) {
         const account = topicAddress(log.topics[1])
         const [amount] = decodeAbiParameters([{ type: 'uint256' }], log.data as `0x${string}`) as [bigint]
         if (!account) { malformed += 1; continue }

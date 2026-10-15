@@ -155,7 +155,10 @@ export function mergeWithPersistedHistory(params: {
   for (const fresh of params.freshEvents) {
     const key = historicalEventIdentityKey(fresh)
     if (!canonical.has(key)) canonical.set(key, fresh)
-    if (!persistable(fresh) || next.has(key)) continue
+    // Only the wallet's own transfers are persisted: an event it is neither sender nor receiver of (e.g. the
+    // signer's ETH on someone else's transaction) would just be rejected as wallet_not_party on the next read.
+    const walletIsParty = (fresh.fromAddress ?? '').toLowerCase() === wallet || (fresh.toAddress ?? '').toLowerCase() === wallet
+    if (!walletIsParty || !persistable(fresh) || next.has(key)) continue
     const prior = previous.get(key)
     next.set(key, {
       key, chain: params.chain, txHash: fresh.txHash!, timestamp: fresh.timestamp!, fromAddress: fresh.fromAddress!, toAddress: fresh.toAddress!,

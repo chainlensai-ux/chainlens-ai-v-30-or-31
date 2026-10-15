@@ -12,9 +12,10 @@
 // an explicit later step, not this pass ("Do not promote decoded swaps into canonical FIFO in this
 // pass").
 
-export type ReceiptSwapChain = 'base'
+// Ethereum: Uniswap V2/V3 pools only (validated against the canonical Uniswap factories).
+export type ReceiptSwapChain = 'base' | 'eth'
 
-export type ReceiptSwapProtocol = 'aerodrome_classic' | 'aerodrome_slipstream' | 'uniswap_v3'
+export type ReceiptSwapProtocol = 'aerodrome_classic' | 'aerodrome_slipstream' | 'uniswap_v3' | 'uniswap_v2'
 
 // One raw, undecoded EVM log entry from a transaction receipt.
 export type RawReceiptLog = {

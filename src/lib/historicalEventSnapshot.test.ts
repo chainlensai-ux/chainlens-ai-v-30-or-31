@@ -188,3 +188,13 @@ describe('repeated-scan structural determinism under a GoldRush timeout', () => 
   })
 })
 
+
+describe('wallet-not-party events are never persisted', () => {
+  it('a fresh event between two other addresses stays in this scan but is not written to the snapshot', () => {
+    const party: RawProviderEvent = { provider: 'alchemy', chain: 'base', txHash: `0x${'a1'.repeat(32)}`, timestamp: new Date(NOW - 1000).toISOString(), fromAddress: WALLET, toAddress: '0x2222222222222222222222222222222222222222', contract: '0x3333333333333333333333333333333333333333', symbol: 'X', amountRaw: '5', tokenDecimals: 18 }
+    const other: RawProviderEvent = { ...party, provider: 'goldrush', txHash: `0x${'b2'.repeat(32)}`, fromAddress: '0x4444444444444444444444444444444444444444', contract: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', symbol: 'ETH' }
+    const merged = mergeWithPersistedHistory({ wallet: WALLET, chain: 'base', providerStatus: 'ok', freshEvents: [party, other], snapshot: null, windowDays: WINDOW_DAYS, now: NOW })
+    assert.equal(merged.canonicalEvents.length, 2)
+    assert.deepEqual(merged.nextSnapshot.events.map((e) => e.txHash), [party.txHash])
+  })
+})

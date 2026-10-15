@@ -251,10 +251,15 @@ export async function fetchGoldrushRawEvents(
       // real native transfer — never a new request, never a guess. `tx.from_address`/`tx.to_address`
       // are the transaction's own signer/recipient, exactly as reliable as `tr.from_address`/
       // `tr.to_address` are for an ERC20 leg below.
+      // Only when the wallet itself sent or received that ETH: GoldRush also returns transactions where
+      // the wallet only appears in token transfers (a relayer, bot or aggregator fill signed by someone
+      // else), and that transaction's ETH moved between other parties — never the wallet's own flow.
+      const walletLower = walletAddress.toLowerCase()
       if (
         isPositiveDecimalString(tx.value) &&
         typeof tx.from_address === 'string' &&
         typeof tx.to_address === 'string' &&
+        (tx.from_address.toLowerCase() === walletLower || tx.to_address.toLowerCase() === walletLower) &&
         events.length < MAX_RAW_EVENTS_PER_PROVIDER
       ) {
         events.push({

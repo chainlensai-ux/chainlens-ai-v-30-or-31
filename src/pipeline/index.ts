@@ -55,9 +55,10 @@ import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/in
 import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
 import type { CandidateTxEvidence } from '../modules/receiptSwapDecoder/candidateSelector'
 import { completionSignalsByTxForAudit, selectBaseReceiptCandidates } from '../modules/receiptSwapDecoder/candidateSelector'
-import { buildReceiptSelectorSellAudit, buildSellGapAudit, shouldLogSellGap } from '../lib/walletSellGapAudit'
-import { activeChainSet } from '../modules/sellTimeline/utils'
-import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
+import { buildReceiptSelectorSellAudit, buildSellGapAudit, explainOutboundSellDecision, shouldLogSellGap } from '../lib/walletSellGapAudit'
+import { activeChainSet, groupEventsByTx } from '../modules/sellTimeline/utils'
+import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEthereumDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
+import { proveSellsFromReceipts, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
 import {
   createLiveUniswapV3PoolValidator, createCachedUniswapV3PoolValidator, createUniswapV3ValidationRequestScope,
 } from '../modules/receiptSwapDecoder/uniswapV3PoolValidator'
@@ -2136,6 +2137,50 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     setImmediate(() => { runShadowReceiptDecodeBlock().catch(() => {}) })
   }
 
+  // 4b'. SELL RECEIPT PROOF (src/modules/receiptSwapDecoder/sellReceiptProof.ts): outbound events the
+  // sell timeline cannot classify from transfers alone (one-legged — e.g. token→ETH where the ETH comes
+  // back as an internal transfer, or a token sent straight to a pool) get their receipt checked on Base
+  // and Ethereum, under this lane's own capped, time-boxed budget. A tx is added only on positive proof
+  // (exact decoded swap of that token, or the token entering a factory-validated pool that swapped).
+  // Runs regardless of RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED; kill switch WALLET_SELL_RECEIPT_PROOF=0.
+  let sellProofTxKeys = new Set<string>()
+  if (process.env.WALLET_SELL_RECEIPT_PROOF !== '0') {
+    try {
+      const sellActiveChains = activeChainSet(chainSelection)
+      const eventsByTx = groupEventsByTx(normalizedEvents)
+      const noSellEvidence = { activeChains: sellActiveChains, knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES, verifiedSwapTxKeys: new Set<string>() }
+      const sellProofCandidates: SellProofCandidate[] = []
+      for (const event of normalizedEvents) {
+        if (event.direction !== 'outbound' || (event.chain !== 'base' && event.chain !== 'eth')) continue
+        const reason = explainOutboundSellDecision(event, eventsByTx.get(event.txHash) ?? [event], noSellEvidence)
+        if (reason !== 'no_inbound_in_tx' && reason !== 'inbound_same_token_only') continue
+        const at = Date.parse(event.timestamp)
+        sellProofCandidates.push({
+          chain: event.chain, txHash: event.txHash, token: event.contract, timestamp: event.timestamp,
+          hasPriorInventory: normalizedEvents.some((e) => e.direction === 'inbound' && e.chain === event.chain
+            && e.contract.toLowerCase() === event.contract.toLowerCase() && Date.parse(e.timestamp) <= at),
+        })
+      }
+      const sellProof = await stageProfiler.stage('sellReceiptProof', { awaitedSerially: true }, () => proveSellsFromReceipts({
+        candidates: sellProofCandidates,
+        walletAddress: params.walletAddress,
+        fetchReceipt: createLiveBaseReceiptFetcher(),
+        validator: createChainPoolValidator({ base: createLiveBaseDexPoolValidator(), eth: createLiveEthereumDexPoolValidator() }),
+        uniswapV3Validator: createCachedUniswapV3PoolValidator(createLiveUniswapV3PoolValidator(), createUniswapV3ValidationRequestScope()).validator,
+      }))
+      sellProofTxKeys = sellProof.provenTxKeys
+      // Only exact decodes count as receipt proof for the unmatched-sell boundary resolver.
+      for (const [txHash, kind] of sellProof.proofByTxHash) {
+        if (kind === 'exact_swap' && !receiptProofByTxHash.has(txHash)) receiptProofByTxHash.set(txHash, 'exact_swap')
+      }
+      // eslint-disable-next-line no-console
+      console.warn('[sell-receipt-proof]', JSON.stringify(sellProof.audit))
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[sell-receipt-proof] failed', error instanceof Error ? error.message : error)
+    }
+  }
+
   // 4c. Pre-recovery sell pass — pure, zero-cost, recovery-independent. Computes exactly
   // sellTimelineV2's mechanisms 1-3 (same-tx swap, transfer-to-known-router, bridge-exit) by
   // passing recoveryPolicyFallback() as its own recoveryPolicy input (mechanism 4 naturally yields
@@ -2148,6 +2193,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     bridgeTimeline,
     recoveryPolicy: recoveryPolicyFallback(),
     walletAddress: params.walletAddress,
+    verifiedSwapTxKeys: sellProofTxKeys,
   })
 
   // 5. recoveryPolicy — the ONLY other component permitted to fetch (historical pages), and only
@@ -2200,6 +2246,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     bridgeTimeline,
     recoveryPolicy,
     walletAddress: params.walletAddress,
+    verifiedSwapTxKeys: sellProofTxKeys,
   })
   // Diagnostic log — real counts, not a guess. outboundCount is every outbound normalized event
   // fifoEngine will see; sellTimelineV2 entries are only the subset that cleared one of its four
@@ -2288,7 +2335,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       bridgeTimeline,
       recoveryPolicy,
       walletAddress: params.walletAddress,
-      verifiedSwapTxKeys: new Set(shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)),
+      verifiedSwapTxKeys: new Set([...sellProofTxKeys, ...shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)]),
     })
   }
 
@@ -2672,7 +2719,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         normalizedEvents: canonicalNormalizedEvents,
         activeChains: activeChainSet(chainSelection),
         knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES,
-        verifiedSwapTxKeys: new Set(shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)),
+        verifiedSwapTxKeys: new Set([...sellProofTxKeys, ...shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)]),
         providerResults: providerResults.map((r) => ({ chain: r.chain, rawEvents: r.rawEvents, alchemyNativeHistory: r.providerResults.alchemy.nativeHistory ?? null })),
         persistedDrops: historicalStability.map((h) => ({ chain: h.audit.chain, eventsDropped: h.audit.eventsDropped })),
       })))

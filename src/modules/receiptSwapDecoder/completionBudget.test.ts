@@ -83,7 +83,7 @@ test('conditional budget stops the round marginal yield first falls below the de
   // from index 13 onward is a plain transfer (yield 0) — expansion should stop at the first batch
   // whose OWN marginal yield drops below threshold, never averaging across all rounds.
   const candidates = Array.from({ length: 30 }, (_, i) => candidate(`0x${i}`))
-  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+  const fetcher = async (_chain: string, txHash: string): Promise<ReceiptFetchOutcome> => {
     const index = Number(txHash.replace('0x', ''))
     return { status: 'ok', logs: index < 13 ? swapLog() : plainTransferLog() }
   }
@@ -143,7 +143,7 @@ test('concurrency per completion batch never exceeds the fixed batch size (3)', 
 test('no candidate is ever fetched twice — already-fetched receipts are cache hits across rounds', async () => {
   const fetchedTxHashes: string[] = []
   const candidates = Array.from({ length: 20 }, (_, i) => candidate(`0x${i}`))
-  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+  const fetcher = async (_chain: string, txHash: string): Promise<ReceiptFetchOutcome> => {
     fetchedTxHashes.push(txHash)
     return { status: 'ok', logs: swapLog() }
   }
@@ -187,7 +187,7 @@ test('tier-3/4 candidates cannot backfill the conditional budget once tier-1 can
     ...Array.from({ length: 30 }, (_, i) => candidate(`0xtier3-${i}`, { priorityTier: 3, priorityReason: 'verified_quote_address' })),
   ]
   const fetchedTxHashes: string[] = []
-  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+  const fetcher = async (_chain: string, txHash: string): Promise<ReceiptFetchOutcome> => {
     fetchedTxHashes.push(txHash)
     return { status: 'ok', logs: swapLog() }
   }
@@ -213,7 +213,7 @@ test('a genuine tier-1 candidate beyond the normal budget IS reached by conditio
     ...Array.from({ length: 10 }, (_, i) => candidate(`0xtier4-${i}`, { priorityTier: 4, priorityReason: 'known_or_high_confidence_router' })),
   ]
   const fetchedTxHashes: string[] = []
-  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+  const fetcher = async (_chain: string, txHash: string): Promise<ReceiptFetchOutcome> => {
     fetchedTxHashes.push(txHash)
     return { status: 'ok', logs: swapLog() } // every real tier-1 fetch yields — expansion should keep going
   }

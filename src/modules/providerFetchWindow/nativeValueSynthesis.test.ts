@@ -101,4 +101,17 @@ describe('fetchGoldrushRawEvents — native-value synthesis from the already-fet
     assert.ok(group)
     assert.equal(group!.length, 2, 'the swap-leg group now has 2+ legs — this was 1 (single-leg) before the fix, matching the confirmed production distribution')
   })
+
+  it('skips the native leg when the wallet neither signed nor received that ETH (someone else\'s tx)', async () => {
+    process.env.GOLDRUSH_API_KEY = 'test-key'
+    global.fetch = (async () => new Response(JSON.stringify({ data: { items: [{
+      tx_hash: '0xrelayed', block_signed_at: new Date().toISOString(),
+      from_address: '0xrelayer0000000000000000000000000000000000', to_address: '0xrouter000000000000000000000000000000000',
+      value: '1000000000000000000',
+      transfers: [{ from_address: '0xpool0000000000000000000000000000000000', to_address: WALLET, contract_address: MEME_TOKEN, contract_ticker_symbol: 'MEME', delta: '5', contract_decimals: 18 }],
+    }] } }), { status: 200 })) as unknown as typeof fetch
+    const result = await fetchGoldrushRawEvents('base', WALLET, 90)
+    assert.equal(result.events.some((e) => e.contract === NATIVE_ASSET_ADDRESS), false)
+    assert.equal(result.events.length, 1, 'the wallet\'s own token leg is kept')
+  })
 })
