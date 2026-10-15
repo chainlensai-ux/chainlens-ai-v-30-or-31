@@ -12,8 +12,9 @@ import '@/src/modules/realizedPnl/computeRealizedPnl.devtools'
 
 const queryClient = new QueryClient()
 
+// Browser only: the modal needs the WalletConnect config, which is never created during SSR.
 let web3ModalInitialized = false
-if (walletConnectEnabled && !web3ModalInitialized) {
+if (typeof window !== 'undefined' && walletConnectEnabled && !web3ModalInitialized) {
   try {
     createWeb3Modal({ wagmiConfig, projectId })
     web3ModalInitialized = true

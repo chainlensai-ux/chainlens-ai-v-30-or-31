@@ -88,7 +88,15 @@ export function decodeWagmiCookieHeader(cookie: string | null | undefined): stri
   }).join('; ')
 }
 
-export const wagmiConfig = walletConnectEnabled
+// WalletConnect (defaultWagmiConfig) starts its core/relayer as soon as it is created, and its
+// key-value storage uses IndexedDB. On the server (server components such as app/layout.tsx, and
+// SSR of client components) that throws "ReferenceError: indexedDB is not defined" as an unhandled
+// rejection, which kills the Vercel function. So WalletConnect is only built in the browser; the
+// server gets a plain config with the same chains and the same cookie/localStorage storage, which
+// is all cookieToInitialState and the SSR render need.
+const isBrowser = typeof window !== 'undefined'
+
+export const wagmiConfig = walletConnectEnabled && isBrowser
   ? defaultWagmiConfig({
       projectId,
       chains: [base],
