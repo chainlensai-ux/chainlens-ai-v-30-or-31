@@ -35,6 +35,8 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 export const kv: {
   get: <T = unknown>(key: string | null) => Promise<T | null>
   set: (key: string, value: unknown, opts?: { ex?: number }) => Promise<unknown>
+  /** SET key value NX EX — true only for the one caller that created the key (an atomic lock). */
+  setIfAbsent: (key: string, value: unknown, exSeconds: number) => Promise<boolean>
 } = {
   async get<T = unknown>(key: string | null): Promise<T | null> {
     if (key === null) return null
@@ -42,5 +44,9 @@ export const kv: {
   },
   async set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown> {
     return await withTimeout(opts?.ex ? vercelKv.set(key, value, { ex: opts.ex }) : vercelKv.set(key, value), KV_SET_TIMEOUT_MS)
+  },
+  async setIfAbsent(key: string, value: unknown, exSeconds: number): Promise<boolean> {
+    const reply = await withTimeout(vercelKv.set(key, value, { nx: true, ex: exSeconds }), KV_SET_TIMEOUT_MS)
+    return reply === 'OK'
   },
 }

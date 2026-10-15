@@ -123,12 +123,18 @@ type WalletScanJobResponse = {
   progress?: WalletScanStageProgress
   partial?: ScanWalletStatusUpdate['partial']
   walletChainSelectionAudit?: WalletChainSelectionAudit
+  // Server clock (ms): job creation, the worker's latest heartbeat, and "now" when the poll answered.
+  createdAt?: number | null
+  heartbeatAt?: number | null
+  serverNow?: number
 }
 
 export type ScanWalletStatusUpdate = {
   jobId: string
   status: WalletScanJobStatus
   progress?: WalletScanStageProgress
+  /** How long ago (ms) the worker last reported in, from the server clock; null before it started. */
+  lastWorkerUpdateAgoMs?: number | null
   // FAST SNAPSHOT, DISCLOSED: the worker publishes holdings/portfolio totals on the job record
   // while FIFO/PnL is still running (see publishWalletScanPartialSnapshot). The poll route already
   // echoes `partial`; this client previously dropped it, so the UI waited for the full ~100s job.
@@ -163,6 +169,13 @@ export function enqueueFailureMessage(httpStatus: number, body: { error?: unknow
   if (error === 'scan-queue-unavailable') return 'The scan queue is temporarily unavailable. Please try again in a moment.'
   if (httpStatus === 504 || httpStatus === 408) return 'Starting the scan timed out. Please try again in a moment.'
   return `scan-enqueue-failed (HTTP ${httpStatus})`
+}
+
+// Watchdog codes from app/api/wallet-scan/[jobId]/route.ts, in words a user can act on.
+export function jobFailureMessage(code: string): string {
+  if (code === 'worker_not_started') return 'The scan never started — the background worker did not pick it up within 90 seconds. Please retry.'
+  if (code === 'worker_stalled') return 'The scan stopped responding — no progress for 90 seconds. Please retry.'
+  return code
 }
 
 function sleep(ms: number): Promise<void> {
@@ -295,7 +308,10 @@ export async function pollWalletScanJob(
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
-      onUpdate?.({ jobId: jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial })
+      onUpdate?.({
+        jobId: jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial,
+        lastWorkerUpdateAgoMs: typeof pollBody.serverNow === 'number' && typeof pollBody.heartbeatAt === 'number' ? Math.max(0, pollBody.serverNow - pollBody.heartbeatAt) : null,
+      })
 
       if (pollBody.status === 'done') {
         const result = pollBody.result
@@ -308,7 +324,7 @@ export async function pollWalletScanJob(
 
       if (pollBody.status === 'failed') {
         const message = typeof pollBody.error === 'string' ? pollBody.error : pollBody.error?.message
-        return toErrorResponse(message ?? 'scan-failed')
+        return toErrorResponse(jobFailureMessage(message ?? 'scan-failed'))
       }
 
       if (Date.now() - pollStartedAt >= POLL_TIMEOUT_MS) {

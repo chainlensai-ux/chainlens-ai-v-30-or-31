@@ -450,7 +450,17 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   // JOB-SCOPED DEXSCREENER STATE: each job gets its own request cache (src/lib/dexscreenerRequestCache.ts), so
   // overlapping jobs on a warm instance can neither reset nor reuse each other's cached (incl. failed) lookups.
   const { runInDexscreenerRequestScope } = await import('@/src/lib/dexscreenerRequestCache')
-  const { jobState, result } = await runInDexscreenerRequestScope(() => executeWalletScanJob(payload))
+  // HEARTBEAT: the poll route's watchdog fails a running job after 90s without one; long stages (the
+  // core scan) report few progress checkpoints, so the worker heartbeats on a timer while it runs.
+  const { startWalletScanHeartbeat } = await import('@/src/modules/walletScanQueue')
+  const stopHeartbeat = startWalletScanHeartbeat(jobId)
+  let executed: Awaited<ReturnType<typeof executeWalletScanJob>>
+  try {
+    executed = await runInDexscreenerRequestScope(() => executeWalletScanJob(payload))
+  } finally {
+    stopHeartbeat()
+  }
+  const { jobState, result } = executed
 
   // FINAL PUBLICATION, HARDENED (confirmed stuck-running bug): publishFinal was previously awaited
   // bare — a throw anywhere in serialization or either KV write propagated straight out of this

@@ -1,6 +1,7 @@
 import { after } from 'next/server'
 import { kv } from '@/lib/server/kv'
 import {
+  walletScanClaimLockKey,
   walletScanJobKey,
   walletScanPendingJobKey,
   walletScanPendingKey,
@@ -8,6 +9,7 @@ import {
 } from '@/src/modules/walletScanQueueKeys'
 
 export {
+  walletScanClaimLockKey,
   walletScanJobKey,
   walletScanPendingJobKey,
   walletScanPendingKey,
@@ -68,6 +70,12 @@ export type WalletScanJobMetadata = {
   includeRobinhoodRequested?: boolean
   /** Follow-up job that runs the V2 analysis modules a heavy wallet's first job deferred. */
   heavyWalletFollowUp?: boolean
+  // WATCHDOG (see superviseWalletScanJob): when a worker claimed the job, its latest heartbeat, and how
+  // often / when the job was (re)triggered while still queued.
+  claimedAt?: number
+  heartbeatAt?: number
+  triggerAttempts?: number
+  lastTriggerAt?: number
 }
 
 export type WalletScanJobPayload = {
@@ -183,7 +191,7 @@ export async function updateWalletScanJobProgress(jobId: string, progress: Walle
     try {
       const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
       if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
-      await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+      await kv.set(walletScanJobKey(jobId), { ...job, progress, heartbeatAt: Date.now(), updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
     } catch (err) {
       logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
     }
@@ -241,7 +249,7 @@ export async function publishWalletScanPartialSnapshot(jobId: string, partial: W
       if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
       // Monotonic: an older partial snapshot never replaces a newer one already on the record.
       if (job.partial && job.partial.publishedAtElapsedMs > partial.publishedAtElapsedMs) return
-      await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+      await kv.set(walletScanJobKey(jobId), { ...job, partial, heartbeatAt: Date.now(), updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
     } catch (err) {
       logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
     }
@@ -259,6 +267,18 @@ export async function readWalletScanResult(jobId: string): Promise<unknown | nul
 }
 
 
+
+const CLAIM_LOCK_TTL_SECONDS = 10 * 60
+
+async function acquireClaimLock(jobId: string): Promise<boolean> {
+  try {
+    return await kv.setIfAbsent(walletScanClaimLockKey(jobId), Date.now(), CLAIM_LOCK_TTL_SECONDS)
+  } catch (err) {
+    // The status check above still guards duplicates; never strand a job because the lock write failed.
+    logQueueFailure('[wallet-scan-queue] claim-lock-failure', { jobId, error: describeKvError(err) })
+    return true
+  }
+}
 
 export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJobPayload | null> {
   assertWalletScanRedisConfigured('queue')
@@ -285,9 +305,15 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
   // "nothing to do" the worker route already reports as not-found) and the original result stays
   // exactly as published.
   if (job.status === 'done' || job.status === 'failed') return null
+  // A job is claimed exactly once: the poll route may re-trigger a queued job, so a second worker
+  // invocation for a job another worker already runs (status 'running', or the NX lock is taken)
+  // gets null instead of starting a duplicate scan.
+  if (job.status === 'running') return null
+  if (!(await acquireClaimLock(jobId))) return null
 
   try {
-    await kv.set(jobKey, { ...job, status: 'running', updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+    const claimedAt = Date.now()
+    await kv.set(jobKey, { ...job, status: 'running', claimedAt, heartbeatAt: claimedAt, updatedAt: claimedAt }, { ex: JOB_TTL_SECONDS })
     await kv.set(pendingJobKey, false, { ex: 60 })
     const pending = (await kv.get<string[]>(walletScanPendingKey())) ?? []
     await kv.set(walletScanPendingKey(), pending.filter((pendingJobId) => pendingJobId !== jobId), { ex: JOB_TTL_SECONDS })
@@ -324,10 +350,12 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
 
   const job = await readWalletScanJob(jobId).catch((err) => { throw queueUnavailable(err) })
   if (!job) return null
+  if (job.status === 'done' || job.status === 'failed' || job.status === 'running') return null
+  if (!(await acquireClaimLock(jobId))) return null
 
   try { await kv.set(walletScanPendingJobKey(jobId), false, { ex: 60 }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-pending-job-failure', err); throw queueUnavailable(err) }
 
-  try { await kv.set(walletScanJobKey(jobId), { ...job, status: 'running', updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
+  try { const claimedAt = Date.now(); await kv.set(walletScanJobKey(jobId), { ...job, status: 'running', claimedAt, heartbeatAt: claimedAt, updatedAt: claimedAt }, { ex: JOB_TTL_SECONDS }) } catch (err) { logQueueFailure('[wallet-scan-queue] claim-write-running-job-failure', err); throw queueUnavailable(err) }
 
   return {
     jobId,
@@ -434,3 +462,75 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
 }
 
 export const MAX_PENDING_JOB_IDS = 200
+
+// ── WATCHDOG ──────────────────────────────────────────────────────────────────────────────────────
+// A queued job nobody claims, or a running job whose worker stopped heart-beating, is never left
+// spinning: the poll route (app/api/wallet-scan/[jobId]/route.ts) asks superviseWalletScanJob on every
+// poll, re-triggers a queued job a few times (claim is NX-locked, so a duplicate trigger is harmless),
+// and marks it failed with a clear code once it has gone WALLET_SCAN_WATCHDOG_MS without progress.
+export const WALLET_SCAN_WATCHDOG_MS = 90_000
+export const WALLET_SCAN_HEARTBEAT_INTERVAL_MS = 20_000
+export const WALLET_SCAN_RETRIGGER_AFTER_MS = 8_000
+export const WALLET_SCAN_MAX_TRIGGER_ATTEMPTS = 5
+
+export type WalletScanWatchdogFailure = 'worker_not_started' | 'worker_stalled'
+export type WalletScanSupervision =
+  | { action: 'none' }
+  | { action: 'retrigger'; attempt: number }
+  | { action: 'fail'; error: WalletScanWatchdogFailure; silentForMs: number }
+
+/** PURE. What the poll route should do about a non-terminal job right now. */
+export function superviseWalletScanJob(job: WalletScanJobMetadata, now: number): WalletScanSupervision {
+  if (job.status === 'done' || job.status === 'failed') return { action: 'none' }
+  if (job.status === 'running') {
+    const last = job.heartbeatAt ?? job.claimedAt ?? job.updatedAt ?? job.createdAt
+    const silentForMs = now - last
+    return silentForMs > WALLET_SCAN_WATCHDOG_MS ? { action: 'fail', error: 'worker_stalled', silentForMs } : { action: 'none' }
+  }
+  // queued
+  const waitingMs = now - job.createdAt
+  if (waitingMs > WALLET_SCAN_WATCHDOG_MS) return { action: 'fail', error: 'worker_not_started', silentForMs: waitingMs }
+  const attempts = job.triggerAttempts ?? 0
+  const sinceTrigger = now - (job.lastTriggerAt ?? job.createdAt)
+  if (attempts < WALLET_SCAN_MAX_TRIGGER_ATTEMPTS && sinceTrigger >= WALLET_SCAN_RETRIGGER_AFTER_MS) return { action: 'retrigger', attempt: attempts + 1 }
+  return { action: 'none' }
+}
+
+/** Records a re-trigger attempt on a still-queued job (best effort). */
+export async function recordWalletScanRetrigger(job: WalletScanJobMetadata, attempt: number, now: number = Date.now()): Promise<void> {
+  try {
+    await kv.set(walletScanJobKey(job.jobId), { ...job, triggerAttempts: attempt, lastTriggerAt: now, updatedAt: now }, { ex: JOB_TTL_SECONDS })
+  } catch (err) {
+    logQueueFailure('[wallet-scan-queue] record-retrigger-failure', { jobId: job.jobId, error: describeKvError(err) })
+  }
+}
+
+/** Marks a stuck job failed so its poller stops; a late worker publishFinal still overwrites it. */
+export async function markWalletScanJobStalled(job: WalletScanJobMetadata, error: WalletScanWatchdogFailure, now: number = Date.now()): Promise<void> {
+  try {
+    await kv.set(walletScanJobKey(job.jobId), { ...job, status: 'failed', error, finishedAt: now, updatedAt: now }, { ex: JOB_TTL_SECONDS })
+  } catch (err) {
+    logQueueFailure('[wallet-scan-queue] mark-stalled-failure', { jobId: job.jobId, error: describeKvError(err) })
+  }
+}
+
+/** Writes heartbeatAt on a running job (never over a finalizing/terminal one). Never throws. */
+export async function heartbeatWalletScanJob(jobId: string): Promise<void> {
+  if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
+  return trackJobRecordWrite(jobId, (async () => {
+    try {
+      const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+      if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
+      await kv.set(walletScanJobKey(jobId), { ...job, heartbeatAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+    } catch (err) {
+      logQueueFailure('[wallet-scan-queue] heartbeat-failure', { jobId, error: describeKvError(err) })
+    }
+  })())
+}
+
+/** Heartbeats every WALLET_SCAN_HEARTBEAT_INTERVAL_MS while a worker runs a job; returns the stopper. */
+export function startWalletScanHeartbeat(jobId: string, intervalMs: number = WALLET_SCAN_HEARTBEAT_INTERVAL_MS): () => void {
+  const timer = setInterval(() => { void heartbeatWalletScanJob(jobId) }, intervalMs)
+  if (typeof timer === 'object' && timer && 'unref' in timer) (timer as { unref: () => void }).unref()
+  return () => clearInterval(timer)
+}

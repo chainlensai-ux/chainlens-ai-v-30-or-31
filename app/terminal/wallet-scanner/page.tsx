@@ -552,6 +552,16 @@ export default function WalletScannerPage() {
   // written by the SAME worker via src/modules/walletScanQueue.ts's updateWalletScanJobProgress).
   // Real, six-literal-label stage text and a real elapsed-ms figure, never fabricated.
   const [scanProgress, setScanProgress] = useState<WalletScanStageProgress | null>(null)
+  // LIVE SCAN CLOCK: client-side elapsed time plus the last real stage and the last time the worker
+  // reported in (server heartbeat), so a slow or stuck scan is visible instead of a silent spinner.
+  const [scanClock, setScanClock] = useState<{ startedAt: number; lastWorkerUpdateAt: number | null; stageLabel: string | null } | null>(null)
+  const [clockNow, setClockNow] = useState(() => Date.now())
+  const lastScanModeRef = useRef<'normal' | 'deep'>('normal')
+  useEffect(() => {
+    if (!loading) return
+    const id = window.setInterval(() => setClockNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [loading])
   const [partialSnapshot, setPartialSnapshot] = useState<NonNullable<ScanWalletStatusUpdate['partial']> | null>(null)
   const uiFirstResultMsRef = useRef<number | null>(null)
   const robinhoodSidecarDurationMsRef = useRef<number | null>(null)
@@ -830,6 +840,8 @@ export default function WalletScannerPage() {
     }
 
     setLoading(true)
+    lastScanModeRef.current = mode
+    setScanClock({ startedAt: Date.now(), lastWorkerUpdateAt: null, stageLabel: null })
     setError(null)
     setPartialSnapshot(null)
     setPnlFollowUp(null)
@@ -900,12 +912,17 @@ export default function WalletScannerPage() {
       // scanRobinhoodWallet() call and the walletChainSelectionAudit both honestly reflect the
       // request. Robinhood availability is still gated server-side by isRobinhoodChainAvailable() —
       // sending this string never fakes Robinhood being scanned when it isn't configured.
-      const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, partial, walletChainSelectionAudit }) => {
+      const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, partial, walletChainSelectionAudit, lastWorkerUpdateAgoMs }) => {
         // STALE-UPDATE GUARD, DISCLOSED (stuck-scanning-lifecycle fix): if the user started a fresh
         // scan while this one was still polling in the background (allowed once limitedEvidenceMode
         // let the button re-enable), this callback belongs to a superseded generation — drop it so
         // it can never clobber the newer scan's state.
         if (scanGenerationRef.current !== myGeneration) return
+        setScanClock((prev) => prev && {
+          ...prev,
+          lastWorkerUpdateAt: lastWorkerUpdateAgoMs != null ? Date.now() - lastWorkerUpdateAgoMs : prev.lastWorkerUpdateAt,
+          stageLabel: progress?.label ?? prev.stageLabel,
+        })
         scanJobId = jobId
         if (jobId) latestScanJobRef.current = jobId
         setCurrentJobId(jobId)
@@ -1437,9 +1454,11 @@ export default function WalletScannerPage() {
                   Job {currentJobId}
                 </div>
               )}
-              {scanProgress && (
-                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
-                  {(scanProgress.elapsedMs / 1000).toFixed(1)}s elapsed
+              {scanClock && (
+                <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.7)' }}>
+                  Elapsed {Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000))}s
+                  {' · '}Last stage: {scanClock.stageLabel ?? (currentJobId ? 'waiting for the worker to start' : 'starting')}
+                  {scanClock.lastWorkerUpdateAt != null && ` · worker last reported ${Math.max(0, Math.round((clockNow - scanClock.lastWorkerUpdateAt) / 1000))}s ago`}
                 </div>
               )}
               {partialSnapshot && !result && (
@@ -1534,6 +1553,15 @@ export default function WalletScannerPage() {
           {!loading && error && (
             <div className="ws-card" style={{ borderColor: 'rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#fca5a5', fontSize: '13px' }}>
               {walletScanErrorBanner(error)}
+              <div style={{ marginTop: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => void handleScan(lastScanModeRef.current)}
+                  style={{ padding: '7px 14px', borderRadius: '9px', border: '1px solid rgba(248,113,113,0.45)', background: 'rgba(248,113,113,0.10)', color: '#fca5a5', fontSize: '11px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', cursor: 'pointer' }}
+                >
+                  Retry scan
+                </button>
+              </div>
             </div>
           )}
 

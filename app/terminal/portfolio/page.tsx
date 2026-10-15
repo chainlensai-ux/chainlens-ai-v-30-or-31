@@ -56,6 +56,14 @@ export default function PortfolioPage() {
 
   const [manualAddress, setManualAddress] = useState('')
   const [loading, setLoading] = useState(false)
+  // LIVE SCAN CLOCK: elapsed time, last real stage and last worker report while a scan runs.
+  const [scanClock, setScanClock] = useState<{ startedAt: number; stageLabel: string | null; lastWorkerUpdateAt: number | null; jobId: string | null } | null>(null)
+  const [clockNow, setClockNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!loading) return
+    const id = window.setInterval(() => setClockNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [loading])
   const [clarkLoading, setClarkLoading] = useState(false)
   const [clarkAnalysis, setClarkAnalysis] = useState<string | null>(null)
   const [failureReason, setFailureReason] = useState<string | null>(null)
@@ -202,6 +210,7 @@ export default function PortfolioPage() {
     const left = Math.max(0, CLIENT_SCAN_COOLDOWN_MS - (Date.now() - lastScanAt))
     if (left > 0) { setCooldownLeftMs(left); return }
     setLoading(true)
+    setScanClock({ startedAt: Date.now(), stageLabel: null, lastWorkerUpdateAt: null, jobId: null })
     setFailureReason(null)
     setCacheHit(false)
     try {
@@ -210,7 +219,14 @@ export default function PortfolioPage() {
 
       // ONE ROBINHOOD PROVIDER SCAN: the job (chains include 'robinhood') already runs the Robinhood scan, so
       // its result is read from the job's report instead of a second, parallel GET /api/wallet-scan/robinhood.
-      const scanResponse = await scanWalletV2(address, PORTFOLIO_SCAN_CHAINS, 'normal', undefined, token)
+      const scanResponse = await scanWalletV2(address, PORTFOLIO_SCAN_CHAINS, 'normal', ({ jobId, progress, lastWorkerUpdateAgoMs }) => {
+        setScanClock((prev) => prev && {
+          ...prev,
+          jobId: jobId ?? prev.jobId,
+          stageLabel: progress?.label ?? prev.stageLabel,
+          lastWorkerUpdateAt: lastWorkerUpdateAgoMs != null ? Date.now() - lastWorkerUpdateAgoMs : prev.lastWorkerUpdateAt,
+        })
+      }, token)
 
       if (!scanResponse.success || !scanResponse.data) {
         setReport(null)
@@ -452,7 +468,11 @@ export default function PortfolioPage() {
           )}
         </div>
         <div className='pf-topbar-hint'>
-          <span>{hasWallet ? loadStatus : 'Paste address or connect wallet'}</span>
+          <span>
+            {loading && scanClock
+              ? `Scanning · ${Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000))}s elapsed · Last stage: ${scanClock.stageLabel ?? (scanClock.jobId ? 'waiting for the worker to start' : 'starting')}${scanClock.lastWorkerUpdateAt != null ? ` · worker last reported ${Math.max(0, Math.round((clockNow - scanClock.lastWorkerUpdateAt) / 1000))}s ago` : ''}`
+              : hasWallet ? loadStatus : 'Paste address or connect wallet'}
+          </span>
           {cooldownLeftMs > 0 && <span>Please wait {Math.ceil(cooldownLeftMs / 1000)}s.</span>}
         </div>
       </section>

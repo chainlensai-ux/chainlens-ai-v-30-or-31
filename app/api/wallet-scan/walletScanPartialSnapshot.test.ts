@@ -12,6 +12,13 @@ import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, publishWalletScanPartialSnapshot, type WalletScanJobMetadata, type WalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { publishFinal } from '@/src/modules/walletScanWorker'
 
+// The poll route adds server-clock fields (createdAt / heartbeatAt / serverNow) to in-flight responses.
+function withoutClock(body: unknown): unknown {
+  if (!body || typeof body !== 'object') return body
+  const { createdAt: _c, heartbeatAt: _h, serverNow: _n, ...rest } = body as Record<string, unknown>
+  return rest
+}
+
 const originalEnv = { ...process.env }
 const originalGet = kv.get
 const originalSet = kv.set
@@ -49,7 +56,7 @@ async function poll(jobId: string): Promise<{ status: number; body: unknown }> {
 }
 
 function runningJob(overrides: Partial<WalletScanJobMetadata> = {}): WalletScanJobMetadata {
-  return { userId: 'user-a', jobId: 'job-partial', wallet: '0xabc', status: 'running', createdAt: 1, updatedAt: 1, ...overrides }
+  return { userId: 'user-a', jobId: 'job-partial', wallet: '0xabc', status: 'running', createdAt: Date.now(), updatedAt: Date.now(), ...overrides }
 }
 
 function snapshot(overrides: Partial<WalletScanPartialSnapshot> = {}): WalletScanPartialSnapshot {
@@ -78,7 +85,7 @@ describe('publishWalletScanPartialSnapshot — real early portfolio/holdings, wi
     const response = await poll('job-partial')
 
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { status: 'running', partial: snapshot() })
+    assert.deepEqual(withoutClock(response.body), { status: 'running', partial: snapshot() })
   })
 
   it('HARD ASSERTION (required regression): the final result still overwrites the partial result — publishFinal replaces the whole job record', async () => {
@@ -91,7 +98,7 @@ describe('publishWalletScanPartialSnapshot — real early portfolio/holdings, wi
 
     const response = await poll('job-partial')
     assert.equal(response.status, 200)
-    assert.deepEqual(response.body, { status: 'done', result: finalResult }, 'the final result must win outright — no partial field, no merge artifact')
+    assert.deepEqual(withoutClock(response.body), { status: 'done', result: finalResult }, 'the final result must win outright — no partial field, no merge artifact')
   })
 
   it('progress and partial can coexist on the same running job — both surfaced together', async () => {

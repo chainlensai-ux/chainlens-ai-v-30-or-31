@@ -15,3 +15,8 @@ export function walletScanPendingJobKey(jobId: string): string {
 export function walletScanPendingKey(): string {
   return WALLET_SCAN_PENDING_KEY
 }
+
+/** NX lock: exactly one worker invocation may claim and run a job. */
+export function walletScanClaimLockKey(jobId: string): string {
+  return `walletScanClaim:${jobId}`
+}
