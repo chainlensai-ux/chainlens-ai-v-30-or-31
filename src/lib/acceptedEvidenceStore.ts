@@ -159,6 +159,8 @@ const MAX_MIGRATION_HISTORY_ENTRIES = 10
 export type AcceptedEvidenceKvLike = {
   get<T>(key: string): Promise<T | null>
   set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown>
+  /** Optional multi-key read (Redis MGET). When present, batch reads use it instead of one GET per key. */
+  mget?: (...keys: string[]) => Promise<unknown[]>
 }
 
 // ================================================================================================
@@ -534,6 +536,18 @@ export type AcceptedEvidenceBatchResult = {
 }
 
 const DEFAULT_BATCH_READ_CONCURRENCY = 8
+// MGET BATCHING: a heavy wallet needs ~2,700 accepted-evidence keys; one GET each at 8-way
+// concurrency took ~27s in production. One MGET per chunk of keys returns the same raw values,
+// validated by exactly the same per-identity checks the single-key readers apply.
+export const ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE = 100
+const ACCEPTED_EVIDENCE_MGET_CONCURRENCY = 4
+const ACCEPTED_EVIDENCE_MGET_TIMEOUT_MS = 5_000
+
+function mgetWithTimeout(mget: NonNullable<AcceptedEvidenceKvLike['mget']>, keys: string[]): Promise<unknown[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('mget_timeout')), ACCEPTED_EVIDENCE_MGET_TIMEOUT_MS) })
+  return Promise.race([mget(...keys), timeout]).finally(() => clearTimeout(timer))
+}
 
 export async function readAcceptedEvidenceBatch(
   kv: AcceptedEvidenceKvLike,
@@ -549,23 +563,56 @@ export async function readAcceptedEvidenceBatch(
   }
   const entries = [...uniqueByKey.entries()]
   const byKey = new Map<string, AcceptedEvidenceEnvelope | null>()
+  const readOne = (identity: AcceptedEvidenceBatchIdentity) => identity.anyLotVersion
+    ? readAcceptedEvidenceAnyLotVersion(kv, identity, now)
+    : readAcceptedEvidence(kv, identity, now)
 
-  let cursor = 0
-  async function worker(): Promise<void> {
-    for (;;) {
-      const index = cursor
-      cursor += 1
-      if (index >= entries.length) return
-      const [key, identity] = entries[index]
-      // eslint-disable-next-line no-await-in-loop
-      const envelope = identity.anyLotVersion
-        ? await readAcceptedEvidenceAnyLotVersion(kv, identity, now)
-        : await readAcceptedEvidence(kv, identity, now)
-      byKey.set(key, envelope)
+  async function runPool<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const index = cursor
+        cursor += 1
+        if (index >= items.length) return
+        // eslint-disable-next-line no-await-in-loop
+        await fn(items[index])
+      }
     }
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, () => worker()))
   }
-  const workerCount = Math.max(1, Math.min(concurrency, entries.length))
-  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+
+  const mget = kv.mget
+  if (typeof mget === 'function' && entries.length > 1) {
+    const chunks: Array<typeof entries> = []
+    for (let i = 0; i < entries.length; i += ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE) chunks.push(entries.slice(i, i + ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE))
+    await runPool(chunks, ACCEPTED_EVIDENCE_MGET_CONCURRENCY, async (chunk) => {
+      // Same key each single-key reader would GET for this identity.
+      const readKeys = chunk.map(([, identity]) => identity.anyLotVersion
+        ? buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' })
+        : buildAcceptedEvidenceKey(identity))
+      let raws: unknown[] | null = null
+      try {
+        const reply = await mgetWithTimeout(mget, readKeys)
+        if (Array.isArray(reply) && reply.length === chunk.length) raws = reply
+      } catch {
+        raws = null
+      }
+      if (raws === null) {
+        // MGET failed or returned an unexpected shape: fall back to the original per-key reads.
+        await runPool(chunk, concurrency, async ([key, identity]) => { byKey.set(key, await readOne(identity)) })
+        return
+      }
+      chunk.forEach(([key, identity], i) => {
+        const raw = raws![i]
+        const valid = identity.anyLotVersion
+          ? isValidAcceptedEvidenceIgnoringLotVersion(raw, identity, now)
+          : isValidAcceptedEvidence(raw, identity, now)
+        byKey.set(key, valid ? raw as AcceptedEvidenceEnvelope : null)
+      })
+    })
+  } else {
+    await runPool(entries, concurrency, async ([key, identity]) => { byKey.set(key, await readOne(identity)) })
+  }
 
   return { byKey, keysRequested: identities.length, uniqueKeysRead: entries.length, elapsedMs: Date.now() - start }
 }

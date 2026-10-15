@@ -659,6 +659,17 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // resolves to null on failure, so this is a pure no-op guard against Node's unhandled-rejection
   // warning on the (never-actually-taken) early-return paths below that abandon this promise.
   robinhoodPromise.catch(() => {})
+  // HOLDINGS FIRST, IN PARALLEL: the holdings/current-price snapshot never touches the shared
+  // historical native-price resolver the gate below reserves for Robinhood, so it no longer waits
+  // ~15s for Robinhood receipt verification before the user sees their portfolio. Only the core
+  // (historical PnL) pipeline stays behind the gate.
+  const fastSnapshotPromise = computeFastSnapshot()
+  fastSnapshotPromise.catch(() => {})
+  void fastSnapshotPromise.then((snap) => {
+    stageMs.snapshotHoldings_atMs = snap.timeToFirstHoldingsMs
+    stageMs.snapshotPortfolio_atMs = snap.timeToFirstPortfolioMs
+    if (snap.timeToPartialPortfolioPublishMs != null) stageMs.snapshotPublished_atMs = snap.timeToPartialPortfolioPublishMs
+  }, () => undefined)
   const nativePriorityStartedAt = Date.now()
   try {
     await withScanTimeout(nativePricePriorityReady, remainingWorkerMs(startTime))
@@ -668,15 +679,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     return timedOutPartialResult('robinhood_native_price_priority_timeout')
   }
   stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt
-  // Both broad EVM lanes start only after the reserved Robinhood native days have completed their
-  // cache/provider pass; neither can consume the shared historical quota or trip its breaker first.
-  const fastSnapshotPromise = computeFastSnapshot()
-  fastSnapshotPromise.catch(() => {})
-  void fastSnapshotPromise.then((snap) => {
-    stageMs.snapshotHoldings_atMs = snap.timeToFirstHoldingsMs
-    stageMs.snapshotPortfolio_atMs = snap.timeToFirstPortfolioMs
-    if (snap.timeToPartialPortfolioPublishMs != null) stageMs.snapshotPublished_atMs = snap.timeToPartialPortfolioPublishMs
-  }, () => undefined)
+  // The core EVM pipeline starts only after the reserved Robinhood native days have completed their
+  // cache/provider pass; it cannot consume the shared historical quota or trip its breaker first.
   const coreTimeoutMs = remainingWorkerMs(startTime)
   const coreStartedAt = Date.now()
   // The core pipeline sees the global deadline and the snapshot publication (src/lib/scanRunContext.ts),

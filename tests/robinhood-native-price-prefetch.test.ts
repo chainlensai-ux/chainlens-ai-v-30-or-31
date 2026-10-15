@@ -147,7 +147,9 @@ test('an open current UTC day is not reserved or persisted from a spot-adjacent 
 test('the worker and orchestrator release broad EVM pricing only after the Robinhood prefetch signal', () => {
   const worker = readFileSync(resolve('workers/walletScanV2.ts'), 'utf8')
   const orchestrator = readFileSync(resolve('lib/server/walletScanOrchestrator.ts'), 'utf8')
-  assert.ok(worker.indexOf('await withScanTimeout(nativePricePriorityReady') < worker.indexOf('const fastSnapshotPromise = computeFastSnapshot()'))
+  // The holdings/current-price snapshot never uses the historical native resolver, so it starts
+  // before the gate; only the core historical-pricing pipeline waits for the Robinhood signal.
+  assert.ok(worker.indexOf('const fastSnapshotPromise = computeFastSnapshot()') < worker.indexOf('await withScanTimeout(nativePricePriorityReady'))
   assert.ok(worker.indexOf('await withScanTimeout(nativePricePriorityReady') < worker.indexOf('const corePromise = withScanTimeout('))
   assert.ok(orchestrator.indexOf('await nativePricePriorityReady') < orchestrator.indexOf('evmReport = await runV2Scan('))
 })

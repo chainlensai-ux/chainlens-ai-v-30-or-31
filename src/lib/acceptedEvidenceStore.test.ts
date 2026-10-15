@@ -401,3 +401,54 @@ describe('createMemoizedAcceptedEvidenceLoader', () => {
     assert.deepEqual(memo.stats(), { requests: 2, uniqueWork: 2, cacheHits: 0 })
   })
 })
+
+describe('readAcceptedEvidenceBatch — MGET path (deep-scan speed fix)', () => {
+  function mgetKv() {
+    const base = fakeKv()
+    const calls = { get: 0, mget: 0, mgetKeys: 0 }
+    const kv: AcceptedEvidenceKvLike = {
+      get: async (key) => { calls.get += 1; return base.get(key) },
+      set: base.set,
+      mget: async (...keys: string[]) => { calls.mget += 1; calls.mgetKeys += keys.length; return keys.map((k) => (base.store.has(k) ? base.store.get(k) : null)) },
+    }
+    return { kv, base, calls }
+  }
+
+  it('returns exactly what per-key reads return, using one MGET per chunk instead of one GET per key', async () => {
+    const { kv, base, calls } = mgetKv()
+    const identities: AcceptedEvidenceIdentity[] = Array.from({ length: 250 }, (_, i) => ({ chain: 'base', token: `0x${i}`, txHash: `0xtx${i}`, side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }))
+    for (const identity of identities.filter((_, i) => i % 3 === 0)) {
+      await writeAcceptedEvidence(base, buildAcceptedEvidenceEnvelope({ identity, priceUsd: 2, valueUsd: 2, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+    }
+    const viaMget = await readAcceptedEvidenceBatch(kv, identities, 0)
+    const viaGet = await readAcceptedEvidenceBatch(base, identities, 0)
+    assert.equal(calls.get, 0)
+    assert.equal(calls.mget, 3, '250 keys in chunks of 100')
+    assert.equal(calls.mgetKeys, 250)
+    assert.deepEqual([...viaMget.byKey.entries()].sort(), [...viaGet.byKey.entries()].sort())
+  })
+
+  it('applies the same validation: a corrupt or mismatched record is null, a relaxed read finds any lot version', async () => {
+    const { kv, base } = mgetKv()
+    const written: AcceptedEvidenceIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, lotIdentityVersion: 'writer-version' }
+    await writeAcceptedEvidence(base, buildAcceptedEvidenceEnvelope({ identity: written, priceUsd: 9, valueUsd: 9, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+    const corrupt: AcceptedEvidenceIdentity = { chain: 'base', token: '0xb', txHash: '0xbuyb', side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }
+    base.store.set(buildAcceptedEvidenceKey(corrupt), { garbage: true })
+    const relaxed: AcceptedEvidenceBatchIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, anyLotVersion: true }
+    const result = await readAcceptedEvidenceBatch(kv, [relaxed, corrupt], 0)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(written))?.priceUsd, 9)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(corrupt)), null)
+  })
+
+  it('falls back to per-key reads when MGET throws, with identical results', async () => {
+    const { kv, base, calls } = mgetKv()
+    const identity: AcceptedEvidenceIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }
+    const other: AcceptedEvidenceIdentity = { ...identity, token: '0xc', txHash: '0xbuyc' }
+    await writeAcceptedEvidence(base, buildAcceptedEvidenceEnvelope({ identity, priceUsd: 4, valueUsd: 4, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+    kv.mget = async () => { throw new Error('boom') }
+    const result = await readAcceptedEvidenceBatch(kv, [identity, other], 0)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(identity))?.priceUsd, 4)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(other)), null)
+    assert.equal(calls.get, 2)
+  })
+})
