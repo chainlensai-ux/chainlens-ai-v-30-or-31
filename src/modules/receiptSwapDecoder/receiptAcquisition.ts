@@ -19,7 +19,8 @@ import { getSharedBaseClient, getSharedEthereumClient } from './rpcClient'
 import { decodeLogs } from './decodeLogs'
 
 export type ReceiptFetchOutcome =
-  | { status: 'ok'; logs: RawReceiptLog[] }
+  // `from`/`to`: the transaction's sender and recipient, read off the same receipt (absent on older cache entries).
+  | { status: 'ok'; logs: RawReceiptLog[]; from?: string | null; to?: string | null }
   | { status: 'missing' }
   | { status: 'reverted' }
   | { status: 'malformed' }
@@ -448,7 +449,7 @@ export function createLiveBaseReceiptFetcher(): ReceiptFetcher {
       const receipt = await client.getTransactionReceipt({ hash: txHash as `0x${string}` })
       if (!receipt) return { status: 'missing' }
       if (receipt.status === 'reverted') return { status: 'reverted' }
-      return { status: 'ok', logs: toRawLogs(receipt.logs) }
+      return { status: 'ok', logs: toRawLogs(receipt.logs), from: receipt.from ? receipt.from.toLowerCase() : null, to: receipt.to ? receipt.to.toLowerCase() : null }
     } catch (err) {
       if (err && typeof err === 'object' && 'name' in err && (err as { name?: string }).name === 'TransactionReceiptNotFoundError') {
         return { status: 'missing' }

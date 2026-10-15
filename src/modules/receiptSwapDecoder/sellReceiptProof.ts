@@ -25,6 +25,9 @@ import { seedPermanentReceiptsIntoRequestScope, recordPermanentReceiptsFromReque
 import type { PoolValidator } from './poolValidator'
 import type { UniswapV3PoolValidator } from './uniswapV3PoolValidator'
 import type { RawReceiptLog, ReceiptSwapChain } from './types'
+import { proveV4SellFromReceipt, type V4SellDeps, type V4SellRejection } from './v4SellReceiptProof'
+import { V4_POOL_MANAGERS, V4_SWAP_TOPIC0 } from '../../lib/v4RouteQuote'
+import { SELL_VENUES, type SellVenue } from '../../lib/sellVenueClassifier'
 
 export const MAX_SELL_PROOF_RECEIPTS = 25
 export const SELL_PROOF_LANE_BUDGET_MS = 12_000
@@ -32,7 +35,7 @@ const RECEIPT_FETCH_TIMEOUT_MS = 5_000
 const CONCURRENCY = 5
 const SUPPORTED_CHAINS: ReadonlySet<string> = new Set(['base', 'eth'])
 
-export type SellProofKind = 'exact_swap' | 'validated_pool_swap'
+export type SellProofKind = 'exact_swap' | 'validated_pool_swap' | 'v4_exact_route'
 export type SellProofRejection =
   | 'lp_add_or_remove' | 'wallet_did_not_send_token' | 'no_pool_swap_event'
   | 'decoded_swap_not_selling_token' | 'pool_not_validated'
@@ -48,9 +51,16 @@ export type SellReceiptProofAudit = {
   liveFetches: number
   fetchFailures: number
   proofs: Record<SellProofKind, number>
-  rejections: Partial<Record<SellProofRejection, number>>
+  rejections: Partial<Record<SellProofRejection | `v4:${V4SellRejection}`, number>>
   byChain: Record<string, { attempted: number; proven: number }>
+  /** Venue of every checked receipt (audit label only), split by outcome. */
+  venues: { rejected: Record<SellVenue, number>; proven: Record<SellVenue, number> }
+  rejectedSamples: Array<{ chain: string; txHash: string; token: string; venue: SellVenue | null; rejection: string }>
+  v4Enabled: boolean
 }
+
+const REJECTED_SAMPLE_LIMIT = 25
+const emptyVenueCounts = (): Record<SellVenue, number> => Object.fromEntries(SELL_VENUES.map((v) => [v, 0])) as Record<SellVenue, number>
 
 /** PURE over its injected validators. Decides whether one receipt proves the wallet sold `token`. */
 export async function proveSellFromReceipt(params: {
@@ -115,6 +125,10 @@ export async function proveSellsFromReceipts(params: {
   laneBudgetMs?: number
   timeoutMs?: number
   now?: () => number
+  /** Audit-only venue label for each checked receipt. */
+  classifyVenue?: (input: { chain: ReceiptSwapChain; logs: RawReceiptLog[]; txTo: string | null }) => Promise<SellVenue>
+  /** Uniswap V4 proof (WALLET_V4_SELL_PROOF=1): tried for receipts with canonical-PoolManager swaps the pool decoder rejected. */
+  v4?: V4SellDeps
 }): Promise<{ provenTxKeys: Set<string>; proofByTxHash: Map<string, SellProofKind>; audit: SellReceiptProofAudit }> {
   const cap = params.cap ?? MAX_SELL_PROOF_RECEIPTS
   const now = params.now ?? Date.now
@@ -138,7 +152,8 @@ export async function proveSellsFromReceipts(params: {
 
   const audit: SellReceiptProofAudit = {
     candidates: unique.length, attempted: 0, skippedByCap: unique.length - selected.length, skippedByTimeBudget: 0,
-    cacheHits: 0, liveFetches: 0, fetchFailures: 0, proofs: { exact_swap: 0, validated_pool_swap: 0 }, rejections: {}, byChain: {},
+    cacheHits: 0, liveFetches: 0, fetchFailures: 0, proofs: { exact_swap: 0, validated_pool_swap: 0, v4_exact_route: 0 }, rejections: {}, byChain: {},
+    venues: { rejected: emptyVenueCounts(), proven: emptyVenueCounts() }, rejectedSamples: [], v4Enabled: params.v4 != null,
   }
   const provenTxKeys = new Set<string>()
   const proofByTxHash = new Map<string, SellProofKind>()
@@ -166,7 +181,8 @@ export async function proveSellsFromReceipts(params: {
     return run
   }
 
-  const results = new Map<SellProofCandidate, SellProofKind | SellProofRejection | null>()
+  const results = new Map<SellProofCandidate, SellProofKind | SellProofRejection | `v4:${V4SellRejection}` | null>()
+  const venueOf = new Map<SellProofCandidate, SellVenue>()
   for (let i = 0; i < selected.length; i += CONCURRENCY) {
     if (now() >= deadline) { audit.skippedByTimeBudget = selected.length - i; break }
     const batch = selected.slice(i, i + CONCURRENCY)
@@ -178,11 +194,21 @@ export async function proveSellsFromReceipts(params: {
       row.attempted += 1
       const outcome = await fetchOne(chain, txHash)
       if (outcome.status !== 'ok') { audit.fetchFailures += 1; results.set(candidate, null); return }
-      const verdict = await proveSellFromReceipt({
+      let verdict: { proof: SellProofKind } | { proof: null; rejection: SellProofRejection | `v4:${V4SellRejection}` } | null = await proveSellFromReceipt({
         chain, txHash, walletAddress: params.walletAddress, token: candidate.token, logs: outcome.logs,
         validator: params.validator, uniswapV3Validator: params.uniswapV3Validator,
       }).catch(() => null)
+      const manager = V4_POOL_MANAGERS[chain]
+      const hasV4Swap = outcome.logs.some((l) => (l.topics[0] ?? '').toLowerCase() === V4_SWAP_TOPIC0 && l.address.toLowerCase() === manager)
+      if (params.v4 && hasV4Swap && verdict?.proof == null) {
+        const v4 = await proveV4SellFromReceipt({ chain, txHash, walletAddress: params.walletAddress, token: candidate.token, logs: outcome.logs, deps: params.v4 }).catch(() => null)
+        if (v4) verdict = v4.proof ? { proof: v4.proof } : { proof: null, rejection: `v4:${v4.rejection}` }
+      }
       results.set(candidate, verdict == null ? null : verdict.proof ?? verdict.rejection)
+      if (params.classifyVenue) {
+        const venue = await params.classifyVenue({ chain, logs: outcome.logs, txTo: outcome.to ?? null }).catch((): SellVenue => 'unknown')
+        venueOf.set(candidate, venue)
+      }
     }))
   }
   recordPermanentReceiptsFromRequestScope(scope)
@@ -191,14 +217,20 @@ export async function proveSellsFromReceipts(params: {
   for (const candidate of selected) {
     const result = results.get(candidate)
     if (result == null) continue
-    if (result === 'exact_swap' || result === 'validated_pool_swap') {
+    const venue = venueOf.get(candidate) ?? null
+    if (result === 'exact_swap' || result === 'validated_pool_swap' || result === 'v4_exact_route') {
       const txHash = candidate.txHash.toLowerCase()
       audit.proofs[result] += 1
+      if (venue) audit.venues.proven[venue] += 1
       audit.byChain[candidate.chain].proven += 1
       provenTxKeys.add(`${candidate.chain}:${txHash}`)
       if (!proofByTxHash.has(txHash) || result === 'exact_swap') proofByTxHash.set(txHash, result)
     } else {
       audit.rejections[result] = (audit.rejections[result] ?? 0) + 1
+      if (venue) audit.venues.rejected[venue] += 1
+      if (audit.rejectedSamples.length < REJECTED_SAMPLE_LIMIT) {
+        audit.rejectedSamples.push({ chain: candidate.chain, txHash: candidate.txHash.toLowerCase(), token: candidate.token.toLowerCase(), venue, rejection: result })
+      }
     }
   }
   return { provenTxKeys, proofByTxHash, audit }

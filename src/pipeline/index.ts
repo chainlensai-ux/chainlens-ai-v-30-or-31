@@ -59,6 +59,8 @@ import { buildReceiptSelectorSellAudit, buildSellGapAudit, explainOutboundSellDe
 import { activeChainSet, groupEventsByTx } from '../modules/sellTimeline/utils'
 import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEthereumDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import { proveSellsFromReceipts, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
+import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
+import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
   createLiveUniswapV3PoolValidator, createCachedUniswapV3PoolValidator, createUniswapV3ValidationRequestScope,
 } from '../modules/receiptSwapDecoder/uniswapV3PoolValidator'
@@ -2167,6 +2169,27 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         fetchReceipt: createLiveBaseReceiptFetcher(),
         validator: createChainPoolValidator({ base: createLiveBaseDexPoolValidator(), eth: createLiveEthereumDexPoolValidator() }),
         uniswapV3Validator: createCachedUniswapV3PoolValidator(createLiveUniswapV3PoolValidator(), createUniswapV3ValidationRequestScope()).validator,
+        // Audit-only venue labels for the [sell-receipt-proof] log.
+        classifyVenue: (() => {
+          const readPoolFactory = createLivePoolFactoryReader()
+          return ({ chain, logs, txTo }) => classifySellVenue({ chain, walletAddress: params.walletAddress, logs, txTo, readPoolFactory })
+        })(),
+        // Uniswap V4 sell proof, off unless WALLET_V4_SELL_PROOF=1.
+        v4: process.env.WALLET_V4_SELL_PROOF === '1'
+          ? (() => {
+            const resolver = createV4PoolKeyResolver()
+            const tracer = createInternalTransferTracer()
+            const fetchTx = createReceiptQuoteTxFetcher()
+            return {
+              resolvePoolKeys: (chain, poolIds) => resolver(chain, poolIds),
+              fetchInternalTransfers: async (chain, txHash) => (await tracer(chain, txHash)).transfers,
+              fetchTxSenderAndValue: async (chain, txHash) => {
+                const tx = await fetchTx(chain, txHash)
+                return tx.status === 'ok' ? { from: tx.from, valueWei: tx.valueWei } : null
+              },
+            }
+          })()
+          : undefined,
       }))
       sellProofTxKeys = sellProof.provenTxKeys
       // Only exact decodes count as receipt proof for the unmatched-sell boundary resolver.

@@ -23,6 +23,8 @@ import type { ReceiptFetchOutcome, ReceiptRequestScopeCache } from './receiptAcq
 import { receiptCacheKey } from './receiptAcquisition'
 
 const permanentReceiptCache = new Map<string, RawReceiptLog[]>()
+// The receipt's own sender/recipient, kept beside the logs when the fetch returned them.
+const permanentReceiptTxAddresses = new Map<string, { from: string | null; to: string | null }>()
 
 export function permanentReceiptCacheSize(): number {
   return permanentReceiptCache.size
@@ -33,6 +35,7 @@ export function permanentReceiptCacheSize(): number {
 // receipt mid-run; tests need a clean slate between cases.
 export function __resetPermanentReceiptCacheForTest(): void {
   permanentReceiptCache.clear()
+  permanentReceiptTxAddresses.clear()
 }
 
 // Copies every permanently-cached receipt into `requestScope` as a real 'ok' outcome, BEFORE
@@ -45,7 +48,7 @@ export function seedPermanentReceiptsIntoRequestScope(requestScope: ReceiptReque
     if (requestScope.cache.has(key)) continue
     const logs = permanentReceiptCache.get(key)
     if (!logs) continue
-    requestScope.cache.set(key, { status: 'ok', logs })
+    requestScope.cache.set(key, { status: 'ok', logs, ...(permanentReceiptTxAddresses.get(key) ?? {}) })
     seeded += 1
   }
   return seeded
@@ -58,6 +61,9 @@ export function recordPermanentReceiptsFromRequestScope(requestScope: ReceiptReq
   let recorded = 0
   for (const [key, outcome] of requestScope.cache) {
     if (outcome.status !== 'ok') continue
+    if (outcome.from !== undefined || outcome.to !== undefined) {
+      if (!permanentReceiptTxAddresses.has(key)) permanentReceiptTxAddresses.set(key, { from: outcome.from ?? null, to: outcome.to ?? null })
+    }
     if (permanentReceiptCache.has(key)) continue
     permanentReceiptCache.set(key, outcome.logs)
     recorded += 1
