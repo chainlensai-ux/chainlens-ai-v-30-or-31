@@ -1,5 +1,5 @@
 import { runWalletScanWorker } from '@/src/modules/walletScanWorker'
-import { timingSafeEqual } from 'node:crypto'
+import { checkWorkerRequest, WORKER_SECRET_HEADER } from '@/src/lib/walletScanWorkerAuth'
 
 // DEPLOYMENT CONFIG, FIXED (audit: route/deployment correctness): this is the route that actually
 // runs the long V2 pipeline (up to WORKER_GLOBAL_TIMEOUT_MS = 270s inside workers/walletScanV2.ts),
@@ -14,18 +14,20 @@ export const preferredRegion = 'iad1'
 export const maxDuration = 300
 
 export function isAuthorizedWalletScanWorkerRequest(req: Request): boolean {
-  const secret = process.env.WALLET_SCAN_WORKER_SECRET
-  const authorization = req.headers.get('authorization') ?? ''
-  if (!secret || !authorization.startsWith('Bearer ')) return false
-  const provided = authorization.slice(7)
-  const expectedBuffer = Buffer.from(secret)
-  const providedBuffer = Buffer.from(provided)
-  return providedBuffer.length === expectedBuffer.length && timingSafeEqual(providedBuffer, expectedBuffer)
+  return checkWorkerRequest(req).ok
 }
 
 export async function POST(req: Request) {
-  if (!isAuthorizedWalletScanWorkerRequest(req)) {
-    return Response.json({ error: 'unauthorized' }, { status: 401 })
+  const auth = checkWorkerRequest(req)
+  if (!auth.ok) {
+    // Which check failed and where the call landed — never the secret itself.
+    console.warn('[wallet-scan-worker] unauthorized internal call', {
+      reason: auth.reason,
+      host: req.headers.get('host'),
+      hasAuthorizationHeader: req.headers.has('authorization'),
+      hasWorkerSecretHeader: req.headers.has(WORKER_SECRET_HEADER),
+    })
+    return Response.json({ error: 'unauthorized', reason: auth.reason }, { status: 401 })
   }
   return await runWalletScanWorker(req)
 }

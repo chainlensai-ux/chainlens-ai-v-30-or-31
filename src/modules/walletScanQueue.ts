@@ -1,5 +1,6 @@
 import { after } from 'next/server'
 import { kv } from '@/lib/server/kv'
+import { resolveWorkerTarget, workerRequestHeaders, type WorkerTarget } from '@/src/lib/walletScanWorkerAuth'
 import {
   walletScanClaimLockKey,
   walletScanJobKey,
@@ -370,37 +371,45 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
 }
 
 export type WorkerTriggerOutcome =
-  | { kind: 'dispatched'; waitedMs: number }
-  | { kind: 'responded'; status: number; waitedMs: number }
-  | { kind: 'error'; message: string; waitedMs: number }
+  | { kind: 'dispatched'; waitedMs: number; targetHost: string; targetSource: WorkerTarget['source'] }
+  | { kind: 'responded'; status: number; waitedMs: number; targetHost: string; targetSource: WorkerTarget['source']; bodySnippet?: string }
+  | { kind: 'error'; message: string; waitedMs: number; targetHost: string; targetSource: WorkerTarget['source'] }
   | { kind: 'not_configured' }
 
 // The worker route only responds when its whole job has finished (up to ~300s). Awaiting that response
 // here held the enqueue request open for the entire scan — and, for a follow-up queued from inside a
-// worker, held THAT worker past its maxDuration before it could publish (a killed job left 'running',
-// the enqueue request a non-JSON 504 → the client's 'scan-enqueue-failed'). Now the request is sent,
-// we wait only until it is dispatched (or answers quickly, e.g. 401/503), and after() keeps the
-// in-flight request alive past this response without blocking it.
+// worker, held THAT worker past its maxDuration before it could publish. Now the request is sent, we
+// wait only until it is dispatched (or answers quickly, e.g. 401/503), and after() keeps the in-flight
+// request alive past this response without blocking it. Target host and auth headers come from
+// src/lib/walletScanWorkerAuth.ts (stable domain, shared secret, Vercel protection bypass).
 export const WORKER_TRIGGER_DISPATCH_WAIT_MS = 1_500
 
-export async function triggerWalletScanWorker(jobId: string, deps: { fetchImpl?: typeof fetch; keepAlive?: (work: Promise<unknown>) => void; dispatchWaitMs?: number } = {}): Promise<WorkerTriggerOutcome> {
-  const base = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'http://localhost:3000'
-  const workerSecret = process.env.WALLET_SCAN_WORKER_SECRET
-  if (!workerSecret) {
+/** First bytes of a rejection body: tells our route's JSON 401 apart from Vercel's protection page. */
+async function rejectionSnippet(res: Response): Promise<string | undefined> {
+  try { return (await res.text()).replace(/\s+/g, ' ').slice(0, 160) } catch { return undefined }
+}
+
+export async function triggerWalletScanWorker(jobId: string, deps: { fetchImpl?: typeof fetch; keepAlive?: (work: Promise<unknown>) => void; dispatchWaitMs?: number; env?: Record<string, string | undefined> } = {}): Promise<WorkerTriggerOutcome> {
+  const env = deps.env ?? process.env
+  const headers = workerRequestHeaders(env)
+  if (!headers) {
     console.error('[walletScanQueue] WALLET_SCAN_WORKER_SECRET is not configured; worker trigger denied')
     return { kind: 'not_configured' }
   }
+  const target = resolveWorkerTarget(env)
+  const where = { targetHost: target.host, targetSource: target.source }
   const startedAt = Date.now()
   const fetchImpl = deps.fetchImpl ?? fetch
-  const request: Promise<WorkerTriggerOutcome> = fetchImpl(`${base}/api/wallet-scan/worker`, {
+  const request: Promise<WorkerTriggerOutcome> = fetchImpl(target.url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${workerSecret}` },
+    headers,
     body: JSON.stringify({ jobId }),
   }).then(
-    (res) => ({ kind: 'responded' as const, status: res.status, waitedMs: Date.now() - startedAt }),
-    (err) => ({ kind: 'error' as const, message: err instanceof Error ? err.message : String(err), waitedMs: Date.now() - startedAt }),
+    async (res) => ({
+      kind: 'responded' as const, status: res.status, waitedMs: Date.now() - startedAt, ...where,
+      ...(res.status >= 400 ? { bodySnippet: await rejectionSnippet(res) } : {}),
+    }),
+    (err) => ({ kind: 'error' as const, message: err instanceof Error ? err.message : String(err), waitedMs: Date.now() - startedAt, ...where }),
   )
   const keepAlive = deps.keepAlive ?? ((work: Promise<unknown>) => {
     // Outside a request scope (scripts, tests) after() throws; the request simply runs to completion.
@@ -413,7 +422,7 @@ export async function triggerWalletScanWorker(jobId: string, deps: { fetchImpl?:
   }))
   let timer: ReturnType<typeof setTimeout> | undefined
   const dispatched = new Promise<WorkerTriggerOutcome>((resolve) => {
-    timer = setTimeout(() => resolve({ kind: 'dispatched', waitedMs: Date.now() - startedAt }), deps.dispatchWaitMs ?? WORKER_TRIGGER_DISPATCH_WAIT_MS)
+    timer = setTimeout(() => resolve({ kind: 'dispatched', waitedMs: Date.now() - startedAt, ...where }), deps.dispatchWaitMs ?? WORKER_TRIGGER_DISPATCH_WAIT_MS)
   })
   const outcome = await Promise.race([request, dispatched])
   if (timer) clearTimeout(timer)
