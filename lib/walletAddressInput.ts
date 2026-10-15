@@ -53,6 +53,8 @@ export function walletScanErrorBanner(message: string): string {
   const kind = classifyWalletScanError(message)
   if (kind === 'validation') return INVALID_WALLET_ADDRESS_MESSAGE
   if (kind === 'auth') return message
+  // Raw worker code from scans before heavy wallets were deferred instead of failed.
+  if (message === 'HEAVY_WALLET_FAST_FAIL') return 'This wallet has too much history to finish in one scan — please rescan.'
   return `Scan failed — try again later. (${message})`
 }
 

@@ -7,6 +7,7 @@ import {
   walletScanResultKey,
 } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
+import { attachHeavyWalletFollowUp } from '@/src/modules/heavyWalletFollowUp'
 
 type WalletScanJobState = {
   userId: string
@@ -348,6 +349,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
       // workers/walletScanV2.ts's own header for why this can't be recovered from `payload.chains`
       // alone (Robinhood is filtered out of `chains` before it ever reaches this queue).
       payload.includeRobinhoodRequested,
+      { heavyWalletFollowUp: payload.heavyWalletFollowUp === true },
     )
 
     if (!result || typeof result !== 'object' || !('body' in result)) {
@@ -356,6 +358,8 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     } else {
       finalBody = result.body ?? invalidShapeResultBody()
       completedSuccessfully = true
+      // A heavy wallet's deferred V2 analysis runs as a follow-up job; its id rides on this result.
+      finalBody = await attachHeavyWalletFollowUp(finalBody, payload)
     }
   } catch (err) {
     finalBody = errorResultBody(err)

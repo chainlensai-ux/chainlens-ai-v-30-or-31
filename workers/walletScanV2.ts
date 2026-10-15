@@ -39,6 +39,8 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { updateWalletScanJobProgress, publishWalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
+import { MAX_RAW_EVENTS_PER_PROVIDER } from '@/src/modules/providerFetchWindow/types'
+import { HEAVY_WALLET_DEFERRED_PNL_STATUS } from '@/src/modules/heavyWalletFollowUp'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
 import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sources/dexscreener'
@@ -88,17 +90,34 @@ function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
 
 export type WalletScanV2WorkerResult = { status: number; body: unknown }
 
-// HEAVY-WALLET FAST-FAIL, DISCLOSED: same 800-event threshold this codebase already uses as its
-// post-hoc CU guard (app/api/scan-v2/worker/route.ts's CU_GUARD_EVENT_THRESHOLD) — reused here,
-// not a new/different number, so this fast-fail and that guard agree on what "heavy" means.
-const HEAVY_WALLET_EVENT_THRESHOLD = 800
+// HEAVY-WALLET DEFERRAL: the summed Alchemy history events above which the V2 analysis modules
+// (trades → signals, smart money) are deferred to a follow-up job instead of running in this one.
+// It used to be 800 and FAILED the scan; that number dated from when Alchemy history was one
+// 200-transfer page per direction (≤ 400 events per chain), so with paginated history (up to
+// MAX_RAW_EVENTS_PER_PROVIDER per chain) ordinary active wallets tripped it. Provider cost is
+// bounded separately by the per-scan Alchemy CU ledger. Above the threshold the scan still returns
+// its holdings / portfolio / core FIFO result, with pnlStatus 'deferred_heavy_wallet'.
+export const HEAVY_WALLET_EVENT_THRESHOLD = MAX_RAW_EVENTS_PER_PROVIDER
 
-function sumProviderEventCount(providerDiagnostics: unknown): number {
+export const HEAVY_WALLET_FOLLOW_UP_ROBINHOOD_REUSE_MS = 15 * 60 * 1000
+
+export type WalletScanV2WorkerOptions = {
+  /** This job is the follow-up for a deferred heavy wallet: run every module, never defer again. */
+  heavyWalletFollowUp?: boolean
+}
+
+export function sumProviderEventCount(providerDiagnostics: unknown): number {
   if (!Array.isArray(providerDiagnostics)) return 0
   return providerDiagnostics.reduce((sum: number, entry) => {
     const alchemy = (entry as { alchemy?: { eventCount?: number } })?.alchemy
     return sum + (typeof alchemy?.eventCount === 'number' ? alchemy.eventCount : 0)
   }, 0)
+}
+
+/** True when this scan's V2 analysis modules go to a follow-up job (never for the follow-up itself). */
+export function shouldDeferHeavyWallet(providerDiagnostics: unknown, options: WalletScanV2WorkerOptions = {}): boolean {
+  if (options.heavyWalletFollowUp) return false
+  return sumProviderEventCount(providerDiagnostics) > HEAVY_WALLET_EVENT_THRESHOLD
 }
 
 const TOTAL_MODULES = 11
@@ -379,7 +398,7 @@ export type WalletScanTimingAudit = {
 // EVM-only) would otherwise leave this worker with no way to know Robinhood was ever asked for.
 // Defaults to false so every existing call site (app/api/scan-v2/full-scan/legacy/route.ts's
 // 2-arg call, this file's own tests) is unaffected — purely additive.
-export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string, includeRobinhoodRequested = false): Promise<WalletScanV2WorkerResult> {
+export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string, includeRobinhoodRequested = false, options: WalletScanV2WorkerOptions = {}): Promise<WalletScanV2WorkerResult> {
   const startTime = Date.now()
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
@@ -604,6 +623,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   const robinhoodPromise = includeRobinhood
     ? runCanonicalRobinhoodScan(walletAddress, fetch, {
       jobId: jobId ?? null, owner: 'worker', onNativePricePrefetchComplete: releaseNativePricePriority,
+      // A heavy-wallet follow-up reuses the Robinhood result its first job just stored.
+      ...(options.heavyWalletFollowUp ? { reuseFreshMs: HEAVY_WALLET_FOLLOW_UP_ROBINHOOD_REUSE_MS } : {}),
     }).catch((err) => {
       // eslint-disable-next-line no-console
       console.warn('[CU-TRACK] worker robinhood scan failed', { walletAddress, error: err instanceof Error ? err.message : String(err) })
@@ -656,18 +677,21 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     return { status: 500, body: { success: false, error: { message: 'invalid_v2_shape', category: 'pipeline' } } }
   }
 
-  // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
-  // populated by router.handleScanRequest (the old pipeline, src/pipeline/index.ts) above — before
-  // any of the V2 chain's own holdings/pricing/trades/pnl calls run. Checking it here means a
-  // pathological wallet is rejected before the V2 chain's own (separate, additional) provider
-  // calls ever fire, not after — a real fast-fail, not a post-hoc one.
+  // HEAVY-WALLET DEFERRAL: `providerDiagnostics` is populated by the core pipeline above. A wallet
+  // over the threshold no longer fails: the holdings / portfolio (fast snapshot), the core FIFO
+  // result and Robinhood are returned as normal, and only the V2 analysis modules (trades → signals,
+  // smart money) are skipped here and re-run by a follow-up job (src/modules/walletScanWorker.ts).
   const earlyDiagnostics = (body.data as Record<string, unknown> | undefined)?.providerDiagnostics
   const earlyEventCount = sumProviderEventCount(earlyDiagnostics)
-  if (earlyEventCount > HEAVY_WALLET_EVENT_THRESHOLD) {
+  const heavyWalletDeferred = shouldDeferHeavyWallet(earlyDiagnostics, options)
+  if (heavyWalletDeferred) {
     // eslint-disable-next-line no-console
-    console.warn('[worker] heavy-wallet-fast-fail', { eventCount: earlyEventCount })
-    return { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
+    console.warn('[worker] heavy-wallet-deferred', { eventCount: earlyEventCount, threshold: HEAVY_WALLET_EVENT_THRESHOLD })
   }
+  // Deferred modules return their existing empty fallback without running (no provider calls).
+  const runModule: typeof runWithTimeoutAndRpcAudit = heavyWalletDeferred
+    ? async (_name, _fn, fallback) => fallback
+    : runWithTimeoutAndRpcAudit
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {
     // DIVERGENCE CHECK, DISCLOSED: `chainsScanned` (the pipeline's own post-hoc echo of the request
@@ -721,7 +745,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
     // something is genuinely misbehaving — trades is skipped entirely rather than adding its own
     // calls on top of an already-abnormal scan.
-    const { trades, evidenceByChain } = scanRpcBudgetExceeded(moduleErrors)
+    const { trades, evidenceByChain } = heavyWalletDeferred || scanRpcBudgetExceeded(moduleErrors)
       ? ({ trades: [], evidenceByChain: [] } as Awaited<ReturnType<typeof fetchParsedTrades>>)
       : await runWithTimeoutAndRpcAudit(
         'trades',
@@ -738,7 +762,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting pnl')
     t0 = performance.now()
-    const pnlOutput = await runWithTimeoutAndRpcAudit(
+    const pnlOutput = await runModule(
       'pnl',
       () => computePnl(pricing.pricedHoldings, chainHoldings, pricing.totalValueUsd, trades, evidenceByChain, walletAddress),
       {
@@ -782,7 +806,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     console.warn('[V2-worker] starting chainActivity')
     t0 = performance.now()
     providerCallsBefore = providerCallSnapshot()
-    const chainActivityOutput = await runWithTimeoutAndRpcAudit(
+    const chainActivityOutput = await runModule(
       'chainActivity',
       () => computeChainActivity(
         walletAddress,
@@ -806,7 +830,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting risk')
     t0 = performance.now()
-    const riskOutput = await runWithTimeoutAndRpcAudit(
+    const riskOutput = await runModule(
       'risk',
       () => computeRisk(
         portfolioOutput.portfolio,
@@ -832,7 +856,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting personality')
     t0 = performance.now()
-    const personalityOutput = await runWithTimeoutAndRpcAudit(
+    const personalityOutput = await runModule(
       'personality',
       () => computePersonality(
         portfolioOutput.portfolio,
@@ -860,7 +884,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting behavior')
     t0 = performance.now()
-    const behaviorOutput = await runWithTimeoutAndRpcAudit(
+    const behaviorOutput = await runModule(
       'behavior',
       () => computeBehavior(
         pnlOutput.pnlV2,
@@ -890,7 +914,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting signals')
     t0 = performance.now()
-    const signalsOutput = await runWithTimeoutAndRpcAudit(
+    const signalsOutput = await runModule(
       'signals',
       () => computeSignals(
         portfolioOutput.portfolio,
@@ -920,7 +944,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     console.warn('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
-    try {
+    if (!heavyWalletDeferred) try {
       // CANONICAL FIFO WIRING, DISCLOSED (evidence-source-ordering task — this task's own fix over
       // the prior pass, which read `body.data.fifoAndPnl` directly): now goes through
       // selectCanonicalMatchedLots(), the SAME shared selector Wallet Personality's own
@@ -1005,9 +1029,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         // (GoldRush failure kind: auth_config / billing / rate_limited / transient_provider …).
         evmHoldingsPricingAudit: pricing.fallbackAudit ?? null,
         evmHoldingsProviderEvidence: holdingsProviderEvidence,
-        pnlV2: pnlOutput.pnlV2,
-        pnlStatus: pnlOutput.pnlStatus,
-        walletPnlEvidenceAudit: pnlOutput.walletPnlEvidenceAudit,
+        // Deferred: no V2 PnL was computed — absent (never the fallback's zeros) until the follow-up job lands.
+        pnlV2: heavyWalletDeferred ? undefined : pnlOutput.pnlV2,
+        pnlStatus: heavyWalletDeferred ? HEAVY_WALLET_DEFERRED_PNL_STATUS : pnlOutput.pnlStatus,
+        walletPnlEvidenceAudit: heavyWalletDeferred ? undefined : pnlOutput.walletPnlEvidenceAudit,
+        heavyWalletDeferral: heavyWalletDeferred
+          ? { eventCount: earlyEventCount, threshold: HEAVY_WALLET_EVENT_THRESHOLD, deferredModules: ['trades', 'pnl', 'chainActivity', 'risk', 'personality', 'behavior', 'signals', 'smartMoneyScore'] }
+          : null,
         chainActivityV2: chainActivityOutput.chainActivityV2,
         chainActivityStatus: chainActivityOutput.chainActivityStatus,
         riskV2: riskOutput.riskV2,

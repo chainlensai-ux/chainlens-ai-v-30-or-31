@@ -216,11 +216,28 @@ export async function scanWalletV2(
       return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
     }
 
+    return await pollWalletScanJob(startBody.jobId, accessToken, onUpdate)
+  } catch (err) {
+    return {
+      success: false,
+      error: { message: err instanceof Error ? err.message : String(err), category: 'network' },
+    }
+  }
+}
+
+// Polls an existing wallet-scan job until it is done/failed (also used for a heavy wallet's
+// follow-up PnL job, whose id arrives on the first job's result as `pnlFollowUpJobId`).
+export async function pollWalletScanJob(
+  jobId: string,
+  accessToken: string,
+  onUpdate?: (update: ScanWalletStatusUpdate) => void,
+): Promise<ScanWalletApiResponse> {
+  try {
     const pollStartedAt = Date.now()
 
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
-      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(startBody.jobId)}`, {
+      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(jobId)}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
@@ -264,7 +281,7 @@ export async function scanWalletV2(
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
-      onUpdate?.({ jobId: startBody.jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial })
+      onUpdate?.({ jobId: jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial })
 
       if (pollBody.status === 'done') {
         const result = pollBody.result

@@ -65,6 +65,8 @@ export type WalletScanJobMetadata = {
   // Optional/defaults to false in every reader below — purely additive, no existing job record
   // written before this task loses meaning.
   includeRobinhoodRequested?: boolean
+  /** Follow-up job that runs the V2 analysis modules a heavy wallet's first job deferred. */
+  heavyWalletFollowUp?: boolean
 }
 
 export type WalletScanJobPayload = {
@@ -79,6 +81,8 @@ export type WalletScanJobPayload = {
   // keeps byte-identical behavior (no Robinhood inclusion at the worker level, same as before this
   // task), purely additive for app/api/wallet-scan/route.ts, which now does pass it.
   includeRobinhoodRequested?: boolean
+  /** See WalletScanJobMetadata.heavyWalletFollowUp. */
+  heavyWalletFollowUp?: boolean
 }
 
 const JOB_TTL_SECONDS = 30 * 60
@@ -281,6 +285,7 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
     scanMode: job.scanMode ?? 'normal',
     ip: job.ip ?? 'unknown',
     includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
+    ...(job.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
   }
 }
 
@@ -313,6 +318,7 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
     scanMode: job.scanMode ?? 'normal',
     ip: job.ip ?? 'unknown',
     includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
+    ...(job.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
   }
 }
 
@@ -354,6 +360,7 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     scanMode: payload.scanMode,
     ip: payload.ip,
     includeRobinhoodRequested: payload.includeRobinhoodRequested ?? false,
+    ...(payload.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
   })
   try {
     await kv.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })

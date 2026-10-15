@@ -30,7 +30,7 @@ import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } f
 import { deepScanRemainingLabel, deepScanQuotaPeriod, scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { checkWalletScanInput, robinhoodScanErrorBanner, walletScanErrorBanner } from '@/lib/walletAddressInput'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, pollWalletScanJob, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { resolvePreservedResultOnScanStart } from '@/app/frontend/lib/walletScanPreservation'
@@ -418,6 +418,8 @@ export function deriveWalletScanStageState(params: {
     : pnlStatus === 'verified' ? 'verified'
     : pnlStatus === 'partial' ? 'partial'
     : pnlStatus === 'unavailable' ? 'unavailable'
+    // Heavy wallet: PnL runs in a follow-up job (workers/walletScanV2.ts) — still processing.
+    : pnlStatus === 'deferred_heavy_wallet' ? 'pending'
     // A completed result with no explicit pnlStatus field still carries real pnlV2 numbers —
     // treat as verified rather than a fabricated "pending" on an already-finished scan.
     : 'verified'
@@ -572,6 +574,9 @@ export default function WalletScannerPage() {
   // touch the existing result/error/loading blocks below.
   const [moduleErrors, setModuleErrors] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Heavy wallet: the first result carries holdings/portfolio; PnL and the full analysis arrive from a
+  // follow-up job (pnlFollowUpJobId) that replaces the result when it finishes.
+  const [pnlFollowUp, setPnlFollowUp] = useState<{ jobId: string | null; status: 'processing' | 'failed' | 'not_queued' } | null>(null)
   // ATOMIC ENVELOPE STATE, DISCLOSED: `result` below is derived read-only from this single envelope
   // — there is deliberately no separate setResult(), so a report can never be swapped without its
   // scan identity going with it. See WalletScanEnvelope's own header for the root cause this closes.
@@ -827,6 +832,7 @@ export default function WalletScannerPage() {
     setLoading(true)
     setError(null)
     setPartialSnapshot(null)
+    setPnlFollowUp(null)
     uiFirstResultMsRef.current = null
     robinhoodSidecarDurationMsRef.current = null
     const scanStartedAt = Date.now()
@@ -1014,6 +1020,28 @@ export default function WalletScannerPage() {
         jobId: scanJobId, robinhoodResultJobId: robinhoodResultJobRef.current,
       }))
       setPartialSnapshot(null)
+      // HEAVY WALLET: PnL deferred to a follow-up job — poll it and swap in its full report when done.
+      const reportPnlStatus = (report as unknown as { pnlStatus?: string | null }).pnlStatus
+      const followUpJobId = (report as unknown as { pnlFollowUpJobId?: string | null }).pnlFollowUpJobId ?? null
+      if (reportPnlStatus === 'deferred_heavy_wallet') {
+        const accessToken = scanSession?.access_token
+        if (followUpJobId && accessToken) {
+          setPnlFollowUp({ jobId: followUpJobId, status: 'processing' })
+          void pollWalletScanJob(followUpJobId, accessToken).then((followUp) => {
+            if (scanGenerationRef.current !== myGeneration) return
+            const fullReport = followUp.success ? (followUp.data as WalletV2Report | undefined) : undefined
+            if (fullReport && (fullReport as unknown as { pnlStatus?: string | null }).pnlStatus !== 'deferred_heavy_wallet') {
+              setResultEnvelope({ report: fullReport, jobId: followUpJobId, completedAt: Date.now() })
+              savePortfolioScanResult(address, fullReport, robinhoodResultRef.current)
+              setPnlFollowUp(null)
+            } else {
+              setPnlFollowUp({ jobId: followUpJobId, status: 'failed' })
+            }
+          })
+        } else {
+          setPnlFollowUp({ jobId: null, status: 'not_queued' })
+        }
+      }
       // PORTFOLIO-SHARED-CACHE, DISCLOSED (Portfolio-page-empty-data audit): hands this completed,
       // real scan result to the shared sessionStorage cache so /terminal/portfolio can use it
       // immediately for the same wallet instead of re-scanning or showing empty — see
@@ -1074,7 +1102,8 @@ export default function WalletScannerPage() {
         failureReason: failureMessage,
       }))
       setResultEnvelope(null)
-      setPartialSnapshot(null)
+      // The live snapshot's holdings/portfolio are real and already on screen: keep them (labelled as
+      // an unfinished scan) instead of clearing them and leaving only the error.
       setError(err instanceof Error ? err.message : 'Scan failed — try again later')
     } finally {
       // STALE-UPDATE GUARD, DISCLOSED (stuck-scanning-lifecycle fix): a superseded generation must
@@ -1419,6 +1448,7 @@ export default function WalletScannerPage() {
               `result`: the instant the full report lands this card unmounts (its guard is
               `!result`) and the full result view below takes over. */}
           {partialSnapshot && !result && (() => {
+            const scanFailedAfterSnapshot = !loading && error != null
             const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult, undefined, partialSnapshot.portfolioEvidence ?? null)
             const chainLabels = partialSnapshot.activeChainIds.map((id) => (
               id === 8453 ? 'Base' : id === 1 ? 'ETH' : id === 4663 ? 'Robinhood' : `chain ${id}`
@@ -1427,8 +1457,8 @@ export default function WalletScannerPage() {
             const top = partialSnapshot.topHoldings.slice(0, 5)
             return (
               <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
-                  {limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
+                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
+                  {scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
                   {mergedTotalText(merged, (v) => fmtUsd(v))}
@@ -1445,7 +1475,11 @@ export default function WalletScannerPage() {
                     {top.map((h) => `${h.symbol} ${fmtUsd(h.valueUsd)}`).join(' · ')}
                   </div>
                 )}
-                {limitedEvidenceMode ? (
+                {scanFailedAfterSnapshot ? (
+                  <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                    Holdings and portfolio value above come from this scan&apos;s live snapshot. PnL and the full analysis did not finish — they are not being reported as $0.
+                  </div>
+                ) : limitedEvidenceMode ? (
                   <>
                     <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
                       Holdings and portfolio value above are verified. PnL, activity, and the CORTEX wallet read did not finish within {(PORTFOLIO_READY_GRACE_MS / 1000).toFixed(0)}s and are marked unavailable for this scan — they are not being reported as $0 or as confirmed.
@@ -1471,6 +1505,14 @@ export default function WalletScannerPage() {
               </div>
             )
           })()}
+
+          {result && pnlFollowUp && (
+            <div className="ws-card" style={{ marginBottom: '16px', borderColor: 'rgba(251,191,36,0.35)', background: 'rgba(251,191,36,0.05)', color: '#fbbf24', fontSize: '12px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+              {pnlFollowUp.status === 'processing'
+                ? 'PnL still processing — this wallet has a large trade history, so PnL, activity and the wallet read are finishing in a second pass. Holdings and portfolio value are final and the rest fills in automatically.'
+                : 'PnL is not available for this scan — this wallet has a large trade history and the second pass did not finish. Holdings and portfolio value are final; rescan to retry PnL.'}
+            </div>
+          )}
 
           {/* Error state */}
           {!loading && error && (
