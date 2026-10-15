@@ -58,7 +58,7 @@ export type SingleProviderFetchResult = {
   // small event count. This lets downstream code prove a bounded window for a young/quiet wallet
   // without falsely claiming that the wallet's complete lifetime history was traversed.
   // Alchemy only: the separate native-ETH (external/internal) history pull merged into `events`.
-  nativeHistory?: { events: number; calls: number; failedCalls: number; moreAvailable: boolean }
+  nativeHistory?: { events: number; calls: number; failedCalls: number; moreAvailable: boolean; lastError?: string | null }
   pagination?: {
     pagesRequested: number
     pagesSucceeded: number

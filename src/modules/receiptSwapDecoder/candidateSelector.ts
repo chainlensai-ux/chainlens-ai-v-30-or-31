@@ -313,6 +313,13 @@ function qualifiesForCompletionTier(evidence: CandidateTxEvidence, strictSeeds: 
   return completionSignalsFor(evidence, strictSeeds).length >= 2
 }
 
+// AUDIT ONLY (src/lib/walletSellGapAudit.ts): the strict completion signals per candidate, keyed by
+// lowercased txHash — the same signals qualifiesForCompletionTier counts. Never used for selection.
+export function completionSignalsByTxForAudit(evidenceList: readonly CandidateTxEvidence[]): Map<string, CompletionSignalName[]> {
+  const strictSeeds = computeFingerprintSeeds(evidenceList, 2)
+  return new Map(evidenceList.map((e) => [e.txHash.toLowerCase(), completionSignalsFor(e, strictSeeds)]))
+}
+
 // PURE. Computes the full Tier1SelectionDiagnostics block for the population of candidates that are
 // structurally completing a real lot (missingClosedLotSide !== null) among those that reach the
 // positive-signal decision at all (i.e. survived chain/wallet-involvement/bridge/LP exclusion) —

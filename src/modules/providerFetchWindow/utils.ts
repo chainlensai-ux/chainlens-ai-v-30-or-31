@@ -934,7 +934,7 @@ export async function fetchAlchemyNativeRawEvents(
   walletAddress: string,
   windowDays: number,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ events: RawProviderEvent[]; calls: number; failedCalls: number; moreAvailable: boolean }> {
+): Promise<{ events: RawProviderEvent[]; calls: number; failedCalls: number; moreAvailable: boolean; lastError?: string | null }> {
   const baseUrl = alchemyBaseUrl(chain)
   if (!baseUrl) return { events: [], calls: 0, failedCalls: 0, moreAvailable: false }
   const cutoff = windowCutoffMs(windowDays)
@@ -942,6 +942,8 @@ export async function fetchAlchemyNativeRawEvents(
   let calls = 0
   let failedCalls = 0
   let moreAvailable = false
+  // Logging only: the last failure, e.g. a chain without `internal` transfer support.
+  let lastError: string | null = null
   const one = async (direction: 'from' | 'to', category: string, pageKey?: string): Promise<Record<string, unknown> | null> => {
     if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) return null
     calls += 1
@@ -958,12 +960,13 @@ export async function fetchAlchemyNativeRawEvents(
         }] }),
         signal: AbortSignal.timeout(12_000),
       })
-      if (!res.ok) { failedCalls += 1; return null }
-      const json = await res.json().catch(() => null) as { result?: Record<string, unknown> } | null
-      if (!json?.result || !Array.isArray(json.result.transfers)) { failedCalls += 1; return null }
+      if (!res.ok) { failedCalls += 1; lastError = `${category}: http_${res.status}`; return null }
+      const json = await res.json().catch(() => null) as { result?: Record<string, unknown>; error?: { message?: string } } | null
+      if (!json?.result || !Array.isArray(json.result.transfers)) { failedCalls += 1; lastError = `${category}: ${json?.error?.message ?? 'no_result'}`; return null }
       return json.result
-    } catch {
+    } catch (err) {
       failedCalls += 1
+      lastError = `${category}: ${err instanceof Error ? err.message : 'request_failed'}`
       return null
     }
   }
@@ -1003,7 +1006,7 @@ export async function fetchAlchemyNativeRawEvents(
   // Sequential: the history path runs at concurrency 1 to stay clear of Alchemy rate limits.
   await run('from', 'external')
   await run('to', 'internal')
-  return { events, calls, failedCalls, moreAvailable }
+  return { events, calls, failedCalls, moreAvailable, lastError }
 }
 
 export function dedupeRawEventKey(event: RawProviderEvent): string {

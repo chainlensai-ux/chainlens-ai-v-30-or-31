@@ -107,7 +107,7 @@ export type HistoricalEventStabilityAudit = {
   restoredPersistedEventCount: number
   finalCanonicalEventCount: number
   eventsMissingFreshButRestored: Array<{ txHash: string; token: string; direction: 'inbound' | 'outbound' | 'unknown'; amountRaw: string; timestamp: string; originalProvider: string }>
-  eventsDropped: Array<{ txHash: string; reason: PersistedEventRejection }>
+  eventsDropped: Array<{ txHash: string; reason: PersistedEventRejection; fromAddress?: string; toAddress?: string; contract?: string; symbol?: string | null; originalProvider?: string }>
   dropReasons: Partial<Record<PersistedEventRejection, number>>
   structuralFingerprintBefore: string | null
   structuralFingerprintAfter: string
@@ -131,7 +131,7 @@ export function mergeWithPersistedHistory(params: {
 }): { canonicalEvents: RawProviderEvent[]; nextSnapshot: HistoricalEventSnapshot; audit: HistoricalEventStabilityAudit } {
   const windowStartMs = params.now - params.windowDays * DAY_MS
   const wallet = params.wallet.toLowerCase()
-  const rejections: Array<{ txHash: string; reason: PersistedEventRejection }> = []
+  const rejections: Array<{ txHash: string; reason: PersistedEventRejection; fromAddress?: string; toAddress?: string; contract?: string; symbol?: string | null; originalProvider?: string }> = []
   const previous = new Map<string, PersistedHistoricalEvent>()
   const snapshotValid = params.snapshot !== null && params.snapshot.v === HISTORICAL_EVENT_SNAPSHOT_VERSION
     && params.snapshot.wallet === wallet && params.snapshot.chain === params.chain && Array.isArray(params.snapshot.events)
@@ -139,7 +139,14 @@ export function mergeWithPersistedHistory(params: {
     for (const raw of params.snapshot!.events) {
       const { event, rejection } = validatePersistedEvent(raw, params.chain, wallet, windowStartMs)
       if (event) previous.set(event.key, event)
-      else rejections.push({ txHash: String((raw as { txHash?: unknown })?.txHash ?? ''), reason: rejection! })
+      else {
+        const r = raw as Partial<PersistedHistoricalEvent> | null
+        // Audit detail for wallet_not_party: who the transfer was actually between, and which provider produced it.
+        rejections.push({
+          txHash: String(r?.txHash ?? ''), reason: rejection!,
+          ...(rejection === 'wallet_not_party' ? { fromAddress: r?.fromAddress, toAddress: r?.toAddress, contract: r?.contract, symbol: r?.symbol ?? null, originalProvider: r?.originalProvider } : {}),
+        })
+      }
     }
   }
 

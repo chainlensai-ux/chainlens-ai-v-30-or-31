@@ -54,6 +54,9 @@ import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/in
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
 import type { CandidateTxEvidence } from '../modules/receiptSwapDecoder/candidateSelector'
+import { completionSignalsByTxForAudit, selectBaseReceiptCandidates } from '../modules/receiptSwapDecoder/candidateSelector'
+import { buildReceiptSelectorSellAudit, buildSellGapAudit, shouldLogSellGap } from '../lib/walletSellGapAudit'
+import { activeChainSet } from '../modules/sellTimeline/utils'
 import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import {
   createLiveUniswapV3PoolValidator, createCachedUniswapV3PoolValidator, createUniswapV3ValidationRequestScope,
@@ -2079,6 +2082,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         freshlyFetchedTxHashes: shadowPayload.freshlyFetchedTxHashes,
       }
     }
+    // LOGGING ONLY ([receipt-selector-sell-audit], src/lib/walletSellGapAudit.ts): what happened to every
+    // outbound-exit candidate and to the Tier-1 single-weak-signal candidates. Re-runs the pure selector.
+    try {
+      // eslint-disable-next-line no-console
+      console.warn('[receipt-selector-sell-audit]', JSON.stringify(buildReceiptSelectorSellAudit({
+        evidence,
+        selection: selectBaseReceiptCandidates(evidence),
+        strictSignalsByTx: completionSignalsByTxForAudit(evidence),
+        fetchedTxHashes: new Set(evidence.filter((e) => receiptRequestScope.cache.get(receiptCacheKey(e.chain, e.txHash))?.status === 'ok').map((e) => e.txHash.toLowerCase())),
+        exactSwapTxHashes: new Set(shadowPayload.enabled ? shadowPayload.acceptedExactSwaps.map((swap) => swap.txHash.toLowerCase()) : []),
+        proofByTxHash: receiptProofByTxHash,
+        receiptsFetched: shadowPayload.enabled ? (shadowPayload.completionBudget?.receiptsFetched ?? shadowPayload.receiptLiveCalls) : 0,
+      })))
+    } catch (auditError) {
+      // eslint-disable-next-line no-console
+      console.warn('[receipt-selector-sell-audit] failed', auditError instanceof Error ? auditError.message : auditError)
+    }
     } catch (err) {
       // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
       // silently disappears, and never propagates into the real scan result either.
@@ -2638,6 +2658,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     } catch (error) {
       console.warn('[wallet-debug-funnel] failed to build', error instanceof Error ? error.message : error)
     }
+  }
+
+  // LOGGING ONLY ([wallet-sell-gap-audit], src/lib/walletSellGapAudit.ts): logged when a wallet has buys
+  // but almost no sells — why each outbound event was not a sell, wallet-not-party events, native history.
+  try {
+    if (shouldLogSellGap(timelines.buyTimeline.totalBuys, sellTimelineV2.totalSells)) {
+      // eslint-disable-next-line no-console
+      console.warn('[wallet-sell-gap-audit]', JSON.stringify(buildSellGapAudit({
+        wallet: params.walletAddress,
+        buys: timelines.buyTimeline.totalBuys,
+        sells: sellTimelineV2.totalSells,
+        normalizedEvents: canonicalNormalizedEvents,
+        activeChains: activeChainSet(chainSelection),
+        knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES,
+        verifiedSwapTxKeys: new Set(shadowExactReceiptSwaps.map((swap) => `${swap.chain}:${swap.txHash.toLowerCase()}`)),
+        providerResults: providerResults.map((r) => ({ chain: r.chain, rawEvents: r.rawEvents, alchemyNativeHistory: r.providerResults.alchemy.nativeHistory ?? null })),
+        persistedDrops: historicalStability.map((h) => ({ chain: h.audit.chain, eventsDropped: h.audit.eventsDropped })),
+      })))
+    }
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.warn('[wallet-sell-gap-audit] failed', error instanceof Error ? error.message : error)
   }
 
   {

@@ -115,7 +115,7 @@ async function fetchProviderWindowLive(
     alchemyResult = {
       ...tokenAlchemyResult,
       events: [...tokenAlchemyResult.events, ...native.events],
-      nativeHistory: { events: native.events.length, calls: native.calls, failedCalls: native.failedCalls, moreAvailable: native.moreAvailable },
+      nativeHistory: { events: native.events.length, calls: native.calls, failedCalls: native.failedCalls, moreAvailable: native.moreAvailable, lastError: native.lastError ?? null },
     }
   }
 
