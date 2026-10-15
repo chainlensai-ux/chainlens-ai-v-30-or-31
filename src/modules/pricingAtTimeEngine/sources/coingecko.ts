@@ -7,6 +7,7 @@
 // this is a real price-at-timestamp lookup, not a current-price approximation.
 
 import type { SupportedChain } from '../../providerFetchWindow/types'
+import { awaitHistoricalPricePriority } from '../../../lib/scanRunContext'
 
 const COINGECKO_PLATFORM_IDS: Partial<Record<SupportedChain, string>> = {
   eth: 'ethereum',
@@ -185,6 +186,7 @@ export async function fetchCoingeckoPriceDetailed(
   chain: SupportedChain,
   timestamp: number,
 ): Promise<CoingeckoPriceResult> {
+  await awaitHistoricalPricePriority()
   const platform = COINGECKO_PLATFORM_IDS[chain]
   if (!platform) return { priceUsd: null, reason: 'unverified_chain_for_coingecko' }
 
@@ -283,6 +285,7 @@ export type NativeEthPricingDiagnostic = {
 export async function fetchCoingeckoNativeEthPriceDetailed(
   timestamp: number,
 ): Promise<CoingeckoPriceResult & { diagnostic: NativeEthPricingDiagnostic }> {
+  await awaitHistoricalPricePriority()
   const breakerStateBeforeCall = coingeckoCircuitOpen
   // Reservation is consumed the moment this requirement gets its real turn — regardless of outcome —
   // so ordinary contract-based calls resume immediately after, never blocked longer than necessary.

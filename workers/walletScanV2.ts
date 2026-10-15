@@ -670,23 +670,18 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     stageMs.snapshotPortfolio_atMs = snap.timeToFirstPortfolioMs
     if (snap.timeToPartialPortfolioPublishMs != null) stageMs.snapshotPublished_atMs = snap.timeToPartialPortfolioPublishMs
   }, () => undefined)
+  // The core EVM pipeline starts now. Only its historical-price calls (CoinGecko / native resolver)
+  // wait for Robinhood's reserved native days to finish their pass (see historicalPricePriority in
+  // src/lib/scanRunContext.ts), so they still cannot consume the shared quota or trip its breaker
+  // first, while history fetch, receipts and sell detection no longer sit idle behind Robinhood.
   const nativePriorityStartedAt = Date.now()
-  try {
-    await withScanTimeout(nativePricePriorityReady, remainingWorkerMs(startTime))
-  } catch {
-    stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt
-    logStageTiming('robinhood_native_price_priority_timeout')
-    return timedOutPartialResult('robinhood_native_price_priority_timeout')
-  }
-  stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt
-  // The core EVM pipeline starts only after the reserved Robinhood native days have completed their
-  // cache/provider pass; it cannot consume the shared historical quota or trip its breaker first.
+  void nativePricePriorityReady.then(() => { stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt })
   const coreTimeoutMs = remainingWorkerMs(startTime)
   const coreStartedAt = Date.now()
   // The core pipeline sees the global deadline and the snapshot publication (src/lib/scanRunContext.ts),
   // so optional late work (the sell receipt proof) starts only after the snapshot and only with time left.
   const corePromise = withScanTimeout(
-    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise }, () => router.runValidatedScanRequest(sanitized)),
+    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady }, () => router.runValidatedScanRequest(sanitized)),
     coreTimeoutMs,
   )
 

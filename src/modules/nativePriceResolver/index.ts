@@ -80,6 +80,7 @@
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { PriceSourceFn } from '../pricingAtTimeEngine/types'
+import { awaitHistoricalPricePriority } from '../../lib/scanRunContext'
 import {
   NATIVE_PRICE_METHODOLOGY_VERSION,
   nativePricePersistenceConfigured,
@@ -659,6 +660,7 @@ export async function resolveHistoricalNativeUsdPrice(params: {
   // real clock. NOT a pricing input — it can only cause a rejection, never produce a price.
   nowMs?: number
 }): Promise<NativePriceResolution | null> {
+  await awaitHistoricalPricePriority()
   const { chain, timestamp } = params
   const nowMs = params.nowMs ?? Date.now()
 
@@ -795,6 +797,7 @@ export async function prefetchNativeUsdPrices(params: {
   requirements: ReadonlyArray<{ chain: SupportedChain; timestamp: number }>
   nowMs?: number
 }): Promise<Map<number, NativePriceResolution>> {
+  await awaitHistoricalPricePriority()
   const byBucket = new Map<number, NativePriceResolution>()
   const seen = new Set<number>()
 

@@ -9,6 +9,12 @@ export type ScanRunContext = {
   deadlineAtMs: number
   /** Settles once the holdings/portfolio snapshot has been published (or could not be). */
   snapshotPublished?: Promise<unknown>
+  /**
+   * Settles once Robinhood's verified native-ETH days have had first use of the shared historical
+   * price quota (CoinGecko breaker / native resolver). Historical-price calls made inside the core
+   * scan wait on it; everything else in the scan runs without waiting.
+   */
+  historicalPricePriority?: Promise<void>
 }
 
 const storage = new AsyncLocalStorage<ScanRunContext>()
@@ -19,4 +25,10 @@ export function runWithScanContext<T>(context: ScanRunContext, fn: () => Promise
 
 export function currentScanContext(): ScanRunContext | undefined {
   return storage.getStore()
+}
+
+/** Waits for the scan's historical-price priority gate, if this call runs inside a gated scan. */
+export async function awaitHistoricalPricePriority(): Promise<void> {
+  const gate = storage.getStore()?.historicalPricePriority
+  if (gate) await gate
 }
