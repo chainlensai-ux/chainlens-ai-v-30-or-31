@@ -971,6 +971,28 @@ export default function WalletScannerPage() {
       // therefore kept displaying its OLD total, indistinguishable from a current one, after every
       // failed rescan. Dropping the envelope here is the honest outcome: a scan that did not
       // produce a new complete result must never leave stale totals presented as current.
+      // PnL FOLLOW-UP: polls the follow-up job (heavy wallet, or a scan that timed out after its snapshot)
+      // and swaps in its full report when it lands; never touches a newer scan's state.
+      const startPnlFollowUp = (followUpJobId: string, accessToken: string) => {
+        setPnlFollowUp({ jobId: followUpJobId, status: 'processing' })
+        void pollWalletScanJob(followUpJobId, accessToken).then((followUp) => {
+          if (scanGenerationRef.current !== myGeneration) return
+          const fullReport = followUp.success ? (followUp.data as WalletV2Report | undefined) : undefined
+          if (fullReport && (fullReport as unknown as { pnlStatus?: string | null }).pnlStatus !== 'deferred_heavy_wallet') {
+            setResultEnvelope({ report: fullReport, jobId: followUpJobId, completedAt: Date.now() })
+            savePortfolioScanResult(address, fullReport, robinhoodResultRef.current)
+            setPnlFollowUp(null)
+          } else {
+            setPnlFollowUp({ jobId: followUpJobId, status: 'failed' })
+          }
+        })
+      }
+      // TIMED OUT AFTER THE SNAPSHOT: the holdings/portfolio snapshot already on screen stays, labelled
+      // "PnL still processing", while the follow-up job finishes PnL — no error banner.
+      if (!response.success && response.pnlStillProcessing && response.pnlFollowUpJobId && scanSession?.access_token) {
+        startPnlFollowUp(response.pnlFollowUpJobId, scanSession.access_token)
+        return
+      }
       if (response.degraded) {
         setResultEnvelope(null)
         setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment. Previous results were cleared — they may no longer reflect this wallet\'s current value.')
@@ -1026,18 +1048,7 @@ export default function WalletScannerPage() {
       if (reportPnlStatus === 'deferred_heavy_wallet') {
         const accessToken = scanSession?.access_token
         if (followUpJobId && accessToken) {
-          setPnlFollowUp({ jobId: followUpJobId, status: 'processing' })
-          void pollWalletScanJob(followUpJobId, accessToken).then((followUp) => {
-            if (scanGenerationRef.current !== myGeneration) return
-            const fullReport = followUp.success ? (followUp.data as WalletV2Report | undefined) : undefined
-            if (fullReport && (fullReport as unknown as { pnlStatus?: string | null }).pnlStatus !== 'deferred_heavy_wallet') {
-              setResultEnvelope({ report: fullReport, jobId: followUpJobId, completedAt: Date.now() })
-              savePortfolioScanResult(address, fullReport, robinhoodResultRef.current)
-              setPnlFollowUp(null)
-            } else {
-              setPnlFollowUp({ jobId: followUpJobId, status: 'failed' })
-            }
-          })
+          startPnlFollowUp(followUpJobId, accessToken)
         } else {
           setPnlFollowUp({ jobId: null, status: 'not_queued' })
         }
@@ -1448,7 +1459,8 @@ export default function WalletScannerPage() {
               `result`: the instant the full report lands this card unmounts (its guard is
               `!result`) and the full result view below takes over. */}
           {partialSnapshot && !result && (() => {
-            const scanFailedAfterSnapshot = !loading && error != null
+            const pnlStillProcessing = pnlFollowUp?.status === 'processing'
+            const scanFailedAfterSnapshot = !loading && !pnlStillProcessing && (error != null || pnlFollowUp?.status === 'failed')
             const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult, undefined, partialSnapshot.portfolioEvidence ?? null)
             const chainLabels = partialSnapshot.activeChainIds.map((id) => (
               id === 8453 ? 'Base' : id === 1 ? 'ETH' : id === 4663 ? 'Robinhood' : `chain ${id}`
@@ -1457,8 +1469,8 @@ export default function WalletScannerPage() {
             const top = partialSnapshot.topHoldings.slice(0, 5)
             return (
               <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
-                  {scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
+                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot || pnlStillProcessing ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
+                  {pnlStillProcessing ? 'Portfolio snapshot · PnL still processing' : scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
                   {mergedTotalText(merged, (v) => fmtUsd(v))}
@@ -1475,7 +1487,11 @@ export default function WalletScannerPage() {
                     {top.map((h) => `${h.symbol} ${fmtUsd(h.valueUsd)}`).join(' · ')}
                   </div>
                 )}
-                {scanFailedAfterSnapshot ? (
+                {pnlStillProcessing ? (
+                  <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                    PnL still processing — this wallet&apos;s full scan ran out of time, so PnL and the wallet read are finishing in a second pass and will appear here automatically. Holdings and portfolio value above are from this scan.
+                  </div>
+                ) : scanFailedAfterSnapshot ? (
                   <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
                     Holdings and portfolio value above come from this scan&apos;s live snapshot. PnL and the full analysis did not finish — they are not being reported as $0.
                   </div>

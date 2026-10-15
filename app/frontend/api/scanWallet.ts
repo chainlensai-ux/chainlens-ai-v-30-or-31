@@ -17,6 +17,9 @@ export type ScanWalletApiResponse = {
   data?: unknown
   error?: { message: string; category: string; details?: string[] }
   degraded?: boolean
+  // Timed out after the holdings/portfolio snapshot: PnL continues in this follow-up job.
+  pnlStillProcessing?: boolean
+  pnlFollowUpJobId?: string | null
 }
 
 const MODULE_ENDPOINTS = [

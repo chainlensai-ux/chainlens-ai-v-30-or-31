@@ -35,6 +35,39 @@ const RECEIPT_FETCH_TIMEOUT_MS = 5_000
 const CONCURRENCY = 5
 const SUPPORTED_CHAINS: ReadonlySet<string> = new Set(['base', 'eth'])
 
+// TIME GATE (queued worker only — see src/lib/scanRunContext.ts). The lane starts only when at least its
+// own budget plus a reserve remains before the worker's global deadline, and its hard deadline stays
+// that reserve ahead of it, so the rest of the core scan + V2 modules + publish keep their time.
+export const SELL_PROOF_RESERVE_MS = 60_000
+export const SELL_PROOF_MIN_REMAINING_MS = SELL_PROOF_LANE_BUDGET_MS + SELL_PROOF_RESERVE_MS
+
+export type SellProofLanePlan =
+  | { run: true; hardDeadlineAtMs: number | undefined; remainingMs: number | null }
+  | { run: false; reason: 'insufficient_time_before_global_deadline' | 'snapshot_not_published_before_cutoff'; remainingMs: number | null }
+
+/** PURE. Whether the lane may start now, and its hard deadline (none without a global deadline). */
+export function planSellProofLane(nowMs: number, globalDeadlineAtMs: number | undefined): SellProofLanePlan {
+  if (globalDeadlineAtMs == null) return { run: true, hardDeadlineAtMs: undefined, remainingMs: null }
+  const remainingMs = globalDeadlineAtMs - nowMs
+  if (remainingMs < SELL_PROOF_MIN_REMAINING_MS) return { run: false, reason: 'insufficient_time_before_global_deadline', remainingMs }
+  return { run: true, hardDeadlineAtMs: globalDeadlineAtMs - SELL_PROOF_RESERVE_MS, remainingMs }
+}
+
+/**
+ * Waits for the published snapshot, but never past the last moment the lane could still start
+ * (cutoffAtMs). Resolves true when the snapshot settled in time.
+ */
+export async function waitForSnapshotBeforeCutoff(snapshot: Promise<unknown>, cutoffAtMs: number, now: () => number = Date.now): Promise<boolean> {
+  const waitMs = cutoffAtMs - now()
+  if (waitMs <= 0) return false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cutoff = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), waitMs) })
+  const settled = snapshot.then(() => true as const, () => true as const)
+  const ready = await Promise.race([settled, cutoff])
+  if (timer) clearTimeout(timer)
+  return ready
+}
+
 export type SellProofKind = 'exact_swap' | 'validated_pool_swap' | 'v4_exact_route'
 export type SellProofRejection =
   | 'lp_add_or_remove' | 'wallet_did_not_send_token' | 'no_pool_swap_event'
@@ -57,6 +90,13 @@ export type SellReceiptProofAudit = {
   venues: { rejected: Record<SellVenue, number>; proven: Record<SellVenue, number> }
   rejectedSamples: Array<{ chain: string; txHash: string; token: string; venue: SellVenue | null; rejection: string }>
   v4Enabled: boolean
+  /** Why the lane stopped: everything checked, its own budget, or the caller's hard deadline. */
+  stopReason: 'completed' | 'lane_budget' | 'hard_deadline'
+  /** Candidates whose check was still running when the deadline hit (left unproven, never guessed). */
+  abandonedInFlight: number
+  elapsedMs: number
+  /** Summed wall time per sub-step across candidates (they overlap under concurrency). */
+  stepMs: { fetch: number; prove: number; v4: number; venue: number }
 }
 
 const REJECTED_SAMPLE_LIMIT = 25
@@ -129,10 +169,19 @@ export async function proveSellsFromReceipts(params: {
   classifyVenue?: (input: { chain: ReceiptSwapChain; logs: RawReceiptLog[]; txTo: string | null }) => Promise<SellVenue>
   /** Uniswap V4 proof (WALLET_V4_SELL_PROOF=1): tried for receipts with canonical-PoolManager swaps the pool decoder rejected. */
   v4?: V4SellDeps
+  /**
+   * Absolute epoch ms after which the lane returns immediately, even with checks still in flight (their
+   * late results are ignored). Defaults to start + laneBudgetMs; the caller passes an earlier one to keep
+   * a reserve before the worker's global deadline.
+   */
+  hardDeadlineAtMs?: number
 }): Promise<{ provenTxKeys: Set<string>; proofByTxHash: Map<string, SellProofKind>; audit: SellReceiptProofAudit }> {
   const cap = params.cap ?? MAX_SELL_PROOF_RECEIPTS
   const now = params.now ?? Date.now
-  const deadline = now() + (params.laneBudgetMs ?? SELL_PROOF_LANE_BUDGET_MS)
+  const startedAt = now()
+  const laneDeadline = startedAt + (params.laneBudgetMs ?? SELL_PROOF_LANE_BUDGET_MS)
+  const deadline = Math.min(laneDeadline, params.hardDeadlineAtMs ?? laneDeadline)
+  const deadlineReason: SellReceiptProofAudit['stopReason'] = deadline < laneDeadline ? 'hard_deadline' : 'lane_budget'
   const timeoutMs = params.timeoutMs ?? RECEIPT_FETCH_TIMEOUT_MS
 
   // One check per (chain, tx, token); a tx can carry more than one token the wallet sold.
@@ -154,10 +203,16 @@ export async function proveSellsFromReceipts(params: {
     candidates: unique.length, attempted: 0, skippedByCap: unique.length - selected.length, skippedByTimeBudget: 0,
     cacheHits: 0, liveFetches: 0, fetchFailures: 0, proofs: { exact_swap: 0, validated_pool_swap: 0, v4_exact_route: 0 }, rejections: {}, byChain: {},
     venues: { rejected: emptyVenueCounts(), proven: emptyVenueCounts() }, rejectedSamples: [], v4Enabled: params.v4 != null,
+    stopReason: 'completed', abandonedInFlight: 0, elapsedMs: 0, stepMs: { fetch: 0, prove: 0, v4: 0, venue: 0 },
   }
   const provenTxKeys = new Set<string>()
   const proofByTxHash = new Map<string, SellProofKind>()
   if (selected.length === 0) return { provenTxKeys, proofByTxHash, audit }
+  if (now() >= deadline) {
+    audit.skippedByTimeBudget = selected.length
+    audit.stopReason = deadlineReason
+    return { provenTxKeys, proofByTxHash, audit }
+  }
 
   const scope = createReceiptRequestScopeCache()
   seedPermanentReceiptsIntoRequestScope(scope, selected.map((c) => ({ chain: c.chain, txHash: c.txHash.toLowerCase() })))
@@ -183,35 +238,60 @@ export async function proveSellsFromReceipts(params: {
 
   const results = new Map<SellProofCandidate, SellProofKind | SellProofRejection | `v4:${V4SellRejection}` | null>()
   const venueOf = new Map<SellProofCandidate, SellVenue>()
+  // Once closed (deadline), late completions are dropped: a candidate counts only if it finished in time.
+  let open = true
+  const finished = new Set<SellProofCandidate>()
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  const deadlineHit = new Promise<'deadline'>((resolve) => { deadlineTimer = setTimeout(() => resolve('deadline'), Math.max(0, deadline - now())) })
+  const timed = async <T>(step: keyof SellReceiptProofAudit['stepMs'], fn: () => Promise<T>): Promise<T> => {
+    const t0 = now()
+    try { return await fn() } finally { audit.stepMs[step] += now() - t0 }
+  }
   for (let i = 0; i < selected.length; i += CONCURRENCY) {
-    if (now() >= deadline) { audit.skippedByTimeBudget = selected.length - i; break }
+    if (now() >= deadline) { audit.skippedByTimeBudget = selected.length - i; audit.stopReason = deadlineReason; break }
     const batch = selected.slice(i, i + CONCURRENCY)
-    await Promise.all(batch.map(async (candidate) => {
+    const batchDone = Promise.all(batch.map(async (candidate) => {
       const chain = candidate.chain as ReceiptSwapChain
       const txHash = candidate.txHash.toLowerCase()
       audit.attempted += 1
       const row = (audit.byChain[chain] ??= { attempted: 0, proven: 0 })
       row.attempted += 1
-      const outcome = await fetchOne(chain, txHash)
-      if (outcome.status !== 'ok') { audit.fetchFailures += 1; results.set(candidate, null); return }
-      let verdict: { proof: SellProofKind } | { proof: null; rejection: SellProofRejection | `v4:${V4SellRejection}` } | null = await proveSellFromReceipt({
+      const outcome = await timed('fetch', () => fetchOne(chain, txHash))
+      if (!open) return
+      if (outcome.status !== 'ok') { audit.fetchFailures += 1; results.set(candidate, null); finished.add(candidate); return }
+      let verdict: { proof: SellProofKind } | { proof: null; rejection: SellProofRejection | `v4:${V4SellRejection}` } | null = await timed('prove', () => proveSellFromReceipt({
         chain, txHash, walletAddress: params.walletAddress, token: candidate.token, logs: outcome.logs,
         validator: params.validator, uniswapV3Validator: params.uniswapV3Validator,
-      }).catch(() => null)
+      }).catch(() => null))
+      if (!open) return
       const manager = V4_POOL_MANAGERS[chain]
       const hasV4Swap = outcome.logs.some((l) => (l.topics[0] ?? '').toLowerCase() === V4_SWAP_TOPIC0 && l.address.toLowerCase() === manager)
       if (params.v4 && hasV4Swap && verdict?.proof == null) {
-        const v4 = await proveV4SellFromReceipt({ chain, txHash, walletAddress: params.walletAddress, token: candidate.token, logs: outcome.logs, deps: params.v4 }).catch(() => null)
+        const v4 = await timed('v4', () => proveV4SellFromReceipt({ chain, txHash, walletAddress: params.walletAddress, token: candidate.token, logs: outcome.logs, deps: params.v4! }).catch(() => null))
+        if (!open) return
         if (v4) verdict = v4.proof ? { proof: v4.proof } : { proof: null, rejection: `v4:${v4.rejection}` }
       }
       results.set(candidate, verdict == null ? null : verdict.proof ?? verdict.rejection)
+      finished.add(candidate)
+      // Audit label only; a deadline during labelling leaves the verdict standing without a venue.
       if (params.classifyVenue) {
-        const venue = await params.classifyVenue({ chain, logs: outcome.logs, txTo: outcome.to ?? null }).catch((): SellVenue => 'unknown')
-        venueOf.set(candidate, venue)
+        const venue = await timed('venue', () => params.classifyVenue!({ chain, logs: outcome.logs, txTo: outcome.to ?? null }).catch((): SellVenue => 'unknown'))
+        if (open) venueOf.set(candidate, venue)
       }
     }))
+    batchDone.catch(() => undefined)
+    if (await Promise.race([batchDone.then(() => 'done' as const), deadlineHit]) === 'deadline') {
+      open = false
+      audit.stopReason = deadlineReason
+      audit.abandonedInFlight = batch.filter((c) => !finished.has(c)).length
+      audit.skippedByTimeBudget = selected.length - i - batch.length
+      break
+    }
   }
+  open = false
+  if (deadlineTimer) clearTimeout(deadlineTimer)
   recordPermanentReceiptsFromRequestScope(scope)
+  audit.elapsedMs = now() - startedAt
 
   // Applied in candidate order so the output never depends on network completion order.
   for (const candidate of selected) {

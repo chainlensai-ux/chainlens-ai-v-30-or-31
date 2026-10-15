@@ -9,7 +9,13 @@ import { enqueueWalletScanJob, type WalletScanJobPayload } from '@/src/modules/w
 
 export const HEAVY_WALLET_DEFERRED_PNL_STATUS = 'deferred_heavy_wallet'
 
-type ResultBody = { success?: boolean; data?: Record<string, unknown> }
+type ResultBody = { success?: boolean; data?: Record<string, unknown>; partial?: boolean; partialSnapshotPublished?: boolean; error?: { message?: string } }
+
+/** The core scan hit worker_global_timeout after the holdings/portfolio snapshot was published. */
+function isTimedOutAfterSnapshot(result: ResultBody | null): boolean {
+  return !!result && result.success === false && result.partial === true && result.partialSnapshotPublished === true
+    && result.error?.message === 'worker_global_timeout'
+}
 
 export async function attachHeavyWalletFollowUp(
   body: unknown,
@@ -19,6 +25,21 @@ export async function attachHeavyWalletFollowUp(
 ): Promise<unknown> {
   if (payload.heavyWalletFollowUp) return body
   const result = body as ResultBody | null
+  // TIMEOUT AFTER SNAPSHOT: the page keeps the published snapshot with "PnL still processing" and polls
+  // a follow-up job that re-runs the scan with a fresh worker budget (it never queues another).
+  if (isTimedOutAfterSnapshot(result)) {
+    const followUpJobId = newJobId()
+    try {
+      await enqueue(followUpJobId, { ...payload, jobId: followUpJobId, heavyWalletFollowUp: true })
+      // eslint-disable-next-line no-console
+      console.warn('[heavy-wallet-follow-up] queued after global timeout', { jobId: payload.jobId, followUpJobId })
+      return { ...result, pnlStillProcessing: true, pnlFollowUpJobId: followUpJobId }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[heavy-wallet-follow-up] enqueue after timeout failed', { jobId: payload.jobId, error: err instanceof Error ? err.message : String(err) })
+      return { ...result, pnlStillProcessing: false, pnlFollowUpJobId: null }
+    }
+  }
   if (!result || result.success !== true || !result.data || result.data.pnlStatus !== HEAVY_WALLET_DEFERRED_PNL_STATUS) return body
 
   const deferral = (result.data.heavyWalletDeferral ?? {}) as Record<string, unknown>

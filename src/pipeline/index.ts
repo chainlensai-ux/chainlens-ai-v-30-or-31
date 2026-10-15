@@ -58,7 +58,8 @@ import { completionSignalsByTxForAudit, selectBaseReceiptCandidates } from '../m
 import { buildReceiptSelectorSellAudit, buildSellGapAudit, explainOutboundSellDecision, shouldLogSellGap } from '../lib/walletSellGapAudit'
 import { activeChainSet, groupEventsByTx } from '../modules/sellTimeline/utils'
 import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEthereumDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
-import { proveSellsFromReceipts, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
+import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
+import { currentScanContext } from '../lib/scanRunContext'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -2163,7 +2164,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
             && e.contract.toLowerCase() === event.contract.toLowerCase() && Date.parse(e.timestamp) <= at),
         })
       }
-      const sellProof = await stageProfiler.stage('sellReceiptProof', { awaitedSerially: true }, () => proveSellsFromReceipts({
+      // TIME + ORDER GATE: in the queued worker, start only after the holdings/portfolio snapshot was
+      // published, and only with enough time left before the global deadline (planSellProofLane).
+      const scanContext = currentScanContext()
+      const gateStartedAt = Date.now()
+      const snapshotReady = sellProofCandidates.length === 0 || !scanContext?.snapshotPublished
+        ? true
+        : await waitForSnapshotBeforeCutoff(scanContext.snapshotPublished, scanContext.deadlineAtMs - SELL_PROOF_MIN_REMAINING_MS)
+      const snapshotWaitMs = Date.now() - gateStartedAt
+      const plan = snapshotReady
+        ? planSellProofLane(Date.now(), scanContext?.deadlineAtMs)
+        : { run: false as const, reason: 'snapshot_not_published_before_cutoff' as const, remainingMs: scanContext ? scanContext.deadlineAtMs - Date.now() : null }
+      if (sellProofCandidates.length > 0 && !plan.run) {
+        // eslint-disable-next-line no-console
+        console.warn('[sell-receipt-proof] skipped', JSON.stringify({ reason: plan.reason, candidates: sellProofCandidates.length, remainingMs: plan.remainingMs, snapshotWaitMs }))
+      }
+      const sellProof = !plan.run ? null : await stageProfiler.stage('sellReceiptProof', { awaitedSerially: true }, () => proveSellsFromReceipts({
+        hardDeadlineAtMs: plan.hardDeadlineAtMs,
         candidates: sellProofCandidates,
         walletAddress: params.walletAddress,
         fetchReceipt: createLiveBaseReceiptFetcher(),
@@ -2191,13 +2208,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           })()
           : undefined,
       }))
-      sellProofTxKeys = sellProof.provenTxKeys
-      // Only exact decodes count as receipt proof for the unmatched-sell boundary resolver.
-      for (const [txHash, kind] of sellProof.proofByTxHash) {
-        if (kind === 'exact_swap' && !receiptProofByTxHash.has(txHash)) receiptProofByTxHash.set(txHash, 'exact_swap')
+      if (sellProof) {
+        sellProofTxKeys = sellProof.provenTxKeys
+        // Only exact decodes count as receipt proof for the unmatched-sell boundary resolver.
+        for (const [txHash, kind] of sellProof.proofByTxHash) {
+          if (kind === 'exact_swap' && !receiptProofByTxHash.has(txHash)) receiptProofByTxHash.set(txHash, 'exact_swap')
+        }
+        // eslint-disable-next-line no-console
+        console.warn('[sell-receipt-proof]', JSON.stringify({ ...sellProof.audit, snapshotWaitMs, remainingAtStartMs: plan.run ? plan.remainingMs : null }))
       }
-      // eslint-disable-next-line no-console
-      console.warn('[sell-receipt-proof]', JSON.stringify(sellProof.audit))
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn('[sell-receipt-proof] failed', error instanceof Error ? error.message : error)

@@ -39,6 +39,7 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { updateWalletScanJobProgress, publishWalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
+import { runWithScanContext } from '@/src/lib/scanRunContext'
 import { MAX_RAW_EVENTS_PER_PROVIDER } from '@/src/modules/providerFetchWindow/types'
 import { HEAVY_WALLET_DEFERRED_PNL_STATUS } from '@/src/modules/heavyWalletFollowUp'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
@@ -148,6 +149,17 @@ export const WORKER_GLOBAL_TIMEOUT_MS = 270_000
 // with no indication of what actually happened.
 function timedOutPartialResult(error = 'worker_global_timeout'): WalletScanV2WorkerResult {
   return { status: 200, body: { success: false, error: { message: error, category: 'timeout' }, partial: true } }
+}
+
+export const GLOBAL_TIMEOUT_SNAPSHOT_GRACE_MS = 2_000
+
+/**
+ * The core scan ran out of time. When the holdings/portfolio snapshot was already published, the job
+ * runner (src/modules/walletScanWorker.ts) queues a follow-up job for PnL and the page keeps the
+ * snapshot with "PnL still processing" instead of an error banner.
+ */
+export function globalTimeoutPartialResult(partialSnapshotPublished: boolean): WalletScanV2WorkerResult {
+  return { status: 200, body: { success: false, error: { message: 'worker_global_timeout', category: 'timeout' }, partial: true, partialSnapshotPublished } }
 }
 
 function remainingWorkerMs(startTime: number): number {
@@ -400,6 +412,13 @@ export type WalletScanTimingAudit = {
 // 2-arg call, this file's own tests) is unaffected — purely additive.
 export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string, includeRobinhoodRequested = false, options: WalletScanV2WorkerOptions = {}): Promise<WalletScanV2WorkerResult> {
   const startTime = Date.now()
+  // STAGE TIMING: elapsed ms per stage (and *_atMs = ms since worker start), one [worker-stage-timing]
+  // line per job on every exit path.
+  const stageMs: Record<string, number> = {}
+  const logStageTiming = (outcome: string) => {
+    // eslint-disable-next-line no-console
+    console.warn('[worker-stage-timing]', JSON.stringify({ jobId: jobId ?? null, outcome, totalMs: Date.now() - startTime, globalTimeoutMs: WORKER_GLOBAL_TIMEOUT_MS, ...stageMs }))
+  }
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
   // eslint-disable-next-line no-console
@@ -640,17 +659,32 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // resolves to null on failure, so this is a pure no-op guard against Node's unhandled-rejection
   // warning on the (never-actually-taken) early-return paths below that abandon this promise.
   robinhoodPromise.catch(() => {})
+  const nativePriorityStartedAt = Date.now()
   try {
     await withScanTimeout(nativePricePriorityReady, remainingWorkerMs(startTime))
   } catch {
+    stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt
+    logStageTiming('robinhood_native_price_priority_timeout')
     return timedOutPartialResult('robinhood_native_price_priority_timeout')
   }
+  stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt
   // Both broad EVM lanes start only after the reserved Robinhood native days have completed their
   // cache/provider pass; neither can consume the shared historical quota or trip its breaker first.
   const fastSnapshotPromise = computeFastSnapshot()
   fastSnapshotPromise.catch(() => {})
+  void fastSnapshotPromise.then((snap) => {
+    stageMs.snapshotHoldings_atMs = snap.timeToFirstHoldingsMs
+    stageMs.snapshotPortfolio_atMs = snap.timeToFirstPortfolioMs
+    if (snap.timeToPartialPortfolioPublishMs != null) stageMs.snapshotPublished_atMs = snap.timeToPartialPortfolioPublishMs
+  }, () => undefined)
   const coreTimeoutMs = remainingWorkerMs(startTime)
-  const corePromise = withScanTimeout(router.runValidatedScanRequest(sanitized), coreTimeoutMs)
+  const coreStartedAt = Date.now()
+  // The core pipeline sees the global deadline and the snapshot publication (src/lib/scanRunContext.ts),
+  // so optional late work (the sell receipt proof) starts only after the snapshot and only with time left.
+  const corePromise = withScanTimeout(
+    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise }, () => router.runValidatedScanRequest(sanitized)),
+    coreTimeoutMs,
+  )
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
   // runWalletScanV2 failure are both caught and returned as a structured RouteResult) — the SAME is
@@ -661,10 +695,18 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     result = await corePromise
   } catch (err) {
     if (err instanceof Error && err.message === `SCAN_TIMEOUT_${coreTimeoutMs}ms`) {
-      return timedOutPartialResult()
+      stageMs.core = Date.now() - coreStartedAt
+      // The holdings/portfolio snapshot normally landed long ago; give it a short grace, never more.
+      const snapshot = await Promise.race([
+        fastSnapshotPromise.catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), GLOBAL_TIMEOUT_SNAPSHOT_GRACE_MS)),
+      ])
+      logStageTiming('worker_global_timeout')
+      return globalTimeoutPartialResult(snapshot?.partialSnapshotPublished === true)
     }
     throw err
   }
+  stageMs.core = Date.now() - coreStartedAt
   const coreScanFinishedAtMs = Date.now() - startTime
   // REAL, MEASURED — see WalletScanTimingAudit's own header for the honest caveat: this is measured
   // AFTER the core call resolves, since manifest-replayed realized PnL is only known once it returns.
@@ -674,6 +716,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
   if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
     logDirectFailure(new Error('Invalid V2 result shape'))
+    logStageTiming('invalid_v2_shape')
     return { status: 500, body: { success: false, error: { message: 'invalid_v2_shape', category: 'pipeline' } } }
   }
 
@@ -689,9 +732,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     console.warn('[worker] heavy-wallet-deferred', { eventCount: earlyEventCount, threshold: HEAVY_WALLET_EVENT_THRESHOLD })
   }
   // Deferred modules return their existing empty fallback without running (no provider calls).
-  const runModule: typeof runWithTimeoutAndRpcAudit = heavyWalletDeferred
+  const baseRunModule: typeof runWithTimeoutAndRpcAudit = heavyWalletDeferred
     ? async (_name, _fn, fallback) => fallback
     : runWithTimeoutAndRpcAudit
+  const runModule = (async (...args: Parameters<typeof runWithTimeoutAndRpcAudit>) => {
+    const t0 = Date.now()
+    try { return await baseRunModule(...args) } finally { stageMs[`module_${String(args[0])}`] = Date.now() - t0 }
+  }) as typeof runWithTimeoutAndRpcAudit
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {
     // DIVERGENCE CHECK, DISCLOSED: `chainsScanned` (the pipeline's own post-hoc echo of the request
@@ -747,7 +794,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // calls on top of an already-abnormal scan.
     const { trades, evidenceByChain } = heavyWalletDeferred || scanRpcBudgetExceeded(moduleErrors)
       ? ({ trades: [], evidenceByChain: [] } as Awaited<ReturnType<typeof fetchParsedTrades>>)
-      : await runWithTimeoutAndRpcAudit(
+      : await runModule(
         'trades',
         () => fetchParsedTrades(walletAddress, eventsCache, cuBudget),
         { trades: [], evidenceByChain: [] } as Awaited<ReturnType<typeof fetchParsedTrades>>,
@@ -1365,5 +1412,6 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     } as typeof body
   }
 
+  logStageTiming(heavyWalletDeferred ? 'done_heavy_wallet_deferred' : 'done')
   return { status: result.status, body }
 }
