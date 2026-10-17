@@ -60,7 +60,7 @@ import { buildReceiptSelectorSellAudit, buildSellGapAudit, explainOutboundSellDe
 import { activeChainSet, groupEventsByTx } from '../modules/sellTimeline/utils'
 import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEthereumDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
-import { currentScanContext } from '../lib/scanRunContext'
+import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -1385,12 +1385,19 @@ async function safeRunPricingAtTime(params: {
 // pricingAtTimeEngine itself spent on bisects vs GoldRush vs fallback) — only how long this
 // orchestration layer's own await points took, which is the real, honest limit of what's
 // observable from outside src/modules/*.
-function startStageTimer(): { stages: Record<string, number>; mark: (name: string, startedAtMs: number) => void } {
+// `start` also reports the step to the worker's live trace (src/lib/scanRunContext.ts), so a scan
+// cut off by the global deadline can still say which step it was in.
+function startStageTimer(): { stages: Record<string, number>; start: (name: string) => number; mark: (name: string, startedAtMs: number) => void } {
   const stages: Record<string, number> = {}
   return {
     stages,
+    start: (name: string) => {
+      traceCoreStageStart(name)
+      return performance.now()
+    },
     mark: (name: string, startedAtMs: number) => {
       stages[name] = Math.round(performance.now() - startedAtMs)
+      traceCoreStageEnd(name)
     },
   }
 }
@@ -1441,7 +1448,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // provider response times, a cache hit vs. miss on that specific key, etc.), not a fabricated or
   // evenly-divided share of the total. `chainLatencies` preserves array order (matching
   // preScan.sanitizedChains), which coldStart detection below relies on and discloses the caveat of.
-  const providerFetchStart = performance.now()
+  const providerFetchStart = scanTimer.start('providerFetchWindow')
   const timedProviderResults = await Promise.all(
     preScan.sanitizedChains.map(async (chain) => {
       const chainStart = performance.now()
@@ -2135,8 +2142,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // real cost is deliberately NOT on the critical path at all (that's the whole point of deferring
   // it), so `stages.receiptDecoding` is honestly absent from scanPerformanceSummary for that scan
   // rather than reporting a number that never actually delayed the response.
-  const receiptDecodingStart = performance.now()
   if (receiptSwapCanonicalPromotionEnabled) {
+    const receiptDecodingStart = scanTimer.start('receiptDecoding')
     await runShadowReceiptDecodeBlock()
     scanTimer.mark('receiptDecoding', receiptDecodingStart)
   } else {
@@ -2254,7 +2261,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // flow) collided on the same key, silently serving the first request's narrower-chain-set recovery
   // result to the second. The codebase's own sibling cache (src/deployment/scanCache.ts's cacheKey)
   // already sorts+joins params.chains into its key — same convention applied here.
-  const recoveryPolicyStart = performance.now()
+  const recoveryPolicyStart = scanTimer.start('recoveryPolicy')
   const verifiedReceiptTxKeys = new Set(shadowExactReceiptSwaps.map((swap) => `base:${swap.txHash.toLowerCase()}`))
   const targetedUnmatchedExits = normalizedEvents
     .filter((event) => event.direction === 'outbound' && verifiedReceiptTxKeys.has(`${event.chain}:${event.txHash.toLowerCase()}`))
@@ -2337,7 +2344,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (also already computed above). The promise is awaited below, at the exact point
   // dustSuppressedKeys is first actually read (buildFilteredEventsForPricing) — same call, same
   // result, only WHEN it resolves relative to this unrelated CPU work changed.
-  const dustSuppressionStart = performance.now()
+  const dustSuppressionStart = scanTimer.start('dustSuppression')
   const dustSuppressionPromise = resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
 
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -2429,7 +2436,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     affectedCurrentScan: acceptedEvidenceManifestRepairAudit.affectedCurrentScan,
   })
 
-  const priceLotsForWalletStart = performance.now()
+  const priceLotsForWalletStart = scanTimer.start('priceLotsForWallet')
   const rpcLogSnapshotBeforePriceLots = rpcDebugLog.length
   // HISTORICAL-PRICE CACHE WRITE FIX, DISCLOSED (confirmed, real production evidence: remoteGets:
   // 229, remoteSets: 0): this previously passed historicalReadOnly: true with no comment anywhere
@@ -2520,7 +2527,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // promotionBeforeSnapshot, cachedOnlyFifo — all gated behind console.warn-only blocks, never
   // read into the returned report) are NOT included in this mark, so `stages.fifoEngine` reports
   // the real, load-bearing FIFO cost only, not inflated by shadow/diagnostic re-runs.
-  const fifoEngineStart = performance.now()
+  const fifoEngineStart = scanTimer.start('fifoEngine')
   const fifoAndPnl = safeRunFifoEngine({
     normalizedEvents: canonicalNormalizedEvents,
     recoveryPolicy,
@@ -3091,7 +3098,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     routerDistributorMode,
   })
 
-  const pricingAtTimeStart = performance.now()
+  const pricingAtTimeStart = scanTimer.start('pricingAtTime')
   const rpcLogSnapshotBeforePricingAtTime = rpcDebugLog.length
   // FALLBACK-PRICING OBSERVABILITY, DISCLOSED: pricingRouteLog (pricingAtTimeAdapter.ts) already
   // records which real provider (goldrush/geckoterminal/dexscreener/coingecko_or_basedex/none)

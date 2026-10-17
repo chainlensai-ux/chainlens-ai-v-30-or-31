@@ -80,9 +80,9 @@ describe('scanPerformanceSummary (perf-sprint: "per-stage timings, percentage of
   })
 
   it('marks fifoEngine (the real, load-bearing FIFO run only) and receiptDecoding, so "Measure FIFO/PnL time" and "Measure receipt decoding time" are both real, not omitted', () => {
-    assert.match(src, /const fifoEngineStart = performance\.now\(\)\s*\n\s*const fifoAndPnl = safeRunFifoEngine\(/, 'fifoEngineStart must be taken immediately before the real fifoAndPnl call, not a diagnostic rerun')
+    assert.match(src, /const fifoEngineStart = scanTimer\.start\('fifoEngine'\)\s*\n\s*const fifoAndPnl = safeRunFifoEngine\(/, 'fifoEngineStart must be taken immediately before the real fifoAndPnl call, not a diagnostic rerun')
     assert.match(src, /scanTimer\.mark\('fifoEngine', fifoEngineStart\)/, 'fifoEngine must be marked into the same scanTimer every other stage uses')
-    assert.match(src, /const receiptDecodingStart = performance\.now\(\)/, 'receiptDecodingStart must exist')
+    assert.match(src, /const receiptDecodingStart = scanTimer\.start\('receiptDecoding'\)/, 'receiptDecodingStart must exist')
     assert.match(src, /scanTimer\.mark\('receiptDecoding', receiptDecodingStart\)/, 'receiptDecoding must be marked into the same scanTimer')
   })
 })
@@ -102,7 +102,7 @@ describe('shadow receipt-decode block deferred when inert (perf-sprint: "move [o
   })
 
   it('the shadow block runs synchronously (awaited) when canonical promotion is enabled, and is deferred via setImmediate when it is not', () => {
-    const dispatchMatch = src.match(/if \(receiptSwapCanonicalPromotionEnabled\) \{\s*\n\s*await runShadowReceiptDecodeBlock\(\)\s*\n[\s\S]{0,200}?\} else \{\s*\n\s*setImmediate\(\(\) => \{ runShadowReceiptDecodeBlock\(\)\.catch\(\(\) => \{\}\) \}\)\s*\n\s*\}/)
+    const dispatchMatch = src.match(/if \(receiptSwapCanonicalPromotionEnabled\) \{\s*\n\s*(?:const receiptDecodingStart = scanTimer\.start\('receiptDecoding'\)\s*\n\s*)?await runShadowReceiptDecodeBlock\(\)\s*\n[\s\S]{0,200}?\} else \{\s*\n\s*setImmediate\(\(\) => \{ runShadowReceiptDecodeBlock\(\)\.catch\(\(\) => \{\}\) \}\)\s*\n\s*\}/)
     assert.ok(dispatchMatch, 'must find the exact awaited-when-enabled / deferred-when-not dispatch pattern')
   })
 

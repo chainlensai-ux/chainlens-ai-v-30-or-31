@@ -24,6 +24,8 @@
 // Every sample records its `depth`; reconciliation sums ONLY depth-0 stages, so a nested stage is
 // fully visible for attribution without being double-counted against the total.
 
+import { traceCoreStageEnd, traceCoreStageStart } from '@/src/lib/scanRunContext'
+
 export type ScanStageSample = {
   name: string
   /** Epoch ms (Date.now()) when this stage began — comparable across the whole job. */
@@ -133,6 +135,7 @@ export function createScanStageProfiler(): ScanStageProfiler {
     name: string, startedAt: number, startPerf: number, depth: number, failed: boolean, awaitedSerially: boolean,
   ): void {
     const frame = open.pop()
+    traceCoreStageEnd(name)
     const durationMs = Math.round(performance.now() - startPerf)
     push({
       name,
@@ -153,6 +156,7 @@ export function createScanStageProfiler(): ScanStageProfiler {
     const startedAt = Date.now()
     const startPerf = performance.now()
     open.push({ name, counters: { providerCalls: 0, kvReads: 0, cacheHits: 0 } })
+    traceCoreStageStart(name)
     try {
       const value = await fn()
       finish(name, startedAt, startPerf, depth, false, options.awaitedSerially)
@@ -168,6 +172,7 @@ export function createScanStageProfiler(): ScanStageProfiler {
     const startedAt = Date.now()
     const startPerf = performance.now()
     open.push({ name, counters: { providerCalls: 0, kvReads: 0, cacheHits: 0 } })
+    traceCoreStageStart(name)
     try {
       const value = fn()
       finish(name, startedAt, startPerf, depth, false, options.awaitedSerially)

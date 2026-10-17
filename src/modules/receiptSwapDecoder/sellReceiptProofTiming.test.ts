@@ -120,7 +120,7 @@ describe('wiring (source checks)', () => {
     assert.match(pipeline, /hardDeadlineAtMs: plan\.hardDeadlineAtMs/)
   })
   it('the worker runs the core inside the scan context with the snapshot promise and logs stage timing', () => {
-    assert.match(worker, /runWithScanContext\(\{ deadlineAtMs: startTime \+ WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady \}/)
+    assert.match(worker, /runWithScanContext\(\{ deadlineAtMs: startTime \+ WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace \}/)
     assert.match(worker, /globalTimeoutPartialResult\(snapshot\?\.partialSnapshotPublished === true\)/)
     assert.match(worker, /workerStageTiming: timing/)
     assert.match(worker, /\[worker-stage-timing\]/)

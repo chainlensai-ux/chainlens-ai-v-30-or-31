@@ -39,7 +39,7 @@ import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/eng
 import { setJobProgress } from '@/src/modules/scanJobs'
 import { updateWalletScanJobProgress, publishWalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
-import { runWithScanContext } from '@/src/lib/scanRunContext'
+import { createCoreStageTrace, runWithScanContext, summarizeCoreStageTrace } from '@/src/lib/scanRunContext'
 import { MAX_RAW_EVENTS_PER_PROVIDER } from '@/src/modules/providerFetchWindow/types'
 import { HEAVY_WALLET_DEFERRED_PNL_STATUS } from '@/src/modules/heavyWalletFollowUp'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
@@ -419,8 +419,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   const stageMs: Record<string, number> = {}
   // Also returned on the job result as `workerStageTiming`, so a scan's timing can be read from the
   // poll response in the browser even when Vercel has dropped the worker's later log lines.
-  const logStageTiming = (outcome: string): WorkerStageTiming => {
-    const timing: WorkerStageTiming = { outcome, totalMs: Date.now() - startTime, globalTimeoutMs: WORKER_GLOBAL_TIMEOUT_MS, ...stageMs }
+  const logStageTiming = (outcome: string, coreSteps: Record<string, number | string> = {}): WorkerStageTiming => {
+    const timing: WorkerStageTiming = { outcome, totalMs: Date.now() - startTime, globalTimeoutMs: WORKER_GLOBAL_TIMEOUT_MS, ...stageMs, ...coreSteps }
     // eslint-disable-next-line no-console
     console.warn('[worker-stage-timing]', JSON.stringify({ jobId: jobId ?? null, ...timing }))
     return timing
@@ -686,8 +686,10 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   const coreStartedAt = Date.now()
   // The core pipeline sees the global deadline and the snapshot publication (src/lib/scanRunContext.ts),
   // so optional late work (the sell receipt proof) starts only after the snapshot and only with time left.
+  // coreStageTrace records each pipeline step as it runs, so a timed-out scan still says where its time went.
+  const coreStageTrace = createCoreStageTrace()
   const corePromise = withScanTimeout(
-    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady }, () => router.runValidatedScanRequest(sanitized)),
+    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace }, () => router.runValidatedScanRequest(sanitized)),
     coreTimeoutMs,
   )
 
@@ -701,12 +703,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   } catch (err) {
     if (err instanceof Error && err.message === `SCAN_TIMEOUT_${coreTimeoutMs}ms`) {
       stageMs.core = Date.now() - coreStartedAt
+      const coreSteps = summarizeCoreStageTrace(coreStageTrace)
       // The holdings/portfolio snapshot normally landed long ago; give it a short grace, never more.
       const snapshot = await Promise.race([
         fastSnapshotPromise.catch(() => null),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), GLOBAL_TIMEOUT_SNAPSHOT_GRACE_MS)),
       ])
-      const timing = logStageTiming('worker_global_timeout')
+      const timing = logStageTiming('worker_global_timeout', coreSteps)
       const timedOut = globalTimeoutPartialResult(snapshot?.partialSnapshotPublished === true)
       return { ...timedOut, body: { ...(timedOut.body as Record<string, unknown>), workerStageTiming: timing } }
     }
@@ -1418,6 +1421,6 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     } as typeof body
   }
 
-  const workerStageTiming = logStageTiming(heavyWalletDeferred ? 'done_heavy_wallet_deferred' : 'done')
+  const workerStageTiming = logStageTiming(heavyWalletDeferred ? 'done_heavy_wallet_deferred' : 'done', summarizeCoreStageTrace(coreStageTrace))
   return { status: result.status, body: { ...body, workerStageTiming } }
 }

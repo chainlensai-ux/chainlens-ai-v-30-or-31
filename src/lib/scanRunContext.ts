@@ -15,6 +15,24 @@ export type ScanRunContext = {
    * scan wait on it; everything else in the scan runs without waiting.
    */
   historicalPricePriority?: Promise<void>
+  /**
+   * Filled in by the core pipeline as each step starts and ends, so a scan cut off by the global
+   * deadline can still report which steps finished, how long each took, and which were still running.
+   */
+  coreStageTrace?: CoreStageTrace
+}
+
+export type CoreStageTrace = {
+  /** Total ms per finished step (a step that runs more than once accumulates). */
+  done: Record<string, number>
+  /** Steps currently running, with their Date.now() start. */
+  open: Array<{ name: string; startedAt: number }>
+  /** The most recently finished step and its Date.now() end, to spot time spent between steps. */
+  lastFinished?: { name: string; endedAt: number }
+}
+
+export function createCoreStageTrace(): CoreStageTrace {
+  return { done: {}, open: [] }
 }
 
 const storage = new AsyncLocalStorage<ScanRunContext>()
@@ -31,4 +49,38 @@ export function currentScanContext(): ScanRunContext | undefined {
 export async function awaitHistoricalPricePriority(): Promise<void> {
   const gate = storage.getStore()?.historicalPricePriority
   if (gate) await gate
+}
+
+export function traceCoreStageStart(name: string): void {
+  storage.getStore()?.coreStageTrace?.open.push({ name, startedAt: Date.now() })
+}
+
+export function traceCoreStageEnd(name: string): void {
+  const trace = storage.getStore()?.coreStageTrace
+  if (!trace) return
+  const index = trace.open.findIndex((entry) => entry.name === name)
+  if (index < 0) return
+  const [entry] = trace.open.splice(index, 1)
+  const endedAt = Date.now()
+  trace.done[name] = (trace.done[name] ?? 0) + (endedAt - entry.startedAt)
+  trace.lastFinished = { name, endedAt }
+}
+
+/**
+ * Flat summary for the job's timing record: `core.<step>` = ms for finished steps,
+ * `core.<step>.running` = ms so far for steps still open at `now`, and the last finished step with
+ * how long ago it ended (time no traced step accounts for).
+ */
+export function summarizeCoreStageTrace(trace: CoreStageTrace, now = Date.now()): Record<string, number | string> {
+  const summary: Record<string, number | string> = {}
+  if (trace.lastFinished) {
+    summary['core.lastFinished'] = trace.lastFinished.name
+    summary['core.sinceLastFinishedMs'] = now - trace.lastFinished.endedAt
+  }
+  for (const [name, ms] of Object.entries(trace.done)) summary[`core.${name}`] = ms
+  for (const { name, startedAt } of trace.open) {
+    const key = `core.${name}.running`
+    summary[key] = Math.max(Number(summary[key] ?? 0), now - startedAt)
+  }
+  return summary
 }
