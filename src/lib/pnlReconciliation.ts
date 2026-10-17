@@ -862,6 +862,20 @@ export type PublicPnlGateAudit = {
   includedVerifiedLotCount: number
   excludedUnpricedLotCount: number
   excludedUnknownUnmatchedCount: number
+  /** Verified-lot count after each reconciliation step — shows which step shrinks verified coverage. */
+  verifiedLotFunnel?: VerifiedLotFunnel
+}
+
+export type VerifiedLotFunnel = {
+  lots: number
+  afterRecovery: number
+  afterOutlierGuard: number
+  outlierSides: number
+  negligibleExempt: number
+  afterSharedSide: number
+  selector: 'none' | 'manifest_applied' | 'manifest_not_applied'
+  afterSelection: number
+  published: number
 }
 
 // MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): the single `missingEvidenceCount` number
@@ -2509,7 +2523,18 @@ export function createPnlReconciliation(config: Config = {}) {
       // One short flat line (no nested objects, so log viewers never truncate or drop it) with the
       // verified-lot count after each step — shows exactly which step shrinks verified coverage.
       const countVerified = (lots: readonly MatchedLot[]) => lots.filter(isCanonicalVerifiedPublishedLot).length
-      logger.warn(`[verified-lot-funnel] lots=${updatedFifoLots.length} afterRecovery=${countVerified(updatedFifoLots)} afterOutlierGuard=${countVerified(priceOutlierGuard.lots)} outlierSides=${priceOutlierGuard.outliers.length} negligibleExempt=${negligibleLots.size} afterSharedSide=${countVerified(consistentFifoLots)} selector=${canonicalSampleSelection ? (canonicalSampleSelection.manifestApplied ? 'manifest_applied' : 'manifest_not_applied') : 'none'} afterSelection=${canonicalSampleSelection ? countVerified(canonicalSampleSelection.publishedLots) : countVerified(consistentFifoLots)} published=${countVerified(publishedFifoLots)}`)
+      const verifiedLotFunnel: VerifiedLotFunnel = {
+        lots: updatedFifoLots.length,
+        afterRecovery: countVerified(updatedFifoLots),
+        afterOutlierGuard: countVerified(priceOutlierGuard.lots),
+        outlierSides: priceOutlierGuard.outliers.length,
+        negligibleExempt: negligibleLots.size,
+        afterSharedSide: countVerified(consistentFifoLots),
+        selector: canonicalSampleSelection ? (canonicalSampleSelection.manifestApplied ? 'manifest_applied' : 'manifest_not_applied') : 'none',
+        afterSelection: countVerified(canonicalSampleSelection ? canonicalSampleSelection.publishedLots : consistentFifoLots),
+        published: countVerified(publishedFifoLots),
+      }
+      logger.warn(`[verified-lot-funnel] ${Object.entries(verifiedLotFunnel).map(([k, v]) => `${k}=${v}`).join(' ')}`)
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
         acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
@@ -2943,6 +2968,7 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       const fullAvailabilityBlockingReasons = blockingReasons
       const publicPnlGateAudit: PublicPnlGateAudit = {
+        verifiedLotFunnel,
         verifiedLotCount: verifiedUpdatedLots.length,
         fullyPricedLotCount,
         pricingCoverage: fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null,

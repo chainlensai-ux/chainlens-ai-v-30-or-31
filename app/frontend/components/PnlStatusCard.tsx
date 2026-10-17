@@ -1083,6 +1083,18 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
               {unrealizedReconciliation.excludedCandidateMarketValueUsd > 0 && (
                 <span>Estimated excluded value: <strong style={{ color: '#e2e8f0' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
               )}
+              {reconciliationSummary?.publicPnlGateAudit?.verifiedLotFunnel && (() => {
+                const f = reconciliationSummary.publicPnlGateAudit.verifiedLotFunnel
+                return (
+                  <span>
+                    Verified closed lots by step ({f.lots} total): priced <strong style={{ color: '#e2e8f0' }}>{f.afterRecovery}</strong>
+                    {' → '}price check <strong style={{ color: '#e2e8f0' }}>{f.afterOutlierGuard}</strong>
+                    {' → '}shared-trade check <strong style={{ color: '#e2e8f0' }}>{f.afterSharedSide}</strong>
+                    {' → '}saved sample ({f.selector.replace(/_/g, ' ')}) <strong style={{ color: '#e2e8f0' }}>{f.afterSelection}</strong>
+                    {' → '}published <strong style={{ color: '#e2e8f0' }}>{f.published}</strong>
+                  </span>
+                )
+              })()}
               {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
                 <span>
                   <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
