@@ -124,3 +124,41 @@ describe('pollWalletScanJob — a joined job that never appears', () => {
     }
   })
 })
+
+describe('pollWalletScanJob — session token refreshed during a long scan', () => {
+  const originalSetTimeout = global.setTimeout
+  it('a 401 re-reads the current token and keeps polling the same job instead of failing the scan', async () => {
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    let current = 'token-old'
+    const seen: string[] = []
+    global.fetch = mock.fn(async (_url: string, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('Authorization') ?? ''
+      seen.push(auth)
+      if (auth === 'Bearer token-old') { current = 'token-new'; return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }) }
+      return new Response(JSON.stringify({ status: 'done', result: { success: true, data: { full: true } } }), { status: 200 })
+    }) as unknown as typeof fetch
+    try {
+      const { pollWalletScanJob } = await import('@/app/frontend/api/scanWallet')
+      const result = await pollWalletScanJob('job-long', async () => current)
+      assert.equal(result.success, true)
+      assert.deepEqual(seen, ['Bearer token-old', 'Bearer token-new'])
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+  it('with no newer token it still stops with the sign-in message', async () => {
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    global.fetch = mock.fn(async () => new Response('{}', { status: 401 })) as unknown as typeof fetch
+    try {
+      const { pollWalletScanJob } = await import('@/app/frontend/api/scanWallet')
+      const result = await pollWalletScanJob('job-long', async () => 'same-token')
+      assert.equal(result.error?.category, 'auth')
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+})

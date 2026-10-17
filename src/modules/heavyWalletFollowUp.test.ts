@@ -87,7 +87,7 @@ describe('wiring (source checks)', () => {
     assert.match(runner, /finalBody = await attachHeavyWalletFollowUp\(finalBody, payload\)/)
   })
   it('the page polls the follow-up, shows "PnL still processing", and keeps the snapshot on failure', () => {
-    assert.match(page, /pollWalletScanJob\(followUpJobId, accessToken\)/)
+    assert.match(page, /pollWalletScanJob\(followUpJobId, currentAccessToken\)/)
     assert.match(page, /PnL still processing/)
     assert.match(page, /pnlStatus === 'deferred_heavy_wallet' \? 'pending'/)
     const catchBlock = page.slice(page.indexOf("console.error('Scan failed', err)"), page.indexOf("setError(err instanceof Error ? err.message : 'Scan failed — try again later')"))

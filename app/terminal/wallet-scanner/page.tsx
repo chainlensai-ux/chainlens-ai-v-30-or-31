@@ -899,6 +899,8 @@ export default function WalletScannerPage() {
       // caller's plan server-side — forward the same access token every other authenticated call
       // in this file already reads via supabase.auth.getSession() (see lines above).
       const { data: { session: scanSession } } = await supabase.auth.getSession()
+      // Polls run for minutes; always hand them the session's current (auto-refreshed) token.
+      const currentAccessToken = async () => (await supabase.auth.getSession()).data.session?.access_token ?? null
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
       // ROOT-CAUSE FIX, DISCLOSED (Robinhood-not-in-normal-pipeline bug): this call previously
@@ -981,7 +983,7 @@ export default function WalletScannerPage() {
           // eslint-disable-next-line no-console
           console.log('[SCAN] walletChainSelectionAudit', walletChainSelectionAudit)
         }
-      }, scanSession?.access_token)
+      }, scanSession?.access_token ? currentAccessToken : null)
       if (scanGenerationRef.current !== myGeneration) return
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
@@ -993,9 +995,9 @@ export default function WalletScannerPage() {
       // produce a new complete result must never leave stale totals presented as current.
       // PnL FOLLOW-UP: polls the follow-up job (heavy wallet, or a scan that timed out after its snapshot)
       // and swaps in its full report when it lands; never touches a newer scan's state.
-      const startPnlFollowUp = (followUpJobId: string, accessToken: string) => {
+      const startPnlFollowUp = (followUpJobId: string) => {
         setPnlFollowUp({ jobId: followUpJobId, status: 'processing' })
-        void pollWalletScanJob(followUpJobId, accessToken).then((followUp) => {
+        void pollWalletScanJob(followUpJobId, currentAccessToken).then((followUp) => {
           if (scanGenerationRef.current !== myGeneration) return
           const fullReport = followUp.success ? (followUp.data as WalletV2Report | undefined) : undefined
           if (fullReport && (fullReport as unknown as { pnlStatus?: string | null }).pnlStatus !== 'deferred_heavy_wallet') {
@@ -1015,7 +1017,7 @@ export default function WalletScannerPage() {
       // TIMED OUT AFTER THE SNAPSHOT: the holdings/portfolio snapshot already on screen stays, labelled
       // "PnL still processing", while the follow-up job finishes PnL — no error banner.
       if (!response.success && response.pnlStillProcessing && response.pnlFollowUpJobId && scanSession?.access_token) {
-        startPnlFollowUp(response.pnlFollowUpJobId, scanSession.access_token)
+        startPnlFollowUp(response.pnlFollowUpJobId)
         return
       }
       if (!response.success || !response.data) {
@@ -1066,9 +1068,8 @@ export default function WalletScannerPage() {
       const reportPnlStatus = (report as unknown as { pnlStatus?: string | null }).pnlStatus
       const followUpJobId = (report as unknown as { pnlFollowUpJobId?: string | null }).pnlFollowUpJobId ?? null
       if (reportPnlStatus === 'deferred_heavy_wallet') {
-        const accessToken = scanSession?.access_token
-        if (followUpJobId && accessToken) {
-          startPnlFollowUp(followUpJobId, accessToken)
+        if (followUpJobId && scanSession?.access_token) {
+          startPnlFollowUp(followUpJobId)
         } else {
           setPnlFollowUp({ jobId: null, status: 'not_queued' })
         }

@@ -222,6 +222,17 @@ function scanAuthenticationResponse(): ScanWalletApiResponse {
 // JOB/POLL SCAN PATH: POST returns immediately with a jobId, then this client polls the status
 // endpoint every 2.5s until the background worker stores the full scan response. The heavy
 // runWalletScanV2Worker call is never made by this client-facing HTTP request.
+// A scan can be polled for several minutes, longer than one access token may stay valid while the
+// browser session refreshes it. Callers may pass a getter that returns the session's current token;
+// a 401/403 then re-reads it once and carries on instead of abandoning a scan that is still running.
+export type WalletScanAccessToken = string | (() => Promise<string | null | undefined>)
+
+async function resolveAccessToken(source: WalletScanAccessToken | null | undefined): Promise<string | null> {
+  if (!source) return null
+  if (typeof source === 'string') return source
+  try { return (await source()) ?? null } catch { return null }
+}
+
 export async function scanWalletV2(
   walletAddress: string,
   chains: string[],
@@ -231,10 +242,11 @@ export async function scanWalletV2(
   // caller's plan server-side (app/api/wallet-scan/route.ts) — without forwarding the caller's
   // Supabase access token, every request would resolve to 'free' and a legitimate Pro/Elite user
   // would be rejected even though the page already confirmed their access client-side.
-  accessToken?: string | null,
+  accessTokenSource?: WalletScanAccessToken | null,
 ): Promise<ScanWalletApiResponse> {
   // Both the enqueue and status routes are user-authenticated. Refuse to start a job that this
   // client cannot subsequently poll rather than leaving the UI indefinitely showing "queued".
+  const accessToken = await resolveAccessToken(accessTokenSource)
   if (!accessToken) {
     return scanAuthenticationResponse()
   }
@@ -264,7 +276,7 @@ export async function scanWalletV2(
       return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }
     }
 
-    return await pollWalletScanJob(startBody.jobId, accessToken, onUpdate)
+    return await pollWalletScanJob(startBody.jobId, typeof accessTokenSource === 'function' ? accessTokenSource : accessToken, onUpdate)
   } catch (err) {
     return {
       success: false,
@@ -277,10 +289,12 @@ export async function scanWalletV2(
 // follow-up PnL job, whose id arrives on the first job's result as `pnlFollowUpJobId`).
 export async function pollWalletScanJob(
   jobId: string,
-  accessToken: string,
+  accessTokenSource: WalletScanAccessToken,
   onUpdate?: (update: ScanWalletStatusUpdate) => void,
 ): Promise<ScanWalletApiResponse> {
   try {
+    let accessToken = await resolveAccessToken(accessTokenSource)
+    if (!accessToken) return scanAuthenticationResponse()
     const pollStartedAt = Date.now()
     let lastStatus: WalletScanJobStatus | null = null
     let lastWorkerUpdateAgoMs: number | null = null
@@ -301,9 +315,15 @@ export async function pollWalletScanJob(
       }
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
 
-      // Authentication failures cannot recover by retrying the same credential. Stop immediately
-      // so callers can prompt for a fresh session instead of spinning until the poll timeout.
+      // Authentication failures cannot recover by retrying the same credential: re-read the session's
+      // current token (it may have been refreshed during a long scan) and retry with it; stop only when
+      // there is no newer token, so callers can prompt for a fresh session.
       if (pollRes.status === 401 || pollRes.status === 403) {
+        const refreshed = typeof accessTokenSource === 'function' ? await resolveAccessToken(accessTokenSource) : null
+        if (refreshed && refreshed !== accessToken) {
+          accessToken = refreshed
+          continue
+        }
         return scanAuthenticationResponse()
       }
 
