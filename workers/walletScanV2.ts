@@ -90,6 +90,8 @@ function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
 }
 
 export type WalletScanV2WorkerResult = { status: number; body: unknown }
+/** Per-stage elapsed ms for one worker run (`*_atMs` = ms since worker start). */
+export type WorkerStageTiming = { outcome: string; totalMs: number; globalTimeoutMs: number } & Record<string, number | string>
 
 // HEAVY-WALLET DEFERRAL: the summed Alchemy history events above which the V2 analysis modules
 // (trades → signals, smart money) are deferred to a follow-up job instead of running in this one.
@@ -415,9 +417,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // STAGE TIMING: elapsed ms per stage (and *_atMs = ms since worker start), one [worker-stage-timing]
   // line per job on every exit path.
   const stageMs: Record<string, number> = {}
-  const logStageTiming = (outcome: string) => {
+  // Also returned on the job result as `workerStageTiming`, so a scan's timing can be read from the
+  // poll response in the browser even when Vercel has dropped the worker's later log lines.
+  const logStageTiming = (outcome: string): WorkerStageTiming => {
+    const timing: WorkerStageTiming = { outcome, totalMs: Date.now() - startTime, globalTimeoutMs: WORKER_GLOBAL_TIMEOUT_MS, ...stageMs }
     // eslint-disable-next-line no-console
-    console.warn('[worker-stage-timing]', JSON.stringify({ jobId: jobId ?? null, outcome, totalMs: Date.now() - startTime, globalTimeoutMs: WORKER_GLOBAL_TIMEOUT_MS, ...stageMs }))
+    console.warn('[worker-stage-timing]', JSON.stringify({ jobId: jobId ?? null, ...timing }))
+    return timing
   }
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
@@ -700,8 +706,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         fastSnapshotPromise.catch(() => null),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), GLOBAL_TIMEOUT_SNAPSHOT_GRACE_MS)),
       ])
-      logStageTiming('worker_global_timeout')
-      return globalTimeoutPartialResult(snapshot?.partialSnapshotPublished === true)
+      const timing = logStageTiming('worker_global_timeout')
+      const timedOut = globalTimeoutPartialResult(snapshot?.partialSnapshotPublished === true)
+      return { ...timedOut, body: { ...(timedOut.body as Record<string, unknown>), workerStageTiming: timing } }
     }
     throw err
   }
@@ -1411,6 +1418,6 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     } as typeof body
   }
 
-  logStageTiming(heavyWalletDeferred ? 'done_heavy_wallet_deferred' : 'done')
-  return { status: result.status, body }
+  const workerStageTiming = logStageTiming(heavyWalletDeferred ? 'done_heavy_wallet_deferred' : 'done')
+  return { status: result.status, body: { ...body, workerStageTiming } }
 }

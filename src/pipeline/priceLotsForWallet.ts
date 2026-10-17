@@ -33,6 +33,7 @@ import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modul
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSourceFn, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
+import { compactAuditForLog } from '../lib/compactAuditLog'
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
 import {
@@ -2401,7 +2402,7 @@ export async function priceLotsForWallet(params: {
   const receiptQuoteSideKeys = new Set<string>()
   const corroboratedCompositeSideKeys = new Set<string>()
   const receiptQuoteRecoveryAudit = await runReceiptQuoteRecovery()
-  console.warn('[receipt-quote-recovery]', { ...receiptQuoteRecoveryAudit, sides: receiptQuoteRecoveryAudit.sides.slice(0, 15) })
+  console.warn('[receipt-quote-recovery]', compactAuditForLog(receiptQuoteRecoveryAudit))
   async function runReceiptQuoteRecovery(): Promise<ReceiptQuoteRecoveryAudit> {
     const config = params.receiptQuoteRecovery
     const maxTxs = Math.max(0, config?.maxTxs ?? RECEIPT_QUOTE_RECOVERY_DEFAULT_MAX_TXS)
@@ -2691,15 +2692,20 @@ export async function priceLotsForWallet(params: {
     }
 
     if (config) sourceAudit.totalRecoveryMs = Math.round(performance.now() - laneStartedAt)
-    // PATH-ATTRIBUTION FORENSICS: one line per fetched-but-not-applied side, serialized to a single
-    // JSON string so log pipelines never collapse nested arrays into `[Object]`/`[Array]`.
-    for (const row of audit.sides) {
-      if (!row.fetched || row.applied || !row.forensics) continue
-      console.warn('[receipt-quote-forensics]', JSON.stringify({
+    // PATH-ATTRIBUTION FORENSICS: one summary line for the fetched-but-not-applied sides (count plus a
+    // small sample), serialized to a single JSON string so log pipelines never collapse nested arrays
+    // into `[Object]`/`[Array]`. One line per side used to flood the worker's logs past Vercel's limit.
+    const forensicRows = audit.sides
+      .filter((row) => row.fetched && !row.applied && row.forensics)
+      .map((row) => ({
         txHash: row.txHash, class: row.class, lotIds: row.lotIds,
         finalClassification: row.classification, rejectionReason: row.rejectionReason,
         ...row.forensics,
       }))
+    if (forensicRows.length > 0) {
+      const byClassification: Record<string, number> = {}
+      for (const row of forensicRows) byClassification[row.finalClassification ?? 'unknown'] = (byClassification[row.finalClassification ?? 'unknown'] ?? 0) + 1
+      console.warn('[receipt-quote-forensics]', JSON.stringify({ count: forensicRows.length, byClassification, sample: forensicRows.slice(0, 2) }))
     }
     for (const lot of structuralMatchedLots) {
       const before = classBefore.get(lot)
@@ -2800,10 +2806,12 @@ export async function priceLotsForWallet(params: {
       })
     }
   }
+  const coinPaprikaStartedAt = Date.now()
   const coinPaprikaResult = await resolveCoinPaprikaHistorical(
     [...coinPaprikaGroups.values()].map((group) => group.requirement),
     { fetchImpl: params.coinPaprikaFetchImpl },
   )
+  coinPaprikaResult.audit.elapsedMs = Date.now() - coinPaprikaStartedAt
   const coinPaprikaHistoricalEvidence = [...coinPaprikaResult.evidence.values()]
   const affectedLotKeys = new Set<string>()
   for (const evidence of coinPaprikaHistoricalEvidence) {
@@ -2821,7 +2829,13 @@ export async function priceLotsForWallet(params: {
   // the same chain and the same UTC day (a same-tx or receipt-verified quote applied above) agrees
   // within COINPAPRIKA_CORROBORATION_TOLERANCE. Never a symbol match, never a current price.
   const coinPaprikaPartialAudit = applyCoinPaprikaCorroboration()
-  console.warn('[coinpaprika-partial-evidence-audit]', coinPaprikaPartialAudit)
+  // Logged without the side_already_priced rows (the bulk of them, and uninformative): every row that
+  // explains a corroboration decision is kept, with the true row count alongside.
+  console.warn('[coinpaprika-partial-evidence-audit]', {
+    ...coinPaprikaPartialAudit,
+    rows: coinPaprikaPartialAudit.rows.filter((row) => row.outcome !== 'side_already_priced').slice(0, 20),
+    rowsTotal: coinPaprikaPartialAudit.rows.length,
+  })
   function applyCoinPaprikaCorroboration() {
     const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10)
     const sideTargetAmount = (chain: string, txHash: string, token: string, side: 'entry' | 'exit') => merged
@@ -2906,7 +2920,7 @@ export async function priceLotsForWallet(params: {
     coinPaprikaHistoricalAudit.exactDropReason = 'daily_candle_partial_unverified_not_canonical'
   }
   // eslint-disable-next-line no-console
-  console.warn('[coinPaprikaHistoricalAudit]', coinPaprikaHistoricalAudit)
+  console.warn('[coinPaprikaHistoricalAudit]', compactAuditForLog(coinPaprikaHistoricalAudit))
 
   const falseVerifiedReasons: Record<string, number> = {}
   const falseVerified = canonicalClassification.filter((item) => item.numericPriced && !item.canonicalVerified)
@@ -2931,10 +2945,10 @@ export async function priceLotsForWallet(params: {
     })),
   }
   // eslint-disable-next-line no-console
-  console.warn('[priceLotsCanonicalGapAudit]', priceLotsCanonicalGapAudit)
+  console.warn('[priceLotsCanonicalGapAudit]', compactAuditForLog(priceLotsCanonicalGapAudit))
 
   const closedLotMissingPriceAudit = buildClosedLotMissingPriceAudit()
-  console.warn('[closed-lot-missing-price-audit]', closedLotMissingPriceAudit)
+  console.warn('[closed-lot-missing-price-audit]', compactAuditForLog(closedLotMissingPriceAudit))
   function buildClosedLotMissingPriceAudit(): ClosedLotMissingPriceAudit {
     const describeSide = (lot: MatchedLot, side: 'entry' | 'exit'): ClosedLotMissingPriceSide => {
       const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
@@ -3181,7 +3195,7 @@ export async function priceLotsForWallet(params: {
       ? (manifestFastPathAudit.manifestEvidenceKeysRequested === 0 ? 'no_matched_lots' : 'no_covered_requirements')
       : 'no_accepted_evidence_store_configured'
   // eslint-disable-next-line no-console
-  console.warn('[manifest-fast-path-audit]', manifestFastPathAudit)
+  console.warn('[manifest-fast-path-audit]', compactAuditForLog(manifestFastPathAudit))
 
   // PERF-SPRINT TASK, DISCLOSED: built last, from real values already computed/measured above — see
   // HistoricalPricingPerformanceSummary's own header for what each field means and why. Deltas

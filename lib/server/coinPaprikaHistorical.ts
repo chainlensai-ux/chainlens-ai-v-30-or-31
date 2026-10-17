@@ -74,6 +74,8 @@ export type CoinPaprikaHistoricalAudit = {
   lotsCompleted: number; coverageBefore: number; coverageAfter: number
   stoppedBecauseNoCandidates: boolean; stoppedBecauseGateReached: boolean; stoppedBecauseBudget: boolean
   failuresByReason: Record<string, number>; examples: CoinPaprikaAuditExample[]
+  /** Wall-clock ms this lane spent (its calls run one at a time), set by the caller. */
+  elapsedMs?: number
 }
 
 type FetchLike = typeof fetch

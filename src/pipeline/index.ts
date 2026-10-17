@@ -15,6 +15,7 @@ import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from 
 import { mergeNormalizedEvents, recoveredEconomicDedupeKey } from '../modules/fifoEngine/utils'
 import type { ProviderFetchWindowResult, RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
+import { compactAuditForLog } from '../lib/compactAuditLog'
 import { buildCounterpartyStats, classifyRouterLikeEvent, logRouterCandidateBatch, recordRouterCandidate, type RouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
@@ -2493,7 +2494,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // Always present, including disabled/misconfigured/zero-candidate scans. This is emitted at the
   // canonical production call site so live logs can identify the first fallback drop stage.
   // eslint-disable-next-line no-console
-  console.warn('[pipeline] coinPaprikaHistoricalAudit', walletPriceLookups.coinPaprikaHistoricalAudit)
+  console.warn('[pipeline] coinPaprikaHistoricalAudit', compactAuditForLog(walletPriceLookups.coinPaprikaHistoricalAudit))
   // REPLAY-COVERED vs CURRENT-PRICE GOLDRUSH CALL SPLIT, DISCLOSED (cost-audit follow-up task):
   // proves, from a live scan's own logs, that the manifest-replay-covered historical/closed-lot
   // sample made zero live GoldRush calls, separately from whatever real, unavoidable live calls the
