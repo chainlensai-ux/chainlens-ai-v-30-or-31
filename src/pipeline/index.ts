@@ -4285,6 +4285,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestAdditiveProviderDependencyAudit: additiveProviderDependencyAudit,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
+    // eslint-disable-next-line no-console
+    console.warn(`[manifest-replay-funnel] outcome=${replay.outcome} manifestVerified=${effectiveManifest.verifiedLotCount} candidateVerified=${candidateVerifiedLots.length} published=${publishedVerifiedLotCount} newCandidates=${replay.candidateNewEvidenceLotKeys.length} missingEvidence=${firstReplay.manifestLotsMissingCurrentEvidence.length} refreshAttempted=${manifestRefreshAttempted} refreshApplied=${manifestRefreshApplied} refreshReason=${manifestRefreshReason ?? 'none'}`)
     return {
       publishedLots: replay.publishedLots,
       forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable,

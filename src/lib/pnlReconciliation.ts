@@ -2506,6 +2506,10 @@ export function createPnlReconciliation(config: Config = {}) {
         ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots).lots
         : consistentFifoLots
       const publishedFifoLots = [...canonicalSelectedLots]
+      // One short flat line (no nested objects, so log viewers never truncate or drop it) with the
+      // verified-lot count after each step — shows exactly which step shrinks verified coverage.
+      const countVerified = (lots: readonly MatchedLot[]) => lots.filter(isCanonicalVerifiedPublishedLot).length
+      logger.warn(`[verified-lot-funnel] lots=${updatedFifoLots.length} afterRecovery=${countVerified(updatedFifoLots)} afterOutlierGuard=${countVerified(priceOutlierGuard.lots)} outlierSides=${priceOutlierGuard.outliers.length} negligibleExempt=${negligibleLots.size} afterSharedSide=${countVerified(consistentFifoLots)} selector=${canonicalSampleSelection ? (canonicalSampleSelection.manifestApplied ? 'manifest_applied' : 'manifest_not_applied') : 'none'} afterSelection=${canonicalSampleSelection ? countVerified(canonicalSampleSelection.publishedLots) : countVerified(consistentFifoLots)} published=${countVerified(publishedFifoLots)}`)
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
         acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
