@@ -3745,6 +3745,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       acceptedEvidenceRealKv as unknown as AcceptedEvidenceKvLike,
       Date.now(),
     )
+    // One batched (MGET) read of every side this scan's lots touch, so the build/replay/audit passes
+    // below validate from memory instead of issuing thousands of single GETs.
+    await acceptedEvidenceMemo.prime(reconciledLots.flatMap((lot) => [
+      { chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, side: 'entry' as const, timestamp: lot.openedAt },
+      { chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit' as const, timestamp: lot.closedAt },
+    ]))
     const loadAcceptedEvidence: AcceptedEvidenceLoader = async (identity) => {
       const value = await acceptedEvidenceMemo.load(identity)
       acceptedEvidenceMemoStats = acceptedEvidenceMemo.stats()

@@ -22,15 +22,18 @@ export async function attachHeavyWalletFollowUp(
   payload: WalletScanJobPayload,
   enqueue: (jobId: string, payload: WalletScanJobPayload) => Promise<void> = enqueueWalletScanJob,
   newJobId: () => string = () => crypto.randomUUID(),
+  /** This job's core is still running and may leave a checkpoint the follow-up can resume from. */
+  coreCheckpointPending = false,
 ): Promise<unknown> {
   if (payload.heavyWalletFollowUp) return body
   const result = body as ResultBody | null
   // TIMEOUT AFTER SNAPSHOT: the page keeps the published snapshot with "PnL still processing" and polls
-  // a follow-up job that re-runs the scan with a fresh worker budget (it never queues another).
+  // a follow-up job (it never queues another). When this job's core may still finish, the follow-up
+  // resumes from its checkpoint instead of re-running the scan (src/modules/walletScanCoreCheckpoint.ts).
   if (isTimedOutAfterSnapshot(result)) {
     const followUpJobId = newJobId()
     try {
-      await enqueue(followUpJobId, { ...payload, jobId: followUpJobId, heavyWalletFollowUp: true })
+      await enqueue(followUpJobId, { ...payload, jobId: followUpJobId, heavyWalletFollowUp: true, ...(coreCheckpointPending ? { resumeCoreFromJobId: payload.jobId } : {}) })
       // eslint-disable-next-line no-console
       console.warn('[heavy-wallet-follow-up] queued after global timeout', { jobId: payload.jobId, followUpJobId })
       return { ...result, pnlStillProcessing: true, pnlFollowUpJobId: followUpJobId }

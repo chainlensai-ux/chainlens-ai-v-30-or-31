@@ -5,7 +5,7 @@ import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
-  lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
+  lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, readAcceptedEvidenceBatch, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   acceptedEvidenceNeedsTtlRefresh, refreshAcceptedEvidenceTtl,
   buildAcceptedEvidenceCoverageFingerprint, buildAcceptedEvidenceKey, detectLegacyPerUnitTotalRecord,
   detectLegacyPerUnitTotalByLiveUpstreamProof, detectWrongDecimalScaleByLiveUpstreamProof,
@@ -14,6 +14,7 @@ import {
   TX_SIDE_EVENT_ALLOCATION_METHOD,
 } from './acceptedEvidenceStore'
 import { txSideKey } from './txSideEventAllocation'
+import { demotePriceOutlierLots } from './lotPriceOutlierGuard'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
@@ -1472,6 +1473,28 @@ export function rankMissingLotsForRecovery(allLots: readonly MatchedLot[]): Matc
 // fabricated recovered price) — so capping the attempt count only bounds cost, it never changes
 // correctness for any lot recovery DOES reach.
 const RECOVERY_CONCURRENCY_LIMIT = 8
+
+type SideEvidenceIdentity = { chain: string; token: string; txHash: string; side: AcceptedEvidenceSide; timestamp: number }
+const sideEvidenceKey = (identity: SideEvidenceIdentity) => buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' })
+
+// BATCHED DISCOVERY READS: the same relaxed read and validation as readAcceptedEvidenceAnyLotVersion,
+// issued as MGET chunks (readAcceptedEvidenceBatch) instead of one GET per side. A 2,918-lot wallet has
+// ~4,400 sides and each pass below used to read them one round trip at a time. Look results up with
+// sideEvidenceKey; a missing entry reads as null.
+async function readSideEvidenceBatch(
+  kv: AcceptedEvidenceKvLike,
+  identities: readonly SideEvidenceIdentity[],
+  now: number,
+): Promise<Map<string, AcceptedEvidenceEnvelope | null>> {
+  if (identities.length === 0) return new Map()
+  const result = await readAcceptedEvidenceBatch(
+    kv,
+    identities.map((identity) => ({ chain: identity.chain, token: identity.token, txHash: identity.txHash, side: identity.side, timestamp: identity.timestamp, anyLotVersion: true as const })),
+    now,
+    RECOVERY_CONCURRENCY_LIMIT,
+  )
+  return result.byKey
+}
 const MAX_RECOVERY_ATTEMPTS = 40
 
 async function mapWithConcurrencyLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -1641,9 +1664,10 @@ export function createPnlReconciliation(config: Config = {}) {
     // corrupt/stale record — e.g. a version belonging to a structurally different lot from a prior
     // FIFO rematch — falling through to live recovery instead of being coerced into a price.
     const evidenceByGroupKey = new Map<string, AcceptedEvidenceEnvelope | null>()
-    await mapWithConcurrencyLimit([...groups.entries()], RECOVERY_CONCURRENCY_LIMIT, async ([key, group]) => {
+    const hydrationReads = await readSideEvidenceBatch(kv, [...groups.values()], now)
+    for (const [key, group] of groups) {
       audit.acceptedSidesRequestedBeforePricing += group.lots.length
-      const evidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
+      const evidence = hydrationReads.get(sideEvidenceKey(group)) ?? null
       const groupVersions = new Set(group.lots.map((l) => lotIdentityVersion(l)))
       // SAME-TX OVERCOUNT FIX: on a side with more than one same-token transfer event, a record seeded
       // before the tx-side allocation fix is not trusted (its total came from per-event overcounted
@@ -1653,7 +1677,7 @@ export function createPnlReconciliation(config: Config = {}) {
         && !acceptedEvidenceTrustedForMultiEventSide(evidence)
       if (legacyMultiEvent) audit.legacyMultiEventEvidenceIgnored = (audit.legacyMultiEventEvidenceIgnored ?? 0) + group.lots.length
       evidenceByGroupKey.set(key, evidence && !legacyMultiEvent && groupVersions.has(evidence.lotIdentityVersion) ? evidence : null)
-    })
+    }
 
     // ALLOCATE EACH GROUP'S TOTAL ACROSS ITS SIBLINGS, ONCE, DISCLOSED: the exact same deterministic,
     // integer-exact split the manifest module uses — allocated shares sum back to the group's total.
@@ -2267,8 +2291,10 @@ export function createPnlReconciliation(config: Config = {}) {
     // reseeded with the true, current total. A live view SMALLER than what was already recorded
     // (`group.lots.length < existing.coveredLotCount`) is conservatively left untouched — this
     // scan's own view may simply be incomplete, never grounds to shrink a persisted record.
+    // Every group is a distinct key, so reading them all up front returns what each per-group read would.
+    const seedingReads = await readSideEvidenceBatch(acceptedEvidenceKv, [...groups.values()], now)
     await mapWithConcurrencyLimit([...groups.values()], RECOVERY_CONCURRENCY_LIMIT, async (group) => {
-      const existing = await readAcceptedEvidenceAnyLotVersion(acceptedEvidenceKv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
+      const existing = seedingReads.get(sideEvidenceKey(group)) ?? null
       const existingCoveredLotCount = existing?.coveredLotCount ?? 1
       const liveFingerprint = buildAcceptedEvidenceCoverageFingerprint(group.lots)
       const compositionUnchanged = existing !== null && existing.coverageFingerprint === liveFingerprint
@@ -2431,7 +2457,18 @@ export function createPnlReconciliation(config: Config = {}) {
       // evidence record for that side (allocation is over the full sibling set). Demote those lots
       // out of the canonical verified sample rather than publish a partial claim or invent the
       // missing siblings into realized PnL.
-      const consistentFifoLots = demoteLotsOnIncompleteAcceptedSides(updatedFifoLots)
+      // PRICE OUTLIER GUARD (src/lib/lotPriceOutlierGuard.ts): a side priced orders of magnitude away
+      // from every other trade of that token (or of the wallet) is demoted before the shared-side rule
+      // and seeding, so it never reaches realized PnL and is never persisted as accepted evidence.
+      const priceOutlierGuard = demotePriceOutlierLots(updatedFifoLots)
+      if (priceOutlierGuard.outliers.length > 0) {
+        logger.warn('lot_price_outliers_demoted', {
+          demotedLotCount: priceOutlierGuard.demotedLotCount,
+          outlierSides: priceOutlierGuard.outliers.length,
+          sample: priceOutlierGuard.outliers.slice(0, 5),
+        })
+      }
+      const consistentFifoLots = demoteLotsOnIncompleteAcceptedSides(priceOutlierGuard.lots)
       // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task):
       // runs over `consistentFifoLots` — the FULLY RESOLVED lot list, after recovery has already merged
       // in anything it found and incomplete shared sides have been demoted — so this pass sees every
@@ -2458,7 +2495,11 @@ export function createPnlReconciliation(config: Config = {}) {
       // verified siblings look like mixed-quality groups and demotes the entire manifest sample.
       // This was the first loss in the live 22/25 -> 0 collapse: replay returned verified manifest
       // lots, then this post-selection pass rewrote their evidenceQuality to `unpriced`.
-      const canonicalSelectedLots = canonicalSampleSelection ? canonicalSampleSelection.publishedLots : consistentFifoLots
+      // Manifest replay rebuilds lots from stored evidence, which may predate the outlier guard, so
+      // the selected sample is guarded again (outlier lots only; the shared-side rule is not re-run).
+      const canonicalSelectedLots = canonicalSampleSelection
+        ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots).lots
+        : consistentFifoLots
       const publishedFifoLots = [...canonicalSelectedLots]
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
@@ -3199,18 +3240,14 @@ export function createPnlReconciliation(config: Config = {}) {
         try {
           const kv = config.acceptedEvidenceKv
           const now = (config.now ?? Date.now)()
-          const rows = await mapWithConcurrencyLimit(verifiedUpdatedLots, RECOVERY_CONCURRENCY_LIMIT, async (l) => {
+          const entryIdentity = (l: MatchedLot): SideEvidenceIdentity => ({ chain: l.chain, token: l.token, txHash: l.openedTxHash, side: 'entry', timestamp: l.openedAt })
+          const exitIdentity = (l: MatchedLot): SideEvidenceIdentity => ({ chain: l.chain, token: l.token, txHash: l.closedTxHash, side: 'exit', timestamp: l.closedAt })
+          // One batched read for every lot's two sides; a failed read leaves null, never fabricated.
+          const diagnosticReads = await readSideEvidenceBatch(kv, verifiedUpdatedLots.flatMap((l) => [entryIdentity(l), exitIdentity(l)]), now).catch(() => new Map<string, AcceptedEvidenceEnvelope | null>())
+          const rows = verifiedUpdatedLots.map((l) => {
             const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(l)
-            let acceptedEntryUsd: number | null = null
-            let acceptedExitUsd: number | null = null
-            try {
-              const entryEvidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: l.chain, token: l.token, txHash: l.openedTxHash, side: 'entry', timestamp: l.openedAt }, now)
-              acceptedEntryUsd = entryEvidence?.priceUsd ?? null
-            } catch { /* read failure — leave null, never fabricated */ }
-            try {
-              const exitEvidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: l.chain, token: l.token, txHash: l.closedTxHash, side: 'exit', timestamp: l.closedAt }, now)
-              acceptedExitUsd = exitEvidence?.priceUsd ?? null
-            } catch { /* read failure — leave null, never fabricated */ }
+            const acceptedEntryUsd: number | null = diagnosticReads.get(sideEvidenceKey(entryIdentity(l)))?.priceUsd ?? null
+            const acceptedExitUsd: number | null = diagnosticReads.get(sideEvidenceKey(exitIdentity(l)))?.priceUsd ?? null
             return {
               lotKey: lotKey(l),
               costBasisUsd: l.costBasisUsd,
@@ -3227,7 +3264,7 @@ export function createPnlReconciliation(config: Config = {}) {
               canonicalExitUsd: l.proceedsUsd,
             }
           })
-          logger.warn('[verified-sample-cost-basis-audit]', { lotCount: rows.length, rows })
+          logger.warn('[verified-sample-cost-basis-audit]', { lotCount: rows.length, rowsLogged: Math.min(rows.length, 50), rows: rows.slice(0, 50) })
         } catch (error) {
           logger.warn('[verified-sample-cost-basis-audit] skipped — diagnostic failure never blocks a scan', { error: String(error) })
         }

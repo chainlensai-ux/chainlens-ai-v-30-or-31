@@ -75,6 +75,8 @@ export type WalletScanJobMetadata = {
   includeRobinhoodRequested?: boolean
   /** Follow-up job that runs the V2 analysis modules a heavy wallet's first job deferred. */
   heavyWalletFollowUp?: boolean
+  /** The timed-out job whose core-scan checkpoint this follow-up may resume from (walletScanCoreCheckpoint.ts). */
+  resumeCoreFromJobId?: string
   // WATCHDOG (see superviseWalletScanJob): when a worker claimed the job, its latest heartbeat, and how
   // often / when the job was (re)triggered while still queued.
   claimedAt?: number
@@ -97,6 +99,8 @@ export type WalletScanJobPayload = {
   includeRobinhoodRequested?: boolean
   /** See WalletScanJobMetadata.heavyWalletFollowUp. */
   heavyWalletFollowUp?: boolean
+  /** See WalletScanJobMetadata.resumeCoreFromJobId. */
+  resumeCoreFromJobId?: string
 }
 
 const JOB_TTL_SECONDS = 30 * 60
@@ -378,6 +382,7 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
     ip: job.ip ?? 'unknown',
     includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
     ...(job.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
+    ...(job.resumeCoreFromJobId ? { resumeCoreFromJobId: job.resumeCoreFromJobId } : {}),
   }
 }
 
@@ -413,6 +418,7 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
     ip: job.ip ?? 'unknown',
     includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
     ...(job.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
+    ...(job.resumeCoreFromJobId ? { resumeCoreFromJobId: job.resumeCoreFromJobId } : {}),
   }
 }
 
@@ -494,6 +500,7 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     ip: payload.ip,
     includeRobinhoodRequested: payload.includeRobinhoodRequested ?? false,
     ...(payload.heavyWalletFollowUp ? { heavyWalletFollowUp: true } : {}),
+    ...(payload.resumeCoreFromJobId ? { resumeCoreFromJobId: payload.resumeCoreFromJobId } : {}),
   })
   let stage: EnqueueStage = 'write_pending_flag'
   let pendingCount = 0

@@ -22,7 +22,7 @@
 // evidence rules is weakened.
 
 import {
-  buildAcceptedEvidenceEnvelope, buildAcceptedEvidenceKey, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence,
+  buildAcceptedEvidenceEnvelope, buildAcceptedEvidenceKey, readAcceptedEvidenceAnyLotVersion, readAcceptedEvidenceBatch, writeAcceptedEvidence,
   type AcceptedEvidenceEnvelope, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike, type AcceptedEvidenceSide,
 } from './acceptedEvidenceStore.ts'
 import {
@@ -245,6 +245,12 @@ export async function repairExpiredAcceptedEvidenceFromManifest(params: Accepted
     && manifest.normalizedWalletAddress === currentIdentity.normalizedWalletAddress
 
   const sides = collectDistinctSides(manifest.verifiedLotRecords)
+  // One batched (MGET) discovery read for every side up front — each side is a distinct key and a
+  // repair write only touches its own side, so this returns exactly what the per-side read would,
+  // without one sequential round trip per side. Skipped when no side can reach the read.
+  const existingBySideKey = manifestIsCurrent
+    ? (await readAcceptedEvidenceBatch(kv, sides.map((spec) => ({ chain: spec.chain, token: spec.token, txHash: spec.txHash, side: spec.side, timestamp: spec.timestamp, anyLotVersion: true as const })), now)).byKey
+    : new Map<string, AcceptedEvidenceEnvelope | null>()
 
   for (const spec of sides) {
     audit.sidesConsidered += 1
@@ -286,7 +292,9 @@ export async function repairExpiredAcceptedEvidenceFromManifest(params: Accepted
     // valid, non-expired record found here — REGARDLESS of its own value — means this side is not
     // eligible: immutability holds, a repair pass never overwrites live-verified evidence, even
     // evidence it disagrees with.
-    const existing = await readAcceptedEvidenceAnyLotVersion(kv, identityForKv, now)
+    const existing = existingBySideKey.has(evidenceKey)
+      ? existingBySideKey.get(evidenceKey) ?? null
+      : await readAcceptedEvidenceAnyLotVersion(kv, identityForKv, now)
     if (existing !== null) {
       audit.existingStrongerEvidence += 1
       pushResult('skipped_evidence_already_valid')

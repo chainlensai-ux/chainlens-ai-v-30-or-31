@@ -719,10 +719,37 @@ export function createMemoizedAcceptedEvidenceLoader(
   now: number,
 ): {
   load: (identity: MemoizedAcceptedEvidenceLoaderIdentity) => Promise<AcceptedEvidenceEnvelope | null>
+  prime: (identities: readonly Omit<MemoizedAcceptedEvidenceLoaderIdentity, 'lotIdentityVersion'>[]) => Promise<void>
   stats: () => MemoizedAcceptedEvidenceLoaderStats
 } {
   const cache = new Map<string, Promise<AcceptedEvidenceEnvelope | null>>()
   const stats: MemoizedAcceptedEvidenceLoaderStats = { requests: 0, uniqueWork: 0, cacheHits: 0 }
+  // PRIMED RAW ROWS: the KV key does not include lotIdentityVersion, so one raw row answers both the
+  // strict and the discovery read for a side. `prime` fetches many rows with MGET chunks; `load`
+  // validates a primed row locally (same validators as the single-key readers) instead of a GET.
+  const rawByKey = new Map<string, unknown>()
+
+  async function prime(identities: readonly Omit<MemoizedAcceptedEvidenceLoaderIdentity, 'lotIdentityVersion'>[]): Promise<void> {
+    const mget = kv.mget
+    if (typeof mget !== 'function') return
+    const keys = [...new Set(identities.map((identity) => buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' })))].filter((key) => !rawByKey.has(key))
+    const chunks: string[][] = []
+    for (let i = 0; i < keys.length; i += ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE) chunks.push(keys.slice(i, i + ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE))
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const chunk = chunks[cursor++]
+        if (!chunk) return
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const reply = await mgetWithTimeout(mget, chunk)
+          // An unexpected reply leaves the chunk unprimed; those sides fall back to single reads.
+          if (Array.isArray(reply) && reply.length === chunk.length) chunk.forEach((key, i) => rawByKey.set(key, reply[i]))
+        } catch { /* unprimed — single reads on demand */ }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(ACCEPTED_EVIDENCE_MGET_CONCURRENCY, chunks.length) }, () => worker()))
+  }
 
   function memoKey(identity: MemoizedAcceptedEvidenceLoaderIdentity): string {
     const base = buildAcceptedEvidenceKey({
@@ -749,6 +776,17 @@ export function createMemoizedAcceptedEvidenceLoader(
       return existing
     }
     stats.uniqueWork += 1
+    const rawKey = buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' })
+    if (rawByKey.has(rawKey)) {
+      const raw = rawByKey.get(rawKey)
+      const sideIdentity = { chain: identity.chain, token: identity.token, txHash: identity.txHash, side: identity.side, timestamp: identity.timestamp }
+      const valid = identity.lotIdentityVersion === null
+        ? isValidAcceptedEvidenceIgnoringLotVersion(raw, sideIdentity, now)
+        : isValidAcceptedEvidence(raw, { ...sideIdentity, lotIdentityVersion: identity.lotIdentityVersion }, now)
+      const primed = Promise.resolve(valid ? raw as AcceptedEvidenceEnvelope : null)
+      cache.set(key, primed)
+      return primed
+    }
     const promise = identity.lotIdentityVersion === null
       ? readAcceptedEvidenceAnyLotVersion(kv, {
           chain: identity.chain,
@@ -769,5 +807,5 @@ export function createMemoizedAcceptedEvidenceLoader(
     return promise
   }
 
-  return { load, stats: () => ({ ...stats }) }
+  return { load, prime, stats: () => ({ ...stats }) }
 }

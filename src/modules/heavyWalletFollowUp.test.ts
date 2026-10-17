@@ -83,8 +83,8 @@ describe('wiring (source checks)', () => {
     assert.match(worker, /pnlV2: heavyWalletDeferred \? undefined : pnlOutput\.pnlV2/)
   })
   it('the job runner passes the follow-up flag and attaches the follow-up job', () => {
-    assert.match(runner, /\{ heavyWalletFollowUp: payload\.heavyWalletFollowUp === true \}/)
-    assert.match(runner, /finalBody = await attachHeavyWalletFollowUp\(finalBody, payload\)/)
+    assert.match(runner, /\{ heavyWalletFollowUp: payload\.heavyWalletFollowUp === true[ ,]/)
+    assert.match(runner, /finalBody = await attachHeavyWalletFollowUp\(finalBody, payload[,)]/)
   })
   it('the page polls the follow-up, shows "PnL still processing", and keeps the snapshot on failure', () => {
     assert.match(page, /pollWalletScanJob\(followUpJobId, currentAccessToken\)/)

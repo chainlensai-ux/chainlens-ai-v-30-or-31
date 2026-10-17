@@ -8,6 +8,7 @@ import {
 } from '@/src/modules/walletScanQueue'
 import type { WalletScanJobPayload } from '@/src/modules/walletScanQueue'
 import { attachHeavyWalletFollowUp } from '@/src/modules/heavyWalletFollowUp'
+import { clearWalletScanCoreCheckpointPending, markWalletScanCoreCheckpointPending, saveWalletScanCoreCheckpoint } from '@/src/modules/walletScanCoreCheckpoint'
 
 type WalletScanJobState = {
   userId: string
@@ -221,7 +222,14 @@ export async function verifyWalletScanKvConnection(): Promise<void> {
   console.warn('[wallet-scan-worker] kv verification succeeded', { key: 'walletScanTestKey' })
 }
 
-async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
+// LATE CORE WINDOW: after a worker_global_timeout the core scan keeps running; the invocation waits for
+// it (after publishing the partial result) until this long after worker entry — under the route's
+// 300s maxDuration — and stores it as a checkpoint for the follow-up job (walletScanCoreCheckpoint.ts).
+export const LATE_CORE_WINDOW_END_MS = 290_000
+
+type ExecutedWalletScanJob = { jobState: WalletScanJobState; result: unknown; lateCore?: Promise<unknown> }
+
+async function executeWalletScanJob(payload: WalletScanJobPayload, lateCoreDeadlineAtMs: number): Promise<ExecutedWalletScanJob> {
   // PERF-SPRINT TASK, DISCLOSED ("detect sequential operations that could safely run in parallel"):
   // these ~15 dynamic imports were previously each individually `await`ed, one after another, even
   // though none of them depends on another's resolved value (every import target is an independent
@@ -336,6 +344,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
 
   let finalBody: unknown
   let completedSuccessfully = false
+  let lateCore: Promise<unknown> | undefined
 
   try {
     const result = await runWalletScanV2Worker(
@@ -349,7 +358,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
       // workers/walletScanV2.ts's own header for why this can't be recovered from `payload.chains`
       // alone (Robinhood is filtered out of `chains` before it ever reaches this queue).
       payload.includeRobinhoodRequested,
-      { heavyWalletFollowUp: payload.heavyWalletFollowUp === true },
+      { heavyWalletFollowUp: payload.heavyWalletFollowUp === true, ...(payload.resumeCoreFromJobId ? { resumeCoreFromJobId: payload.resumeCoreFromJobId } : {}) },
     )
 
     if (!result || typeof result !== 'object' || !('body' in result)) {
@@ -358,8 +367,15 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     } else {
       finalBody = result.body ?? invalidShapeResultBody()
       completedSuccessfully = true
+      // The core is still running after a timeout: say so BEFORE the follow-up is queued, so the
+      // follow-up waits for this job's checkpoint instead of starting the whole scan again.
+      // A follow-up never queues another, so its own late core has no consumer.
+      if (result.lateCore && !payload.heavyWalletFollowUp && Date.now() < lateCoreDeadlineAtMs) {
+        lateCore = result.lateCore
+        await markWalletScanCoreCheckpointPending(payload.jobId, lateCoreDeadlineAtMs)
+      }
       // A heavy wallet's deferred V2 analysis runs as a follow-up job; its id rides on this result.
-      finalBody = await attachHeavyWalletFollowUp(finalBody, payload)
+      finalBody = await attachHeavyWalletFollowUp(finalBody, payload, undefined, undefined, lateCore !== undefined)
     }
   } catch (err) {
     finalBody = errorResultBody(err)
@@ -408,7 +424,27 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // next real attempt, regardless of outcome.
   console.warn('[wallet-scan-worker] job finished', { jobId: payload.jobId, completedSuccessfully, durationMs: jobState.durationMs })
 
-  return { jobState, result: finalBody }
+  return { jobState, result: finalBody, ...(lateCore ? { lateCore } : {}) }
+}
+
+/**
+ * Waits (until `deadlineAtMs`) for a timed-out job's still-running core scan and stores its result as
+ * the follow-up job's checkpoint. Clears the pending marker when it does not land in time.
+ */
+export async function checkpointLateCore(jobId: string, lateCore: Promise<unknown>, deadlineAtMs: number): Promise<'saved' | 'not_saved' | 'timed_out'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const outOfTime = new Promise<'timed_out'>((resolve) => { timer = setTimeout(() => resolve('timed_out'), Math.max(0, deadlineAtMs - Date.now())) })
+  const landed = lateCore.then((value) => ({ value }), () => null)
+  const outcome = await Promise.race([landed, outOfTime]).finally(() => clearTimeout(timer))
+  if (outcome === 'timed_out' || outcome === null) {
+    await clearWalletScanCoreCheckpointPending(jobId)
+    console.warn('[core-checkpoint] late core did not land', { jobId, outcome: outcome === null ? 'core_failed' : 'timed_out' })
+    return outcome === null ? 'not_saved' : 'timed_out'
+  }
+  const saved = await saveWalletScanCoreCheckpoint(jobId, toSerializableResult(outcome.value))
+  if (!saved) await clearWalletScanCoreCheckpointPending(jobId)
+  console.warn('[core-checkpoint] late core', { jobId, saved })
+  return saved ? 'saved' : 'not_saved'
 }
 
 export async function runWalletScanWorker(req: Request): Promise<Response> {
@@ -456,11 +492,11 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   const stopHeartbeat = startWalletScanHeartbeat(jobId)
   let executed: Awaited<ReturnType<typeof executeWalletScanJob>>
   try {
-    executed = await runInDexscreenerRequestScope(() => executeWalletScanJob(payload))
+    executed = await runInDexscreenerRequestScope(() => executeWalletScanJob(payload, workerEntryAtMs + LATE_CORE_WINDOW_END_MS))
   } finally {
     stopHeartbeat()
   }
-  const { jobState, result } = executed
+  const { jobState, result, lateCore } = executed
 
   // FINAL PUBLICATION, HARDENED (confirmed stuck-running bug): publishFinal was previously awaited
   // bare — a throw anywhere in serialization or either KV write propagated straight out of this
@@ -516,6 +552,10 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   const finalBody = result as { data?: Record<string, unknown> } | null | undefined
   const unrealizedPriceUsageAuditFromResult = finalBody?.data?.unrealizedPriceUsageAudit ?? null
   console.warn('[wallet-worker-unrealized-price-usage-audit]', { jobId, unrealizedPriceUsageAudit: unrealizedPriceUsageAuditFromResult })
+
+  // The partial result is already published; keep this invocation alive for the late core so the
+  // follow-up job can resume from it (never past LATE_CORE_WINDOW_END_MS after entry).
+  if (lateCore) await checkpointLateCore(jobId, lateCore, workerEntryAtMs + LATE_CORE_WINDOW_END_MS)
 
   return Response.json({ status: 'done', jobId, resultPublished: true })
 }

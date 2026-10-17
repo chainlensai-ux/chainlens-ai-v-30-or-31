@@ -42,6 +42,7 @@ import { withScanTimeout } from '@/src/utils/timeout'
 import { createCoreStageTrace, runWithScanContext, summarizeCoreStageTrace } from '@/src/lib/scanRunContext'
 import { MAX_RAW_EVENTS_PER_PROVIDER } from '@/src/modules/providerFetchWindow/types'
 import { HEAVY_WALLET_DEFERRED_PNL_STATUS } from '@/src/modules/heavyWalletFollowUp'
+import { waitForWalletScanCoreCheckpoint } from '@/src/modules/walletScanCoreCheckpoint'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
 import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sources/dexscreener'
@@ -89,7 +90,12 @@ function isValidV2Result(data: Record<string, unknown> | undefined): boolean {
   return true
 }
 
-export type WalletScanV2WorkerResult = { status: number; body: unknown }
+export type WalletScanV2WorkerResult = {
+  status: number
+  body: unknown
+  /** On worker_global_timeout: the core scan, still running, so the job runner can checkpoint it. */
+  lateCore?: Promise<unknown>
+}
 /** Per-stage elapsed ms for one worker run (`*_atMs` = ms since worker start). */
 export type WorkerStageTiming = { outcome: string; totalMs: number; globalTimeoutMs: number } & Record<string, number | string>
 
@@ -107,6 +113,8 @@ export const HEAVY_WALLET_FOLLOW_UP_ROBINHOOD_REUSE_MS = 15 * 60 * 1000
 export type WalletScanV2WorkerOptions = {
   /** This job is the follow-up for a deferred heavy wallet: run every module, never defer again. */
   heavyWalletFollowUp?: boolean
+  /** Resume from this timed-out job's core-scan checkpoint when one exists (walletScanCoreCheckpoint.ts). */
+  resumeCoreFromJobId?: string
 }
 
 export function sumProviderEventCount(providerDiagnostics: unknown): number {
@@ -682,16 +690,26 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // first, while history fetch, receipts and sell detection no longer sit idle behind Robinhood.
   const nativePriorityStartedAt = Date.now()
   void nativePricePriorityReady.then(() => { stageMs.robinhoodNativePriorityWait = Date.now() - nativePriorityStartedAt })
+  // RESUME: a follow-up of a timed-out job takes that job's core result when it landed (or lands while
+  // we wait); otherwise it runs the core itself below, exactly as before.
+  const resumedCore = options.resumeCoreFromJobId
+    ? await waitForWalletScanCoreCheckpoint(options.resumeCoreFromJobId) as Awaited<ReturnType<typeof router.runValidatedScanRequest>> | null
+    : null
+  if (options.resumeCoreFromJobId) {
+    stageMs.coreCheckpointWait = Date.now() - startTime
+    // eslint-disable-next-line no-console
+    console.warn('[core-checkpoint] follow-up', JSON.stringify({ jobId: jobId ?? null, resumeFrom: options.resumeCoreFromJobId, resumed: resumedCore != null }))
+  }
   const coreTimeoutMs = remainingWorkerMs(startTime)
   const coreStartedAt = Date.now()
   // The core pipeline sees the global deadline and the snapshot publication (src/lib/scanRunContext.ts),
   // so optional late work (the sell receipt proof) starts only after the snapshot and only with time left.
   // coreStageTrace records each pipeline step as it runs, so a timed-out scan still says where its time went.
   const coreStageTrace = createCoreStageTrace()
-  const corePromise = withScanTimeout(
-    runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace }, () => router.runValidatedScanRequest(sanitized)),
-    coreTimeoutMs,
-  )
+  const coreRun = resumedCore != null
+    ? Promise.resolve(resumedCore)
+    : runWithScanContext({ deadlineAtMs: startTime + WORKER_GLOBAL_TIMEOUT_MS, snapshotPublished: fastSnapshotPromise, historicalPricePriority: nativePricePriorityReady, coreStageTrace }, () => router.runValidatedScanRequest(sanitized))
+  const corePromise = withScanTimeout(coreRun, coreTimeoutMs)
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
   // runWalletScanV2 failure are both caught and returned as a structured RouteResult) — the SAME is
@@ -711,7 +729,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       ])
       const timing = logStageTiming('worker_global_timeout', coreSteps)
       const timedOut = globalTimeoutPartialResult(snapshot?.partialSnapshotPublished === true)
-      return { ...timedOut, body: { ...(timedOut.body as Record<string, unknown>), workerStageTiming: timing } }
+      return { ...timedOut, body: { ...(timedOut.body as Record<string, unknown>), workerStageTiming: timing }, ...(resumedCore == null ? { lateCore: coreRun } : {}) }
     }
     throw err
   }
