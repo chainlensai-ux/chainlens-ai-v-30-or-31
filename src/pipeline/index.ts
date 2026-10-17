@@ -15,7 +15,7 @@ import { KNOWN_DEX_ROUTER_ADDRESSES as SHARED_KNOWN_DEX_ROUTER_ADDRESSES } from 
 import { mergeNormalizedEvents, recoveredEconomicDedupeKey } from '../modules/fifoEngine/utils'
 import type { ProviderFetchWindowResult, RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
-import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
+import { buildCounterpartyStats, classifyRouterLikeEvent, logRouterCandidateBatch, recordRouterCandidate, type RouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
 import { createPnlReconciliation, type CanonicalSampleSelector } from '../lib/pnlReconciliation'
@@ -1684,6 +1684,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       eventsByTx.set(e.txHash, list)
     }
     const counterpartyStats = buildCounterpartyStats(normalizedEvents.filter((e) => e.direction === 'outbound'))
+    const routerCandidates: RouterCandidate[] = []
 
     for (const event of normalizedEvents) {
       if (event.direction !== 'outbound') continue
@@ -1697,9 +1698,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           txHash: event.txHash,
           chain: event.chain,
           heuristic,
-        })
+        }, routerCandidates)
       }
     }
+    logRouterCandidateBatch(routerCandidates)
   })
 
   // 3. chainSelection — pure. visible_value_usd stays 0 (no holdings-pricing module exists yet in

@@ -85,14 +85,20 @@ export function classifyRouterLikeEvent(
 // cross-request" pattern already used by rpcDebugLog elsewhere in this codebase.
 const loggedCandidates = new Set<string>()
 
-// Logs a router candidate for human review. Deliberately does nothing else: never mutates
+// Records a router candidate for human review. Deliberately does nothing else: never mutates
 // KNOWN_DEX_ROUTER_ADDRESSES, never touches sellTimelineV2/dust suppression/FIFO/pricing, and has
-// no return value a caller could accidentally wire into detection logic.
-export function recordRouterCandidate(chain: string, address: string, evidence: RouterEvidence): void {
+// no return value a caller could accidentally wire into detection logic. With a `batch`, the new
+// candidate is collected there and logged once per scan by logRouterCandidateBatch (two log lines
+// per candidate used to flood the worker's logs and push its timing lines out of the log limit).
+export function recordRouterCandidate(chain: string, address: string, evidence: RouterEvidence, batch?: RouterCandidate[]): void {
   const addr = address.toLowerCase()
   const key = `${chain}:${addr}`
   if (loggedCandidates.has(key)) return
   loggedCandidates.add(key)
+  if (batch) {
+    batch.push({ chain, address: addr, heuristic: evidence.heuristic, txHash: evidence.txHash })
+    return
+  }
   // eslint-disable-next-line no-console
   console.warn('[router-discovery] candidate (log-only — NOT added to KNOWN_DEX_ROUTER_ADDRESSES)', {
     chain,
@@ -101,6 +107,28 @@ export function recordRouterCandidate(chain: string, address: string, evidence: 
   })
   // eslint-disable-next-line no-console
   console.warn('[router-discovery] candidate requires review')
+}
+
+export type RouterCandidate = { chain: string; address: string; heuristic: RouterDiscoveryHeuristic; txHash: string }
+
+const ROUTER_CANDIDATE_LOG_SAMPLE = 10
+
+/** One log line for a scan's new router candidates (count per chain/heuristic plus a sample); silent when none. */
+export function logRouterCandidateBatch(batch: RouterCandidate[]): void {
+  if (batch.length === 0) return
+  const byChain: Record<string, number> = {}
+  const byHeuristic: Record<string, number> = {}
+  for (const c of batch) {
+    byChain[c.chain] = (byChain[c.chain] ?? 0) + 1
+    byHeuristic[c.heuristic] = (byHeuristic[c.heuristic] ?? 0) + 1
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[router-discovery] candidates for review (log-only — NOT added to KNOWN_DEX_ROUTER_ADDRESSES)', JSON.stringify({
+    count: batch.length,
+    byChain,
+    byHeuristic,
+    sample: batch.slice(0, ROUTER_CANDIDATE_LOG_SAMPLE).map((c) => `${c.chain}:${c.address}`),
+  }))
 }
 
 // MANUAL PROMOTION, DISCLOSED: the task's own snippet assumed KNOWN_DEX_ROUTER_ADDRESSES is a
