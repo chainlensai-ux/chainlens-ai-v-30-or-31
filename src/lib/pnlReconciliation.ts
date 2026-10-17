@@ -14,7 +14,7 @@ import {
   TX_SIDE_EVENT_ALLOCATION_METHOD,
 } from './acceptedEvidenceStore'
 import { txSideKey } from './txSideEventAllocation'
-import { demotePriceOutlierLots } from './lotPriceOutlierGuard'
+import { demotePriceOutlierLots, negligibleUnpricedLotIndexes } from './lotPriceOutlierGuard'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
@@ -2468,7 +2468,12 @@ export function createPnlReconciliation(config: Config = {}) {
           sample: priceOutlierGuard.outliers.slice(0, 5),
         })
       }
-      const consistentFifoLots = demoteLotsOnIncompleteAcceptedSides(priceOutlierGuard.lots)
+      // Negligible unpriced lots (dust legs) sit out the shared-side rule so they cannot demote the
+      // real lots sharing their transaction; every other lot goes through it unchanged.
+      const negligibleLots = negligibleUnpricedLotIndexes(priceOutlierGuard.lots)
+      const sharedSideChecked = demoteLotsOnIncompleteAcceptedSides(priceOutlierGuard.lots.filter((_, index) => !negligibleLots.has(index)))
+      let sharedSideCursor = 0
+      const consistentFifoLots = priceOutlierGuard.lots.map((lot, index) => (negligibleLots.has(index) ? lot : sharedSideChecked[sharedSideCursor++]))
       // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task):
       // runs over `consistentFifoLots` — the FULLY RESOLVED lot list, after recovery has already merged
       // in anything it found and incomplete shared sides have been demoted — so this pass sees every

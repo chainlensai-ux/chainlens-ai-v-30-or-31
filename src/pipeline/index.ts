@@ -61,6 +61,7 @@ import { activeChainSet, groupEventsByTx } from '../modules/sellTimeline/utils'
 import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEthereumDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
 import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
+import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -2498,6 +2499,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (verification requirement: confirm the fan-out actually shrinks for dust-heavy wallets).
   // eslint-disable-next-line no-console
   console.warn('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
+  // PRICE OUTLIER GUARD (src/lib/lotPriceOutlierGuard.ts): an event priced orders of magnitude away
+  // from its token's other trades (or the wallet's) reads as unpriced in every FIFO pass below, so it
+  // reaches neither realized nor unrealized PnL. Confirmed case: a dust leg priced at $603,963/token.
+  const guardedPriceLookup = guardPriceUsdLookup(
+    [...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
+    walletPriceLookups.priceUsdLookup,
+  )
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] price outlier guard', { rejectedEvents: guardedPriceLookup.rejectedEvents, rejectedValueUsd: guardedPriceLookup.rejectedValueUsd })
   // Always present, including disabled/misconfigured/zero-candidate scans. This is emitted at the
   // canonical production call site so live logs can identify the first fallback drop stage.
   // eslint-disable-next-line no-console
@@ -2534,7 +2544,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     walletAddress: params.walletAddress,
     buyTimeline: timelines.buyTimeline,
     sellTimeline: timelines.sellTimeline,
-    priceUsdLookup: walletPriceLookups.priceUsdLookup,
+    priceUsdLookup: guardedPriceLookup.lookup,
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2573,7 +2583,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           walletAddress: params.walletAddress,
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
-          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          priceUsdLookup: guardedPriceLookup.lookup,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2625,7 +2635,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           walletAddress: params.walletAddress,
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
-          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          priceUsdLookup: guardedPriceLookup.lookup,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2663,7 +2673,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           walletAddress: params.walletAddress,
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
-          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          priceUsdLookup: guardedPriceLookup.lookup,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2993,7 +3003,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         normalizedEvents,
         walletAddress: params.walletAddress,
         decodedSwap: shadowExactReceiptSwaps[0],
-        priceUsdLookup: walletPriceLookups.priceUsdLookup,
+        priceUsdLookup: guardedPriceLookup.lookup,
         currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
       })
       // eslint-disable-next-line no-console

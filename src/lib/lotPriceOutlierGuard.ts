@@ -10,11 +10,14 @@
 //      per-unit price of that token's other priced sides (needs MIN_TOKEN_SAMPLES distinct sides), or
 //   2. its USD value exceeds both WALLET_VALUE_FLOOR_USD and OUTLIER_FACTOR times the wallet's median
 //      side value — catches a bad price on a token too thinly traded for check 1.
-// Every verified lot on an outlier side is demoted to 'unpriced' (the same convention
-// demoteLotsOnIncompleteAcceptedSides uses), so it is neither summed into realized PnL nor seeded as
-// accepted evidence. Values are left untouched for diagnostics; nothing is repriced or invented.
+// Applied twice: to FIFO's per-event USD lookup (guardPriceUsdLookup), so an outlier price never
+// becomes a lot's cost basis or proceeds — realized or unrealized — and to the reconciled lots
+// (demotePriceOutlierLots), which catches outliers re-entering from stored accepted evidence. A demoted
+// lot is 'unpriced' (the convention demoteLotsOnIncompleteAcceptedSides uses): never summed into
+// realized PnL, never seeded as accepted evidence. Nothing is repriced or invented.
 
-import type { MatchedLot } from '../modules/fifoEngine/types'
+import type { MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
+import type { NormalizedEvent } from '../modules/normalization/types'
 import { isCanonicalPositiveUsd, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
 
 export const LOT_PRICE_OUTLIER_FACTOR = 1_000
@@ -22,7 +25,7 @@ export const LOT_PRICE_OUTLIER_MIN_TOKEN_SAMPLES = 3
 export const LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD = 1_000_000
 
 type Side = 'entry' | 'exit'
-type SideSample = { key: string; tokenKey: string; perUnitUsd: number; valueUsd: number }
+type SideSample = PriceSample
 
 export type LotPriceOutlier = {
   chain: string
@@ -75,41 +78,106 @@ function collectSideSamples(lots: readonly MatchedLot[]): Map<string, SideSample
   return samples
 }
 
+type PriceSample = { key: string; tokenKey: string; perUnitUsd: number; valueUsd: number }
+type OutlierVerdict = { reason: LotPriceOutlier['reason']; tokenMedianPerUnitUsd: number | null }
+
+// The shared rule: one median per token (with at least MIN_TOKEN_SAMPLES samples a single bad value
+// cannot move it) and one median side value for the whole wallet.
+function detectPriceOutliers(samples: Iterable<PriceSample>): Map<string, OutlierVerdict> {
+  const all = [...samples]
+  const verdicts = new Map<string, OutlierVerdict>()
+  if (all.length === 0) return verdicts
+  const byToken = new Map<string, number[]>()
+  for (const sample of all) {
+    const prices = byToken.get(sample.tokenKey)
+    if (prices) prices.push(sample.perUnitUsd)
+    else byToken.set(sample.tokenKey, [sample.perUnitUsd])
+  }
+  const tokenMedian = new Map<string, number>()
+  for (const [tokenKey, prices] of byToken) if (prices.length >= LOT_PRICE_OUTLIER_MIN_TOKEN_SAMPLES) tokenMedian.set(tokenKey, median(prices))
+  const walletMedianValueUsd = median(all.map((s) => s.valueUsd))
+  for (const sample of all) {
+    const reference = tokenMedian.get(sample.tokenKey) ?? null
+    if (reference !== null && reference > 0
+      && (sample.perUnitUsd > reference * LOT_PRICE_OUTLIER_FACTOR || sample.perUnitUsd < reference / LOT_PRICE_OUTLIER_FACTOR)) {
+      verdicts.set(sample.key, { reason: 'token_price_outlier', tokenMedianPerUnitUsd: reference })
+    } else if (sample.valueUsd > LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD && sample.valueUsd > walletMedianValueUsd * LOT_PRICE_OUTLIER_FACTOR) {
+      verdicts.set(sample.key, { reason: 'wallet_value_outlier', tokenMedianPerUnitUsd: reference })
+    }
+  }
+  return verdicts
+}
+
 export function demotePriceOutlierLots(lots: readonly MatchedLot[]): LotPriceOutlierResult {
   const samples = collectSideSamples(lots)
-  if (samples.size === 0) return { lots: [...lots], demotedLotCount: 0, outliers: [] }
-
-  const byToken = new Map<string, SideSample[]>()
-  for (const sample of samples.values()) byToken.set(sample.tokenKey, [...(byToken.get(sample.tokenKey) ?? []), sample])
-  const walletMedianValueUsd = median([...samples.values()].map((s) => s.valueUsd))
-
-  const outlierKeys = new Set<string>()
+  const verdicts = detectPriceOutliers(samples.values())
+  if (verdicts.size === 0) return { lots: [...lots], demotedLotCount: 0, outliers: [] }
   const outliers: LotPriceOutlier[] = []
-  for (const sample of samples.values()) {
-    const tokenSamples = byToken.get(sample.tokenKey) ?? []
-    // Median of the token's OTHER sides, so a single bad side cannot drag its own reference.
-    const others = tokenSamples.filter((s) => s.key !== sample.key).map((s) => s.perUnitUsd)
-    const tokenMedian = tokenSamples.length >= LOT_PRICE_OUTLIER_MIN_TOKEN_SAMPLES ? median(others) : null
-    let reason: LotPriceOutlier['reason'] | null = null
-    if (tokenMedian !== null
-      && (sample.perUnitUsd > tokenMedian * LOT_PRICE_OUTLIER_FACTOR || sample.perUnitUsd < tokenMedian / LOT_PRICE_OUTLIER_FACTOR)) {
-      reason = 'token_price_outlier'
-    } else if (sample.valueUsd > LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD && sample.valueUsd > walletMedianValueUsd * LOT_PRICE_OUTLIER_FACTOR) {
-      reason = 'wallet_value_outlier'
-    }
-    if (!reason) continue
-    outlierKeys.add(sample.key)
-    const [chain, token, txHash, side] = sample.key.split(':')
-    outliers.push({ chain, token, txHash, side: side as Side, perUnitUsd: sample.perUnitUsd, tokenMedianPerUnitUsd: tokenMedian, valueUsd: sample.valueUsd, reason })
+  for (const [key, verdict] of verdicts) {
+    const sample = samples.get(key)!
+    const [chain, token, txHash, side] = key.split(':')
+    outliers.push({ chain, token, txHash, side: side as Side, perUnitUsd: sample.perUnitUsd, tokenMedianPerUnitUsd: verdict.tokenMedianPerUnitUsd, valueUsd: sample.valueUsd, reason: verdict.reason })
   }
-  if (outlierKeys.size === 0) return { lots: [...lots], demotedLotCount: 0, outliers: [] }
-
   let demotedLotCount = 0
   const guarded = lots.map((lot) => {
     if (!isCanonicalVerifiedPublishedLot(lot)) return lot
-    if (!outlierKeys.has(sideKey(lot, 'entry')) && !outlierKeys.has(sideKey(lot, 'exit'))) return lot
+    if (!verdicts.has(sideKey(lot, 'entry')) && !verdicts.has(sideKey(lot, 'exit'))) return lot
     demotedLotCount += 1
     return { ...lot, evidenceQuality: 'unpriced' as const }
   })
   return { lots: guarded, demotedLotCount, outliers }
+}
+
+const eventKey = (event: NormalizedEvent) =>
+  `${event.chain}:${event.contract.toLowerCase()}:${event.txHash.toLowerCase()}:${event.direction}:${event.amount}`
+
+/**
+ * The same rule applied to FIFO's per-event USD lookup, before any lot is built: an event whose USD
+ * value is an outlier for its token (or the wallet) reads as unpriced, so it can reach neither
+ * realized nor unrealized PnL. `events` is every event FIFO will look up; others pass through.
+ */
+export function guardPriceUsdLookup(events: readonly NormalizedEvent[], lookup: PriceUsdLookup): { lookup: PriceUsdLookup; rejectedEvents: number; rejectedValueUsd: number } {
+  const samples = new Map<string, PriceSample>()
+  for (const event of events) {
+    if (!(event.amount > 0) || !Number.isFinite(event.amount)) continue
+    const key = eventKey(event)
+    if (samples.has(key)) continue
+    const usd = lookup(event)
+    if (!isCanonicalPositiveUsd(usd)) continue
+    samples.set(key, { key, tokenKey: `${event.chain}:${event.contract.toLowerCase()}`, perUnitUsd: usd / event.amount, valueUsd: usd })
+  }
+  const verdicts = detectPriceOutliers(samples.values())
+  let rejectedValueUsd = 0
+  for (const key of verdicts.keys()) rejectedValueUsd += samples.get(key)!.valueUsd
+  return {
+    lookup: verdicts.size === 0 ? lookup : (event) => (verdicts.has(eventKey(event)) ? null : lookup(event)),
+    rejectedEvents: verdicts.size,
+    rejectedValueUsd,
+  }
+}
+
+/** A lot below this share of its transaction side's total quantity carries no meaningful value. */
+export const NEGLIGIBLE_LOT_SHARE = 1e-6
+
+/**
+ * Indexes of unpriced lots too small to matter on any side they share: a 1e-12-token "refund" leg in
+ * a liquidity transaction, priced out by the outlier guard, must not demote the dozens of real lots
+ * that close against the same sell. Its share of every side's allocation is effectively zero, so
+ * leaving it out of the shared-side completeness rule changes no published total.
+ */
+export function negligibleUnpricedLotIndexes(lots: readonly MatchedLot[]): Set<number> {
+  const quantityBySide = new Map<string, number>()
+  const add = (key: string, amount: number) => quantityBySide.set(key, (quantityBySide.get(key) ?? 0) + amount)
+  for (const lot of lots) {
+    if (!(lot.amount > 0)) continue
+    add(sideKey(lot, 'entry'), lot.amount)
+    add(sideKey(lot, 'exit'), lot.amount)
+  }
+  const negligible = new Set<number>()
+  lots.forEach((lot, index) => {
+    if (isCanonicalVerifiedPublishedLot(lot)) return
+    const largestSide = Math.max(quantityBySide.get(sideKey(lot, 'entry')) ?? 0, quantityBySide.get(sideKey(lot, 'exit')) ?? 0)
+    if (largestSide > 0 && lot.amount <= largestSide * NEGLIGIBLE_LOT_SHARE) negligible.add(index)
+  })
+  return negligible
 }

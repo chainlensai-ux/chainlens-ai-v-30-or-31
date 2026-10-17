@@ -61,3 +61,36 @@ describe('lot price outlier guard', () => {
     assert.equal(demotePriceOutlierLots(lots).demotedLotCount, 0)
   })
 })
+
+describe('price outlier guard on the FIFO event lookup', async () => {
+  const { guardPriceUsdLookup, negligibleUnpricedLotIndexes } = await import('@/src/lib/lotPriceOutlierGuard')
+  const ev = (txHash: string, amount: number, direction: 'inbound' | 'outbound' = 'inbound') => ({
+    provider: 'alchemy', chain: 'base', txHash, timestamp: '2026-10-17T00:00:00.000Z', fromAddress: '0xa', toAddress: '0xb',
+    contract: TOKEN, symbol: 'T', amount, amountRaw: null, tokenDecimals: 18, direction,
+  }) as unknown as import('@/src/modules/normalization/types').NormalizedEvent
+
+  it('reads a dust buy priced at $603,963/token as unpriced, so it can never be an open cost basis', () => {
+    const usdByTx: Record<string, number> = { '0x1': 24, '0x2': 18, '0x3': 30, '0xdust': 24.046795 }
+    const events = [ev('0x1', 2000), ev('0x2', 1500), ev('0x3', 2500), ev('0xdust', 0.00003981497723455)]
+    const guarded = guardPriceUsdLookup(events, (e) => usdByTx[e.txHash] ?? null)
+    assert.equal(guarded.rejectedEvents, 1)
+    assert.equal(guarded.lookup(events[3]), null)
+    assert.equal(guarded.lookup(events[0]), 24)
+  })
+
+  it('reads an astronomically valued sell as unpriced (wallet-wide check)', () => {
+    const events = [...Array.from({ length: 10 }, (_, i) => ev(`0xb${i}`, 100)), ev('0xhuge', 5_701, 'outbound')]
+    const guarded = guardPriceUsdLookup(events, (e) => (e.txHash === '0xhuge' ? 3.15e19 : 50))
+    assert.equal(guarded.lookup(events[10]), null)
+    assert.equal(guarded.rejectedEvents, 1)
+  })
+
+  it('a dust lot left unpriced does not count as a missing sibling on the sell it shares', () => {
+    const shared = { closedTxHash: '0xbigsell' }
+    const lots = [lot({ ...shared, amount: 3000, entryPerUnit: 0.01, exitPerUnit: 0.012 }), lot({ ...shared, amount: 2701, entryPerUnit: 0.011, exitPerUnit: 0.012 }),
+      { ...lot({ ...shared, amount: 9.97e-13, entryPerUnit: 1, exitPerUnit: 0.012 }), evidenceQuality: 'unpriced' as const, costBasisUsd: null }]
+    assert.deepEqual([...negligibleUnpricedLotIndexes(lots)], [2])
+    const realSized = [lots[0], { ...lots[1], evidenceQuality: 'unpriced' as const }]
+    assert.equal(negligibleUnpricedLotIndexes(realSized).size, 0, 'a real-sized unpriced lot still counts')
+  })
+})
