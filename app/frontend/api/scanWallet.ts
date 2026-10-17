@@ -85,7 +85,28 @@ export async function fetchScanModule(
 
 const WALLET_SCAN_ROUTE = '/api/wallet-scan'
 const POLL_INTERVAL_MS = 2_500
-const POLL_TIMEOUT_MS = 295_000
+export const POLL_TIMEOUT_MS = 295_000
+// Past POLL_TIMEOUT_MS the client keeps waiting only while the server says the job is running and
+// its worker reported in recently (the server watchdog fails a silent job after 90s), up to this cap:
+// the worker's own 300s function limit plus queueing and the final result write.
+export const POLL_HARD_CAP_MS = 420_000
+const POLL_LIVE_HEARTBEAT_MS = 45_000
+// A joined scan whose job record never appears (its starting request was refused or failed to
+// enqueue) is given up on instead of polling a missing job until the overall timeout.
+export const POLL_NEVER_FOUND_GIVE_UP_MS = 30_000
+
+/** PURE. Whether the client should keep polling a job that has not finished yet. */
+export function shouldKeepPollingWalletScan(params: {
+  elapsedMs: number
+  status: WalletScanJobStatus | null
+  lastWorkerUpdateAgoMs: number | null
+}): boolean {
+  if (params.elapsedMs < POLL_TIMEOUT_MS) return true
+  if (params.elapsedMs >= POLL_HARD_CAP_MS) return false
+  return params.status === 'running'
+    && params.lastWorkerUpdateAgoMs != null
+    && params.lastWorkerUpdateAgoMs < POLL_LIVE_HEARTBEAT_MS
+}
 
 type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed' | 'not-found'
 
@@ -261,12 +282,23 @@ export async function pollWalletScanJob(
 ): Promise<ScanWalletApiResponse> {
   try {
     const pollStartedAt = Date.now()
+    let lastStatus: WalletScanJobStatus | null = null
+    let lastWorkerUpdateAgoMs: number | null = null
+    let everFound = false
+    const keepPolling = () => shouldKeepPollingWalletScan({ elapsedMs: Date.now() - pollStartedAt, status: lastStatus, lastWorkerUpdateAgoMs })
 
     for (;;) {
       await sleep(POLL_INTERVAL_MS)
-      const pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(jobId)}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      })
+      let pollRes: Response
+      try {
+        pollRes = await fetch(`${WALLET_SCAN_ROUTE}/${encodeURIComponent(jobId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+      } catch (err) {
+        // A dropped connection on one poll is not a failed scan: the job keeps running server-side.
+        if (keepPolling()) continue
+        return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [err instanceof Error ? err.message : String(err)])
+      }
       const pollBody = await pollRes.json().catch(() => null) as WalletScanJobResponse | null
 
       // Authentication failures cannot recover by retrying the same credential. Stop immediately
@@ -280,6 +312,9 @@ export async function pollWalletScanJob(
       }
 
       if (!pollRes.ok || !pollBody) {
+        if (pollRes.status === 404 && !everFound && Date.now() - pollStartedAt >= POLL_NEVER_FOUND_GIVE_UP_MS) {
+          return toErrorResponse('This scan could not be started. Please rescan.', ['HTTP 404'])
+        }
         // TRANSIENT-POLL-FAILURE RETRY, DISCLOSED (confirmed bug — real production evidence): this
         // previously only retried a 404 "not-found" (a job not yet visible to a cold KV read) —
         // every OTHER non-OK response (in particular a 503 { error: 'scan-status-unavailable' },
@@ -293,8 +328,7 @@ export async function pollWalletScanJob(
         // non-OK/unparsable response now retries like the 404 case already did, bounded by the same
         // overall POLL_TIMEOUT_MS this loop already enforces — a genuinely dead backend still times
         // out honestly, it just no longer gives up on the first isolated hiccup.
-        const stillWithinPollWindow = Date.now() - pollStartedAt < POLL_TIMEOUT_MS
-        if (stillWithinPollWindow) {
+        if (keepPolling()) {
           continue
         }
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.', [`HTTP ${pollRes.status}`])
@@ -308,9 +342,12 @@ export async function pollWalletScanJob(
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
+      everFound = true
+      lastStatus = pollBody.status
+      lastWorkerUpdateAgoMs = typeof pollBody.serverNow === 'number' && typeof pollBody.heartbeatAt === 'number' ? Math.max(0, pollBody.serverNow - pollBody.heartbeatAt) : null
       onUpdate?.({
         jobId: jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial,
-        lastWorkerUpdateAgoMs: typeof pollBody.serverNow === 'number' && typeof pollBody.heartbeatAt === 'number' ? Math.max(0, pollBody.serverNow - pollBody.heartbeatAt) : null,
+        lastWorkerUpdateAgoMs,
       })
 
       if (pollBody.status === 'done') {
@@ -327,8 +364,8 @@ export async function pollWalletScanJob(
         return toErrorResponse(jobFailureMessage(message ?? 'scan-failed'))
       }
 
-      if (Date.now() - pollStartedAt >= POLL_TIMEOUT_MS) {
-        return toErrorResponse('Scan timed out before a final result was available. Please rescan in a moment.', [`timeout ${POLL_TIMEOUT_MS}ms`])
+      if (!keepPolling()) {
+        return toErrorResponse('Scan timed out before a final result was available. Please rescan in a moment.', [`timeout ${Date.now() - pollStartedAt}ms`])
       }
     }
   } catch (err) {

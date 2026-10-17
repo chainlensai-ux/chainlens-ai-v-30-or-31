@@ -382,7 +382,7 @@ export type WalletScanStageStatus = 'pending' | 'ready' | 'failed'
 export type WalletScanPnlStageStatus = 'pending' | 'verified' | 'partial' | 'unavailable'
 export type WalletScanActivityStageStatus = 'pending' | 'ready' | 'failed' | 'unavailable'
 export type WalletScanCortexStageStatus = 'pending' | 'ready' | 'skipped' | 'failed'
-export type WalletScanFinalStatus = 'scanning' | 'completed' | 'completed_with_limited_evidence' | 'failed' | 'stalled'
+export type WalletScanFinalStatus = 'scanning' | 'portfolio_ready_processing' | 'completed' | 'completed_with_limited_evidence' | 'failed' | 'stalled'
 
 export type WalletScanStageState = {
   holdings: WalletScanStageStatus
@@ -413,8 +413,10 @@ export function deriveWalletScanStageState(params: {
   const pricing: WalletScanStageStatus = holdings
   const portfolio: WalletScanStageStatus = holdings
 
+  // While the job is still live (`loading`: the poll is still running), a section without a result is
+  // still processing — never "unavailable" just because the portfolio grace period passed.
   const pnl: WalletScanPnlStageStatus = !hasResult
-    ? (loading && !limitedEvidenceMode ? 'pending' : 'unavailable')
+    ? (loading ? 'pending' : 'unavailable')
     : pnlStatus === 'verified' ? 'verified'
     : pnlStatus === 'partial' ? 'partial'
     : pnlStatus === 'unavailable' ? 'unavailable'
@@ -425,14 +427,15 @@ export function deriveWalletScanStageState(params: {
     : 'verified'
 
   const activity: WalletScanActivityStageStatus = !hasResult
-    ? (loading && !limitedEvidenceMode ? 'pending' : 'unavailable')
+    ? (loading ? 'pending' : 'unavailable')
     : chainActivityV2Present ? 'ready' : 'unavailable'
 
-  const cortex: WalletScanCortexStageStatus = hasResult ? 'ready' : (loading && !limitedEvidenceMode ? 'pending' : 'skipped')
+  const cortex: WalletScanCortexStageStatus = hasResult ? 'ready' : (loading ? 'pending' : 'skipped')
 
   const finalStatus: WalletScanFinalStatus =
     hasResult ? 'completed'
       : hasError && !loading ? (timeoutHit ? 'stalled' : 'failed')
+      : limitedEvidenceMode && loading ? 'portfolio_ready_processing'
       : limitedEvidenceMode ? 'completed_with_limited_evidence'
       : 'scanning'
 
@@ -1486,10 +1489,13 @@ export default function WalletScannerPage() {
             ))
             if (merged.robinhoodIncluded && !chainLabels.includes('Robinhood')) chainLabels.push('Robinhood')
             const top = partialSnapshot.topHoldings.slice(0, 5)
+            // Portfolio is ready but the job is still live: PnL/activity/CORTEX are processing, not missing.
+            const stillProcessing = limitedEvidenceMode && loading
+            const elapsedSec = scanClock ? Math.max(0, Math.round((clockNow - scanClock.startedAt) / 1000)) : null
             return (
               <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
                 <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: limitedEvidenceMode || scanFailedAfterSnapshot || pnlStillProcessing ? '#fbbf24' : '#2DD4BF', marginBottom: '10px' }}>
-                  {pnlStillProcessing ? 'Portfolio snapshot · PnL still processing' : scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : limitedEvidenceMode ? 'Scan completed with limited evidence' : 'Portfolio snapshot · live'}
+                  {pnlStillProcessing ? 'Portfolio snapshot · PnL still processing' : scanFailedAfterSnapshot ? 'Portfolio snapshot · scan did not finish' : stillProcessing ? 'Holdings ready · PnL, activity and CORTEX processing' : limitedEvidenceMode ? 'Scan finished with limited evidence' : 'Portfolio snapshot · live'}
                 </div>
                 <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
                   {mergedTotalText(merged, (v) => fmtUsd(v))}
@@ -1514,10 +1520,15 @@ export default function WalletScannerPage() {
                   <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
                     Holdings and portfolio value above come from this scan&apos;s live snapshot. PnL and the full analysis did not finish — they are not being reported as $0.
                   </div>
+                ) : stillProcessing ? (
+                  <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                    Holdings and portfolio value above are verified. PnL, activity and the CORTEX wallet read are still running in the background
+                    {elapsedSec != null ? ` (${elapsedSec}s elapsed${scanClock?.stageLabel ? ` · ${scanClock.stageLabel}` : ''})` : ''} and will appear here automatically — no need to rescan. Nothing is shown as $0 while they run.
+                  </div>
                 ) : limitedEvidenceMode ? (
                   <>
                     <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
-                      Holdings and portfolio value above are verified. PnL, activity, and the CORTEX wallet read did not finish within {(PORTFOLIO_READY_GRACE_MS / 1000).toFixed(0)}s and are marked unavailable for this scan — they are not being reported as $0 or as confirmed.
+                      Holdings and portfolio value above are verified. PnL, activity and the CORTEX wallet read did not finish for this scan and are not being reported as $0 or as confirmed.
                     </div>
                     <button
                       type="button"
@@ -1838,7 +1849,7 @@ export default function WalletScannerPage() {
             )}
             {loading && limitedEvidenceMode && !cortexRead && (
               <p style={{ fontSize: '12px', color: 'rgba(251,191,36,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', lineHeight: 1.6 }}>
-                Portfolio ready. CORTEX wallet read is still processing in the background — rescan anytime to check again.
+                Portfolio ready. CORTEX wallet read is still processing in the background — it will appear here automatically when the scan finishes.
               </p>
             )}
             {!loading && !cortexRead && (

@@ -3,13 +3,17 @@ import { kv } from '@/lib/server/kv'
 import { resolveWorkerTarget, workerRequestHeaders, type WorkerTarget } from '@/src/lib/walletScanWorkerAuth'
 import {
   walletScanClaimLockKey,
+  walletScanInFlightKey,
   walletScanJobKey,
+  walletScanJobLiveKey,
   walletScanPendingJobKey,
   walletScanPendingKey,
   walletScanResultKey,
 } from '@/src/modules/walletScanQueueKeys'
 
 export {
+  walletScanInFlightKey,
+  walletScanJobLiveKey,
   walletScanClaimLockKey,
   walletScanJobKey,
   walletScanPendingJobKey,
@@ -188,15 +192,50 @@ export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMet
 // never be slowed or blocked by an observability write.
 export async function updateWalletScanJobProgress(jobId: string, progress: WalletScanJobProgress): Promise<void> {
   if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
-  return trackJobRecordWrite(jobId, (async () => {
+  latestJobProgress.set(jobId, progress)
+  return writeWalletScanJobLive(jobId)
+}
+
+// LIVENESS OFF THE JOB RECORD: heartbeat and stage progress used to read-modify-write the whole job
+// record, so a heartbeat that read the record before a newer partial snapshot landed wrote the older
+// record back (snapshot lost until the next publish), and one that read it before the watchdog or
+// publishFinal could write `running` back over a terminal job. They now go to their own key with a
+// single SET — never a read of, or a write to, the job record — and readers merge them in
+// (mergeWalletScanJobLive), ignoring them entirely once the job is terminal.
+export type WalletScanJobLive = { heartbeatAt: number; progress?: WalletScanJobProgress }
+const latestJobProgress = new Map<string, WalletScanJobProgress>()
+const liveWriteChains = new Map<string, Promise<void>>()
+
+function writeWalletScanJobLive(jobId: string): Promise<void> {
+  // Serialized per job so a slower earlier write can never land after (and roll back) a newer one.
+  const previous = liveWriteChains.get(jobId) ?? Promise.resolve()
+  const write = previous.then(async () => {
+    if (finalizingJobIds.has(jobId)) return
+    const live: WalletScanJobLive = { heartbeatAt: Date.now(), ...(latestJobProgress.has(jobId) ? { progress: latestJobProgress.get(jobId) } : {}) }
     try {
-      const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
-      if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
-      await kv.set(walletScanJobKey(jobId), { ...job, progress, heartbeatAt: Date.now(), updatedAt: Date.now() }, { ex: JOB_TTL_SECONDS })
+      await kv.set(walletScanJobLiveKey(jobId), live, { ex: JOB_TTL_SECONDS })
     } catch (err) {
-      logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
+      logQueueFailure('[wallet-scan-queue] live-write-failure', { jobId, error: describeKvError(err) })
     }
-  })())
+  })
+  liveWriteChains.set(jobId, write)
+  void write.finally(() => { if (liveWriteChains.get(jobId) === write) liveWriteChains.delete(jobId) })
+  return trackJobRecordWrite(jobId, write)
+}
+
+/** PURE. A non-terminal job with the worker's latest heartbeat/progress applied; a terminal job is returned untouched. */
+export function mergeWalletScanJobLive<T extends { status?: string; heartbeatAt?: number; progress?: WalletScanJobProgress }>(job: T, live: WalletScanJobLive | null | undefined): T {
+  if (!live || job.status === 'done' || job.status === 'failed') return job
+  const heartbeatAt = Math.max(job.heartbeatAt ?? 0, typeof live.heartbeatAt === 'number' ? live.heartbeatAt : 0)
+  return { ...job, ...(heartbeatAt > 0 ? { heartbeatAt } : {}), ...(live.progress ? { progress: live.progress } : {}) }
+}
+
+export async function readWalletScanJobLive(jobId: string): Promise<WalletScanJobLive | null> {
+  try {
+    return await kv.get<WalletScanJobLive>(walletScanJobLiveKey(jobId))
+  } catch {
+    return null
+  }
 }
 
 // OVERWRITE ORDER GUARD (repeated-scan portfolio-value audit): progress and partial-snapshot writes are
@@ -227,6 +266,7 @@ function trackJobRecordWrite(jobId: string, write: Promise<void>): Promise<void>
 /** Called by publishFinal before its terminal writes: refuse further partial/progress writes, drain in-flight ones. */
 export async function beginWalletScanJobFinalization(jobId: string): Promise<void> {
   finalizingJobIds.add(jobId)
+  latestJobProgress.delete(jobId)
   if (finalizingJobIds.size > MAX_FINALIZING_TRACKED) {
     const oldest = finalizingJobIds.values().next().value
     if (oldest !== undefined && oldest !== jobId) finalizingJobIds.delete(oldest)
@@ -244,7 +284,9 @@ export async function beginWalletScanJobFinalization(jobId: string): Promise<voi
 // result exists; there is no separate "clear partial" step to forget. Never throws.
 export async function publishWalletScanPartialSnapshot(jobId: string, partial: WalletScanPartialSnapshot): Promise<void> {
   if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
-  return trackJobRecordWrite(jobId, (async () => {
+  // Serialized per job: two snapshot read-modify-writes can never interleave and land out of order.
+  const previous = partialWriteChains.get(jobId) ?? Promise.resolve()
+  const write = previous.then(async () => {
     try {
       const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
       if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
@@ -254,8 +296,12 @@ export async function publishWalletScanPartialSnapshot(jobId: string, partial: W
     } catch (err) {
       logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
     }
-  })())
+  })
+  partialWriteChains.set(jobId, write)
+  void write.finally(() => { if (partialWriteChains.get(jobId) === write) partialWriteChains.delete(jobId) })
+  return trackJobRecordWrite(jobId, write)
 }
+const partialWriteChains = new Map<string, Promise<void>>()
 
 export async function readWalletScanResult(jobId: string): Promise<unknown | null> {
   assertWalletScanRedisConfigured('status')
@@ -523,18 +569,10 @@ export async function markWalletScanJobStalled(job: WalletScanJobMetadata, error
   }
 }
 
-/** Writes heartbeatAt on a running job (never over a finalizing/terminal one). Never throws. */
+/** Records the worker's heartbeat on the job's live key (never on the job record, never after finalization). Never throws. */
 export async function heartbeatWalletScanJob(jobId: string): Promise<void> {
   if (!walletScanRedisConfigured() || finalizingJobIds.has(jobId)) return
-  return trackJobRecordWrite(jobId, (async () => {
-    try {
-      const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
-      if (!job || isTerminalJob(job) || finalizingJobIds.has(jobId)) return
-      await kv.set(walletScanJobKey(jobId), { ...job, heartbeatAt: Date.now() }, { ex: JOB_TTL_SECONDS })
-    } catch (err) {
-      logQueueFailure('[wallet-scan-queue] heartbeat-failure', { jobId, error: describeKvError(err) })
-    }
-  })())
+  return writeWalletScanJobLive(jobId)
 }
 
 /** Heartbeats every WALLET_SCAN_HEARTBEAT_INTERVAL_MS while a worker runs a job; returns the stopper. */
@@ -542,4 +580,168 @@ export function startWalletScanHeartbeat(jobId: string, intervalMs: number = WAL
   const timer = setInterval(() => { void heartbeatWalletScanJob(jobId) }, intervalMs)
   if (typeof timer === 'object' && timer && 'unref' in timer) (timer as { unref: () => void }).unref()
   return () => clearInterval(timer)
+}
+
+// IN-FLIGHT REUSE: a second Scan / Rescan / Retry for the same (user, wallet, mode) while the first job
+// is still queued or running (and not stalled per the watchdog) joins that job instead of starting a
+// second full worker run. Only the same user's job can be joined; a heavy-wallet follow-up job is
+// never joined (it is not a full scan).
+//
+// THE SLOT IS A LEASE, CHANGED ONLY ATOMICALLY: the in-flight key holds {jobId, leaseUntil}. It is
+// created with SET NX and is only ever replaced or freed with compare-and-set against the exact value
+// the caller read, so of any number of racing requests exactly one wins each transition, and a
+// request whose lease was replaced finds out (confirmWalletScanInFlight) before it consumes quota or
+// enqueues. A holder whose job record is not written yet is still valid until its lease runs out — a
+// slow owner is joined, never replaced. Only a holder whose job is finished/failed/stalled, or whose
+// lease expired without ever writing a job record, can be replaced.
+const IN_FLIGHT_TTL_SECONDS = 10 * 60
+// A running job is joinable only while its worker heartbeats (every WALLET_SCAN_HEARTBEAT_INTERVAL_MS):
+// two missed beats means the worker is likely gone (e.g. killed at maxDuration) even though the 90s
+// watchdog has not failed it yet — a rescan then starts fresh instead of waiting on a dead job.
+export const WALLET_SCAN_JOINABLE_HEARTBEAT_MS = 45_000
+/** How long a fresh reservation stays valid before its job record must exist. */
+export const WALLET_SCAN_RESERVE_LEASE_MS = 30_000
+/** Lease after confirmWalletScanInFlight: covers quota + enqueue, whose KV calls are each bounded (≤10s). */
+export const WALLET_SCAN_ENQUEUE_LEASE_MS = 120_000
+// A joining request waits this long for a just-reserved owner's record so it can report a real status.
+const IN_FLIGHT_RECORD_WAIT_MS = 3_000
+const IN_FLIGHT_RECORD_POLL_MS = 150
+const IN_FLIGHT_MAX_TRANSITIONS = 5
+
+/** PURE. Whether `job` is a live scan this user can join for this wallet and mode. */
+export function isReusableWalletScanJob(
+  job: WalletScanJobMetadata | null,
+  userId: string,
+  wallet: string,
+  scanMode: 'normal' | 'deep',
+  now: number,
+): job is WalletScanJobMetadata {
+  if (!job || job.userId !== userId || job.heavyWalletFollowUp) return false
+  if (job.wallet.toLowerCase() !== wallet.toLowerCase()) return false
+  if ((job.scanMode ?? 'normal') !== scanMode) return false
+  if (job.status !== 'queued' && job.status !== 'running') return false
+  if (superviseWalletScanJob(job, now).action === 'fail') return false
+  if (job.status === 'running') {
+    const last = job.heartbeatAt ?? job.claimedAt ?? job.updatedAt ?? job.createdAt
+    return now - last <= WALLET_SCAN_JOINABLE_HEARTBEAT_MS
+  }
+  return true
+}
+
+type InFlightLease = { jobId: string; leaseUntil: number; raw: string }
+
+export type WalletScanInFlightReservation =
+  /** This request owns the slot; it must confirm before consuming quota or enqueueing. */
+  | { kind: 'owner'; key: string; jobId: string; raw: string }
+  /** Another live (or still-enqueueing) job holds the slot: return it instead of starting a scan. */
+  | { kind: 'join'; jobId: string; status: 'queued' | 'running'; pending: boolean }
+  /** Lost every transition to other requests (pathological contention): start nothing. */
+  | { kind: 'contended' }
+  /** KV unavailable for the reservation: dedupe skipped, the scan proceeds as before. */
+  | { kind: 'unavailable' }
+
+function leaseRaw(jobId: string, leaseUntil: number): string {
+  return JSON.stringify({ jobId, leaseUntil })
+}
+
+// The slot is written as a raw JSON string; the KV client hands it back parsed. Older deployments
+// stored a bare job id, which reads back as a plain string (lease 0: replaceable once its job is not live).
+function parseLease(stored: unknown): InFlightLease | null {
+  if (typeof stored === 'string') {
+    try {
+      const parsed = JSON.parse(stored) as unknown
+      if (parsed && typeof parsed === 'object') return parseLease(parsed)
+    } catch { /* bare job id */ }
+    return stored ? { jobId: stored, leaseUntil: 0, raw: stored } : null
+  }
+  if (stored && typeof stored === 'object') {
+    const { jobId, leaseUntil } = stored as { jobId?: unknown; leaseUntil?: unknown }
+    if (typeof jobId === 'string' && typeof leaseUntil === 'number') return { jobId, leaseUntil, raw: leaseRaw(jobId, leaseUntil) }
+  }
+  return null
+}
+
+async function readJobForReuse(jobId: string): Promise<WalletScanJobMetadata | null> {
+  const [job, live] = await Promise.all([readWalletScanJob(jobId).catch(() => null), readWalletScanJobLive(jobId)])
+  return job ? mergeWalletScanJobLive(job, live) : null
+}
+
+/**
+ * Reserves the in-flight slot for `jobId`, or returns the live job to join. Every change to the slot
+ * is atomic (SET NX to create, compare-and-set to replace), so racing requests cannot both own it.
+ */
+export async function reserveWalletScanInFlight(
+  userId: string,
+  wallet: string,
+  scanMode: 'normal' | 'deep',
+  jobId: string,
+  deps: { now?: () => number; sleep?: (ms: number) => Promise<void>; recordWaitMs?: number } = {},
+): Promise<WalletScanInFlightReservation> {
+  const now = deps.now ?? Date.now
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const recordWaitMs = deps.recordWaitMs ?? IN_FLIGHT_RECORD_WAIT_MS
+  const key = walletScanInFlightKey(userId, wallet, scanMode)
+  try {
+    transitions: for (let attempt = 0; attempt < IN_FLIGHT_MAX_TRANSITIONS; attempt++) {
+      const mine = leaseRaw(jobId, now() + WALLET_SCAN_RESERVE_LEASE_MS)
+      if (await kv.setIfAbsent(key, mine, IN_FLIGHT_TTL_SECONDS)) return { kind: 'owner', key, jobId, raw: mine }
+      const holder = parseLease(await kv.get<unknown>(key))
+      if (!holder) continue // freed or expired since the NX: try to create it again
+      if (holder.jobId === jobId) return { kind: 'owner', key, jobId, raw: holder.raw }
+
+      let record = await readJobForReuse(holder.jobId)
+      // A holder still inside its lease may simply not have written its record yet: wait briefly so
+      // the joiner can report a real status — but never replace it for being slow.
+      const deadline = now() + recordWaitMs
+      while (!record && now() < holder.leaseUntil && now() < deadline) {
+        await sleep(IN_FLIGHT_RECORD_POLL_MS)
+        if (parseLease(await kv.get<unknown>(key))?.raw !== holder.raw) continue transitions
+        record = await readJobForReuse(holder.jobId)
+      }
+      if (record) {
+        if (isReusableWalletScanJob(record, userId, wallet, scanMode, now())) {
+          return { kind: 'join', jobId: record.jobId ?? holder.jobId, status: record.status as 'queued' | 'running', pending: false }
+        }
+      } else if (now() < holder.leaseUntil) {
+        return { kind: 'join', jobId: holder.jobId, status: 'queued', pending: true }
+      }
+      // Holder finished, failed, stalled, or its lease expired before it enqueued anything: replace it,
+      // but only if the slot still holds exactly what was evaluated.
+      const replacement = leaseRaw(jobId, now() + WALLET_SCAN_RESERVE_LEASE_MS)
+      if (await kv.compareAndSet(key, holder.raw, replacement, IN_FLIGHT_TTL_SECONDS)) return { kind: 'owner', key, jobId, raw: replacement }
+      // Another request changed the slot first: evaluate whoever holds it now.
+    }
+    return { kind: 'contended' }
+  } catch (err) {
+    console.warn('[wallet-scan-queue] in-flight reservation skipped', describeKvError(err))
+    return { kind: 'unavailable' }
+  }
+}
+
+/**
+ * Proves the reservation is still this request's and extends its lease to cover quota + enqueue.
+ * Returns the refreshed reservation, or null when it was superseded — the caller must then start
+ * nothing (no quota, no enqueue). A KV failure keeps the reservation (best effort, as before).
+ */
+export async function confirmWalletScanInFlight(
+  reservation: Extract<WalletScanInFlightReservation, { kind: 'owner' }>,
+  now: number = Date.now(),
+): Promise<Extract<WalletScanInFlightReservation, { kind: 'owner' }> | null> {
+  const next = leaseRaw(reservation.jobId, now + WALLET_SCAN_ENQUEUE_LEASE_MS)
+  try {
+    return (await kv.compareAndSet(reservation.key, reservation.raw, next, IN_FLIGHT_TTL_SECONDS)) ? { ...reservation, raw: next } : null
+  } catch (err) {
+    console.warn('[wallet-scan-queue] in-flight confirm skipped', describeKvError(err))
+    return reservation
+  }
+}
+
+/** Frees the slot when this request's job was never enqueued (quota refusal, enqueue failure); a no-op if superseded. */
+export async function releaseWalletScanInFlight(reservation: WalletScanInFlightReservation): Promise<void> {
+  if (reservation.kind !== 'owner') return
+  try {
+    await kv.compareAndSet(reservation.key, reservation.raw, null, IN_FLIGHT_TTL_SECONDS)
+  } catch (err) {
+    console.warn('[wallet-scan-queue] in-flight release skipped', describeKvError(err))
+  }
 }

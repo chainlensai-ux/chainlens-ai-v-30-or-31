@@ -6,7 +6,7 @@ import { clearWalletScanTestAuth, installWalletScanTestAuth, walletScanTestAuthH
 import { kv } from '@/lib/server/kv'
 import {
   WALLET_SCAN_WATCHDOG_MS, WALLET_SCAN_RETRIGGER_AFTER_MS, WALLET_SCAN_MAX_TRIGGER_ATTEMPTS,
-  claimWalletScanPayload, heartbeatWalletScanJob, superviseWalletScanJob, walletScanClaimLockKey, walletScanJobKey,
+  claimWalletScanPayload, heartbeatWalletScanJob, superviseWalletScanJob, walletScanClaimLockKey, walletScanJobKey, walletScanJobLiveKey,
   type WalletScanJobMetadata,
 } from '@/src/modules/walletScanQueue'
 import { jobFailureMessage } from '@/app/frontend/api/scanWallet'
@@ -67,14 +67,17 @@ describe('claim + heartbeat', () => {
     store.set(walletScanClaimLockKey('j2'), { value: 1 })
     assert.equal(await claimWalletScanPayload('j2'), null)
   })
-  it('heartbeats a running job and never a terminal one', async () => {
+  it('heartbeats on the live key and never rewrites the job record', async () => {
     const store = memoryKv()
-    store.set(walletScanJobKey('j3'), { value: job({ jobId: 'j3', status: 'running', heartbeatAt: 1 }) })
+    const running = job({ jobId: 'j3', status: 'running', heartbeatAt: 1 })
+    store.set(walletScanJobKey('j3'), { value: running })
     await heartbeatWalletScanJob('j3')
-    assert.ok(((store.get(walletScanJobKey('j3'))?.value as WalletScanJobMetadata).heartbeatAt ?? 0) > 1)
-    store.set(walletScanJobKey('j4'), { value: job({ jobId: 'j4', status: 'done' }) })
+    assert.ok(((store.get(walletScanJobLiveKey('j3'))?.value as { heartbeatAt: number }).heartbeatAt ?? 0) > 1)
+    assert.deepEqual(store.get(walletScanJobKey('j3'))?.value, running, 'job record untouched')
+    const done = job({ jobId: 'j4', status: 'done' })
+    store.set(walletScanJobKey('j4'), { value: done })
     await heartbeatWalletScanJob('j4')
-    assert.equal((store.get(walletScanJobKey('j4'))?.value as WalletScanJobMetadata).heartbeatAt, undefined)
+    assert.deepEqual(store.get(walletScanJobKey('j4'))?.value, done, 'a terminal job record is never touched')
   })
 })
 

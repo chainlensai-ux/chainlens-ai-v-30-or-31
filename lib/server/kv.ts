@@ -32,11 +32,21 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
+// Atomic compare-and-set (one Redis EVAL): replaces the key only while it still holds exactly
+// `expected`; an empty `next` deletes it. Never a read followed by a separate unconditional write.
+const COMPARE_AND_SET_SCRIPT = `
+local cur = redis.call('GET', KEYS[1])
+if cur ~= ARGV[1] then return 0 end
+if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3]) end
+return 1`
+
 export const kv: {
   get: <T = unknown>(key: string | null) => Promise<T | null>
   set: (key: string, value: unknown, opts?: { ex?: number }) => Promise<unknown>
   /** SET key value NX EX — true only for the one caller that created the key (an atomic lock). */
   setIfAbsent: (key: string, value: unknown, exSeconds: number) => Promise<boolean>
+  /** Atomically swaps raw string `expected` for `next` (null deletes); true only if the key still held `expected`. */
+  compareAndSet: (key: string, expected: string, next: string | null, exSeconds: number) => Promise<boolean>
 } = {
   async get<T = unknown>(key: string | null): Promise<T | null> {
     if (key === null) return null
@@ -48,5 +58,9 @@ export const kv: {
   async setIfAbsent(key: string, value: unknown, exSeconds: number): Promise<boolean> {
     const reply = await withTimeout(vercelKv.set(key, value, { nx: true, ex: exSeconds }), KV_SET_TIMEOUT_MS)
     return reply === 'OK'
+  },
+  async compareAndSet(key: string, expected: string, next: string | null, exSeconds: number): Promise<boolean> {
+    const reply = await withTimeout(vercelKv.eval(COMPARE_AND_SET_SCRIPT, [key], [expected, next ?? '', String(exSeconds)]), KV_SET_TIMEOUT_MS)
+    return Number(reply) === 1
   },
 }

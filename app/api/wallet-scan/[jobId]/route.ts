@@ -1,8 +1,8 @@
 import {
-  WALLET_SCAN_STATUS_UNAVAILABLE, markWalletScanJobStalled, recordWalletScanRetrigger, superviseWalletScanJob, triggerWalletScanWorker,
-  walletScanJobKey, walletScanResultKey,
+  WALLET_SCAN_STATUS_UNAVAILABLE, markWalletScanJobStalled, mergeWalletScanJobLive, readWalletScanJobLive, recordWalletScanRetrigger,
+  superviseWalletScanJob, triggerWalletScanWorker, walletScanJobKey, walletScanResultKey,
 } from '@/src/modules/walletScanQueue'
-import type { WalletScanJobMetadata, WalletScanJobProgress, WalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
+import type { WalletScanJobLive, WalletScanJobMetadata, WalletScanJobProgress, WalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { kv } from '@/lib/server/kv'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
 
@@ -31,14 +31,18 @@ export async function GET(req: Request, context: { params: Promise<{ jobId: stri
 
   let job: WalletScanJobState | null
   let result: unknown | null
+  let live: WalletScanJobLive | null
   try {
-    ;[job, result] = await Promise.all([
+    ;[job, result, live] = await Promise.all([
       kv.get<WalletScanJobState>(jobKey),
       kv.get(resultKey),
+      readWalletScanJobLive(jobId),
     ])
   } catch {
     return Response.json(WALLET_SCAN_STATUS_UNAVAILABLE, { status: 503 })
   }
+  // The worker's heartbeat/progress live on their own key; a terminal job ignores them.
+  if (job) job = mergeWalletScanJobLive(job, live)
 
   if (!job || job.userId !== auth.userId) {
     return Response.json({ status: 'not-found' }, { status: 404 })

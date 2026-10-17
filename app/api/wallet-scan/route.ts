@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { isAddress } from 'viem'
-import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, describeKvError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
+import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, describeKvError, confirmWalletScanInFlight, enqueueWalletScanJob, releaseWalletScanInFlight, reserveWalletScanInFlight, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { consumeDailyScan, snapshotDailyScan } from '@/lib/scanQuota'
@@ -119,10 +119,34 @@ async function enqueueScan(req: Request): Promise<Response> {
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
   }
+  // IN-FLIGHT REUSE: a repeat scan of the same wallet and mode by the same user while the first job
+  // is still live joins that job (same jobId, same background run) instead of starting a second full
+  // scan, and does not consume another deep-scan quota unit. Only the request that wins the atomic
+  // reservation (and still holds it at confirm time) may consume quota or enqueue.
+  const jobId = crypto.randomUUID()
+  let reservation = await reserveWalletScanInFlight(authUser.userId, wallet, scanMode, jobId)
+  if (reservation.kind === 'owner') {
+    const confirmed = await confirmWalletScanInFlight(reservation)
+    // Superseded between reserve and confirm: join whoever holds the slot now, never enqueue.
+    reservation = confirmed ?? await reserveWalletScanInFlight(authUser.userId, wallet, scanMode, crypto.randomUUID())
+    if (!confirmed && reservation.kind === 'owner') {
+      await releaseWalletScanInFlight(reservation)
+      reservation = { kind: 'contended' }
+    }
+  }
+  if (reservation.kind === 'join') {
+    console.log('[wallet-scan] joined in-flight job', { jobId: reservation.jobId, wallet: wallet.toLowerCase(), scanMode, status: reservation.status, pending: reservation.pending })
+    return NextResponse.json({ jobId: reservation.jobId, wallet, status: reservation.status, reused: true, scanQuota: await snapshotDailyScan(plan, ip) })
+  }
+  if (reservation.kind === 'contended') {
+    return NextResponse.json({ error: { message: 'A scan of this wallet is already starting. Try again in a moment.', category: 'rate_limit' } }, { status: 429 })
+  }
+
   let deepScanQuota = await snapshotDailyScan(plan, ip)
   if (wantsDeep) {
     const scanQuota = await consumeDailyScan(plan, ip)
     if (!scanQuota.allowed) {
+      await releaseWalletScanInFlight(reservation)
       return NextResponse.json({
         error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' },
         scanQuota: await snapshotDailyScan(plan, ip),
@@ -130,8 +154,6 @@ async function enqueueScan(req: Request): Promise<Response> {
     }
     deepScanQuota = await snapshotDailyScan(plan, ip)
   }
-
-  const jobId = crypto.randomUUID()
 
   // ONE PROVIDER SCAN PER USER SCAN: no cache-warm scan here (it was a second full Robinhood pipeline next
   // to the worker's). The queued job owns the scan; this records that it is coming so GET
@@ -161,6 +183,7 @@ async function enqueueScan(req: Request): Promise<Response> {
       payloadBytes: JSON.stringify(jobPayload).length,
     })
     if (robinhoodMarked) await markRobinhoodScanEnqueueFailed(wallet, jobId, robinhoodQueuedAt).catch(() => {})
+    await releaseWalletScanInFlight(reservation)
     if (err instanceof WalletScanQueueUnavailableError) {
       return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
     }
