@@ -179,6 +179,34 @@ export function toSerializableResult(result: unknown): unknown {
   return json === undefined ? null : JSON.parse(json)
 }
 
+const DIAGNOSTIC_ARRAY_LIMIT = 50
+
+function jsonByteLength(value: unknown): number {
+  try { return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8') } catch { return -1 }
+}
+
+/**
+ * Copy of `result` with every array found under an `*audit*` key cut to DIAGNOSTIC_ARRAY_LIMIT
+ * items. Audit objects are diagnostics only; nothing outside them is changed.
+ */
+export function compactResultDiagnostics(result: unknown): unknown {
+  const walk = (value: unknown, insideAudit: boolean): unknown => {
+    if (Array.isArray(value)) {
+      const items = insideAudit && value.length > DIAGNOSTIC_ARRAY_LIMIT ? value.slice(0, DIAGNOSTIC_ARRAY_LIMIT) : value
+      return items.map((item) => walk(item, insideAudit))
+    }
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        out[key] = walk(child, insideAudit || /audit/i.test(key))
+      }
+      return out
+    }
+    return value
+  }
+  return walk(result, false)
+}
+
 // PUBLICATION ORDER, FIXED (confirmed ordering bug): this previously wrote the job key (status
 // 'done') FIRST and the result key SECOND — so a failed/interrupted result write, or a poll
 // landing between the two writes, produced a job marked done with no result: exactly the
@@ -198,7 +226,20 @@ export async function publishFinal(
   // Refuse/drain late progress and partial-snapshot writes first, so none can land over the terminal record.
   await beginWalletScanJobFinalization(jobId)
   const t0 = Date.now()
-  await kv.set(walletScanResultKey(jobId), result)
+  try {
+    await kv.set(walletScanResultKey(jobId), result)
+  } catch (err) {
+    // An oversized result (e.g. a request-size limit) fails the whole scan. Retry once with the
+    // diagnostic audit lists shortened; every figure the UI shows is kept as is.
+    const compacted = compactResultDiagnostics(result)
+    console.warn('[wallet-scan-worker] result write failed, retrying with compacted diagnostics', {
+      jobId,
+      error: err instanceof Error ? err.message : String(err),
+      resultBytes: jsonByteLength(result),
+      compactedBytes: jsonByteLength(compacted),
+    })
+    await kv.set(walletScanResultKey(jobId), compacted)
+  }
   const t1 = Date.now()
   await kv.set(walletScanJobKey(jobId), jobState)
   const t2 = Date.now()
