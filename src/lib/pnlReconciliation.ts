@@ -15,7 +15,7 @@ import {
 } from './acceptedEvidenceStore'
 import { txSideKey } from './txSideEventAllocation'
 import { demotePriceOutlierLots, negligibleUnpricedLotIndexes } from './lotPriceOutlierGuard'
-import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare, type SidePricedPredicate } from './canonicalPnlSampleManifest'
+import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import { buildVerifiedSampleWinRateAudit, type VerifiedSampleWinRateAudit } from './verifiedSampleWinLoss'
@@ -553,10 +553,7 @@ export function buildMissingPriceRecoveryFunnelAudit(params: {
     return reconstructFinalLot(hydrated, params.recoveredByLotKey.get(key))
   })
   const demotedKeys = new Set<string>()
-  // Same per-side rule reconcile() applies (a sibling prices a shared side when it has a positive
-  // value for that side); the outlier guard is not reproduced in this diagnostic.
-  const sidePriced: SidePricedPredicate = (lot, side) => isCanonicalPositiveUsd(side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd)
-  for (const demotedLot of demoteLotsOnIncompleteAcceptedSides(allFinalLots, sidePriced)) {
+  for (const demotedLot of demoteLotsOnIncompleteAcceptedSides(allFinalLots)) {
     if (demotedLot.evidenceQuality === 'unpriced') demotedKeys.add(lotKey(demotedLot))
   }
 
@@ -2238,7 +2235,7 @@ export function createPnlReconciliation(config: Config = {}) {
   // members can later reconstruct their individual shares deterministically via
   // `allocateSideValueAcrossGroup`/`splitGroupTotalAcrossOccurrences` (canonicalPnlSampleManifest.ts),
   // which sum bit-for-bit back to this exact stored total.
-  async function seedAcceptedEvidenceForVerifiedLots(lots: readonly MatchedLot[], sidePriced?: SidePricedPredicate): Promise<AcceptedEvidenceAudit> {
+  async function seedAcceptedEvidenceForVerifiedLots(lots: readonly MatchedLot[]): Promise<AcceptedEvidenceAudit> {
     const audit = emptyAcceptedEvidenceAudit()
     const acceptedEvidenceKv = config.acceptedEvidenceKv
     if (!acceptedEvidenceKv) return audit
@@ -2274,23 +2271,6 @@ export function createPnlReconciliation(config: Config = {}) {
         }
         audit.verifiedSidesEligibleForPersistence += 1
         addToGroup(lot, s.side, s.txHash, s.timestamp, s.price)
-      }
-    }
-    // A side shared with siblings that are unverified only because of their OTHER side: those
-    // siblings still carry this side's value (the shared-side rule kept the verified lots only
-    // because every sibling prices the side), so the persisted total is the full side total, never
-    // the verified slice alone.
-    if (sidePriced) {
-      for (const lot of lots) {
-        if (isCanonicalVerifiedLotForPnl(lot) || !isStructurallyValidLot(lot)) continue
-        for (const s of [
-          { side: 'entry' as const, txHash: lot.openedTxHash, timestamp: lot.openedAt, price: lot.costBasisUsd },
-          { side: 'exit' as const, txHash: lot.closedTxHash, timestamp: lot.closedAt, price: lot.proceedsUsd },
-        ]) {
-          if (!sidePriced(lot, s.side) || !isPersistablePrice(s.price)) continue
-          if (!groups.has(sideGroupKey(lot.chain, lot.token, s.txHash, s.side, s.timestamp))) continue
-          addToGroup(lot, s.side, s.txHash, s.timestamp, s.price)
-        }
       }
     }
 
@@ -2505,13 +2485,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // Negligible unpriced lots (dust legs) sit out the shared-side rule so they cannot demote the
       // real lots sharing their transaction; every other lot goes through it unchanged.
       const negligibleLots = negligibleUnpricedLotIndexes(priceOutlierGuard.lots)
-      // A shared side is incomplete only when a sibling has no trustworthy value for THAT side. A
-      // sibling unverified only because of its other side still prices the shared one; a lot the
-      // outlier guard demoted prices neither.
-      const outlierDemotedLots = new Set(priceOutlierGuard.lots.filter((lot, index) => lot !== updatedFifoLots[index]))
-      const sidePriced: SidePricedPredicate = (lot, side) =>
-        !outlierDemotedLots.has(lot) && isCanonicalPositiveUsd(side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd)
-      const sharedSideChecked = demoteLotsOnIncompleteAcceptedSides(priceOutlierGuard.lots.filter((_, index) => !negligibleLots.has(index)), sidePriced)
+      const sharedSideChecked = demoteLotsOnIncompleteAcceptedSides(priceOutlierGuard.lots.filter((_, index) => !negligibleLots.has(index)))
       let sharedSideCursor = 0
       const consistentFifoLots = priceOutlierGuard.lots.map((lot, index) => (negligibleLots.has(index) ? lot : sharedSideChecked[sharedSideCursor++]))
       // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task):
@@ -2520,7 +2494,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // verified side regardless of whether it was priced upstream (before recoverPrices ever ran) or
       // by recovery itself just above. See seedAcceptedEvidenceForVerifiedLots' own header for the
       // full rationale.
-      const seeding = await seedAcceptedEvidenceForVerifiedLots(consistentFifoLots, sidePriced)
+      const seeding = await seedAcceptedEvidenceForVerifiedLots(consistentFifoLots)
       // CANONICAL SAMPLE SELECTION, DISCLOSED (requirement #5's exact required order: reconcile
       // accepted evidence -> resolve manifest -> validate -> construct final canonical published lot
       // array -> calculate gate/AYRI/fingerprints from THAT array). Runs AFTER accepted-evidence

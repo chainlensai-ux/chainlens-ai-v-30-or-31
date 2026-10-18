@@ -400,44 +400,37 @@ export type SideAllocationShare = {
 // `groupLots` must be the FULL set of matched lots drawing from that transaction side — including
 // any not currently verified/priced — so a verified sibling is never over-credited a share that
 // rightly belongs to an unpriced one (see this module's own header on the allocation population).
-export type SidePricedPredicate = (lot: MatchedLot, side: 'entry' | 'exit') => boolean
-
-// Default: a sibling counts as pricing a shared side only when it is itself fully verified (the
-// original, whole-lot rule). Callers that know which siblings carry a trustworthy value for the
-// shared side itself pass a per-side predicate instead (see pnlReconciliation's shared-side check).
-const verifiedLotPricesSide: SidePricedPredicate = (lot) => isCanonicalVerifiedPublishedLot(lot)
-
-export function lotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[], sidePriced: SidePricedPredicate = verifiedLotPricesSide): Set<MatchedLot> {
+export function lotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[]): Set<MatchedLot> {
   // A verified lot that shares an accepted-evidence side (same chain/token/txHash/side/timestamp)
-  // with a sibling that carries no trustworthy value for THAT side cannot contribute a group total
-  // that equals the accepted side's stored priceUsd/valueUsd: the side's total is unknown. A sibling
-  // that prices the shared side but is unverified only because of its OTHER side does not make the
-  // shared side incomplete — allocation is over the full sibling set (see
-  // allocateSideValueAcrossGroup), so the verified lot's share stays exact.
+  // with ANY lot that is not itself in the verified sample cannot contribute a group total that
+  // equals the accepted side's stored priceUsd/valueUsd. Allocation is over the FULL sibling set
+  // (see allocateSideValueAcrossGroup) so the verified slice is a proper fraction of the side;
+  // publishing that slice as "verified" is exactly `group_total_does_not_equal_accepted_side_total`.
   // Fail closed: return the original lot objects that must be demoted, never invent the missing
   // siblings into realized PnL.
-  const groups = new Map<string, Array<{ lot: MatchedLot; side: 'entry' | 'exit' }>>()
+  const groups = new Map<string, MatchedLot[]>()
   for (const lot of lots) {
     const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
-    for (const [key, side] of [[entryKey, 'entry'], [exitKey, 'exit']] as const) {
+    for (const key of [entryKey, exitKey]) {
       const existing = groups.get(key)
-      if (existing) existing.push({ lot, side })
-      else groups.set(key, [{ lot, side }])
+      if (existing) existing.push(lot)
+      else groups.set(key, [lot])
     }
   }
   const demote = new Set<MatchedLot>()
   for (const members of groups.values()) {
-    if (members.length < 2) continue
-    if (members.every((member) => sidePriced(member.lot, member.side))) continue
-    for (const { lot } of members) {
-      if (isCanonicalVerifiedPublishedLot(lot)) demote.add(lot)
+    const verifiedCount = members.filter(isCanonicalVerifiedPublishedLot).length
+    if (verifiedCount > 0 && verifiedCount < members.length) {
+      for (const lot of members) {
+        if (isCanonicalVerifiedPublishedLot(lot)) demote.add(lot)
+      }
     }
   }
   return demote
 }
 
-export function demoteLotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[], sidePriced?: SidePricedPredicate): MatchedLot[] {
-  const demote = lotsOnIncompleteAcceptedSides(lots, sidePriced)
+export function demoteLotsOnIncompleteAcceptedSides(lots: readonly MatchedLot[]): MatchedLot[] {
+  const demote = lotsOnIncompleteAcceptedSides(lots)
   if (demote.size === 0) return [...lots]
   return lots.map((lot) => (demote.has(lot) ? { ...lot, evidenceQuality: 'unpriced' as const } : lot))
 }

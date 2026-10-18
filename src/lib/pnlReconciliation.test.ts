@@ -586,16 +586,20 @@ describe('pnlReconciliation', () => {
     assert.equal(published2!.proceedsUsd, 40)
   })
 
-  it('a verified lot is NOT demoted when its unverified sibling still prices the shared side (only the sibling\'s own, unshared side is missing)', async () => {
-    // Two lots share the SAME accepted-evidence entry side. Hydration fills the unpriced sibling's
-    // share of that entry from the accepted record; only its own, unshared exit stays missing. The
-    // shared side is therefore complete, so the verified lot's quantity-proportional share is exact
-    // and it stays published. The funnel's `canonicalVerifiedLots` must agree with the published count.
+  it('missingPriceRecoveryFunnelAudit: canonicalVerifiedLots matches the REAL, post-demotion final count — never the pre-demotion reconstruction (the confirmed 64-vs-30 funnel scoping bug)', async () => {
+    // Two lots share the SAME accepted-evidence entry side (same chain/token/txHash/timestamp) — one
+    // fully priced/verified, one still genuinely unpriced. `demoteLotsOnIncompleteAcceptedSides`
+    // demotes the verified one back to 'unpriced' because the shared side's group total cannot
+    // equal the accepted evidence record while a sibling remains unpriced. The funnel's own
+    // `canonicalVerifiedLots`/`recovered_verified` bucket must reflect that demotion, never count the
+    // sibling as verified just because it reconstructs cleanly in isolation.
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     const sharedEntry = { chain: 'base', txHash: '0xshared-buy', timestamp: 100 }
     const verifiedSibling = lot({ lotId: 'sib-verified', openedTxHash: sharedEntry.txHash, closedTxHash: '0xsell-a', openedAt: sharedEntry.timestamp, closedAt: 200, amount: 5, costBasisUsd: 50, proceedsUsd: 60, realizedPnlUsd: 10, evidenceQuality: 'verified' })
     // Exit side genuinely unrecoverable (priceKvClient/priceSources below always return null) — the
-    // shared entry side gets filled by hydration, but the unshared exit stays null.
+    // entry side gets filled by hydration (same group total as verifiedSibling's own value, since
+    // both siblings have equal amount), but the exit stays null, so this sibling never becomes fully
+    // priced — the group stays genuinely INCOMPLETE, which is what must trigger demotion.
     const unpricedSibling = lot({ lotId: 'sib-unpriced', openedTxHash: sharedEntry.txHash, closedTxHash: '0xsell-b', openedAt: sharedEntry.timestamp, closedAt: 250, amount: 5, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
     const identityVersion = realLotIdentityVersion(verifiedSibling)
     acceptedEvidenceKv.store.set(buildAcceptedEvidenceKey({ chain: sharedEntry.chain, token: '0xtoken', txHash: sharedEntry.txHash, side: 'entry', timestamp: sharedEntry.timestamp, lotIdentityVersion: identityVersion }), {
@@ -610,52 +614,10 @@ describe('pnlReconciliation', () => {
       acceptedEvidenceKv: acceptedEvidenceKv as never,
     })
     const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [verifiedSibling, unpricedSibling] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
-    const publishedVerified = summary.publishedMatchedLots.filter((l) => l.evidenceQuality === 'verified')
-    assert.deepEqual(publishedVerified.map((l) => l.lotId), ['sib-verified'], 'the verified lot keeps its exact share of the complete shared side')
-    assert.equal(summary.missingPriceRecoveryFunnelAudit.canonicalVerifiedLots, 1, 'funnel canonicalVerifiedLots must match the real published count')
-  })
-
-  it('a shared sell priced by an unverified sibling (missing only its own buy) is seeded with the FULL sell total, never the verified slice alone', async () => {
-    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
-    const first = lot({ lotId: 'first', token: '0xsplit', openedTxHash: '0xbuy1', closedTxHash: '0xsell-split', openedAt: 1, closedAt: 3, amount: 1, costBasisUsd: 40, proceedsUsd: 100, realizedPnlUsd: 60, evidenceQuality: 'verified' })
-    const second = lot({ lotId: 'second', token: '0xsplit', openedTxHash: '0xbuy2', closedTxHash: '0xsell-split', openedAt: 2, closedAt: 3, amount: 0.5, costBasisUsd: null, proceedsUsd: 50, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
-    const r = createPnlReconciliation({
-      logger: quiet,
-      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
-      priceSources: { primary: async () => null },
-      acceptedEvidenceKv: acceptedEvidenceKv as never,
-      now: () => 1,
-    })
-    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [first, second] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
-    assert.deepEqual(summary.publishedMatchedLots.filter((l) => l.evidenceQuality === 'verified').map((l) => l.lotId), ['first'])
-    const stored = [...acceptedEvidenceKv.store.values()]
-      .map((v) => v as { txHash: string; side: string; priceUsd: number; coveredLotCount: number })
-      .filter((v) => v.txHash === '0xsell-split' && v.side === 'exit')
-    assert.equal(stored.length, 1, 'the shared sell side is persisted exactly once')
-    assert.equal(stored[0].priceUsd, 150, 'the persisted total is the full sell (100 + 50), never the verified lot\'s 100 alone')
-    assert.equal(stored[0].coveredLotCount, 2)
-    assert.equal(
-      [...acceptedEvidenceKv.store.values()].filter((v) => (v as { txHash: string }).txHash === '0xbuy2').length, 0,
-      'the sibling\'s own unpriced buy is never persisted',
-    )
-  })
-
-  it('missingPriceRecoveryFunnelAudit: canonicalVerifiedLots matches the REAL, post-demotion final count — a verified lot sharing a side its sibling cannot price is demoted (the confirmed 64-vs-30 funnel scoping bug)', async () => {
-    // Two lots share the SAME exit side; the sibling has no value for it and nothing can recover one
-    // (no accepted record, every price source returns null). The shared side's total is unknown, so
-    // the verified lot is demoted, and the funnel must count the real, post-demotion sample.
-    const sharedExit = { txHash: '0xshared-sell', timestamp: 300 }
-    const verifiedSibling = lot({ lotId: 'sib-verified', openedTxHash: '0xbuy-a', closedTxHash: sharedExit.txHash, openedAt: 100, closedAt: sharedExit.timestamp, amount: 5, costBasisUsd: 50, proceedsUsd: 60, realizedPnlUsd: 10, evidenceQuality: 'verified' })
-    const unpricedSibling = lot({ lotId: 'sib-unpriced', openedTxHash: '0xbuy-b', closedTxHash: sharedExit.txHash, openedAt: 150, closedAt: sharedExit.timestamp, amount: 5, costBasisUsd: 40, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
-    const r = createPnlReconciliation({
-      logger: quiet,
-      priceKvClient: { getPriceHistorical: async () => null, getPricePrimary: async () => null },
-      priceSources: { primary: async () => null },
-      acceptedEvidenceKv: fakeAcceptedEvidenceKv() as never,
-    })
-    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [verifiedSibling, unpricedSibling] }), pnlEngineResult: pnl(2), syntheticPnlAssemblyOutput: null })
+    // The real, published sample must demote the sibling (proves the fixture actually exercises demotion).
     const publishedVerified = summary.publishedMatchedLots.filter((l) => l.evidenceQuality === 'verified')
     assert.equal(publishedVerified.length, 0, 'the shared-side sibling must be demoted out of the published verified sample')
+    // The funnel's own count must agree — never report the pre-demotion reconstruction as verified.
     assert.equal(summary.missingPriceRecoveryFunnelAudit.canonicalVerifiedLots, 0, 'funnel canonicalVerifiedLots must match the real, post-demotion published count, never an inflated pre-demotion figure')
   })
 
