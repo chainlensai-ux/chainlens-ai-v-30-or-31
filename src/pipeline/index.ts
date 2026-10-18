@@ -62,6 +62,7 @@ import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEth
 import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
 import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
+import { guardLiquidityLegs } from '../lib/liquidityLegGuard'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -2502,10 +2503,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // PRICE OUTLIER GUARD (src/lib/lotPriceOutlierGuard.ts): an event priced orders of magnitude away
   // from its token's other trades (or the wallet's) reads as unpriced in every FIFO pass below, so it
   // reaches neither realized nor unrealized PnL. Confirmed case: a dust leg priced at $603,963/token.
-  const guardedPriceLookup = guardPriceUsdLookup(
-    [...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
-    walletPriceLookups.priceUsdLookup,
-  )
+  // LIQUIDITY LEG GUARD (src/lib/liquidityLegGuard.ts): runs first, so liquidity deposit/withdrawal
+  // legs are neither priced as trades nor counted in the outlier guard's per-token medians.
+  const guardEvents = [...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing]
+  const liquidityGuardedLookup = guardLiquidityLegs(guardEvents, walletPriceLookups.priceUsdLookup)
+  // eslint-disable-next-line no-console
+  console.warn(`[pipeline] liquidity leg guard addTxs=${liquidityGuardedLookup.liquidityAddTxs} removeTxs=${liquidityGuardedLookup.liquidityRemoveTxs} rejectedEvents=${liquidityGuardedLookup.rejectedEvents}`)
+  const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup)
   // eslint-disable-next-line no-console
   console.warn('[pipeline] price outlier guard', { rejectedEvents: guardedPriceLookup.rejectedEvents, rejectedValueUsd: guardedPriceLookup.rejectedValueUsd })
   // Always present, including disabled/misconfigured/zero-candidate scans. This is emitted at the

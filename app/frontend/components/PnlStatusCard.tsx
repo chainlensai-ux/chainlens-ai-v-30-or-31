@@ -1095,6 +1095,16 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
                   </span>
                 )
               })()}
+              {(reconciliationSummary?.publicPnlGateAudit?.largestVerifiedLots?.length ?? 0) > 0 && (
+                <div style={{ width: '100%' }}>
+                  Largest verified trades (token · amount · cost → proceeds = PnL · buy tx / sell tx):
+                  {reconciliationSummary!.publicPnlGateAudit.largestVerifiedLots!.map((lot, i) => (
+                    <div key={i} style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {lot.token.slice(0, 10)} · {lot.amount.toPrecision(6)} · {fmtUsd(lot.costBasisUsd ?? 0)} → {fmtUsd(lot.proceedsUsd ?? 0)} = <strong style={{ color: '#e2e8f0' }}>{fmtSignedUsd(lot.realizedPnlUsd)}</strong> · {lot.openedTxHash.slice(0, 10)} / {lot.closedTxHash.slice(0, 10)}
+                    </div>
+                  ))}
+                </div>
+              )}
               {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
                 <span>
                   <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings

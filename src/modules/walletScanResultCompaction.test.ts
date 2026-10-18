@@ -4,7 +4,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
-import { walletScanJobKey, walletScanResultKey, type WalletScanJobMetadata } from '@/src/modules/walletScanQueue'
+import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
 import { compactResultDiagnostics, publishFinal } from '@/src/modules/walletScanWorker'
 
 const originalEnv = { ...process.env }
@@ -53,7 +53,7 @@ describe('final result publication', () => {
       store.set(key, value)
       return 'OK'
     }
-    const done = { jobId: JOB, status: 'done', finishedAt: Date.now() } as unknown as WalletScanJobMetadata
+    const done = { jobId: JOB, status: 'done', finishedAt: Date.now() } as never
     await publishFinal(JOB, done, result())
     assert.equal(resultWrites, 2)
     const stored = store.get(walletScanResultKey(JOB)) as ReturnType<typeof result>

@@ -864,6 +864,18 @@ export type PublicPnlGateAudit = {
   excludedUnknownUnmatchedCount: number
   /** Verified-lot count after each reconciliation step — shows which step shrinks verified coverage. */
   verifiedLotFunnel?: VerifiedLotFunnel
+  /** The published verified lots with the largest |realized PnL| — shows which trades drive the total. */
+  largestVerifiedLots?: LargestVerifiedLot[]
+}
+
+export type LargestVerifiedLot = {
+  token: string
+  amount: number
+  costBasisUsd: number | null
+  proceedsUsd: number | null
+  realizedPnlUsd: number | null
+  openedTxHash: string
+  closedTxHash: string
 }
 
 export type VerifiedLotFunnel = {
@@ -2967,8 +2979,16 @@ export function createPnlReconciliation(config: Config = {}) {
         boundedSampleBlockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
       }
       const fullAvailabilityBlockingReasons = blockingReasons
+      const largestVerifiedLots: LargestVerifiedLot[] = [...verifiedUpdatedLots]
+        .sort((a, b) => Math.abs(b.realizedPnlUsd ?? 0) - Math.abs(a.realizedPnlUsd ?? 0))
+        .slice(0, 8)
+        .map((lot) => ({
+          token: lot.token, amount: lot.amount, costBasisUsd: lot.costBasisUsd, proceedsUsd: lot.proceedsUsd,
+          realizedPnlUsd: lot.realizedPnlUsd, openedTxHash: lot.openedTxHash, closedTxHash: lot.closedTxHash,
+        }))
       const publicPnlGateAudit: PublicPnlGateAudit = {
         verifiedLotFunnel,
+        largestVerifiedLots,
         verifiedLotCount: verifiedUpdatedLots.length,
         fullyPricedLotCount,
         pricingCoverage: fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null,
