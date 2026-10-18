@@ -39,6 +39,9 @@ export type SourceBreakdown = {
 export type PricingAtTimeResult = {
   costUsd: Record<string, number | null>
   proceedsUsd: Record<string, number | null>
+  /** The token (lowercased) each costUsd/proceedsUsd value belongs to; one tx side can hold several tokens. */
+  costToken?: Record<string, string>
+  proceedsToken?: Record<string, string>
   evidenceMissingCount: number
   sourceBreakdown: SourceBreakdown
   // ADDITIVE, DISCLOSED: txHash keys (from either costUsd or proceedsUsd) that the per-token cap

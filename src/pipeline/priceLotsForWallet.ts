@@ -828,6 +828,7 @@ export async function priceLotsForWallet(params: {
   // `countFullyPriced()`, the final lookup builders) — so a skipped requirement behaves exactly like
   // one a provider resolved, never like an unpriced placeholder.
   const acceptedPriceByTxHash = { costUsd: new Map<string, number>(), proceedsUsd: new Map<string, number>() }
+  const acceptedTokenByTxHash = { costUsd: new Map<string, string>(), proceedsUsd: new Map<string, string>() }
   // MANIFEST FAST-PATH AUDIT, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts B/C):
   // real, measured counters from THIS pass — the earliest point real matched-lot identity exists in
   // this pipeline, and the one true choke point every provider call for a manifest-covered side
@@ -903,6 +904,7 @@ export async function priceLotsForWallet(params: {
         const matchedQuantity = groupedLots.filter((l) => l.token.toLowerCase() === representative.token.toLowerCase()).reduce((sum, l) => sum + l.amount, 0)
         const sideQuantity = txSides.get(sideKey)?.quantity ?? matchedQuantity
         dict.set(txHash, matchedQuantity > 0 && sideQuantity > 0 ? canonicalPriceUsd * (sideQuantity / matchedQuantity) : canonicalPriceUsd)
+        ;(side === 'entry' ? acceptedTokenByTxHash.costUsd : acceptedTokenByTxHash.proceedsUsd).set(txHash, representative.token.toLowerCase())
       } else {
         acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length
         // LOST-COVERAGE FORENSICS, DISCLOSED — see ManifestFastPathAudit.lostCoverageSides. Reaching
@@ -1543,8 +1545,23 @@ export async function priceLotsForWallet(params: {
   // live provider had resolved it. Never overwrites a value `resolvePricingAtTime` itself already
   // set — a skipped requirement's txHash was never sent to it in the first place (see the filter
   // above), so there is nothing to conflict with; this is populating a gap, never replacing a value.
-  for (const [txHash, priceUsd] of acceptedPriceByTxHash.costUsd) atTradeTime.costUsd[txHash] = priceUsd
-  for (const [txHash, priceUsd] of acceptedPriceByTxHash.proceedsUsd) atTradeTime.proceedsUsd[txHash] = priceUsd
+  // SIDE-VALUE OWNERS (txSideEventAllocation.ts's TxSideValueOwners): the dictionaries are keyed by
+  // txHash, but a tx side can move several tokens; every writer below records which token its value
+  // belongs to, so the FIFO lookup never applies one token's value to another token on the same side.
+  const sideOwners = {
+    cost: new Map<string, string>(Object.entries(atTradeTime.costToken ?? {})),
+    proceeds: new Map<string, string>(Object.entries(atTradeTime.proceedsToken ?? {})),
+  }
+  const setSideOwner = (side: 'entry' | 'exit', txHash: string, token: string) =>
+    (side === 'entry' ? sideOwners.cost : sideOwners.proceeds).set(txHash, token.toLowerCase())
+  for (const [txHash, priceUsd] of acceptedPriceByTxHash.costUsd) {
+    atTradeTime.costUsd[txHash] = priceUsd
+    setSideOwner('entry', txHash, acceptedTokenByTxHash.costUsd.get(txHash)!)
+  }
+  for (const [txHash, priceUsd] of acceptedPriceByTxHash.proceedsUsd) {
+    atTradeTime.proceedsUsd[txHash] = priceUsd
+    setSideOwner('exit', txHash, acceptedTokenByTxHash.proceedsUsd.get(txHash)!)
+  }
 
   // ATTRIBUTION SPLIT, DISCLOSED (wallet-provider-cost-audit follow-up task #2): when this pass was
   // provably open-position-only (see `historicalPassIsOpenPositionOnly` above), its real GoldRush
@@ -2098,6 +2115,7 @@ export async function priceLotsForWallet(params: {
     // quoteValueUsd is what must be stored to match every other value already in these dicts.
     if (result.priceUsd != null && isSanePrice(result.priceUsd)) {
       targetDict[event.txHash] = result.quoteValueUsd
+      setSideOwner(side, event.txHash, event.contract)
       canonicalSameTxSideKeys.add(`${event.chain}:${event.txHash.toLowerCase()}:${side}`)
       if (result.source === 'same_tx_stable_quote') sameTxStablePricesRecovered += 1
       else sameTxNativePricesRecovered += 1
@@ -2363,10 +2381,12 @@ export async function priceLotsForWallet(params: {
         if (!isSanePrice(totalUsd)) continue
         if (sides.has('cost') && atTradeTime.costUsd[txHash] == null) {
           atTradeTime.costUsd[txHash] = totalUsd
+          setSideOwner('entry', txHash, token)
           pricesApplied += 1
         }
         if (sides.has('proceeds') && atTradeTime.proceedsUsd[txHash] == null) {
           atTradeTime.proceedsUsd[txHash] = totalUsd
+          setSideOwner('exit', txHash, token)
           pricesApplied += 1
         }
       }
@@ -2686,6 +2706,7 @@ export async function priceLotsForWallet(params: {
       const dict = requirement.side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
       if (dict[requirement.txHash] != null) continue
       dict[requirement.txHash] = quoteValueUsd
+      setSideOwner(requirement.side, requirement.txHash, requirement.token)
       receiptQuoteSideKeys.add(`${requirement.chain}:${requirement.txHash.toLowerCase()}:${requirement.side}`)
       row.applied = true
       audit.sidesRecoveredByClass[requirement.cls] += 1
@@ -2898,6 +2919,7 @@ export async function priceLotsForWallet(params: {
         const value = evidence.priceUsd * amount
         if (!(amount > 0) || !isSanePrice(evidence.priceUsd) || !(value > 0)) continue
         dict[realTxHash] = value
+        setSideOwner(side, realTxHash, token)
         corroboratedCompositeSideKeys.add(`${chain}:${txHash}:${side}`)
         row.outcome = 'corroborated_applied'
         applied += 1
@@ -3138,7 +3160,7 @@ export async function priceLotsForWallet(params: {
   // ONE SIDE VALUE, ALLOCATED ACROSS ITS EVENTS (same-tx overcount fix — see txSideEventAllocation.ts):
   // replaces the per-event `resolveEventPriceUsd`, which gave every same-token event of a tx side the
   // whole side value. Identical to it for a side with a single event.
-  const { lookup: priceUsdLookup } = buildTxSideEventPriceLookup(merged, atTradeTime.costUsd, atTradeTime.proceedsUsd)
+  const { lookup: priceUsdLookup } = buildTxSideEventPriceLookup(merged, atTradeTime.costUsd, atTradeTime.proceedsUsd, sideOwners)
 
   const currentPriceUsdLookup: CurrentPriceUsdLookup = (token, chain) =>
     atNow.costUsd[`current:${chain}:${token.toLowerCase()}`] ?? null
@@ -3247,7 +3269,7 @@ export async function priceLotsForWallet(params: {
   }
   return {
     priceUsdLookup,
-    txSideValueLookup: buildTxSideValueLookup(atTradeTime.costUsd, atTradeTime.proceedsUsd),
+    txSideValueLookup: buildTxSideValueLookup(atTradeTime.costUsd, atTradeTime.proceedsUsd, sideOwners),
     txSideAllocation: {
       costUsd: atTradeTime.costUsd,
       proceedsUsd: atTradeTime.proceedsUsd,

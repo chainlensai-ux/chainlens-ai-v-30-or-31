@@ -142,9 +142,13 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
 }
 
 function summarizeEntryResults(
-  results: Array<{ txHash: string; entryKey: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean; cappedByCap: boolean }>,
+  results: Array<{ txHash: string; token: string; entryKey: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean; cappedByCap: boolean }>,
 ) {
   const usdByTxHash: Record<string, number | null> = {}
+  // The token each `usdByTxHash` value belongs to. Two entries for different tokens on one tx side
+  // (a buy that refunds some of the input token, a liquidity add) must never share a value: the first
+  // priced entry keeps the slot and its token; a later entry for another token never overwrites it.
+  const tokenByTxHash: Record<string, string> = {}
   const breakdown: SourceBreakdown = { primary: 0, fallback: 0, failed: 0 }
   let missing = 0
   // CAP-VS-PROVIDER-MISS DISTINCTION, DISCLOSED, ADDITIVE: `missing` alone conflates two different
@@ -161,7 +165,12 @@ function summarizeEntryResults(
   const cappedEntryKeys = new Set<string>()
 
   for (const r of results) {
-    usdByTxHash[r.txHash] = r.usd
+    const token = r.token.toLowerCase()
+    const existing = usdByTxHash[r.txHash]
+    if (existing == null || tokenByTxHash[r.txHash] === token) {
+      usdByTxHash[r.txHash] = r.usd
+      if (r.usd != null) tokenByTxHash[r.txHash] = token
+    }
     breakdown[r.source] += 1
     if (r.missing) missing += 1
     if (r.cappedByCap) {
@@ -170,7 +179,7 @@ function summarizeEntryResults(
     }
   }
 
-  return { usdByTxHash, breakdown, missing, cappedTxHashes, cappedEntryKeys }
+  return { usdByTxHash, tokenByTxHash, breakdown, missing, cappedTxHashes, cappedEntryKeys }
 }
 
 // Exported so a caller building a PriceableEntry can compute the EXACT SAME key this module uses
@@ -195,8 +204,8 @@ async function priceAllEntries(
   fallbackPricing: FallbackPricingConfig | undefined,
   maxLookupsPerTokenOverride: number | undefined,
 ): Promise<{
-  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
-  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
+  buys: { usdByTxHash: Record<string, number | null>; tokenByTxHash: Record<string, string>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
+  sells: { usdByTxHash: Record<string, number | null>; tokenByTxHash: Record<string, string>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
 }> {
   const combined = [
     ...buyEntries.map((entry) => ({ entry, list: 'buy' as const })),
@@ -252,7 +261,7 @@ async function priceAllEntries(
     if (priorLookups >= maxLookupsPerToken) {
       cappedCount += 1
       if (entry.pairRank !== undefined) priorityCappedCount += 1
-      return { list, txHash: entry.txHash, entryKey, usd: null, source: 'failed' as const, missing: true, cappedByCap: true }
+      return { list, txHash: entry.txHash, token: entry.token, entryKey, usd: null, source: 'failed' as const, missing: true, cappedByCap: true }
     }
     lookupCountByToken.set(tokenKey, priorLookups + 1)
 
@@ -268,11 +277,11 @@ async function priceAllEntries(
       const route = attempt.ok ? attempt.source : 'failed'
       fallbackPricing.onRouteRecorded?.({ token: entry.token, chain: entry.chain, timestamp: entry.timestamp, route })
       if (attempt.ok) {
-        return { list, txHash: entry.txHash, entryKey, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false, cappedByCap: false }
+        return { list, txHash: entry.txHash, token: entry.token, entryKey, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false, cappedByCap: false }
       }
     }
 
-    return { list, txHash: entry.txHash, entryKey, usd: multiplyAmount(price, entry.amount), source, missing: price === null, cappedByCap: false }
+    return { list, txHash: entry.txHash, token: entry.token, entryKey, usd: multiplyAmount(price, entry.amount), source, missing: price === null, cappedByCap: false }
   })
 
   if (cappedCount > 0) {
@@ -330,6 +339,8 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
   return {
     costUsd: buys.usdByTxHash,
     proceedsUsd: sells.usdByTxHash,
+    costToken: buys.tokenByTxHash,
+    proceedsToken: sells.tokenByTxHash,
     evidenceMissingCount: buys.missing + sells.missing,
     sourceBreakdown: {
       primary: buys.breakdown.primary + sells.breakdown.primary,

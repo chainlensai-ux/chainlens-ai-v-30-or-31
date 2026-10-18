@@ -11,6 +11,7 @@ import {
   allocateTxSideValue,
   buildSameTxMultiEventAudit,
   buildTxSideEventPriceLookup,
+  buildTxSideValueLookup,
   multiEventTxSideKeys,
   txSideKey,
 } from './txSideEventAllocation.ts'
@@ -341,5 +342,46 @@ describe('Goal B — repeated scans reproduce', () => {
     const tampered = await replayManifest({ manifest: oldManifest, allCandidateLots: lots, loadEvidence: loaderOf(oldKv), computeFingerprints: fingerprints })
     assert.equal(tampered.structuralIntegrityFailure, true)
     assert.equal(ACCEPTED_EVIDENCE_SCHEMA_VERSION > 0, true)
+  })
+})
+
+describe('tx side value ownership (one value per txHash, several tokens on a side)', () => {
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const withToken = (e: NormalizedEvent, contract: string) => ({ ...e, contract }) as NormalizedEvent
+
+  it('a buy that refunds USDC: the bought token gets the side value, the refund gets nothing', () => {
+    const events = [ev('0xbuy', 'inbound', 1000, BUY), withToken(ev('0xbuy', 'inbound', 1, BUY), USDC)]
+    const owners = { cost: new Map([['0xbuy', CLAW]]), proceeds: new Map<string, string>() }
+    const { lookup } = buildTxSideEventPriceLookup(events, { '0xbuy': 100 }, {}, owners)
+    assert.equal(lookup(events[0]), 100)
+    assert.equal(lookup(events[1]), null)
+  })
+
+  it('two tokens on one side with no recorded owner: neither gets the value', () => {
+    const events = [ev('0xbuy', 'inbound', 1000, BUY), withToken(ev('0xbuy', 'inbound', 1, BUY), USDC)]
+    const { lookup } = buildTxSideEventPriceLookup(events, { '0xbuy': 100 }, {})
+    assert.equal(lookup(events[0]), null)
+    assert.equal(lookup(events[1]), null)
+  })
+
+  it('a single token with no recorded owner keeps the value', () => {
+    const events = [ev('0xbuy', 'inbound', 1000, BUY)]
+    const { lookup } = buildTxSideEventPriceLookup(events, { '0xbuy': 100 }, {})
+    assert.equal(lookup(events[0]), 100)
+  })
+
+  it('a liquidity add (token + USDC out): proceeds apply only to the owner token', () => {
+    const events = [ev('0xadd', 'outbound', 500, SELL), withToken(ev('0xadd', 'outbound', 250, SELL), USDC)]
+    const owners = { cost: new Map<string, string>(), proceeds: new Map([['0xadd', USDC]]) }
+    const { lookup } = buildTxSideEventPriceLookup(events, {}, { '0xadd': 250 }, owners)
+    assert.equal(lookup(events[0]), null)
+    assert.equal(lookup(events[1]), 250)
+  })
+
+  it('side-level lookup refuses a token that does not own the value', () => {
+    const owners = { cost: new Map([['0xbuy', CLAW]]), proceeds: new Map<string, string>() }
+    const side = buildTxSideValueLookup({ '0xbuy': 100 }, {}, owners)
+    assert.equal(side({ txHash: '0xbuy', direction: 'inbound', token: CLAW }), 100)
+    assert.equal(side({ txHash: '0xbuy', direction: 'inbound', token: USDC }), null)
   })
 })

@@ -96,6 +96,41 @@ export function allocateTxSideValue(totalUsd: number, events: readonly Normalize
   return shares.map((s) => Number(s) / Number(VALUE_SCALE))
 }
 
+/**
+ * The token each `costUsd`/`proceedsUsd` value belongs to (lowercased), by txHash. The dictionaries
+ * are keyed by txHash only, but one tx side can move several tokens (a buy that refunds some of the
+ * input token, a liquidity add): a side value belongs to exactly one of them and must never be
+ * applied to the others.
+ */
+export type TxSideValueOwners = { cost: ReadonlyMap<string, string>; proceeds: ReadonlyMap<string, string> }
+
+/**
+ * Whether the dictionary value stored for `txHash` applies to `token` on that side. With a recorded
+ * owner, only the owner. Without one (a writer that predates ownership), only when that side moves a
+ * single token — with several, which token the value belongs to is unknown, so none gets it.
+ */
+function sideValueAppliesTo(
+  owners: TxSideValueOwners | undefined,
+  direction: TxSideDirection,
+  txHash: string,
+  token: string,
+  tokensOnSide: number,
+): boolean {
+  const owner = (direction === 'inbound' ? owners?.cost : owners?.proceeds)?.get(txHash)
+  if (owner !== undefined) return owner === token.toLowerCase()
+  return tokensOnSide <= 1
+}
+
+/** Number of distinct tokens per (chain, tx, direction) among the grouped sides. */
+function tokensPerTxDirection(groups: ReadonlyMap<string, TxSideGroup>): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const g of groups.values()) {
+    const key = `${g.chain}:${g.txHash.toLowerCase()}:${g.direction}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
+}
+
 export type TxSideAllocation = {
   /** Per-event allocated USD, by fifoEngine's own event dedupe key. */
   shareByEventKey: Map<string, number | null>
@@ -110,12 +145,15 @@ export function allocateTxSideValues(
   events: readonly NormalizedEvent[],
   costUsd: Record<string, number | null>,
   proceedsUsd: Record<string, number | null>,
+  owners?: TxSideValueOwners,
 ): TxSideAllocation {
   const groups = groupTxSides(events)
+  const tokenCounts = tokensPerTxDirection(groups)
   const shareByEventKey = new Map<string, number | null>()
   for (const group of groups.values()) {
     const dict = group.direction === 'inbound' ? costUsd : proceedsUsd
-    const value = dict[group.txHash] ?? null
+    const tokensOnSide = tokenCounts.get(`${group.chain}:${group.txHash.toLowerCase()}:${group.direction}`) ?? 1
+    const value = sideValueAppliesTo(owners, group.direction, group.txHash, group.token, tokensOnSide) ? (dict[group.txHash] ?? null) : null
     if (value === null || !Number.isFinite(value)) {
       for (const e of group.events) shareByEventKey.set(normalizedDedupeKey(e), null)
       continue
@@ -137,8 +175,10 @@ export type TxSideIdentity = { chain?: string; txHash: string; direction: TxSide
  */
 export type TxSideValueLookup = (side: TxSideIdentity) => number | null
 
-export function buildTxSideValueLookup(costUsd: Record<string, number | null>, proceedsUsd: Record<string, number | null>): TxSideValueLookup {
+export function buildTxSideValueLookup(costUsd: Record<string, number | null>, proceedsUsd: Record<string, number | null>, owners?: TxSideValueOwners): TxSideValueLookup {
   return (side) => {
+    const owner = (side.direction === 'inbound' ? owners?.cost : owners?.proceeds)?.get(side.txHash)
+    if (owner !== undefined && side.token !== undefined && owner !== side.token.toLowerCase()) return null
     const value = (side.direction === 'inbound' ? costUsd : proceedsUsd)[side.txHash] ?? null
     return value !== null && Number.isFinite(value) ? value : null
   }
@@ -153,12 +193,18 @@ export function buildTxSideEventPriceLookup(
   events: readonly NormalizedEvent[],
   costUsd: Record<string, number | null>,
   proceedsUsd: Record<string, number | null>,
+  owners?: TxSideValueOwners,
 ): { lookup: PriceUsdLookup; allocation: TxSideAllocation } {
-  const allocation = allocateTxSideValues(events, costUsd, proceedsUsd)
+  const allocation = allocateTxSideValues(events, costUsd, proceedsUsd, owners)
+  const tokenCounts = tokensPerTxDirection(allocation.groups)
   const lookup: PriceUsdLookup = (event) => {
     if (event.direction !== 'inbound' && event.direction !== 'outbound') return null
     const key = normalizedDedupeKey(event)
     if (allocation.shareByEventKey.has(key)) return allocation.shareByEventKey.get(key) ?? null
+    // Count this event's own token too when its side was not among the allocated groups.
+    const ownSideGrouped = allocation.groups.has(txSideKeyForEvent(event)!)
+    const tokensOnSide = (tokenCounts.get(`${event.chain}:${event.txHash.toLowerCase()}:${event.direction}`) ?? 0) + (ownSideGrouped ? 0 : 1)
+    if (!sideValueAppliesTo(owners, event.direction, event.txHash, event.contract, tokensOnSide)) return null
     const value = (event.direction === 'inbound' ? costUsd : proceedsUsd)[event.txHash] ?? null
     if (value === null) return null
     const group = allocation.groups.get(txSideKeyForEvent(event)!)
