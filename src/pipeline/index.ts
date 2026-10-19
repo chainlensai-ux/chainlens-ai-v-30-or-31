@@ -515,8 +515,23 @@ export function safeRunFifoEngine(params: {
   // before this function runs — see src/pipeline/index.ts's receiptSwapPromotionResult), threaded
   // through purely for the audit log below. Never recomputed here.
   receiptPromotionCounts?: { exactSwapsRecovered: number; contradictoryLegsAfter: number | null }
+  // `${chain}:${txHash}` of liquidity deposits/withdrawals (src/lib/liquidityLegGuard.ts). Every leg
+  // of these transactions is kept out of FIFO: a deposit is not a sale, a withdrawal is not a buy.
+  excludedTxKeys?: ReadonlySet<string>
 }): FifoOutput {
   const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
+  const excluded = params.excludedTxKeys
+  if (excluded && excluded.size > 0) {
+    const keep = (chain: string, txHash: string | null) => !txHash || !excluded.has(`${chain}:${txHash.toLowerCase()}`)
+    params = {
+      ...params,
+      normalizedEvents: params.normalizedEvents.filter((e) => keep(e.chain, e.txHash)),
+      recoveryPolicy: {
+        ...params.recoveryPolicy,
+        evaluation: params.recoveryPolicy.evaluation.map((e) => ({ ...e, recoveredEvents: e.recoveredEvents.filter((r) => keep(r.chain, r.txHash)) })),
+      },
+    }
+  }
   // STABLECOINS ARE CASH, NOT TRADES: spending USDC on a buy is the quote side of that buy, not a
   // USDC sale. Matched through FIFO they became their own "lots" with realized PnL priced from
   // whatever value their tx side carried, so they never reach FIFO (the classification audit below
@@ -2556,6 +2571,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     buyTimeline: timelines.buyTimeline,
     sellTimeline: timelines.sellTimeline,
     priceUsdLookup: guardedPriceLookup.lookup,
+    excludedTxKeys: liquidityGuardedLookup.liquidityTxKeys,
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2595,6 +2611,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
           priceUsdLookup: guardedPriceLookup.lookup,
+          excludedTxKeys: liquidityGuardedLookup.liquidityTxKeys,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2647,6 +2664,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
           priceUsdLookup: guardedPriceLookup.lookup,
+          excludedTxKeys: liquidityGuardedLookup.liquidityTxKeys,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
@@ -2685,6 +2703,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           buyTimeline: timelines.buyTimeline,
           sellTimeline: timelines.sellTimeline,
           priceUsdLookup: guardedPriceLookup.lookup,
+          excludedTxKeys: liquidityGuardedLookup.liquidityTxKeys,
           currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
           canonicalBalanceLookup: params.canonicalBalanceLookup,
           unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,

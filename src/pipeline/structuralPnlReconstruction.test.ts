@@ -299,3 +299,23 @@ test('stablecoins never reach FIFO: USDC spent on a buy is not a USDC sale', () 
   assert.equal(result.matchedLots.some((l) => l.token === USDC), false)
   assert.equal(result.matchedLots.filter((l) => l.token === '0xtokenc').length, 1)
 })
+
+test('a liquidity deposit and withdrawal never close or open a lot; the later real sell matches the original buy', () => {
+  const buy = evt({ txHash: '0xbuy3', direction: 'inbound', contract: '0xtokenc', amount: 10, timestamp: '1700000000' })
+  const deposit = evt({ txHash: '0xDeposit', direction: 'outbound', contract: '0xtokenc', amount: 10, timestamp: '1700000100' })
+  const withdraw = evt({ txHash: '0xwithdraw', direction: 'inbound', contract: '0xtokenc', amount: 10, timestamp: '1700000200' })
+  const sell = evt({ txHash: '0xsell3', direction: 'outbound', contract: '0xtokenc', amount: 10, timestamp: '1700000300' })
+
+  const result = safeRunFifoEngine({
+    normalizedEvents: [buy, deposit, withdraw, sell],
+    recoveryPolicy: emptyRecoveryPolicy,
+    walletAddress: '0xwallet',
+    buyTimeline: emptyBuyTimeline,
+    sellTimeline: emptySellTimeline,
+    excludedTxKeys: new Set(['base:0xdeposit', 'base:0xwithdraw']),
+  })
+
+  assert.equal(result.matchedLots.length, 1)
+  assert.equal(result.matchedLots[0].openedTxHash, '0xbuy3')
+  assert.equal(result.matchedLots[0].closedTxHash, '0xsell3')
+})

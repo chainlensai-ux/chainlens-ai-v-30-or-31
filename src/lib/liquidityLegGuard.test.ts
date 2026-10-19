@@ -88,3 +88,15 @@ describe('guardLiquidityLegs', () => {
     assert.equal(guard.rejectedEvents, 0)
   })
 })
+
+describe('liquidity transactions handed to FIFO', () => {
+  it('lists every add and remove transaction, and no swap', () => {
+    const legs = [
+      ev('0xAdd', CHIP, 'outbound', 100), ev('0xAdd', USDC, 'outbound', 5),
+      ev('0xrm2', CHIP, 'inbound', 90), ev('0xrm2', USDC, 'inbound', 5),
+      ev('0xswap', USDC, 'outbound', 5), ev('0xswap', CHIP, 'inbound', 100),
+    ]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.deepEqual([...guard.liquidityTxKeys].sort(), ['base:0xadd', 'base:0xrm2'])
+  })
+})

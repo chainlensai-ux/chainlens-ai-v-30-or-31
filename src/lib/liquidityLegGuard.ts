@@ -31,6 +31,9 @@ export type LiquidityLegGuardResult = {
   liquidityAddTxs: number
   liquidityRemoveTxs: number
   rejectedEvents: number
+  // `${chain}:${txHash}` of every liquidity add/remove. FIFO skips these transactions entirely: a
+  // deposit is not a sale and a withdrawal is not a buy, so neither may open or close a lot.
+  liquidityTxKeys: ReadonlySet<string>
 }
 
 export function guardLiquidityLegs(events: readonly NormalizedEvent[], lookup: PriceUsdLookup): LiquidityLegGuardResult {
@@ -44,23 +47,26 @@ export function guardLiquidityLegs(events: readonly NormalizedEvent[], lookup: P
   const rejected = new Set<string>()
   let liquidityAddTxs = 0
   let liquidityRemoveTxs = 0
-  for (const legs of byTx.values()) {
+  const liquidityTxKeys = new Set<string>()
+  for (const [key, legs] of byTx) {
     const quoteOut = legs.some((e) => e.direction === 'outbound' && isQuoteAsset(e))
     const quoteIn = legs.some((e) => e.direction === 'inbound' && isQuoteAsset(e))
     const tokenOut = legs.some((e) => e.direction === 'outbound' && !isQuoteAsset(e))
     const tokenIn = legs.some((e) => e.direction === 'inbound' && !isQuoteAsset(e))
     const net = new Map<string, number>()
     for (const e of legs) {
-      const key = e.contract.toLowerCase()
-      net.set(key, (net.get(key) ?? 0) + (e.direction === 'inbound' ? e.amount : -e.amount))
+      const token = e.contract.toLowerCase()
+      net.set(token, (net.get(token) ?? 0) + (e.direction === 'inbound' ? e.amount : -e.amount))
     }
     const netOutTokens = [...net.values()].filter((v) => v < 0).length
     const netInTokens = [...net.values()].filter((v) => v > 0).length
     if ((tokenOut && quoteOut && !quoteIn) || netOutTokens >= 2) {
       liquidityAddTxs += 1
+      liquidityTxKeys.add(key)
       for (const e of legs) if (!isQuoteAsset(e)) rejected.add(eventKey(e))
     } else if ((tokenIn && quoteIn && !quoteOut) || (netInTokens >= 2 && netOutTokens <= 1)) {
       liquidityRemoveTxs += 1
+      liquidityTxKeys.add(key)
       for (const e of legs) if (e.direction === 'inbound' && !isQuoteAsset(e)) rejected.add(eventKey(e))
     }
   }
@@ -69,5 +75,6 @@ export function guardLiquidityLegs(events: readonly NormalizedEvent[], lookup: P
     liquidityAddTxs,
     liquidityRemoveTxs,
     rejectedEvents: rejected.size,
+    liquidityTxKeys,
   }
 }
