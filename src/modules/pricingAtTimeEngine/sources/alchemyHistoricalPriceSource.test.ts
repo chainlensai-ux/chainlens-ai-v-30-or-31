@@ -410,6 +410,32 @@ describe('alchemyHistoricalPriceSource — hourly series for majors', () => {
     assert.equal(majorMarketUnitPriceUsd('base', WETH, Date.parse('2026-01-01T10:00:00.000Z')), null, 'cleared per scan')
   })
 
+  it('volatile majors get budget slots first, and range hints widen or fetch their hourly series', async () => {
+    const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
+    const bodies: { address: string; startTime: string; endTime: string }[] = []
+    global.fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)))
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T10:00:00.000Z', value: '1' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const memes = Array.from({ length: MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN + 2 }, (_, i) =>
+      req({ chain: 'base', token: `0x${String(i + 1).padStart(40, '0')}`, txHash: `0xm${i}`, oneSideMissing: true }))
+    const cbbtc = req({ chain: 'base', token: CBBTC, txHash: '0xc', timestamp: Date.parse('2026-01-01T10:00:00.000Z'), oneSideMissing: false })
+    const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow([...memes, cbbtc], {
+      majorRangeHints: [
+        { chain: 'base', token: CBBTC, timestamp: Date.parse('2026-01-02T10:00:00.000Z') },
+        { chain: 'base', token: WETH, timestamp: Date.parse('2026-01-01T09:00:00.000Z') },
+        { chain: 'base', token: '0xmeme', timestamp: Date.parse('2026-01-01T09:00:00.000Z') },
+      ],
+    })
+    assert.deepEqual(bodies.slice(0, 2).map((b) => b.address).sort(), [CBBTC, WETH].sort())
+    assert.equal(bodies.find((b) => b.address === CBBTC)?.endTime, '2026-01-02T10:00:00.000Z', 'hint widens the range')
+    assert.equal(bodies.length, MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN)
+    assert.ok(!bodies.some((b) => b.address === '0xmeme'), 'hints for non-majors are ignored')
+    assert.equal(shadowPricesByTxHash.has('0xc'), true)
+    assert.equal(audit.eligibleRequirements, memes.length + 1, 'hints are not requirements')
+    assert.equal(majorMarketUnitPriceUsd('base', WETH, Date.parse('2026-01-01T09:30:00.000Z')), 1)
+  })
+
   it('other tokens keep the daily series', async () => {
     const intervals: string[] = []
     global.fetch = (async (_url: string, init: RequestInit) => {

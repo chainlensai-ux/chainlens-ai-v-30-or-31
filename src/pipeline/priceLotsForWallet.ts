@@ -48,7 +48,7 @@ import {
   isAlchemyHistoricalPricingEnabled,
   type AlchemyPricingRequirement,
 } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
-import { acceptsMajorMarketPrice } from '../lib/majorMarketPrice'
+import { acceptsMajorMarketPrice, isMajorVolatileToken } from '../lib/majorMarketPrice'
 import {
   prefetchNativeUsdPrices,
   readPrefetchedNativeUsdPrice,
@@ -2346,8 +2346,16 @@ export async function priceLotsForWallet(params: {
     acceptedEvidenceSkipAudit.estimatedCreditsSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
     acceptedEvidenceSkipAudit.estimatedCuSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
-  if (alchemyShadowRequirements.length > 0) {
-    const { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+  // Every trade time of a major volatile token, priced or not, so its hourly market series covers
+  // the sides the outlier guard may later reprice (src/lib/lotPriceOutlierGuard.ts).
+  const majorRangeHints = structuralMatchedLots
+    .filter((lot) => isMajorVolatileToken(lot.chain, lot.token))
+    .flatMap((lot) => [
+      { chain: lot.chain, token: lot.token, timestamp: lot.openedAt },
+      { chain: lot.chain, token: lot.token, timestamp: lot.closedAt },
+    ])
+  if (alchemyShadowRequirements.length > 0 || majorRangeHints.length > 0) {
+    const { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements, { majorRangeHints })
     acceptedEvidenceSkipAudit.alchemyActualLiveCalls = alchemyAudit.liveRequests
 
     // Snapshot BEFORE any Alchemy write — reuses the exact same countFullyPriced() closure already

@@ -179,7 +179,7 @@ function tierOf(
   req: Pick<AlchemyPricingRequirement, 'chain' | 'token' | 'oneSideMissing'>,
   assetsWithPriorSuccess: Set<string>,
 ): 1 | 2 | 3 | 4 {
-  if (isTier2Asset(req.chain, req.token)) return 1
+  if (isTier2Asset(req.chain, req.token) || isMajorMarketToken(req.chain, req.token)) return 1
   if (req.oneSideMissing) return 2
   if (assetsWithPriorSuccess.has(assetKey(req.chain, req.token))) return 3
   return 4
@@ -448,6 +448,15 @@ function closestPoint(points: AlchemyHistoricalPricePoint[], timestamp: number):
 // to ever act on this (today: nowhere does).
 export async function resolveAlchemyHistoricalPricesShadow(
   requirements: AlchemyPricingRequirement[],
+  options: {
+    /**
+     * Trade times of major volatile tokens (WETH, cbBTC, native) whose sides are already priced.
+     * They widen that asset's hourly range — or fetch it when no side needs a price — so the
+     * outlier guard can reprice a rejected major side from the market (majorMarketUnitPriceUsd).
+     * Never priced themselves; a widening that would push the range past the hourly limit is dropped.
+     */
+    majorRangeHints?: { chain: SupportedChain; token: string; timestamp: number }[]
+  } = {},
 ): Promise<{
   shadowPricesByTxHash: Map<string, number>
   /** Distance between each accepted price point and its trade, by txHash. */
@@ -468,24 +477,43 @@ export async function resolveAlchemyHistoricalPricesShadow(
   // one-side-missing requirement is tier 2 for the whole asset, since one bounded range covers all
   // of that asset's requirements together anyway. Within tier 4, unknown Base microcaps are pushed
   // to the very back via baseMicrocapTieBreak (0 = sorts first, 1 = sorts last).
-  const assetEntries = [...byAsset.entries()].map(([key, reqs]) => {
-    const [{ chain, token }] = reqs
+  const hintsByAsset = new Map<string, { chain: SupportedChain; token: string; timestamps: number[] }>()
+  for (const hint of options.majorRangeHints ?? []) {
+    if (!Number.isFinite(hint.timestamp) || !isMajorVolatileToken(hint.chain, hint.token)) continue
+    const key = assetKey(hint.chain, hint.token)
+    const entry = hintsByAsset.get(key) ?? { chain: hint.chain, token: hint.token, timestamps: [] }
+    entry.timestamps.push(hint.timestamp)
+    hintsByAsset.set(key, entry)
+  }
+  const assetKeys = new Set([...byAsset.keys(), ...hintsByAsset.keys()])
+  const assetEntries = [...assetKeys].map((key) => {
+    const reqs = byAsset.get(key) ?? []
+    const hint = hintsByAsset.get(key)
+    const { chain, token } = reqs[0] ?? hint!
     return {
       key,
+      chain,
+      token,
       reqs,
-      tier: Math.min(...reqs.map((r) => tierOf(r, assetsWithPriorSuccessThisScan))) as 1 | 2 | 3 | 4,
+      hintTimestamps: hint?.timestamps ?? [],
+      tier: (reqs.length > 0 ? Math.min(...reqs.map((r) => tierOf(r, assetsWithPriorSuccessThisScan))) : 1) as 1 | 2 | 3 | 4,
+      // Volatile majors lead tier 1: their hourly series is what prices or reprices their sides.
+      majorTieBreak: isMajorVolatileToken(chain, token) ? 0 : 1,
       baseMicrocapTieBreak: isUnknownBaseMicrocap(chain, token) ? 1 : 0,
     }
   })
-  assetEntries.sort((a, b) => a.tier - b.tier || a.baseMicrocapTieBreak - b.baseMicrocapTieBreak)
+  assetEntries.sort((a, b) => a.tier - b.tier || a.majorTieBreak - b.majorTieBreak || a.baseMicrocapTieBreak - b.baseMicrocapTieBreak)
 
   const shadowPricesByTxHash = new Map<string, number>()
   const shadowDistanceMsByTxHash = new Map<string, number>()
   let cacheHitsForThisCall = 0
 
-  for (const { key: assetKeyStr, reqs } of assetEntries) {
-    const [{ chain, token }] = reqs
-    const timestamps = reqs.map((r) => r.timestamp)
+  for (const { key: assetKeyStr, chain, token, reqs, hintTimestamps } of assetEntries) {
+    const reqTimestamps = reqs.map((r) => r.timestamp)
+    const widened = [...reqTimestamps, ...hintTimestamps]
+    const timestamps = reqTimestamps.length === 0 || Math.max(...widened) - Math.min(...widened) <= HOURLY_MAX_RANGE_MS
+      ? widened
+      : reqTimestamps
     const startTimeMs = Math.min(...timestamps)
     const endTimeMs = Math.max(...timestamps)
     const wasCached = rangeCache.has(`${assetKey(chain, token)}:${startTimeMs}:${endTimeMs}`)
