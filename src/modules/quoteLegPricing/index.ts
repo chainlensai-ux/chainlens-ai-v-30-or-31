@@ -255,6 +255,43 @@ function tieBreakSort(legs: SwapLeg[]): SwapLeg[] {
   })
 }
 
+// WALLET FLOW SHAPE: the quote paid or received in a transaction prices the target only when the
+// transaction is a trade of the target against that quote. Netting the wallet's own legs per token
+// rules out two production shapes that derived prices like $512,533/token:
+//   - the target leg is a refund or remainder — the wallet's net flow of the target runs the other way
+//     (e.g. a liquidity add sends 1,000 ZORA and 155 USDC and gets 0.0003 ZORA back);
+//   - a quote asset moves, net, the same way as the target (token + USDC both out: a liquidity add;
+//     both in: a liquidity withdrawal) — nothing was paid for the target.
+function walletFlowShapeRejection(
+  chain: SupportedChain,
+  targetToken: string,
+  targetDirection: SwapLegDirection,
+  legs: readonly SwapLeg[],
+): string | null {
+  if (targetDirection === 'unknown') return null
+  const net = new Map<string, number>()
+  const gross = new Map<string, number>()
+  for (const leg of legs) {
+    if (leg.direction === 'unknown' || !isFinitePositive(leg.amount)) continue
+    const token = leg.contract.toLowerCase()
+    net.set(token, (net.get(token) ?? 0) + (leg.direction === 'inbound' ? leg.amount : -leg.amount))
+    gross.set(token, (gross.get(token) ?? 0) + leg.amount)
+  }
+  const sign = targetDirection === 'inbound' ? 1 : -1
+  const signedNet = (token: string) => {
+    const value = (net.get(token) ?? 0) * sign
+    return Math.abs(value) <= (gross.get(token) ?? 0) * 1e-9 ? 0 : value
+  }
+  const target = targetToken.toLowerCase()
+  if (gross.has(target) && signedNet(target) <= 0) return 'target_leg_is_refund_or_remainder'
+  for (const token of net.keys()) {
+    if (token === target) continue
+    const isQuote = stablecoinSymbolFor(chain, token) !== null || isNativeOrCanonicalWeth(chain, { contract: token })
+    if (isQuote && signedNet(token) > 0) return 'quote_moves_with_target_liquidity_shape'
+  }
+  return null
+}
+
 export function deriveSameTransactionQuotePrice(
   params: DeriveSameTransactionQuotePriceParams,
 ): QuoteLegPriceResult {
@@ -301,6 +338,9 @@ export function deriveSameTransactionQuotePrice(
   )
 
   if (candidateLegs.length === 0) return failure(params, 'no_opposite_leg_in_transaction', targetDecimals)
+
+  const shapeRejection = walletFlowShapeRejection(chain, targetToken, targetDirection, legs)
+  if (shapeRejection) return failure(params, shapeRejection, targetDecimals)
 
   // Stablecoin has priority over native/WETH.
   const stableCandidates = candidateLegs.filter((leg) => stablecoinSymbolFor(chain, leg.contract) !== null)

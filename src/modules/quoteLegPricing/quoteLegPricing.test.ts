@@ -322,3 +322,37 @@ describe('deriveSameTransactionQuotePrice — determinism and isolation', () => 
     assert.ok(result.priceUsd != null && Number.isFinite(result.priceUsd) && result.priceUsd > 0 && result.priceUsd <= 1e6)
   })
 })
+
+describe('deriveSameTransactionQuotePrice — wallet flow shape', () => {
+  it('a refund leg of a token the wallet net-sent is never priced with the whole quote (liquidity add)', () => {
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'outbound', logIndex: 0 },
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 155, direction: 'outbound', logIndex: 1 },
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 0.0003, direction: 'inbound', logIndex: 2 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs, targetDirection: 'inbound', targetQuantity: 0.0003 }))
+    assert.equal(result.priceUsd, null)
+    assert.equal(result.evidence.rejectionReason, 'target_leg_is_refund_or_remainder')
+  })
+
+  it('a token received together with USDC (liquidity withdrawal) is not priced from a pool-side quote', () => {
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'inbound', logIndex: 0 },
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 200, direction: 'inbound', logIndex: 1 },
+      { contract: WETH_ETH, symbol: 'WETH', decimals: 18, amount: 0.1, direction: 'unknown', logIndex: 2 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs, targetDirection: 'inbound', targetQuantity: 1000, historicalNativePrice: 2400 }))
+    assert.equal(result.priceUsd, null)
+    assert.equal(result.evidence.rejectionReason, 'quote_moves_with_target_liquidity_shape')
+  })
+
+  it('a buy with a small USDC refund still prices the bought token', () => {
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'inbound', logIndex: 0 },
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 500, direction: 'outbound', logIndex: 1 },
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 1, direction: 'inbound', logIndex: 2 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs, targetDirection: 'inbound', targetQuantity: 1000 }))
+    assert.equal(result.priceUsd, 0.5)
+  })
+})
