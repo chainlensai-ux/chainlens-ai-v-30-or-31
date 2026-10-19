@@ -366,3 +366,43 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     assert.ok(audit.negativeCacheHits >= 1)
   })
 })
+
+describe('alchemyHistoricalPriceSource — hourly series for majors', () => {
+  const WETH = '0x4200000000000000000000000000000000000006'
+
+  it('WETH is requested hourly and reports how far the accepted point is from the trade', async () => {
+    const intervals: string[] = []
+    global.fetch = (async (_url: string, init: RequestInit) => {
+      intervals.push(JSON.parse(String(init.body)).interval)
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T10:00:00.000Z', value: '2400' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const trade = Date.parse('2026-01-01T10:20:00.000Z')
+    const { shadowPricesByTxHash, shadowDistanceMsByTxHash } = await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', token: WETH, txHash: '0xw', timestamp: trade })])
+    assert.deepEqual(intervals, ['1h'])
+    assert.equal(shadowPricesByTxHash.get('0xw'), 2400)
+    assert.equal(shadowDistanceMsByTxHash.get('0xw'), 20 * 60_000)
+  })
+
+  it('a refused hourly request falls back to the daily series', async () => {
+    const intervals: string[] = []
+    global.fetch = (async (_url: string, init: RequestInit) => {
+      const interval = JSON.parse(String(init.body)).interval
+      intervals.push(interval)
+      if (interval === '1h') return new Response('{}', { status: 500 })
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '2400' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const { shadowPricesByTxHash } = await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', token: WETH, txHash: '0xw2' })])
+    assert.deepEqual(intervals, ['1h', '1d'])
+    assert.equal(shadowPricesByTxHash.get('0xw2'), 2400)
+  })
+
+  it('other tokens keep the daily series', async () => {
+    const intervals: string[] = []
+    global.fetch = (async (_url: string, init: RequestInit) => {
+      intervals.push(JSON.parse(String(init.body)).interval)
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '1' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', txHash: '0xm' })])
+    assert.deepEqual(intervals, ['1d'])
+  })
+})

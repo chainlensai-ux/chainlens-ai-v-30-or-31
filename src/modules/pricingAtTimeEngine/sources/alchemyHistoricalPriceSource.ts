@@ -17,6 +17,7 @@
 // copy, etc.) — rather than importing providerFetchWindow's private (unexported) alchemyApiKey.
 
 import type { SupportedChain } from '../../providerFetchWindow/types'
+import { isMajorMarketToken } from '../../../lib/majorMarketPrice'
 
 const ALCHEMY_KEY_NAMES: Partial<Record<SupportedChain, string[]>> = {
   eth: ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY'],
@@ -221,6 +222,8 @@ const TIER2_MAX_TEMPORAL_DISTANCE_MS = 24 * 60 * 60 * 1000
 // most trades. One day admits the nearest daily candle while still rejecting stale multi-day data.
 const OTHER_MAX_TEMPORAL_DISTANCE_MS = 24 * 60 * 60 * 1000
 
+const HOURLY_MAX_RANGE_MS = 30 * 24 * 60 * 60 * 1000
+
 function maxTemporalDistanceMsFor(chain: SupportedChain, token: string): number {
   return isTier2Asset(chain, token) ? TIER2_MAX_TEMPORAL_DISTANCE_MS : OTHER_MAX_TEMPORAL_DISTANCE_MS
 }
@@ -311,7 +314,7 @@ async function fetchAlchemyHistoricalRange(
     return { ok: false, reason: 'token_not_found', points: [] }
   }
 
-  const networkSlug = ALCHEMY_NETWORK_SLUGS[chain]
+  const networkSlug: string | undefined = ALCHEMY_NETWORK_SLUGS[chain]
   if (!networkSlug) return { ok: false, reason: 'unverified_chain_for_alchemy_prices', points: [] }
 
   const apiKey = alchemyApiKey(chain)
@@ -338,8 +341,20 @@ async function fetchAlchemyHistoricalRange(
   }
 
   liveRequests += 1
-  const interval = '1d'
+  // Majors get hourly points so a price within an hour of the trade can count as verified
+  // (src/lib/majorMarketPrice.ts); hourly ranges are capped at 30 days. A refused hourly request
+  // falls back once to the daily series every other asset uses.
+  const hourly = isMajorMarketToken(chain, token) && endTimeMs - startTimeMs <= HOURLY_MAX_RANGE_MS
   const live = (async (): Promise<AlchemyAssetRangeResult> => {
+    if (!hourly) return requestAlchemySeries('1d')
+    const result = await requestAlchemySeries('1h')
+    if (result.ok || result.reason === 'token_not_found') return result
+    liveRequests += 1
+    return requestAlchemySeries('1d')
+  })()
+
+  async function requestAlchemySeries(interval: '1h' | '1d'): Promise<AlchemyAssetRangeResult> {
+    if (!networkSlug || !apiKey) return { ok: false, reason: 'no_api_key_configured', points: [] }
     try {
       const res = await fetch(`https://api.g.alchemy.com/prices/v1/${apiKey}/tokens/historical`, {
         method: 'POST',
@@ -391,7 +406,7 @@ async function fetchAlchemyHistoricalRange(
     } catch (err) {
       return { ok: false, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, points: [] }
     }
-  })()
+  }
 
   rangeCache.set(key, live)
   return live
@@ -413,6 +428,8 @@ export async function resolveAlchemyHistoricalPricesShadow(
   requirements: AlchemyPricingRequirement[],
 ): Promise<{
   shadowPricesByTxHash: Map<string, number>
+  /** Distance between each accepted price point and its trade, by txHash. */
+  shadowDistanceMsByTxHash: Map<string, number>
   audit: AlchemyHistoricalAuditRecord
 }> {
   const eligibleRequirements = requirements.length
@@ -441,6 +458,7 @@ export async function resolveAlchemyHistoricalPricesShadow(
   assetEntries.sort((a, b) => a.tier - b.tier || a.baseMicrocapTieBreak - b.baseMicrocapTieBreak)
 
   const shadowPricesByTxHash = new Map<string, number>()
+  const shadowDistanceMsByTxHash = new Map<string, number>()
   let cacheHitsForThisCall = 0
 
   for (const { key: assetKeyStr, reqs } of assetEntries) {
@@ -491,6 +509,7 @@ export async function resolveAlchemyHistoricalPricesShadow(
       }
 
       shadowPricesByTxHash.set(req.txHash, price)
+      shadowDistanceMsByTxHash.set(req.txHash, distanceMs)
       requirementsResolvedCount += 1
       bumpMapCount(resolvedByChainCounts, req.chain)
       bumpMapCount(resolvedByAssetCounts, assetKeyStr)
@@ -523,7 +542,7 @@ export async function resolveAlchemyHistoricalPricesShadow(
     negativeCacheHits: negativeCacheHitsCount,
   }
 
-  return { shadowPricesByTxHash, audit }
+  return { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit }
 }
 
 // TEST-SUPPORT EXPORTS, DISCLOSED: read-only observability, same convention as this codebase's other

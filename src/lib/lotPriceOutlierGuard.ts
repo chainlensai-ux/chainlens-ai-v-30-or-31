@@ -19,7 +19,7 @@
 import type { MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { isCanonicalPositiveUsd, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
-import { isCanonicalWethAddress, isNativePseudoAddress } from '../modules/quoteLegPricing'
+import { isMajorVolatileToken } from './majorMarketPrice'
 
 export const LOT_PRICE_OUTLIER_FACTOR = 1_000
 export const LOT_PRICE_OUTLIER_MIN_TOKEN_SAMPLES = 3
@@ -28,11 +28,10 @@ export const LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD = 1_000_000
 // and $730 and cbBTC at $27.8k next to a $2,409 / $81.5k median — liquidity legs and split side values
 // a 1000x band can never catch.
 export const LOT_PRICE_MAJOR_OUTLIER_FACTOR = 1.5
-const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
 
 function isMajorTokenKey(tokenKey: string): boolean {
   const [chain, token] = tokenKey.split(':')
-  return token === CBBTC || isNativePseudoAddress(token) || isCanonicalWethAddress(chain as never, token)
+  return isMajorVolatileToken(chain, token)
 }
 
 type Side = 'entry' | 'exit'

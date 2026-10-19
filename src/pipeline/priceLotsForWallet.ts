@@ -48,6 +48,7 @@ import {
   isAlchemyHistoricalPricingEnabled,
   type AlchemyPricingRequirement,
 } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
+import { acceptsMajorMarketPrice } from '../lib/majorMarketPrice'
 import {
   prefetchNativeUsdPrices,
   readPrefetchedNativeUsdPrice,
@@ -2311,6 +2312,8 @@ export async function priceLotsForWallet(params: {
     alchemyRequirementSidesByTxHash.set(txHash, meta)
   }
   const alchemyShadowRequirements: AlchemyPricingRequirement[] = []
+  // Sides priced by a major asset's market price within an hour of the trade (src/lib/majorMarketPrice.ts).
+  const majorMarketPriceSideKeys = new Set<string>()
   let alchemyRequirementsSkippedByAcceptedEvidence = 0
   for (const lot of structuralMatchedLots) {
     const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
@@ -2344,7 +2347,7 @@ export async function priceLotsForWallet(params: {
     acceptedEvidenceSkipAudit.estimatedCuSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
   if (alchemyShadowRequirements.length > 0) {
-    const { shadowPricesByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+    const { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
     acceptedEvidenceSkipAudit.alchemyActualLiveCalls = alchemyAudit.liveRequests
 
     // Snapshot BEFORE any Alchemy write — reuses the exact same countFullyPriced() closure already
@@ -2379,14 +2382,17 @@ export async function priceLotsForWallet(params: {
         if (amount == null || !Number.isFinite(amount) || amount <= 0) continue
         const totalUsd = perUnitPrice * amount
         if (!isSanePrice(totalUsd)) continue
+        const majorMarket = acceptsMajorMarketPrice(chain, token, shadowDistanceMsByTxHash.get(txHash))
         if (sides.has('cost') && atTradeTime.costUsd[txHash] == null) {
           atTradeTime.costUsd[txHash] = totalUsd
           setSideOwner('entry', txHash, token)
+          if (majorMarket) majorMarketPriceSideKeys.add(`${chain}:${txHash.toLowerCase()}:entry`)
           pricesApplied += 1
         }
         if (sides.has('proceeds') && atTradeTime.proceedsUsd[txHash] == null) {
           atTradeTime.proceedsUsd[txHash] = totalUsd
           setSideOwner('exit', txHash, token)
+          if (majorMarket) majorMarketPriceSideKeys.add(`${chain}:${txHash.toLowerCase()}:exit`)
           pricesApplied += 1
         }
       }
@@ -2761,12 +2767,13 @@ export async function priceLotsForWallet(params: {
     const accepted = isSkippableByAcceptedEvidence(lot.chain, txHash, side)
     const sameTx = canonicalSameTxSideKeys.has(key)
     const receiptQuote = receiptQuoteSideKeys.has(key) || corroboratedCompositeSideKeys.has(key)
+    const majorMarket = majorMarketPriceSideKeys.has(key)
     const numeric = typeof price === 'number' && Number.isFinite(price) && price > 0
-    const verified = numeric && (accepted || sameTx || receiptQuote)
+    const verified = numeric && (accepted || sameTx || receiptQuote || majorMarket)
     return {
       price: numeric ? price : null,
       evidenceQuality: verified ? 'verified' : numeric ? 'partial' : 'unpriced',
-      sourceStatus: accepted ? 'accepted_evidence' : sameTx ? 'same_tx_verified_quote' : receiptQuote ? 'receipt_verified_quote' : numeric ? 'unverified_source' : 'missing',
+      sourceStatus: accepted ? 'accepted_evidence' : sameTx ? 'same_tx_verified_quote' : receiptQuote ? 'receipt_verified_quote' : majorMarket ? 'major_market_price' : numeric ? 'unverified_source' : 'missing',
       canonicalVerified: verified,
       rejectionReason: verified ? null : numeric ? 'missing_canonical_verified_evidence' : 'missing_numeric_price',
     }
