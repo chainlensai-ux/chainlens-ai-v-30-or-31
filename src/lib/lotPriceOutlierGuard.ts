@@ -19,10 +19,21 @@
 import type { MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { isCanonicalPositiveUsd, isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
+import { isCanonicalWethAddress, isNativePseudoAddress } from '../modules/quoteLegPricing'
 
 export const LOT_PRICE_OUTLIER_FACTOR = 1_000
 export const LOT_PRICE_OUTLIER_MIN_TOKEN_SAMPLES = 3
 export const LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD = 1_000_000
+// Majors (ETH/WETH, cbBTC) never move 1.5x inside a scan window. Production showed WETH sides at $330
+// and $730 and cbBTC at $27.8k next to a $2,409 / $81.5k median — liquidity legs and split side values
+// a 1000x band can never catch.
+export const LOT_PRICE_MAJOR_OUTLIER_FACTOR = 1.5
+const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
+
+function isMajorTokenKey(tokenKey: string): boolean {
+  const [chain, token] = tokenKey.split(':')
+  return token === CBBTC || isNativePseudoAddress(token) || isCanonicalWethAddress(chain as never, token)
+}
 
 type Side = 'entry' | 'exit'
 type SideSample = PriceSample
@@ -98,8 +109,9 @@ function detectPriceOutliers(samples: Iterable<PriceSample>): Map<string, Outlie
   const walletMedianValueUsd = median(all.map((s) => s.valueUsd))
   for (const sample of all) {
     const reference = tokenMedian.get(sample.tokenKey) ?? null
+    const factor = isMajorTokenKey(sample.tokenKey) ? LOT_PRICE_MAJOR_OUTLIER_FACTOR : LOT_PRICE_OUTLIER_FACTOR
     if (reference !== null && reference > 0
-      && (sample.perUnitUsd > reference * LOT_PRICE_OUTLIER_FACTOR || sample.perUnitUsd < reference / LOT_PRICE_OUTLIER_FACTOR)) {
+      && (sample.perUnitUsd > reference * factor || sample.perUnitUsd < reference / factor)) {
       verdicts.set(sample.key, { reason: 'token_price_outlier', tokenMedianPerUnitUsd: reference })
     } else if (sample.valueUsd > LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD && sample.valueUsd > walletMedianValueUsd * LOT_PRICE_OUTLIER_FACTOR) {
       verdicts.set(sample.key, { reason: 'wallet_value_outlier', tokenMedianPerUnitUsd: reference })

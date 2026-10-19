@@ -93,4 +93,24 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     const realSized = [lots[0], { ...lots[1], evidenceQuality: 'unpriced' as const }]
     assert.equal(negligibleUnpricedLotIndexes(realSized).size, 0, 'a real-sized unpriced lot still counts')
   })
+
+  it('WETH and cbBTC sides far from the token median are rejected; a normal memecoin swing is not', () => {
+    const WETH = '0x4200000000000000000000000000000000000006'
+    const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
+    const mk = (txHash: string, contract: string, amount: number) => ({ ...ev(txHash, amount), contract })
+    const weth = [mk('0xw1', WETH, 0.1), mk('0xw2', WETH, 0.2), mk('0xw3', WETH, 0.05), mk('0xwbad', WETH, 0.18)]
+    const btc = [mk('0xb1', CBBTC, 0.001), mk('0xb2', CBBTC, 0.002), mk('0xb3', CBBTC, 0.003), mk('0xbbad', CBBTC, 0.0021)]
+    const meme = [ev('0xm1', 100), ev('0xm2', 100), ev('0xm3', 100), ev('0xm4', 100)]
+    const usd: Record<string, number> = {
+      '0xw1': 241, '0xw2': 480, '0xw3': 121, '0xwbad': 59.38,
+      '0xb1': 81.5, '0xb2': 163, '0xb3': 245, '0xbbad': 58.43,
+      '0xm1': 1, '0xm2': 1, '0xm3': 1, '0xm4': 10,
+    }
+    const guarded = guardPriceUsdLookup([...weth, ...btc, ...meme], (e) => usd[e.txHash] ?? null)
+    assert.equal(guarded.lookup(weth[3]), null, 'WETH at $330 next to a $2.4k median')
+    assert.equal(guarded.lookup(btc[3]), null, 'cbBTC at $27.8k next to an $81.5k median')
+    assert.equal(guarded.lookup(weth[0]), 241)
+    assert.equal(guarded.lookup(meme[3]), 10, 'a 10x memecoin move is real')
+    assert.equal(guarded.rejectedEvents, 2)
+  })
 })
