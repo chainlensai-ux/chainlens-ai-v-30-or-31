@@ -63,6 +63,7 @@ import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS,
 import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
 import { guardLiquidityLegs } from '../lib/liquidityLegGuard'
+import { buildUnpricedLotAudit } from '../lib/unpricedLotAudit'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -2997,6 +2998,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     publicPnlStatus: fifoAndPnl.publicPnlStatus,
     hardInvalid: fifoAndPnl.integrityFlags.hardInvalid,
   })
+  // Why each unverified closed lot has no price (src/lib/unpricedLotAudit.ts). JSON so nested rows
+  // are not collapsed to [Object] in the log.
+  try {
+    // eslint-disable-next-line no-console
+    console.warn('[unpriced-lot-audit]', JSON.stringify(buildUnpricedLotAudit({
+      lots: fifoAndPnl.matchedLots,
+      events: guardEvents,
+      rawLookup: walletPriceLookups.priceUsdLookup,
+      liquidityGuardedLookup: liquidityGuardedLookup.lookup,
+      guardedLookup: guardedPriceLookup.lookup,
+    })))
+  } catch {
+    // Diagnostic only.
+  }
   // One line naming the lots that drive the total, so an absurd figure can be traced to its trades.
   const largestFifoLots = [...fifoAndPnl.matchedLots]
     .filter((l) => typeof l.realizedPnlUsd === 'number' && Number.isFinite(l.realizedPnlUsd))
