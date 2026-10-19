@@ -64,6 +64,7 @@ import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../l
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
 import { guardLiquidityLegs } from '../lib/liquidityLegGuard'
 import { buildUnpricedLotAudit } from '../lib/unpricedLotAudit'
+import { buildUnmatchedSellAudit } from '../lib/unmatchedSellAudit'
 import { majorMarketUnitPriceUsd } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
@@ -3014,6 +3015,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       rawLookup: walletPriceLookups.priceUsdLookup,
       liquidityGuardedLookup: liquidityGuardedLookup.lookup,
       guardedLookup: guardedPriceLookup.lookup,
+    })))
+  } catch {
+    // Diagnostic only.
+  }
+  // Which tokens the unmatched sells belong to (src/lib/unmatchedSellAudit.ts); they count against
+  // the PnL coverage gate alongside unverified lots.
+  try {
+    // eslint-disable-next-line no-console
+    console.warn('[unmatched-sell-audit]', JSON.stringify(buildUnmatchedSellAudit({
+      unmatchedSells: fifoAndPnl.unmatchedSellEvents,
+      events: guardEvents,
+      excludedTxKeys: liquidityGuardedLookup.liquidityTxKeys,
     })))
   } catch {
     // Diagnostic only.
