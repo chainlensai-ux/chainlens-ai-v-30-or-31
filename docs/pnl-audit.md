@@ -20,7 +20,7 @@ available locally.
 
 ## Findings
 
-### F1 — Critical: price tables are keyed by transaction, not by token (confirmed in code)
+### F1 — Critical: price tables are keyed by transaction, not by token (fixed in eed3c6b6)
 
 `costUsd` / `proceedsUsd` are `Record<txHash, number>`. The value is meant to be the USD value of
 one token's side of a transaction, but nothing records *which* token.
@@ -39,7 +39,7 @@ gains/losses and is consistent with the −$1.35M sample.
 
 Fix: key every table by `(txHash, token)`; each writer already knows the token it priced.
 
-### F2 — High: USDC and WETH are matched as trades (confirmed in code)
+### F2 — High: USDC and WETH are matched as trades (stablecoins fixed; WETH kept as an asset)
 
 Quote assets enter FIFO like any token (`lot_base_0x8335…`, `lot_base_0x4200…` lots in production).
 Spending USDC on a buy closes a USDC "lot" with its own realized PnL. With F1, refund and quote legs

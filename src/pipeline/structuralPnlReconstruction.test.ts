@@ -280,3 +280,22 @@ test('HARD ASSERTION (production regression fixture): [lot-identity-audit] repor
     restore()
   }
 })
+
+test('stablecoins never reach FIFO: USDC spent on a buy is not a USDC sale', () => {
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const usdcIn = evt({ txHash: '0xdeposit', direction: 'inbound', contract: USDC, symbol: 'USDC', amount: 100, amountRaw: '100000000', tokenDecimals: 6, timestamp: '1700000000' })
+  const usdcOut = evt({ txHash: '0xbuy3', direction: 'outbound', contract: USDC, symbol: 'USDC', amount: 100, amountRaw: '100000000', tokenDecimals: 6, timestamp: '1700000100' })
+  const tokenIn = evt({ txHash: '0xbuy3', direction: 'inbound', contract: '0xtokenc', amount: 50, timestamp: '1700000100' })
+  const tokenOut = evt({ txHash: '0xsell3', direction: 'outbound', contract: '0xtokenc', amount: 50, timestamp: '1700000200' })
+
+  const result = safeRunFifoEngine({
+    normalizedEvents: [usdcIn, usdcOut, tokenIn, tokenOut],
+    recoveryPolicy: emptyRecoveryPolicy,
+    walletAddress: '0xwallet',
+    buyTimeline: emptyBuyTimeline,
+    sellTimeline: emptySellTimeline,
+  })
+
+  assert.equal(result.matchedLots.some((l) => l.token === USDC), false)
+  assert.equal(result.matchedLots.filter((l) => l.token === '0xtokenc').length, 1)
+})

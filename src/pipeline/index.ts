@@ -517,8 +517,15 @@ export function safeRunFifoEngine(params: {
   receiptPromotionCounts?: { exactSwapsRecovered: number; contradictoryLegsAfter: number | null }
 }): FifoOutput {
   const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
-  const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
+  // STABLECOINS ARE CASH, NOT TRADES: spending USDC on a buy is the quote side of that buy, not a
+  // USDC sale. Matched through FIFO they became their own "lots" with realized PnL priced from
+  // whatever value their tx side carried, so they never reach FIFO (the classification audit below
+  // still sees them).
+  const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation
+    .flatMap((e) => e.recoveredEvents)
+    .filter((e) => !(e.contract && isVerifiedStablecoinAddress(e.chain, e.contract)))
   const canonicalEvents = filterToFifoEligible(params.normalizedEvents, classificationContext)
+    .filter((e) => !isVerifiedStablecoinAddress(e.chain, e.contract))
 
   if (params.computeReconstructionAudit) {
     try {
