@@ -624,7 +624,8 @@ export function isReusableWalletScanJob(
   now: number,
 ): job is WalletScanJobMetadata {
   if (!job || job.userId !== userId || job.heavyWalletFollowUp) return false
-  if (job.wallet.toLowerCase() !== wallet.toLowerCase()) return false
+  // Older or partial job records can lack a wallet; they are never reusable.
+  if (typeof job.wallet !== 'string' || job.wallet.toLowerCase() !== wallet.toLowerCase()) return false
   if ((job.scanMode ?? 'normal') !== scanMode) return false
   if (job.status !== 'queued' && job.status !== 'running') return false
   if (superviseWalletScanJob(job, now).action === 'fail') return false
