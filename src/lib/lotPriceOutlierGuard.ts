@@ -147,7 +147,14 @@ const eventKey = (event: NormalizedEvent) =>
  * value is an outlier for its token (or the wallet) reads as unpriced, so it can reach neither
  * realized nor unrealized PnL. `events` is every event FIFO will look up; others pass through.
  */
-export function guardPriceUsdLookup(events: readonly NormalizedEvent[], lookup: PriceUsdLookup): { lookup: PriceUsdLookup; rejectedEvents: number; rejectedValueUsd: number } {
+// A rejected ETH/WETH/cbBTC side is the value of a known amount of a major asset, so when the scan
+// holds that asset's market price within an hour of the trade (majorMarketValueUsd) the side reads
+// amount x market price instead of nothing. Every other rejected side stays unpriced.
+export function guardPriceUsdLookup(
+  events: readonly NormalizedEvent[],
+  lookup: PriceUsdLookup,
+  options: { majorMarketValueUsd?: (event: NormalizedEvent) => number | null } = {},
+): { lookup: PriceUsdLookup; rejectedEvents: number; rejectedValueUsd: number; repricedMajorEvents: number } {
   const samples = new Map<string, PriceSample>()
   for (const event of events) {
     if (!(event.amount > 0) || !Number.isFinite(event.amount)) continue
@@ -160,10 +167,24 @@ export function guardPriceUsdLookup(events: readonly NormalizedEvent[], lookup: 
   const verdicts = detectPriceOutliers(samples.values())
   let rejectedValueUsd = 0
   for (const key of verdicts.keys()) rejectedValueUsd += samples.get(key)!.valueUsd
+  const repriced = new Map<string, number>()
+  if (options.majorMarketValueUsd) {
+    for (const event of events) {
+      const key = eventKey(event)
+      if (!verdicts.has(key) || repriced.has(key) || !isMajorVolatileToken(event.chain, event.contract)) continue
+      const usd = options.majorMarketValueUsd(event)
+      if (isCanonicalPositiveUsd(usd)) repriced.set(key, usd)
+    }
+  }
   return {
-    lookup: verdicts.size === 0 ? lookup : (event) => (verdicts.has(eventKey(event)) ? null : lookup(event)),
-    rejectedEvents: verdicts.size,
+    lookup: verdicts.size === 0 ? lookup : (event) => {
+      const key = eventKey(event)
+      if (!verdicts.has(key)) return lookup(event)
+      return repriced.get(key) ?? null
+    },
+    rejectedEvents: verdicts.size - repriced.size,
     rejectedValueUsd,
+    repricedMajorEvents: repriced.size,
   }
 }
 

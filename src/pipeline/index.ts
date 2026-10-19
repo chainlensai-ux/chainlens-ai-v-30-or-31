@@ -64,6 +64,7 @@ import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../l
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
 import { guardLiquidityLegs } from '../lib/liquidityLegGuard'
 import { buildUnpricedLotAudit } from '../lib/unpricedLotAudit'
+import { majorMarketUnitPriceUsd } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import { classifySellVenue, createLivePoolFactoryReader } from '../lib/sellVenueClassifier'
 import { createReceiptQuoteTxFetcher } from '../lib/receiptQuoteRecovery'
 import {
@@ -2532,9 +2533,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const liquidityGuardedLookup = guardLiquidityLegs(guardEvents, walletPriceLookups.priceUsdLookup)
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] liquidity leg guard addTxs=${liquidityGuardedLookup.liquidityAddTxs} removeTxs=${liquidityGuardedLookup.liquidityRemoveTxs} rejectedEvents=${liquidityGuardedLookup.rejectedEvents}`)
-  const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup)
+  const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup, {
+    majorMarketValueUsd: (event) => {
+      const unit = majorMarketUnitPriceUsd(event.chain, event.contract, Date.parse(event.timestamp))
+      return unit == null ? null : unit * event.amount
+    },
+  })
   // eslint-disable-next-line no-console
-  console.warn('[pipeline] price outlier guard', { rejectedEvents: guardedPriceLookup.rejectedEvents, rejectedValueUsd: guardedPriceLookup.rejectedValueUsd })
+  console.warn('[pipeline] price outlier guard', { rejectedEvents: guardedPriceLookup.rejectedEvents, rejectedValueUsd: guardedPriceLookup.rejectedValueUsd, repricedMajorEvents: guardedPriceLookup.repricedMajorEvents })
   // Always present, including disabled/misconfigured/zero-candidate scans. This is emitted at the
   // canonical production call site so live logs can identify the first fallback drop stage.
   // eslint-disable-next-line no-console

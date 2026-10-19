@@ -113,4 +113,17 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     assert.equal(guarded.lookup(meme[3]), 10, 'a 10x memecoin move is real')
     assert.equal(guarded.rejectedEvents, 2)
   })
+
+  it('a rejected WETH side reads amount x market price when the hour\'s price is known; others stay unpriced', () => {
+    const WETH = '0x4200000000000000000000000000000000000006'
+    const mk = (txHash: string, contract: string, amount: number) => ({ ...ev(txHash, amount), contract })
+    const weth = [mk('0xw1', WETH, 0.1), mk('0xw2', WETH, 0.2), mk('0xw3', WETH, 0.05), mk('0xwbad', WETH, 0.18)]
+    const meme = [ev('0xm1', 100), ev('0xm2', 100), ev('0xm3', 100), ev('0xmbad', 100)]
+    const usd: Record<string, number> = { '0xw1': 241, '0xw2': 480, '0xw3': 121, '0xwbad': 59.38, '0xm1': 1, '0xm2': 1, '0xm3': 1, '0xmbad': 5000 }
+    const guarded = guardPriceUsdLookup([...weth, ...meme], (e) => usd[e.txHash] ?? null, { majorMarketValueUsd: (e) => e.amount * 2400 })
+    assert.equal(guarded.lookup(weth[3]), 0.18 * 2400)
+    assert.equal(guarded.lookup(meme[3]), null)
+    assert.equal(guarded.repricedMajorEvents, 1)
+    assert.equal(guarded.rejectedEvents, 1)
+  })
 })

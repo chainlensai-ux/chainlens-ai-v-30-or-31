@@ -17,7 +17,7 @@
 // copy, etc.) — rather than importing providerFetchWindow's private (unexported) alchemyApiKey.
 
 import type { SupportedChain } from '../../providerFetchWindow/types'
-import { isMajorMarketToken } from '../../../lib/majorMarketPrice'
+import { isMajorMarketToken, isMajorVolatileToken, MAJOR_MARKET_PRICE_MAX_DISTANCE_MS } from '../../../lib/majorMarketPrice'
 
 const ALCHEMY_KEY_NAMES: Partial<Record<SupportedChain, string[]>> = {
   eth: ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY'],
@@ -127,6 +127,8 @@ const tokenNotFoundNegativeCache = new Set<string>()
 // PRIORITY STATE, DISCLOSED: assets that already had a genuine Alchemy success this scan get
 // bumped ahead of untested ones for any later, still-unresolved requirements (see tierOf below).
 const assetsWithPriorSuccessThisScan = new Set<string>()
+// Hourly points fetched this scan for ETH/WETH/cbBTC, read by majorMarketUnitPriceUsd.
+const hourlyMajorPointsByAsset = new Map<string, AlchemyHistoricalPricePoint[]>()
 
 export function resetAlchemyHistoricalPricingState(): void {
   liveRequests = 0
@@ -148,6 +150,7 @@ export function resetAlchemyHistoricalPricingState(): void {
   failureReasonCounts.clear()
   selectedAssetOrder.length = 0
   tokenNotFoundNegativeCache.clear()
+  hourlyMajorPointsByAsset.clear()
   assetsWithPriorSuccessThisScan.clear()
 }
 
@@ -348,6 +351,10 @@ async function fetchAlchemyHistoricalRange(
   const live = (async (): Promise<AlchemyAssetRangeResult> => {
     if (!hourly) return requestAlchemySeries('1d')
     const result = await requestAlchemySeries('1h')
+    if (result.ok && isMajorVolatileToken(chain, token)) {
+      const asset = assetKey(chain, token)
+      hourlyMajorPointsByAsset.set(asset, [...(hourlyMajorPointsByAsset.get(asset) ?? []), ...result.points])
+    }
     if (result.ok || result.reason === 'token_not_found') return result
     liveRequests += 1
     return requestAlchemySeries('1d')
@@ -410,6 +417,21 @@ async function fetchAlchemyHistoricalRange(
 
   rangeCache.set(key, live)
   return live
+}
+
+/**
+ * ETH/WETH/cbBTC market price per unit from this scan's hourly series, or null when no hourly point
+ * lies within MAJOR_MARKET_PRICE_MAX_DISTANCE_MS of the timestamp. Only reads what was already fetched.
+ */
+export function majorMarketUnitPriceUsd(chain: SupportedChain, token: string, timestampMs: number): number | null {
+  if (!Number.isFinite(timestampMs) || !isMajorVolatileToken(chain, token)) return null
+  const points = hourlyMajorPointsByAsset.get(assetKey(chain, token))
+  if (!points || points.length === 0) return null
+  let best: AlchemyHistoricalPricePoint | null = null
+  for (const point of points) {
+    if (!best || Math.abs(point.timestamp - timestampMs) < Math.abs(best.timestamp - timestampMs)) best = point
+  }
+  return best && Math.abs(best.timestamp - timestampMs) <= MAJOR_MARKET_PRICE_MAX_DISTANCE_MS ? best.priceUsd : null
 }
 
 function closestPoint(points: AlchemyHistoricalPricePoint[], timestamp: number): number | null {

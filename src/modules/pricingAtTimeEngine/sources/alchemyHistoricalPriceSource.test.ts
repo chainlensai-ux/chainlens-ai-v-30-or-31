@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import {
   resolveAlchemyHistoricalPricesShadow,
   resetAlchemyHistoricalPricingState,
+  majorMarketUnitPriceUsd,
   MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN,
   type AlchemyPricingRequirement,
 } from './alchemyHistoricalPriceSource'
@@ -394,6 +395,19 @@ describe('alchemyHistoricalPriceSource — hourly series for majors', () => {
     const { shadowPricesByTxHash } = await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', token: WETH, txHash: '0xw2' })])
     assert.deepEqual(intervals, ['1h', '1d'])
     assert.equal(shadowPricesByTxHash.get('0xw2'), 2400)
+  })
+
+  it('keeps the hourly WETH series for majorMarketUnitPriceUsd, within one hour only', async () => {
+    global.fetch = (async () => new Response(JSON.stringify({ data: [
+      { timestamp: '2026-01-01T10:00:00.000Z', value: '2400' },
+      { timestamp: '2026-01-01T11:00:00.000Z', value: '2450' },
+    ] }), { status: 200 })) as unknown as typeof fetch
+    await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', token: WETH, txHash: '0xw3', timestamp: Date.parse('2026-01-01T10:20:00.000Z') })])
+    assert.equal(majorMarketUnitPriceUsd('base', WETH, Date.parse('2026-01-01T10:50:00.000Z')), 2450)
+    assert.equal(majorMarketUnitPriceUsd('base', WETH, Date.parse('2026-01-01T13:30:00.000Z')), null, 'over an hour from any point')
+    assert.equal(majorMarketUnitPriceUsd('base', '0xmeme', Date.parse('2026-01-01T10:00:00.000Z')), null)
+    resetAlchemyHistoricalPricingState()
+    assert.equal(majorMarketUnitPriceUsd('base', WETH, Date.parse('2026-01-01T10:00:00.000Z')), null, 'cleared per scan')
   })
 
   it('other tokens keep the daily series', async () => {
