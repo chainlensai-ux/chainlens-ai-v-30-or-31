@@ -63,4 +63,28 @@ describe('guardLiquidityLegs', () => {
     assert.equal(guard.rejectedEvents, 0)
     assert.equal(guard.lookup(legs[1]), 100)
   })
+
+  it('liquidity add into a pool of two non-quote tokens (cbBTC + AERO out) is not a sell', () => {
+    const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
+    const AERO = '0x940181a94a35a4569e4529a3cdfb74e38fd98631'
+    const legs = [ev('0xlp', CBBTC, 'outbound', 0.0011465), ev('0xlp', AERO, 'outbound', 120), ev('0xlp', AERO, 'inbound', 0.3)]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.liquidityAddTxs, 1)
+    for (const leg of legs) assert.equal(guard.lookup(leg), null)
+  })
+
+  it('liquidity withdrawal from a pool of two non-quote tokens is not a buy', () => {
+    const CBBTC = '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf'
+    const AERO = '0x940181a94a35a4569e4529a3cdfb74e38fd98631'
+    const legs = [ev('0xrm2', CBBTC, 'inbound', 0.0011465), ev('0xrm2', AERO, 'inbound', 120)]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.liquidityRemoveTxs, 1)
+    for (const leg of legs) assert.equal(guard.lookup(leg), null)
+  })
+
+  it('a token-to-token swap that refunds part of the input stays priced', () => {
+    const legs = [ev('0xt3', CHIP, 'outbound', 2000), ev('0xt3', ZRO, 'inbound', 50), ev('0xt3', CHIP, 'inbound', 5)]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.rejectedEvents, 0)
+  })
 })
