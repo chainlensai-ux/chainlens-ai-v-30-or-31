@@ -259,8 +259,8 @@ describe('canonicalPnlSampleManifest — canonical side references (requirement 
     }
   })
 
-  it('the schema version is 4 — a v2 manifest genuinely lacks the side references replay now requires', async () => {
-    assert.equal(CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, 4)
+  it('the schema version is 5 — a v2 manifest genuinely lacks the side references replay now requires', async () => {
+    assert.equal(CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, 5)
     const kv = fakeKv()
     const { manifest } = await manifestWithEvidence(buildLots(2, 2))
     await kv.set(buildManifestKey(identity()), { ...manifest, manifestSchemaVersion: 2 })
@@ -719,7 +719,7 @@ describe('canonicalPnlSampleManifest — production-shaped regression (requireme
 
     // RUN 1 — create and persist the manifest end-to-end under the new schema.
     const { manifest: run1Manifest, evidence, total: TOTAL_A } = await manifestWithEvidence(run1Lots)
-    assert.equal(run1Manifest.manifestSchemaVersion, 4)
+    assert.equal(run1Manifest.manifestSchemaVersion, 5)
     assert.equal(run1Manifest.verifiedLotCount, 23)
     assert.equal(run1Manifest.verifiedPricingCoverage, 23 / 27)
     assert.equal(await writeCanonicalPnlSampleManifest(kv, run1Manifest), true)

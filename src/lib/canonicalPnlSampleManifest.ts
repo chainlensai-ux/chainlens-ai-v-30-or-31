@@ -102,7 +102,9 @@ export function stablecoinNormalizedGroupTotal(groupLots: readonly MatchedLot[],
 // exactly which siblings composed that group) — so replay can finally compare the SAME quantity on
 // both sides, and tell "the accepted evidence total moved" apart from "the sibling set composing it
 // changed" apart from "nothing changed" instead of conflating all three into one bogus comparison.
-export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 4
+// v5: manifests selected from v2 accepted evidence (see ACCEPTED_EVIDENCE_SCHEMA_VERSION v3) are
+// rebuilt rather than replayed.
+export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 5
 // UNCHANGED at 2: the structural lot IDENTITY semantics (chain/token/tx hashes/timestamps/
 // partial-fill ordinal) are correct and were proven correct in production — identity replay
 // succeeded for all 23 lots with zero mismatches. Only the stored VALUES were missing.

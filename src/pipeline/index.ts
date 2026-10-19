@@ -2978,6 +2978,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     publicPnlStatus: fifoAndPnl.publicPnlStatus,
     hardInvalid: fifoAndPnl.integrityFlags.hardInvalid,
   })
+  // One line naming the lots that drive the total, so an absurd figure can be traced to its trades.
+  const largestFifoLots = [...fifoAndPnl.matchedLots]
+    .filter((l) => typeof l.realizedPnlUsd === 'number' && Number.isFinite(l.realizedPnlUsd))
+    .sort((a, b) => Math.abs(b.realizedPnlUsd as number) - Math.abs(a.realizedPnlUsd as number))
+    .slice(0, 8)
+    .map((l) => `${l.token.slice(0, 10)} amt=${l.amount} cost=${l.costBasisUsd?.toFixed(2)} proc=${l.proceedsUsd?.toFixed(2)} pnl=${(l.realizedPnlUsd as number).toFixed(2)} q=${l.evidenceQuality} open=${l.openedTxHash.slice(0, 10)} close=${l.closedTxHash.slice(0, 10)}`)
+  // eslint-disable-next-line no-console
+  console.warn(`[pipeline] largest fifo lots ${largestFifoLots.join(' | ')}`)
 
   // RECEIPT-DECODED FIFO SHADOW REPLAY, DISCLOSED (src/modules/receiptSwapDecoder/
   // shadowFifoReplay.ts — see that module's own header). Runs exactly once per scan, right after

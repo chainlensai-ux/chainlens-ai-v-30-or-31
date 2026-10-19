@@ -30,7 +30,10 @@ export type AcceptedEvidenceSide = 'entry' | 'exit'
 // reused as if it were. Bumping the schema version is what makes `isValidAcceptedEvidence` treat
 // every existing v1 record as a clean miss (never a corrupt/invalid value to reject loudly, never a
 // value to silently reinterpret) — a rescan simply re-seeds it correctly under the new version.
-export const ACCEPTED_EVIDENCE_SCHEMA_VERSION = 2
+// v3: records written before per-token side ownership, stablecoin exclusion and the same-tx wallet
+// flow-shape check could carry one token's value on another token's side, or a refund priced with a
+// whole quote (e.g. 0.0003 ZORA at $512,533/token). Every v2 record is a clean miss and re-priced.
+export const ACCEPTED_EVIDENCE_SCHEMA_VERSION = 3
 // IMMUTABLE HISTORICAL FACT, DISCLOSED: same reasoning as kvClient.ts's HISTORICAL_TTL_SECONDS — an
 // accepted price for a specific past (chain, token, txHash, timestamp) can never legitimately
 // change, so a long TTL is safe. Still finite (not "forever") to bound storage growth.
