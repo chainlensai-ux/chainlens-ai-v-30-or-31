@@ -207,6 +207,62 @@ export function compactResultDiagnostics(result: unknown): unknown {
   return walk(result, false)
 }
 
+/** Below Upstash's smallest per-request limit (1 MB), with room for the request envelope. */
+export const RESULT_WRITE_BUDGET_BYTES = 900_000
+const DIAGNOSTIC_KEY = /audit|debug|diagnostic|trace|breakdown|rejection/i
+
+type ShrinkCandidate = { holder: Record<string, unknown> | unknown[]; key: string | number; path: string; diagnostic: boolean; bytes: number; kind: 'array' | 'object' }
+
+/**
+ * Copy of `result` shrunk under `budgetBytes`. Each round cuts the largest piece of diagnostics —
+ * halving an array, or dropping an object under a diagnostic key — and only when no diagnostics are
+ * left does it halve other arrays. A result that cannot be stored fails the whole scan, so a shorter
+ * list is the lesser loss. The cuts are listed in `resultCompaction` on the returned object.
+ */
+export function shrinkResultToBudget(result: unknown, budgetBytes: number = RESULT_WRITE_BUDGET_BYTES): unknown {
+  const copy = compactResultDiagnostics(result)
+  const originalBytes = jsonByteLength(result)
+  const truncated: string[] = []
+  // One pass: returns the node's approximate JSON size and records every cuttable node.
+  const measure = (value: unknown, path: string, diagnostic: boolean, out: ShrinkCandidate[], holder?: ShrinkCandidate['holder'], key?: string | number, keyIsDiagnostic = false): number => {
+    if (Array.isArray(value)) {
+      let bytes = 2 + Math.max(0, value.length - 1)
+      value.forEach((item, i) => { bytes += measure(item, `${path}[]`, diagnostic, out, value, i) })
+      if (holder !== undefined && key !== undefined && value.length > 0) out.push({ holder, key, path, diagnostic, bytes, kind: 'array' })
+      return bytes
+    }
+    if (value && typeof value === 'object') {
+      let bytes = 2
+      for (const [k, child] of Object.entries(value as Record<string, unknown>)) {
+        const childDiagnostic = DIAGNOSTIC_KEY.test(k)
+        bytes += k.length + 4 + measure(child, path ? `${path}.${k}` : k, diagnostic || childDiagnostic, out, value as Record<string, unknown>, k, childDiagnostic)
+      }
+      if (holder !== undefined && key !== undefined && keyIsDiagnostic && !Array.isArray(holder)) out.push({ holder, key, path, diagnostic: true, bytes, kind: 'object' })
+      return bytes
+    }
+    return jsonByteLength(value)
+  }
+  let bytes = jsonByteLength(copy)
+  for (let round = 0; bytes > budgetBytes && round < 400; round += 1) {
+    const candidates: ShrinkCandidate[] = []
+    measure(copy, '', false, candidates)
+    const diagnostics = candidates.filter((c) => c.diagnostic && c.bytes > 64)
+    const pool = diagnostics.length > 0 ? diagnostics : candidates.filter((c) => c.kind === 'array')
+    const largest = pool.sort((a, b) => b.bytes - a.bytes)[0]
+    if (!largest) break
+    const holder = largest.holder as Record<string | number, unknown>
+    if (largest.kind === 'object') holder[largest.key] = { omitted: true, bytes: largest.bytes }
+    else {
+      const list = holder[largest.key] as unknown[]
+      holder[largest.key] = list.slice(0, Math.floor(list.length / 2))
+    }
+    truncated.push(largest.path)
+    bytes = jsonByteLength(copy)
+  }
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) return copy
+  return { ...(copy as Record<string, unknown>), resultCompaction: { originalBytes, finalBytes: bytes, truncatedPaths: [...new Set(truncated)].slice(0, 50) } }
+}
+
 // PUBLICATION ORDER, FIXED (confirmed ordering bug): this previously wrote the job key (status
 // 'done') FIRST and the result key SECOND — so a failed/interrupted result write, or a poll
 // landing between the two writes, produced a job marked done with no result: exactly the
@@ -238,7 +294,17 @@ export async function publishFinal(
       resultBytes: jsonByteLength(result),
       compactedBytes: jsonByteLength(compacted),
     })
-    await kv.set(walletScanResultKey(jobId), compacted)
+    try {
+      await kv.set(walletScanResultKey(jobId), compacted)
+    } catch (retryErr) {
+      const shrunk = shrinkResultToBudget(result)
+      console.warn('[wallet-scan-worker] compacted result write failed, retrying under size budget', {
+        jobId,
+        error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+        shrunkBytes: jsonByteLength(shrunk),
+      })
+      await kv.set(walletScanResultKey(jobId), shrunk)
+    }
   }
   const t1 = Date.now()
   await kv.set(walletScanJobKey(jobId), jobState)

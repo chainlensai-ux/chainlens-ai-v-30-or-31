@@ -5,7 +5,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { kv } from '@/lib/server/kv'
 import { walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
-import { compactResultDiagnostics, publishFinal } from '@/src/modules/walletScanWorker'
+import { compactResultDiagnostics, publishFinal, shrinkResultToBudget } from '@/src/modules/walletScanWorker'
 
 const originalEnv = { ...process.env }
 const original = { get: kv.get, set: kv.set, setIfAbsent: kv.setIfAbsent }
@@ -59,6 +59,44 @@ describe('final result publication', () => {
     const stored = store.get(walletScanResultKey(JOB)) as ReturnType<typeof result>
     assert.equal(stored.data.matchedLots.length, 300)
     assert.equal(stored.data.canonicalSampleManifestAudit.candidateNewEvidenceLotKeys.length, 50)
+    assert.equal((store.get(walletScanJobKey(JOB)) as { status: string }).status, 'done')
+  })
+
+  it('a result still too large after compaction is shrunk under the budget, diagnostics first', () => {
+    const row = (i: number) => ({ txHash: `0x${i.toString(16).padStart(64, '0')}`, token: 'abc', usd: i })
+    const huge = {
+      success: true,
+      data: {
+        holdings: Array.from({ length: 100 }, (_, i) => row(i)),
+        pnl: { realizedPnlUsd: 12.5, publicPnlGateAudit: { verifiedLotCount: 3 } },
+        pricingDebug: { rows: Array.from({ length: 40_000 }, (_, i) => row(i)) },
+        traceByTx: Object.fromEntries(Array.from({ length: 20_000 }, (_, i) => [`k${i}`, row(i)])),
+      },
+    }
+    const started = Date.now()
+    const shrunk = shrinkResultToBudget(huge, 200_000) as typeof huge & { resultCompaction: { finalBytes: number } }
+    assert.ok(Date.now() - started < 5_000, 'shrinking stays fast')
+    assert.ok(Buffer.byteLength(JSON.stringify(shrunk)) < 200_000)
+    assert.equal(shrunk.data.holdings.length, 100, 'non-diagnostic data is kept while diagnostics can be cut')
+    assert.equal(shrunk.data.pnl.realizedPnlUsd, 12.5)
+    assert.ok(shrunk.resultCompaction.finalBytes < 200_000)
+  })
+
+  it('when the compacted write is also rejected, the size-budgeted result is stored', async () => {
+    const JOB = `job-compact-${++jobSeq}`
+    let resultWrites = 0
+    kv.set = async (key: string, value: unknown) => {
+      if (key === walletScanResultKey(JOB)) {
+        resultWrites += 1
+        if (resultWrites <= 2) throw new Error('ERR max request size exceeded')
+      }
+      store.set(key, value)
+      return 'OK'
+    }
+    const done = { jobId: JOB, status: 'done', finishedAt: Date.now() } as never
+    await publishFinal(JOB, done, result())
+    assert.equal(resultWrites, 3)
+    assert.ok((store.get(walletScanResultKey(JOB)) as { resultCompaction?: unknown }).resultCompaction)
     assert.equal((store.get(walletScanJobKey(JOB)) as { status: string }).status, 'done')
   })
 })
