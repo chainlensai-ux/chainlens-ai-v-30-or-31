@@ -295,11 +295,6 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         .fb-utility { margin-top: auto; padding-top: 14px; }
         .fb-utility-divider { height: 1px; background: rgba(148,163,184,0.09); margin: 0 4px 10px; }
 
-        /* ── Brand ─────────────────────────────────────────────────────────── */
-        .fb-brand { outline: none; transition: opacity 150ms ease; }
-        .fb-brand:hover { opacity: 0.88; }
-        .fb-brand:focus-visible { box-shadow: inset 0 0 0 2px rgba(45,212,191,0.6); }
-
         /* ── Wallet chip ───────────────────────────────────────────────────────
            ConnectWallet puts this className on its own root element per state — a <button> for
            disconnected/reconnecting, a <div> wrapping a button (+ address/helper text in the
@@ -408,39 +403,47 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         </button>
       )}
 
-      {/* ── Brand ─────────────────────────────────────────────── */}
+      {/* ── Branding ──────────────────────────────────────────── */}
       <Link
         href="/"
-        aria-label="ChainLens home"
-        className="fb-brand shrink-0 flex items-center justify-center"
+        className="shrink-0 flex items-center gap-3"
         style={{
-          height: '64px',
-          padding: '0 20px',
-          borderBottom: '1px solid rgba(148,163,184,0.09)',
+          padding: '20px 20px 18px',
+          borderBottom: '1px solid rgba(255,255,255,0.07)',
           textDecoration: 'none',
+          cursor: 'pointer',
         }}
       >
-        {/* cl-logo.png is 408×612 with the mark in a 297×195 box (x 64, y 209); the frame crops to
-            the mark so it renders at its real proportions. */}
+        {/* Logo — unboxed, large, clean */}
+        <Image
+          src="/cl-logo.png"
+          alt="ChainLens"
+          width={48}
+          height={48}
+          style={{ display: 'block', flexShrink: 0 }}
+        />
+
+        {/* Wordmark */}
         <span
-          style={{ position: 'relative', display: 'block', width: '58px', height: '42px', overflow: 'hidden', flexShrink: 0 }}
+          style={{
+            fontSize: '17px',
+            fontWeight: 800,
+            letterSpacing: '-0.03em',
+            color: '#f1f5f9',
+            fontFamily: 'var(--font-inter)',
+          }}
         >
-          <Image
-            src="/cl-logo.png"
-            alt="ChainLens"
-            width={63}
-            height={94}
-            priority
+          Chain
+          <span
             style={{
-              position: 'absolute',
-              left: '-4px',
-              top: '-26px',
-              width: '63px',
-              height: '94px',
-              maxWidth: 'none',
-              filter: 'drop-shadow(0 0 6px rgba(45,212,191,0.2))',
+              background: 'linear-gradient(105deg, #2DD4BF 0%, #8b5cf6 55%, #ec4899 100%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+              backgroundClip: 'text',
             }}
-          />
+          >
+            Lens
+          </span>
         </span>
       </Link>
 
