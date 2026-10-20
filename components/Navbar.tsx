@@ -24,20 +24,20 @@ const NAV_LINKS = [
 
 const BRAND_GRADIENT = 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)'
 
-// C/L monogram in the brand gradient: an open C with an L set inside its bowl.
-function BrandMark({ size = 22 }: { size?: number }) {
+// C/L monogram in the brand gradient: a C and an L side by side on a shared baseline.
+function BrandMark({ size = 26 }: { size?: number }) {
   const gradientId = useId()
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <defs>
-        <linearGradient id={gradientId} x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="2" y1="6" x2="22" y2="18" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#E053C2" />
           <stop offset="0.5" stopColor="#B666F3" />
           <stop offset="1" stopColor="#53F3C3" />
         </linearGradient>
       </defs>
-      <path d="M18.4 6.6A8.5 8.5 0 1 0 18.4 17.4" stroke={`url(#${gradientId})`} strokeWidth="2.3" strokeLinecap="round" />
-      <path d="M10.6 8.4V15.6H16" stroke={`url(#${gradientId})`} strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.6 8.1A5.6 5.6 0 1 0 12.6 15.9" stroke={`url(#${gradientId})`} strokeWidth="2.4" strokeLinecap="round" />
+      <path d="M15.2 6.4V17.6H21" stroke={`url(#${gradientId})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
@@ -350,9 +350,8 @@ export default function Navbar() {
 
           {/* Logo */}
           <div className="nav-left">
-            <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', flexShrink: 0 }}>
-              {/* 1px drop: the mark's optical centre sits level with the wordmark's x-height, not its cap line. */}
-              <span className="nav-logo" style={{ display: 'flex', transform: 'translateY(1px)' }}><BrandMark /></span>
+            <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', flexShrink: 0 }}>
+              <span className="nav-logo" style={{ display: 'flex' }}><BrandMark /></span>
               <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9', whiteSpace: 'nowrap' }}>
                 Chain<span style={{ background: BRAND_GRADIENT, WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
               </span>
