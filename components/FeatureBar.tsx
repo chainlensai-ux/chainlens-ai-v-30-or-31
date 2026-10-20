@@ -414,30 +414,33 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         aria-label="ChainLens home"
         className="fb-brand shrink-0 flex items-center"
         style={{
-          gap: '10px',
-          height: '64px',
-          padding: '0 18px',
+          height: '76px',
+          padding: '0 20px',
           borderBottom: '1px solid rgba(148,163,184,0.09)',
           textDecoration: 'none',
         }}
       >
-        <Image
-          src="/cl-logo.png"
-          alt=""
-          width={30}
-          height={30}
-          style={{ display: 'block', flexShrink: 0 }}
-        />
+        {/* cl-logo.png is 408×612 with the mark in a 297×195 box (x 64, y 209); the frame crops to
+            the mark so it renders large and at its real proportions. */}
         <span
-          style={{
-            fontSize: '16px',
-            fontWeight: 700,
-            letterSpacing: '-0.02em',
-            color: '#f1f5f9',
-            fontFamily: 'var(--font-inter)',
-          }}
+          style={{ position: 'relative', display: 'block', width: '84px', height: '60px', margin: '0 -8px', overflow: 'hidden', flexShrink: 0 }}
         >
-          Chain<span style={{ color: '#2DD4BF' }}>Lens</span>
+          <Image
+            src="/cl-logo.png"
+            alt="ChainLens"
+            width={92}
+            height={138}
+            priority
+            style={{
+              position: 'absolute',
+              left: '-6px',
+              top: '-39px',
+              width: '92px',
+              height: '138px',
+              maxWidth: 'none',
+              filter: 'drop-shadow(0 0 10px rgba(45,212,191,0.22))',
+            }}
+          />
         </span>
       </Link>
 
