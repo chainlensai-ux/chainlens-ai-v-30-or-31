@@ -7,6 +7,7 @@ import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
 import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
+import SideSlideIn from '@/components/home/SideSlideIn'
 import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
@@ -895,7 +896,7 @@ export default function HomePage() {
             gap: '20px',
           }}>
             {FEATURES.map((f, i) => (
-              <Reveal key={f.title} delayMs={i * 80}><div
+              <SideSlideIn key={f.title} side={i % 2 === 0 ? 'left' : 'right'} delayMs={(i % 2) * 90}><div
                 className="feat-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)',
@@ -1000,7 +1001,7 @@ export default function HomePage() {
                     <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
                 </Link>
-              </div></Reveal>
+              </div></SideSlideIn>
             ))}
           </div>
         </section>
