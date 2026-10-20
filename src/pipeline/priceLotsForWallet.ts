@@ -955,7 +955,7 @@ export async function priceLotsForWallet(params: {
         neverAcceptedLotSides: manifestFastPathAudit.lostCoverageSides.filter((s) => s.evidenceHistory === 'never_accepted_lot').length,
         oppositeSidePresentSides: manifestFastPathAudit.lostCoverageSides.filter((s) => s.evidenceHistory === 'opposite_side_present').length,
         lotsAffected: manifestFastPathAudit.lostCoverageSides.reduce((sum, s) => sum + s.affectedLotCount, 0),
-        examples: manifestFastPathAudit.lostCoverageSides,
+        examples: manifestFastPathAudit.lostCoverageSides.slice(0, 5),
       })
     }
   }
@@ -982,7 +982,7 @@ export async function priceLotsForWallet(params: {
     blockedLots: blockedLotPlan.length,
     missingSingleSideLots: blockedLotPlan.filter((l) => l.otherSideAlreadyVerified).length,
     missingBothSidesLots: blockedLotPlan.filter((l) => !l.otherSideAlreadyVerified).length,
-    lots: blockedLotPlan.slice(0, 25),
+    lots: blockedLotPlan.slice(0, 5),
   })
   // ACCEPTED-EVIDENCE SKIP FILTER, DISCLOSED (requirement #2): removes a requirement entirely from
   // the event lists this whole pass builds requirements from — GoldRush/Alchemy/GeckoTerminal/
@@ -1686,13 +1686,14 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[quote-leg-native-cap-priority]', {
     nativeRequirementsSubmittedBeforeCap: nativeQuoteRequirementResolvers.length,
-    rankValuesSeenByPricingAtTimeEngine: sortedNativeCandidates.map((c) => nativeQuoteRankByGroupKey.get(c.groupKey)),
+    rankValuesSeenByPricingAtTimeEngine: sortedNativeCandidates.slice(0, 10).map((c) => nativeQuoteRankByGroupKey.get(c.groupKey)),
     nativeRankTopFive,
     nativeRequirementsSelectedByCap,
     nativeRequirementsActuallyCapped,
     nativeRequirementsProviderMiss,
     nativeRequirementsPriced,
-    selectedNativeRequirementKeys,
+    selectedNativeRequirementKeys: selectedNativeRequirementKeys.slice(0, 10),
+    selectedNativeRequirementKeysTotal: selectedNativeRequirementKeys.length,
     // COMPLETION-AWARE RANKING DIAGNOSTICS, DISCLOSED, ADDITIVE — see the "COMPLETION-AWARE PRIORITY
     // ASSIGNMENT" header above for the full tier definitions.
     completionEligibleNativeRequirements,

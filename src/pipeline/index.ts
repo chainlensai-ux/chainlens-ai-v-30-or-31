@@ -571,7 +571,12 @@ export function safeRunFifoEngine(params: {
       const nonTradesRemovedFromFifo = classified.filter((c) => nonTradeClassifications.includes(c.classification)).length
       const lotIdentityAudit = buildLotIdentityAudit(before, after, classified)
       // eslint-disable-next-line no-console
-      console.warn('[lot-identity-audit]', lotIdentityAudit)
+      console.warn('[lot-identity-audit]', {
+        lotsRemovedTotal: lotIdentityAudit.lotsRemoved.length,
+        lotsAddedTotal: lotIdentityAudit.lotsAdded.length,
+        lotsRemoved: lotIdentityAudit.lotsRemoved.slice(0, 5),
+        lotsAdded: lotIdentityAudit.lotsAdded.slice(0, 5),
+      })
       // eslint-disable-next-line no-console
       console.warn('[structural-pnl-reconstruction-audit]', {
         eventsByClassification,

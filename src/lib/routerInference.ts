@@ -244,7 +244,6 @@ export function createRouterInference(config: RouterInferenceConfig = {}) {
         if (competing.length > 0 && candidate.confidenceTier !== 'low') {
           candidate.ambiguous = true
           candidate.competingAddresses = competing
-          logger.warn('[router-inference] ambiguous', { address: candidate.address, competingAddresses: competing })
         }
       }
 
@@ -267,7 +266,14 @@ export function createRouterInference(config: RouterInferenceConfig = {}) {
           rejectedRouters.add(candidate.address)
         }
       }
-      logger.warn('[router-inference] summary', { acceptedCount: acceptedRouters.size, rejectedCount: rejectedRouters.size, ambiguousCount: ambiguousRouters.size })
+      // One line instead of one per ambiguous candidate: a busy wallet produced ~100 multi-kilobyte
+      // lines here, enough to exhaust the per-request log limit before the pipeline's results printed.
+      logger.warn('[router-inference] summary', {
+        acceptedCount: acceptedRouters.size,
+        rejectedCount: rejectedRouters.size,
+        ambiguousCount: ambiguousRouters.size,
+        ambiguousSample: candidates.filter((c) => c.ambiguous).slice(0, 5).map((c) => `${c.address}(${c.competingAddresses?.length ?? 0})`),
+      })
 
       return { acceptedRouters, highConfidenceRouters, evidenceByAddress, tokenFlowClustersByAddress, ambiguousRouters, rejectedRouters, candidates, outboundEvents, inboundEvents }
     },
