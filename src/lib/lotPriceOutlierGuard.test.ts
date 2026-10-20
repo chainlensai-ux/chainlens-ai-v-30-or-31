@@ -87,6 +87,21 @@ describe('local price outlier guard', () => {
     assert.equal(result.outliers[0].side, 'exit')
   })
 
+  it('demotes a VIRTUAL sell ~780x under the same day\'s trades even with no other trade inside the hour', () => {
+    const VIRTUAL = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b'
+    const hours = (n: number) => at(0) + n * 60 * MINUTE_MS
+    const day = [
+      lot({ token: VIRTUAL, amount: 47.8, entryPerUnit: 0.657, exitPerUnit: 0.658, openedAt: hours(0), closedAt: hours(2) }),
+      lot({ token: VIRTUAL, amount: 47.7, entryPerUnit: 0.66, exitPerUnit: 0.661, openedAt: hours(4), closedAt: hours(6) }),
+      lot({ token: VIRTUAL, amount: 47.9, entryPerUnit: 0.66, exitPerUnit: 0.659, openedAt: hours(12), closedAt: hours(14) }),
+    ]
+    const bad = lot({ token: VIRTUAL, amount: 47.63, entryPerUnit: 0.6596, exitPerUnit: 0.00085, openedAt: hours(8), closedAt: hours(9.5) })
+    const result = demotePriceOutlierLots([...day, bad])
+    assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['verified', 'verified', 'verified', 'unpriced'])
+    assert.equal(result.outliers.length, 1)
+    assert.equal(result.outliers[0].side, 'exit')
+  })
+
   it('needs enough neighbours inside the hour; the same price gap days apart is a real move', () => {
     const spread = [
       lot({ token: CHIP, amount: 5_000, entryPerUnit: 0.041, exitPerUnit: 0.040, openedAt: at(0), closedAt: DAY_MS + at(0) }),

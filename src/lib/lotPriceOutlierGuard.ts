@@ -9,7 +9,8 @@
 //   1. its per-unit price is more than OUTLIER_FACTOR away (either direction) from the median
 //      per-unit price of that token's other priced sides (needs MIN_TOKEN_SAMPLES distinct sides),
 //   2. its per-unit price is more than LOCAL_OUTLIER_FACTOR away from the median of that token's
-//      other sides within LOCAL_WINDOW_MS of it (needs LOCAL_MIN_NEIGHBORS of them), or
+//      other sides within LOCAL_WINDOW_MS of it, or DAY_OUTLIER_FACTOR away from those within
+//      DAY_WINDOW_MS (each needs LOCAL_MIN_NEIGHBORS sides), or
 //   3. its USD value exceeds both WALLET_VALUE_FLOOR_USD and OUTLIER_FACTOR times the wallet's median
 //      side value — catches a bad price on a token too thinly traded for check 1.
 // Reconciled lots are also checked one at a time (lotLevelOutlierReason): a lot whose proceeds are
@@ -39,6 +40,12 @@ export const LOT_PRICE_MAJOR_OUTLIER_FACTOR = 1.5
 export const LOT_PRICE_LOCAL_OUTLIER_FACTOR = 5
 export const LOT_PRICE_LOCAL_WINDOW_MS = 60 * 60 * 1000
 export const LOT_PRICE_LOCAL_MIN_NEIGHBORS = 3
+// A thinly traded token rarely has three trades inside the hour. Production then published a VIRTUAL
+// sell at $0.00085 (~780x under its $0.66 trades that day), a DRB sell 30x under the buy 3 minutes
+// earlier and an AAPLc buy at $28.64 between same-day sides at $200-$342. Same-day trades get a
+// wider band than same-hour ones, but far tighter than the whole window's.
+export const LOT_PRICE_DAY_OUTLIER_FACTOR = 10
+export const LOT_PRICE_DAY_WINDOW_MS = 24 * 60 * 60 * 1000
 // A single lot returning more than this multiple of its own cost basis is a bad price on one side,
 // not a trade: production published a lot bought for $3.9e-14 and sold for $70 (a 1.8e15x return)
 // on a token with too few trades for the per-token median check.
@@ -137,11 +144,12 @@ function detectPriceOutliers(samples: Iterable<PriceSample>): Map<string, Outlie
     const reference = tokenMedian.get(sample.tokenKey) ?? null
     const major = isMajorTokenKey(sample.tokenKey)
     const factor = major ? LOT_PRICE_MAJOR_OUTLIER_FACTOR : LOT_PRICE_OUTLIER_FACTOR
-    // Majors already use a band tighter than the local one.
-    const local = major ? null : localMedianPerUnit(sample, bySampleToken.get(sample.tokenKey)!)
+    // Majors already use a band tighter than the local ones.
+    const tokenSamples = bySampleToken.get(sample.tokenKey)!
+    const local = major ? null : localOutlierReference(sample, tokenSamples)
     if (reference !== null && reference > 0 && outsideBand(sample.perUnitUsd, reference, factor)) {
       verdicts.set(sample.key, { reason: 'token_price_outlier', tokenMedianPerUnitUsd: reference })
-    } else if (local !== null && local > 0 && outsideBand(sample.perUnitUsd, local, LOT_PRICE_LOCAL_OUTLIER_FACTOR)) {
+    } else if (local !== null) {
       verdicts.set(sample.key, { reason: 'token_local_price_outlier', tokenMedianPerUnitUsd: local })
     } else if (sample.valueUsd > LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD && sample.valueUsd > walletMedianValueUsd * LOT_PRICE_OUTLIER_FACTOR) {
       verdicts.set(sample.key, { reason: 'wallet_value_outlier', tokenMedianPerUnitUsd: reference })
@@ -154,14 +162,23 @@ function outsideBand(perUnitUsd: number, reference: number, factor: number): boo
   return perUnitUsd > reference * factor || perUnitUsd < reference / factor
 }
 
-// Median per-unit price of the token's other sides within LOCAL_WINDOW_MS, or null without enough of them.
-function localMedianPerUnit(sample: PriceSample, tokenSamples: readonly PriceSample[]): number | null {
+// The neighbouring median a sample breaks (same hour first, then same day), or null when it breaks neither.
+function localOutlierReference(sample: PriceSample, tokenSamples: readonly PriceSample[]): number | null {
+  for (const [windowMs, factor] of [[LOT_PRICE_LOCAL_WINDOW_MS, LOT_PRICE_LOCAL_OUTLIER_FACTOR], [LOT_PRICE_DAY_WINDOW_MS, LOT_PRICE_DAY_OUTLIER_FACTOR]]) {
+    const reference = localMedianPerUnit(sample, tokenSamples, windowMs)
+    if (reference !== null && reference > 0 && outsideBand(sample.perUnitUsd, reference, factor)) return reference
+  }
+  return null
+}
+
+// Median per-unit price of the token's other sides within windowMs, or null without enough of them.
+function localMedianPerUnit(sample: PriceSample, tokenSamples: readonly PriceSample[], windowMs: number): number | null {
   const at = sample.timestampMs
   if (at === undefined || !Number.isFinite(at)) return null
   const prices: number[] = []
   for (const other of tokenSamples) {
     if (other.key === sample.key || other.timestampMs === undefined || !Number.isFinite(other.timestampMs)) continue
-    if (Math.abs(other.timestampMs - at) <= LOT_PRICE_LOCAL_WINDOW_MS) prices.push(other.perUnitUsd)
+    if (Math.abs(other.timestampMs - at) <= windowMs) prices.push(other.perUnitUsd)
   }
   return prices.length >= LOT_PRICE_LOCAL_MIN_NEIGHBORS ? median(prices) : null
 }
