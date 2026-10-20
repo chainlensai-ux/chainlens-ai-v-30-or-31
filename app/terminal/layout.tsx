@@ -24,7 +24,12 @@ const PATH_TO_KEY: Record<string, string> = {
 export default function TerminalLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
-  const active = PATH_TO_KEY[pathname] ?? 'dashboard'
+  // Nested routes (e.g. /terminal/pump-alerts/report) take the key of their closest mapped parent.
+  const active = PATH_TO_KEY[pathname]
+    ?? Object.entries(PATH_TO_KEY)
+      .filter(([path]) => path !== '/terminal' && pathname.startsWith(`${path}/`))
+      .sort((a, b) => b[0].length - a[0].length)[0]?.[1]
+    ?? 'dashboard'
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
