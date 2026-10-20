@@ -340,7 +340,9 @@ export default function Navbar() {
               <span className="nav-logo" style={{ position: 'relative', width: 34, height: 34, margin: '-3px -4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} priority style={{ objectFit: 'contain' }} />
               </span>
-              <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>ChainLens</span>
+              <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9', whiteSpace: 'nowrap' }}>
+                ChainLens <span style={{ background: 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AI</span>
+              </span>
             </Link>
           </div>
 
