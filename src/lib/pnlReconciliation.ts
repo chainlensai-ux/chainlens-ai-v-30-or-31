@@ -1,3 +1,4 @@
+import { acceptedEvidenceKeysForOutlierSides } from './acceptedEvidencePurge'
 import type { FifoOutput, MatchedLot, UnmatchedEventIdentity } from '../modules/fifoEngine/types'
 import { canonicalVerifiedRejectionReason, isCanonicalVerifiedPublishedLot, isCanonicalPositiveUsd } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
@@ -1030,7 +1031,10 @@ type ConflictContext = {
 // pass already repaired it above, before this audit entry is even built).
 export type AcceptedEvidenceConflictAuditRecord = {
   evidenceKey: string
+  /** This lot's share of the stored side total (what is compared with `upstreamValue`). */
   persistedValue: number
+  /** The stored record's whole transaction-side total, shared by every lot of that side. */
+  persistedGroupTotalUsd?: number
   upstreamValue: number
   source: string
   originWriter: string
@@ -1500,6 +1504,11 @@ export function rankMissingLotsForRecovery(allLots: readonly MatchedLot[]): Matc
 // correctness for any lot recovery DOES reach.
 const RECOVERY_CONCURRENCY_LIMIT = 8
 
+// Two USD values equal within a millionth (relative), or a hundredth of a cent for tiny values.
+function sameUsdValue(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(1e-4, 1e-6 * Math.max(Math.abs(a), Math.abs(b)))
+}
+
 type SideEvidenceIdentity = { chain: string; token: string; txHash: string; side: AcceptedEvidenceSide; timestamp: number }
 const sideEvidenceKey = (identity: SideEvidenceIdentity) => buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' })
 
@@ -1838,7 +1847,9 @@ export function createPnlReconciliation(config: Config = {}) {
             // CONFLICT DETECTION, DISCLOSED (requirement #6): compares the upstream candidate ONLY
             // for diagnostics — the accepted, canonical allocated share is applied unconditionally
             // below regardless of the outcome of this comparison.
-            if (s.upstreamPrice === s.share.allocatedValueUsd) {
+            // Same value up to float noise (a share recomputed from a rounded stored total differs
+            // in the last digits); exact equality reported hundreds of false conflicts.
+            if (s.upstreamPrice != null && sameUsdValue(s.upstreamPrice, s.share.allocatedValueUsd)) {
               audit.upstreamPricesMatchingAcceptedEvidence += 1
               audit.existingUpstreamSidesBackedByAcceptedEvidence += 1
             } else {
@@ -1857,7 +1868,8 @@ export function createPnlReconciliation(config: Config = {}) {
                 const wasRepaired = repairedEvidenceKeysThisPass.has(s.context.evidenceKey)
                 audit.acceptedEvidenceConflictAudit.push({
                   evidenceKey: s.context.evidenceKey,
-                  persistedValue: s.context.evidence.priceUsd,
+                  persistedValue: s.share.allocatedValueUsd,
+                  persistedGroupTotalUsd: s.context.evidence.priceUsd,
                   upstreamValue: s.upstreamPrice!,
                   source: s.context.evidence.source,
                   originWriter: s.context.evidence.originWriter ?? s.context.evidence.source,
@@ -2493,6 +2505,13 @@ export function createPnlReconciliation(config: Config = {}) {
           outlierSides: priceOutlierGuard.outliers.length,
           sample: priceOutlierGuard.outliers.slice(0, 5),
         })
+        // Stored records of those sides would come back on every later scan (accepted evidence is
+        // immutable); delete them so the side is priced from scratch next time.
+        const outlierEvidenceKeys = acceptedEvidenceKeysForOutlierSides(updatedFifoLots, priceOutlierGuard.outliers)
+        if (outlierEvidenceKeys.length > 0 && config.acceptedEvidenceKv?.del) {
+          const deleted = await config.acceptedEvidenceKv.del(...outlierEvidenceKeys).then(() => true, () => false)
+          logger.warn('[accepted-evidence-outlier-purge]', { keys: outlierEvidenceKeys.length, deleted, sample: outlierEvidenceKeys.slice(0, 5) })
+        }
       }
       // Negligible unpriced lots (dust legs) sit out the shared-side rule so they cannot demote the
       // real lots sharing their transaction; every other lot goes through it unchanged.
@@ -3049,6 +3068,7 @@ export function createPnlReconciliation(config: Config = {}) {
         publicPnlStatus,
         canonicalRealizedPnlUsd: realizedPnlUsd,
         alternateEngineRealizedPnlUsd: roundUsd(input.pnlEngineResult.realizedPnlUsd),
+        alternateEngineEvidenceMissingCount: input.pnlEngineResult.evidenceMissingCount,
         verifiedLotCount: publicPnlGateAudit.verifiedLotCount,
         structuralClosedLots: publicPnlGateAudit.structuralClosedLots,
         pricingCoverage: verifiedPricingCoverage,

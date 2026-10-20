@@ -57,6 +57,15 @@ describe('buildPnlDiscrepancyAudit — engine divergence', () => {
     assert.ok(audit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold'))
   })
 
+  it('a gap against an alternate engine that left lots unpriced is reported but never fires (production: $1,169 vs $1,408 with 202 of 231 alternate lots unpriced)', () => {
+    const audit = buildPnlDiscrepancyAudit(baseParams({ canonicalRealizedPnlUsd: 1169.13, alternateEngineRealizedPnlUsd: 1408.59, alternateEngineEvidenceMissingCount: 202 }))
+    assert.equal(audit.engineComparisonComparable, false)
+    assert.equal(audit.engineDivergenceUsd != null && Math.round(audit.engineDivergenceUsd * 100) / 100, 239.46)
+    assert.ok(!audit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold'))
+    const complete = buildPnlDiscrepancyAudit(baseParams({ canonicalRealizedPnlUsd: 1169.13, alternateEngineRealizedPnlUsd: 1408.59, alternateEngineEvidenceMissingCount: 0 }))
+    assert.ok(complete.likelyReasonCodes.includes('engine_divergence_exceeds_threshold'))
+  })
+
   it('a small wallet with a genuinely small divergence (both under $250 AND under 10%) never triggers', () => {
     const audit = buildPnlDiscrepancyAudit(baseParams({ canonicalRealizedPnlUsd: 1000, alternateEngineRealizedPnlUsd: 1050 }))
     assert.deepEqual(audit.likelyReasonCodes, [])

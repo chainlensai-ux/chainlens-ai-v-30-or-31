@@ -709,6 +709,34 @@ const ESTIMATED_CU_PER_SKIPPED_REQUIREMENT = 1
 // normalized event fifoEngine will merge and process, plus a "current" (now-timestamped) price per
 // distinct held token for marking open lots to market — then exposes both as fifoEngine's existing
 // sync lookup contract. Never touches fifoEngine's own source.
+// No single DEX trade side is worth a billion dollars; a value above this is a unit error (a price
+// times a raw, undecimalled amount, or one token's price on another token's amount) and is removed
+// here, before it can complete a lot. Production logged $8.76e17 across a handful of sides.
+export const MAX_PLAUSIBLE_TRADE_SIDE_USD = 1_000_000_000
+
+export type ImplausibleTradeSide = { side: 'entry' | 'exit'; txHash: string; token: string | null; valueUsd: number }
+
+// Removes non-finite or implausibly large side totals from the per-tx
+// dictionaries (in place) and returns what was removed. A removed side reads as unpriced.
+export function dropImplausibleTradeSideTotals(
+  values: { costUsd: Record<string, number | null | undefined>; proceedsUsd: Record<string, number | null | undefined> },
+  owners?: { cost: Map<string, string>; proceeds: Map<string, string> },
+): ImplausibleTradeSide[] {
+  const dropped: ImplausibleTradeSide[] = []
+  for (const [side, dict, ownerMap] of [
+    ['entry', values.costUsd, owners?.cost],
+    ['exit', values.proceedsUsd, owners?.proceeds],
+  ] as const) {
+    for (const [txHash, value] of Object.entries(dict)) {
+      if (value == null) continue
+      if (Number.isFinite(value) && Math.abs(value) <= MAX_PLAUSIBLE_TRADE_SIDE_USD) continue
+      dropped.push({ side, txHash, token: ownerMap?.get(txHash) ?? null, valueUsd: value })
+      delete dict[txHash]
+    }
+  }
+  return dropped
+}
+
 export async function priceLotsForWallet(params: {
   normalizedEvents: NormalizedEvent[]
   recoveredEvents: NormalizedEvent[]
@@ -2382,6 +2410,12 @@ export async function priceLotsForWallet(params: {
       }
       return sum
     }
+    // Without this, one absurd side value from an earlier lane swamps the audit's before/after delta.
+    const implausibleBeforeAlchemy = dropImplausibleTradeSideTotals(atTradeTime, sideOwners)
+    if (implausibleBeforeAlchemy.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[implausible-trade-side-totals]', { stage: 'before_alchemy', dropped: implausibleBeforeAlchemy.length, sample: implausibleBeforeAlchemy.slice(0, 10) })
+    }
     const realizedPnlBefore = sumApproxRealizedPnl()
 
     let pricesApplied = 0
@@ -3176,6 +3210,13 @@ export async function priceLotsForWallet(params: {
   // must be counted alongside it, never replace it.
   acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls += getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
   acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeNow
+
+  // Last stop for every lane above (engine, accepted evidence, quote legs, Alchemy, receipts).
+  const implausibleSides = dropImplausibleTradeSideTotals(atTradeTime, sideOwners)
+  if (implausibleSides.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[implausible-trade-side-totals]', { dropped: implausibleSides.length, sample: implausibleSides.slice(0, 10) })
+  }
 
   // ONE SIDE VALUE, ALLOCATED ACROSS ITS EVENTS (same-tx overcount fix — see txSideEventAllocation.ts):
   // replaces the per-event `resolveEventPriceUsd`, which gave every same-token event of a tx side the

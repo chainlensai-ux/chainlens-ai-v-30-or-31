@@ -206,7 +206,9 @@ describe('pnlReconciliation', () => {
     // lookup to become fully priced; a lot missing BOTH sides needs two. Prioritizing one-side-
     // missing candidates first yields more fully-priced lots per attempt within any bounded budget.
     const oneSideMissing = lot({ lotId: 'one-side', openedTxHash: '0xbuy-oneside', closedTxHash: '0xsell-oneside', openedAt: 100, closedAt: 200, costBasisUsd: 10, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
-    const bothSidesMissing = lot({ lotId: 'both-sides', openedTxHash: '0xbuy-both', closedTxHash: '0xsell-both', openedAt: 300, closedAt: 400, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    // A second token: on one token, three sides at exactly $5 would make the $10 side a tight-band
+    // price outlier (lotPriceOutlierGuard.ts), which is not what this ordering test is about.
+    const bothSidesMissing = lot({ lotId: 'both-sides', token: '0x2222222222222222222222222222222222222222', openedTxHash: '0xbuy-both', closedTxHash: '0xsell-both', openedAt: 300, closedAt: 400, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
     const calls: string[] = []
     const r = createPnlReconciliation({
       logger: quiet,

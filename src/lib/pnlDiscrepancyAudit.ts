@@ -105,6 +105,11 @@ export type PnlDiscrepancyAudit = {
   alternateEngineRealizedPnlUsd: number | null
   engineDivergenceUsd: number | null
   engineDivergencePct: number | null
+  /**
+   * False when the alternate engine summed only part of its own lots (some lacked price evidence):
+   * the two totals then cover different trades, so their gap says nothing about either engine.
+   */
+  engineComparisonComparable?: boolean
   verifiedLotCount: number
   structuralClosedLots: number
   pricingCoverage: number | null
@@ -164,6 +169,8 @@ export type BuildPnlDiscrepancyAuditParams = {
   publicPnlStatus: 'available' | 'partial' | 'unavailable'
   canonicalRealizedPnlUsd: number | null
   alternateEngineRealizedPnlUsd: number | null
+  /** Lots the alternate engine could not price; above 0 its total is not comparable. */
+  alternateEngineEvidenceMissingCount?: number
   verifiedLotCount: number
   structuralClosedLots: number
   pricingCoverage: number | null
@@ -208,6 +215,7 @@ export function buildPnlDiscrepancyAudit(params: BuildPnlDiscrepancyAuditParams)
     criticalTradeEvidenceMissing, genuineUnmatchedSells,
     publishedMatchedLots, mismatches, unmatchedSellEvents,
   } = params
+  const engineComparisonComparable = (params.alternateEngineEvidenceMissingCount ?? 0) === 0
 
   const engineDivergenceUsd = canonicalRealizedPnlUsd != null && alternateEngineRealizedPnlUsd != null
     ? Math.abs(canonicalRealizedPnlUsd - alternateEngineRealizedPnlUsd)
@@ -221,7 +229,7 @@ export function buildPnlDiscrepancyAudit(params: BuildPnlDiscrepancyAuditParams)
     : null
 
   const reasonCodes: PnlDiscrepancyReasonCode[] = []
-  if (engineDivergenceUsd != null && (engineDivergenceUsd > ENGINE_DIVERGENCE_ABS_THRESHOLD_USD || (engineDivergencePct != null && engineDivergencePct > ENGINE_DIVERGENCE_PCT_THRESHOLD))) {
+  if (engineComparisonComparable && engineDivergenceUsd != null && (engineDivergenceUsd > ENGINE_DIVERGENCE_ABS_THRESHOLD_USD || (engineDivergencePct != null && engineDivergencePct > ENGINE_DIVERGENCE_PCT_THRESHOLD))) {
     reasonCodes.push('engine_divergence_exceeds_threshold')
   }
   if (pricingCoverage != null && pricingCoverage < PRICING_COVERAGE_TRUST_THRESHOLD) {
@@ -250,6 +258,7 @@ export function buildPnlDiscrepancyAudit(params: BuildPnlDiscrepancyAuditParams)
   return {
     externalComparatorHint: null,
     canonicalRealizedPnlUsd, alternateEngineRealizedPnlUsd, engineDivergenceUsd, engineDivergencePct,
+    engineComparisonComparable,
     verifiedLotCount, structuralClosedLots, pricingCoverage,
     criticalTradeEvidenceMissing, genuineUnmatchedSells,
     largestNegativeClosedLotsTop10: negative.map((l) => toContributor(l, mismatches)),

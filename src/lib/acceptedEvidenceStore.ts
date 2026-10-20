@@ -164,6 +164,8 @@ export type AcceptedEvidenceKvLike = {
   set(key: string, value: unknown, opts?: { ex?: number }): Promise<unknown>
   /** Optional multi-key read (Redis MGET). When present, batch reads use it instead of one GET per key. */
   mget?: (...keys: string[]) => Promise<unknown[]>
+  /** Optional delete, used only to drop records the in-scan outlier guard proved wrong. */
+  del?: (...keys: string[]) => Promise<unknown>
 }
 
 // ================================================================================================

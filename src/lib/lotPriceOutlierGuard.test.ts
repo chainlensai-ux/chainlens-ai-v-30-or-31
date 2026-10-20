@@ -210,3 +210,27 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['unpriced', 'verified', 'verified'])
   })
 })
+
+describe('lot price outlier guard — tight same-hour band', () => {
+  const STOCK = '0xb200000000000000000000c2e324d24d7eecd1fb'
+  const t0 = 1_792_446_449_000
+
+  it('demotes a buy 30% under a token whose other sides that hour all agree within 5% (production: $234.69 vs $342.7)', () => {
+    const sells = [0, 5, 10, 20].map((m, i) => lot({
+      token: STOCK, amount: 2.92, entryPerUnit: 341 + i * 0.2, exitPerUnit: 342.7 + i * 0.03,
+      openedAt: t0 - 30 * MINUTE_MS + m * MINUTE_MS, closedAt: t0 + m * MINUTE_MS,
+      openedTxHash: `0xstockbuy${i}`, closedTxHash: `0xstocksell${i}`,
+    }))
+    const bad = lot({ token: STOCK, amount: 1.47, entryPerUnit: 234.69, exitPerUnit: 342.71, openedAt: t0, closedAt: t0 + 36_000, openedTxHash: '0x28245e2f', closedTxHash: '0xb3b1454e' })
+    const result = demotePriceOutlierLots([...sells, bad])
+    assert.equal(result.demotedLotCount, 1)
+    assert.equal(result.lots[4].evidenceQuality, 'unpriced')
+    assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side, o.reason]), [['0x28245e2f', 'entry', 'token_local_price_outlier']])
+  })
+
+  it('never applies to a volatile token whose same-hour sides already spread beyond the band', () => {
+    const meme = [0.010, 0.013, 0.016, 0.0095].map((p, i) => lot({ amount: 1_000, entryPerUnit: p, exitPerUnit: p * 1.1, openedAt: t0 + i * MINUTE_MS, closedAt: t0 + (i + 1) * MINUTE_MS }))
+    const pump = lot({ amount: 1_000, entryPerUnit: 0.012, exitPerUnit: 0.02, openedAt: t0 + 5 * MINUTE_MS, closedAt: t0 + 6 * MINUTE_MS })
+    assert.equal(demotePriceOutlierLots([...meme, pump]).demotedLotCount, 0)
+  })
+})
