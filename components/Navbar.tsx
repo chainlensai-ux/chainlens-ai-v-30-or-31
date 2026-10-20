@@ -1,9 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import Image from 'next/image'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
 import { PLAN_TOOL_NAV as TIER_COLUMNS } from '@/lib/pricingPlans'
 import { useAccount } from '@/lib/usePlan'
@@ -18,14 +17,30 @@ const AVATAR_COLORS: Record<string, string> = {
 const NAV_LINKS = [
   { href: '/terminal', label: 'Terminal', prefetch: true },
   { href: '/pricing', label: 'Pricing', prefetch: true },
+  { href: '/affiliate', label: 'Affiliate', prefetch: true },
+  { href: '/about', label: 'About', prefetch: undefined },
+  { href: '/contact', label: 'Contact', prefetch: true },
 ] as const
 
-// Kept out of the bar on purpose; the homepage footer and the mobile menu's small footer row carry them.
-const SECONDARY_LINKS = [
-  { href: '/affiliate', label: 'Affiliate' },
-  { href: '/about', label: 'About' },
-  { href: '/contact', label: 'Contact' },
-] as const
+const BRAND_GRADIENT = 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)'
+
+// C/L monogram in the brand gradient: an open C with an L set inside its bowl.
+function BrandMark({ size = 22 }: { size?: number }) {
+  const gradientId = useId()
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradientId} x1="3" y1="4" x2="21" y2="20" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#E053C2" />
+          <stop offset="0.5" stopColor="#B666F3" />
+          <stop offset="1" stopColor="#53F3C3" />
+        </linearGradient>
+      </defs>
+      <path d="M18.4 6.6A8.5 8.5 0 1 0 18.4 17.4" stroke={`url(#${gradientId})`} strokeWidth="2.3" strokeLinecap="round" />
+      <path d="M10.6 8.4V15.6H16" stroke={`url(#${gradientId})`} strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
 function isActivePath(pathname: string | null, href: string): boolean {
   return pathname === href || (pathname?.startsWith(`${href}/`) ?? false)
@@ -288,7 +303,6 @@ export default function Navbar() {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 8px 12px !important; }
           .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; overflow: visible !important; }
-          .nav-logo { width: 34px !important; height: 34px !important; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
           .btn-access { padding: 8px 12px !important; font-size: 11px !important; min-height: 44px !important; }
           .mob-nav-overlay { top: 64px !important; }
@@ -336,12 +350,11 @@ export default function Navbar() {
 
           {/* Logo */}
           <div className="nav-left">
-            <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-              <span className="nav-logo" style={{ position: 'relative', width: 34, height: 34, margin: '-3px -4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} priority style={{ objectFit: 'contain' }} />
-              </span>
+            <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', flexShrink: 0 }}>
+              {/* 1px drop: the mark's optical centre sits level with the wordmark's x-height, not its cap line. */}
+              <span className="nav-logo" style={{ display: 'flex', transform: 'translateY(1px)' }}><BrandMark /></span>
               <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9', whiteSpace: 'nowrap' }}>
-                ChainLens <span style={{ background: 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AI</span>
+                Chain<span style={{ background: BRAND_GRADIENT, WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
               </span>
             </Link>
           </div>
@@ -587,6 +600,9 @@ export default function Navbar() {
           )}
 
           <Link href="/pricing"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Pricing</Link>
+          <Link href="/affiliate" className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Affiliate</Link>
+          <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
+          <Link href="/contact"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Contact</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '18px 0 14px' }} />
 
@@ -682,12 +698,6 @@ export default function Navbar() {
               <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </Link>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: '22px', marginTop: '26px' }}>
-            {SECONDARY_LINKS.map(({ href, label }) => (
-              <Link key={href} href={href} onClick={() => setMobileOpen(false)} style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)', textDecoration: 'none' }}>{label}</Link>
-            ))}
-          </div>
         </div>
       )}
     </>
