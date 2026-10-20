@@ -247,7 +247,13 @@ export async function fetchGoldrushRawEvents(
     if (!res.ok) return { provider: 'goldrush', ok: false, events: [], errorReason: `http_${res.status}` }
     const json = await res.json()
     const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
+    // transactions_v3 signals older pages through `links` (prev/next URLs); `pagination.has_more`
+    // belongs to the older v2 shape and is absent here. Reading only has_more made every v3 page
+    // look like the end of the wallet's history.
+    const links = json?.data?.links as { prev?: unknown; next?: unknown } | null | undefined
     const hasMore = json?.data?.pagination?.has_more === true
+      || (typeof links?.prev === 'string' && links.prev.length > 0)
+      || (typeof links?.next === 'string' && links.next.length > 0)
     const cutoff = windowCutoffMs(windowDays)
     const events: RawProviderEvent[] = []
     for (const it of items) {
@@ -295,6 +301,14 @@ export async function fetchGoldrushRawEvents(
       }
       if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
       const transfers: unknown[] = Array.isArray(tx.transfers) ? tx.transfers : []
+      // transactions_v3 carries ERC-20 movements as decoded Transfer logs, not a `transfers` array —
+      // read without this, a busy Base wallet's page produced zero events.
+      if (transfers.length === 0) {
+        for (const event of goldrushLogTransferEvents(tx, walletLower)) {
+          if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
+          events.push({ provider: 'goldrush', chain, txHash, timestamp, ...event })
+        }
+      }
       for (const transfer of transfers) {
         if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
         const tr = transfer as Record<string, unknown>
@@ -326,6 +340,42 @@ export async function fetchGoldrushRawEvents(
   } catch (err) {
     return { provider: 'goldrush', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error' }
   }
+}
+
+// PURE. The wallet's own ERC-20 legs in a transactions_v3 item, from its decoded Transfer logs.
+// Logs that do not touch the wallet (pool and router hops) and transfers without a `value`
+// parameter (ERC-721) are skipped. Amounts stay raw decimal strings, the format mergeProviderResults
+// dedupes on, so the same transfer reported by Alchemy collapses into one row.
+export function goldrushLogTransferEvents(
+  tx: Record<string, unknown>,
+  walletLower: string,
+): Array<Pick<RawProviderEvent, 'fromAddress' | 'toAddress' | 'contract' | 'symbol' | 'amountRaw' | 'tokenDecimals'>> {
+  const logs: unknown[] = Array.isArray(tx.log_events) ? tx.log_events : []
+  const out: Array<Pick<RawProviderEvent, 'fromAddress' | 'toAddress' | 'contract' | 'symbol' | 'amountRaw' | 'tokenDecimals'>> = []
+  for (const log of logs) {
+    const le = log as Record<string, unknown>
+    const decoded = le.decoded as Record<string, unknown> | null | undefined
+    if (!decoded || decoded.name !== 'Transfer' || !Array.isArray(decoded.params)) continue
+    const params = decoded.params as Array<Record<string, unknown>>
+    const param = (name: string) => params.find((p) => p.name === name)?.value
+    const from = param('from')
+    const to = param('to')
+    const value = param('value')
+    if (typeof from !== 'string' || typeof to !== 'string' || !isPositiveDecimalString(value)) continue
+    const fromLower = from.toLowerCase()
+    const toLower = to.toLowerCase()
+    if (fromLower !== walletLower && toLower !== walletLower) continue
+    if (typeof le.sender_address !== 'string') continue
+    out.push({
+      fromAddress: fromLower,
+      toAddress: toLower,
+      contract: le.sender_address.toLowerCase(),
+      symbol: typeof le.sender_contract_ticker_symbol === 'string' ? le.sender_contract_ticker_symbol : null,
+      amountRaw: value as string,
+      tokenDecimals: typeof le.sender_contract_decimals === 'number' ? le.sender_contract_decimals : null,
+    })
+  }
+  return out
 }
 
 // PURE. Exported for direct unit testing.
@@ -799,7 +849,10 @@ export async function fetchAlchemyRawEvents(
     const ms = typeof ts === 'string' ? Date.parse(ts) : Number.NaN
     return Number.isFinite(ms) ? ms : null
   }
-  type DirectionPages = { results: Record<string, unknown>[]; moreAvailable: boolean }
+  // coveredFromMs: everything from this point to now was read for the direction (the window cutoff
+  // when it was fully paged, the oldest row of the last page read when it stopped early, null when
+  // that is unknown).
+  type DirectionPages = { results: Record<string, unknown>[]; moreAvailable: boolean; coveredFromMs: number | null }
   const fetchPages = async (
     direction: 'from' | 'to',
     category: string[],
@@ -825,7 +878,9 @@ export async function fetchAlchemyRawEvents(
       pageKey = next
       moreAvailable = true
     }
-    return { results, moreAvailable }
+    const last = results[results.length - 1]
+    const coveredFromMs = !moreAvailable ? cutoff : last ? pageOldestMs(last) : null
+    return { results, moreAvailable, coveredFromMs }
   }
 
   try {
@@ -899,14 +954,25 @@ export async function fetchAlchemyRawEvents(
                       : 'no_usable_response'
       return { provider: 'alchemy', ok: false, events: [], errorReason, diagnostics }
     }
+    // More history exists beyond what was read (page cap reached, or a later page failed).
+    const nextPageKeyPresent = fromPages.moreAvailable || toPages.moreAvailable
+    // Both directions are complete from the later of their two covered points; older rows from the
+    // direction that reached further back are dropped so a buy is never seen without the sells of
+    // the same period (or the reverse).
+    const coveredFromMs = !nextPageKeyPresent || !fromResult || !toResult
+      || fromPages.coveredFromMs === null || toPages.coveredFromMs === null
+      ? null
+      : Math.max(fromPages.coveredFromMs, toPages.coveredFromMs)
     const events: RawProviderEvent[] = []
+    let eventCapHit = false
     const collect = (result: Record<string, unknown> | null) => {
       const transfers = Array.isArray(result?.transfers) ? (result!.transfers as Record<string, unknown>[]) : []
       for (const t of transfers) {
-        if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) return
+        if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) { eventCapHit = true; return }
         const meta = t.metadata as Record<string, unknown> | undefined
         const timestamp = typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null
         if (timestamp && Date.parse(timestamp) < cutoff) continue // shallow window only
+        if (coveredFromMs !== null && timestamp && Date.parse(timestamp) < coveredFromMs) continue
         const rawContract = t.rawContract as Record<string, unknown> | undefined
         const rawValueHex = typeof rawContract?.value === 'string' ? rawContract.value : null
         const rawDecimalHex = typeof rawContract?.decimal === 'string' ? rawContract.decimal : null
@@ -926,8 +992,6 @@ export async function fetchAlchemyRawEvents(
     }
     for (const result of fromPages.results) collect(result)
     for (const result of toPages.results) collect(result)
-    // More history exists beyond what was read (page cap reached, or a later page failed).
-    const nextPageKeyPresent = fromPages.moreAvailable || toPages.moreAvailable
     const pagesSucceeded = fromPages.results.length + toPages.results.length
     return {
       provider: 'alchemy', ok: true, events, errorReason: null, diagnostics,
@@ -937,6 +1001,8 @@ export async function fetchAlchemyRawEvents(
         paginationExhausted: fromResult !== null && toResult !== null && !nextPageKeyPresent,
         nextPageKeyPresent,
         providerCapReached: nextPageKeyPresent || events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
+        // The event cap cuts rows arbitrarily across directions, so no contiguous range is proven.
+        coveredFromMs: eventCapHit ? null : coveredFromMs,
       },
     }
   } catch (err) {

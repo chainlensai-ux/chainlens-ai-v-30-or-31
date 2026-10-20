@@ -97,6 +97,11 @@ export function detectProviderUnavailable(
 // the results. Never throws — each provider call is individually failure-isolated inside
 // fetchGoldrushRawEvents/fetchAlchemyRawEvents, so one provider failing never prevents the other
 // from being used (Architecture Step 7 §1).
+function clipToCoveredRange(events: RawProviderEvent[], coveredFromMs: number | null | undefined): RawProviderEvent[] {
+  if (coveredFromMs === null || coveredFromMs === undefined) return events
+  return events.filter((event) => !event.timestamp || Date.parse(event.timestamp) >= coveredFromMs)
+}
+
 async function fetchProviderWindowLive(
   chain: SupportedChain,
   walletAddress: string,
@@ -114,7 +119,9 @@ async function fetchProviderWindowLive(
     const native = await fetchAlchemyNativeRawEvents(chain, walletAddress, resolvedWindowDays)
     alchemyResult = {
       ...tokenAlchemyResult,
-      events: [...tokenAlchemyResult.events, ...native.events],
+      // Native rows older than the token history's proven range would sit in a period whose token
+      // legs were dropped; keep the two consistent.
+      events: [...tokenAlchemyResult.events, ...clipToCoveredRange(native.events, tokenAlchemyResult.pagination?.coveredFromMs)],
       nativeHistory: { events: native.events.length, calls: native.calls, failedCalls: native.failedCalls, moreAvailable: native.moreAvailable, lastError: native.lastError ?? null },
     }
   }

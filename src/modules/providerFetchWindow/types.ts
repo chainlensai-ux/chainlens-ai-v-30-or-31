@@ -65,6 +65,11 @@ export type SingleProviderFetchResult = {
     paginationExhausted: boolean
     nextPageKeyPresent: boolean
     providerCapReached: boolean
+    // Set when pagination stopped early (page cap, time budget or failed later page): the epoch ms
+    // from which `events` is complete in every direction this provider queried, i.e. newest-first
+    // pages were read without a gap back to this point and older events were dropped. Lets the scan
+    // treat [coveredFromMs, now] as a proven, shorter window instead of an unproven requested one.
+    coveredFromMs?: number | null
   }
   // ADDITIVE, OPTIONAL, DISCLOSED (Alchemy-history-ingestion-regression task): low-level per-call
   // outcome counts backing the [alchemy-history-ingestion-audit] diagnostic — populated only by

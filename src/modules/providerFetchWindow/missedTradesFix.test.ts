@@ -86,3 +86,26 @@ test('native history failure (e.g. chain without internal transfers) yields no r
   const r = await fetchAlchemyNativeRawEvents('base', W, 90)
   assert.deepEqual([r.events.length, r.failedCalls], [0, 2])
 })
+
+test('a page-capped history reports the range it covered and drops the older rows of the deeper direction', async () => {
+  const capped = Array.from({ length: ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION + 1 }, (_, i) => ({ count: 200, ageDays: 1 + i * 3 }))
+  mockPages({
+    // The sells reach back further than the buys: their rows older than the buys' last page go.
+    'erc20:from': capped.map((page) => ({ ...page, ageDays: page.ageDays * 2 })),
+    'erc20:to': capped,
+  })
+  const r = await fetchAlchemyRawEvents('base', W, 90)
+  assert.equal(r.pagination?.nextPageKeyPresent, true)
+  const covered = r.pagination?.coveredFromMs
+  assert.ok(typeof covered === 'number')
+  const lastToPageAge = 1 + (ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION - 1) * 3
+  assert.ok(Math.abs(covered - (Date.now() - lastToPageAge * 86_400_000)) < 60_000, 'the shallower direction bounds the range')
+  assert.ok(r.events.every((e) => Date.parse(e.timestamp!) >= covered), 'nothing older than the covered start')
+})
+
+test('a fully paged history has no covered-range narrowing', async () => {
+  mockPages({ 'erc20:from': [{ count: 5, ageDays: 3 }], 'erc20:to': [{ count: 5, ageDays: 4 }] })
+  const r = await fetchAlchemyRawEvents('base', W, 90)
+  assert.equal(r.pagination?.nextPageKeyPresent, false)
+  assert.equal(r.pagination?.coveredFromMs, null)
+})

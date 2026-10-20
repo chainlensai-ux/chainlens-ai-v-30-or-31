@@ -956,7 +956,12 @@ export function buildWindowBoundaryProviderAudit(
     const pagination = result.pagination
     const providerFailed = !result.ok
     const reachedByTimestamp = oldestMs !== null && oldestMs <= requestedStartMs + toleranceMs
+    // An empty "last page" proves nothing while the other provider returned this chain's events:
+    // production saw GoldRush report exhaustion with 0 events next to Alchemy's 4,025.
+    const siblingHasEvents = (['goldrush', 'alchemy'] as const)
+      .some((other) => other !== provider && chainResult.providerResults[other].events.length > 0)
     const reachedByExhaustion = result.ok && pagination?.paginationExhausted === true
+      && (result.events.length > 0 || !siblingHasEvents)
     const requestedWindowStartReached = !providerFailed && (reachedByTimestamp || reachedByExhaustion)
     const providerCapReached = pagination?.providerCapReached ?? result.events.length >= MAX_RAW_EVENTS_PER_PROVIDER
     const boundaryStatus = providerFailed ? 'failed'
@@ -984,6 +989,36 @@ export function buildWindowBoundaryProviderAudit(
       boundaryStatus, boundaryReason,
     }
   }))
+}
+
+// PURE. Per chain, the history is complete from the earliest point any one successful provider
+// proved (each provider alone returns every wallet transfer in the range it covered); the scan is
+// complete from the latest of those chain points. A provider proves the requested start by
+// reaching it, or a later start through `pagination.coveredFromMs` when its page cap stopped it.
+// Returns the requested start when it is proven, the narrowed start when every chain proved one,
+// and null when some chain proved nothing (the window stays unproven).
+export function resolveCoveredWindowStart(
+  audit: ReadonlyArray<WindowBoundaryProviderAudit>,
+  providerResults: ReadonlyArray<ProviderFetchWindowResult>,
+  requestedStartMs: number,
+): number | null {
+  if (providerResults.length === 0) return null
+  let windowStart = requestedStartMs
+  for (const chainResult of providerResults) {
+    let chainStart: number | null = null
+    for (const provider of ['goldrush', 'alchemy'] as const) {
+      const result = chainResult.providerResults[provider]
+      if (!result.ok) continue
+      const proven = audit.some((entry) => entry.chain === chainResult.chain && entry.provider === provider && entry.requestedWindowStartReached)
+      const covered = proven ? requestedStartMs : result.pagination?.coveredFromMs
+      if (typeof covered !== 'number' || !Number.isFinite(covered)) continue
+      const start = Math.max(requestedStartMs, covered)
+      chainStart = chainStart === null ? start : Math.min(chainStart, start)
+    }
+    if (chainStart === null) return null
+    windowStart = Math.max(windowStart, chainStart)
+  }
+  return windowStart
 }
 
 // PURE — extracted so this is directly unit-testable (item 8). See its own call site's comment for
@@ -3555,14 +3590,42 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // never derived from timestamps alone. `anyProviderFetchFailed` is checked separately (a genuine
   // failure, not a cap, is a different and still fail-closed case — see eventClassification's own
   // HistoryCoverageStatus header).
-  const requestedWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
-  const windowBoundaryProviderAudit = buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp))
-  const anyProviderAtEventCap = windowBoundaryProviderAudit.some((provider) => provider.providerCapReached)
+  // COVERED WINDOW: a busy wallet's history outruns the per-scan Alchemy budget (this wallet: 4,025
+  // transfers in 32 days, ~60 history calls for 90 days against a 53-call CU ceiling). The pages
+  // that WERE read are contiguous newest-first, so [coveredStart, now] is complete and is used as
+  // the scan's bounded window instead of an unproven 90 days. Sells of tokens acquired before it are
+  // then pre-window exits of that shorter, honestly labelled window.
+  const configuredWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
+  const configuredBoundaryAudit = buildWindowBoundaryProviderAudit(providerResults, configuredWindowStart, Date.parse(scanTimestamp))
+  const coveredWindowStart = resolveCoveredWindowStart(configuredBoundaryAudit, providerResults, configuredWindowStart)
+  const requestedWindowStart = coveredWindowStart ?? configuredWindowStart
+  const windowNarrowed = requestedWindowStart > configuredWindowStart
+  const scanWindowDaysUsed = windowNarrowed
+    ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
+    : PROVIDER_FETCH_WINDOW_DAYS_USED
+  const windowBoundaryProviderAudit = windowNarrowed
+    ? buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp))
+    : configuredBoundaryAudit
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
-  const providerWindowStartReached = windowBoundaryProviderAudit.length > 0
-    && windowBoundaryProviderAudit.every((provider) => provider.requestedWindowStartReached)
+  // Chain-level: one successful provider reaching the start covers the chain; a cap only matters
+  // on a chain where no provider reached it.
+  const chainReachedStart = (chain: SupportedChain) => windowBoundaryProviderAudit
+    .some((provider) => provider.chain === chain && provider.requestedWindowStartReached)
+  const providerWindowStartReached = providerResults.length > 0
+    && providerResults.every((r) => chainReachedStart(r.chain))
+  const anyProviderAtEventCap = windowBoundaryProviderAudit
+    .some((provider) => provider.providerCapReached && !chainReachedStart(provider.chain))
+  // eslint-disable-next-line no-console
+  console.warn('[covered-window-audit]', {
+    configuredWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    configuredWindowStart: new Date(configuredWindowStart).toISOString(),
+    coveredWindowStart: coveredWindowStart === null ? null : new Date(coveredWindowStart).toISOString(),
+    windowNarrowed,
+    scanWindowDaysUsed,
+    providerWindowStartReached,
+  })
   const unmatchedEvidenceAuditContext = {
-    windowStartTimestamp: requestedWindowStart, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    windowStartTimestamp: requestedWindowStart, scanWindowDays: scanWindowDaysUsed,
     anyProviderAtEventCap, anyProviderFetchFailed, boundedWindowStartProven: providerWindowStartReached,
   }
   let unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
@@ -4406,7 +4469,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
       sellsBlockedSolelyByUnprovenBoundary: unmatchedEvidenceAudit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
       historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
-      scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      scanWindowDays: scanWindowDaysUsed,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
       boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
       boundaryDependentRemainingBlockers: boundaryDependentSellResolutionAudit.remainingBlockers,
@@ -4436,6 +4499,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // eslint-disable-next-line no-console
     console.warn('[bounded-pnl-boundary-audit]', {
       requestedWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      scanWindowDaysUsed,
       boundedWindowStart: new Date(requestedWindowStart).toISOString(),
       providerWindowStartReached,
       historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,

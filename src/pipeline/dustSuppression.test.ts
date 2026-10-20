@@ -16,6 +16,7 @@ import {
   computeHeavyWalletFlag,
   buildProviderFetchWindowDiagnostics,
   buildWindowBoundaryProviderAudit,
+  resolveCoveredWindowStart,
   computeSlowProviderFlag,
   computeJitterFlag,
   computeColdStartFlag,
@@ -559,5 +560,54 @@ describe('buildWindowBoundaryProviderAudit', () => {
     assert.ok(audit.every((provider) => !provider.requestedWindowStartReached))
     assert.ok(audit.every((provider) => provider.boundaryStatus === 'truncated'))
     assert.ok(audit.every((provider) => provider.boundaryReason === 'continuation_not_followed'))
+  })
+
+  it('an empty provider claiming exhaustion proves nothing while the other provider has events', () => {
+    const event = { provider: 'alchemy' as const, chain: 'base' as const, txHash: '0x1', timestamp: new Date(Date.UTC(2026, 6, 20)).toISOString(), fromAddress: null, toAddress: null, contract: null, symbol: null, amountRaw: null, tokenDecimals: null }
+    const base = result({ paginationExhausted: true, nextPageKeyPresent: false, providerCapReached: false })
+    const audit = buildWindowBoundaryProviderAudit([{
+      ...base,
+      providerResults: {
+        goldrush: base.providerResults.goldrush,
+        alchemy: { ...base.providerResults.alchemy, events: [event], pagination: { pagesRequested: 20, pagesSucceeded: 20, paginationExhausted: false, nextPageKeyPresent: true, providerCapReached: true } },
+      },
+    }], Date.UTC(2026, 5, 1), Date.UTC(2026, 7, 30))
+    assert.equal(audit.find((p) => p.provider === 'goldrush')?.requestedWindowStartReached, false)
+  })
+})
+
+describe('resolveCoveredWindowStart', () => {
+  const START = Date.UTC(2026, 6, 22)
+  const COVERED = Date.UTC(2026, 8, 18)
+  const at = (ms: number) => ({ provider: 'alchemy' as const, chain: 'base' as const, txHash: '0x1', timestamp: new Date(ms).toISOString(), fromAddress: null, toAddress: null, contract: null, symbol: null, amountRaw: null, tokenDecimals: null })
+  const chain = (chainId: 'base' | 'eth', alchemy: { coveredFromMs: number | null; exhausted: boolean; oldest: number | null }) => ({
+    chain: chainId,
+    providerStatus: 'ok' as const,
+    rawEvents: [],
+    providerFetchWindowDays: 90,
+    providerResults: {
+      goldrush: { provider: 'goldrush' as const, ok: true, events: [{ ...at(Date.UTC(2026, 9, 19)), provider: 'goldrush' as const }], errorReason: null,
+        pagination: { pagesRequested: 1, pagesSucceeded: 1, paginationExhausted: false, nextPageKeyPresent: true, providerCapReached: true } },
+      alchemy: { provider: 'alchemy' as const, ok: true, events: alchemy.oldest === null ? [] : [at(alchemy.oldest)], errorReason: null,
+        pagination: { pagesRequested: 20, pagesSucceeded: 20, paginationExhausted: alchemy.exhausted, nextPageKeyPresent: !alchemy.exhausted, providerCapReached: !alchemy.exhausted, coveredFromMs: alchemy.coveredFromMs } },
+    },
+  })
+  const resolve = (results: ReturnType<typeof chain>[]) =>
+    resolveCoveredWindowStart(buildWindowBoundaryProviderAudit(results, START, Date.UTC(2026, 9, 20)), results, START)
+
+  it('narrows to the page-capped provider\'s covered start (production: 90 requested, 32 covered)', () => {
+    assert.equal(resolve([chain('base', { coveredFromMs: COVERED, exhausted: false, oldest: COVERED })]), COVERED)
+  })
+  it('keeps the requested start when history reached it', () => {
+    assert.equal(resolve([chain('base', { coveredFromMs: null, exhausted: true, oldest: START + 1000 })]), START)
+  })
+  it('uses the latest chain start across chains', () => {
+    const quiet = chain('eth', { coveredFromMs: null, exhausted: true, oldest: null })
+    const eth = { ...quiet, providerResults: { ...quiet.providerResults, goldrush: { ...quiet.providerResults.goldrush, events: [],
+      pagination: { pagesRequested: 1, pagesSucceeded: 1, paginationExhausted: true, nextPageKeyPresent: false, providerCapReached: false } } } }
+    assert.equal(resolve([chain('base', { coveredFromMs: COVERED, exhausted: false, oldest: COVERED }), eth]), COVERED)
+  })
+  it('is null when a capped chain reports no covered range', () => {
+    assert.equal(resolve([chain('base', { coveredFromMs: null, exhausted: false, oldest: COVERED })]), null)
   })
 })
