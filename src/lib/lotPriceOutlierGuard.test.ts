@@ -228,9 +228,45 @@ describe('lot price outlier guard — tight same-hour band', () => {
     assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side, o.reason]), [['0x28245e2f', 'entry', 'token_local_price_outlier']])
   })
 
+  it('one stray neighbour does not hide the bad side (production: a $398 sell in the same hour)', () => {
+    const sells = [342.71, 342.71, 342.78, 398.1].map((p, i) => lot({
+      token: STOCK, amount: 0.5, entryPerUnit: 342.6, exitPerUnit: p,
+      openedAt: t0 - 2 * 60 * MINUTE_MS, closedAt: t0 + (i + 1) * MINUTE_MS,
+      openedTxHash: `0xoldbuy${i}`, closedTxHash: `0xsell${i}`,
+    }))
+    const bad = lot({ token: STOCK, amount: 2.93, entryPerUnit: 234.69, exitPerUnit: 342.71, openedAt: t0, closedAt: t0 + 36_000, openedTxHash: '0x28245e2f', closedTxHash: '0xb3b1454e' })
+    const result = demotePriceOutlierLots([...sells, bad])
+    assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side]), [['0x28245e2f', 'entry']])
+    assert.equal(result.lots[4].evidenceQuality, 'unpriced')
+  })
+
   it('never applies to a volatile token whose same-hour sides already spread beyond the band', () => {
     const meme = [0.010, 0.013, 0.016, 0.0095].map((p, i) => lot({ amount: 1_000, entryPerUnit: p, exitPerUnit: p * 1.1, openedAt: t0 + i * MINUTE_MS, closedAt: t0 + (i + 1) * MINUTE_MS }))
     const pump = lot({ amount: 1_000, entryPerUnit: 0.012, exitPerUnit: 0.02, openedAt: t0 + 5 * MINUTE_MS, closedAt: t0 + 6 * MINUTE_MS })
     assert.equal(demotePriceOutlierLots([...meme, pump]).demotedLotCount, 0)
+  })
+})
+
+describe('lot price outlier guard — major same-day band', () => {
+  const WETH = '0x4200000000000000000000000000000000000006'
+  const t0 = 1_792_446_449_000
+
+  it('demotes a WETH entry at $1,774 between same-day sides at ~$2,400 (production: +$130.81 in 94 seconds)', () => {
+    const normal = [2390, 2405, 2410, 2398].map((p, i) => lot({
+      token: WETH, amount: 0.2, entryPerUnit: p, exitPerUnit: p + 5,
+      openedAt: t0 - (i + 2) * 60 * MINUTE_MS, closedAt: t0 - (i + 1) * 60 * MINUTE_MS,
+    }))
+    const bad = lot({ token: WETH, amount: 0.217, entryPerUnit: 1774, exitPerUnit: 2377, openedAt: t0, closedAt: t0 + 94_000, openedTxHash: '0x8329fd22', closedTxHash: '0x43258715' })
+    const result = demotePriceOutlierLots([...normal, bad])
+    assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side, o.reason]), [['0x8329fd22', 'entry', 'token_local_price_outlier']])
+    assert.ok(result.lots.slice(0, 4).every((l) => l.evidenceQuality === 'verified'))
+  })
+
+  it('keeps a real 6% same-day ETH move verified', () => {
+    const lots = [2400, 2420, 2450, 2500, 2550].map((p, i) => lot({
+      token: WETH, amount: 0.2, entryPerUnit: p, exitPerUnit: p * 1.01,
+      openedAt: t0 + i * 2 * 60 * MINUTE_MS, closedAt: t0 + (i * 2 + 1) * 60 * MINUTE_MS,
+    }))
+    assert.equal(demotePriceOutlierLots(lots).demotedLotCount, 0)
   })
 })
