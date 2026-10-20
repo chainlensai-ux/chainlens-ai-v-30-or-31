@@ -10,6 +10,8 @@
 //      per-unit price of that token's other priced sides (needs MIN_TOKEN_SAMPLES distinct sides), or
 //   2. its USD value exceeds both WALLET_VALUE_FLOOR_USD and OUTLIER_FACTOR times the wallet's median
 //      side value — catches a bad price on a token too thinly traded for check 1.
+// Reconciled lots are also checked one at a time (lotLevelOutlierReason): a lot whose proceeds are
+// more than LOT_RETURN_OUTLIER_FACTOR times its cost, or a same-transaction dust leg.
 // Applied twice: to FIFO's per-event USD lookup (guardPriceUsdLookup), so an outlier price never
 // becomes a lot's cost basis or proceeds — realized or unrealized — and to the reconciled lots
 // (demotePriceOutlierLots), which catches outliers re-entering from stored accepted evidence. A demoted
@@ -28,6 +30,13 @@ export const LOT_PRICE_OUTLIER_WALLET_VALUE_FLOOR_USD = 1_000_000
 // and $730 and cbBTC at $27.8k next to a $2,409 / $81.5k median — liquidity legs and split side values
 // a 1000x band can never catch.
 export const LOT_PRICE_MAJOR_OUTLIER_FACTOR = 1.5
+// A single lot returning more than this multiple of its own cost basis is a bad price on one side,
+// not a trade: production published a lot bought for $3.9e-14 and sold for $70 (a 1.8e15x return)
+// on a token with too few trades for the per-token median check.
+export const LOT_RETURN_OUTLIER_FACTOR = 10_000
+// A lot opened and closed in the same transaction with both sides under this USD value is a dust
+// leg passing through the wallet (router leftovers, refunds), not a trade.
+export const SAME_TX_DUST_LOT_USD = 0.01
 
 function isMajorTokenKey(tokenKey: string): boolean {
   const [chain, token] = tokenKey.split(':')
@@ -45,7 +54,7 @@ export type LotPriceOutlier = {
   perUnitUsd: number
   tokenMedianPerUnitUsd: number | null
   valueUsd: number
-  reason: 'token_price_outlier' | 'wallet_value_outlier'
+  reason: 'token_price_outlier' | 'wallet_value_outlier' | 'lot_return_outlier' | 'same_tx_dust_lot'
 }
 
 export type LotPriceOutlierResult = {
@@ -119,10 +128,19 @@ function detectPriceOutliers(samples: Iterable<PriceSample>): Map<string, Outlie
   return verdicts
 }
 
+// Checks one lot on its own, no other trades needed: an impossible return, or a same-transaction
+// dust leg. Only called on canonically verified lots, so both sides are positive and finite.
+function lotLevelOutlierReason(lot: MatchedLot): 'lot_return_outlier' | 'same_tx_dust_lot' | null {
+  const cost = lot.costBasisUsd as number
+  const proceeds = lot.proceedsUsd as number
+  if (proceeds > cost * LOT_RETURN_OUTLIER_FACTOR) return 'lot_return_outlier'
+  if (lot.openedTxHash.toLowerCase() === lot.closedTxHash.toLowerCase() && cost < SAME_TX_DUST_LOT_USD && proceeds < SAME_TX_DUST_LOT_USD) return 'same_tx_dust_lot'
+  return null
+}
+
 export function demotePriceOutlierLots(lots: readonly MatchedLot[]): LotPriceOutlierResult {
   const samples = collectSideSamples(lots)
   const verdicts = detectPriceOutliers(samples.values())
-  if (verdicts.size === 0) return { lots: [...lots], demotedLotCount: 0, outliers: [] }
   const outliers: LotPriceOutlier[] = []
   for (const [key, verdict] of verdicts) {
     const sample = samples.get(key)!
@@ -132,7 +150,16 @@ export function demotePriceOutlierLots(lots: readonly MatchedLot[]): LotPriceOut
   let demotedLotCount = 0
   const guarded = lots.map((lot) => {
     if (!isCanonicalVerifiedPublishedLot(lot)) return lot
-    if (!verdicts.has(sideKey(lot, 'entry')) && !verdicts.has(sideKey(lot, 'exit'))) return lot
+    const lotReason = lotLevelOutlierReason(lot)
+    if (lotReason) {
+      outliers.push({
+        chain: lot.chain, token: lot.token.toLowerCase(), txHash: lot.closedTxHash.toLowerCase(), side: 'exit',
+        perUnitUsd: lot.amount > 0 ? (lot.proceedsUsd as number) / lot.amount : 0, tokenMedianPerUnitUsd: null,
+        valueUsd: lot.proceedsUsd as number, reason: lotReason,
+      })
+    } else if (!verdicts.has(sideKey(lot, 'entry')) && !verdicts.has(sideKey(lot, 'exit'))) {
+      return lot
+    }
     demotedLotCount += 1
     return { ...lot, evidenceQuality: 'unpriced' as const }
   })

@@ -70,6 +70,41 @@ export function stablecoinNormalizedGroupTotal(groupLots: readonly MatchedLot[],
   return groupLots.reduce((sum, lot) => sum + lot.amount, 0)
 }
 
+// Total token quantity an accepted-evidence record's value was aggregated over, read back from its
+// coverage fingerprint (each covered lot's identity ends in its canonical amount). Null unless the
+// fingerprint lists exactly `coveredLotCount` lots: older writers defaulted the fingerprint to one
+// lot's identity while aggregating several, and those records say nothing reliable about quantity.
+export function acceptedEvidenceCoveredQuantity(coverageFingerprint: string | null | undefined, coveredLotCount: number | null | undefined): number | null {
+  if (!coverageFingerprint) return null
+  const identities = coverageFingerprint.split('|')
+  if (identities.length !== (coveredLotCount ?? 1)) return null
+  let total = 0
+  for (const identity of identities) {
+    const amount = Number(identity.slice(identity.lastIndexOf(':') + 1))
+    if (!Number.isFinite(amount) || amount < 0) return null
+    total += amount
+  }
+  return total > 0 ? total : null
+}
+
+// QUANTITY-SCALED SIDE TOTAL: a record's value covers the quantity it was written over, and one
+// transaction side has one per-unit price. When this scan matched LESS of that side than the record
+// covers — production: a 4,054-token sell whose buys fell past a truncated history matched only a
+// 1e-12 slice, and the slice was handed the whole sell's $70.35 — the total is scaled down to the
+// quantity actually present. Never scaled up (a larger live group is reseeded by canonical seeding),
+// and differences under 1e-6 relative are float noise that leave the total untouched.
+export const ACCEPTED_EVIDENCE_QUANTITY_RESCALE_TOLERANCE = 1e-6
+export function acceptedEvidenceGroupTotal(
+  groupLots: readonly MatchedLot[],
+  evidence: { priceUsd: number; coverageFingerprint?: string | null; coveredLotCount?: number | null },
+): number {
+  const coveredQuantity = acceptedEvidenceCoveredQuantity(evidence.coverageFingerprint, evidence.coveredLotCount)
+  const liveQuantity = groupLots.reduce((sum, lot) => sum + (Number.isFinite(lot.amount) && lot.amount > 0 ? lot.amount : 0), 0)
+  const scaleDown = coveredQuantity !== null && liveQuantity < coveredQuantity * (1 - ACCEPTED_EVIDENCE_QUANTITY_RESCALE_TOLERANCE)
+  const total = scaleDown ? evidence.priceUsd * (liveQuantity / (coveredQuantity as number)) : evidence.priceUsd
+  return stablecoinNormalizedGroupTotal(groupLots, total)
+}
+
 // SCHEMA BUMP TO 3, GENUINELY REQUIRED, DISCLOSED (canonical-price-replay follow-up task,
 // requirement #10 — "do not create a new manifest schema key merely to hide this test unless the
 // stored manifest lacks required side references"). It genuinely does: a v2 manifest's per-lot
@@ -1076,7 +1111,7 @@ export async function buildManifestFromCandidate(params: {
       const { job, evidence } = row
       job.target.set(job.key, evidence)
       if (evidence) {
-        const groupTotal = stablecoinNormalizedGroupTotal(job.groupLots, evidence.priceUsd)
+        const groupTotal = acceptedEvidenceGroupTotal(job.groupLots, evidence)
         job.totals.set(job.key, groupTotal)
         job.allocations.set(job.key, new Map(allocateSideValueAcrossGroup(job.groupLots, groupTotal).map((s) => [s.lot, s])))
       }
@@ -1383,7 +1418,11 @@ export async function buildManifestFromCandidate(params: {
       const allocatedUsdSum = Math.round(allocations.reduce((sum, a) => sum + a.allocatedUsd, 0) * 1e8) / 1e8
       const publishedUsdSum = Math.round(allocations.filter((a) => a.published).reduce((sum, a) => sum + a.allocatedUsd, 0) * 1e8) / 1e8
       const residualUsd = Math.round((allocatedUsdSum - publishedUsdSum) * 1e8) / 1e8
-      const conservationSatisfied = Math.abs(allocatedUsdSum - acceptedEvidenceUsd) <= CANONICAL_VALUE_TOLERANCE
+      // A group whose lots are all below quantity precision (dust left on a sell whose real
+      // quantity went unmatched this scan) has nothing to allocate across. That is stale
+      // evidence, not an allocation error, and none of those lots can publish anyway.
+      const groupHasNoQuantity = shareByLot !== undefined && groupLots.every((lot) => (shareByLot.get(lot)?.denominator ?? '0') === '0')
+      const conservationSatisfied = groupHasNoQuantity || Math.abs(allocatedUsdSum - acceptedEvidenceUsd) <= CANONICAL_VALUE_TOLERANCE
       results.push({
         evidenceKey: key, side, acceptedEvidenceUsd, occurrenceCountBefore: groupLots.length,
         allocatedUsdSum, publishedUsdSum, residualUsd, conservationSatisfied, allocations,
@@ -2329,9 +2368,9 @@ export async function replayManifest(params: {
   for (const [key, evidence] of evidenceByKey) {
     if (!evidence) continue
     const entryGroup = entryGroupsByKey.get(key)
-    if (entryGroup) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(entryGroup, stablecoinNormalizedGroupTotal(entryGroup, evidence.priceUsd)).map((share) => [share.lot, share])))
+    if (entryGroup) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(entryGroup, acceptedEvidenceGroupTotal(entryGroup, evidence)).map((share) => [share.lot, share])))
     const exitGroup = exitGroupsByKey.get(key)
-    if (exitGroup) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(exitGroup, stablecoinNormalizedGroupTotal(exitGroup, evidence.priceUsd)).map((share) => [share.lot, share])))
+    if (exitGroup) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(exitGroup, acceptedEvidenceGroupTotal(exitGroup, evidence)).map((share) => [share.lot, share])))
   }
 
   // 3. Resolve, REBUILD FROM ACCEPTED EVIDENCE (Part A: per-sibling allocated share, never a flat
@@ -2565,7 +2604,7 @@ export async function replayManifest(params: {
       if (!evidence || !group || group.length === 0 || !allocationMap || frozenGroupTotal === null || frozenOccurrenceTotal === null || storedFingerprint === undefined) return null
       const shares = group.map((lot) => allocationMap.get(lot)).filter((s): s is SideAllocationShare => s !== undefined)
       if (shares.length !== group.length) return null
-      const acceptedRawUsd = stablecoinNormalizedGroupTotal(group, evidence.priceUsd)
+      const acceptedRawUsd = acceptedEvidenceGroupTotal(group, evidence)
       const acceptedScaled = toScaledValue(acceptedRawUsd)
       const allocatedScaledTotal = shares.reduce((sum, s) => sum + s.allocatedScaled, BigInt(0))
       const rawQuantities = group.map((lot) => toScaledRawQuantity(lot.amount))
@@ -2743,7 +2782,7 @@ export async function replayManifest(params: {
       for (const lot of current.occurrences) covered.add(lot)
     }
     if (covered.size !== group.length || group.some((lot) => !covered.has(lot))) return false
-    const acceptedScaled = toScaledValue(stablecoinNormalizedGroupTotal(group, evidence.priceUsd))
+    const acceptedScaled = toScaledValue(acceptedEvidenceGroupTotal(group, evidence))
     // Exact scaled-integer conservation; the only slack is each stored value's own 1e-8 rounding
     // (one unit per summed record, plus the accepted total's own) — never a value tolerance.
     const units = BigInt(sideRecords.length + 1)

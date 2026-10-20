@@ -15,7 +15,7 @@ import {
 } from './acceptedEvidenceStore'
 import { txSideKey } from './txSideEventAllocation'
 import { demotePriceOutlierLots, negligibleUnpricedLotIndexes } from './lotPriceOutlierGuard'
-import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
+import { allocateSideValueAcrossGroup, acceptedEvidenceGroupTotal, demoteLotsOnIncompleteAcceptedSides, acceptedEvidenceIdentityKeysForLot, type SideAllocationShare } from './canonicalPnlSampleManifest'
 import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 import { classifyVerifiedSampleRoiEligibility, liveRoiQuoteLegProofsToPersist, mergeRoiQuoteLegProofs, roiLotKey, type PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import { buildVerifiedSampleWinRateAudit, type VerifiedSampleWinRateAudit } from './verifiedSampleWinLoss'
@@ -1808,7 +1808,7 @@ export function createPnlReconciliation(config: Config = {}) {
         else ctx.exit = context
         conflictContextByLot.set(lot, ctx)
       }
-      for (const share of allocateSideValueAcrossGroup(group.lots, stablecoinNormalizedGroupTotal(group.lots, groupTotalUsd))) {
+      for (const share of allocateSideValueAcrossGroup(group.lots, acceptedEvidenceGroupTotal(group.lots, { priceUsd: groupTotalUsd, coverageFingerprint: evidence.coverageFingerprint, coveredLotCount: evidence.coveredLotCount }))) {
         const existing = shareByLot.get(share.lot) ?? {}
         if (group.side === 'entry') existing.entry = share
         else existing.exit = share

@@ -1661,6 +1661,51 @@ describe('canonicalPnlSampleManifest — incomplete accepted sides demoted (Wall
     assert.equal(entryGroupAudit!.conservationSatisfied, true, 'allocatedUsdSum (published + residual) still equals the real accepted evidence total')
   })
 
+  it('a side whose only lots are below quantity precision is not reported as a conservation failure', async () => {
+    // Production (TAO sell 0xe365f93d): $299.55 accepted for the sell, but this scan matched only a
+    // 1e-15 dust slice of it (the rest went unmatched past the history cut-off). Nothing to allocate.
+    const verified = lot({
+      lotId: 'real', token: '0xtao', openedTxHash: '0xbuy', closedTxHash: '0xothersell',
+      openedAt: 100, closedAt: 200, amount: 1, costBasisUsd: 50, proceedsUsd: 80, realizedPnlUsd: 30,
+    })
+    const dust = lot({
+      lotId: 'dust', token: '0xtao', openedTxHash: '0xbuy2', closedTxHash: '0xe365',
+      openedAt: 150, closedAt: 300, amount: 1e-15,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const store = new Map<string, unknown>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (store.get(key) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+    const identity2 = {
+      chain: dust.chain, token: dust.token, txHash: dust.closedTxHash, side: 'exit' as const,
+      timestamp: dust.closedAt, lotIdentityVersion: lotIdentityVersion(dust),
+    }
+    store.set(buildAcceptedEvidenceKey(identity2), buildAcceptedEvidenceEnvelope({
+      identity: identity2, priceUsd: 299.55, valueUsd: 299.55,
+      source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: NOW,
+    }))
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('dust-side'),
+      allCandidateLots: [verified, dust],
+      candidateVerifiedLots: [verified],
+      structuralLotCount: 2,
+      fingerprints: computeFingerprints([verified, dust], 30),
+      realizedPnlUsd: 30,
+      verifiedPricingCoverage: 0.5,
+      now: 1000,
+      loadEvidence: loader,
+      computeFingerprints,
+    })
+    const failures = (manifest.manifestAllocationBuildAudit?.groups ?? []).filter((g) => !g.conservationSatisfied)
+    assert.deepEqual(failures, [], 'nothing to allocate is not a conservation failure')
+  })
+
   it('HARD ASSERTION (control): two verified lots sharing a schema-2 side stay published and their claimed totals sum to the accepted side total', async () => {
     const a = lot({
       lotId: 'a', token: '0xfacy', openedTxHash: '0xsharedbuy', closedTxHash: '0xasell',

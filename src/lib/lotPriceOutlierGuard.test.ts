@@ -126,4 +126,22 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     assert.equal(guarded.repricedMajorEvents, 1)
     assert.equal(guarded.rejectedEvents, 1)
   })
+  it('demotes a lone lot with an impossible return even when the token has too few trades for a median', () => {
+    // Production (scan b6519b82): cost $3.9e-14, proceeds $70.35 on this token, counted as +$70 verified.
+    const bad = { ...lot({ amount: 1.67e-12, entryPerUnit: 0.0234, exitPerUnit: 4.2e13 }), costBasisUsd: 3.9e-14, proceedsUsd: 70.35, realizedPnlUsd: 70.35 }
+    const result = demotePriceOutlierLots([bad])
+    assert.equal(result.demotedLotCount, 1)
+    assert.equal(result.outliers[0].reason, 'lot_return_outlier')
+    assert.equal(result.lots[0].evidenceQuality, 'unpriced')
+  })
+
+  it('demotes a same-transaction dust leg but keeps a real same-transaction trade and a real 50x', () => {
+    const dust = lot({ amount: 1e-12, entryPerUnit: 1, exitPerUnit: 1.2, openedTxHash: '0xsame', closedTxHash: '0xsame' })
+    const realSameTx = lot({ amount: 100, entryPerUnit: 1, exitPerUnit: 1.01, openedTxHash: '0xsame2', closedTxHash: '0xsame2' })
+    const fiftyX = lot({ token: '0xother', amount: 1_000, entryPerUnit: 0.001, exitPerUnit: 0.05 })
+    const result = demotePriceOutlierLots([dust, realSameTx, fiftyX])
+    assert.equal(result.demotedLotCount, 1)
+    assert.equal(result.outliers[0].reason, 'same_tx_dust_lot')
+    assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['unpriced', 'verified', 'verified'])
+  })
 })
