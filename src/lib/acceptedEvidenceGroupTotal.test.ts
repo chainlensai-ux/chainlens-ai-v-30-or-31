@@ -4,7 +4,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { acceptedEvidenceGroupTotal, acceptedEvidenceCoveredQuantity } from '@/src/lib/canonicalPnlSampleManifest'
-import { buildAcceptedEvidenceCoverageFingerprint } from '@/src/lib/acceptedEvidenceStore'
+import { buildAcceptedEvidenceCoverageFingerprint, TX_SIDE_EVENT_ALLOCATION_METHOD } from '@/src/lib/acceptedEvidenceStore'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 
 const TOKEN = '0x226a2fa2556c48245e57cd1cba4c6c9e67077dd2'
@@ -34,8 +34,16 @@ describe('acceptedEvidenceGroupTotal', () => {
     assert.ok(total < 1e-10, `dust slice got $${total}`)
   })
 
-  it('never scales up, and leaves records without a usable fingerprint alone', () => {
+  it('never scales up a record without a canonical-seeding allocation method, and leaves records without a usable fingerprint alone', () => {
     assert.equal(acceptedEvidenceGroupTotal([...fullSell, lot('c', '0xbuy4', 500)], record), 70.35)
     assert.equal(acceptedEvidenceGroupTotal([lot('dust', '0xbuy3', 1e-12)], { priceUsd: 70.35, coverageFingerprint: '', coveredLotCount: 1 }), 70.35)
+  })
+
+  it('scales a canonical-seeding record up to a larger live group (production CHIP: $257 over ~6.4k handed to ~40k)', () => {
+    const seeded = [lot('s1', '0xbuy1', 6_400)]
+    const seededRecord = { priceUsd: 257.09, coverageFingerprint: buildAcceptedEvidenceCoverageFingerprint(seeded), coveredLotCount: 1, allocationMethod: TX_SIDE_EVENT_ALLOCATION_METHOD }
+    const total = acceptedEvidenceGroupTotal([lot('big', '0xbuy9', 40_000)], seededRecord)
+    assert.ok(Math.abs(total - 257.09 * 40_000 / 6_400) < 1e-6, `got $${total}`)
+    assert.equal(acceptedEvidenceGroupTotal([lot('big', '0xbuy9', 40_000)], { ...seededRecord, allocationMethod: undefined }), 257.09)
   })
 })

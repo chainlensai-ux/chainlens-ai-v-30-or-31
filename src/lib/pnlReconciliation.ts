@@ -1808,7 +1808,7 @@ export function createPnlReconciliation(config: Config = {}) {
         else ctx.exit = context
         conflictContextByLot.set(lot, ctx)
       }
-      for (const share of allocateSideValueAcrossGroup(group.lots, acceptedEvidenceGroupTotal(group.lots, { priceUsd: groupTotalUsd, coverageFingerprint: evidence.coverageFingerprint, coveredLotCount: evidence.coveredLotCount }))) {
+      for (const share of allocateSideValueAcrossGroup(group.lots, acceptedEvidenceGroupTotal(group.lots, { priceUsd: groupTotalUsd, coverageFingerprint: evidence.coverageFingerprint, coveredLotCount: evidence.coveredLotCount, allocationMethod: evidence.allocationMethod }))) {
         const existing = shareByLot.get(share.lot) ?? {}
         if (group.side === 'entry') existing.entry = share
         else existing.exit = share

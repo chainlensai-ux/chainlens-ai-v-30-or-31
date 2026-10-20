@@ -33,7 +33,7 @@
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import type { PersistedRoiQuoteLegProof } from './verifiedSampleRoiEligibility'
 import {
-  buildAcceptedEvidenceKey, lotIdentityVersion,
+  buildAcceptedEvidenceKey, lotIdentityVersion, TX_SIDE_EVENT_ALLOCATION_METHOD,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceValueType,
 } from './acceptedEvidenceStore'
 import {
@@ -91,17 +91,23 @@ export function acceptedEvidenceCoveredQuantity(coverageFingerprint: string | nu
 // transaction side has one per-unit price. When this scan matched LESS of that side than the record
 // covers — production: a 4,054-token sell whose buys fell past a truncated history matched only a
 // 1e-12 slice, and the slice was handed the whole sell's $70.35 — the total is scaled down to the
-// quantity actually present. Never scaled up (a larger live group is reseeded by canonical seeding),
-// and differences under 1e-6 relative are float noise that leave the total untouched.
+// quantity actually present. It is scaled UP only for a canonical-seeding record (allocationMethod
+// set, fingerprint naming every covered lot), whose total is exactly the side value over the
+// quantities its fingerprint lists: production CHIP — a $257.09 record over ~6.4k tokens handed to a
+// ~40k-token live group (seeding skips a live group with fewer lots) booked a sell at 1/6 of its
+// price and a -$1,376.77 loss. Recovery-lane and legacy records (coveredLotCount 1, the default
+// fingerprint) are never scaled up. Differences under 1e-6 relative are float noise.
 export const ACCEPTED_EVIDENCE_QUANTITY_RESCALE_TOLERANCE = 1e-6
 export function acceptedEvidenceGroupTotal(
   groupLots: readonly MatchedLot[],
-  evidence: { priceUsd: number; coverageFingerprint?: string | null; coveredLotCount?: number | null },
+  evidence: { priceUsd: number; coverageFingerprint?: string | null; coveredLotCount?: number | null; allocationMethod?: string | null },
 ): number {
   const coveredQuantity = acceptedEvidenceCoveredQuantity(evidence.coverageFingerprint, evidence.coveredLotCount)
   const liveQuantity = groupLots.reduce((sum, lot) => sum + (Number.isFinite(lot.amount) && lot.amount > 0 ? lot.amount : 0), 0)
   const scaleDown = coveredQuantity !== null && liveQuantity < coveredQuantity * (1 - ACCEPTED_EVIDENCE_QUANTITY_RESCALE_TOLERANCE)
-  const total = scaleDown ? evidence.priceUsd * (liveQuantity / (coveredQuantity as number)) : evidence.priceUsd
+  const scaleUp = coveredQuantity !== null && evidence.allocationMethod === TX_SIDE_EVENT_ALLOCATION_METHOD
+    && liveQuantity > coveredQuantity * (1 + ACCEPTED_EVIDENCE_QUANTITY_RESCALE_TOLERANCE)
+  const total = scaleDown || scaleUp ? evidence.priceUsd * (liveQuantity / (coveredQuantity as number)) : evidence.priceUsd
   return stablecoinNormalizedGroupTotal(groupLots, total)
 }
 
