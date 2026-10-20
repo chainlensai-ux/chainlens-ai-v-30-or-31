@@ -7,6 +7,8 @@ import { demotePriceOutlierLots } from '@/src/lib/lotPriceOutlierGuard'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 
 const TOKEN = '0x226a2fa2556c48245e57cd1cba4c6c9e67077dd2'
+const DAY_MS = 24 * 60 * 60 * 1000
+const MINUTE_MS = 60 * 1000
 let seq = 0
 function lot(over: Partial<MatchedLot> & { entryPerUnit: number; exitPerUnit: number; amount: number }): MatchedLot {
   seq += 1
@@ -44,7 +46,12 @@ describe('lot price outlier guard', () => {
   })
 
   it('leaves a real 50x move and a genuinely large wallet alone', () => {
-    const moon = [lot({ amount: 1e6, entryPerUnit: 0.0001, exitPerUnit: 0.005 }), lot({ amount: 1e6, entryPerUnit: 0.0002, exitPerUnit: 0.004 }), lot({ amount: 1e6, entryPerUnit: 0.001, exitPerUnit: 0.003 })]
+    const days = (n: number) => n * DAY_MS
+    const moon = [
+      lot({ amount: 1e6, entryPerUnit: 0.0001, exitPerUnit: 0.005, openedAt: days(0), closedAt: days(9) }),
+      lot({ amount: 1e6, entryPerUnit: 0.0002, exitPerUnit: 0.004, openedAt: days(2), closedAt: days(7) }),
+      lot({ amount: 1e6, entryPerUnit: 0.001, exitPerUnit: 0.003, openedAt: days(4), closedAt: days(5) }),
+    ]
     assert.equal(demotePriceOutlierLots(moon).demotedLotCount, 0)
     const whale = Array.from({ length: 10 }, (_, i) => lot({ token: `0xw${i}`, amount: 1_000, entryPerUnit: 2_000, exitPerUnit: 2_100 }))
     assert.equal(demotePriceOutlierLots(whale).demotedLotCount, 0)
@@ -62,10 +69,53 @@ describe('lot price outlier guard', () => {
   })
 })
 
+describe('local price outlier guard', () => {
+  const CHIP = '0x0c1c1c109fe34733fca54b82d7b46b75cfb71f6e'
+  const at = (minutes: number) => 1_792_346_273_000 + minutes * MINUTE_MS
+
+  it('demotes a CHIP sell at $0.0064 between same-hour trades at ~$0.04 (production: -$1,376.77)', () => {
+    const neighbours = [
+      lot({ token: CHIP, amount: 5_000, entryPerUnit: 0.041, exitPerUnit: 0.040, openedAt: at(0), closedAt: at(2) }),
+      lot({ token: CHIP, amount: 5_000, entryPerUnit: 0.040, exitPerUnit: 0.039, openedAt: at(4), closedAt: at(40) }),
+      lot({ token: CHIP, amount: 3_000, entryPerUnit: 0.0405, exitPerUnit: 0.0395, openedAt: at(43), closedAt: at(55) }),
+    ]
+    const bad = lot({ token: CHIP, amount: 40_033.620080174, entryPerUnit: 0.04077, exitPerUnit: 0.00638, openedAt: at(42), closedAt: at(54) })
+    const result = demotePriceOutlierLots([...neighbours, bad])
+    assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['verified', 'verified', 'verified', 'unpriced'])
+    assert.equal(result.outliers.length, 1)
+    assert.equal(result.outliers[0].reason, 'token_local_price_outlier')
+    assert.equal(result.outliers[0].side, 'exit')
+  })
+
+  it('needs enough neighbours inside the hour; the same price gap days apart is a real move', () => {
+    const spread = [
+      lot({ token: CHIP, amount: 5_000, entryPerUnit: 0.041, exitPerUnit: 0.040, openedAt: at(0), closedAt: DAY_MS + at(0) }),
+      lot({ token: CHIP, amount: 5_000, entryPerUnit: 0.040, exitPerUnit: 0.039, openedAt: 2 * DAY_MS + at(0), closedAt: 3 * DAY_MS + at(0) }),
+      lot({ token: CHIP, amount: 3_000, entryPerUnit: 0.0405, exitPerUnit: 0.0395, openedAt: 4 * DAY_MS + at(0), closedAt: 5 * DAY_MS + at(0) }),
+      lot({ token: CHIP, amount: 40_000, entryPerUnit: 0.04, exitPerUnit: 0.0064, openedAt: 6 * DAY_MS + at(0), closedAt: 9 * DAY_MS + at(0) }),
+    ]
+    assert.equal(demotePriceOutlierLots(spread).demotedLotCount, 0)
+  })
+
+  it('rejects the same bad sell on the FIFO event lookup', async () => {
+    const { guardPriceUsdLookup } = await import('@/src/lib/lotPriceOutlierGuard')
+    const ev = (txHash: string, amount: number, minutes: number) => ({
+      provider: 'alchemy', chain: 'base', txHash, timestamp: new Date(at(minutes)).toISOString(), fromAddress: '0xa', toAddress: '0xb',
+      contract: CHIP, symbol: 'CHIP', amount, amountRaw: null, tokenDecimals: 18, direction: 'outbound',
+    }) as unknown as import('@/src/modules/normalization/types').NormalizedEvent
+    const events = [ev('0x1', 5_000, 0), ev('0x2', 5_000, 10), ev('0x3', 3_000, 30), ev('0xbad', 40_033, 54)]
+    const usd: Record<string, number> = { '0x1': 205, '0x2': 200, '0x3': 121, '0xbad': 255.42 }
+    const guarded = guardPriceUsdLookup(events, (e) => usd[e.txHash] ?? null)
+    assert.equal(guarded.lookup(events[3]), null)
+    assert.equal(guarded.lookup(events[0]), 205)
+    assert.equal(guarded.rejectedEvents, 1)
+  })
+})
+
 describe('price outlier guard on the FIFO event lookup', async () => {
   const { guardPriceUsdLookup, negligibleUnpricedLotIndexes } = await import('@/src/lib/lotPriceOutlierGuard')
-  const ev = (txHash: string, amount: number, direction: 'inbound' | 'outbound' = 'inbound') => ({
-    provider: 'alchemy', chain: 'base', txHash, timestamp: '2026-10-17T00:00:00.000Z', fromAddress: '0xa', toAddress: '0xb',
+  const ev = (txHash: string, amount: number, direction: 'inbound' | 'outbound' = 'inbound', timestamp = '2026-10-17T00:00:00.000Z') => ({
+    provider: 'alchemy', chain: 'base', txHash, timestamp, fromAddress: '0xa', toAddress: '0xb',
     contract: TOKEN, symbol: 'T', amount, amountRaw: null, tokenDecimals: 18, direction,
   }) as unknown as import('@/src/modules/normalization/types').NormalizedEvent
 
@@ -100,7 +150,7 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     const mk = (txHash: string, contract: string, amount: number) => ({ ...ev(txHash, amount), contract })
     const weth = [mk('0xw1', WETH, 0.1), mk('0xw2', WETH, 0.2), mk('0xw3', WETH, 0.05), mk('0xwbad', WETH, 0.18)]
     const btc = [mk('0xb1', CBBTC, 0.001), mk('0xb2', CBBTC, 0.002), mk('0xb3', CBBTC, 0.003), mk('0xbbad', CBBTC, 0.0021)]
-    const meme = [ev('0xm1', 100), ev('0xm2', 100), ev('0xm3', 100), ev('0xm4', 100)]
+    const meme = ['0xm1', '0xm2', '0xm3', '0xm4'].map((tx, i) => ev(tx, 100, 'inbound', `2026-10-1${i}T00:00:00.000Z`))
     const usd: Record<string, number> = {
       '0xw1': 241, '0xw2': 480, '0xw3': 121, '0xwbad': 59.38,
       '0xb1': 81.5, '0xb2': 163, '0xb3': 245, '0xbbad': 58.43,

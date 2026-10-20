@@ -21,8 +21,10 @@ function countingKv() {
   return { kv, calls, store }
 }
 
+// Apart in time, so the local price outlier check (1h window) never compares these synthetic prices.
+const TWO_HOURS_MS = 2 * 60 * 60 * 1000
 const lot = (i: number, over: Partial<MatchedLot> = {}): MatchedLot => ({
-  lotId: `lot-${i}`, token: '0xtoken', chain: 'base', openedAt: 1_000 + i, closedAt: 2_000 + i,
+  lotId: `lot-${i}`, token: '0xtoken', chain: 'base', openedAt: 1_000 + i * TWO_HOURS_MS, closedAt: 2_000 + i * TWO_HOURS_MS,
   openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`, amount: 1 + i, costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2,
   evidenceQuality: 'verified', ...over,
 })
