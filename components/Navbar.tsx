@@ -15,6 +15,18 @@ const AVATAR_COLORS: Record<string, string> = {
   blue:   'linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%)',
 }
 
+const NAV_LINKS = [
+  { href: '/terminal', label: 'Terminal', prefetch: true },
+  { href: '/pricing', label: 'Pricing', prefetch: true },
+  { href: '/affiliate', label: 'Affiliate', prefetch: true },
+  { href: '/about', label: 'About', prefetch: undefined },
+  { href: '/contact', label: 'Contact', prefetch: true },
+] as const
+
+function isActivePath(pathname: string | null, href: string): boolean {
+  return pathname === href || (pathname?.startsWith(`${href}/`) ?? false)
+}
+
 export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -68,37 +80,30 @@ export default function Navbar() {
   return (
     <>
       <style>{`
-        .nav-shell { position: relative; box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 18px 44px rgba(0,0,0,0.42); overflow: hidden; }
+        .nav-shell { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 14px 36px rgba(0,0,0,0.36); overflow: hidden; }
         .nav-shell::before {
           content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
-          background: linear-gradient(120deg, rgba(182,102,243,0.28), rgba(224,83,194,0.14) 45%, transparent 72%);
+          background: linear-gradient(120deg, rgba(255,255,255,0.10), rgba(182,102,243,0.10) 50%, rgba(255,255,255,0.04));
           -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
           -webkit-mask-composite: xor; mask-composite: exclude;
         }
 
-        .nav-link {
-          color: rgba(255,255,255,0.68);
-          text-decoration: none;
-          font-size: 13px;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-          transition: color 0.15s, text-shadow 0.15s;
-          padding: 6px 0;
-          white-space: nowrap;
-        }
-        .nav-link:hover { color: #fff; text-shadow: 0 0 14px rgba(182,102,243,0.24); }
+        /* Left and right take equal shares of the free space so the link group sits centred. */
+        .nav-left { flex: 1 1 0; min-width: 0; display: flex; align-items: center; }
+        .nav-links { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
 
-        .tools-btn {
-          background: none; border: none;
-          color: rgba(255,255,255,0.68);
-          cursor: pointer; font-size: 13px;
-          font-weight: 600; font-family: inherit;
-          letter-spacing: 0.02em;
-          display: flex; align-items: center; gap: 4px;
-          padding: 6px 0; transition: color 0.15s, text-shadow 0.15s;
-          white-space: nowrap;
+        .nav-link, .tools-btn {
+          display: inline-flex; align-items: center; gap: 5px;
+          height: 32px; padding: 0 13px; border-radius: 999px;
+          background: transparent; border: 1px solid transparent;
+          color: rgba(255,255,255,0.62);
+          text-decoration: none; font-family: inherit;
+          font-size: 13px; font-weight: 500; letter-spacing: 0.01em;
+          cursor: pointer; white-space: nowrap;
+          transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .tools-btn:hover, .tools-btn.open { color: #fff; text-shadow: 0 0 16px rgba(182,102,243,0.26); }
+        .nav-link:hover, .tools-btn:hover, .tools-btn.open { color: #fff; background: rgba(255,255,255,0.05); }
+        .nav-link.is-active { color: #fff; background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.06); }
 
         .tools-item {
           display: flex; align-items: center; justify-content: space-between;
@@ -148,42 +153,44 @@ export default function Navbar() {
           overflow: hidden;
         }
         .btn-signin:hover {
-          border-color: rgba(255,255,255,0.38);
+          border-color: rgba(255,255,255,0.30);
           color: #fff;
-          background: rgba(255,255,255,0.07);
-          box-shadow: 0 0 22px rgba(182,102,243,0.14);
+          background: rgba(255,255,255,0.06);
         }
 
         .btn-access {
-          position: relative; overflow: hidden;
-          display: inline-flex; align-items: center; gap: 6px;
-          padding: 9px 18px; border-radius: 999px;
-          background: rgba(83,243,195,0.04);
-          border: 1.5px solid rgba(83,243,195,0.4);
-          color: #bdf5e6;
-          font-size: 11px; font-weight: 800;
+          display: inline-flex; align-items: center; gap: 8px;
+          height: 38px; padding: 0 16px 0 18px; border-radius: 999px;
+          background: rgba(83,243,195,0.05);
+          border: 1px solid rgba(83,243,195,0.55);
+          color: #c9f7ea;
+          font-size: 11px; font-weight: 700;
           text-decoration: none;
-          letter-spacing: 0.07em;
+          letter-spacing: 0.08em;
           text-transform: uppercase;
-          transition: box-shadow 0.18s, border-color 0.18s, background 0.18s, color 0.18s, transform 0.18s;
+          transition: border-color 0.18s, background 0.18s, color 0.18s;
           white-space: nowrap;
           flex-shrink: 0;
         }
         .btn-access:hover {
-          border-color: rgba(83,243,195,0.65);
-          background: rgba(83,243,195,0.09);
+          border-color: rgba(83,243,195,0.85);
+          background: rgba(83,243,195,0.10);
           color: #53F3C3;
-          box-shadow: 0 6px 18px rgba(83,243,195,0.16);
-          transform: translateY(-1px);
         }
-        .btn-access::after {
-          content: ''; position: absolute; top: 0; left: -70%; width: 45%; height: 100%;
-          background: linear-gradient(115deg, transparent, rgba(255,255,255,0.5), transparent);
-          transform: skewX(-18deg); transition: left 0.55s ease;
+        .btn-access-go { display: inline-flex; transition: transform 0.2s ease; }
+        .btn-access:hover .btn-access-go { transform: translateX(2px); }
+
+        .nav-live-badge {
+          display: flex; align-items: center; gap: 6px;
+          height: 24px; padding: 0 9px;
+          border: 1px solid rgba(255,255,255,0.07);
+          border-radius: 999px;
+          background: rgba(255,255,255,0.02);
+          margin-right: 2px;
+          font-size: 9px; font-weight: 600;
+          font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
+          letter-spacing: 0.06em; white-space: nowrap;
         }
-        .btn-access:hover::after { left: 130%; }
-        .btn-access-go { display: inline-flex; transition: transform 0.25s ease; }
-        .btn-access:hover .btn-access-go { transform: translateX(3px); }
 
         .mob-ham {
           display: none;
@@ -281,6 +288,8 @@ export default function Navbar() {
 
         @media (max-width: 1023px) {
           .mob-nav-links { display: none !important; }
+          .nav-left { flex: 0 0 auto; }
+          .mob-auth-wrap { flex: 0 0 auto !important; }
           .mob-ham { display: flex !important; }
           .mob-auth-wrap .btn-signin { display: none !important; }
           .nav-shell { gap: 10px !important; }
@@ -291,7 +300,7 @@ export default function Navbar() {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 8px 12px !important; }
           .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; overflow: visible !important; }
-          .nav-logo { width: 36px !important; height: 36px !important; margin: 0 !important; }
+          .nav-logo { width: 34px !important; height: 34px !important; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
           .btn-access { padding: 8px 12px !important; font-size: 11px !important; min-height: 44px !important; }
           .mob-nav-overlay { top: 64px !important; }
@@ -299,7 +308,7 @@ export default function Navbar() {
         @media (prefers-reduced-motion: reduce) {
           .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
           .mob-ham span { transition: none !important; }
-          .nav-link, .tools-btn, .btn-signin, .btn-access, .tools-item { transition: none !important; }
+          .nav-link, .tools-btn, .btn-signin, .btn-access, .btn-access-go, .tools-item { transition: none !important; }
         }
       `}</style>
 
@@ -322,15 +331,15 @@ export default function Navbar() {
           style={{
             maxWidth: '1220px',
             margin: '0 auto',
-            background: 'linear-gradient(180deg, rgba(9,12,26,0.82) 0%, rgba(6,8,18,0.76) 100%)',
+            background: 'linear-gradient(180deg, rgba(10,13,26,0.78) 0%, rgba(6,8,18,0.72) 100%)',
             backdropFilter: 'blur(24px)',
             WebkitBackdropFilter: 'blur(24px)',
             border: '1px solid rgba(255,255,255,0.09)',
             borderRadius: '999px',
-            padding: '11px 18px',
+            padding: '9px 10px 9px 20px',
             display: 'flex',
             alignItems: 'center',
-            gap: '14px',
+            gap: '16px',
             pointerEvents: 'auto',
             position: 'relative',
             overflow: 'visible',
@@ -338,27 +347,17 @@ export default function Navbar() {
         >
 
           {/* Logo */}
-          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', flexShrink: 0 }}>
-            <span className="nav-logo" style={{ position: 'relative', width: 56, height: 56, margin: '-10px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Image src="/cl-logo.png" alt="ChainLens AI" width={56} height={56} priority style={{ objectFit: 'contain' }} />
-            </span>
-            <div>
-              <div style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 700, fontSize: '17px', lineHeight: 1.15 }}>
-                <span style={{ color: '#f1f5f9' }}>Chain</span>
-                <span style={{ color: '#f1f5f9' }}>Lens</span>
-              </div>
-              <div style={{
-                fontSize: '8px', color: 'rgba(255,255,255,0.52)',
-                letterSpacing: '0.18em', textTransform: 'uppercase',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-              }}>
-                AI Intelligence
-              </div>
-            </div>
-          </Link>
+          <div className="nav-left">
+            <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
+              <span className="nav-logo" style={{ position: 'relative', width: 34, height: 34, margin: '-3px -4px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} priority style={{ objectFit: 'contain' }} />
+              </span>
+              <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9' }}>ChainLens</span>
+            </Link>
+          </div>
 
           {/* Center nav links */}
-          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '20px', flex: 1, minWidth: 0 }}>
+          <div className="mob-nav-links nav-links">
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -453,42 +452,23 @@ export default function Navbar() {
               )}
             </div>
 
-            <Link href="/terminal"  className="nav-link" prefetch={true}>Terminal</Link>
-            <Link href="/pricing"   className="nav-link" prefetch={true}>Pricing</Link>
-            <Link href="/affiliate" className="nav-link" prefetch={true}>Affiliate</Link>
-            <Link href="/about"     className="nav-link">About</Link>
-            <Link href="/contact"   className="nav-link" prefetch={true}>Contact</Link>
+            {NAV_LINKS.map(({ href, label, prefetch }) => {
+              const active = isActivePath(pathname, href)
+              return (
+                <Link key={href} href={href} className={`nav-link${active ? ' is-active' : ''}`} aria-current={active ? 'page' : undefined} prefetch={prefetch}>{label}</Link>
+              )
+            })}
           </div>
 
           {/* Right: LIVE badge + auth buttons */}
-          <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: 'auto' }}>
+          <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', flex: '1 1 0', minWidth: 0, marginLeft: 'auto' }}>
             {/* LIVE | CORTEX — compact secondary status chip */}
-            <div
-              className="nav-live-badge"
-              style={{
-                display: 'flex', alignItems: 'center', gap: '5px',
-                padding: '5px 11px',
-                border: '1px solid rgba(83,243,195,0.18)',
-                borderRadius: '999px',
-                background: 'rgba(255,255,255,0.03)',
-                marginRight: '2px',
-              }}
-            >
-              <div style={{
-                width: '5px', height: '5px', borderRadius: '50%',
-                background: '#53F3C3',
-                boxShadow: '0 0 6px rgba(83,243,195,0.7)',
-                flexShrink: 0,
-              }} />
-              <span style={{
-                fontSize: '9px', fontWeight: 600,
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                letterSpacing: '0.04em',
-                whiteSpace: 'nowrap',
-              }}>
-                <span style={{ color: 'rgba(255,255,255,0.55)' }}>LIVE</span>
-                <span style={{ color: 'rgba(255,255,255,0.14)', margin: '0 5px' }}>|</span>
-                <span style={{ color: 'rgba(182,102,243,0.68)' }}>CORTEX</span>
+            <div className="nav-live-badge">
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(83,243,195,0.75)', flexShrink: 0 }} />
+              <span>
+                <span style={{ color: 'rgba(255,255,255,0.42)' }}>LIVE</span>
+                <span style={{ color: 'rgba(255,255,255,0.12)', margin: '0 5px' }}>|</span>
+                <span style={{ color: 'rgba(182,102,243,0.55)' }}>CORTEX</span>
               </span>
             </div>
 
@@ -556,8 +536,8 @@ export default function Navbar() {
             <Link href="/pricing" className="btn-access" prefetch={true}>
               Get Access
               <span className="btn-access-go">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </span>
             </Link>

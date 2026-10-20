@@ -114,10 +114,10 @@ export default function ReferenceHero() {
           <div className="ref-copy">
             <div className="ref-copy-head">
               <div className="ref-badge"><span className="ref-badge-tick"><i /></span>Powered by <b>Cortex Engine</b></div>
-              <h1>Find the move<br />before the <span>crowd.</span></h1>
+              <h1>Don&apos;t ape<br /><span>blind.</span></h1>
             </div>
             <div className="ref-copy-tail">
-              <p className="ref-sub">CORTEX reads token risk, wallet behavior, and liquidity on Base in real time, so you move before the crowd does.</p>
+              <p className="ref-sub">CORTEX reads token risk, wallet behavior, and liquidity on Base in real time, so you don&apos;t ape blind.</p>
               <div className="ref-ctas">
                 <LightBeamButton className="ref-btn ref-btn-beam" href="/terminal"><span className="ref-terminal-mark">›_</span> Launch Terminal <span>→</span></LightBeamButton>
                 <Link className="ref-btn ref-btn-secondary" href="/terminal/token-scanner">Scan Token Free</Link>
