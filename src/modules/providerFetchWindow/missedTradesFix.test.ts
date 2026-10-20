@@ -66,7 +66,7 @@ test('pagination stops once a page reaches past the window start (no wasted call
 })
 
 test('page cap is respected and reported as more history available', async () => {
-  const many = Array.from({ length: 10 }, (_, i) => ({ count: 200, ageDays: 1 + i }))
+  const many = Array.from({ length: ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION + 2 }, (_, i) => ({ count: 50, ageDays: 1 + i }))
   mockPages({ 'erc20:from': many, 'erc20:to': [] })
   const r = await fetchAlchemyRawEvents('base', W, 90)
   assert.equal(calls.filter(p => 'fromAddress' in p).length, ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION)

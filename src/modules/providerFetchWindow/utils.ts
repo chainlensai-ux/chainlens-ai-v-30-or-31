@@ -193,6 +193,9 @@ function isPositiveDecimalString(value: unknown): value is string {
 // Fetches a SINGLE bounded page from GoldRush (Covalent) transactions_v3. Never pages further —
 // "never deep-page" (Architecture Step 1/8). Never throws: any failure resolves to
 // { ok: false, events: [], errorReason }.
+export const GOLDRUSH_HISTORY_PAGE_SIZE = 200
+export const GOLDRUSH_HISTORY_RETRY_PAGE_SIZE = 100
+const GOLDRUSH_HISTORY_TIMEOUT_MS = 20_000
 export async function fetchGoldrushRawEvents(
   chain: SupportedChain,
   walletAddress: string,
@@ -207,11 +210,14 @@ export async function fetchGoldrushRawEvents(
     return { provider: 'goldrush', ok: false, events: [], errorReason: 'no_api_key_configured' }
   }
   try {
-    const url = new URL(`https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/transactions_v3/`)
-    url.searchParams.set('page-size', '200')
-    url.searchParams.set('page-number', '0')
-    url.searchParams.set('with-logs', 'true')
-    url.searchParams.set('no-spam', 'true')
+    const buildUrl = (pageSize: number) => {
+      const url = new URL(`https://api.covalenthq.com/v1/${chainSlug}/address/${walletAddress}/transactions_v3/`)
+      url.searchParams.set('page-size', String(pageSize))
+      url.searchParams.set('page-number', '0')
+      url.searchParams.set('with-logs', 'true')
+      url.searchParams.set('no-spam', 'true')
+      return url
+    }
     // SHARED LEDGER, DISCLOSED (cost-audit task): counted against the one scan-wide GoldRush
     // budget. This is the scan's single structural history fetch per chain (already singleflighted
     // by fetchProviderWindow), so it is expected to always fit — recording it is what makes the
@@ -221,11 +227,23 @@ export async function fetchGoldrushRawEvents(
     }
     recordPageFetched('goldrush')
     logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
-    const res = await fetch(url.toString(), {
+    const request = (pageSize: number, timeoutMs: number) => fetch(buildUrl(pageSize).toString(), {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
+    // A 200-row page with logs on a busy wallet regularly runs past the first timeout, which left
+    // the scan with Alchemy alone. One retry with a smaller page, if the budget allows it.
+    let res: Response
+    try {
+      res = await request(GOLDRUSH_HISTORY_PAGE_SIZE, GOLDRUSH_HISTORY_TIMEOUT_MS)
+    } catch (err) {
+      const timedOut = err instanceof Error && err.name === 'TimeoutError'
+      if (!timedOut || !tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain, stage: 'transaction_history' })) throw err
+      recordPageFetched('goldrush')
+      logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
+      res = await request(GOLDRUSH_HISTORY_RETRY_PAGE_SIZE, GOLDRUSH_HISTORY_TIMEOUT_MS)
+    }
     if (!res.ok) return { provider: 'goldrush', ok: false, events: [], errorReason: `http_${res.status}` }
     const json = await res.json()
     const items: unknown[] = Array.isArray(json?.data?.items) ? json.data.items : []
@@ -361,10 +379,13 @@ export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | n
 // resetProviderFetchWindowRequestCache() (the same per-job reset point already used for this
 // module's other request-scoped state), not left to accumulate across unrelated jobs.
 export const ALCHEMY_HISTORY_MAX_CONCURRENCY = 1
-// Page caps for the paginated history fetch (each page = 200 rows, one budgeted call). Pagination
-// stops earlier once the fetch window is covered, which is the common case.
-export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 4
+// Page caps for the paginated history fetch (each page = 200 rows, one budgeted call, 150 CU).
+// Pagination stops earlier once the fetch window is covered, which is the common case. 4 pages per
+// direction cut a busy Base wallet's 90-day history off 55 days short, leaving its sells without
+// their buys; 10 per direction is 3,000 CU at most, inside the 8,000 CU scan ceiling.
+export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 10
 export const ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION = 2
+const ALCHEMY_HISTORY_PAGINATION_BUDGET_MS = 45_000
 // Short pause after ANY 429 before the next QUEUED call gets its turn — deliberately short since
 // the goal is de-bursting, not stalling a normal 4-call job for seconds.
 const ALCHEMY_HISTORY_429_COOLDOWN_MS = 400
@@ -787,7 +808,10 @@ export async function fetchAlchemyRawEvents(
     const results: Record<string, unknown>[] = []
     let pageKey: string | undefined
     let moreAvailable = false
+    const startedAt = Date.now()
     for (let page = 0; page < maxPages; page += 1) {
+      // Wall-clock guard so the larger page cap can't push the scan past its time budget.
+      if (page > 0 && Date.now() - startedAt > ALCHEMY_HISTORY_PAGINATION_BUDGET_MS) { moreAvailable = true; break }
       const result = await rpc(direction, {
         fromBlock: '0x0', category, withMetadata: true, maxCount: '0xC8', order: 'desc',
         [direction === 'from' ? 'fromAddress' : 'toAddress']: walletAddress,
