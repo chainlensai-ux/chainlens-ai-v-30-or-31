@@ -18,9 +18,13 @@ const AVATAR_COLORS: Record<string, string> = {
 const NAV_LINKS = [
   { href: '/terminal', label: 'Terminal', prefetch: true },
   { href: '/pricing', label: 'Pricing', prefetch: true },
-  { href: '/affiliate', label: 'Affiliate', prefetch: true },
-  { href: '/about', label: 'About', prefetch: undefined },
-  { href: '/contact', label: 'Contact', prefetch: true },
+] as const
+
+// Kept out of the bar on purpose; the homepage footer and the mobile menu's small footer row carry them.
+const SECONDARY_LINKS = [
+  { href: '/affiliate', label: 'Affiliate' },
+  { href: '/about', label: 'About' },
+  { href: '/contact', label: 'Contact' },
 ] as const
 
 function isActivePath(pathname: string | null, href: string): boolean {
@@ -180,18 +184,6 @@ export default function Navbar() {
         .btn-access-go { display: inline-flex; transition: transform 0.2s ease; }
         .btn-access:hover .btn-access-go { transform: translateX(2px); }
 
-        .nav-live-badge {
-          display: flex; align-items: center; gap: 6px;
-          height: 24px; padding: 0 9px;
-          border: 1px solid rgba(255,255,255,0.07);
-          border-radius: 999px;
-          background: rgba(255,255,255,0.02);
-          margin-right: 2px;
-          font-size: 9px; font-weight: 600;
-          font-family: var(--font-plex-mono, IBM Plex Mono, monospace);
-          letter-spacing: 0.06em; white-space: nowrap;
-        }
-
         .mob-ham {
           display: none;
           width: 44px; height: 44px; border-radius: 8px;
@@ -280,10 +272,6 @@ export default function Navbar() {
         .nav-free-badge-label {
           font-size: 9px; font-weight: 700; letter-spacing: 0.10em; white-space: nowrap;
           color: rgba(148,163,184,0.80);
-        }
-
-        @media (max-width: 1280px) {
-          .nav-live-badge { display: none !important; }
         }
 
         @media (max-width: 1023px) {
@@ -460,18 +448,8 @@ export default function Navbar() {
             })}
           </div>
 
-          {/* Right: LIVE badge + auth buttons */}
+          {/* Right: account chip or sign-in, then Get Access */}
           <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', flex: '1 1 0', minWidth: 0, marginLeft: 'auto' }}>
-            {/* LIVE | CORTEX — compact secondary status chip */}
-            <div className="nav-live-badge">
-              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(83,243,195,0.75)', flexShrink: 0 }} />
-              <span>
-                <span style={{ color: 'rgba(255,255,255,0.42)' }}>LIVE</span>
-                <span style={{ color: 'rgba(255,255,255,0.12)', margin: '0 5px' }}>|</span>
-                <span style={{ color: 'rgba(182,102,243,0.55)' }}>CORTEX</span>
-              </span>
-            </div>
-
             {accountEmail ? (
               <Link
                 href="/terminal/settings"
@@ -607,9 +585,6 @@ export default function Navbar() {
           )}
 
           <Link href="/pricing"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Pricing</Link>
-          <Link href="/affiliate" className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Affiliate</Link>
-          <Link href="/about"     className="mob-nav-menu-link" onClick={() => setMobileOpen(false)}>About</Link>
-          <Link href="/contact"   className="mob-nav-menu-link" prefetch={true} onClick={() => setMobileOpen(false)}>Contact</Link>
 
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '18px 0 14px' }} />
 
@@ -705,6 +680,12 @@ export default function Navbar() {
               <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </Link>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '22px', marginTop: '26px' }}>
+            {SECONDARY_LINKS.map(({ href, label }) => (
+              <Link key={href} href={href} onClick={() => setMobileOpen(false)} style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)', textDecoration: 'none' }}>{label}</Link>
+            ))}
+          </div>
         </div>
       )}
     </>
