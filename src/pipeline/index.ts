@@ -991,6 +991,15 @@ export function buildWindowBoundaryProviderAudit(
   }))
 }
 
+// PURE. Drops events dated before the covered window start. Events without a parseable timestamp
+// are kept: normalization already decides what to do with them.
+export function filterEventsToCoveredWindow<T extends { timestamp: string | null }>(events: readonly T[], windowStartMs: number): T[] {
+  return events.filter((event) => {
+    const ms = event.timestamp === null ? Number.NaN : Date.parse(event.timestamp)
+    return !Number.isFinite(ms) || ms >= windowStartMs
+  })
+}
+
 // PURE. Per chain, the history is complete from the earliest point any one successful provider
 // proved (each provider alone returns every wallet transfer in the range it covered); the scan is
 // complete from the latest of those chain points. A provider proves the requested start by
@@ -1656,8 +1665,31 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
   }
 
+  // COVERED WINDOW (resolved here, before normalization): see the [covered-window-audit] block below
+  // for how the start is proven. Only provider results and the scan time feed it.
+  const configuredWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
+  const configuredBoundaryAudit = buildWindowBoundaryProviderAudit(providerResults, configuredWindowStart, Date.parse(scanTimestamp))
+  const coveredWindowStart = resolveCoveredWindowStart(configuredBoundaryAudit, providerResults, configuredWindowStart)
+  const requestedWindowStart = coveredWindowStart ?? configuredWindowStart
+  const windowNarrowed = requestedWindowStart > configuredWindowStart
+  const scanWindowDaysUsed = windowNarrowed
+    ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
+    : PROVIDER_FETCH_WINDOW_DAYS_USED
+
   // 2. normalization — pure, zero provider calls.
-  const allRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)
+  // A narrowed window keeps only events from its proven start onward: older rows (a provider that
+  // read further back, or events restored from earlier scans) come from history this scan did not
+  // read completely, so they must not form trades inside a sample labelled as the covered window.
+  const stabilizedRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)
+  const allRawEvents = windowNarrowed ? filterEventsToCoveredWindow(stabilizedRawEvents, requestedWindowStart) : stabilizedRawEvents
+  if (allRawEvents.length !== stabilizedRawEvents.length) {
+    // eslint-disable-next-line no-console
+    console.warn('[covered-window-event-filter]', {
+      coveredWindowStart: new Date(requestedWindowStart).toISOString(),
+      eventsBefore: stabilizedRawEvents.length,
+      eventsDroppedBeforeCoveredStart: stabilizedRawEvents.length - allRawEvents.length,
+    })
+  }
   if (allRawEvents.length === 0) {
     // eslint-disable-next-line no-console
     console.warn('[pipeline] NO RAW EVENTS FETCHED for this scan', { providerDiagnostics })
@@ -3595,14 +3627,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // that WERE read are contiguous newest-first, so [coveredStart, now] is complete and is used as
   // the scan's bounded window instead of an unproven 90 days. Sells of tokens acquired before it are
   // then pre-window exits of that shorter, honestly labelled window.
-  const configuredWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
-  const configuredBoundaryAudit = buildWindowBoundaryProviderAudit(providerResults, configuredWindowStart, Date.parse(scanTimestamp))
-  const coveredWindowStart = resolveCoveredWindowStart(configuredBoundaryAudit, providerResults, configuredWindowStart)
-  const requestedWindowStart = coveredWindowStart ?? configuredWindowStart
-  const windowNarrowed = requestedWindowStart > configuredWindowStart
-  const scanWindowDaysUsed = windowNarrowed
-    ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
-    : PROVIDER_FETCH_WINDOW_DAYS_USED
+  // (configuredWindowStart / coveredWindowStart / scanWindowDaysUsed are resolved before normalization.)
   const windowBoundaryProviderAudit = windowNarrowed
     // No tolerance: the narrowed start is an exact event time, and a 3-day slack would let a
     // provider that read only the last hours claim the whole (often shorter) window.
@@ -4713,7 +4738,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   console.warn('[debug] normalizedEvents trace', normalizedEventsTrace)
 
   // 7. windowCoverage — pure arithmetic derived from the fixed fetch window and recovery pages used.
-  const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)
+  // Real days are the covered window. Recovery pages are token-scoped acquisition lookups, not
+  // wallet-wide history, so they never fill a narrowed window up to a "full" one.
+  const windowCoverage = computeWindowCoverage(scanWindowDaysUsed, windowNarrowed ? 0 : recoveryPolicy.totalPagesUsedThisWallet)
 
   // 8. behaviorIntel — pure, zero cost. Reads timelines (buyTimeline/distributionTimeline) +
   // sellTimelineV2.entries + chainSelection + windowCoverage; has no access to recoveryPolicy or

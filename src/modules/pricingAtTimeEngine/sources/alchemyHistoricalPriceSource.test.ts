@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import {
   resolveAlchemyHistoricalPricesShadow,
   resetAlchemyHistoricalPricingState,
+  alchemyShadowTxTokenKey,
   majorMarketUnitPriceUsd,
   MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN,
   type AlchemyPricingRequirement,
@@ -444,5 +445,23 @@ describe('alchemyHistoricalPriceSource — hourly series for majors', () => {
     }) as unknown as typeof fetch
     await resolveAlchemyHistoricalPricesShadow([req({ chain: 'base', txHash: '0xm' })])
     assert.deepEqual(intervals, ['1d'])
+  })
+})
+
+describe('alchemyHistoricalPriceSource — two tokens in one transaction', () => {
+  it('prices each token leg of a swap separately instead of letting the last asset overwrite the tx', async () => {
+    const USDC = '0x0000000000000000000000000000000000000f01'
+    const SOLD = '0x0000000000000000000000000000000000000f02'
+    global.fetch = (async (_url: string, init: RequestInit) => {
+      const address = JSON.parse(String(init.body)).address
+      const value = address === USDC ? '1' : '0.0004'
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    const { shadowPricesByTxToken } = await resolveAlchemyHistoricalPricesShadow([
+      req({ token: SOLD, txHash: '0xSWAP' }),
+      req({ token: USDC, txHash: '0xSWAP' }),
+    ])
+    assert.equal(shadowPricesByTxToken.get(alchemyShadowTxTokenKey('0xswap', SOLD)), 0.0004)
+    assert.equal(shadowPricesByTxToken.get(alchemyShadowTxTokenKey('0xswap', USDC)), 1)
   })
 })

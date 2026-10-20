@@ -45,6 +45,7 @@ import {
 } from '../modules/pricingAtTimeEngine/sources/basedex'
 import {
   resolveAlchemyHistoricalPricesShadow,
+  alchemyShadowTxTokenKey,
   isAlchemyHistoricalPricingEnabled,
   type AlchemyPricingRequirement,
 } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
@@ -2288,7 +2289,7 @@ export async function priceLotsForWallet(params: {
   // ENABLED=true — see that function's own header for why this new flag exists). When OFF (the
   // default), behavior is byte-identical to the prior shadow-mode-only pass: results are resolved and
   // logged, never written into atTradeTime. When ON, only temporally-ACCEPTED prices
-  // (shadowPricesByTxHash already excludes anything that failed the 24h/6h acceptance window — see
+  // (shadowPricesByTxToken already excludes anything that failed the 24h/6h acceptance window — see
   // that module) are written, and ONLY into a costUsd/proceedsUsd slot that is currently null — an
   // existing verified price from any earlier source is never touched, reordered, or overwritten.
   // Because Alchemy is the LAST gap-fill stage in this whole pipeline, "Alchemy success stops lower
@@ -2306,11 +2307,14 @@ export async function priceLotsForWallet(params: {
   for (const e of merged) {
     eventAmountByLegKey.set(`${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}`, e.amount)
   }
-  const alchemyRequirementSidesByTxHash = new Map<string, { sides: Set<'cost' | 'proceeds'>; chain: NormalizedEvent['chain']; token: string }>()
+  // Keyed by (txHash, token): one swap tx carries a requirement per token (the sold token's exit and
+  // the bought token's entry), and each must be priced by its own token's price and amount.
+  const alchemyRequirementSidesByTxToken = new Map<string, { sides: Set<'cost' | 'proceeds'>; txHash: string; chain: NormalizedEvent['chain']; token: string }>()
   function markAlchemySide(txHash: string, side: 'cost' | 'proceeds', chain: NormalizedEvent['chain'], token: string): void {
-    const meta = alchemyRequirementSidesByTxHash.get(txHash) ?? { sides: new Set<'cost' | 'proceeds'>(), chain, token }
+    const key = alchemyShadowTxTokenKey(txHash, token)
+    const meta = alchemyRequirementSidesByTxToken.get(key) ?? { sides: new Set<'cost' | 'proceeds'>(), txHash, chain, token }
     meta.sides.add(side)
-    alchemyRequirementSidesByTxHash.set(txHash, meta)
+    alchemyRequirementSidesByTxToken.set(key, meta)
   }
   const alchemyShadowRequirements: AlchemyPricingRequirement[] = []
   // Sides priced by a major asset's market price within an hour of the trade (src/lib/majorMarketPrice.ts).
@@ -2356,7 +2360,7 @@ export async function priceLotsForWallet(params: {
       { chain: lot.chain, token: lot.token, timestamp: lot.closedAt },
     ])
   if (alchemyShadowRequirements.length > 0 || majorRangeHints.length > 0) {
-    const { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements, { majorRangeHints })
+    const { shadowPricesByTxToken, shadowDistanceMsByTxToken, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements, { majorRangeHints })
     acceptedEvidenceSkipAudit.alchemyActualLiveCalls = alchemyAudit.liveRequests
 
     // Snapshot BEFORE any Alchemy write — reuses the exact same countFullyPriced() closure already
@@ -2382,8 +2386,8 @@ export async function priceLotsForWallet(params: {
 
     let pricesApplied = 0
     if (alchemyApplyEnabled) {
-      for (const [txHash, { sides, chain, token }] of alchemyRequirementSidesByTxHash) {
-        const perUnitPrice = shadowPricesByTxHash.get(txHash)
+      for (const [txTokenKey, { sides, txHash, chain, token }] of alchemyRequirementSidesByTxToken) {
+        const perUnitPrice = shadowPricesByTxToken.get(txTokenKey)
         if (perUnitPrice == null) continue
         const amount = eventAmountByLegKey.get(`${chain}:${txHash.toLowerCase()}:${token.toLowerCase()}`)
         // No real transaction amount to scale by — fail closed rather than write an un-scaled,
@@ -2391,7 +2395,7 @@ export async function priceLotsForWallet(params: {
         if (amount == null || !Number.isFinite(amount) || amount <= 0) continue
         const totalUsd = perUnitPrice * amount
         if (!isSanePrice(totalUsd)) continue
-        const majorMarket = acceptsMajorMarketPrice(chain, token, shadowDistanceMsByTxHash.get(txHash))
+        const majorMarket = acceptsMajorMarketPrice(chain, token, shadowDistanceMsByTxToken.get(txTokenKey))
         if (sides.has('cost') && atTradeTime.costUsd[txHash] == null) {
           atTradeTime.costUsd[txHash] = totalUsd
           setSideOwner('entry', txHash, token)

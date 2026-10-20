@@ -440,6 +440,11 @@ function closestPoint(points: AlchemyHistoricalPricePoint[], timestamp: number):
   return closest.priceUsd
 }
 
+/** Key of one (transaction, token) price: a swap tx carries several tokens, each with its own price. */
+export function alchemyShadowTxTokenKey(txHash: string, token: string): string {
+  return `${txHash.toLowerCase()}:${token.toLowerCase()}`
+}
+
 // SHADOW-MODE RESOLUTION, DISCLOSED, ADDITIVE — groups requirements by (chain, token), assigns ONE
 // bounded historical range per asset (covering every requirement's own timestamp for that asset,
 // never "all holdings" and never one request per trade), prioritises which assets get the bounded
@@ -461,6 +466,9 @@ export async function resolveAlchemyHistoricalPricesShadow(
   shadowPricesByTxHash: Map<string, number>
   /** Distance between each accepted price point and its trade, by txHash. */
   shadowDistanceMsByTxHash: Map<string, number>
+  /** Per (txHash, token) — see alchemyShadowTxTokenKey. Use this to apply a price to a token's leg. */
+  shadowPricesByTxToken: Map<string, number>
+  shadowDistanceMsByTxToken: Map<string, number>
   audit: AlchemyHistoricalAuditRecord
 }> {
   const eligibleRequirements = requirements.length
@@ -506,6 +514,8 @@ export async function resolveAlchemyHistoricalPricesShadow(
 
   const shadowPricesByTxHash = new Map<string, number>()
   const shadowDistanceMsByTxHash = new Map<string, number>()
+  const shadowPricesByTxToken = new Map<string, number>()
+  const shadowDistanceMsByTxToken = new Map<string, number>()
   let cacheHitsForThisCall = 0
 
   for (const { key: assetKeyStr, chain, token, reqs, hintTimestamps } of assetEntries) {
@@ -560,6 +570,8 @@ export async function resolveAlchemyHistoricalPricesShadow(
 
       shadowPricesByTxHash.set(req.txHash, price)
       shadowDistanceMsByTxHash.set(req.txHash, distanceMs)
+      shadowPricesByTxToken.set(alchemyShadowTxTokenKey(req.txHash, req.token), price)
+      shadowDistanceMsByTxToken.set(alchemyShadowTxTokenKey(req.txHash, req.token), distanceMs)
       requirementsResolvedCount += 1
       bumpMapCount(resolvedByChainCounts, req.chain)
       bumpMapCount(resolvedByAssetCounts, assetKeyStr)
@@ -592,7 +604,7 @@ export async function resolveAlchemyHistoricalPricesShadow(
     negativeCacheHits: negativeCacheHitsCount,
   }
 
-  return { shadowPricesByTxHash, shadowDistanceMsByTxHash, audit }
+  return { shadowPricesByTxHash, shadowDistanceMsByTxHash, shadowPricesByTxToken, shadowDistanceMsByTxToken, audit }
 }
 
 // TEST-SUPPORT EXPORTS, DISCLOSED: read-only observability, same convention as this codebase's other

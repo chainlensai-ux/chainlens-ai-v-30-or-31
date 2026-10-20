@@ -17,6 +17,7 @@ import {
   buildProviderFetchWindowDiagnostics,
   buildWindowBoundaryProviderAudit,
   resolveCoveredWindowStart,
+  filterEventsToCoveredWindow,
   computeSlowProviderFlag,
   computeJitterFlag,
   computeColdStartFlag,
@@ -616,5 +617,18 @@ describe('resolveCoveredWindowStart', () => {
   })
   it('is null when a capped chain reports no covered range', () => {
     assert.equal(resolve([chain('base', { coveredFromMs: null, exhausted: false, oldest: COVERED })]), null)
+  })
+})
+
+describe('filterEventsToCoveredWindow', () => {
+  it('drops events dated before the covered start and keeps undated ones for normalization to judge', () => {
+    const start = Date.parse('2026-10-18T22:10:47.000Z')
+    const events = [
+      { id: 'restored-old', timestamp: '2026-10-15T08:00:00.000Z' },
+      { id: 'at-start', timestamp: '2026-10-18T22:10:47.000Z' },
+      { id: 'inside', timestamp: '2026-10-20T10:00:00.000Z' },
+      { id: 'undated', timestamp: null },
+    ]
+    assert.deepEqual(filterEventsToCoveredWindow(events, start).map((e) => e.id), ['at-start', 'inside', 'undated'])
   })
 })

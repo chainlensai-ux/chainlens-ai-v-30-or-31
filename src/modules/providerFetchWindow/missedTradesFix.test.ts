@@ -1,7 +1,8 @@
 // Wallet Scanner missed-trades fixes: Alchemy token history pagination and native ETH history.
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { fetchAlchemyNativeRawEvents, fetchAlchemyRawEvents, NATIVE_ASSET_ADDRESS, ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION } from './utils'
+import { capAlchemyEventsByTime, fetchAlchemyNativeRawEvents, fetchAlchemyRawEvents, NATIVE_ASSET_ADDRESS, ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION } from './utils'
+import { MAX_RAW_EVENTS_PER_PROVIDER } from './types'
 import { resetProviderFetchWindowRequestCache } from './index'
 import { __resetWalletProviderCostLedgerForTest } from '../providerCost/walletProviderCostLedger'
 
@@ -108,4 +109,28 @@ test('a fully paged history has no covered-range narrowing', async () => {
   const r = await fetchAlchemyRawEvents('base', W, 90)
   assert.equal(r.pagination?.nextPageKeyPresent, false)
   assert.equal(r.pagination?.coveredFromMs, null)
+})
+
+test('the event cap cuts at one point in time and keeps the covered range proven', () => {
+  const rows = [5, 4, 4, 3, 2, 1].map((ms, i) => ({ event: `r${i}`, ms }))
+  const r = capAlchemyEventsByTime(rows, 2)
+  // The 3rd-newest row (ms 4) does not fit, so both ms-4 rows go: no half of a block is kept.
+  assert.deepEqual(r, { events: ['r0'], eventCapHit: true, cappedCoveredFromMs: 5 })
+  assert.deepEqual(capAlchemyEventsByTime(rows, 6), { events: ['r0', 'r1', 'r2', 'r3', 'r4', 'r5'], eventCapHit: false, cappedCoveredFromMs: null })
+})
+
+test('a history over the event cap still reports a contiguous covered range (was: no range at all)', async () => {
+  // Both directions busy over the last days, page cap reached: more rows than the event cap.
+  const pages = Array.from({ length: ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION + 1 }, (_, i) => ({ count: 200, ageDays: 0.1 + i * 0.1 }))
+  mockPages({ 'erc20:from': pages, 'erc20:to': pages })
+  const r = await fetchAlchemyRawEvents('base', W, 90)
+  assert.ok(r.events.length <= MAX_RAW_EVENTS_PER_PROVIDER)
+  assert.equal(r.pagination?.paginationExhausted, false)
+  assert.equal(r.pagination?.providerCapReached, true)
+  const covered = r.pagination?.coveredFromMs
+  assert.ok(typeof covered === 'number', 'the time cut is a proven range')
+  assert.ok(r.events.every((e) => Date.parse(e.timestamp!) >= covered))
+  assert.ok(r.events.some((e) => Date.parse(e.timestamp!) === covered), 'the oldest kept row marks the start')
+  const directions = new Set(r.events.map((e) => (e.fromAddress === W.toLowerCase() ? 'out' : 'in')))
+  assert.equal(directions.size, 2, 'both directions keep their rows of the covered range')
 })

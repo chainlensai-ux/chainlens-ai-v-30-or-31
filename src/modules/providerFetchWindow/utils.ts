@@ -429,11 +429,35 @@ export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | n
 // resetProviderFetchWindowRequestCache() (the same per-job reset point already used for this
 // module's other request-scoped state), not left to accumulate across unrelated jobs.
 export const ALCHEMY_HISTORY_MAX_CONCURRENCY = 1
+
+// PURE. Keeps at most `cap` rows, newest first across both directions, cut at a single timestamp:
+// every row strictly newer than the first row that does not fit is kept, so the result is complete
+// from `cappedCoveredFromMs` (the oldest kept row) onward. Rows without a timestamp sort oldest.
+export function capAlchemyEventsByTime<T>(
+  candidates: ReadonlyArray<{ event: T; ms: number }>,
+  cap: number,
+): { events: T[]; eventCapHit: boolean; cappedCoveredFromMs: number | null } {
+  if (candidates.length <= cap) return { events: candidates.map((c) => c.event), eventCapHit: false, cappedCoveredFromMs: null }
+  const sorted = [...candidates].sort((a, b) => (Number.isFinite(b.ms) ? b.ms : -Infinity) - (Number.isFinite(a.ms) ? a.ms : -Infinity))
+  const firstExcluded = sorted[cap].ms
+  if (!Number.isFinite(firstExcluded)) {
+    return { events: sorted.slice(0, cap).map((c) => c.event), eventCapHit: true, cappedCoveredFromMs: null }
+  }
+  const kept = sorted.filter((c) => Number.isFinite(c.ms) && c.ms > firstExcluded)
+  return {
+    events: kept.map((c) => c.event),
+    eventCapHit: true,
+    cappedCoveredFromMs: kept.length > 0 ? kept[kept.length - 1].ms : null,
+  }
+}
 // Page caps for the paginated history fetch (each page = 200 rows, one budgeted call, 150 CU).
 // Pagination stops earlier once the fetch window is covered, which is the common case. 4 pages per
 // direction cut a busy Base wallet's 90-day history off 55 days short, leaving its sells without
-// their buys; 10 per direction is 3,000 CU at most, inside the 8,000 CU scan ceiling.
-export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 10
+// their buys. 10 per direction covered only ~1.4 days of a bot-like Base wallet while the scan used
+// ~3,700 of its 8,000 CU; 16 per direction is 4,800 CU at most. With native and ETH history
+// (~600 CU) that leaves recovery (capped at 8,000 - 1,500 reserved) ~800 CU after a full-cap pull,
+// above the ~0-400 CU that stage spent on that wallet.
+export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 16
 export const ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION = 2
 const ALCHEMY_HISTORY_PAGINATION_BUDGET_MS = 45_000
 // Short pause after ANY 429 before the next QUEUED call gets its turn — deliberately short since
@@ -963,12 +987,10 @@ export async function fetchAlchemyRawEvents(
       || fromPages.coveredFromMs === null || toPages.coveredFromMs === null
       ? null
       : Math.max(fromPages.coveredFromMs, toPages.coveredFromMs)
-    const events: RawProviderEvent[] = []
-    let eventCapHit = false
+    const candidates: Array<{ event: RawProviderEvent; ms: number }> = []
     const collect = (result: Record<string, unknown> | null) => {
       const transfers = Array.isArray(result?.transfers) ? (result!.transfers as Record<string, unknown>[]) : []
       for (const t of transfers) {
-        if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) { eventCapHit = true; return }
         const meta = t.metadata as Record<string, unknown> | undefined
         const timestamp = typeof meta?.blockTimestamp === 'string' ? meta.blockTimestamp : null
         if (timestamp && Date.parse(timestamp) < cutoff) continue // shallow window only
@@ -976,33 +998,41 @@ export async function fetchAlchemyRawEvents(
         const rawContract = t.rawContract as Record<string, unknown> | undefined
         const rawValueHex = typeof rawContract?.value === 'string' ? rawContract.value : null
         const rawDecimalHex = typeof rawContract?.decimal === 'string' ? rawContract.decimal : null
-        events.push({
-          provider: 'alchemy',
-          chain,
-          txHash: typeof t.hash === 'string' ? t.hash : null,
-          timestamp,
-          fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
-          toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
-          contract: typeof rawContract?.address === 'string' ? (rawContract.address as string).toLowerCase() : null,
-          symbol: typeof t.asset === 'string' ? t.asset : null,
-          amountRaw: alchemyHexAmountToDecimalString(rawValueHex),
-          tokenDecimals: alchemyHexDecimalToNumber(rawDecimalHex),
+        candidates.push({
+          ms: timestamp ? Date.parse(timestamp) : Number.NaN,
+          event: {
+            provider: 'alchemy',
+            chain,
+            txHash: typeof t.hash === 'string' ? t.hash : null,
+            timestamp,
+            fromAddress: typeof t.from === 'string' ? t.from.toLowerCase() : null,
+            toAddress: typeof t.to === 'string' ? (t.to as string).toLowerCase() : null,
+            contract: typeof rawContract?.address === 'string' ? (rawContract.address as string).toLowerCase() : null,
+            symbol: typeof t.asset === 'string' ? t.asset : null,
+            amountRaw: alchemyHexAmountToDecimalString(rawValueHex),
+            tokenDecimals: alchemyHexDecimalToNumber(rawDecimalHex),
+          },
         })
       }
     }
     for (const result of fromPages.results) collect(result)
     for (const result of toPages.results) collect(result)
+    // EVENT CAP BY TIME: over the cap, keep the newest rows of BOTH directions and cut at one point in
+    // time, so [cut, now] stays complete and the covered window is still proven. Rows sharing the cut
+    // timestamp are all dropped (never half of a block).
+    const { events, eventCapHit, cappedCoveredFromMs } = capAlchemyEventsByTime(candidates, MAX_RAW_EVENTS_PER_PROVIDER)
+    // The time cut is only a proven range when both directions were read over a known range.
+    const rangeKnown = fromResult !== null && toResult !== null && (!nextPageKeyPresent || coveredFromMs !== null)
     const pagesSucceeded = fromPages.results.length + toPages.results.length
     return {
       provider: 'alchemy', ok: true, events, errorReason: null, diagnostics,
       pagination: {
         pagesRequested: Math.max(2, pagesSucceeded),
         pagesSucceeded,
-        paginationExhausted: fromResult !== null && toResult !== null && !nextPageKeyPresent,
+        paginationExhausted: fromResult !== null && toResult !== null && !nextPageKeyPresent && !eventCapHit,
         nextPageKeyPresent,
-        providerCapReached: nextPageKeyPresent || events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
-        // The event cap cuts rows arbitrarily across directions, so no contiguous range is proven.
-        coveredFromMs: eventCapHit ? null : coveredFromMs,
+        providerCapReached: nextPageKeyPresent || eventCapHit,
+        coveredFromMs: eventCapHit ? (rangeKnown ? cappedCoveredFromMs : null) : coveredFromMs,
       },
     }
   } catch (err) {
