@@ -607,6 +607,13 @@ describe('resolveCoveredWindowStart', () => {
       pagination: { pagesRequested: 1, pagesSucceeded: 1, paginationExhausted: true, nextPageKeyPresent: false, providerCapReached: false } } } }
     assert.equal(resolve([chain('base', { coveredFromMs: COVERED, exhausted: false, oldest: COVERED }), eth]), COVERED)
   })
+  it('without tolerance, a provider holding only the last hours cannot claim the narrowed start', () => {
+    const narrowed = Date.UTC(2026, 9, 18, 19, 50)
+    const results = [chain('base', { coveredFromMs: narrowed, exhausted: false, oldest: narrowed })]
+    const audit = buildWindowBoundaryProviderAudit(results, narrowed, Date.UTC(2026, 9, 20), 0)
+    assert.equal(audit.find((p) => p.provider === 'goldrush')?.requestedWindowStartReached, false)
+    assert.equal(audit.find((p) => p.provider === 'alchemy')?.requestedWindowStartReached, true)
+  })
   it('is null when a capped chain reports no covered range', () => {
     assert.equal(resolve([chain('base', { coveredFromMs: null, exhausted: false, oldest: COVERED })]), null)
   })

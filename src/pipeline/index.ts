@@ -3604,7 +3604,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
     : PROVIDER_FETCH_WINDOW_DAYS_USED
   const windowBoundaryProviderAudit = windowNarrowed
-    ? buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp))
+    // No tolerance: the narrowed start is an exact event time, and a 3-day slack would let a
+    // provider that read only the last hours claim the whole (often shorter) window.
+    ? buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp), 0)
     : configuredBoundaryAudit
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
   // Chain-level: one successful provider reaching the start covers the chain; a cap only matters

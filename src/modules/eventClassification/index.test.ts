@@ -452,9 +452,12 @@ test('HARD ASSERTION (Aug 5 regression, reproduced exactly): losing ONLY the sin
 
   // Successful scan (7877dd6b-shaped): boundary proven, the 110 qualify as bounded-history exits.
   assert.equal(good.windowBoundaryProven, true)
-  assert.equal(good.preWindowInventoryExits, 110)
-  assert.equal(good.unknownSells, 5, 'only the 5 sells that genuinely have an earlier in-window buy stay unknown')
-  assert.equal(good.structurallyInvalidOrUnknownSells, 5)
+  // A proven-complete window also admits the 5 shortfall sells: their unmatched remainder can only
+  // be inventory held at the window start.
+  assert.equal(good.preWindowInventoryExits, 115)
+  assert.equal(good.preWindowShortfallsByCompleteWindow, 5)
+  assert.equal(good.unknownSells, 0)
+  assert.equal(good.structurallyInvalidOrUnknownSells, 0)
 
   // Failed scan (8486c013-shaped): the reported production numbers, exactly.
   assert.equal(bad.windowBoundaryProven, false)
@@ -466,12 +469,12 @@ test('HARD ASSERTION (Aug 5 regression, reproduced exactly): losing ONLY the sin
   // proven — not one additional sell became unknown for any classification/matching reason.
   assert.equal(bad.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 110)
   assert.equal(bad.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5)
-  assert.equal(good.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5, 'identical in both scans — this population is boundary-independent')
+  assert.equal(good.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 0, 'admitted by the complete window, blocking only when it is unproven')
   assert.equal(good.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
   assert.equal(
     bad.unknownSells - good.unknownSells,
-    bad.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
-    'the whole unknown-sell increase is accounted for by the boundary flag alone',
+    bad.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary + bad.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow,
+    'the whole unknown-sell increase is accounted for by the boundary proof alone',
   )
 })
 
@@ -503,7 +506,7 @@ test('HARD ASSERTION: the rolling window ADVANCING on its own can never break bo
     const laterCtx = { windowStartTimestamp: (BP_NOW + daysLater * BP_DAY) - BP_WINDOW_DAYS * BP_DAY, scanWindowDays: BP_WINDOW_DAYS }
     const audit = computeUnmatchedEvidenceAudit(classified, 26, [], f.sellIdentities, laterCtx)
     assert.equal(audit.windowBoundaryProven, true, `boundary must stay proven ${daysLater} days later when no event is lost`)
-    assert.equal(audit.preWindowInventoryExits, 110, `pre-window exits must be stable ${daysLater} days later`)
+    assert.equal(audit.preWindowInventoryExits, 115, `pre-window exits must be stable ${daysLater} days later`)
     assert.equal(audit.boundaryProofDiagnostics.boundaryShortfallMs, 0)
   }
 })
@@ -520,7 +523,7 @@ test('HARD ASSERTION: boundary proof is a one-event cliff — the flip is driven
   const unproven = computeUnmatchedEvidenceAudit(classifyEvents([justPastEdge, ...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
 
   assert.equal(proven.windowBoundaryProven, true)
-  assert.equal(proven.preWindowInventoryExits, 110)
+  assert.equal(proven.preWindowInventoryExits, 115)
   assert.equal(proven.boundaryProofDiagnostics.boundaryShortfallMs, 0)
 
   assert.equal(unproven.windowBoundaryProven, false, 'one millisecond of lost history reclassifies 110 lots')
@@ -591,8 +594,8 @@ test('the boundary diagnostics never alter any existing decision — every pre-e
   // The gate's own inputs: numerator is the closed-lot count, denominator adds ONLY blocking
   // evidence, and pre-window exits/open positions stay excluded from it — unchanged by this task.
   assert.equal(audit.structuralCoverageNumerator, 26)
-  assert.equal(audit.structuralCoverageDenominator, 26 + 0 + 5)
-  assert.equal(audit.structuralCoverage, 26 / 31)
+  assert.equal(audit.structuralCoverageDenominator, 26)
+  assert.equal(audit.structuralCoverage, 1)
   assert.equal(audit.openPositionBuys, 0)
   assert.equal(audit.structurallyInvalidBuys, 0)
   assert.equal(audit.unknownBuys, 0)
@@ -688,10 +691,10 @@ test('positive provider exhaustion proves the bounded start for a short wallet w
   assert.equal(audit.historyCoverageStatus, 'exhaustive')
   assert.equal(audit.windowBoundaryProven, true)
   assert.equal(audit.boundedSampleWindowSafe, true)
-  assert.equal(audit.preWindowInventoryExits, 110)
-  assert.equal(audit.unknownSells, 5, 'sells with an earlier in-window buy remain independently blocking')
+  assert.equal(audit.preWindowInventoryExits, 115)
+  assert.equal(audit.unknownSells, 0, 'shortfall sells are pre-window remainders once the window is proven complete')
   assert.equal(audit.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
-  assert.equal(audit.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5)
+  assert.equal(audit.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 0)
 })
 
 test('a genuinely exhaustive fetch (no cap, no failure, boundary reached) is unaffected by this task — byte-for-byte prior behavior', () => {
@@ -703,9 +706,9 @@ test('a genuinely exhaustive fetch (no cap, no failure, boundary reached) is una
   assert.equal(audit.historyCoverageStatus, 'exhaustive')
   assert.equal(audit.boundedSampleWindowSafe, true)
   assert.equal(audit.windowBoundaryProven, true)
-  assert.equal(audit.preWindowInventoryExits, 110)
+  assert.equal(audit.preWindowInventoryExits, 115)
   assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
-  assert.equal(audit.unknownSells, 5)
+  assert.equal(audit.unknownSells, 0)
 })
 
 test('an unmigrated caller that never supplies anyProviderAtEventCap/anyProviderFetchFailed gets byte-for-byte the pre-existing behavior', () => {
@@ -937,4 +940,19 @@ test('HARD ASSERTION: canonical event wins over a recovered copy on the same joi
   const audit = computeExactStructuralCoverageAudit(canonicalClassified, 1, [], [identity], recoveredClassified)
   assert.equal(audit.unmatchedIdentityJoinFailures, 0)
   assert.equal(audit.genuineUnmatchedSells, 1)
+})
+
+test('a shortfall sell blocks under an unproven window but is a pre-window remainder once the window is proven complete', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const shortfalls = f.sellIdentities.filter((s) => s.token.startsWith('0xwb'))
+  const truncated = computeUnmatchedEvidenceAudit(classified, 0, [], shortfalls, { ...bpCtx, anyProviderAtEventCap: true })
+  assert.equal(truncated.unknownSells, 5)
+  assert.equal(truncated.preWindowShortfallsByCompleteWindow, 0)
+  const complete = computeUnmatchedEvidenceAudit(classified, 0, [], shortfalls, { ...bpCtx, boundedWindowStartProven: true })
+  assert.equal(complete.historyCoverageStatus, 'exhaustive')
+  assert.equal(complete.unknownSells, 0)
+  assert.equal(complete.preWindowInventoryExits, 5)
+  assert.equal(complete.preWindowShortfallsByCompleteWindow, 5)
+  assert.deepEqual(complete.boundaryProofDiagnostics.boundaryIndependentSells, [])
 })
