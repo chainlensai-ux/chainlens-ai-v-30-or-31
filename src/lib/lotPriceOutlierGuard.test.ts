@@ -247,6 +247,36 @@ describe('lot price outlier guard — tight same-hour band', () => {
   })
 })
 
+describe('lot price outlier guard — price-anchored token', () => {
+  const STOCK = '0xb200000000000000000000c2e324d24d7eecd1fb'
+  const HOUR_MS = 60 * MINUTE_MS
+  const at = (iso: string) => Date.parse(iso)
+
+  it('demotes production\'s $200-$270 buys and $424.66 sell of a stock whose sides sit at $338-$343 for 32 hours', () => {
+    const lots = [
+      lot({ token: STOCK, amount: 0.675, entryPerUnit: 200.38, exitPerUnit: 342.714, openedAt: at('2026-10-19T16:00:11Z'), closedAt: at('2026-10-19T21:15:00Z'), openedTxHash: '0x738473bc', closedTxHash: '0x13fe1db0' }),
+      lot({ token: STOCK, amount: 0.7, entryPerUnit: 210.49, exitPerUnit: 342.717, openedAt: at('2026-10-18T23:56:39Z'), closedAt: at('2026-10-19T21:15:30Z'), openedTxHash: '0x21e0813b', closedTxHash: '0xcbeb2e19' }),
+      lot({ token: STOCK, amount: 1.18, entryPerUnit: 270.05, exitPerUnit: 343.28, openedAt: at('2026-10-20T01:48:33Z'), closedAt: at('2026-10-20T01:49:40Z'), openedTxHash: '0xbb3a7586', closedTxHash: '0xa9547446' }),
+      lot({ token: STOCK, amount: 0.45, entryPerUnit: 341.33, exitPerUnit: 424.66, openedAt: at('2026-10-19T17:00:31Z'), closedAt: at('2026-10-19T21:16:09Z'), openedTxHash: '0x15da6467', closedTxHash: '0x99961709' }),
+      lot({ token: STOCK, amount: 0.32, entryPerUnit: 270.05, exitPerUnit: 337.98, openedAt: at('2026-10-20T01:48:33Z'), closedAt: at('2026-10-21T00:53:00Z'), openedTxHash: '0xbb3a7586', closedTxHash: '0x05e466be' }),
+    ]
+    const result = demotePriceOutlierLots(lots)
+    assert.deepEqual(result.outliers.map((o) => `${o.txHash}:${o.side}`).sort(), ['0x21e0813b:entry', '0x738473bc:entry', '0x99961709:exit', '0xbb3a7586:entry'])
+    assert.ok(result.outliers.every((o) => o.reason === 'token_local_price_outlier'))
+    assert.ok(result.lots.every((l) => l.evidenceQuality === 'unpriced'))
+  })
+
+  it('keeps a real 15% same-day move of an anchored token, and never anchors a token that wanders', () => {
+    const t0 = at('2026-10-19T00:00:00Z')
+    const flat = [100, 100.5, 99.8, 100.2].map((p, i) => lot({ token: STOCK, amount: 1, entryPerUnit: p, exitPerUnit: p, openedAt: t0 + i * 3 * HOUR_MS, closedAt: t0 + i * 3 * HOUR_MS + MINUTE_MS }))
+    const move = lot({ token: STOCK, amount: 1, entryPerUnit: 100.1, exitPerUnit: 115, openedAt: t0 + 10 * HOUR_MS, closedAt: t0 + 12 * HOUR_MS })
+    assert.equal(demotePriceOutlierLots([...flat, move]).demotedLotCount, 0)
+    const wander = [1, 1.3, 0.8, 1.6, 1.1].map((p, i) => lot({ amount: 1_000, entryPerUnit: p, exitPerUnit: p * 1.05, openedAt: t0 + i * 3 * HOUR_MS, closedAt: t0 + i * 3 * HOUR_MS + MINUTE_MS }))
+    const pump = lot({ amount: 1_000, entryPerUnit: 1, exitPerUnit: 1.9, openedAt: t0 + 2 * HOUR_MS, closedAt: t0 + 4 * HOUR_MS })
+    assert.equal(demotePriceOutlierLots([...wander, pump]).demotedLotCount, 0)
+  })
+})
+
 describe('lot price outlier guard — major same-day band', () => {
   const WETH = '0x4200000000000000000000000000000000000006'
   const t0 = 1_792_446_449_000

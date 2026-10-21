@@ -3,6 +3,7 @@ const DAY_SECONDS = 86_400
 const FREE_HISTORY_DAYS = 365
 const POSITIVE_TTL_MS = 6 * 60 * 60 * 1000
 const NEGATIVE_TTL_MS = 15 * 60 * 1000
+const ACCESS_DENIED_TTL_MS = 60 * 60 * 1000
 
 export type CoinPaprikaIdentity = {
   chainId: string
@@ -73,6 +74,8 @@ export type CoinPaprikaHistoricalAudit = {
   identityResolved: number; identityRejected: number; pricesResolved: number; pricesApplied: number
   lotsCompleted: number; coverageBefore: number; coverageAfter: number
   stoppedBecauseNoCandidates: boolean; stoppedBecauseGateReached: boolean; stoppedBecauseBudget: boolean
+  /** A 401/402/403 means the plan cannot serve these routes; no further calls are made. */
+  stoppedBecauseAccessDenied?: boolean
   failuresByReason: Record<string, number>; examples: CoinPaprikaAuditExample[]
   /** Wall-clock ms this lane spent (its calls run one at a time), set by the caller. */
   elapsedMs?: number
@@ -83,6 +86,9 @@ type Cached<T> = { expiresAt: number; value: T }
 const identityCache = new Map<string, Cached<CoinPaprikaIdentity>>()
 const priceCache = new Map<string, Cached<CoinPaprikaHistoricalEvidence | null>>()
 const inFlight = new Map<string, Promise<unknown>>()
+// Keyed by mode + base URL. One 401/402/403 answers for every later call on the same plan, so
+// it trips this breaker instead of spending the whole per-scan budget on identical refusals.
+const accessDenied = new Map<string, Cached<string>>()
 
 export function coinPaprikaPlatformForChain(chainId: string): string | null {
   const chain = chainId.toLowerCase()
@@ -173,6 +179,9 @@ export async function resolveCoinPaprikaHistorical(
   if (!cfg.enabled) { audit.disabledReason = 'COINPAPRIKA_HISTORICAL_ENABLED_false'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
   if (!cfg.baseUrlValid) { audit.disabledReason = 'COINPAPRIKA_API_BASE_URL_invalid'; audit.stoppedBecauseNoCandidates = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
   if (cfg.max === 0) { audit.stoppedBecauseBudget = true; failure(audit, 'budget_resolved_to_zero'); drop('configuration', 'budget_resolved_to_zero'); return { evidence, audit } }
+  const accessKey = `${cfg.mode}:${cfg.baseUrl}`
+  const denied = accessDenied.get(accessKey)
+  if (denied && denied.expiresAt > Date.now()) { audit.disabledReason = `coinpaprika_access_denied_${denied.value}`; audit.stoppedBecauseAccessDenied = true; failure(audit, audit.disabledReason); drop('configuration', audit.disabledReason); return { evidence, audit } }
   if (options.canonicalGateSatisfied) { audit.stoppedBecauseGateReached = true; failure(audit, 'canonical_gate_already_satisfied'); drop('eligibility', 'canonical_gate_already_satisfied'); return { evidence, audit } }
 
   const eligible: CoinPaprikaRequirement[] = []
@@ -202,12 +211,18 @@ export async function resolveCoinPaprikaHistorical(
   const seen = new Set<string>()
 
   const callJson = async (url: string): Promise<{ json: unknown | null; reason: string | null }> => {
+    if (audit.stoppedBecauseAccessDenied) return { json: null, reason: 'access_denied' }
     if (audit.callsAttempted >= cfg.max) { audit.stoppedBecauseBudget = true; return { json: null, reason: 'budget_exhausted' } }
     audit.callsAttempted++
     try {
       const headers = cfg.mode === 'authenticated' ? { Authorization: `Bearer ${cfg.apiKey}` } : undefined
       const response = await fetcher(url, { headers, cache: 'no-store', signal: AbortSignal.timeout(6_000) })
       if (response.status === 404) { audit.callsFailed++; return { json: null, reason: 'not_found_404' } }
+      if (response.status === 401 || response.status === 402 || response.status === 403) {
+        audit.callsFailed++; audit.stoppedBecauseAccessDenied = true
+        accessDenied.set(accessKey, { value: `http_${response.status}`, expiresAt: Date.now() + ACCESS_DENIED_TTL_MS })
+        return { json: null, reason: `http_${response.status}` }
+      }
       if (response.status === 429) { audit.callsFailed++; return { json: null, reason: 'rate_limited_429' } }
       if (response.status >= 500) { audit.callsFailed++; return { json: null, reason: `server_${response.status}` } }
       if (!response.ok) { audit.callsFailed++; return { json: null, reason: `http_${response.status}` } }
@@ -220,7 +235,7 @@ export async function resolveCoinPaprikaHistorical(
   }
 
   for (const r of ranked) {
-    if (audit.stoppedBecauseBudget) break
+    if (audit.stoppedBecauseBudget || audit.stoppedBecauseAccessDenied) break
     const platform = coinPaprikaPlatformForChain(r.chainId)!
     const address = r.contractAddress.toLowerCase()
     const identityKey = `${platform}:${address}`
@@ -316,4 +331,4 @@ export async function resolveCoinPaprikaHistorical(
   return { evidence, audit }
 }
 
-export function clearCoinPaprikaCachesForTests() { identityCache.clear(); priceCache.clear(); inFlight.clear() }
+export function clearCoinPaprikaCachesForTests() { identityCache.clear(); priceCache.clear(); inFlight.clear(); accessDenied.clear() }

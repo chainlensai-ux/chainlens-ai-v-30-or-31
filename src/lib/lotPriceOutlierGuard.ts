@@ -11,7 +11,8 @@
 //   2. its per-unit price is more than LOCAL_OUTLIER_FACTOR away from the median of that token's
 //      other sides within LOCAL_WINDOW_MS of it, or DAY_OUTLIER_FACTOR away from those within
 //      DAY_WINDOW_MS (each needs LOCAL_MIN_NEIGHBORS sides), or more than TIGHT_BAND_DEVIATION
-//      outside a same-hour band its neighbours all agree on within TIGHT_BAND_MAX_SPREAD, or
+//      outside a same-hour band its neighbours all agree on within TIGHT_BAND_MAX_SPREAD, or more
+//      than ANCHORED_DAY_OUTLIER_FACTOR from the same-day median of a token anchored to one price, or
 //   3. its USD value exceeds both WALLET_VALUE_FLOOR_USD and OUTLIER_FACTOR times the wallet's median
 //      side value — catches a bad price on a token too thinly traded for check 1.
 // Reconciled lots are also checked one at a time (lotLevelOutlierReason): a lot whose proceeds are
@@ -62,6 +63,16 @@ export const LOT_PRICE_TIGHT_BAND_DEVIATION = 1.25
 export const LOT_PRICE_MAJOR_LOCAL_OUTLIER_FACTOR = 1.1
 export const LOT_PRICE_MAJOR_DAY_OUTLIER_FACTOR = 1.2
 export const LOT_PRICE_DAY_WINDOW_MS = 24 * 60 * 60 * 1000
+// A token whose sides keep landing within ANCHORED_MAX_SPREAD of one price, again and again over
+// hours, trades like a stock, not a meme: the tight band needs three neighbours inside one hour,
+// which a thinly traded tokenized stock rarely has. Production published that stock's buys at
+// $200.38, $210.49 and $270.05 and a sell at $424.66 one minute after two $1,000 USDC sells at
+// $342.71, while five of its sides sat at $338-$343 across 32 hours: +$334 of fake profit. Such a
+// token gets a same-day band as narrow as a major's.
+export const LOT_PRICE_ANCHORED_MAX_SPREAD = 1.02
+export const LOT_PRICE_ANCHORED_MIN_SAMPLES = 4
+export const LOT_PRICE_ANCHORED_MIN_SPAN_MS = 6 * 60 * 60 * 1000
+export const LOT_PRICE_ANCHORED_DAY_OUTLIER_FACTOR = 1.2
 // A single lot returning more than this multiple of its own cost basis is a bad price on one side,
 // not a trade: production published a lot bought for $3.9e-14 and sold for $70 (a 1.8e15x return)
 // on a token with too few trades for the per-token median check.
@@ -179,7 +190,7 @@ function outsideBand(perUnitUsd: number, reference: number, factor: number): boo
 
 // The neighbouring median a sample breaks (same hour first, then same day), or null when it breaks neither.
 function localOutlierReference(sample: PriceSample, tokenSamples: readonly PriceSample[]): number | null {
-  const tight = tightBandReference(sample, tokenSamples)
+  const tight = tightBandReference(sample, tokenSamples) ?? anchoredBandReference(sample, tokenSamples)
   if (tight !== null) return tight
   for (const [windowMs, factor] of [[LOT_PRICE_LOCAL_WINDOW_MS, LOT_PRICE_LOCAL_OUTLIER_FACTOR], [LOT_PRICE_DAY_WINDOW_MS, LOT_PRICE_DAY_OUTLIER_FACTOR]]) {
     const reference = localMedianPerUnit(sample, tokenSamples, windowMs)
@@ -207,6 +218,25 @@ function tightBandReference(sample: PriceSample, tokenSamples: readonly PriceSam
   const inside = prices.filter((price) => !outsideBand(price, reference, LOT_PRICE_TIGHT_BAND_MAX_SPREAD)).length
   if (inside < prices.length * LOT_PRICE_TIGHT_BAND_MIN_SHARE) return null
   return outsideBand(sample.perUnitUsd, reference, LOT_PRICE_TIGHT_BAND_DEVIATION) ? reference : null
+}
+
+// The token's same-day median when the token is price-anchored around it (MIN_SAMPLES of its other
+// sides within ANCHORED_MAX_SPREAD of that median, spread over MIN_SPAN_MS) and this side falls more
+// than ANCHORED_DAY_OUTLIER_FACTOR away from it; null otherwise.
+function anchoredBandReference(sample: PriceSample, tokenSamples: readonly PriceSample[]): number | null {
+  const reference = localMedianPerUnit(sample, tokenSamples, LOT_PRICE_DAY_WINDOW_MS)
+  if (reference === null || !(reference > 0) || !outsideBand(sample.perUnitUsd, reference, LOT_PRICE_ANCHORED_DAY_OUTLIER_FACTOR)) return null
+  let count = 0
+  let first = Infinity
+  let last = -Infinity
+  for (const other of tokenSamples) {
+    if (other.key === sample.key || other.timestampMs === undefined || !Number.isFinite(other.timestampMs)) continue
+    if (outsideBand(other.perUnitUsd, reference, LOT_PRICE_ANCHORED_MAX_SPREAD)) continue
+    count += 1
+    first = Math.min(first, other.timestampMs)
+    last = Math.max(last, other.timestampMs)
+  }
+  return count >= LOT_PRICE_ANCHORED_MIN_SAMPLES && last - first >= LOT_PRICE_ANCHORED_MIN_SPAN_MS ? reference : null
 }
 
 function neighbourPrices(sample: PriceSample, tokenSamples: readonly PriceSample[], windowMs: number): number[] | null {

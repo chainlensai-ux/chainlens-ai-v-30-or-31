@@ -198,6 +198,22 @@ test('HTTP 402 remains explicitly classified and produces no historical evidence
   assert.equal(result.evidence.size, 0)
 })
 
+test('HTTP 402 trips the access breaker: no further calls this scan or the next', async () => {
+  clearCoinPaprikaCachesForTests(); delete process.env.COINPAPRIKA_API_KEY
+  let calls = 0
+  const fetchImpl = async () => { calls++; return new Response('', { status: 402 }) }
+  const reqs = Array.from({ length: 20 }, (_, i) => requirement({ contractAddress: uniqueAddress(i) }))
+  const first = await resolveCoinPaprikaHistorical(reqs, { fetchImpl })
+  assert.equal(calls, 1)
+  assert.equal(first.audit.callsAttempted, 1)
+  assert.equal(first.audit.stoppedBecauseAccessDenied, true)
+  const second = await resolveCoinPaprikaHistorical(reqs, { fetchImpl })
+  assert.equal(calls, 1)
+  assert.equal(second.audit.callsAttempted, 0)
+  assert.equal(second.audit.disabledReason, 'coinpaprika_access_denied_http_402')
+  clearCoinPaprikaCachesForTests()
+})
+
 test('same ticker cannot bypass wrong contract or wrong chain identity', async () => {
   clearCoinPaprikaCachesForTests(); process.env.COINPAPRIKA_API_KEY = 'test'
   const fetchImpl = async () => Response.json({ id: 'first-symbol-result', platform_id: 'eth-ethereum', contract_address: '0x9999999999999999999999999999999999999999' })
