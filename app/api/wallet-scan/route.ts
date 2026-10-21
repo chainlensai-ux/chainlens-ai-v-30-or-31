@@ -9,6 +9,7 @@ import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectio
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { markRobinhoodScanQueued, markRobinhoodScanEnqueueFailed } from '@/lib/server/robinhoodScanCoordinator'
 import { requireAuthenticatedUser, unauthorizedResponse } from '@/lib/server/requireAuth'
+import { detectContractAddress } from '@/lib/server/whaleWalletKind'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -92,6 +93,18 @@ async function enqueueScan(req: Request): Promise<Response> {
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {
     return NextResponse.json({ error: { message: 'Wallet Scanner is not available on this plan.', category: 'plan' } }, { status: 403 })
+  }
+
+  // A contract (token, bridge, router) is not a wallet: its transfers are not trades, and scanning
+  // one publishes nonsense PnL. Rejected before any quota is consumed. Lookup failures scan anyway.
+  const walletKind = await detectContractAddress(wallet)
+  if (walletKind === 'contract' || walletKind === 'infra') {
+    return NextResponse.json({
+      error: {
+        message: 'This address is a smart contract (a token, bridge or router), not a wallet. Paste a wallet address, or use Token Scanner to analyse a token.',
+        category: 'validation',
+      },
+    }, { status: 400 })
   }
 
   const rawChains = Array.isArray(body?.chains) && body.chains.every((chain) => typeof chain === 'string')

@@ -83,5 +83,43 @@ export async function classifyWallets(
   return out
 }
 
+function ethRpcUrl(): string | null {
+  const explicit = process.env.ETH_RPC_URL ?? process.env.ALCHEMY_ETH_RPC_URL
+  if (explicit && /^https?:\/\//.test(explicit)) return explicit
+  const key = process.env.ALCHEMY_ETHEREUM_KEY ?? process.env.ALCHEMY_ETH_KEY
+  return key ? `https://eth-mainnet.g.alchemy.com/v2/${key}` : null
+}
+
+async function codeKindAt(rpcUrl: string, address: string, fetchImpl: RpcFetch): Promise<'eoa' | 'contract' | 'unknown'> {
+  try {
+    const res = await fetchImpl(rpcUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getCode', params: [address, 'latest'] }),
+      signal: AbortSignal.timeout(4_000),
+    })
+    const json = res.ok ? await res.json().catch(() => null) as { result?: unknown } | null : null
+    return classifyCode(json?.result)
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * Whether an address the user asked Wallet Scanner to scan is a contract on Base or Ethereum.
+ * A token, bridge or router contract has no trades of its own: scanning one turned an ENA bridge
+ * adapter's deposits into a $37.6M "portfolio" and +$2.05M of "realized PnL". 'contract' when either
+ * chain has code (EIP-7702 delegated EOAs excepted), 'infra' for known infrastructure, 'eoa' when
+ * both chains answered with no code, and 'unknown' otherwise — callers scan on 'unknown'.
+ */
+export async function detectContractAddress(rawAddress: string, fetchImpl: RpcFetch = fetch): Promise<WalletKind> {
+  const address = rawAddress.toLowerCase()
+  if (KNOWN_INFRA_ADDRESSES.has(address)) return 'infra'
+  const urls = [baseRpcUrl(), ethRpcUrl()].filter((url): url is string => url !== null)
+  const kinds = await Promise.all(urls.map((url) => codeKindAt(url, address, fetchImpl)))
+  if (kinds.includes('contract')) return 'contract'
+  return kinds.length === 2 && kinds.every((kind) => kind === 'eoa') ? 'eoa' : 'unknown'
+}
+
 /** Test-only. */
 export function __resetWalletKindCacheForTest(): void { codeCache.clear() }
