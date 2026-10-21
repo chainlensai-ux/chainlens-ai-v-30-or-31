@@ -8,6 +8,7 @@ import IntelligenceHero from '@/components/home/IntelligenceHero'
 import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
 import SideSlideIn from '@/components/home/SideSlideIn'
+import FeatureHoverPreview from '@/components/home/FeatureHoverPreview'
 import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
@@ -58,6 +59,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(45,212,191,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/wallet-scanner',
     title: 'Scan Wallets Instantly',
+    previewVideo: '/feature-previews/scan-wallets.mp4',
     body: "Check a Base wallet's available holdings, portfolio signals, recent activity where available, and Clark's wallet read.",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -74,6 +76,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(236,72,153,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/whale-alerts',
     title: 'Track Base Alerts Live',
+    previewVideo: '/feature-previews/track-base-alerts.mp4',
     body: 'See tracked-wallet activity, high-momentum Base tokens, volume expansion, and alert context in one feed.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -90,6 +93,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(139,92,246,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/token-scanner',
     title: 'Analyze Base Tokens',
+    previewVideo: '/feature-previews/analyze-base-tokens.mp4',
     body: 'Scan Base tokens for price, liquidity, LP control, holder concentration, security/tax checks, and dev/deployer risk.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -106,6 +110,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(34,211,238,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/base-radar',
     title: 'Base Radar',
+    previewVideo: '/feature-previews/base-radar.mp4',
     body: 'Spot emerging tokens and momentum signals on Base before they hit mainstream feeds. Filter by volume, velocity, and recency.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -123,6 +128,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(167,139,250,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/pump-alerts',
     title: 'Pump Alerts',
+    previewVideo: '/feature-previews/pump-alerts.mp4',
     body: 'Get notified when tokens on Base show rapid volume expansion, price velocity, or unusual buy pressure patterns.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -139,6 +145,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(129,140,248,0.06) 0%, rgba(45,212,191,0.03) 100%)',
     href: '/terminal/clark-ai',
     title: 'Clark AI',
+    previewVideo: '/feature-previews/clark-ai.mp4',
     body: 'Ask Clark anything onchain. Get plain-English verdicts on tokens, wallets, and market moves, powered by CORTEX.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -896,7 +903,7 @@ export default function HomePage() {
             gap: '20px',
           }}>
             {FEATURES.map((f, i) => (
-              <SideSlideIn key={f.title} side={i % 2 === 0 ? 'left' : 'right'} delayMs={(i % 2) * 90}><div
+              <SideSlideIn key={f.title} side={i % 2 === 0 ? 'left' : 'right'} delayMs={(i % 2) * 90}><FeatureHoverPreview src={f.previewVideo} accent={f.accent} side={i % 2 === 0 ? 'right' : 'left'} label={f.title}><div
                 className="feat-card"
                 style={{
                   background: 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)',
@@ -1001,7 +1008,7 @@ export default function HomePage() {
                     <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
                 </Link>
-              </div></SideSlideIn>
+              </div></FeatureHoverPreview></SideSlideIn>
             ))}
           </div>
         </section>
