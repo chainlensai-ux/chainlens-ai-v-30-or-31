@@ -19,6 +19,7 @@ import {
 } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import { rawAmountFor } from './priceLotsForWallet.eventFixture'
 
 const originalFetch = global.fetch
 const originalKey = process.env.ALCHEMY_API_KEY
@@ -38,12 +39,13 @@ afterEach(() => {
 })
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
-  return {
+  const base: NormalizedEvent = {
     provider: 'goldrush', chain: 'eth', txHash: '0xtx', timestamp: '2026-01-01T00:00:00.000Z',
     fromAddress: '0xfrom', toAddress: '0xto', contract: '0xtoken', symbol: 'TOK',
     amount: 1, amountRaw: '1000000000000000000', tokenDecimals: 18, direction: 'inbound',
     ...overrides,
   }
+  return overrides.amountRaw !== undefined ? base : { ...base, amountRaw: rawAmountFor(base.amount, base.tokenDecimals) }
 }
 
 const NO_OP_SOURCES: PriceSources = {
@@ -78,9 +80,10 @@ describe('priceLotsForWallet — Alchemy historical pricing promoted (ALCHEMY_HI
   it('a temporally-rejected (stale) price never applies, even with the flag enabled', async () => {
     process.env.ALCHEMY_HISTORICAL_PRICING_ENABLED = 'true'
     const meme = '0x0000000000000000000000000000000000000f01'
-    // 7 hours apart — outside the 6h non-tier2 acceptance window.
+    // 25 hours apart — outside the 24h acceptance window (Alchemy returns daily points, so a
+    // same-day candle is accepted; anything past a full day is stale).
     const buy = event({ txHash: '0xstalebuy', contract: meme, direction: 'inbound', amount: 500, timestamp: '2026-01-01T00:00:00.000Z' })
-    const sell = event({ txHash: '0xstalesell', contract: meme, direction: 'outbound', amount: 500, timestamp: '2026-01-01T07:00:00.000Z' })
+    const sell = event({ txHash: '0xstalesell', contract: meme, direction: 'outbound', amount: 500, timestamp: '2026-01-02T01:00:00.000Z' })
     const events = [buy, sell]
 
     global.fetch = (async (input: RequestInfo | URL) => {
@@ -94,7 +97,7 @@ describe('priceLotsForWallet — Alchemy historical pricing promoted (ALCHEMY_HI
     const lookups = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: NO_OP_SOURCES })
 
     assert.equal(lookups.priceUsdLookup(buy), 1250, 'buy is within the window (0h distance) and must still be applied (2.5 * 500)')
-    assert.equal(lookups.priceUsdLookup(sell), null, 'sell is 7h away — outside the 6h non-tier2 window — must be rejected, never applied')
+    assert.equal(lookups.priceUsdLookup(sell), null, 'sell is 25h away — outside the 24h window — must be rejected, never applied')
   })
 
   it('an existing verified price from an earlier source is never overwritten', async () => {

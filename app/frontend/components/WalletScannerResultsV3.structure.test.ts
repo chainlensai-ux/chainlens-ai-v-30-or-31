@@ -47,10 +47,11 @@ describe('Wallet Scanner V3 layout — reuses existing components, never a dupli
     assert.match(source, /import \{ ChainSelectionView \} from '\.\/ChainSelectionView'/)
   })
 
-  it('WalletScannerTabsV3 passes pricedHoldings/chainValueUsd straight through to HoldingsViewV2 — the same canonical selectHoldingsV2() source the old layout uses', () => {
+  it('WalletScannerTabsV3 feeds HoldingsViewV2 the canonical report.pricedHoldings/chainValueUsd, with Robinhood holdings merged in and nothing recomputed', () => {
     const source = readV3File('WalletScannerTabsV3.tsx')
-    assert.match(source, /pricedHoldings=\{report\.pricedHoldings\}/)
-    assert.match(source, /chainValueUsd=\{report\.chainValueUsd\}/)
+    assert.match(source, /mergeRobinhoodIntoPricedHoldings\(report\.pricedHoldings, report\.chainValueUsd,/)
+    assert.match(source, /pricedHoldings=\{merged\.pricedHoldings\}/)
+    assert.match(source, /chainValueUsd=\{merged\.chainValueUsd\}/)
   })
 
   it('WalletScannerDiagnosticsV3 imports the existing FinalSummaryView/RecoveryHealthCard/CoverageTimelineCard/ScanDiagnosticsCard/BehaviorIntelView — nothing is deleted, only moved into a collapsible section', () => {

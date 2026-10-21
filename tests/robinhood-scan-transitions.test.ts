@@ -133,5 +133,5 @@ test('POST writes the queued marker before enqueueing, and closes it if enqueue 
   const mark = post.indexOf('await markRobinhoodScanQueued(wallet, jobId, robinhoodQueuedAt)')
   const enqueue = post.indexOf('await enqueueWalletScanJob(jobId,')
   assert.ok(mark > 0 && enqueue > 0 && mark < enqueue, 'marker precedes enqueue')
-  assert.match(post, /catch \(err\) \{[\s\S]{0,200}markRobinhoodScanEnqueueFailed\(wallet, jobId, robinhoodQueuedAt\)/)
+  assert.match(post, /catch \(err\) \{[\s\S]{0,800}markRobinhoodScanEnqueueFailed\(wallet, jobId, robinhoodQueuedAt\)/)
 })

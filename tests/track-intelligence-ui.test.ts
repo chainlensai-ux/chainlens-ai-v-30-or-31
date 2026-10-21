@@ -41,8 +41,8 @@ test('four compact cards preserve unavailable current values without implying ze
 })
 test('incompatible liquidity displays both values but no comparison arrow or delta', () => {
   const html = render()
-  assert.match(html, /\$161K/)
-  assert.match(html, /\$149K/)
+  assert.match(html, /\$161(\.0)?K/)
+  assert.match(html, /\$149(\.0)?K/)
   assert.match(html, /Different or unrecorded liquidity basis/)
   assert.doesNotMatch(html, /aria-label="compared with"/)
   assert.doesNotMatch(html, /-7\.5%/)

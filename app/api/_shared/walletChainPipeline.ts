@@ -137,8 +137,13 @@ export async function fetchRawEventsForChain(chain: SupportedChain, walletAddres
     : await fetchLive()
 
   if (cuBudget) recordProviderCall(cuBudget)
-  cache?.set(chain, walletAddress, result.rawEvents)
-  return result.rawEvents
+  if (cache) {
+    cache.set(chain, walletAddress, result.rawEvents)
+    return result.rawEvents
+  }
+  // The 30s stage cache hands every caller the same array; a copy keeps one caller's edits out of
+  // the next caller's events.
+  return result.rawEvents.slice()
 }
 
 function toRawTransfer(event: RawProviderEvent, logIndex: number): RawTransfer {

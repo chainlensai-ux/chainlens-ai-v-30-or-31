@@ -17,6 +17,7 @@ import { resetGeckoTerminalNoPoolCache } from './providers/geckoTerminalPriceSou
 import { __resetBaseDexCachesForTest } from '../modules/pricingAtTimeEngine/sources/basedex'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import { rawAmountFor } from './priceLotsForWallet.eventFixture'
 
 const originalFetch = global.fetch
 const ETH_WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
@@ -34,12 +35,13 @@ afterEach(() => {
 })
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
-  return {
+  const base: NormalizedEvent = {
     provider: 'goldrush', chain: 'eth', txHash: '0xtx', timestamp: '2024-03-15T00:00:00.000Z',
     fromAddress: '0xfrom', toAddress: '0xto', contract: '0xtoken', symbol: 'TOK',
     amount: 1, amountRaw: '1000000000000000000', tokenDecimals: 18, direction: 'inbound',
     ...overrides,
   }
+  return overrides.amountRaw !== undefined ? base : { ...base, amountRaw: rawAmountFor(base.amount, base.tokenDecimals) }
 }
 
 // Only counts calls carrying one of THIS fixture's two real historical dates — priceLotsForWallet

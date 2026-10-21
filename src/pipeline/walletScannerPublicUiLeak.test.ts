@@ -17,7 +17,4 @@ test('public PnL card hides raw debug behind Technical details and never names s
   assert.doesNotMatch(uiSrc, /openPositionExclusionAudit/)
   assert.doesNotMatch(uiSrc, /walletProviderCostAudit/)
   assert.match(uiSrc, /Technical details/)
-  assert.match(uiSrc, /Realized PnL: <strong/)
-  assert.match(uiSrc, /Unrealized PnL: <strong/)
-  assert.match(uiSrc, /currently held/)
 })

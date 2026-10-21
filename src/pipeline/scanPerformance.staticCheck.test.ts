@@ -17,7 +17,7 @@ describe('repeat-scan cache TTL (perf-sprint task, NARROWED by perf-guardrails f
   it('recoveryPolicy (a bounded, deterministic recomputation over a fixed past window) uses the 300s repeat-scan constant', () => {
     assert.match(src, /const REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS = 300/, 'the shared TTL constant must exist and be 300s (5 min)')
 
-    const recoveryPolicyCallMatch = src.match(/const recoveryPolicy = await withStageCache\(\s*`v2:recoveryPolicy:[^`]*`,\s*(\S+),/)
+    const recoveryPolicyCallMatch = src.match(/const recoveryPolicy = await withStageCache\(\s*`v\d+:recoveryPolicy:.*`,\n\s*(\S+),/)
     assert.ok(recoveryPolicyCallMatch, 'could not locate the recoveryPolicy withStageCache call')
     assert.equal(recoveryPolicyCallMatch[1], 'REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS', 'recoveryPolicy must use the 5-10min repeat-scan constant')
   })

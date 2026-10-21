@@ -23,6 +23,7 @@ import { priceLotsForWallet } from './priceLotsForWallet.ts'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import { rawAmountFor } from './priceLotsForWallet.eventFixture'
 
 const originalFetch = global.fetch
 const originalApiKey = process.env.GOLDRUSH_API_KEY
@@ -42,12 +43,13 @@ function memeToken(i: number): string {
 }
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
-  return {
+  const base: NormalizedEvent = {
     provider: 'goldrush', chain: 'base', txHash: '0xtx', timestamp: '2026-01-01T00:00:00.000Z',
     fromAddress: '0xfrom', toAddress: '0xto', contract: '0xtoken', symbol: 'TOK',
     amount: 1, amountRaw: '1000000000000000000', tokenDecimals: 18, direction: 'inbound',
     ...overrides,
   }
+  return overrides.amountRaw !== undefined ? base : { ...base, amountRaw: rawAmountFor(base.amount, base.tokenDecimals) }
 }
 
 function mockCovalentResponse(txHash: string, timestamp: string, tokenAddress: string, tokenAmountRaw: string, ethAmountRaw: string): void {

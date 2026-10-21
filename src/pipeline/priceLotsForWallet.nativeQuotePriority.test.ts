@@ -17,17 +17,19 @@ import { priceLotsForWallet } from './priceLotsForWallet.ts'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import { rawAmountFor } from './priceLotsForWallet.eventFixture'
 
 const WETH_BASE = '0x4200000000000000000000000000000000000006'
 const MEME_TOKEN = '0x0000000000000000000000000000000000000001'
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
-  return {
+  const base: NormalizedEvent = {
     provider: 'goldrush', chain: 'base', txHash: '0xtx', timestamp: '2026-01-01T00:00:00.000Z',
     fromAddress: '0xfrom', toAddress: '0xto', contract: '0xtoken', symbol: 'TOK',
     amount: 1, amountRaw: '1000000000000000000', tokenDecimals: 18, direction: 'inbound',
     ...overrides,
   }
+  return overrides.amountRaw !== undefined ? base : { ...base, amountRaw: rawAmountFor(base.amount, base.tokenDecimals) }
 }
 
 describe('priceLotsForWallet — native/WETH quote-leg priority pricing', () => {
