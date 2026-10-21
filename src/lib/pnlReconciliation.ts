@@ -787,6 +787,9 @@ export type PnlReconciliationInput = {
   // already consumed. Used only to prove independent stablecoin movements vs unresolved native
   // quote identity. Omitted → unpaired stablecoin lots fail closed as unresolved (ROI unavailable).
   normalizedEvents?: readonly NormalizedEvent[]
+  // Lot side keys the event-level price outlier guard rejected (guardPriceUsdLookup); those sides
+  // stay unpriced even when recovery or stored accepted evidence prices them again.
+  rejectedPriceSideKeys?: ReadonlySet<string>
 }
 
 // PUBLIC PNL GATE AUDIT, DISCLOSED (evidence-first PnL completion task, requirement #1): a single,
@@ -2498,7 +2501,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // PRICE OUTLIER GUARD (src/lib/lotPriceOutlierGuard.ts): a side priced orders of magnitude away
       // from every other trade of that token (or of the wallet) is demoted before the shared-side rule
       // and seeding, so it never reaches realized PnL and is never persisted as accepted evidence.
-      const priceOutlierGuard = demotePriceOutlierLots(updatedFifoLots)
+      const priceOutlierGuard = demotePriceOutlierLots(updatedFifoLots, { rejectedSideKeys: input.rejectedPriceSideKeys })
       if (priceOutlierGuard.outliers.length > 0) {
         logger.warn('lot_price_outliers_demoted', {
           demotedLotCount: priceOutlierGuard.demotedLotCount,
@@ -2548,7 +2551,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // Manifest replay rebuilds lots from stored evidence, which may predate the outlier guard, so
       // the selected sample is guarded again (outlier lots only; the shared-side rule is not re-run).
       const canonicalSelectedLots = canonicalSampleSelection
-        ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots).lots
+        ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots, { rejectedSideKeys: input.rejectedPriceSideKeys }).lots
         : consistentFifoLots
       const publishedFifoLots = [...canonicalSelectedLots]
       // One short flat line (no nested objects, so log viewers never truncate or drop it) with the

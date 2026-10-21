@@ -34,7 +34,7 @@ export function acceptedEvidencePurgeReason(raw: unknown): AcceptedEvidencePurge
 
 // Outlier reasons that name the bad side itself. A lot-level return outlier only says one of its
 // two sides is wrong, so neither side's record is deleted for it.
-const SIDE_OUTLIER_REASONS: ReadonlySet<LotPriceOutlier['reason']> = new Set(['token_price_outlier', 'token_local_price_outlier', 'wallet_value_outlier'])
+const SIDE_OUTLIER_REASONS: ReadonlySet<LotPriceOutlier['reason']> = new Set(['token_price_outlier', 'token_local_price_outlier', 'wallet_value_outlier', 'event_price_outlier'])
 
 /**
  * Accepted-evidence keys of the transaction sides the in-scan outlier guard rejected. Those values

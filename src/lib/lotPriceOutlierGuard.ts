@@ -97,7 +97,7 @@ export type LotPriceOutlier = {
   perUnitUsd: number
   tokenMedianPerUnitUsd: number | null
   valueUsd: number
-  reason: 'token_price_outlier' | 'token_local_price_outlier' | 'wallet_value_outlier' | 'lot_return_outlier' | 'same_tx_dust_lot'
+  reason: 'token_price_outlier' | 'token_local_price_outlier' | 'wallet_value_outlier' | 'lot_return_outlier' | 'same_tx_dust_lot' | 'event_price_outlier'
 }
 
 export type LotPriceOutlierResult = {
@@ -266,9 +266,19 @@ function lotLevelOutlierReason(lot: MatchedLot): 'lot_return_outlier' | 'same_tx
   return null
 }
 
-export function demotePriceOutlierLots(lots: readonly MatchedLot[]): LotPriceOutlierResult {
+// `rejectedSideKeys` are the sides guardPriceUsdLookup already rejected at event level, where it
+// saw every trade of the token. Recovery and stored accepted evidence can price such a side again
+// after FIFO (production: a $0.068 entry the event guard rejected came back from accepted evidence
+// and published +$30 of a $57 total); the lot-level check alone sees too few trades to catch it.
+export function demotePriceOutlierLots(
+  lots: readonly MatchedLot[],
+  options: { rejectedSideKeys?: ReadonlySet<string> } = {},
+): LotPriceOutlierResult {
   const samples = collectSideSamples(lots)
   const verdicts = detectPriceOutliers(samples.values())
+  for (const key of options.rejectedSideKeys ?? []) {
+    if (samples.has(key) && !verdicts.has(key)) verdicts.set(key, { reason: 'event_price_outlier', tokenMedianPerUnitUsd: null })
+  }
   const outliers: LotPriceOutlier[] = []
   for (const [key, verdict] of verdicts) {
     const sample = samples.get(key)!
@@ -309,7 +319,7 @@ export function guardPriceUsdLookup(
   events: readonly NormalizedEvent[],
   lookup: PriceUsdLookup,
   options: { majorMarketValueUsd?: (event: NormalizedEvent) => number | null } = {},
-): { lookup: PriceUsdLookup; rejectedEvents: number; rejectedValueUsd: number; repricedMajorEvents: number } {
+): { lookup: PriceUsdLookup; rejectedEvents: number; rejectedValueUsd: number; repricedMajorEvents: number; rejectedSideKeys: Set<string> } {
   const samples = new Map<string, PriceSample>()
   for (const event of events) {
     if (!(event.amount > 0) || !Number.isFinite(event.amount)) continue
@@ -334,7 +344,16 @@ export function guardPriceUsdLookup(
       if (isCanonicalPositiveUsd(usd)) repriced.set(key, usd)
     }
   }
+  // Lot side keys (sideKey's format) of the events that stay rejected: inbound legs are entries,
+  // outbound legs exits. Repriced major sides are priced, not rejected.
+  const rejectedSideKeys = new Set<string>()
+  for (const event of events) {
+    const key = eventKey(event)
+    if (!verdicts.has(key) || repriced.has(key) || event.direction === 'unknown') continue
+    rejectedSideKeys.add(`${event.chain}:${event.contract.toLowerCase()}:${event.txHash.toLowerCase()}:${event.direction === 'inbound' ? 'entry' : 'exit'}`)
+  }
   return {
+    rejectedSideKeys,
     lookup: verdicts.size === 0 ? lookup : (event) => {
       const key = eventKey(event)
       if (!verdicts.has(key)) return lookup(event)

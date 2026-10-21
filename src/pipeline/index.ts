@@ -4504,6 +4504,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
     canonicalSampleSelector,
     normalizedEvents: [...canonicalNormalizedEvents, ...recoveredNormalizedForPricing],
+    rejectedPriceSideKeys: guardedPriceLookup.rejectedSideKeys,
     }),
   )
   if (roiQuoteLegManifestIdentity) {

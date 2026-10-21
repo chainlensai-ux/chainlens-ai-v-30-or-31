@@ -143,6 +143,22 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     assert.equal(guarded.lookup(events[0]), 24)
   })
 
+  it('reports the rejected event as a lot side, so a side re-priced later by recovery or stored evidence is still demoted', () => {
+    const usdByTx: Record<string, number> = { '0x1': 24, '0x2': 18, '0x3': 30, '0xdust': 24.046795 }
+    const events = [ev('0x1', 2000), ev('0x2', 1500), ev('0x3', 2500), ev('0xdust', 0.00003981497723455)]
+    const guarded = guardPriceUsdLookup(events, (e) => usdByTx[e.txHash] ?? null)
+    assert.deepEqual([...guarded.rejectedSideKeys], [`base:${TOKEN}:0xdust:entry`])
+    // Two lots only: too few trades for the lot-level checks, so only the event verdict catches it.
+    const lots = [
+      lot({ amount: 1, entryPerUnit: 0.012, exitPerUnit: 0.033, openedTxHash: '0xdust' }),
+      lot({ amount: 1000, entryPerUnit: 0.012, exitPerUnit: 0.013 }),
+    ]
+    assert.equal(demotePriceOutlierLots(lots).demotedLotCount, 0)
+    const result = demotePriceOutlierLots(lots, { rejectedSideKeys: guarded.rejectedSideKeys })
+    assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['unpriced', 'verified'])
+    assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side, o.reason]), [['0xdust', 'entry', 'event_price_outlier']])
+  })
+
   it('reads an astronomically valued sell as unpriced (wallet-wide check)', () => {
     const events = [...Array.from({ length: 10 }, (_, i) => ev(`0xb${i}`, 100)), ev('0xhuge', 5_701, 'outbound')]
     const guarded = guardPriceUsdLookup(events, (e) => (e.txHash === '0xhuge' ? 3.15e19 : 50))
