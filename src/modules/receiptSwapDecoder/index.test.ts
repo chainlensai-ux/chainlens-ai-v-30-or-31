@@ -200,6 +200,16 @@ test('malformed receipt data fails closed instead of throwing or fabricating a s
   assert.equal(result.rejection.reason, 'malformed_log_data')
 })
 
+test('an ERC-721 Transfer (LP position NFT: tokenId as 4th topic, no data) is not counted as malformed', async () => {
+  const nft = { ...transferLog(1, ROUTER.toLowerCase(), ZERO, wallet, BigInt(0)), data: '0x' }
+  nft.topics = [...nft.topics, `0x${'0'.repeat(63)}7`]
+  const tx = bundle({ logs: [transferLog(0, TOKEN_X, wallet, ROUTER.toLowerCase(), BigInt('1')), nft] })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.rejection.reason, 'plain_transfer_no_swap_event')
+})
+
 test('Classic: two transfers into the same pool that sum exactly to the Swap event amount are aggregated, not rejected', async () => {
   // AGGREGATION, DISCLOSED (multiTransferLeg.ts): a duplicated/split incoming transfer whose sum
   // matches the Swap event's own authoritative amount0In is a real, aggregatable pool leg — never

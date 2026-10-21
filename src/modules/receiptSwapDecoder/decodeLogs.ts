@@ -92,6 +92,10 @@ export function decodeLogs(logs: RawReceiptLog[], chain: 'base' | 'eth' = 'base'
       } else if (topic0 === CLASSIC_BURN_TOPIC0 || topic0 === SLIPSTREAM_BURN_TOPIC0) {
         lpEvents.push({ logIndex: log.logIndex, poolAddress: address, kind: 'burn' })
       } else if (topic0 === ERC20_TRANSFER_TOPIC0) {
+        // ERC-721 Transfer shares the topic but indexes tokenId as a 4th topic and has no data (an LP
+        // position NFT minted or burned by a position manager). It is not a token movement here, and
+        // decoding its empty data used to count it as malformed and reject the whole receipt.
+        if (log.topics.length === 4) continue
         const from = topicAddress(log.topics[1])
         const to = topicAddress(log.topics[2])
         const [value] = decodeAbiParameters([{ type: 'uint256' }], log.data as `0x${string}`) as [bigint]

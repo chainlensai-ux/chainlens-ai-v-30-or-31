@@ -77,6 +77,27 @@ describe('priceLotsForWallet — Alchemy historical pricing promoted (ALCHEMY_HI
     assert.equal(lookups.priceUsdLookup(sell), 2500, 'the accepted Alchemy price must land in proceedsUsd, scaled by the real transaction amount')
   })
 
+  it('a tx that moves the token both ways values each side by its own direction\'s quantity (not the last event)', async () => {
+    process.env.ALCHEMY_HISTORICAL_PRICING_ENABLED = 'true'
+    const meme = '0x0000000000000000000000000000000000000f04'
+    const buy = event({ txHash: '0xtwowaybuy', contract: meme, direction: 'inbound', amount: 1000, timestamp: '2026-01-01T00:00:00.000Z' })
+    // The sell sends 1000 out and gets a 1-token refund back in the same tx (LP rebalance / swap refund).
+    const sell = event({ txHash: '0xtwowaysell', contract: meme, direction: 'outbound', amount: 1000, timestamp: '2026-01-01T02:00:00.000Z' })
+    const refund = event({ txHash: '0xtwowaysell', contract: meme, direction: 'inbound', amount: 1, timestamp: '2026-01-01T02:00:00.000Z', fromAddress: '0xrouter' })
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      if (url.includes('api.g.alchemy.com')) {
+        return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '2.5' }] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({}), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const lookups = await priceLotsForWallet({ normalizedEvents: [buy, sell, refund], recoveredEvents: [], priceSources: NO_OP_SOURCES })
+
+    assert.equal(lookups.priceUsdLookup(buy), 2500)
+    assert.equal(lookups.priceUsdLookup(sell), 2500, 'proceeds are 2.5 x the 1000 tokens sent, never 2.5 x the 1-token refund')
+  })
+
   it('a temporally-rejected (stale) price never applies, even with the flag enabled', async () => {
     process.env.ALCHEMY_HISTORICAL_PRICING_ENABLED = 'true'
     const meme = '0x0000000000000000000000000000000000000f01'

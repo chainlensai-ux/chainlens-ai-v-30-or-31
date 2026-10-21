@@ -89,7 +89,9 @@ test('native history failure (e.g. chain without internal transfers) yields no r
 })
 
 test('a page-capped history reports the range it covered and drops the older rows of the deeper direction', async () => {
-  const capped = Array.from({ length: ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION + 1 }, (_, i) => ({ count: 200, ageDays: 1 + i * 3 }))
+  // Page spacing keeps the shallower direction's last capped page inside the 90-day window.
+  const step = 80 / ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION
+  const capped = Array.from({ length: ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION + 1 }, (_, i) => ({ count: 200, ageDays: 1 + i * step }))
   mockPages({
     // The sells reach back further than the buys: their rows older than the buys' last page go.
     'erc20:from': capped.map((page) => ({ ...page, ageDays: page.ageDays * 2 })),
@@ -99,7 +101,7 @@ test('a page-capped history reports the range it covered and drops the older row
   assert.equal(r.pagination?.nextPageKeyPresent, true)
   const covered = r.pagination?.coveredFromMs
   assert.ok(typeof covered === 'number')
-  const lastToPageAge = 1 + (ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION - 1) * 3
+  const lastToPageAge = 1 + (ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION - 1) * step
   assert.ok(Math.abs(covered - (Date.now() - lastToPageAge * 86_400_000)) < 60_000, 'the shallower direction bounds the range')
   assert.ok(r.events.every((e) => Date.parse(e.timestamp!) >= covered), 'nothing older than the covered start')
 })

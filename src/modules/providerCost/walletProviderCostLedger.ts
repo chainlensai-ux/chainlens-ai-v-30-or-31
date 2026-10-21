@@ -85,6 +85,15 @@ export const MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN = 80
 // isReuseEligible).
 export const ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU = 1_500
 
+// DEEP HISTORY ALLOWANCE: a wallet moving ~1,400 transfers a day each way (LP rebalancing, bots) used
+// up the shared ceiling after 32 history pages, which covered only its last 2 days of a 90-day window.
+// Once transaction history has spent ALCHEMY_HISTORY_STANDARD_CU, further history pages are charged to
+// this separate allowance instead of the shared ceiling, so they never take budget from receipts,
+// pricing or recovery. A wallet whose history fits in the standard share never touches it.
+export const ALCHEMY_HISTORY_STANDARD_CU = 4_800
+export const ALCHEMY_DEEP_HISTORY_EXTRA_CU = 9_000
+export const ALCHEMY_DEEP_HISTORY_EXTRA_CALLS = 60
+
 type ProviderCounters = {
   calls: number
   estimatedCost: number
@@ -117,6 +126,9 @@ type LedgerState = {
   alchemy: ProviderCounters
   goldrush: ProviderCounters
   goldrushPricingCalls: number
+  alchemyHistoryCu: number
+  alchemyDeepHistoryCu: number
+  alchemyDeepHistoryCalls: number
   requestHits: number
   singleflightHits: number
   negativeCacheHits: number
@@ -127,6 +139,9 @@ function emptyState(): LedgerState {
     alchemy: emptyProviderCounters(),
     goldrush: emptyProviderCounters(),
     goldrushPricingCalls: 0,
+    alchemyHistoryCu: 0,
+    alchemyDeepHistoryCu: 0,
+    alchemyDeepHistoryCalls: 0,
     requestHits: 0,
     singleflightHits: 0,
     negativeCacheHits: 0,
@@ -160,9 +175,19 @@ export type ConsumeRequest = {
 }
 
 // PURE CHECK — never mutates. Reports whether one more call would fit under every applicable cap.
+function isDeepHistoryCall(request: ConsumeRequest): boolean {
+  return request.provider === 'alchemy' && request.stage === 'transaction_history'
+    && state.alchemyHistoryCu - state.alchemyDeepHistoryCu >= ALCHEMY_HISTORY_STANDARD_CU
+}
+
 export function canConsume(request: ConsumeRequest): boolean {
   if (request.provider === 'alchemy') {
-    if (state.alchemy.calls >= MAX_ALCHEMY_CALLS_PER_SCAN) return false
+    const cu = estimatedCuForMethod(request.endpoint)
+    if (isDeepHistoryCall(request)) {
+      return state.alchemyDeepHistoryCalls < ALCHEMY_DEEP_HISTORY_EXTRA_CALLS
+        && state.alchemyDeepHistoryCu + cu <= ALCHEMY_DEEP_HISTORY_EXTRA_CU
+    }
+    if (state.alchemy.calls - state.alchemyDeepHistoryCalls >= MAX_ALCHEMY_CALLS_PER_SCAN) return false
     // RESERVED FLOOR, DISCLOSED: a non-transaction_history request (today, only 'recovery') is
     // checked against the ceiling MINUS the reserved floor — it can never push cumulative Alchemy
     // spend past that reduced line, no matter how many recovery candidates are queued. The
@@ -171,7 +196,7 @@ export function canConsume(request: ConsumeRequest): boolean {
     const effectiveCeiling = request.stage === 'transaction_history'
       ? MAX_ALCHEMY_CU_PER_SCAN
       : MAX_ALCHEMY_CU_PER_SCAN - ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU
-    if (state.alchemy.estimatedCost + estimatedCuForMethod(request.endpoint) > effectiveCeiling) return false
+    if (state.alchemy.estimatedCost - state.alchemyDeepHistoryCu + cu > effectiveCeiling) return false
     return true
   }
   if (state.goldrush.calls >= MAX_GOLDRUSH_CALLS_PER_SCAN) return false
@@ -190,6 +215,14 @@ export function tryConsume(request: ConsumeRequest): boolean {
     return false
   }
 
+  if (request.provider === 'alchemy' && request.stage === 'transaction_history') {
+    const cu = estimatedCuForMethod(request.endpoint)
+    if (isDeepHistoryCall(request)) {
+      state.alchemyDeepHistoryCu += cu
+      state.alchemyDeepHistoryCalls += 1
+    }
+    state.alchemyHistoryCu += cu
+  }
   counters.calls += 1
   counters.estimatedCost += request.provider === 'alchemy'
     ? estimatedCuForMethod(request.endpoint)
@@ -240,6 +273,9 @@ export type WalletProviderCostAudit = {
     callsByStage: Record<string, number>
     duplicateCallsPrevented: number
     cappedCalls: number
+    /** History pages charged to the deep-history allowance (included in calls/estimatedCu). */
+    deepHistoryCalls: number
+    deepHistoryCu: number
   }
   goldrush: {
     calls: number
@@ -341,6 +377,8 @@ export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInpu
       callsByStage: mapToRecord(state.alchemy.callsByStage),
       duplicateCallsPrevented: state.alchemy.duplicateCallsPrevented,
       cappedCalls: state.alchemy.cappedCalls,
+      deepHistoryCalls: state.alchemyDeepHistoryCalls,
+      deepHistoryCu: state.alchemyDeepHistoryCu,
     },
     goldrush: {
       calls: state.goldrush.calls,

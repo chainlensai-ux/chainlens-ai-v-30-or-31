@@ -143,5 +143,6 @@ export const PROVIDER_FETCH_WINDOW_DAYS_DEFAULT = 90
 // reach across a wallet's full base window rather than truncating earlier within it.
 // Raised from 400 with Alchemy pagination (up to 4 token pages per direction + native pages):
 // 400 cut a busy wallet's history before the window was covered. Raised again to 5000 with the
-// 10-page-per-direction Alchemy cap (2 x 10 x 200 token rows + native pages).
-export const MAX_RAW_EVENTS_PER_PROVIDER = 5000
+// 10-page-per-direction Alchemy cap (2 x 10 x 200 token rows + native pages). Raised to 16000 with
+// the 40-page cap: at 5000 a wallet moving ~1,400 transfers a day each way was cut to its last 2 days.
+export const MAX_RAW_EVENTS_PER_PROVIDER = 16000

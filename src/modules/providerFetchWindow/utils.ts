@@ -457,7 +457,9 @@ export function capAlchemyEventsByTime<T>(
 // ~3,700 of its 8,000 CU; 16 per direction is 4,800 CU at most. With native and ETH history
 // (~600 CU) that leaves recovery (capped at 8,000 - 1,500 reserved) ~800 CU after a full-cap pull,
 // above the ~0-400 CU that stage spent on that wallet.
-export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 16
+// 40 pages (8,000 rows) per direction: past ~16 pages a direction is paid from the ledger's
+// deep-history allowance (walletProviderCostLedger.ts), and the wall-clock guard below still applies.
+export const ALCHEMY_ERC20_MAX_PAGES_PER_DIRECTION = 40
 export const ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION = 2
 const ALCHEMY_HISTORY_PAGINATION_BUDGET_MS = 45_000
 // Short pause after ANY 429 before the next QUEUED call gets its turn — deliberately short since

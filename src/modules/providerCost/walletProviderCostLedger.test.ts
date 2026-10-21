@@ -17,6 +17,9 @@ import {
   MAX_ALCHEMY_CU_PER_SCAN,
   MAX_GOLDRUSH_CALLS_PER_SCAN,
   MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN,
+  ALCHEMY_HISTORY_STANDARD_CU,
+  ALCHEMY_DEEP_HISTORY_EXTRA_CU,
+  ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU,
 } from './walletProviderCostLedger'
 import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
@@ -59,11 +62,29 @@ test('the Alchemy CU cap binds independently of the call cap for expensive metho
   const perCall = estimatedCuForMethod('alchemy_getAssetTransfers')
   let granted = 0
   for (let i = 0; i < MAX_ALCHEMY_CALLS_PER_SCAN; i++) {
-    if (tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain: 'base', stage: 'transaction_history' })) granted += 1
+    if (tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain: 'base', stage: 'unknown' })) granted += 1
   }
   assert.ok(granted < MAX_ALCHEMY_CALLS_PER_SCAN,
     'expected the CU cap to bind before the call cap for a 150-CU method')
   assert.ok(granted * perCall <= MAX_ALCHEMY_CU_PER_SCAN)
+})
+
+test('deep history pages are paid from their own allowance and never take budget from other stages', () => {
+  const perCall = estimatedCuForMethod('alchemy_getAssetTransfers')
+  let history = 0
+  for (let i = 0; i < 500; i++) {
+    if (tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain: 'base', stage: 'transaction_history' })) history += 1
+  }
+  // Bounded: the standard share plus the deep allowance, never more.
+  assert.equal(history * perCall, ALCHEMY_HISTORY_STANDARD_CU + ALCHEMY_DEEP_HISTORY_EXTRA_CU)
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.alchemy.deepHistoryCu, ALCHEMY_DEEP_HISTORY_EXTRA_CU)
+  // Receipts/pricing still have exactly what they would have had if history stopped at its standard share.
+  let other = 0
+  for (let i = 0; i < 500; i++) {
+    if (tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain: 'base', stage: 'recovery' })) other += 1
+  }
+  assert.equal(other, Math.floor((MAX_ALCHEMY_CU_PER_SCAN - ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU - ALCHEMY_HISTORY_STANDARD_CU) / perCall))
 })
 
 test('HARD ASSERTION: no provider call is granted after a budget refusal', () => {

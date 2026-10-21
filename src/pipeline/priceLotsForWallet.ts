@@ -2324,17 +2324,15 @@ export async function priceLotsForWallet(params: {
   // fallbacks" is already true structurally: nothing runs after this block for these requirements.
   const alchemyApplyEnabled = isAlchemyHistoricalPricingEnabled()
   // UNIT CONVERSION, DISCLOSED: Alchemy's historical endpoint returns a PER-UNIT USD price, but
-  // costUsd/proceedsUsd store the TOTAL resolved USD value of a transaction leg (same convention as
-  // resolvePricingAtTime's own usd = price * amount, and the same-tx quote-leg gap-fill above) — so
-  // applying a bare per-unit price here would silently corrupt every downstream dollar figure by a
-  // factor of the token's own quantity. eventAmountByLegKey resolves the REAL transaction amount for
-  // the exact (chain, txHash, token) leg — keyed by token too, since one tx can carry multiple legs
-  // for different tokens at different amounts — read from `merged`, the same canonical event set the
-  // quote-leg lookup above is built from, never re-fetched.
-  const eventAmountByLegKey = new Map<string, number>()
-  for (const e of merged) {
-    eventAmountByLegKey.set(`${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}`, e.amount)
-  }
+  // costUsd/proceedsUsd store the TOTAL USD value of one token's transaction SIDE (see
+  // src/lib/txSideEventAllocation.ts) — so the price is scaled by that side's quantity: the sum of the
+  // token's inbound transfers in the tx for a cost side, of its outbound transfers for a proceeds side
+  // (`txSides`, built from `merged` above). This used to be one amount per (tx, token) with the last
+  // event winning, whatever its direction: in a tx that moves the same token both ways (an LP
+  // rebalance, a swap with a refund) a 10-WETH sell was valued at the 0.01-WETH refund, which produced
+  // a -$397k realized PnL on a $21k wallet.
+  const alchemySideQuantity = (chain: NormalizedEvent['chain'], txHash: string, side: 'cost' | 'proceeds', token: string): number | null =>
+    txSides.get(txSideKey(chain, txHash, side === 'cost' ? 'inbound' : 'outbound', token))?.quantity ?? null
   // Keyed by (txHash, token): one swap tx carries a requirement per token (the sold token's exit and
   // the bought token's entry), and each must be priced by its own token's price and amount.
   const alchemyRequirementSidesByTxToken = new Map<string, { sides: Set<'cost' | 'proceeds'>; txHash: string; chain: NormalizedEvent['chain']; token: string }>()
@@ -2401,11 +2399,23 @@ export async function priceLotsForWallet(params: {
     // proceedsUsd already store elsewhere in this file. This is NOT the official realized-PnL module
     // (src/modules/realizedPnl) and is never fed into any PnL gate — it exists purely so this audit
     // log can report a before/after delta without requiring a second, heavier pipeline pass.
+    // Each side value is a whole tx side, so a lot gets only its quantity's share of it (a buy split
+    // across 100 FIFO lots used to have its full cost subtracted 100 times), and a value owned by a
+    // different token on that side is not this lot's.
+    const lotSideShare = (lot: typeof structuralMatchedLots[number], side: 'cost' | 'proceeds'): number | null => {
+      const txHash = side === 'cost' ? lot.openedTxHash : lot.closedTxHash
+      const value = (side === 'cost' ? atTradeTime.costUsd : atTradeTime.proceedsUsd)[txHash]
+      if (value == null) return null
+      const owner = (side === 'cost' ? sideOwners.cost : sideOwners.proceeds).get(txHash)
+      if (owner !== undefined && owner !== lot.token.toLowerCase()) return null
+      const quantity = alchemySideQuantity(lot.chain, txHash, side, lot.token)
+      return quantity != null && quantity > 0 ? value * Math.min(1, lot.amount / quantity) : value
+    }
     function sumApproxRealizedPnl(): number {
       let sum = 0
       for (const lot of structuralMatchedLots) {
-        const cost = atTradeTime.costUsd[lot.openedTxHash]
-        const proceeds = atTradeTime.proceedsUsd[lot.closedTxHash]
+        const cost = lotSideShare(lot, 'cost')
+        const proceeds = lotSideShare(lot, 'proceeds')
         if (cost != null && proceeds != null) sum += proceeds - cost
       }
       return sum
@@ -2423,21 +2433,25 @@ export async function priceLotsForWallet(params: {
       for (const [txTokenKey, { sides, txHash, chain, token }] of alchemyRequirementSidesByTxToken) {
         const perUnitPrice = shadowPricesByTxToken.get(txTokenKey)
         if (perUnitPrice == null) continue
-        const amount = eventAmountByLegKey.get(`${chain}:${txHash.toLowerCase()}:${token.toLowerCase()}`)
-        // No real transaction amount to scale by — fail closed rather than write an un-scaled,
-        // silently-wrong per-unit value into a TOTAL-USD dictionary.
-        if (amount == null || !Number.isFinite(amount) || amount <= 0) continue
-        const totalUsd = perUnitPrice * amount
-        if (!isSanePrice(totalUsd)) continue
         const majorMarket = acceptsMajorMarketPrice(chain, token, shadowDistanceMsByTxToken.get(txTokenKey))
-        if (sides.has('cost') && atTradeTime.costUsd[txHash] == null) {
-          atTradeTime.costUsd[txHash] = totalUsd
+        // No real side quantity to scale by — fail closed rather than write an un-scaled,
+        // silently-wrong per-unit value into a TOTAL-USD dictionary.
+        const sideTotalUsd = (side: 'cost' | 'proceeds'): number | null => {
+          const quantity = alchemySideQuantity(chain, txHash, side, token)
+          if (quantity == null || !Number.isFinite(quantity) || quantity <= 0) return null
+          const totalUsd = perUnitPrice * quantity
+          return isSanePrice(totalUsd) ? totalUsd : null
+        }
+        const costTotal = sides.has('cost') && atTradeTime.costUsd[txHash] == null ? sideTotalUsd('cost') : null
+        if (costTotal != null) {
+          atTradeTime.costUsd[txHash] = costTotal
           setSideOwner('entry', txHash, token)
           if (majorMarket) majorMarketPriceSideKeys.add(`${chain}:${txHash.toLowerCase()}:entry`)
           pricesApplied += 1
         }
-        if (sides.has('proceeds') && atTradeTime.proceedsUsd[txHash] == null) {
-          atTradeTime.proceedsUsd[txHash] = totalUsd
+        const proceedsTotal = sides.has('proceeds') && atTradeTime.proceedsUsd[txHash] == null ? sideTotalUsd('proceeds') : null
+        if (proceedsTotal != null) {
+          atTradeTime.proceedsUsd[txHash] = proceedsTotal
           setSideOwner('exit', txHash, token)
           if (majorMarket) majorMarketPriceSideKeys.add(`${chain}:${txHash.toLowerCase()}:exit`)
           pricesApplied += 1

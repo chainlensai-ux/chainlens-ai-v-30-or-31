@@ -13,9 +13,9 @@
 //                        sent the token in this tx and that token went INTO a pool that emitted a Swap
 //                        event and is validated by its canonical factory for a pair containing it.
 //
-// Never: a receipt with an LP Mint/Burn (a deposit also sends tokens to a pool), a tx where the wallet
-// did not send the token, a swap that only exists on an unvalidated contract, or a decoded swap whose
-// input is a different token. The proceeds (often native ETH) are never invented here — the sell is
+// Never: a receipt with an LP Mint/Burn on a pool the token moved through (a deposit also sends tokens
+// to a pool), a tx where the wallet did not send the token, a swap that only exists on an unvalidated
+// contract, or a decoded swap whose input is a different token. The proceeds (often native ETH) are never invented here — the sell is
 // valued by the existing pricing at time.
 
 import { decodeReceiptSwap } from './index'
@@ -115,7 +115,13 @@ export async function proveSellFromReceipt(params: {
   const wallet = params.walletAddress.toLowerCase()
   const token = params.token.toLowerCase()
   const decoded = decodeLogs(params.logs, params.chain)
-  if (decoded.lpEvents.length > 0) return { proof: null, rejection: 'lp_add_or_remove' }
+  // Only an LP Mint/Burn on a pool the sold token moved into or out of makes this a deposit/withdrawal
+  // of that token. An LP operation on an unrelated pool in the same tx (a bot or vault rebalancing a
+  // USDC/WETH position while the wallet sells another token) used to reject every such sell.
+  const lpPools = new Set(decoded.lpEvents.map((e) => e.poolAddress))
+  if (decoded.transfers.some((t) => t.token === token && (lpPools.has(t.to) || lpPools.has(t.from)))) {
+    return { proof: null, rejection: 'lp_add_or_remove' }
+  }
   if (!decoded.transfers.some((t) => t.token === token && t.from === wallet && t.value > BigInt(0))) {
     return { proof: null, rejection: 'wallet_did_not_send_token' }
   }

@@ -51,6 +51,14 @@ describe('proveSellFromReceipt', () => {
     const r = await proveSellFromReceipt({ chain: 'base', txHash: TX, walletAddress: WALLET, token: TOKEN_X, logs, validator: yes })
     assert.deepEqual(r, { proof: null, rejection: 'lp_add_or_remove' })
   })
+  it('an LP operation on an unrelated pool in the same tx does not block the sell', async () => {
+    // A vault/bot rebalances a WETH position on POOL_B (Mint + position-NFT transfer) in the tx that sells TOKEN_X on POOL_A.
+    const nftMint = { ...transferLog(5, ROUTER, '0x0000000000000000000000000000000000000000', WALLET, BigInt(0)), data: '0x' }
+    nftMint.topics = [...nftMint.topics, `0x${'0'.repeat(63)}7`]
+    const logs = [...tokenToEthSell(), transferLog(4, WETH, ROUTER, POOL_B, OUT), classicMintLog(6, POOL_B, ROUTER), nftMint]
+    const r = await proveSellFromReceipt({ chain: 'base', txHash: TX, walletAddress: WALLET, token: TOKEN_X, logs, validator: yes })
+    assert.equal(r.proof, 'validated_pool_swap')
+  })
   it('a plain transfer (no swap event) is not a sell', async () => {
     const logs = [transferLog(0, TOKEN_X, WALLET, POOL_A, AMT)]
     const r = await proveSellFromReceipt({ chain: 'base', txHash: TX, walletAddress: WALLET, token: TOKEN_X, logs, validator: yes })
