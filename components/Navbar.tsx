@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
 import { PLAN_TOOL_NAV as TIER_COLUMNS } from '@/lib/pricingPlans'
@@ -23,24 +24,6 @@ const NAV_LINKS = [
 ] as const
 
 const BRAND_GRADIENT = 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)'
-
-// C/L monogram in the brand gradient: a C and an L side by side on a shared baseline.
-function BrandMark({ size = 26 }: { size?: number }) {
-  const gradientId = useId()
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} x1="2" y1="6" x2="22" y2="18" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#E053C2" />
-          <stop offset="0.5" stopColor="#B666F3" />
-          <stop offset="1" stopColor="#53F3C3" />
-        </linearGradient>
-      </defs>
-      <path d="M12.6 8.1A5.6 5.6 0 1 0 12.6 15.9" stroke={`url(#${gradientId})`} strokeWidth="2.4" strokeLinecap="round" />
-      <path d="M15.2 6.4V17.6H21" stroke={`url(#${gradientId})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
 
 function isActivePath(pathname: string | null, href: string): boolean {
   return pathname === href || (pathname?.startsWith(`${href}/`) ?? false)
@@ -351,7 +334,8 @@ export default function Navbar() {
           {/* Logo */}
           <div className="nav-left">
             <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', flexShrink: 0 }}>
-              <span className="nav-logo" style={{ display: 'flex' }}><BrandMark /></span>
+              {/* /cl-mark.png is /cl-logo.png trimmed to the mark's own edges (transparent background). */}
+              <Image className="nav-logo" src="/cl-mark.png" alt="" width={28} height={18} priority style={{ display: 'block', width: 28, height: 'auto' }} />
               <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9', whiteSpace: 'nowrap' }}>
                 Chain<span style={{ background: BRAND_GRADIENT, WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
               </span>
