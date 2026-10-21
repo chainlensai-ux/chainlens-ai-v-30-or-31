@@ -97,7 +97,7 @@ export type LotPriceOutlier = {
   perUnitUsd: number
   tokenMedianPerUnitUsd: number | null
   valueUsd: number
-  reason: 'token_price_outlier' | 'token_local_price_outlier' | 'wallet_value_outlier' | 'lot_return_outlier' | 'same_tx_dust_lot' | 'event_price_outlier'
+  reason: 'token_price_outlier' | 'token_local_price_outlier' | 'wallet_value_outlier' | 'lot_return_outlier' | 'same_tx_dust_lot' | 'event_price_outlier' | 'accepted_evidence_price_dispute'
 }
 
 export type LotPriceOutlierResult = {
@@ -270,9 +270,12 @@ function lotLevelOutlierReason(lot: MatchedLot): 'lot_return_outlier' | 'same_tx
 // saw every trade of the token. Recovery and stored accepted evidence can price such a side again
 // after FIFO (production: a $0.068 entry the event guard rejected came back from accepted evidence
 // and published +$30 of a $57 total); the lot-level check alone sees too few trades to catch it.
+// `disputedTokenKeys` (`chain:token`) are tokens whose stored and live prices for the same trade
+// disagree materially (ACCEPTED_EVIDENCE_DISPUTE_FACTOR in pnlReconciliation): every verified lot of
+// such a token is demoted, since nothing says which of its prices are the wrong ones.
 export function demotePriceOutlierLots(
   lots: readonly MatchedLot[],
-  options: { rejectedSideKeys?: ReadonlySet<string> } = {},
+  options: { rejectedSideKeys?: ReadonlySet<string>; disputedTokenKeys?: ReadonlySet<string> } = {},
 ): LotPriceOutlierResult {
   const samples = collectSideSamples(lots)
   const verdicts = detectPriceOutliers(samples.values())
@@ -289,6 +292,7 @@ export function demotePriceOutlierLots(
   const guarded = lots.map((lot) => {
     if (!isCanonicalVerifiedPublishedLot(lot)) return lot
     const lotReason = lotLevelOutlierReason(lot)
+      ?? (options.disputedTokenKeys?.has(`${lot.chain}:${lot.token.toLowerCase()}`) ? 'accepted_evidence_price_dispute' as const : null)
     if (lotReason) {
       outliers.push({
         chain: lot.chain, token: lot.token.toLowerCase(), txHash: lot.closedTxHash.toLowerCase(), side: 'exit',

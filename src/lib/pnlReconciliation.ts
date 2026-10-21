@@ -1011,7 +1011,17 @@ export type AcceptedEvidenceAudit = {
   // (`existingUpstreamSidesConflictingWithAcceptedEvidence`'s own real detail) — answers "why did the
   // conflict counter fire but nothing got reseeded" without needing to re-derive it from logs.
   acceptedEvidenceConflictAudit: AcceptedEvidenceConflictAuditRecord[]
+  // `chain:token` keys of tokens with a stored side more than ACCEPTED_EVIDENCE_DISPUTE_FACTOR away
+  // from this scan's live value for the same side (see hydrateFromAcceptedEvidence).
+  disputedPriceTokens?: string[]
 }
+
+// A stored side and this scan's live value for the exact same side are two sources pricing one
+// trade. When they disagree by more than this, at least one of them misprices the token by that
+// much and nothing tells which: production stored two sells of one token at $0.19/unit while live
+// pricing read $0.11-$0.13, and a $0.068 buy of the same token published +$30 against them. None of
+// that token's lots is published as verified in such a scan (demotePriceOutlierLots).
+export const ACCEPTED_EVIDENCE_DISPUTE_FACTOR = 1.5
 
 // CONFLICT-CONTEXT, DISCLOSED (provenance-laundering follow-up task): per-group-side state the
 // per-lot conflict-audit loop needs — computed once per group, never re-derived per lot.
@@ -1624,7 +1634,7 @@ export function createPnlReconciliation(config: Config = {}) {
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
       verifiedSidesCoverageReseeded: 0, acceptedEvidenceMutationAudit: [],
       legacyPerUnitRecordsDetected: 0, legacyPerUnitRecordsRepaired: 0, legacyPerUnitRecordsRejected: 0,
-      legacyPerUnitMigrationAudit: [], acceptedEvidenceConflictAudit: [],
+      legacyPerUnitMigrationAudit: [], acceptedEvidenceConflictAudit: [], disputedPriceTokens: [],
     }
   }
 
@@ -1858,6 +1868,13 @@ export function createPnlReconciliation(config: Config = {}) {
             } else {
               audit.upstreamPricesRejectedDueToAcceptedEvidence += 1
               audit.existingUpstreamSidesConflictingWithAcceptedEvidence += 1
+              const repaired = s.context != null && repairedEvidenceKeysThisPass.has(s.context.evidenceKey)
+              const tokenKey = `${lot.chain}:${lot.token.toLowerCase()}`
+              if (!repaired && s.upstreamPrice != null && isCanonicalPositiveUsd(s.upstreamPrice)
+                && (s.share.allocatedValueUsd > s.upstreamPrice * ACCEPTED_EVIDENCE_DISPUTE_FACTOR || s.share.allocatedValueUsd * ACCEPTED_EVIDENCE_DISPUTE_FACTOR < s.upstreamPrice)
+                && !audit.disputedPriceTokens!.includes(tokenKey)) {
+                audit.disputedPriceTokens!.push(tokenKey)
+              }
               // CONFLICT AUDIT, DISCLOSED (provenance-laundering follow-up task — answers the
               // confirmed "conflicting=211, reseeded=0" paradox for EVERY conflicting side, not just
               // an aggregate count): a repair already happened above (in the group loop) whenever an
@@ -2501,7 +2518,8 @@ export function createPnlReconciliation(config: Config = {}) {
       // PRICE OUTLIER GUARD (src/lib/lotPriceOutlierGuard.ts): a side priced orders of magnitude away
       // from every other trade of that token (or of the wallet) is demoted before the shared-side rule
       // and seeding, so it never reaches realized PnL and is never persisted as accepted evidence.
-      const priceOutlierGuard = demotePriceOutlierLots(updatedFifoLots, { rejectedSideKeys: input.rejectedPriceSideKeys })
+      const disputedTokenKeys = new Set(recovery.acceptedEvidenceAudit.disputedPriceTokens ?? [])
+      const priceOutlierGuard = demotePriceOutlierLots(updatedFifoLots, { rejectedSideKeys: input.rejectedPriceSideKeys, disputedTokenKeys })
       if (priceOutlierGuard.outliers.length > 0) {
         logger.warn('lot_price_outliers_demoted', {
           demotedLotCount: priceOutlierGuard.demotedLotCount,
@@ -2551,7 +2569,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // Manifest replay rebuilds lots from stored evidence, which may predate the outlier guard, so
       // the selected sample is guarded again (outlier lots only; the shared-side rule is not re-run).
       const canonicalSelectedLots = canonicalSampleSelection
-        ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots, { rejectedSideKeys: input.rejectedPriceSideKeys }).lots
+        ? demotePriceOutlierLots(canonicalSampleSelection.publishedLots, { rejectedSideKeys: input.rejectedPriceSideKeys, disputedTokenKeys }).lots
         : consistentFifoLots
       const publishedFifoLots = [...canonicalSelectedLots]
       // One short flat line (no nested objects, so log viewers never truncate or drop it) with the

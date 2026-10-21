@@ -159,6 +159,18 @@ describe('price outlier guard on the FIFO event lookup', async () => {
     assert.deepEqual(result.outliers.map((o) => [o.txHash, o.side, o.reason]), [['0xdust', 'entry', 'event_price_outlier']])
   })
 
+  it('demotes every verified lot of a token whose stored and live prices disagree, and nothing else', () => {
+    const lots = [
+      lot({ amount: 158.6, entryPerUnit: 0.0684, exitPerUnit: 0.188 }),
+      lot({ amount: 90.5, entryPerUnit: 0.0684, exitPerUnit: 0.192 }),
+      lot({ amount: 10, entryPerUnit: 1, exitPerUnit: 1.2, token: '0xother' }),
+    ]
+    const result = demotePriceOutlierLots(lots, { disputedTokenKeys: new Set([`base:${TOKEN}`]) })
+    assert.deepEqual(result.lots.map((l) => l.evidenceQuality), ['unpriced', 'unpriced', 'verified'])
+    assert.equal(result.demotedLotCount, 2)
+    assert.deepEqual(result.outliers.map((o) => o.reason), ['accepted_evidence_price_dispute', 'accepted_evidence_price_dispute'])
+  })
+
   it('reads an astronomically valued sell as unpriced (wallet-wide check)', () => {
     const events = [...Array.from({ length: 10 }, (_, i) => ev(`0xb${i}`, 100)), ev('0xhuge', 5_701, 'outbound')]
     const guarded = guardPriceUsdLookup(events, (e) => (e.txHash === '0xhuge' ? 3.15e19 : 50))

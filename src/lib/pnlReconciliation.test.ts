@@ -1564,19 +1564,41 @@ describe('pnlReconciliation', () => {
     const identityVersion = ['base', '0xalready', '0xb', '0xs', 1, 2, 1].join(':')
     acceptedEvidenceKv.store.set(`v1:accepted-evidence:base:0xalready:0xb:entry:1`, {
       schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xalready', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
-      priceUsd: 999, valueUsd: 999, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      priceUsd: 6, valueUsd: 6, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
       verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
     })
     let liveCalls = 0
     const priceKvClient = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
     const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 1 }, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 50 })
     const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [alreadyPriced] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
-    assert.equal(summary.realizedPnlUsd, -992, 'canonical entry price (999) wins over the upstream candidate (5) — 7 (unchanged exit) - 999 = -992')
+    assert.equal(summary.realizedPnlUsd, 1, 'canonical entry price (6) wins over the upstream candidate (5) — 7 (unchanged exit) - 6 = 1')
     assert.equal(liveCalls, 0, 'no live call needed — recovery never runs for a side hydration already resolved')
     assert.equal(summary.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 2, 'kept for backward compatibility — both sides were already upstream-priced going in')
-    assert.equal(summary.acceptedEvidenceAudit.existingUpstreamSidesConflictingWithAcceptedEvidence, 1, 'the entry side: upstream said 5, accepted evidence said 999')
+    assert.equal(summary.acceptedEvidenceAudit.existingUpstreamSidesConflictingWithAcceptedEvidence, 1, 'the entry side: upstream said 5, accepted evidence said 6')
     assert.equal(summary.acceptedEvidenceAudit.existingUpstreamSidesWithoutAcceptedEvidence, 1, 'the exit side: no accepted evidence exists for it at all')
     assert.equal(summary.acceptedEvidenceAudit.upstreamPricesRejectedDueToAcceptedEvidence, 1)
+    assert.deepEqual(summary.acceptedEvidenceAudit.disputedPriceTokens, [], '6 vs 5 is within the dispute factor')
+  })
+
+  it('a stored side more than 1.5x from this scan\'s live value for the same side demotes every lot of that token (production: sells stored at $0.19/unit, live $0.11)', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    // Production 0x58538e6a: a buy at $0.068/unit, one sell whose stored value ($17.35) is 1.73x
+    // this scan's live value ($10.01), and another sell of the same buy with no stored record.
+    const buy = { openedTxHash: '0xbuy', openedAt: 1 }
+    const disputedSell = lot({ lotId: 'a', token: '0xdisputed', ...buy, closedTxHash: '0xsell1', closedAt: 3, amount: 90.5, costBasisUsd: 6.19, proceedsUsd: 10.01, realizedPnlUsd: 3.82, evidenceQuality: 'verified' })
+    const sibling = lot({ lotId: 'b', token: '0xdisputed', ...buy, closedTxHash: '0xsell2', closedAt: 2, amount: 158.6, costBasisUsd: 10.84, proceedsUsd: 29.85, realizedPnlUsd: 19.01, evidenceQuality: 'verified' })
+    const other = lot({ lotId: 'c', token: '0xother', openedTxHash: '0xo1', closedTxHash: '0xo2', openedAt: 1, closedAt: 2, costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2, evidenceQuality: 'verified' })
+    acceptedEvidenceKv.store.set('v1:accepted-evidence:base:0xdisputed:0xsell1:exit:3', {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xdisputed', txHash: '0xsell1', side: 'exit', timestamp: 3,
+      lotIdentityVersion: ['base', '0xdisputed', '0xbuy', '0xsell1', 1, 3, 90.5].join(':'),
+      priceUsd: 17.35, valueUsd: 17.35, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 50 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [disputedSell, sibling, other] }), pnlEngineResult: pnl(3), syntheticPnlAssemblyOutput: null })
+    assert.deepEqual(summary.acceptedEvidenceAudit.disputedPriceTokens, ['base:0xdisputed'])
+    assert.equal(summary.realizedPnlUsd, 2, 'only the undisputed token\'s lot is realized')
+    assert.ok(acceptedEvidenceKv.store.has('v1:accepted-evidence:base:0xdisputed:0xsell1:exit:3'), 'the stored record is kept: nothing says it is the wrong one')
   })
 
   it('HARD ASSERTION: corrupt/mismatched persisted evidence (wrong lot-identity-version) is ignored and falls through to live recovery, never coerced into a price', async () => {
@@ -1956,8 +1978,10 @@ describe('pnlReconciliation', () => {
     // same 17 lots (simulating provider drift), TWO more lots (17, 18) become newly live-priceable,
     // and the remaining lots stay unpriced (simulating "some providers return null").
     const run2UpstreamLots = build27CanonicalPrecedenceLots(
-      (i) => (i < 17 ? 10 + i + 500 : null), // deliberately DIFFERENT upstream candidate for the 17
-      (i) => (i < 17 ? 20 + i + 500 : null),
+      // Deliberately DIFFERENT upstream candidates for the 17, within ACCEPTED_EVIDENCE_DISPUTE_FACTOR
+      // (a wider gap is a price dispute and demotes the token instead; tested separately).
+      (i) => (i < 17 ? 10 + i + 3 : null),
+      (i) => (i < 17 ? 20 + i + 3 : null),
     )
     let liveCalls = 0
     const priceKvClient2 = {
