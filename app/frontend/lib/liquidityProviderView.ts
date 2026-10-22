@@ -26,6 +26,7 @@ export function buildLiquidityProviderView(
   const pricedPositions = positions?.pricedPositions ?? 0
   const positionsValueUsd = pricedPositions > 0 ? positions!.totalValueUsd : null
   const positionsNote = !positions || positions.status === 'not_attempted' || positions.status === 'unavailable'
+    || (openPositions === 0 && (positions.positionReadErrors ?? 0) > 0)
     ? 'Open positions could not be read on this scan.'
     : openPositions === 0
       ? 'No open positions found from the liquidity transactions in this scan window.'

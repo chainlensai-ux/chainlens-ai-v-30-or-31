@@ -116,3 +116,53 @@ describe('resolveWalletLpPositions', () => {
     assert.equal(calls.length, 0)
   })
 })
+
+describe('resolveWalletLpPositions: read failures and older positions', () => {
+  const tick = Math.round(Math.log(2500 * 1e-12) / Math.log(1.0001))
+  const own = (i: number) => `0x${i.toString(16).padStart(64, '0')}`
+  // 40 mints in the wallet's own transactions; tokenId i minted at block i (higher = newer).
+  function setup(readPosition: (id: number) => { result?: string; error?: { message: string } }) {
+    const keys = new Set<string>()
+    const transfers = Array.from({ length: 40 }, (_, k) => {
+      const i = k + 1
+      keys.add(`base:${own(i)}`)
+      return { hash: own(i), erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}` }
+    })
+    const rpc = async (body: unknown) => {
+      if (Array.isArray(body)) {
+        const reqs = body as Array<{ id: number; params: [{ to: string; data: string }] }>
+        return reqs.map((r) => r.params[0].data === '0x313ce567'
+          ? { id: r.id, result: `0x${w(r.params[0].to === WETH ? 18 : 6)}` }
+          : { id: r.id, ...readPosition(Number(BigInt(`0x${r.params[0].data.slice(10)}`))) })
+      }
+      const req = body as { params: [{ toAddress: string; contractAddresses: string[] }] }
+      return { result: { transfers: req.params[0].toAddress === ZAPPER && req.params[0].contractAddresses[0] === SLIPSTREAM ? transfers : [] } }
+    }
+    return { rpc, keys }
+  }
+  const open = positionsHex({ token0: WETH, token1: USDC, tickLower: tick - 600, tickUpper: tick + 600, liquidity: BigInt(1e15) })
+  const withdrawn = positionsHex({ token0: WETH, token1: USDC, tickLower: tick - 600, tickUpper: tick + 600, liquidity: BigInt(0) })
+  const price = (t: string) => (t === WETH ? 2500 : t === USDC ? 1 : null)
+
+  it('a failed read is reported as an error with a sample, never as a closed position', async () => {
+    const { rpc, keys } = setup(() => ({ error: { message: 'Your app has exceeded its compute units per second capacity' } }))
+    const r = await resolveWalletLpPositions({ walletAddress: WALLET, liquidityTxKeys: keys, counterparties: [ZAPPER], rpc, priceUsd: price })
+    assert.equal(r.status, 'unavailable')
+    assert.equal(r.reason, 'position_reads_failed')
+    assert.equal(r.positionReadErrors, 30)
+    assert.equal(r.closedPositionsSkipped, 0)
+    assert.match(r.sampleReadError!, /compute units/)
+  })
+
+  it('when the newest 30 are all closed it checks older ones and finds the open position', async () => {
+    // 40..11 newest: burned or withdrawn; 5 is still open.
+    const { rpc, keys } = setup((id) => id === 5 ? { result: open } : id % 2 ? { error: { message: 'execution reverted: Invalid token ID' } } : { result: withdrawn })
+    const r = await resolveWalletLpPositions({ walletAddress: WALLET, liquidityTxKeys: keys, counterparties: [ZAPPER], rpc, priceUsd: price })
+    assert.equal(r.openPositions, 1)
+    assert.equal(r.positions[0].tokenId, '5')
+    assert.equal(r.positionsChecked, 40)
+    assert.equal(r.burnedPositions + r.zeroLiquidityPositions, 39)
+    assert.equal(r.positionReadErrors, 0)
+    assert.equal(r.status, 'ok')
+  })
+})

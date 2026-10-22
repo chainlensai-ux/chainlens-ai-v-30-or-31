@@ -23,6 +23,7 @@ export const BASE_POSITION_MANAGERS: Readonly<Record<string, 'aerodrome_slipstre
 }
 
 export const MAX_LP_POSITION_LOOKUPS = 30
+export const MAX_LP_POSITION_BATCHES = 3
 export const MAX_LP_DISCOVERY_ADDRESSES = 4
 export const LP_POSITIONS_BUDGET_MS = 8_000
 
@@ -58,11 +59,18 @@ export type WalletLpPositionsSummary = {
   totalValueUsd: number
   mintsFound: number
   closedPositionsSkipped: number
+  /** How the checked positions came back: burned (reverted), zero liquidity, or a failed read. */
+  positionsChecked: number
+  burnedPositions: number
+  zeroLiquidityPositions: number
+  positionReadErrors: number
+  sampleReadError: string | null
   rpcCalls: number
 }
 
 export const emptyLpPositionsSummary = (status: WalletLpPositionsSummary['status'], reason: string | null): WalletLpPositionsSummary => ({
   status, reason, positions: [], openPositions: 0, pricedPositions: 0, totalValueUsd: 0, mintsFound: 0, closedPositionsSkipped: 0, rpcCalls: 0,
+  positionsChecked: 0, burnedPositions: 0, zeroLiquidityPositions: 0, positionReadErrors: 0, sampleReadError: null,
 })
 
 function word(hex: string, index: number): string {
@@ -121,6 +129,13 @@ export type ResolveWalletLpPositionsInput = {
 
 type RpcResponse = { id?: unknown; result?: unknown; error?: unknown }
 
+function errorText(error: unknown): string | null {
+  if (error == null) return null
+  if (typeof error === 'string') return error.slice(0, 160)
+  const message = (error as { message?: unknown }).message
+  return typeof message === 'string' ? message.slice(0, 160) : JSON.stringify(error).slice(0, 160)
+}
+
 function asArray(value: unknown): RpcResponse[] {
   return Array.isArray(value) ? (value as RpcResponse[]) : value && typeof value === 'object' ? [value as RpcResponse] : []
 }
@@ -164,24 +179,57 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
       return { ...summary, status: discoveryIncomplete ? 'unavailable' : 'ok', reason: discoveryIncomplete ? 'position_discovery_failed' : 'no_positions_minted_in_wallet_transactions' }
     }
 
-    // 2. Current state of the most recent positions, one batch.
-    const selected = [...mints.values()].sort((a, b) => b.blockNum - a.blockNum || (a.tokenId < b.tokenId ? 1 : -1)).slice(0, MAX_LP_POSITION_LOOKUPS)
-    if (now() > deadline || !consume('eth_call')) return { ...summary, status: 'unavailable', reason: 'budget_exhausted_before_position_reads' }
-    summary.rpcCalls += 1
-    const positionResponses = asArray(await input.rpc(selected.map((m, i) => ({
-      jsonrpc: '2.0', id: i, method: 'eth_call',
-      params: [{ to: m.manager, data: `${POSITIONS_SELECTOR}${m.tokenId.toString(16).padStart(64, '0')}` }, 'latest'],
-    }))))
-    const byId = new Map(positionResponses.map((r) => [Number(r.id), r]))
+    // 2. Current state, newest first, in batches. A burned position reverts with "Invalid token ID" and a
+    // withdrawn one has zero liquidity: both are closed. Any other failure is a read error and is counted
+    // separately, never as closed. A batch with nothing open (and no read errors) moves on to older
+    // mints, up to MAX_LP_POSITION_BATCHES batches.
+    const ordered = [...mints.values()].sort((a, b) => b.blockNum - a.blockNum || (a.tokenId < b.tokenId ? 1 : -1))
     const open: Array<{ mint: Mint; position: DecodedPosition }> = []
-    for (let i = 0; i < selected.length; i++) {
-      const position = decodePositions(byId.get(i)?.result as string | undefined)
-      // A burned position reverts (error) and a withdrawn one has zero liquidity: neither is open.
-      if (!position || position.liquidity === BigInt(0)) { summary.closedPositionsSkipped += 1; continue }
-      open.push({ mint: selected[i], position })
+    for (let batch = 0; batch < MAX_LP_POSITION_BATCHES; batch++) {
+      const selected = ordered.slice(batch * MAX_LP_POSITION_LOOKUPS, (batch + 1) * MAX_LP_POSITION_LOOKUPS)
+      if (selected.length === 0) break
+      if (now() > deadline || !consume('eth_call')) {
+        if (batch === 0) return { ...summary, status: 'unavailable', reason: 'budget_exhausted_before_position_reads' }
+        summary.reason = 'position_reads_stopped_by_budget'
+        break
+      }
+      summary.rpcCalls += 1
+      const positionResponses = asArray(await input.rpc(selected.map((m, i) => ({
+        jsonrpc: '2.0', id: i, method: 'eth_call',
+        params: [{ to: m.manager, data: `${POSITIONS_SELECTOR}${m.tokenId.toString(16).padStart(64, '0')}` }, 'latest'],
+      }))))
+      const byId = new Map(positionResponses.map((r) => [Number(r.id), r]))
+      const errorsBefore = summary.positionReadErrors
+      for (let i = 0; i < selected.length; i++) {
+        summary.positionsChecked += 1
+        const response = byId.get(i)
+        const errorMessage = errorText(response?.error)
+        if (errorMessage != null && /invalid token id/i.test(errorMessage)) { summary.burnedPositions += 1; continue }
+        if (!response || errorMessage != null) {
+          summary.positionReadErrors += 1
+          summary.sampleReadError ??= errorMessage ?? 'no_response_for_request'
+          continue
+        }
+        const position = decodePositions(response.result as string | undefined)
+        if (!position) {
+          summary.positionReadErrors += 1
+          summary.sampleReadError ??= `unexpected_result:${String(response.result).slice(0, 40)}`
+          continue
+        }
+        if (position.liquidity === BigInt(0)) { summary.zeroLiquidityPositions += 1; continue }
+        open.push({ mint: selected[i], position })
+      }
+      if (open.length > 0 || summary.positionReadErrors > errorsBefore) break
     }
+    summary.closedPositionsSkipped = summary.burnedPositions + summary.zeroLiquidityPositions
     summary.openPositions = open.length
-    if (open.length === 0) return summary
+    if (open.length === 0) {
+      if (summary.positionReadErrors > 0) {
+        const allFailed = summary.positionReadErrors === summary.positionsChecked
+        return { ...summary, status: allFailed ? 'unavailable' : 'partial', reason: allFailed ? 'position_reads_failed' : 'some_position_reads_failed' }
+      }
+      return summary
+    }
 
     // 3. Token decimals, one batch.
     const tokens = [...new Set(open.flatMap(({ position }) => [position.token0, position.token1]))]
@@ -220,9 +268,10 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
     const priced = summary.positions.filter((p) => p.valueUsd != null)
     summary.pricedPositions = priced.length
     summary.totalValueUsd = priced.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
-    if (discoveryIncomplete || priced.length < summary.positions.length) {
+    if (discoveryIncomplete || summary.positionReadErrors > 0 || priced.length < summary.positions.length) {
       summary.status = 'partial'
-      summary.reason = discoveryIncomplete ? 'position_discovery_incomplete' : 'some_positions_unpriced'
+      summary.reason = discoveryIncomplete ? 'position_discovery_incomplete'
+        : summary.positionReadErrors > 0 ? 'some_position_reads_failed' : 'some_positions_unpriced'
     }
     return summary
   } catch (err) {
