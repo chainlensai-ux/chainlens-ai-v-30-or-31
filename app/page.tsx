@@ -7,8 +7,7 @@ import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
 import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
-import SideSlideIn from '@/components/home/SideSlideIn'
-import FeatureHoverPreview from '@/components/home/FeatureHoverPreview'
+import CapabilitiesSection, { type Capability } from '@/components/home/CapabilitiesSection'
 import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
@@ -49,14 +48,8 @@ const TICKER = [
 
 // ─── Feature cards ────────────────────────────────────────────────────────────
 
-const FEATURES = [
+const FEATURES: Capability[] = [
   {
-    accent: '#2DD4BF',
-    grad: 'linear-gradient(90deg, #2DD4BF 0%, #22d3ee 100%)',
-    borderColor: 'rgba(45,212,191,0.16)',
-    hoverBorder: 'rgba(45,212,191,0.44)',
-    hoverShadow: '0 0 40px rgba(45,212,191,0.20), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(45,212,191,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/wallet-scanner',
     title: 'Scan Wallets Instantly',
     previewVideo: '/feature-previews/scan-wallets.mp4',
@@ -68,12 +61,6 @@ const FEATURES = [
     ),
   },
   {
-    accent: '#ec4899',
-    grad: 'linear-gradient(90deg, #ec4899 0%, #f472b6 100%)',
-    borderColor: 'rgba(236,72,153,0.16)',
-    hoverBorder: 'rgba(236,72,153,0.44)',
-    hoverShadow: '0 0 40px rgba(236,72,153,0.18), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(236,72,153,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/whale-alerts',
     title: 'Track Base Alerts Live',
     previewVideo: '/feature-previews/track-base-alerts.mp4',
@@ -85,12 +72,6 @@ const FEATURES = [
     ),
   },
   {
-    accent: '#8b5cf6',
-    grad: 'linear-gradient(90deg, #8b5cf6 0%, #a78bfa 100%)',
-    borderColor: 'rgba(139,92,246,0.16)',
-    hoverBorder: 'rgba(139,92,246,0.44)',
-    hoverShadow: '0 0 40px rgba(139,92,246,0.20), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(139,92,246,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/token-scanner',
     title: 'Analyze Base Tokens',
     previewVideo: '/feature-previews/analyze-base-tokens.mp4',
@@ -102,12 +83,6 @@ const FEATURES = [
     ),
   },
   {
-    accent: '#22d3ee',
-    grad: 'linear-gradient(90deg, #06b6d4 0%, #22d3ee 100%)',
-    borderColor: 'rgba(34,211,238,0.16)',
-    hoverBorder: 'rgba(34,211,238,0.44)',
-    hoverShadow: '0 0 40px rgba(34,211,238,0.18), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(34,211,238,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/base-radar',
     title: 'Base Radar',
     previewVideo: '/feature-previews/base-radar.mp4',
@@ -120,12 +95,6 @@ const FEATURES = [
     ),
   },
   {
-    accent: '#a78bfa',
-    grad: 'linear-gradient(90deg, #8b5cf6 0%, #c084fc 100%)',
-    borderColor: 'rgba(167,139,250,0.16)',
-    hoverBorder: 'rgba(167,139,250,0.44)',
-    hoverShadow: '0 0 40px rgba(167,139,250,0.20), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(167,139,250,0.06) 0%, rgba(255,255,255,0.02) 100%)',
     href: '/terminal/pump-alerts',
     title: 'Pump Alerts',
     previewVideo: '/feature-previews/pump-alerts.mp4',
@@ -137,12 +106,6 @@ const FEATURES = [
     ),
   },
   {
-    accent: '#818cf8',
-    grad: 'linear-gradient(90deg, #2DD4BF 0%, #818cf8 60%, #c084fc 100%)',
-    borderColor: 'rgba(129,140,248,0.16)',
-    hoverBorder: 'rgba(129,140,248,0.44)',
-    hoverShadow: '0 0 40px rgba(129,140,248,0.20), 0 8px 48px rgba(0,0,0,0.50)',
-    hoverBg: 'linear-gradient(145deg, rgba(129,140,248,0.06) 0%, rgba(45,212,191,0.03) 100%)',
     href: '/terminal/clark-ai',
     title: 'Clark AI',
     previewVideo: '/feature-previews/clark-ai.mp4',
@@ -853,165 +816,7 @@ export default function HomePage() {
         </div>
 
         {/* ── What ChainLens Does ──────────────────────────────────────────── */}
-        <section className="feat-section" style={{
-          position: 'relative', zIndex: 1,
-          padding: '88px 24px 96px',
-          maxWidth: '1120px',
-          margin: '0 auto',
-          width: '100%',
-        }}>
-          {/* Top separator */}
-          <div style={{
-            position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
-            background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.25), rgba(139,92,246,0.25), transparent)',
-          }} />
-
-          {/* Section header */}
-          <Reveal><div style={{ textAlign: 'center', marginBottom: '60px' }}>
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: '7px',
-              marginBottom: '16px',
-            }}>
-              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #2DD4BF)' }} />
-              <span style={{
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em',
-                color: '#2DD4BF', textTransform: 'uppercase',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-              }}>Capabilities</span>
-              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #2DD4BF, transparent)' }} />
-            </div>
-            <h2 className="section-heading" style={{
-              fontSize: 'clamp(34px, 4.8vw, 56px)', fontWeight: 900,
-              letterSpacing: '-0.03em', lineHeight: 1.06,
-              color: '#f8fafc', margin: '0 0 18px',
-            }}>
-              What ChainLens Does
-            </h2>
-            <p style={{
-              fontSize: '17px', color: 'rgba(255,255,255,0.46)',
-              maxWidth: '480px', margin: '0 auto', lineHeight: 1.68,
-              fontWeight: 400,
-            }}>
-              Eight features. One terminal. Built natively on Base.
-            </p>
-          </div></Reveal>
-
-          {/* 2-column grid — 4 rows on desktop, 1 column on mobile */}
-          <div className="feat-grid" style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: '20px',
-          }}>
-            {FEATURES.map((f, i) => (
-              <SideSlideIn key={f.title} side={i % 2 === 0 ? 'left' : 'right'} delayMs={(i % 2) * 90}><FeatureHoverPreview src={f.previewVideo} accent={f.accent} side={i % 2 === 0 ? 'right' : 'left'} label={f.title}><div
-                className="feat-card"
-                style={{
-                  background: 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)',
-                  border: `1px solid ${f.borderColor}`,
-                  borderRadius: '22px',
-                  padding: '32px 30px 28px',
-                  backdropFilter: 'blur(6px)',
-                  WebkitBackdropFilter: 'blur(6px)',
-                  boxShadow: '0 4px 28px rgba(0,0,0,0.32)',
-                  animationDelay: `${i * 0.08}s`,
-                  position: 'relative',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  transition: 'border-color 280ms ease, box-shadow 280ms ease, background 280ms ease, transform 280ms cubic-bezier(0.22,1,0.36,1)',
-                }}
-                onMouseEnter={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = f.hoverBorder
-                  el.style.boxShadow   = f.hoverShadow
-                  el.style.background  = f.hoverBg
-                  el.style.transform   = 'translateY(-5px)'
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget as HTMLDivElement
-                  el.style.borderColor = f.borderColor
-                  el.style.boxShadow   = '0 4px 28px rgba(0,0,0,0.32)'
-                  el.style.background  = 'linear-gradient(145deg, rgba(255,255,255,0.035) 0%, rgba(255,255,255,0.012) 100%)'
-                  el.style.transform   = 'translateY(0)'
-                }}
-              >
-                {/* Top accent line — slides in on hover */}
-                <div className="feat-top-line" style={{
-                  position: 'absolute', top: 0, left: 0, right: 0, height: '2px',
-                  background: `linear-gradient(90deg, transparent 0%, ${f.accent}aa 50%, transparent 100%)`,
-                }} />
-
-                {/* Inner radial glow — subtle card depth */}
-                <div style={{
-                  position: 'absolute', bottom: 0, right: 0,
-                  width: '180px', height: '180px',
-                  background: `radial-gradient(circle at 80% 80%, ${f.accent}12 0%, transparent 65%)`,
-                  pointerEvents: 'none',
-                }} />
-
-                {/* Icon — circular ring */}
-                <div style={{
-                  width: '54px', height: '54px', borderRadius: '50%',
-                  background: `${f.accent}16`,
-                  border: `1.5px solid ${f.accent}55`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: f.accent,
-                  marginBottom: '20px',
-                  boxShadow: `0 0 20px ${f.accent}30`,
-                  flexShrink: 0,
-                }}>
-                  {f.icon}
-                </div>
-
-                {/* Title */}
-                <h3 style={{
-                  fontSize: '17px', fontWeight: 700,
-                  letterSpacing: '-0.01em', lineHeight: 1.2,
-                  margin: '0 0 10px',
-                  background: f.grad,
-                  WebkitBackgroundClip: 'text',
-                  WebkitTextFillColor: 'transparent',
-                  backgroundClip: 'text',
-                }}>
-                  {f.title}
-                </h3>
-
-                {/* Body */}
-                <p style={{
-                  fontSize: '14px', lineHeight: 1.72,
-                  color: 'rgba(255,255,255,0.48)',
-                  margin: '0 0 20px',
-                  fontWeight: 400,
-                  flex: 1,
-                }}>
-                  {f.body}
-                </p>
-
-                {/* Arrow link */}
-                <Link
-                  href={f.href}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: '6px',
-                    fontSize: '12px', fontWeight: 700,
-                    letterSpacing: '0.06em', textTransform: 'uppercase',
-                    textDecoration: 'none',
-                    color: f.accent,
-                    opacity: 0.80,
-                    transition: 'opacity 0.15s, gap 0.15s',
-                    alignSelf: 'flex-start',
-                  }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLAnchorElement).style.opacity = '1' }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLAnchorElement).style.opacity = '0.80' }}
-                >
-                  Open in Terminal
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
-                    <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </Link>
-              </div></FeatureHoverPreview></SideSlideIn>
-            ))}
-          </div>
-        </section>
+        <CapabilitiesSection features={FEATURES} />
 
         {/* ── Testimonials ─────────────────────────────────────────────────── */}
         <section style={{
