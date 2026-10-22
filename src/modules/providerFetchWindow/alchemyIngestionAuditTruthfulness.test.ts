@@ -92,3 +92,25 @@ test('a genuine success is still counted as pagesSucceeded (no regression on the
   assert.equal(baseLog.http429Errors, 0)
   assert.equal(baseLog.finalStatus, 'ok')
 })
+
+test('paged history: pagesRequested/pageKeysSeen report the pages actually followed, not a fixed 2/0', async () => {
+  // Production 0xd40e…b811: 80 pages read, audit said pagesRequested: 2, pageKeysSeen: 0.
+  const callsByDirection = new Map<string, number>()
+  global.fetch = (async (url: unknown, init?: { body?: string }) => {
+    if (typeof url === 'string' && url.includes('covalenthq.com')) return mockGoldrushSuccess()
+    const body = JSON.parse(init?.body ?? '{}') as { id?: number; params?: Array<Record<string, unknown>> }
+    const params = body.params?.[0] ?? {}
+    if (!Array.isArray(params.category) || !(params.category as string[]).includes('erc20')) {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result: { transfers: [] } }), { status: 200 })
+    }
+    const direction = params.fromAddress ? 'from' : 'to'
+    const n = (callsByDirection.get(direction) ?? 0) + 1
+    callsByDirection.set(direction, n)
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result: { transfers: [], ...(n < 3 ? { pageKey: `k${n}` } : {}) } }), { status: 200 })
+  }) as unknown as typeof fetch
+
+  await fetchProviderWindow('base', '0xwallet', 90, 'old-pipeline')
+  const log = findIngestionAuditLogs().find((l) => l.chain === 'base')!
+  assert.equal(log.pagesRequested, 6, '3 pages in each direction')
+  assert.equal(log.pageKeysSeen, 4, 'every page after the first in each direction followed a pageKey')
+})

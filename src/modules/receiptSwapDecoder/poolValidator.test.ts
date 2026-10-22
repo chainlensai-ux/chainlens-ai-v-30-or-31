@@ -1,6 +1,6 @@
-import { test } from 'node:test'
+import { describe, it, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { tryClassicStableVariants } from './poolValidator'
+import { EXTRA_SLIPSTREAM_FACTORIES_ENV, listedExtraSlipstreamFactories, tryClassicStableVariants, validateByListedSlipstreamFactory } from './poolValidator'
 
 const POOL = '0x3333333333333333333333333333333333333333'
 const ZERO = '0x0000000000000000000000000000000000000000'
@@ -54,4 +54,35 @@ test('a non-string/undefined return for a given key is never mistaken for a matc
   const fetchPool = async () => undefined
   const result = await tryClassicStableVariants(fetchPool, POOL)
   assert.equal(result, false)
+})
+
+describe('operator-listed Slipstream factories', () => {
+  // Production 0xd40e…b811: pools 0x160d7e9d…/0x3fe04a59… report factory 0xf8f2eb49…, not the canonical one.
+  const FACTORY = '0xf8f2eb4940cfe7d13603dddd87f123820fc061ef'
+  const POOL = '0x3fe04a59ebd38cf06080a6f60a98d124eb59392a'
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
+  const WETH = '0x4200000000000000000000000000000000000006'
+  const reads = (returned: string | null) => ({
+    poolTickSpacing: async () => 100,
+    factoryGetPool: async (_f: string, _a: string, _b: string, ts: number) => (ts === 100 ? returned : null),
+  })
+
+  it('reads the env list, ignoring malformed entries', () => {
+    const listed = listedExtraSlipstreamFactories({ [EXTRA_SLIPSTREAM_FACTORIES_ENV]: ` ${FACTORY.toUpperCase().replace('0X', '0x')} , nope, 0x12 ` })
+    assert.deepEqual([...listed], [FACTORY])
+    assert.equal(listedExtraSlipstreamFactories({}).size, 0)
+  })
+
+  it('an unlisted factory never validates, even when it vouches for the pool', async () => {
+    assert.equal(await validateByListedSlipstreamFactory(reads(POOL), FACTORY, POOL, USDC, WETH, new Set()), false)
+  })
+
+  it('a listed factory validates only when it returns this exact pool for the pool\'s tick spacing', async () => {
+    const listed = new Set([FACTORY])
+    const attempts: Array<{ key: string; returnedPool: string | null }> = []
+    assert.equal(await validateByListedSlipstreamFactory(reads(POOL), FACTORY, POOL, USDC, WETH, listed, attempts), true)
+    assert.equal(attempts[0].key, 'listedFactory.getPool(tickSpacing=100)')
+    assert.equal(await validateByListedSlipstreamFactory(reads('0x0000000000000000000000000000000000000001'), FACTORY, POOL, USDC, WETH, listed), false)
+    assert.equal(await validateByListedSlipstreamFactory({ ...reads(POOL), poolTickSpacing: async () => null }, FACTORY, POOL, USDC, WETH, listed), false)
+  })
 })

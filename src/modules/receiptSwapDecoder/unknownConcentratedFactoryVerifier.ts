@@ -65,11 +65,21 @@ const FACTORY_DISCOVERY_ABI = [
     outputs: [{ name: 'pool', type: 'address' }],
   },
   {
+    // Aerodrome Slipstream keys pools by tick spacing: a different selector from the uint24-fee getPool.
+    type: 'function', name: 'getPool', stateMutability: 'view',
+    inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }, { name: 'tickSpacing', type: 'int24' }],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+  {
     type: 'function', name: 'poolByPair', stateMutability: 'view',
     inputs: [{ name: 'tokenA', type: 'address' }, { name: 'tokenB', type: 'address' }],
     outputs: [{ name: 'pool', type: 'address' }],
   },
 ] as const
+
+const POOL_TICK_SPACING_ABI = [{
+  type: 'function', name: 'tickSpacing', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'int24' }],
+}] as const
 
 export type KnownPoolImplementationEntry = { codeHash: string; protocol: string }
 
@@ -79,7 +89,7 @@ export type KnownPoolImplementationEntry = { codeHash: string; protocol: string 
 // similarity alone" disclosure); never seeded with a guessed or assumed hash.
 export const KNOWN_CONCENTRATED_POOL_IMPLEMENTATION_CODE_HASHES: readonly KnownPoolImplementationEntry[] = []
 
-export type UnknownFactoryDiscoveryMethod = 'getPool' | 'poolByPair' | null
+export type UnknownFactoryDiscoveryMethod = 'getPool' | 'getPoolByTickSpacing' | 'poolByPair' | null
 
 export type UnknownConcentratedFactoryVerificationFinalReason =
   | 'factory_created_emitter'
@@ -202,12 +212,17 @@ export function classifyUnknownFactoryVerification(
 
 async function attemptDiscovery(
   client: NonNullable<ReturnType<typeof getSharedBaseClient>>,
-  factory: string, token0: string, token1: string, fee: number, functionName: 'getPool' | 'poolByPair',
+  factory: string, token0: string, token1: string, fee: number, functionName: 'getPool' | 'getPoolByTickSpacing' | 'poolByPair',
 ): Promise<{ succeeded: boolean; pool: string | null }> {
   try {
     const result = functionName === 'getPool'
       ? await client.readContract({
-          address: factory as `0x${string}`, abi: FACTORY_DISCOVERY_ABI, functionName: 'getPool',
+          address: factory as `0x${string}`, abi: [FACTORY_DISCOVERY_ABI[0]], functionName: 'getPool',
+          args: [token0 as `0x${string}`, token1 as `0x${string}`, fee],
+        })
+      : functionName === 'getPoolByTickSpacing'
+      ? await client.readContract({
+          address: factory as `0x${string}`, abi: [FACTORY_DISCOVERY_ABI[1]], functionName: 'getPool',
           args: [token0 as `0x${string}`, token1 as `0x${string}`, fee],
         })
       : await client.readContract({
@@ -223,7 +238,8 @@ async function attemptDiscovery(
 }
 
 // Real, on-chain implementation. NO RETRIES, DISCLOSED: each read below is attempted exactly once,
-// bounded to at most 4 total factory-verification RPC calls (see this file's own header).
+// bounded to at most 6 total factory-verification RPC calls (bytecode, getPool(fee), tickSpacing +
+// getPool(tickSpacing) for a Slipstream-shaped factory, poolByPair, pool bytecode).
 export function createLiveUnknownConcentratedFactoryVerifier(): UnknownConcentratedFactoryVerifier {
   return {
     async verify(txHash, eventEmitter, claimedFactory, token0, token1, fee) {
@@ -254,7 +270,27 @@ export function createLiveUnknownConcentratedFactoryVerifier(): UnknownConcentra
       // already-fetched bytecode proves the factory implements poolByPair): the fallback discovery
       // attempt — a real, purposeful second attempt, never a blind guess against an unadvertised
       // interface.
+      // Slipstream-shaped factory (getPool by int24 tick spacing, advertised in its bytecode): read the
+      // emitter's own tickSpacing() and ask the factory for the pool at that key. Two extra calls.
       if (!primary.succeeded && factoryCode) {
+        const tickSpacingGetPoolSelector = keccak256(toBytes('getPool(address,address,int24)')).slice(2, 10)
+        if (factoryCode.toLowerCase().includes(tickSpacingGetPoolSelector)) {
+          try {
+            const tickSpacing = await client.readContract({
+              address: eventEmitter as `0x${string}`, abi: POOL_TICK_SPACING_ABI, functionName: 'tickSpacing',
+            })
+            const bySpacing = await attemptDiscovery(client, claimedFactory, token0, token1, Number(tickSpacing), 'getPoolByTickSpacing')
+            if (bySpacing.succeeded) {
+              discoveryMethod = 'getPoolByTickSpacing'
+              discoveredPool = bySpacing.pool
+            }
+          } catch {
+            // tickSpacing() unreadable: leave discovery unresolved.
+          }
+        }
+      }
+
+      if (!discoveryMethod && factoryCode) {
         const poolByPairSelector = keccak256(toBytes('poolByPair(address,address)')).slice(2, 10)
         if (factoryCode.toLowerCase().includes(poolByPairSelector)) {
           const fallback = await attemptDiscovery(client, claimedFactory, token0, token1, fee, 'poolByPair')

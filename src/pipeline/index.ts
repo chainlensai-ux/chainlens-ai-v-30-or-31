@@ -2927,6 +2927,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
   {
     const mergedForAudit = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
+    const fifoAuditTradeEvents = withoutLiquidityTxs(mergedForAudit, liquidityGuardedLookup.liquidityTxKeys)
     // Same identity a duplicate event would collapse under. Deterministic and side-effect free.
     const eventIdentity = (e: NormalizedEvent) =>
       `${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}:${e.direction}:${e.amount}:${e.timestamp}`
@@ -2978,12 +2979,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       mergedEventCount: mergedForAudit.length,
       dedupedEventCount: dedupedEventKeys.size,
       duplicateEventCount: mergedForAudit.length - dedupedEventKeys.size,
-      // Stage 4 — detection vs what FIFO is actually handed.
+      // Stage 4 — detection vs what FIFO is actually handed. detected* count every timeline entry;
+      // trade* and fifoInput* leave out liquidity add/remove transactions, which FIFO skips
+      // (excludedTxKeys) and the reported timelines drop.
       detectedBuys: timelines.buyTimeline.totalBuys,
       detectedSells: timelines.sellTimeline.totalSells,
-      fifoInputBuys: mergedForAudit.filter((e) => e.direction === 'inbound').length,
-      fifoInputSells: mergedForAudit.filter((e) => e.direction === 'outbound').length,
-      fifoInputUnknownDirection: mergedForAudit.filter((e) => e.direction === 'unknown').length,
+      tradeBuys: withoutLiquidityTxs(timelines.buyTimeline.entries, liquidityGuardedLookup.liquidityTxKeys).length,
+      tradeSells: withoutLiquidityTxs(timelines.sellTimeline.entries, liquidityGuardedLookup.liquidityTxKeys).length,
+      fifoInputBuys: fifoAuditTradeEvents.filter((e) => e.direction === 'inbound').length,
+      fifoInputSells: fifoAuditTradeEvents.filter((e) => e.direction === 'outbound').length,
+      fifoInputUnknownDirection: fifoAuditTradeEvents.filter((e) => e.direction === 'unknown').length,
+      fifoInputLiquidityLegsExcluded: mergedForAudit.length - fifoAuditTradeEvents.length,
       // Stage 5 — lots produced, and what was dropped.
       rawMatchedLots: lots.length,
       dedupedMatchedLots: dedupedLotKeys.size,

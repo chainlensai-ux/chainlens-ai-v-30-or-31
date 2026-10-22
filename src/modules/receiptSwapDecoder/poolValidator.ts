@@ -58,6 +58,41 @@ const CL_POOL_FACTORY_ABI = [{
   outputs: [{ name: '', type: 'address' }],
 }] as const
 
+const CL_POOL_TICK_SPACING_ABI = [{
+  type: 'function', name: 'tickSpacing', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'int24' }],
+}] as const
+
+// OPERATOR-LISTED SLIPSTREAM FACTORIES: Aerodrome deploys new Slipstream factories (production log:
+// 0xf8f2eb49…, pools with dynamic fees). A factory that registers a pool proves nothing on its own —
+// anyone can deploy one that vouches for a fake pool — so a new factory is trusted only after an
+// operator checks it (e.g. on Basescan / Aerodrome's docs) and lists it here, comma-separated. A
+// listed factory still has to return this exact pool for the pool's own tickSpacing().
+export const EXTRA_SLIPSTREAM_FACTORIES_ENV = 'AERODROME_SLIPSTREAM_EXTRA_FACTORIES'
+
+export function listedExtraSlipstreamFactories(env: Record<string, string | undefined> = process.env): Set<string> {
+  return new Set((env[EXTRA_SLIPSTREAM_FACTORIES_ENV] ?? '').split(',')
+    .map((a) => a.trim().toLowerCase())
+    .filter((a) => /^0x[0-9a-f]{40}$/.test(a)))
+}
+
+export type ListedFactoryReads = {
+  poolTickSpacing(pool: string): Promise<number | null>
+  factoryGetPool(factory: string, token0: string, token1: string, tickSpacing: number): Promise<string | null>
+}
+
+/** True only when `factory` is operator-listed and returns `pool` for the pool's own tick spacing. */
+export async function validateByListedSlipstreamFactory(
+  reads: ListedFactoryReads, factory: string, pool: string, token0: string, token1: string,
+  listed: ReadonlySet<string>, attempts: PoolValidationAttempt[] = [],
+): Promise<boolean> {
+  if (!listed.has(factory.toLowerCase())) return false
+  const tickSpacing = await reads.poolTickSpacing(pool)
+  if (tickSpacing == null) return false
+  const returned = await reads.factoryGetPool(factory, token0, token1, tickSpacing)
+  attempts.push({ key: `listedFactory.getPool(tickSpacing=${tickSpacing})`, returnedPool: returned?.toLowerCase() ?? null })
+  return typeof returned === 'string' && returned.toLowerCase() === pool.toLowerCase()
+}
+
 // Same tick-spacing enumeration basedex.ts uses for Slipstream pool discovery.
 const SLIPSTREAM_TICK_SPACINGS = [1, 50, 100, 200, 2000] as const
 
@@ -175,6 +210,16 @@ export function createLiveBaseDexPoolValidator(): PoolValidator {
         })
         attempts.push({ key: 'pool.factory()', returnedPool: typeof reverseFactory === 'string' ? reverseFactory.toLowerCase() : null })
         if (isCanonicalSlipstreamFactory(reverseFactory)) return true
+        if (typeof reverseFactory === 'string') {
+          const listedMatch = await validateByListedSlipstreamFactory({
+            poolTickSpacing: async (pool) => Number(await client.readContract({ address: pool as `0x${string}`, abi: CL_POOL_TICK_SPACING_ABI, functionName: 'tickSpacing' })),
+            factoryGetPool: async (factory, a, b, tickSpacing) => await client.readContract({
+              address: factory as `0x${string}`, abi: SLIPSTREAM_FACTORY_ABI, functionName: 'getPool',
+              args: [a as `0x${string}`, b as `0x${string}`, tickSpacing],
+            }) as string,
+          }, reverseFactory, target, token0, token1, listedExtraSlipstreamFactories(), attempts)
+          if (listedMatch) return true
+        }
         logPoolValidationAudit(protocol, AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, false)
         return false
       } catch {

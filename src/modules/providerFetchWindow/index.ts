@@ -279,10 +279,9 @@ function isReuseEligible(result: ProviderFetchWindowResult): boolean {
 // logged once per real LIVE fetch (never for a reused/coalesced call, which made no new Alchemy
 // call of its own) — real counts only, reconciled directly from fetchAlchemyRawEvents' own
 // diagnostics (see providerFetchWindow/utils.ts) and this key's own per-entry coalescing counters,
-// never estimates. `pagesRequested`/`pageKeysSeen` are always 2/0 today (this module's own
-// "never deep-page" rule — one bounded from+to page per provider, no pageKey follow-up), kept as
-// real fields (not hardcoded in the log) so a future paginated caller is reflected honestly rather
-// than silently under-reported.
+// never estimates. `pagesRequested`/`pageKeysSeen` come from the fetch's own pagination record (the
+// first from+to page each, then every page reached by following a pageKey); they were hardcoded
+// 2/0 from before history paging existed, which logged "2 requested, 80 succeeded".
 function logAlchemyHistoryIngestionAudit(
   chain: SupportedChain,
   alchemyResult: SingleProviderFetchResult,
@@ -315,9 +314,9 @@ function logAlchemyHistoryIngestionAudit(
   // eslint-disable-next-line no-console
   console.warn('[alchemy-history-ingestion-audit]', {
     chain,
-    pagesRequested: 2, // one bounded from+to page each — see this module's own "never deep-page" rule
+    pagesRequested: alchemyResult.pagination?.pagesRequested ?? 2,
     pagesSucceeded,
-    pageKeysSeen: 0, // this module never follows a pageKey — see fetchAlchemyRawEvents' own header
+    pageKeysSeen: Math.max(0, (alchemyResult.pagination?.pagesSucceeded ?? 0) - 2),
     liveCalls: d.liveCalls,
     preventedCalls,
     settledReuseHits: entry.settledSuccessReuseHits + entry.settledFailureReuseHits,
