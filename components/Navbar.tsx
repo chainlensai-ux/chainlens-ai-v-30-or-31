@@ -79,10 +79,20 @@ export default function Navbar() {
   return (
     <>
       <style>{`
-        .nav-shell { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 44px rgba(0,0,0,0.42); overflow: hidden; }
+        .nav-shell { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(255,255,255,0.03), 0 18px 44px rgba(0,0,0,0.45); overflow: hidden; }
+        /* Glints along the pill's top and bottom edge, as in the reference. */
+        .nav-shell::after {
+          content: ''; position: absolute; inset: 0; border-radius: 999px; pointer-events: none;
+          background:
+            linear-gradient(90deg, transparent 4%, rgba(255,255,255,0.10) 14%, rgba(255,255,255,0.75) 30%, rgba(255,255,255,0.18) 48%, rgba(255,255,255,0.45) 66%, rgba(255,255,255,0.08) 84%, transparent 96%) top / 100% 1px no-repeat,
+            linear-gradient(90deg, transparent 6%, rgba(255,255,255,0.06) 20%, rgba(255,255,255,0.42) 40%, rgba(255,255,255,0.60) 52%, rgba(255,255,255,0.10) 72%, transparent 92%) bottom / 100% 1px no-repeat;
+        }
+        @media (min-width: 1024px) {
+          .nav-shell { max-width: min(1400px, 84vw) !important; min-height: clamp(56px, 4.7vw, 78px) !important; }
+        }
         .nav-shell::before {
           content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
-          background: linear-gradient(90deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.30) 22%, rgba(255,255,255,0.10) 45%, rgba(255,255,255,0.08) 60%, rgba(255,255,255,0.26) 82%, rgba(255,255,255,0.10) 100%);
+          background: linear-gradient(90deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.22) 22%, rgba(255,255,255,0.12) 45%, rgba(255,255,255,0.12) 60%, rgba(255,255,255,0.22) 82%, rgba(255,255,255,0.16) 100%);
           -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
           -webkit-mask-composite: xor; mask-composite: exclude;
         }
@@ -93,11 +103,11 @@ export default function Navbar() {
 
         .nav-link, .tools-btn {
           display: inline-flex; align-items: center; gap: 5px;
-          height: 38px; padding: 0 clamp(8px, 0.8vw, 14px); border-radius: 999px;
+          height: clamp(32px, 2.3vw, 38px); padding: 0 clamp(7px, 0.8vw, 14px); border-radius: 999px;
           background: transparent; border: 1px solid transparent;
           color: rgba(255,255,255,0.90);
           text-decoration: none; font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0;
+          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0;
           cursor: pointer; white-space: nowrap;
           transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
@@ -138,13 +148,13 @@ export default function Navbar() {
 
         .btn-signin {
           display: inline-flex; align-items: center;
-          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px);
+          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px);
           border: 1.5px solid rgba(255,255,255,0.20);
           border-radius: 999px;
           background: rgba(255,255,255,0.03);
           color: rgba(255,255,255,0.90);
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500;
+          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500;
           text-decoration: none;
           letter-spacing: 0;
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
@@ -160,13 +170,13 @@ export default function Navbar() {
 
         .btn-access {
           display: inline-flex; align-items: center; gap: 10px;
-          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
+          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
           background: rgba(31,216,200,0.04);
           border: 1.5px solid #22d3da;
           box-shadow: 0 0 14px rgba(31,214,220,0.22), inset 0 0 10px rgba(31,214,220,0.06);
           color: #2bdde3;
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500;
+          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500;
           text-decoration: none;
           letter-spacing: 0;
           transition: border-color 0.18s, background 0.18s, color 0.18s;
@@ -221,29 +231,29 @@ export default function Navbar() {
 
         /* Brand monogram: the existing /cl-mark.png shape, filled mint to white. */
         .nav-mark {
-          display: block; width: clamp(40px, 3.3vw, 54px); aspect-ratio: 300 / 192; flex-shrink: 0;
+          display: block; width: clamp(34px, 3.3vw, 54px); aspect-ratio: 300 / 192; flex-shrink: 0;
           background: linear-gradient(100deg, #1fd6dc 0%, #63ecec 42%, #ffffff 70%);
           -webkit-mask: url('/cl-mark.png') center / contain no-repeat;
           mask: url('/cl-mark.png') center / contain no-repeat;
         }
         .nav-wordmark {
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); font-weight: 500;
-          font-size: clamp(18px, 1.45vw, 24px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
+          font-size: clamp(16px, 1.45vw, 24px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
         }
 
         /* Plan badge — compact pill, gold edge for Elite (reference), purple for Pro, grey for Free. */
         .nav-plan-badge {
           display: inline-flex; align-items: center; justify-content: center;
-          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
+          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0.01em;
+          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0.01em;
           text-decoration: none; white-space: nowrap; flex-shrink: 0;
           background: rgba(10,10,8,0.6);
           border: 1.5px solid rgba(148,163,184,0.30); color: rgba(226,232,240,0.85);
           transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
         }
         .nav-plan-badge--elite {
-          border-color: rgba(230,184,72,0.85); color: #f3c64a;
+          border-color: rgba(236,190,80,0.92); color: #f6c84c; background: rgba(14,11,4,0.55);
           box-shadow: 0 0 12px rgba(230,184,72,0.16), inset 0 0 8px rgba(230,184,72,0.06);
         }
         .nav-plan-badge--elite:hover { border-color: #f0c75a; box-shadow: 0 0 18px rgba(230,184,72,0.26), inset 0 0 10px rgba(230,184,72,0.08); }
@@ -333,12 +343,12 @@ export default function Navbar() {
             maxWidth: '1400px',
             minHeight: 'clamp(60px, 4.7vw, 78px)',
             margin: '0 auto',
-            background: 'linear-gradient(180deg, rgba(14,16,17,0.62) 0%, rgba(6,7,8,0.58) 100%)',
+            background: 'linear-gradient(180deg, rgba(22,24,26,0.55) 0%, rgba(8,9,10,0.62) 100%)',
             backdropFilter: 'blur(20px)',
             WebkitBackdropFilter: 'blur(20px)',
             border: '1px solid rgba(255,255,255,0.06)',
             borderRadius: '999px',
-            padding: '8px clamp(10px, 1.2vw, 20px) 8px clamp(16px, 1.6vw, 26px)',
+            padding: '6px clamp(10px, 1.2vw, 20px) 6px clamp(14px, 1.6vw, 26px)',
             display: 'flex',
             alignItems: 'center',
             gap: '16px',
