@@ -48,7 +48,6 @@ export default function MobileClarkDrawer() {
   const pathname = usePathname()
   const [expanded, setExpanded] = useState(false)
   const [showDock, setShowDock] = useState(false)
-  const [miniInput, setMiniInput] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
@@ -84,7 +83,6 @@ export default function MobileClarkDrawer() {
 
     setError('')
     setInput('')
-    setMiniInput('')
     setLoadingKind(inferAnalysisKind(text))
     setLoading(true)
     loadingRef.current = true
@@ -150,18 +148,6 @@ export default function MobileClarkDrawer() {
     }
   }
 
-  const expandOnly = () => {
-    setExpanded(true)
-    setLastAction('expand')
-  }
-
-  const expandAndSend = (raw: string) => {
-    const text = raw.trim()
-    setExpanded(true)
-    setLastAction(text ? 'expand-send' : 'expand')
-    if (text) void sendText(text)
-  }
-
   useEffect(() => {
     const onOpenEvent = (event: Event) => {
       const detail = (event as CustomEvent<ClarkOpenDetail>).detail ?? {}
@@ -169,7 +155,6 @@ export default function MobileClarkDrawer() {
       setLastAction(`event-${detail.source ?? 'unknown'}`)
       if (typeof detail.prompt === 'string') {
         setInput(detail.prompt)
-        setMiniInput(detail.prompt)
       }
       if (detail.autoSend && detail.prompt?.trim()) {
         void sendText(detail.prompt)
@@ -195,12 +180,6 @@ export default function MobileClarkDrawer() {
         .clark-loading-scan { position:relative; height:2px; margin-top:8px; overflow:hidden; background:rgba(148,163,184,.13); }
         .clark-loading-scan::before { content:''; position:absolute; inset:0 auto 0 0; width:45%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clarkDrawerScan 1.15s linear infinite; }
         @keyframes clarkDrawerScan { from{ transform:translateX(-100%);} to{ transform:translateX(250%);} }
-        /* Compact dock. Plain CSS (not Tailwind utilities): this project's Tailwind build does not
-           generate the spacing/radius/size utilities, which left the dock unstyled and squashed. */
-        .clark-dock { position:fixed; z-index:99999; right:16px; bottom:max(16px, env(safe-area-inset-bottom)); display:flex; align-items:center; gap:8px; height:48px; width:min(232px, calc(100vw - 32px)); padding:0 6px; border-radius:16px; color:#fff; background:linear-gradient(180deg, rgba(14,18,22,0.92), rgba(6,8,12,0.94)); border:1px solid rgba(31,214,220,0.32); box-shadow:0 12px 28px rgba(0,0,0,0.55), 0 0 18px rgba(31,214,220,0.14); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); box-sizing:border-box; }
-        .clark-dock-chip { flex-shrink:0; height:36px; padding:0 10px; border:0; border-radius:11px; color:#03161a; font:700 11px/1 var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); letter-spacing:.02em; background:linear-gradient(135deg, #5cf0f0 0%, #1fd6dc 55%, #12bccb 100%); cursor:pointer; }
-        .clark-dock-input { min-width:0; flex:1; height:36px; padding:0 4px; border:0; outline:none; background:transparent; color:#fff; font:500 13px/1 var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); }
-        .clark-dock-input::placeholder { color:rgba(203,213,225,0.55); }
         .clark-drawer { position:fixed; z-index:99999; left:0; right:0; bottom:0; display:flex; color:#fff; }
         .clark-drawer-panel { display:flex; flex-direction:column; width:100%; min-height:60dvh; max-height:85dvh; padding-bottom:env(safe-area-inset-bottom); border:1px solid rgba(255,255,255,0.1); border-radius:16px 16px 0 0; background:#050814; box-shadow:0 -12px 40px rgba(0,0,0,0.6); box-sizing:border-box; font-family:var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); }
         @media (min-width:1024px) { .clark-drawer { left:auto; right:16px; bottom:16px; width:430px; } .clark-drawer-panel { border-radius:16px; } }
@@ -222,32 +201,11 @@ export default function MobileClarkDrawer() {
         .clark-drawer-input { flex:1; min-height:44px; max-height:96px; resize:none; padding:8px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:#020617; color:#fff; font-size:14px; line-height:1.4; font-family:inherit; outline:none; box-sizing:border-box; }
         .clark-drawer-send { align-self:flex-end; min-height:44px; min-width:44px; padding:8px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:rgba(6,182,212,0.2); color:#fff; font-size:14px; cursor:pointer; }
         .clark-drawer-send:disabled { opacity:.6; }
-        .clark-dock-go { flex-shrink:0; width:32px; height:32px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.04); color:#cfeff1; font-size:14px; cursor:pointer; }
       `}</style>
 
       {debugClark && (
         <div className="fixed left-3 top-20 z-[99999] rounded bg-black/90 px-2 py-1 text-[10px] text-emerald-300">
           MobileClark mounted · mode: {expanded ? 'expanded' : 'compact'} · action: {lastAction}
-        </div>
-      )}
-
-      {!expanded && (
-        <div className="clark-dock">
-          <button type="button" className="clark-dock-chip" onClick={expandOnly}>Clark AI</button>
-          <input
-            value={miniInput}
-            onChange={(e) => setMiniInput(e.target.value)}
-            onFocus={expandOnly}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                expandAndSend(miniInput)
-              }
-            }}
-            placeholder="Ask Clark..."
-            className="clark-dock-input"
-          />
-          <button type="button" aria-label="Open Clark" onClick={() => expandAndSend(miniInput)} className="clark-dock-go">↗</button>
         </div>
       )}
 
