@@ -33,6 +33,8 @@ import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, mergedTotalText, mergedCoverageText, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
+import { selectScanWindow } from '@/app/frontend/lib/scanWindow'
+import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -79,6 +81,8 @@ export type WalletV2Report = FinalReport & {
   // so walletPublicUiDataAudit's new per-chain holdings/priced counts can be computed off the SAME
   // real rows the Holdings tab renders (via mergeRobinhoodIntoPricedHoldings), not a re-derived guess.
   pricedHoldings?: PricedHolding[]
+  /** src/lib/liquidityLegGuard.ts — LP-strategy flag (absent on older reports). */
+  liquidityActivity?: Pick<LiquidityActivitySummary, 'lpStrategyWallet'> | null
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm', 4663: 'robinhood' }
@@ -196,6 +200,10 @@ export function deriveActivityWindow(report: WalletV2Report): { firstSeenMs: num
 // PURE. Restates behaviorIntel.rotationStyle + multiChainParticipation as a short label — never a
 // new classification, just plain-English phrasing of the two real fields.
 function deriveBehaviorLabel(report: WalletV2Report): string {
+  if (report.liquidityActivity?.lpStrategyWallet) {
+    const lpChains = report.behaviorIntel?.multiChainParticipation?.activeChains?.length ?? 0
+    return lpChains > 1 ? 'Multi-Chain Liquidity Provider' : 'Liquidity Provider'
+  }
   const rotationStyle = report.behaviorIntel?.rotationStyle?.value ?? 'unknown'
   const activeChains = Array.isArray(report.behaviorIntel?.multiChainParticipation?.activeChains)
     ? report.behaviorIntel.multiChainParticipation.activeChains
@@ -212,6 +220,8 @@ function deriveBehaviorLabel(report: WalletV2Report): string {
 }
 
 function deriveRiskProfile(report: WalletV2Report): string {
+  // Deposit/withdraw cycles of an LP strategy are not token rotation or risk-on trading.
+  if (report.liquidityActivity?.lpStrategyWallet) return 'Automated LP Strategy'
   const rotationStyle = report.behaviorIntel?.rotationStyle?.value ?? 'unknown'
   const riskOnOff = report.behaviorIntel?.riskOnOff?.value ?? 'unknown'
   if (rotationStyle === 'unknown' && riskOnOff === 'unknown') return 'Not enough evidence yet'
@@ -228,6 +238,10 @@ function deriveRiskProfile(report: WalletV2Report): string {
 export function WalletOverview({ report }: { report: WalletV2Report }) {
   const address = report.scanMetadata?.walletAddress ?? ''
   const { firstSeenMs, lastActiveMs } = deriveActivityWindow(report)
+  const scanWindow = selectScanWindow(report)
+  const firstSeenLabel = scanWindow.narrowed
+    ? `Earliest in ${scanWindow.windowDays}d Scanned`
+    : 'First Seen'
 
   return (
     <div>
@@ -243,7 +257,7 @@ export function WalletOverview({ report }: { report: WalletV2Report }) {
         </span>
       </div>
       <div style={{ display: 'flex', gap: '24px', marginTop: '14px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.70)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-        <span>First Seen — {fmtTimestamp(firstSeenMs)}</span>
+        <span>{firstSeenLabel} — {fmtTimestamp(firstSeenMs)}</span>
         <span>Last Active — {fmtTimestamp(lastActiveMs)}</span>
       </div>
     </div>

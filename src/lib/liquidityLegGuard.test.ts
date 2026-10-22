@@ -3,7 +3,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import type { NormalizedEvent } from '../modules/normalization/types'
-import { guardLiquidityLegs } from './liquidityLegGuard'
+import { guardLiquidityLegs, withoutLiquidityTxs } from './liquidityLegGuard'
 
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 const WETH = '0x4200000000000000000000000000000000000006'
@@ -156,5 +156,17 @@ describe('single-token zaps (production: 0xb847cd… sends 6,508 tokens to a zap
     assert.deepEqual(lp.liquidityTokens, [{ token: CHIP, txs: 30 }])
     const trader = guardLiquidityLegs(busy.slice(40), priceEverything)
     assert.equal(trader.lpStrategyWallet, false)
+  })
+})
+
+describe('withoutLiquidityTxs', () => {
+  it('drops timeline entries from liquidity transactions and keeps the rest', () => {
+    const entries = [
+      { chain: 'base', txHash: '0xAA', id: 1 },
+      { chain: 'base', txHash: '0xbb', id: 2 },
+      { chain: 'eth', txHash: '0xaa', id: 3 },
+    ]
+    assert.deepEqual(withoutLiquidityTxs(entries, new Set(['base:0xaa'])).map((e) => e.id), [2, 3])
+    assert.equal(withoutLiquidityTxs(entries, new Set()), entries)
   })
 })

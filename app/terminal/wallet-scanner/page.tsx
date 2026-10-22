@@ -39,6 +39,7 @@ import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, deriveEvmPort
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
+import { selectScanWindow } from '@/app/frontend/lib/scanWindow'
 import { buildWalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
 import {
   BehaviorIntelView,
@@ -335,6 +336,8 @@ function buildCortexReadV2(
     pnlConfidence,
     pnlViewModel,
     smartMoneyStatus: report.smartMoneyScore?.status ?? null,
+    lpStrategyWallet: report.liquidityActivity?.lpStrategyWallet ?? false,
+    scanWindow: selectScanWindow(report),
   })
 }
 

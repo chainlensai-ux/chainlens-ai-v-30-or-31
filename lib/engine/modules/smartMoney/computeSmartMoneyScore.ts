@@ -274,6 +274,8 @@ function combineBreakdown(breakdown: SmartMoneyPerformanceBreakdown): number | n
   return Math.round(weightedSum / totalWeight)
 }
 
+const MIN_HISTORY_DAYS_FOR_HIGH_CONFIDENCE = 7
+
 // PURE. Evidence confidence — SEPARATE from the score itself, per this task's own explicit rule.
 // Three real, disclosed factors: coverage (reaches 1.0 at the official 50% coverage bar), sample
 // size (reaches 1.0 at 20 verified trades), and history length (reaches 1.0 at 30 days of real
@@ -296,7 +298,11 @@ function computeEvidenceConfidence(params: {
   const historyFactor = historyDays == null ? 0 : clamp(historyDays / 30, 0, 1)
 
   const value = clamp(0.5 * coverageFactor + 0.3 * sampleSizeFactor + 0.2 * historyFactor, 0, 1)
-  const level: SmartMoneyEvidenceConfidenceLevel = value >= 0.7 ? 'high' : value >= 0.4 ? 'medium' : 'low'
+  // Under a week of closed-trade history is never 'high', however well priced: the same minimum the
+  // Wallet Personality card applies (walletPersonality.ts's MIN_WALLET_AGE_DAYS_FOR_HIGH_CONFIDENCE),
+  // so the two cards can't call the same short sample LOW and HIGH.
+  const rawLevel: SmartMoneyEvidenceConfidenceLevel = value >= 0.7 ? 'high' : value >= 0.4 ? 'medium' : 'low'
+  const level: SmartMoneyEvidenceConfidenceLevel = rawLevel === 'high' && (historyDays == null || historyDays < MIN_HISTORY_DAYS_FOR_HIGH_CONFIDENCE) ? 'medium' : rawLevel
 
   return {
     value: Math.round(value * 100) / 100, level, fullyPricedTradeCount: verifiedCount, totalMatchedLotCount,

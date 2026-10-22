@@ -39,6 +39,8 @@ import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
+import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
+import { selectScanWindow, type ScanWindowSource } from '@/app/frontend/lib/scanWindow'
 // CONCENTRATION WIRING FIX, DISCLOSED (this task's own root-cause trace: portfolio intelligence ->
 // API serialization -> page selector -> personality model): the ONLY real, live-populated
 // dominant-holding-share computation in this codebase is PortfolioIntelligenceCard.tsx's own
@@ -64,6 +66,10 @@ export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 
   // WalletScannerSummaryRowV3/PortfolioIntelligenceCard already read from `report`.
   portfolio?: PortfolioSummary | null
   portfolioV2?: EnginePortfolioV2 | null
+  // LP-strategy flag (src/lib/liquidityLegGuard.ts) and how much history the scan read.
+  liquidityActivity?: Pick<LiquidityActivitySummary, 'lpStrategyWallet' | 'liquidityTxShare'> | null
+  windowCoverage?: ScanWindowSource['windowCoverage']
+  scanMetadata?: ScanWindowSource['scanMetadata']
 }
 
 export type EvidenceBasis = 'behavior_verified' | 'behavior_only' | 'behavior_plus_pnl' | 'limited_evidence'
@@ -97,6 +103,8 @@ export type BehaviorMetrics = {
   uniqueTokensTraded: number | null
   repeatedRouterPercent: number | null
   walletAgeDays: number | null
+  /** True when walletAgeDays only spans a scan window that was cut short, not the wallet's real age. */
+  walletAgeLimitedByScan: boolean
   lastActiveAt: string | null
 }
 
@@ -809,17 +817,28 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   // evidence-backed title (the live "Unknown" headline next to an ACCUMULATOR label elsewhere on the page).
   const useArchetypeOverride = !insufficientEvidence && archetypeOverride != null && archetypeOverride.trim().length > 0
     && !PLACEHOLDER_ARCHETYPES.has(archetypeOverride.trim().toLowerCase())
-  const title = insufficientEvidence
+  // LP STRATEGY: a wallet that mostly adds/removes liquidity is not a token rotator or swing trader;
+  // its timelines already exclude those transactions (src/pipeline/index.ts), so what's left of the
+  // trading classification describes only its occasional swaps.
+  const lpStrategy = report.liquidityActivity?.lpStrategyWallet === true
+  const lpSharePct = lpStrategy ? Math.round((report.liquidityActivity?.liquidityTxShare ?? 0) * 100) : null
+  const title = lpStrategy
+    ? 'Automated Liquidity Provider'
+    : insufficientEvidence
     ? 'General User'
     : (useArchetypeOverride ? archetypeOverride! : composeTitle({
         automationClass, holdingClass, concentrationClass, riskClass, rotationValue, convictionValue, activeChains, totalTransactions, activityLevel,
       }))
 
-  const subtitle = insufficientEvidence
+  const subtitle = lpStrategy
+    ? `${lpSharePct}% of transactions add or remove liquidity · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
+    : insufficientEvidence
     ? 'Insufficient evidence for a detailed personality'
     : `${automationClass} · ${holdingClass} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
 
-  const summarySentence = insufficientEvidence
+  const summarySentence = lpStrategy
+    ? `This wallet runs a liquidity-provision strategy: ${lpSharePct}% of its transactions add or remove liquidity. Those are left out of the trading metrics below, which cover its swaps only.`
+    : insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
     : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
 
@@ -840,7 +859,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     if (repeatedRouterPercent != null && repeatedRouterPercent < 40) strengths.push('Low router repetition')
     if (concentrationClass === 'Concentrated' && (b?.convictionScore?.value === 'high')) strengths.push('Concentrated conviction')
 
-    if (rotationValue === 'rotator' && (uniqueTokensTraded ?? 0) >= 5) watchouts.push('Rapid token rotation')
+    if (!lpStrategy && rotationValue === 'rotator' && (uniqueTokensTraded ?? 0) >= 5) watchouts.push('Rapid token rotation')
     if (concentrationClass === 'Concentrated') watchouts.push('Heavy portfolio concentration')
     if (repeatedRouterPercent != null && repeatedRouterPercent >= 70) watchouts.push('Repeated router patterns')
     if (averageHoldingDays != null && averageHoldingDays < 1) watchouts.push('Short holding periods')
@@ -860,7 +879,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
       tradingStyle: automationClass,
       activityLevel,
       holdingStyle: holdingClass,
-      rotationBehavior: rotationValue === 'unknown' ? 'Unknown' : rotationValue.charAt(0).toUpperCase() + rotationValue.slice(1),
+      rotationBehavior: lpStrategy ? 'Liquidity provision' : rotationValue === 'unknown' ? 'Unknown' : rotationValue.charAt(0).toUpperCase() + rotationValue.slice(1),
       // CALIBRATED RISK TRAIT FIX, DISCLOSED (this task's own confirmed bug): previously read the
       // LEGACY riskOnOff.value directly ("risk on"/"risk off"/"Unknown") — a field computed
       // entirely independently of the calibrated Risk axis, so it could (and did, live) show
@@ -885,6 +904,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
       uniqueTokensTraded,
       repeatedRouterPercent,
       walletAgeDays,
+      walletAgeLimitedByScan: selectScanWindow(report).narrowed,
       lastActiveAt,
     },
     classification: {

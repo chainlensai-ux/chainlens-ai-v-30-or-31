@@ -62,7 +62,7 @@ import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEth
 import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
 import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
-import { guardLiquidityLegs, lpStrategyConditionText, summarizeLiquidityActivity } from '../lib/liquidityLegGuard'
+import { guardLiquidityLegs, lpStrategyConditionText, summarizeLiquidityActivity, withoutLiquidityTxs } from '../lib/liquidityLegGuard'
 import { emptyLpPositionsSummary, resolveWalletLpPositions } from '../lib/walletLpPositions'
 import { alchemyRpcUrlFor } from '../modules/providerFetchWindow/utils'
 import { tryConsume as tryConsumeProviderCall } from '../modules/providerCost/walletProviderCostLedger'
@@ -4773,10 +4773,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // itself derived only from normalizedEvents/chainSelection/bridgeTimeline/recoveryPolicy — this
   // does not give behaviorIntel a backdoor into recoveryPolicy's own object, only its already-
   // downstream-processed sell entries.
+  // Liquidity adds/removes are not trades: behaviorIntel and the reported timelines (buy/sell counts,
+  // rotation, wallet personality) leave them out, as FIFO already does.
+  const lpKeys = liquidityGuardedLookup.liquidityTxKeys
+  const tradeBuyEntries = withoutLiquidityTxs(timelines.buyTimeline.entries, lpKeys)
+  const tradeLegacySellEntries = withoutLiquidityTxs(timelines.sellTimeline.entries, lpKeys)
+  const tradeSellEntries = withoutLiquidityTxs(sellTimelineV2.entries, lpKeys)
+  const tradeDistributionEntries = withoutLiquidityTxs(timelines.distributionTimeline.entries, lpKeys)
+  const tradeTimelines: TimelineBuilderResult = {
+    buyTimeline: { ...timelines.buyTimeline, totalBuys: tradeBuyEntries.length, entries: tradeBuyEntries },
+    sellTimeline: { ...timelines.sellTimeline, totalSells: tradeLegacySellEntries.length, entries: tradeLegacySellEntries },
+    distributionTimeline: { ...timelines.distributionTimeline, totalDistributions: tradeDistributionEntries.length, entries: tradeDistributionEntries },
+  }
+  const tradeSellTimelineV2 = { ...sellTimelineV2, totalSells: tradeSellEntries.length, entries: tradeSellEntries }
   const behaviorIntel = safeRunBehaviorIntel({
-    buyTimeline: timelines.buyTimeline,
-    sellEntries: sellTimelineV2.entries,
-    distributionTimeline: timelines.distributionTimeline,
+    buyTimeline: tradeTimelines.buyTimeline,
+    sellEntries: tradeSellTimelineV2.entries,
+    distributionTimeline: tradeTimelines.distributionTimeline,
     chainSelection,
     windowCoverage,
   })
@@ -4916,13 +4929,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const finalReport = finalReportAssembler.assemble({
     scanMetadata,
     chainSelection,
-    timelines,
+    timelines: tradeTimelines,
     recoveryPolicy,
     fifoAndPnl: reconciledFifoAndPnl,
     behaviorIntel,
     windowCoverage,
     bridgeTimeline,
-    sellTimelineV2,
+    sellTimelineV2: tradeSellTimelineV2,
     pnlSummaryV2: reconciledPnlSummaryV2,
     pricingAtTime,
     providerDiagnostics,

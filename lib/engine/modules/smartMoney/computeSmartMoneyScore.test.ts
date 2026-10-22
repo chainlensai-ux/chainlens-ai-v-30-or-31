@@ -195,3 +195,13 @@ test('consistency measures spread across time, not raw profitability: all wins c
   const spreadResult = computeSmartMoneyScore({ trades: spread })
   assert.ok((concentratedResult.breakdown.consistency ?? 100) <= (spreadResult.breakdown.consistency ?? 0))
 })
+
+test('evidence confidence is never high on under a week of closed-trade history, even when fully priced', () => {
+  // 40 verified trades, 100% coverage, all closed within 6 days (production: LP-strategy wallet,
+  // deep scan reached 6 days) — raw confidence 0.84 would read HIGH next to a LOW personality badge.
+  const short = Array.from({ length: 40 }, (_, i) => trade({ closedAt: NOW - (i % 6) * DAY - 1000, openedAt: NOW - 7 * DAY }))
+  const shortResult = computeSmartMoneyScore({ trades: short, structuralClosedLotCount: 40 })
+  assert.equal(shortResult.evidenceConfidence.level, 'medium')
+  const long = richVerifiedSample(40)
+  assert.equal(computeSmartMoneyScore({ trades: long, structuralClosedLotCount: 40 }).evidenceConfidence.level, 'high')
+})

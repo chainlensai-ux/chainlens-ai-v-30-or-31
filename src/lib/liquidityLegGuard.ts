@@ -190,3 +190,13 @@ export function lpStrategyConditionText(summary: LiquidityActivitySummary): stri
   return `Liquidity provider: ${pct}% of this wallet's transactions (${summary.liquidityAddTxs} deposits, ${summary.liquidityRemoveTxs} withdrawals) add or remove liquidity. `
     + 'Those are left out of trading PnL, which covers swaps only; LP fees, rewards and the value held in liquidity positions are not part of it.'
 }
+
+/**
+ * The same entries without liquidity adds/removes, for behavior read from timelines (buy/sell counts,
+ * rotation, wallet personality). Returns the list unchanged when nothing was removed.
+ */
+export function withoutLiquidityTxs<T extends { chain: string; txHash: string }>(entries: T[], liquidityTxKeys: ReadonlySet<string>): T[] {
+  if (liquidityTxKeys.size === 0) return entries
+  const kept = entries.filter((entry) => !liquidityTxKeys.has(`${entry.chain}:${entry.txHash.toLowerCase()}`))
+  return kept.length === entries.length ? entries : kept
+}

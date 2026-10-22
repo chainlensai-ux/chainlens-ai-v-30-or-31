@@ -298,7 +298,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
             <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap' }}>
               <Stat label="Total Transactions" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
               <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />
-              <Stat label="Wallet Age" value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} />
+              <Stat label={data.metrics.walletAgeLimitedByScan ? 'Active in Scan' : 'Wallet Age'} value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} />
             </div>
           </div>
         ) : (
@@ -358,7 +358,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 <Stat label="Unique Tokens" value={fmtMetric(data.metrics.uniqueTokensTraded)} emphasized />
                 <Stat label="Avg Holding Time" value={fmtHoldingDays(data.metrics.averageHoldingDays)} emphasized />
                 <Stat label="Repeated-Router %" value={fmtPercent(data.metrics.repeatedRouterPercent)} emphasized />
-                <Stat label="Wallet Age" value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} emphasized />
+                <Stat label={data.metrics.walletAgeLimitedByScan ? 'Active in Scan' : 'Wallet Age'} value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} emphasized />
                 <Stat label="Buys" value={fmtMetric(data.metrics.buys)} />
                 <Stat label="Sells" value={fmtMetric(data.metrics.sells)} />
                 <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />

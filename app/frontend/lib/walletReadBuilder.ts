@@ -36,6 +36,7 @@ import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 // The real buildWalletPnlViewModel(...) CALL happens at the page.tsx call site (a real React page,
 // no purity constraint) — this file only carries its already-computed plain-data result through.
 import type { WalletPnlViewModel } from '@/app/frontend/lib/buildWalletPnlViewModel'
+import type { ScanWindow } from '@/app/frontend/lib/scanWindow'
 
 export type WalletReadConfidence = 'High' | 'Medium' | 'Low'
 
@@ -129,9 +130,10 @@ export function selectWalletReadConfidence(behaviorIntel: BehaviorIntelResult | 
 // neutral 'Wallet' label rather than guessing a personality with zero supporting evidence — the
 // hard rule "if a label is shown, provide supporting bullets" means a label with nothing behind it
 // must not be shown as a specific personality at all.
-export function selectPersonalityLabel(behaviorIntel: BehaviorIntelResult | null | undefined): string {
+export function selectPersonalityLabel(behaviorIntel: BehaviorIntelResult | null | undefined, lpStrategyWallet = false): string {
   const rotation = behaviorIntel?.rotationStyle?.value ?? 'unknown'
   const isMultiChain = (behaviorIntel?.multiChainParticipation?.activeChains?.length ?? 0) > 1
+  if (lpStrategyWallet) return isMultiChain ? 'Multi-chain Liquidity Provider' : 'Liquidity Provider'
   const concentrationLabel = behaviorIntel?.concentrationSignals?.concentrationLabel ?? null
 
   if (rotation === 'unknown') {
@@ -362,11 +364,24 @@ export function buildNextAction(params: {
   robinhoodPnlLane: RobinhoodPnlLaneStatus
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined
   concentrationLabel: string | null
+  // Optional: what the scan read. After a deep scan, suggesting another one is no help.
+  scanWindow?: ScanWindow | null
 }): string {
+  const deepScanDone = params.scanWindow?.deepScan === true
+  const coveredDays = params.scanWindow?.narrowed ? params.scanWindow.windowDays : null
+  if (params.evmPnlLane === 'partial' && deepScanDone) {
+    return coveredDays != null
+      ? `Deep scan done — it reached only the last ${coveredDays}d of this busy wallet's history, so older trades are outside the verified sample.`
+      : 'Deep scan done — the verified sample covers the history it could read.'
+  }
   if (params.evmPnlLane === 'partial') return 'Run Deep Scan to improve verified history coverage.'
   if (params.robinhoodResult && params.robinhoodPnlLane === 'not_verified' && !selectRobinhoodSwapEvidence(params.robinhoodResult)?.openPositionOnly) return 'Inspect the Robinhood tab for verified swap evidence.'
   if (params.concentrationLabel === 'high') return 'Review concentration risk in top holdings.'
-  if (params.evmPnlLane === 'unavailable') return 'Run Deep Scan to build a verifiable PnL sample.'
+  if (params.evmPnlLane === 'unavailable') {
+    return deepScanDone
+      ? 'Deep scan done — no verifiable closed trades in the history it read.'
+      : 'Run Deep Scan to build a verifiable PnL sample.'
+  }
   return 'No further action needed — evidence coverage is strong.'
 }
 
@@ -400,11 +415,14 @@ export function buildWalletReadV2(params: {
   pnlViewModel?: WalletPnlViewModel | null
   // OPTIONAL, ADDITIVE: the Smart Money status, so the evidence panel can name a missing closed-trade score.
   smartMoneyStatus?: 'official' | 'not_yet_rated' | null
+  // OPTIONAL: LP-strategy flag (labels the wallet a liquidity provider) and the scan's history window.
+  lpStrategyWallet?: boolean
+  scanWindow?: ScanWindow | null
 }): WalletReadV2 {
   const topChain = params.chainBreakdown.length > 0
     ? [...params.chainBreakdown].sort((a, b) => b.percent - a.percent)[0]
     : null
-  const personalityLabel = selectPersonalityLabel(params.behaviorIntel)
+  const personalityLabel = selectPersonalityLabel(params.behaviorIntel, params.lpStrategyWallet ?? false)
   const activeChainCount = params.chainsScanned.length + (params.robinhoodIncluded ? 1 : 0)
   const medianSellGap = fmtMedianGap(params.behaviorIntel?.exitVelocity?.medianMsBetweenSells)
   const buyCount = params.behaviorIntel?.rotationStyle?.basis?.buyCount ?? null
@@ -459,6 +477,7 @@ export function buildWalletReadV2(params: {
       robinhoodPnlLane: params.robinhoodPnlLane,
       robinhoodResult: params.robinhoodResult,
       concentrationLabel: params.concentrationLabel,
+      scanWindow: params.scanWindow ?? null,
     }),
   }
 }

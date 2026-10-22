@@ -818,3 +818,26 @@ test('personality scope is explicit: built from Base/ETH activity only', () => {
   const data = deriveWalletPersonality(baseReport())
   assert.deepEqual(data.scope, { kind: 'evm_only', label: 'Behavior profile based on Base/ETH activity only' })
 })
+
+test('LP-strategy wallet: titled a liquidity provider, never a token rotator', () => {
+  const data = deriveWalletPersonality(baseReport({
+    liquidityActivity: { lpStrategyWallet: true, liquidityTxShare: 0.746 },
+  }))
+  assert.equal(data.title, 'Automated Liquidity Provider')
+  assert.equal(data.traits.rotationBehavior, 'Liquidity provision')
+  assert.match(data.subtitle, /^75% of transactions add or remove liquidity/)
+  assert.ok(!data.watchouts.includes('Rapid token rotation'))
+})
+
+test('wallet age is flagged as scan-limited when the scan read less than its configured window', () => {
+  const narrowed = deriveWalletPersonality(baseReport({
+    windowCoverage: { realDataDays: 6 },
+    scanMetadata: { provider_fetch_window_days: 90, scanMode: 'deep' },
+  }))
+  assert.equal(narrowed.metrics.walletAgeLimitedByScan, true)
+  const full = deriveWalletPersonality(baseReport({
+    windowCoverage: { realDataDays: 90 },
+    scanMetadata: { provider_fetch_window_days: 90, scanMode: 'deep' },
+  }))
+  assert.equal(full.metrics.walletAgeLimitedByScan, false)
+})
