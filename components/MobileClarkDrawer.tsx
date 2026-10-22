@@ -195,6 +195,34 @@ export default function MobileClarkDrawer() {
         .clark-loading-scan { position:relative; height:2px; margin-top:8px; overflow:hidden; background:rgba(148,163,184,.13); }
         .clark-loading-scan::before { content:''; position:absolute; inset:0 auto 0 0; width:45%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clarkDrawerScan 1.15s linear infinite; }
         @keyframes clarkDrawerScan { from{ transform:translateX(-100%);} to{ transform:translateX(250%);} }
+        /* Compact dock. Plain CSS (not Tailwind utilities): this project's Tailwind build does not
+           generate the spacing/radius/size utilities, which left the dock unstyled and squashed. */
+        .clark-dock { position:fixed; z-index:99999; right:16px; bottom:max(16px, env(safe-area-inset-bottom)); display:flex; align-items:center; gap:8px; height:48px; width:min(232px, calc(100vw - 32px)); padding:0 6px; border-radius:16px; color:#fff; background:linear-gradient(180deg, rgba(14,18,22,0.92), rgba(6,8,12,0.94)); border:1px solid rgba(31,214,220,0.32); box-shadow:0 12px 28px rgba(0,0,0,0.55), 0 0 18px rgba(31,214,220,0.14); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); box-sizing:border-box; }
+        .clark-dock-chip { flex-shrink:0; height:36px; padding:0 10px; border:0; border-radius:11px; color:#03161a; font:700 11px/1 var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); letter-spacing:.02em; background:linear-gradient(135deg, #5cf0f0 0%, #1fd6dc 55%, #12bccb 100%); cursor:pointer; }
+        .clark-dock-input { min-width:0; flex:1; height:36px; padding:0 4px; border:0; outline:none; background:transparent; color:#fff; font:500 13px/1 var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); }
+        .clark-dock-input::placeholder { color:rgba(203,213,225,0.55); }
+        .clark-drawer { position:fixed; z-index:99999; left:0; right:0; bottom:0; display:flex; color:#fff; }
+        .clark-drawer-panel { display:flex; flex-direction:column; width:100%; min-height:60dvh; max-height:85dvh; padding-bottom:env(safe-area-inset-bottom); border:1px solid rgba(255,255,255,0.1); border-radius:16px 16px 0 0; background:#050814; box-shadow:0 -12px 40px rgba(0,0,0,0.6); box-sizing:border-box; font-family:var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); }
+        @media (min-width:1024px) { .clark-drawer { left:auto; right:16px; bottom:16px; width:430px; } .clark-drawer-panel { border-radius:16px; } }
+        .clark-drawer-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid rgba(255,255,255,0.1); }
+        .clark-drawer-head p { margin:0; }
+        .clark-drawer-title { font-weight:600; font-size:15px; color:#fff; }
+        .clark-drawer-sub { font-size:12px; color:#94a3b8; }
+        .clark-drawer-min { background:none; border:0; color:#cbd5e1; font-size:14px; cursor:pointer; padding:6px 4px; }
+        .clark-drawer-messages { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:12px 16px; }
+        .clark-msg { max-width:86%; border-radius:8px; border:1px solid; padding:8px 12px; font-size:14px; }
+        .clark-msg--user { margin-left:auto; border-color:rgba(103,232,249,0.2); background:rgba(8,51,68,0.3); color:#ecfeff; }
+        .clark-msg--clark { margin-right:auto; border-color:rgba(71,85,105,0.3); background:rgba(2,6,23,0.8); color:#e2e8f0; }
+        .clark-msg-role { margin-bottom:4px; font:800 10px/1.2 var(--font-plex-mono, monospace); letter-spacing:.16em; text-transform:uppercase; }
+        .clark-msg--user .clark-msg-role { color:#a5f3fc; }
+        .clark-msg--clark .clark-msg-role { color:#a7f3d0; }
+        .clark-msg-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; }
+        .clark-drawer-error { margin:0; font-size:14px; color:#fda4af; }
+        .clark-drawer-compose { position:sticky; bottom:0; display:flex; gap:8px; padding:12px; border-top:1px solid rgba(255,255,255,0.1); background:#050814; }
+        .clark-drawer-input { flex:1; min-height:44px; max-height:96px; resize:none; padding:8px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:#020617; color:#fff; font-size:14px; line-height:1.4; font-family:inherit; outline:none; box-sizing:border-box; }
+        .clark-drawer-send { align-self:flex-end; min-height:44px; min-width:44px; padding:8px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); background:rgba(6,182,212,0.2); color:#fff; font-size:14px; cursor:pointer; }
+        .clark-drawer-send:disabled { opacity:.6; }
+        .clark-dock-go { flex-shrink:0; width:32px; height:32px; border-radius:10px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.04); color:#cfeff1; font-size:14px; cursor:pointer; }
       `}</style>
 
       {debugClark && (
@@ -204,8 +232,8 @@ export default function MobileClarkDrawer() {
       )}
 
       {!expanded && (
-        <div className="fixed z-[99999] flex h-12 w-[min(180px,calc(100vw-24px))] items-center gap-2 rounded-2xl border border-white/10 bg-[#080c14] px-2 text-white shadow-2xl" style={{ right: 16, bottom: 'max(16px, env(safe-area-inset-bottom))', boxShadow: '0 0 0 1px rgba(255,255,255,0.06), 0 12px 28px rgba(0,0,0,0.55), 0 0 24px rgba(139,92,246,0.28)' }}>
-          <button type="button" className="shrink-0 min-h-11 rounded-lg bg-gradient-to-r from-[#2DD4BF] via-[#8b5cf6] to-[#ec4899] px-2 py-2 text-[10px] font-semibold" onClick={expandOnly}>Clark AI</button>
+        <div className="clark-dock">
+          <button type="button" className="clark-dock-chip" onClick={expandOnly}>Clark AI</button>
           <input
             value={miniInput}
             onChange={(e) => setMiniInput(e.target.value)}
@@ -217,44 +245,44 @@ export default function MobileClarkDrawer() {
               }
             }}
             placeholder="Ask Clark..."
-            className="min-w-0 flex-1 bg-transparent text-xs text-white placeholder:text-slate-400 outline-none"
+            className="clark-dock-input"
           />
-          <button type="button" aria-label="Open Clark" onClick={() => expandAndSend(miniInput)} className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-xs">↗</button>
+          <button type="button" aria-label="Open Clark" onClick={() => expandAndSend(miniInput)} className="clark-dock-go">↗</button>
         </div>
       )}
 
       {expanded && (
-        <div className="fixed inset-x-0 bottom-0 z-[99999] flex text-white lg:inset-x-auto lg:right-4 lg:w-[430px]">
-          <section className="flex min-h-[60dvh] max-h-[85dvh] w-full flex-col rounded-t-2xl border border-white/10 bg-[#050814] lg:rounded-2xl" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+        <div className="clark-drawer">
+          <section className="clark-drawer-panel">
+            <div className="clark-drawer-head">
               <div>
-                <p className="font-semibold text-white">Clark AI</p>
-                <p className="text-xs text-slate-400">CORTEX assistant</p>
+                <p className="clark-drawer-title">Clark AI</p>
+                <p className="clark-drawer-sub">CORTEX assistant</p>
               </div>
-              <button type="button" className="text-slate-300" onClick={() => { setExpanded(false); setLastAction('minimize') }}>Minimize</button>
+              <button type="button" className="clark-drawer-min" onClick={() => { setExpanded(false); setLastAction('minimize') }}>Minimize</button>
             </div>
 
-            <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3">
+            <div className="clark-drawer-messages">
               {messages.map((m, i) => {
                 const isThinking = m.role === 'clark' && loading && m.text === 'Clark is thinking...'
                 return (
-                  <div key={i} className={`max-w-[86%] rounded-md border px-3 py-2 text-sm ${m.role === 'user' ? 'ml-auto border-cyan-300/20 bg-cyan-950/30 text-cyan-50' : 'mr-auto border-slate-600/30 bg-slate-950/80 text-slate-200'}`}>
-                    <div className={`mb-1 font-mono text-[10px] font-extrabold uppercase tracking-[0.16em] ${m.role === 'user' ? 'text-cyan-200' : 'text-emerald-200'}`}>{m.role === 'user' ? 'USER' : 'CLARK'}</div>
-                    {isThinking ? <ClarkLoadingTrace kind={loadingKind} /> : <div className="whitespace-pre-wrap break-words leading-relaxed">{m.text}</div>}
+                  <div key={i} className={`clark-msg ${m.role === 'user' ? 'clark-msg--user' : 'clark-msg--clark'}`}>
+                    <div className="clark-msg-role">{m.role === 'user' ? 'USER' : 'CLARK'}</div>
+                    {isThinking ? <ClarkLoadingTrace kind={loadingKind} /> : <div className="clark-msg-text">{m.text}</div>}
                   </div>
                 )
               })}
-              {error && <p className="text-sm text-rose-300">{error}</p>}
+              {error && <p className="clark-drawer-error">{error}</p>}
               <div ref={endRef} />
             </div>
 
-            <div className="sticky bottom-0 flex gap-2 border-t border-white/10 bg-[#050814] p-3">
+            <div className="clark-drawer-compose">
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Ask Clark anything…"
                 rows={2}
-                className="max-h-24 min-h-[44px] flex-1 resize-none rounded-xl border border-white/10 bg-slate-950 px-3 py-2 text-sm text-white outline-none"
+                className="clark-drawer-input"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -262,7 +290,7 @@ export default function MobileClarkDrawer() {
                   }
                 }}
               />
-              <button type="button" disabled={loading} onClick={() => void sendText(input)} className="self-end min-h-11 min-w-11 rounded-xl border border-white/10 bg-cyan-500/20 px-3 py-2 text-sm text-white disabled:opacity-60">Send</button>
+              <button type="button" disabled={loading} onClick={() => void sendText(input)} className="clark-drawer-send">Send</button>
             </div>
           </section>
         </div>

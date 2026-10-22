@@ -88,7 +88,7 @@ export default function Navbar() {
             linear-gradient(90deg, transparent 6%, rgba(255,255,255,0.06) 20%, rgba(255,255,255,0.42) 40%, rgba(255,255,255,0.60) 52%, rgba(255,255,255,0.10) 72%, transparent 92%) bottom / 100% 1px no-repeat;
         }
         @media (min-width: 1024px) {
-          .nav-shell { max-width: min(1400px, 84vw) !important; min-height: clamp(56px, 4.7vw, 78px) !important; }
+          .nav-shell { max-width: min(1320px, 81vw) !important; min-height: clamp(52px, 4.3vw, 72px) !important; }
         }
         .nav-shell::before {
           content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
@@ -107,7 +107,7 @@ export default function Navbar() {
           background: transparent; border: 1px solid transparent;
           color: rgba(255,255,255,0.90);
           text-decoration: none; font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0;
+          font-size: clamp(13px, 1vw, 16.5px); font-weight: 500; letter-spacing: 0;
           cursor: pointer; white-space: nowrap;
           transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
@@ -148,13 +148,13 @@ export default function Navbar() {
 
         .btn-signin {
           display: inline-flex; align-items: center;
-          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px);
+          height: clamp(32px, 2.65vw, 44px); padding: 0 clamp(16px, 1.4vw, 24px);
           border: 1.5px solid rgba(255,255,255,0.20);
           border-radius: 999px;
           background: rgba(255,255,255,0.03);
           color: rgba(255,255,255,0.90);
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500;
+          font-size: clamp(13px, 1vw, 16.5px); font-weight: 500;
           text-decoration: none;
           letter-spacing: 0;
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
@@ -170,13 +170,13 @@ export default function Navbar() {
 
         .btn-access {
           display: inline-flex; align-items: center; gap: 10px;
-          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
+          height: clamp(32px, 2.65vw, 44px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
           background: rgba(31,216,200,0.04);
           border: 1.5px solid #22d3da;
           box-shadow: 0 0 14px rgba(31,214,220,0.22), inset 0 0 10px rgba(31,214,220,0.06);
           color: #2bdde3;
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500;
+          font-size: clamp(13px, 1vw, 16.5px); font-weight: 500;
           text-decoration: none;
           letter-spacing: 0;
           transition: border-color 0.18s, background 0.18s, color 0.18s;
@@ -231,32 +231,48 @@ export default function Navbar() {
 
         /* Brand monogram: the existing /cl-mark.png shape, filled mint to white. */
         .nav-mark {
-          display: block; width: clamp(34px, 3.3vw, 54px); aspect-ratio: 300 / 192; flex-shrink: 0;
+          display: block; width: clamp(32px, 3vw, 50px); aspect-ratio: 300 / 192; flex-shrink: 0;
           background: linear-gradient(100deg, #1fd6dc 0%, #63ecec 42%, #ffffff 70%);
           -webkit-mask: url('/cl-mark.png') center / contain no-repeat;
           mask: url('/cl-mark.png') center / contain no-repeat;
         }
         .nav-wordmark {
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); font-weight: 500;
-          font-size: clamp(16px, 1.45vw, 24px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
+          font-size: clamp(15px, 1.33vw, 22px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
         }
 
         /* Plan badge — compact pill, gold edge for Elite (reference), purple for Pro, grey for Free. */
         .nav-plan-badge {
           display: inline-flex; align-items: center; justify-content: center;
-          height: clamp(34px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
+          height: clamp(32px, 2.65vw, 44px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
-          font-size: clamp(13px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0.01em;
+          font-size: clamp(13px, 1vw, 16.5px); font-weight: 500; letter-spacing: 0.01em;
           text-decoration: none; white-space: nowrap; flex-shrink: 0;
           background: rgba(10,10,8,0.6);
           border: 1.5px solid rgba(148,163,184,0.30); color: rgba(226,232,240,0.85);
           transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
         }
         .nav-plan-badge--elite {
-          border-color: rgba(236,190,80,0.92); color: #f6c84c; background: rgba(14,11,4,0.55);
-          box-shadow: 0 0 12px rgba(230,184,72,0.16), inset 0 0 8px rgba(230,184,72,0.06);
+          position: relative; overflow: hidden; gap: 7px; color: #f6c84c;
+          border: 1.5px solid transparent;
+          background:
+            linear-gradient(180deg, rgba(34,26,8,0.92), rgba(12,9,3,0.94)) padding-box,
+            linear-gradient(135deg, #fff1b8 0%, #e9b949 28%, #8a5a12 52%, #f3cf6a 74%, #fff4c4 100%) border-box;
+          box-shadow: 0 0 16px rgba(240,190,80,0.22), 0 0 2px rgba(255,220,130,0.5), inset 0 1px 0 rgba(255,236,170,0.18), inset 0 0 12px rgba(240,190,80,0.10);
         }
-        .nav-plan-badge--elite:hover { border-color: #f0c75a; box-shadow: 0 0 18px rgba(230,184,72,0.26), inset 0 0 10px rgba(230,184,72,0.08); }
+        .nav-plan-badge--elite .nav-plan-badge-text {
+          background: linear-gradient(180deg, #fff3c2 0%, #f6cf5e 45%, #d9a233 100%);
+          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+          font-weight: 600; letter-spacing: 0.04em; filter: drop-shadow(0 0 6px rgba(246,200,76,0.35));
+        }
+        .nav-plan-badge-star { width: 0.72em; height: 0.72em; flex-shrink: 0; filter: drop-shadow(0 0 4px rgba(246,200,76,0.6)); }
+        .nav-plan-badge--elite::after {
+          content: ''; position: absolute; top: 0; bottom: 0; left: -70%; width: 45%; pointer-events: none;
+          background: linear-gradient(105deg, transparent, rgba(255,240,190,0.35), transparent);
+          transform: skewX(-18deg); transition: left 0.7s ease;
+        }
+        .nav-plan-badge--elite:hover::after { left: 130%; }
+        .nav-plan-badge--elite:hover { box-shadow: 0 0 24px rgba(240,190,80,0.32), 0 0 2px rgba(255,220,130,0.6), inset 0 1px 0 rgba(255,236,170,0.24), inset 0 0 14px rgba(240,190,80,0.14); }
         .nav-plan-badge--pro { border-color: rgba(139,92,246,0.70); color: #c4b5fd; }
         .nav-plan-badge--pro:hover { border-color: rgba(167,139,250,0.95); }
         .nav-plan-badge--free:hover { border-color: rgba(203,213,225,0.5); }
@@ -319,7 +335,7 @@ export default function Navbar() {
         @media (prefers-reduced-motion: reduce) {
           .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
           .mob-ham span { transition: none !important; }
-          .nav-link, .tools-btn, .btn-signin, .btn-access, .btn-access-go, .tools-item, .nav-plan-badge { transition: none !important; }
+          .nav-link, .tools-btn, .btn-signin, .btn-access, .btn-access-go, .tools-item, .nav-plan-badge, .nav-plan-badge--elite::after { transition: none !important; }
         }
       `}</style>
 
@@ -482,7 +498,13 @@ export default function Navbar() {
                   title={`${accountEmail} · ${planLabel}${trialBadgeDesktop ? ` · ${trialBadgeDesktop}` : ''}`}
                   aria-label={`Account settings (${accountEmail}, ${planLabel || 'plan'})`}
                 >
-                  {planLabel}
+                  {isEliteDisplay ? (
+                    <svg className="nav-plan-badge-star" viewBox="0 0 24 24" aria-hidden="true">
+                      <defs><linearGradient id="nav-elite-star" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff3c2" /><stop offset="1" stopColor="#d9a233" /></linearGradient></defs>
+                      <path fill="url(#nav-elite-star)" d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z" />
+                    </svg>
+                  ) : null}
+                  <span className="nav-plan-badge-text">{planLabel}</span>
                 </Link>
                 {trialBadgeDesktop ? <span className="nav-plan-trial">{trialBadgeDesktop}</span> : null}
               </>

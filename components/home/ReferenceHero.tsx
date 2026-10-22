@@ -45,14 +45,19 @@ export default function ReferenceHero() {
         .ref-line-2::after{background-image:linear-gradient(172deg,#62f1f1 0%,#1fd6dc 42%,#12bccb 70%,#28d9de 100%)}
         .ref-ctas{display:flex;gap:clamp(14px,1.4vw,24px);margin-top:clamp(36px,3.9vw,64px)}
         .ref-btn{display:inline-flex;align-items:center;justify-content:center;width:clamp(200px,15.2vw,256px);height:clamp(52px,3.75vw,62px);border-radius:12px;color:#fff;text-decoration:none;font-size:clamp(15px,1.1vw,18.5px);font-weight:600;letter-spacing:.005em;transition:border-color .18s ease,box-shadow .18s ease,background .18s ease,transform .18s ease}
-        .ref-btn-terminal{background:linear-gradient(180deg,rgba(31,214,220,.06),rgba(31,214,220,.015)),rgba(4,10,11,.78);border:2px solid #22d3da;box-shadow:0 0 16px rgba(31,214,220,.35),0 0 2px rgba(31,214,220,.6),inset 0 0 12px rgba(31,214,220,.14)}
-        .ref-btn-terminal:hover{border-color:#5cf0f0;box-shadow:0 0 24px rgba(31,214,220,.45),0 0 2px rgba(31,214,220,.7),inset 0 0 14px rgba(31,214,220,.18);transform:translateY(-1px)}
+        .ref-btn-terminal{position:relative;overflow:hidden;isolation:isolate;background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.24) 0%,rgba(31,214,220,.07) 48%,rgba(3,9,10,.92) 100%);border:1.5px solid #2ad8df;text-shadow:0 0 12px rgba(92,240,240,.45);box-shadow:0 0 0 4px rgba(31,214,220,.07),0 0 24px rgba(31,214,220,.38),0 10px 26px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.22),inset 0 0 18px rgba(31,214,220,.18)}
+        /* Inner hairline and top gloss. */
+        .ref-btn-terminal::before{content:"";position:absolute;inset:3px;border-radius:9px;border:1px solid rgba(120,245,245,.20);background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,0) 46%);pointer-events:none;z-index:-1}
+        /* Light sweep on hover. */
+        .ref-btn-terminal::after{content:"";position:absolute;top:0;bottom:0;left:-60%;width:40%;background:linear-gradient(105deg,transparent,rgba(170,255,252,.28),transparent);transform:skewX(-18deg);transition:left .6s ease;pointer-events:none}
+        .ref-btn-terminal:hover::after{left:120%}
+        .ref-btn-terminal:hover{border-color:#6ff3f3;box-shadow:0 0 0 4px rgba(31,214,220,.10),0 0 32px rgba(31,214,220,.5),0 12px 28px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.28),inset 0 0 22px rgba(31,214,220,.24);transform:translateY(-1px)}
         .ref-btn-scan{background:rgba(3,4,5,.94);border:2px solid rgba(190,196,200,.34)}
         .ref-btn-scan:hover{border-color:rgba(220,226,230,.5);background:rgba(12,14,16,.95);transform:translateY(-1px)}
         .ref-btn:focus-visible{outline:2px solid #5cf0f0;outline-offset:3px}
         @media(max-width:767px){.ref-home-shell{min-height:max(600px,92svh);padding-top:72px}.ref-bg{background-position:58% center}.ref-badge{gap:10px}}
         @media(max-width:480px){.ref-ctas{flex-direction:column;width:100%;max-width:320px}.ref-btn{width:100%}}
-        @media(prefers-reduced-motion:reduce){.ref-btn{transition:none}}
+        @media(prefers-reduced-motion:reduce){.ref-btn,.ref-btn-terminal::after{transition:none}}
       `}</style>
     </>
   )
