@@ -64,13 +64,13 @@ describe('resolveWalletLpPositions', () => {
             : { id: r.id, result: positionsHex({ token0: WETH, token1: USDC, tickLower: tick - 600, tickUpper: tick + 600, liquidity }) }
         })
       }
-      const req = body as { params: [{ toAddress: string; contractAddresses: string[] }] }
-      calls.push(`transfers:${req.params[0].toAddress}:${req.params[0].contractAddresses[0]}`)
-      if (req.params[0].toAddress !== ZAPPER || req.params[0].contractAddresses[0] !== SLIPSTREAM) return { result: { transfers: [] } }
+      const req = body as { params: [{ toAddress: string }] }
+      calls.push(`transfers:${req.params[0].toAddress}`)
+      if (req.params[0].toAddress !== ZAPPER) return { result: { transfers: [] } }
       return { result: { transfers: [
-        { hash: OWN_TX, erc721TokenId: '0x1', blockNum: '0x10' },
-        { hash: OWN_TX, erc721TokenId: '0x2', blockNum: '0x11' },
-        { hash: OTHER_TX, erc721TokenId: '0x3', blockNum: '0x12' }, // another user's mint through the same zapper
+        { hash: OWN_TX, erc721TokenId: '0x1', blockNum: '0x10', rawContract: { address: SLIPSTREAM } },
+        { hash: OWN_TX, erc721TokenId: '0x2', blockNum: '0x11', rawContract: { address: SLIPSTREAM } },
+        { hash: OTHER_TX, erc721TokenId: '0x3', blockNum: '0x12', rawContract: { address: SLIPSTREAM } }, // another user's mint through the same zapper
       ] } }
     }
     return { fn, calls }
@@ -126,7 +126,7 @@ describe('resolveWalletLpPositions: read failures and older positions', () => {
     const transfers = Array.from({ length: 40 }, (_, k) => {
       const i = k + 1
       keys.add(`base:${own(i)}`)
-      return { hash: own(i), erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}` }
+      return { hash: own(i), erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}`, rawContract: { address: SLIPSTREAM } }
     })
     const rpc = async (body: unknown) => {
       if (Array.isArray(body)) {
@@ -135,8 +135,8 @@ describe('resolveWalletLpPositions: read failures and older positions', () => {
           ? { id: r.id, result: `0x${w(r.params[0].to === WETH ? 18 : 6)}` }
           : { id: r.id, ...readPosition(Number(BigInt(`0x${r.params[0].data.slice(10)}`))) })
       }
-      const req = body as { params: [{ toAddress: string; contractAddresses: string[] }] }
-      return { result: { transfers: req.params[0].toAddress === ZAPPER && req.params[0].contractAddresses[0] === SLIPSTREAM ? transfers : [] } }
+      const req = body as { params: [{ toAddress: string }] }
+      return { result: { transfers: req.params[0].toAddress === ZAPPER ? transfers : [] } }
     }
     return { rpc, keys }
   }
@@ -174,7 +174,7 @@ describe('resolveWalletLpPositions: Aerodrome burned-position revert', () => {
       const i = k + 1
       const hash = `0x${i.toString(16).padStart(64, '0')}`
       keys.add(`base:${hash}`)
-      return { hash, erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}` }
+      return { hash, erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}`, rawContract: { address: SLIPSTREAM } }
     })
     const tick = Math.round(Math.log(2500 * 1e-12) / Math.log(1.0001))
     const rpc = async (body: unknown) => {
@@ -188,8 +188,8 @@ describe('resolveWalletLpPositions: Aerodrome burned-position revert', () => {
             : { id: r.id, error: { code: 3, message: 'execution reverted: ID' } }
         })
       }
-      const req = body as { params: [{ toAddress: string; contractAddresses: string[] }] }
-      return { result: { transfers: req.params[0].toAddress === ZAPPER && req.params[0].contractAddresses[0] === SLIPSTREAM ? transfers : [] } }
+      const req = body as { params: [{ toAddress: string }] }
+      return { result: { transfers: req.params[0].toAddress === ZAPPER ? transfers : [] } }
     }
     const r = await resolveWalletLpPositions({
       walletAddress: WALLET, liquidityTxKeys: keys, counterparties: [ZAPPER], rpc,
@@ -200,5 +200,66 @@ describe('resolveWalletLpPositions: Aerodrome burned-position revert', () => {
     assert.equal(r.openPositions, 1)
     assert.equal(r.positions[0].tokenId, '2')
     assert.equal(r.status, 'ok')
+  })
+})
+
+describe('resolveWalletLpPositions: managers found from the wallet\'s own mints', () => {
+  const tick = Math.round(Math.log(2500 * 1e-12) / Math.log(1.0001))
+  // Production 0xd40e…b811: the strategy moved to a second Slipstream manager; every position on the
+  // listed one was burned, so only reading by contract list reported "0 open".
+  const NEW_NPM = '0xe1f8cd9ac4e4a65f54f38a5cdafca44f6dd68b53'
+  const NFT = '0x1111111111111111111111111111111111111111'
+  const tx = (i: number) => `0x${i.toString(16).padStart(64, '0')}`
+  const transfers = [
+    { hash: tx(1), erc721TokenId: '0x1', blockNum: '0x1', rawContract: { address: SLIPSTREAM } },
+    { hash: tx(2), erc721TokenId: '0x7', blockNum: '0x2', rawContract: { address: NEW_NPM } },
+    { hash: tx(3), erc721TokenId: '0x9', blockNum: '0x3', rawContract: { address: NFT } }, // some other NFT, no positions()
+  ]
+  const keys = new Set([1, 2, 3].map((i) => `base:${tx(i)}`))
+  const rpc = async (body: unknown) => {
+    if (Array.isArray(body)) {
+      const reqs = body as Array<{ id: number; params: [{ to: string; data: string }] }>
+      return reqs.map((r) => {
+        if (r.params[0].data === '0x313ce567') return { id: r.id, result: `0x${w(r.params[0].to === WETH ? 18 : 6)}` }
+        if (r.params[0].to === SLIPSTREAM) return { id: r.id, error: { message: 'execution reverted: ID' } }
+        if (r.params[0].to === NEW_NPM) return { id: r.id, result: positionsHex({ token0: WETH, token1: USDC, tickLower: tick - 600, tickUpper: tick + 600, liquidity: BigInt(1e15) }) }
+        return { id: r.id, result: `0x${w(1)}` }
+      })
+    }
+    const req = body as { params: [{ toAddress: string; contractAddresses?: string[] }] }
+    assert.equal(req.params[0].contractAddresses, undefined, 'discovery is not limited to listed managers')
+    return { result: { transfers: req.params[0].toAddress === ZAPPER ? transfers : [] } }
+  }
+
+  it('finds and values an open position on a manager that is not listed', async () => {
+    const r = await resolveWalletLpPositions({ walletAddress: WALLET, liquidityTxKeys: keys, counterparties: [ZAPPER], rpc, priceUsd: (t) => (t === WETH ? 2500 : t === USDC ? 1 : null) })
+    assert.deepEqual(r.positionManagers.sort(), [NEW_NPM, NFT, SLIPSTREAM].sort())
+    assert.equal(r.openPositions, 1)
+    assert.equal(r.positions[0].positionManager, NEW_NPM)
+    assert.equal(r.positions[0].protocol, 'unlisted_manager')
+    assert.ok(r.totalValueUsd > 0)
+    assert.equal(r.burnedPositions, 1)
+    assert.equal(r.positionReadErrors, 1, 'the non-position NFT is a read error, never an open position')
+  })
+
+  it('decodePositions rejects returns no position manager can produce', () => {
+    assert.equal(decodePositions(positionsHex({ token0: USDC, token1: WETH, tickLower: -10, tickUpper: 10, liquidity: BigInt(1) })), null, 'unsorted tokens')
+    assert.equal(decodePositions(positionsHex({ token0: WETH, token1: USDC, tickLower: 10, tickUpper: 10, liquidity: BigInt(1) })), null, 'empty tick range')
+  })
+
+  it('a budget stop before any open position is found is partial, not "none open"', async () => {
+    const many = Array.from({ length: 40 }, (_, k) => ({ hash: tx(100 + k), erc721TokenId: `0x${(100 + k).toString(16)}`, blockNum: `0x${(100 + k).toString(16)}`, rawContract: { address: SLIPSTREAM } }))
+    const manyKeys = new Set(many.map((t) => `base:${t.hash}`))
+    let ethCalls = 0
+    const burnedRpc = async (body: unknown) => Array.isArray(body)
+      ? (body as Array<{ id: number }>).map((r) => ({ id: r.id, error: { message: 'execution reverted: ID' } }))
+      : { result: { transfers: (body as { params: [{ toAddress: string }] }).params[0].toAddress === ZAPPER ? many : [] } }
+    const r = await resolveWalletLpPositions({
+      walletAddress: WALLET, liquidityTxKeys: manyKeys, counterparties: [ZAPPER], rpc: burnedRpc, priceUsd: () => 1,
+      consume: (m) => m !== 'eth_call' || ++ethCalls <= 1,
+    })
+    assert.equal(r.positionsChecked, 30)
+    assert.equal(r.status, 'partial')
+    assert.equal(r.reason, 'position_reads_stopped_by_budget')
   })
 })

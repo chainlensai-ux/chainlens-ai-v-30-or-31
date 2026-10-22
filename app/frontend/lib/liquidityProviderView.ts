@@ -28,6 +28,8 @@ export function buildLiquidityProviderView(
   const positionsNote = !positions || positions.status === 'not_attempted' || positions.status === 'unavailable'
     || (openPositions === 0 && (positions.positionReadErrors ?? 0) > 0)
     ? 'Open positions could not be read on this scan.'
+    : openPositions === 0 && positions.reason === 'position_reads_stopped_by_budget'
+      ? `Checked the newest ${positions.positionsChecked} of ${positions.mintsFound} positions this wallet minted; none are still open. Older ones were not checked on this scan.`
     : openPositions === 0
       ? 'No open positions found from the liquidity transactions in this scan window.'
       : pricedPositions < openPositions

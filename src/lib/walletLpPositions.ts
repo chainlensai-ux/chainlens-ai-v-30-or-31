@@ -17,6 +17,9 @@ const DECIMALS_SELECTOR = '0x313ce567' // decimals()
 
 // Base NonfungiblePositionManagers whose positions() return the same 12-word layout (Slipstream has
 // int24 tickSpacing where Uniswap V3 has uint24 fee). Same addresses as lib/server/lpProof.ts.
+// Known managers only name the protocol: discovery reads every NFT minted in the wallet's own liquidity
+// transactions, so a manager not listed here (Aerodrome deploys new Slipstream managers alongside new
+// factories) is still found, and counts only if its positions() answers in this exact layout.
 export const BASE_POSITION_MANAGERS: Readonly<Record<string, 'aerodrome_slipstream' | 'uniswap_v3'>> = {
   '0x827922686190790b37229fd06084350e74485b72': 'aerodrome_slipstream',
   '0x03a520b32c04bf3beef7beb72e919cf822ed34f1': 'uniswap_v3',
@@ -25,6 +28,8 @@ export const BASE_POSITION_MANAGERS: Readonly<Record<string, 'aerodrome_slipstre
 export const MAX_LP_POSITION_LOOKUPS = 30
 export const MAX_LP_POSITION_BATCHES = 3
 export const MAX_LP_DISCOVERY_ADDRESSES = 4
+/** Most recent NFT mints read per discovery address (Alchemy's per-call maximum). */
+export const MAX_LP_DISCOVERY_TRANSFERS = 1000
 export const LP_POSITIONS_BUDGET_MS = 8_000
 
 export type DecodedPosition = {
@@ -39,7 +44,7 @@ export type DecodedPosition = {
 
 export type WalletLpPosition = {
   positionManager: string
-  protocol: 'aerodrome_slipstream' | 'uniswap_v3'
+  protocol: 'aerodrome_slipstream' | 'uniswap_v3' | 'unlisted_manager'
   tokenId: string
   mintTxHash: string
   token0: string
@@ -58,6 +63,8 @@ export type WalletLpPositionsSummary = {
   pricedPositions: number
   totalValueUsd: number
   mintsFound: number
+  /** Distinct contracts that minted position NFTs in the wallet's own liquidity transactions. */
+  positionManagers: string[]
   closedPositionsSkipped: number
   /** How the checked positions came back: burned (reverted), zero liquidity, or a failed read. */
   positionsChecked: number
@@ -69,7 +76,7 @@ export type WalletLpPositionsSummary = {
 }
 
 export const emptyLpPositionsSummary = (status: WalletLpPositionsSummary['status'], reason: string | null): WalletLpPositionsSummary => ({
-  status, reason, positions: [], openPositions: 0, pricedPositions: 0, totalValueUsd: 0, mintsFound: 0, closedPositionsSkipped: 0, rpcCalls: 0,
+  status, reason, positions: [], openPositions: 0, pricedPositions: 0, totalValueUsd: 0, mintsFound: 0, positionManagers: [], closedPositionsSkipped: 0, rpcCalls: 0,
   positionsChecked: 0, burnedPositions: 0, zeroLiquidityPositions: 0, positionReadErrors: 0, sampleReadError: null,
 })
 
@@ -82,10 +89,15 @@ function signed24(wordHex: string): number {
   return Number(v >= BigInt(0x800000) ? v - BigInt(0x1000000) : v)
 }
 
-/** PURE. Decodes a positions(uint256) return value; null for any other shape. */
+const ZERO_TOKEN = `0x${'0'.repeat(40)}`
+
+/**
+ * PURE. Decodes a positions(uint256) return value; null for any other shape, including one no
+ * V3-style manager can return (unsorted or zero tokens, tickLower >= tickUpper).
+ */
 export function decodePositions(hex: string | null | undefined): DecodedPosition | null {
   if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]*$/.test(hex) || hex.length !== 2 + 12 * 64) return null
-  return {
+  const decoded = {
     token0: `0x${word(hex, 2).slice(24)}`.toLowerCase(),
     token1: `0x${word(hex, 3).slice(24)}`.toLowerCase(),
     tickLower: signed24(word(hex, 5)),
@@ -94,6 +106,9 @@ export function decodePositions(hex: string | null | undefined): DecodedPosition
     tokensOwed0: BigInt(`0x${word(hex, 10)}`),
     tokensOwed1: BigInt(`0x${word(hex, 11)}`),
   }
+  if (decoded.token0 === ZERO_TOKEN || decoded.token1 === ZERO_TOKEN || decoded.token0 >= decoded.token1) return null
+  if (decoded.tickLower >= decoded.tickUpper) return null
+  return decoded
 }
 
 /**
@@ -159,26 +174,27 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
     type Mint = { manager: string; tokenId: bigint; txHash: string; blockNum: number }
     const mints = new Map<string, Mint>()
     let discoveryIncomplete = false
-    for (const manager of Object.keys(BASE_POSITION_MANAGERS)) {
-      for (const to of addresses) {
-        if (now() > deadline || !consume('alchemy_getAssetTransfers')) { discoveryIncomplete = true; continue }
-        summary.rpcCalls += 1
-        const response = asArray(await input.rpc({
-          jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
-          params: [{ fromAddress: ZERO_ADDRESS, toAddress: to, contractAddresses: [manager], category: ['erc721'], order: 'desc', maxCount: '0x64', withMetadata: false }],
-        }))[0]
-        const transfers = (response?.result as { transfers?: unknown } | undefined)?.transfers
-        if (!Array.isArray(transfers)) { discoveryIncomplete = true; continue }
-        for (const t of transfers as Array<Record<string, unknown>>) {
-          const txHash = typeof t.hash === 'string' ? t.hash.toLowerCase() : null
-          const idHex = typeof t.erc721TokenId === 'string' ? t.erc721TokenId : typeof t.tokenId === 'string' ? t.tokenId : null
-          if (!txHash || !idHex || !ownTxHashes.has(txHash)) continue
-          const tokenId = BigInt(idHex)
-          mints.set(`${manager}:${tokenId}`, { manager, tokenId, txHash, blockNum: typeof t.blockNum === 'string' ? Number(BigInt(t.blockNum)) : 0 })
-        }
+    for (const to of addresses) {
+      if (now() > deadline || !consume('alchemy_getAssetTransfers')) { discoveryIncomplete = true; continue }
+      summary.rpcCalls += 1
+      const response = asArray(await input.rpc({
+        jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers',
+        params: [{ fromAddress: ZERO_ADDRESS, toAddress: to, category: ['erc721'], order: 'desc', maxCount: `0x${MAX_LP_DISCOVERY_TRANSFERS.toString(16)}`, withMetadata: false }],
+      }))[0]
+      const transfers = (response?.result as { transfers?: unknown } | undefined)?.transfers
+      if (!Array.isArray(transfers)) { discoveryIncomplete = true; continue }
+      for (const t of transfers as Array<Record<string, unknown>>) {
+        const txHash = typeof t.hash === 'string' ? t.hash.toLowerCase() : null
+        const idHex = typeof t.erc721TokenId === 'string' ? t.erc721TokenId : typeof t.tokenId === 'string' ? t.tokenId : null
+        const contract = (t.rawContract as { address?: unknown } | undefined)?.address
+        const manager = typeof contract === 'string' && /^0x[0-9a-fA-F]{40}$/.test(contract) ? contract.toLowerCase() : null
+        if (!txHash || !idHex || !manager || !ownTxHashes.has(txHash)) continue
+        const tokenId = BigInt(idHex)
+        mints.set(`${manager}:${tokenId}`, { manager, tokenId, txHash, blockNum: typeof t.blockNum === 'string' ? Number(BigInt(t.blockNum)) : 0 })
       }
     }
     summary.mintsFound = mints.size
+    summary.positionManagers = [...new Set([...mints.values()].map((m) => m.manager))]
     if (mints.size === 0) {
       return { ...summary, status: discoveryIncomplete ? 'unavailable' : 'ok', reason: discoveryIncomplete ? 'position_discovery_failed' : 'no_positions_minted_in_wallet_transactions' }
     }
@@ -232,6 +248,8 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
         const allFailed = summary.positionReadErrors === summary.positionsChecked
         return { ...summary, status: allFailed ? 'unavailable' : 'partial', reason: allFailed ? 'position_reads_failed' : 'some_position_reads_failed' }
       }
+      // Stopped before reaching every mint: closed so far is not the same as none open.
+      if (summary.reason === 'position_reads_stopped_by_budget') summary.status = 'partial'
       return summary
     }
 
@@ -254,7 +272,7 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
       const p0 = input.priceUsd(position.token0)
       const p1 = input.priceUsd(position.token1)
       const base = {
-        positionManager: mint.manager, protocol: BASE_POSITION_MANAGERS[mint.manager], tokenId: mint.tokenId.toString(), mintTxHash: mint.txHash,
+        positionManager: mint.manager, protocol: BASE_POSITION_MANAGERS[mint.manager] ?? 'unlisted_manager', tokenId: mint.tokenId.toString(), mintTxHash: mint.txHash,
         token0: position.token0, token1: position.token1,
       }
       if (d0 == null || d1 == null || p0 == null || p1 == null || !(p0 > 0) || !(p1 > 0)) {

@@ -35,3 +35,12 @@ describe('buildLiquidityProviderView', () => {
     assert.match(buildLiquidityProviderView(activity(true), positions, 100)!.positionsNote!, /1 of 3 positions/)
   })
 })
+
+it('a budget-stopped read says how many positions were checked, not "no open positions"', () => {
+  const view = buildLiquidityProviderView(
+    { lpStrategyWallet: true, liquidityAddTxs: 2017, liquidityRemoveTxs: 2260, zapDepositTxs: 409, zapWithdrawTxs: 272, totalTxs: 5734, liquidityTxShare: 0.746, liquidityTokens: [] },
+    { ...emptyLpPositionsSummary('partial', 'position_reads_stopped_by_budget'), mintsFound: 177, positionsChecked: 30, burnedPositions: 30 },
+    32325.8,
+  )
+  assert.match(view!.positionsNote!, /newest 30 of 177/)
+})
