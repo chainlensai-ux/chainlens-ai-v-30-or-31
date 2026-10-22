@@ -543,9 +543,11 @@ export type AcceptedEvidenceBatchResult = {
 const DEFAULT_BATCH_READ_CONCURRENCY = 8
 // MGET BATCHING: a heavy wallet needs ~2,700 accepted-evidence keys; one GET each at 8-way
 // concurrency took ~27s in production. One MGET per chunk of keys returns the same raw values,
-// validated by exactly the same per-identity checks the single-key readers apply.
-export const ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE = 100
-const ACCEPTED_EVIDENCE_MGET_CONCURRENCY = 4
+// validated by exactly the same per-identity checks the single-key readers apply. 100 keys x 4 in
+// flight still took 8.2s for an LP wallet's 8,434 keys (~22 sequential rounds); 250 x 8 is ~5 rounds,
+// each request still far under Upstash's 1 MB request limit (a key is ~150 bytes).
+export const ACCEPTED_EVIDENCE_MGET_CHUNK_SIZE = 250
+const ACCEPTED_EVIDENCE_MGET_CONCURRENCY = 8
 const ACCEPTED_EVIDENCE_MGET_TIMEOUT_MS = 5_000
 
 function mgetWithTimeout(mget: NonNullable<AcceptedEvidenceKvLike['mget']>, keys: string[]): Promise<unknown[]> {

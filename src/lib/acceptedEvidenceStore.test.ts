@@ -416,15 +416,15 @@ describe('readAcceptedEvidenceBatch — MGET path (deep-scan speed fix)', () => 
 
   it('returns exactly what per-key reads return, using one MGET per chunk instead of one GET per key', async () => {
     const { kv, base, calls } = mgetKv()
-    const identities: AcceptedEvidenceIdentity[] = Array.from({ length: 250 }, (_, i) => ({ chain: 'base', token: `0x${i}`, txHash: `0xtx${i}`, side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }))
+    const identities: AcceptedEvidenceIdentity[] = Array.from({ length: 600 }, (_, i) => ({ chain: 'base', token: `0x${i}`, txHash: `0xtx${i}`, side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }))
     for (const identity of identities.filter((_, i) => i % 3 === 0)) {
       await writeAcceptedEvidence(base, buildAcceptedEvidenceEnvelope({ identity, priceUsd: 2, valueUsd: 2, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
     }
     const viaMget = await readAcceptedEvidenceBatch(kv, identities, 0)
     const viaGet = await readAcceptedEvidenceBatch(base, identities, 0)
     assert.equal(calls.get, 0)
-    assert.equal(calls.mget, 3, '250 keys in chunks of 100')
-    assert.equal(calls.mgetKeys, 250)
+    assert.equal(calls.mget, 3, '600 keys in chunks of 250')
+    assert.equal(calls.mgetKeys, 600)
     assert.deepEqual([...viaMget.byKey.entries()].sort(), [...viaGet.byKey.entries()].sort())
   })
 

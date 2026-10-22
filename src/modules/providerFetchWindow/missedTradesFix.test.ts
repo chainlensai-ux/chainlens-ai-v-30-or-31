@@ -136,3 +136,22 @@ test('a history over the event cap still reports a contiguous covered range (was
   const directions = new Set(r.events.map((e) => (e.fromAddress === W.toLowerCase() ? 'out' : 'in')))
   assert.equal(directions.size, 2, 'both directions keep their rows of the covered range')
 })
+
+test('native history: both directions are in flight together, rows still come back sent-then-received', async () => {
+  mockPages({ 'external:from': [{ count: 2, ageDays: 3 }], 'internal:to': [{ count: 3, ageDays: 3 }] })
+  const mocked = global.fetch
+  let active = 0
+  let maxActive = 0
+  global.fetch = (async (url: unknown, init?: { body?: string }) => {
+    active++; maxActive = Math.max(maxActive, active)
+    // The sent (external) lookup answers last, so arrival order differs from the result order.
+    const slow = String(init?.body ?? '').includes('"external"')
+    await new Promise((resolve) => setTimeout(resolve, slow ? 20 : 5))
+    active--
+    return (mocked as unknown as (u: unknown, i?: unknown) => Promise<Response>)(url, init)
+  }) as unknown as typeof fetch
+  const r = await fetchAlchemyNativeRawEvents('base', W, 90)
+  assert.equal(maxActive, 2)
+  assert.equal(r.events.length, 5)
+  assert.deepEqual(r.events.map((e) => e.fromAddress === W.toLowerCase() ? 'sent' : 'received'), ['sent', 'sent', 'received', 'received', 'received'])
+})

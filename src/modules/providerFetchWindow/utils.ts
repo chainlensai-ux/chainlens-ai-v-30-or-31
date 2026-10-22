@@ -1070,7 +1070,6 @@ export async function fetchAlchemyNativeRawEvents(
   const baseUrl = alchemyBaseUrl(chain)
   if (!baseUrl) return { events: [], calls: 0, failedCalls: 0, moreAvailable: false }
   const cutoff = windowCutoffMs(windowDays)
-  const events: RawProviderEvent[] = []
   let calls = 0
   let failedCalls = 0
   let moreAvailable = false
@@ -1102,7 +1101,7 @@ export async function fetchAlchemyNativeRawEvents(
       return null
     }
   }
-  const run = async (direction: 'from' | 'to', category: string) => {
+  const run = async (direction: 'from' | 'to', category: string, events: RawProviderEvent[]) => {
     let pageKey: string | undefined
     for (let page = 0; page < ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION; page += 1) {
       const result = await one(direction, category, pageKey)
@@ -1132,12 +1131,17 @@ export async function fetchAlchemyNativeRawEvents(
       const next = typeof result.pageKey === 'string' && result.pageKey.length > 0 ? result.pageKey : undefined
       if (!next || (oldest !== null && oldest < cutoff)) return
       pageKey = next
-      moreAvailable = page + 1 >= ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION
+      if (page + 1 >= ALCHEMY_NATIVE_MAX_PAGES_PER_DIRECTION) moreAvailable = true
     }
   }
-  // Sequential: the history path runs at concurrency 1 to stay clear of Alchemy rate limits.
-  await run('from', 'external')
-  await run('to', 'internal')
+  // The two directions run side by side (at most 2 requests in flight, after the token history has
+  // finished): `internal` lookups are slow on Alchemy's side (production: ~15s for 4 calls one after
+  // the other). Each direction fills its own list; joined in the old order (sent, then received)
+  // and capped as before, so the rows are the same.
+  const sent: RawProviderEvent[] = []
+  const received: RawProviderEvent[] = []
+  await Promise.all([run('from', 'external', sent), run('to', 'internal', received)])
+  const events = [...sent, ...received].slice(0, MAX_RAW_EVENTS_PER_PROVIDER)
   return { events, calls, failedCalls, moreAvailable, lastError }
 }
 

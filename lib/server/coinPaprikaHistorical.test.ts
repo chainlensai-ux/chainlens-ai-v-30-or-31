@@ -7,6 +7,7 @@ import {
   rankCoinPaprikaRequirements,
   resolveCoinPaprikaHistorical,
   COINPAPRIKA_HARD_MAX_CALLS,
+  COINPAPRIKA_CONCURRENCY,
   type CoinPaprikaRequirement,
 } from './coinPaprikaHistorical'
 
@@ -379,4 +380,29 @@ test('HARD ASSERTION: once the cap is exhausted remaining requirements fail clos
   assert.equal(typeof result.audit.callsSucceeded, 'number')
   assert.equal(typeof result.audit.callsFailed, 'number')
   delete process.env.COINPAPRIKA_MAX_CALLS_PER_SCAN
+})
+
+test('lookups overlap (up to COINPAPRIKA_CONCURRENCY) and return the same evidence/examples as one at a time', async () => {
+  // Production 0xd40e…b811: 49 sequential calls took 13.6s.
+  process.env.COINPAPRIKA_API_KEY = 'test'
+  // Distinct leading bytes so the mock's coin ids (first 8 hex chars) differ.
+  const many = Array.from({ length: 12 }, (_, i) => requirement({ contractAddress: `0x${(i + 1).toString(16).padStart(2, '0').repeat(20)}`, notionalUsd: 100 + i }))
+  let active = 0
+  let maxActive = 0
+  const slowFetch = async (input: string | URL | Request) => {
+    active++; maxActive = Math.max(maxActive, active)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    active--
+    return contractAndDailyPriceFetch(input)
+  }
+  clearCoinPaprikaCachesForTests()
+  const parallel = await resolveCoinPaprikaHistorical(many, { fetchImpl: slowFetch })
+  assert.ok(maxActive > 1 && maxActive <= COINPAPRIKA_CONCURRENCY, `max in flight ${maxActive}`)
+  clearCoinPaprikaCachesForTests()
+  const ranked = rankCoinPaprikaRequirements(many)
+  assert.deepEqual(parallel.audit.examples.map((e) => e.tokenAddress), ranked.map((r) => r.contractAddress.toLowerCase()))
+  assert.equal(parallel.evidence.size, 12)
+  assert.deepEqual([...parallel.evidence.keys()], ranked.map((r) => `coin-${r.contractAddress.toLowerCase().slice(2, 10)}:2024-01-02`))
+  assert.equal(parallel.audit.callsAttempted, 24)
+  delete process.env.COINPAPRIKA_API_KEY
 })

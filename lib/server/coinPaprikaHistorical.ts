@@ -90,6 +90,9 @@ const inFlight = new Map<string, Promise<unknown>>()
 // it trips this breaker instead of spending the whole per-scan budget on identical refusals.
 const accessDenied = new Map<string, Cached<string>>()
 
+/** Requirements resolved at once; keyless CoinPaprika answers ~280 ms, so 3 stays near 10 req/s. */
+export const COINPAPRIKA_CONCURRENCY = 3
+
 export function coinPaprikaPlatformForChain(chainId: string): string | null {
   const chain = chainId.toLowerCase()
   if (chain === '1' || chain === 'eth' || chain === 'ethereum' || chain === 'eth-mainnet') return 'eth-ethereum'
@@ -234,8 +237,13 @@ export async function resolveCoinPaprikaHistorical(
     }
   }
 
-  for (const r of ranked) {
-    if (audit.stoppedBecauseBudget || audit.stoppedBecauseAccessDenied) break
+  // Up to COINPAPRIKA_CONCURRENCY requirements in flight (was one at a time: 49 calls took 13.6s).
+  // Dedupe (`seen`) and the budget check run with no await in between, so neither can be raced;
+  // examples and evidence are put back in ranked order so the output matches a sequential run.
+  const examplesByRank: Array<{ rank: number; example: (typeof audit.examples)[number] }> = []
+  const evidenceRank = new Map<string, number>()
+  const processRequirement = async (r: CoinPaprikaRequirement, rank: number): Promise<void> => {
+    if (audit.stoppedBecauseBudget || audit.stoppedBecauseAccessDenied) return
     const platform = coinPaprikaPlatformForChain(r.chainId)!
     const address = r.contractAddress.toLowerCase()
     const identityKey = `${platform}:${address}`
@@ -269,15 +277,15 @@ export async function resolveCoinPaprikaHistorical(
     if (identity.identityStatus !== 'verified' || !identity.coinPaprikaId) {
       drop('identity', identity.identityReason)
       audit.identityRejected++; audit.noIdentityMatchFiltered++; failure(audit, identity.identityReason)
-      audit.examples.push({ chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: null, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'rejected', requestMade, priceResolved: false, lotsCompleted: 0, dropStage: 'identity', dropReason: identity.identityReason })
-      continue
+      examplesByRank.push({ rank, example: { chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: null, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'rejected', requestMade, priceResolved: false, lotsCompleted: 0, dropStage: 'identity', dropReason: identity.identityReason } })
+      return
     }
     audit.identityResolved++
     const requestedMs = Date.parse(r.timestamp)
-    if (!Number.isFinite(requestedMs)) { failure(audit, 'invalid_requested_timestamp'); continue }
+    if (!Number.isFinite(requestedMs)) { failure(audit, 'invalid_requested_timestamp'); return }
     const day = new Date(requestedMs).toISOString().slice(0, 10)
     const requirementKey = `${identity.coinPaprikaId}:${day}`
-    if (seen.has(requirementKey)) continue
+    if (seen.has(requirementKey)) return
     seen.add(requirementKey); audit.uniqueRequestsAfterDedupe++
     audit.historicalRequestsPlanned++
     const priceCacheKey = `${cfg.mode}:${requirementKey}`
@@ -320,13 +328,42 @@ export async function resolveCoinPaprikaHistorical(
       })
     }
     if (priced) {
-      evidence.set(requirementKey, priced); audit.pricesResolved++; audit.pricesApplied++
+      evidence.set(requirementKey, priced); evidenceRank.set(requirementKey, rank); audit.pricesResolved++; audit.pricesApplied++
       // Daily CoinPaprika candles are intentionally partial/unverified under the canonical
       // Wallet Scanner policy. They may make an estimate inspectable, but cannot increase the
       // verified-lot numerator or claim that the 50% gate was crossed.
     } else drop('http', 'historical_price_unavailable')
-    audit.examples.push({ chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: identity.coinPaprikaId, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'verified', requestMade, priceResolved: Boolean(priced), lotsCompleted: 0, dropStage: priced ? 'evidence_quality' : 'price', dropReason: priced ? 'daily_candle_partial_unverified' : 'historical_price_unavailable' })
+    examplesByRank.push({ rank, example: { chainId: r.chainId, tokenAddress: address, symbol: r.symbol ?? null, coinPaprikaId: identity.coinPaprikaId, lotCount: r.lotCount, expectedLotsCompleted: r.lotsCompletedIfResolved, identityStatus: 'verified', requestMade, priceResolved: Boolean(priced), lotsCompleted: 0, dropStage: priced ? 'evidence_quality' : 'price', dropReason: priced ? 'daily_candle_partial_unverified' : 'historical_price_unavailable' } })
   }
+  // Same outcome as the sequential loop: the first requirement runs alone (a 401/402/403 still costs
+  // one call), and a requirement only starts once the budget covers it plus the at most 2 calls
+  // (identity + price) every requirement already in flight may still make. Near the end of the
+  // budget only worker 0 continues, one requirement at a time, in ranked order.
+  let cursor = 0
+  let inFlight = 0
+  let wake: (() => void) | null = null
+  const run = async (rank: number) => {
+    inFlight++
+    try { await processRequirement(ranked[rank], rank) } finally { inFlight--; const w = wake; wake = null; w?.() }
+  }
+  if (ranked.length > 0) { cursor = 1; await run(0) }
+  const worker = async (id: number): Promise<void> => {
+    while (cursor < ranked.length && !audit.stoppedBecauseBudget && !audit.stoppedBecauseAccessDenied) {
+      const headroom = cfg.max - audit.callsAttempted - 2 * inFlight
+      if (headroom < 2 * COINPAPRIKA_CONCURRENCY) {
+        if (id > 0) return
+        // eslint-disable-next-line no-await-in-loop
+        if (inFlight > 0) { await new Promise<void>((resolve) => { wake = resolve }); continue }
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await run(cursor++)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(COINPAPRIKA_CONCURRENCY, Math.max(1, ranked.length - 1)) }, (_, id) => worker(id)))
+  audit.examples = examplesByRank.sort((a, b) => a.rank - b.rank).map((e) => e.example)
+  const orderedEvidence = [...evidence.entries()].sort((a, b) => (evidenceRank.get(a[0]) ?? 0) - (evidenceRank.get(b[0]) ?? 0))
+  evidence.clear()
+  for (const [key, value] of orderedEvidence) evidence.set(key, value)
   audit.examples = audit.examples.slice(0, 20)
   return { evidence, audit }
 }
