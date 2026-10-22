@@ -415,6 +415,59 @@ describe('control flow after 6f2d83c6: V4 token-to-token candidates reach the qu
   })
 })
 
+describe('receipt quote recovery: dust quote legs', () => {
+  // The V4 route cannot be proven (no pool keys), so the lane falls to the quote token's historical USD
+  // price. A quote worth a fraction of a cent is a refund, not the trade's other side.
+  async function runWithQuotePrice(usdPrice: number) {
+    const xPaid = units('1250000')
+    const fee = BigInt(0)
+    const h1 = hop(51, TOKEN_753F, xPaid - fee, NATIVE_CURRENCY, units('0.67'))
+    const h2 = hop(52, NATIVE_CURRENCY, units('0.67'), MID, units('5000'))
+    const h3 = hop(53, MID, units('5000'), CLAW, DD_TARGET)
+    const tx = okTx([transfer(TOKEN_753F, WALLET, ROUTER, xPaid), transfer(TOKEN_753F, ROUTER, PM, xPaid - fee), h1.log, h2.log, h3.log, transfer(CLAW, PM, WALLET, DD_TARGET)])
+    const buyTx = '0xdd4229cccae1f56f4782ffd8de227b45b17b190a9b391f2e42661601fed435fa'
+    const ts = '2026-09-20T10:00:00.000Z'
+    const ev = (o: Partial<NormalizedEvent>): NormalizedEvent => ({ provider: 'alchemy', chain: 'base', txHash: buyTx, timestamp: ts, fromAddress: PM, toAddress: WALLET, contract: CLAW, symbol: '1clawAI', amount: 565818131.2763674, amountRaw: DD_TARGET.toString(), tokenDecimals: 18, direction: 'inbound', ...o })
+    const events = [
+      ev({}),
+      ev({ txHash: '0xselldust', timestamp: '2026-09-21T10:00:00.000Z', direction: 'outbound', fromAddress: WALLET, toAddress: PM }),
+      ev({ txHash: '0xselldust', timestamp: '2026-09-21T10:00:00.000Z', contract: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', symbol: 'USDC', amount: 2500, amountRaw: '2500000000', tokenDecimals: 6, direction: 'unknown', fromAddress: PM, toAddress: ROUTER }),
+    ]
+    const prior = process.env.COINPAPRIKA_HISTORICAL_ENABLED
+    process.env.COINPAPRIKA_HISTORICAL_ENABLED = 'false'
+    const originalWarn = console.warn
+    console.warn = () => undefined
+    try {
+      const result = await priceLotsForWallet({
+        normalizedEvents: events, recoveredEvents: [], priceSources: { primary: () => null, fallback: () => null },
+        receiptQuoteRecovery: {
+          walletAddress: WALLET,
+          fetchTx: async () => tx,
+          resolveV4PoolKeys: async () => new Map(),
+          quoteTokenHistoricalPrice: () => usdPrice,
+        },
+      })
+      return result.receiptQuoteRecoveryAudit.sides.find((s) => s.txHash === buyTx)
+    } finally {
+      console.warn = originalWarn
+      if (prior === undefined) delete process.env.COINPAPRIKA_HISTORICAL_ENABLED; else process.env.COINPAPRIKA_HISTORICAL_ENABLED = prior
+    }
+  }
+
+  it('a quote leg worth under a cent is never applied', async () => {
+    const row = await runWithQuotePrice(1e-12)
+    assert.ok(row, 'the buy side was examined')
+    assert.equal(row!.applied, false)
+    assert.equal(row!.rejectionReason, 'quote_leg_below_min_value')
+  })
+
+  it('a real quote leg is still applied', async () => {
+    const row = await runWithQuotePrice(0.002)
+    assert.equal(row?.applied, true, String(row?.rejectionReason))
+    assert.equal(row?.quoteValueUsd, 2500)
+  })
+})
+
 describe('connected route extraction (production shapes after f3828c8f)', () => {
   const TAX_HOLDER = `0x${'6'.repeat(40)}`
   const OUTSIDER = `0x${'2'.repeat(40)}`

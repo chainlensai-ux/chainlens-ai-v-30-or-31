@@ -77,6 +77,8 @@ import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
 import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
+import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
+import type { WalletLpPositionsSummary } from '@/src/lib/walletLpPositions'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 
@@ -135,6 +137,10 @@ export type WalletV2Report = FinalReport & {
   // test harness path (unrelated to this real route) returns an empty array, and any older cached
   // response predating this field simply won't have it.
   walletConditionMessages?: WalletConditionSection[]
+  // Liquidity activity kept out of PnL, and open LP positions (src/lib/liquidityLegGuard.ts,
+  // src/lib/walletLpPositions.ts) — absent on reports from before they existed.
+  liquidityActivity?: LiquidityActivitySummary
+  lpPositions?: WalletLpPositionsSummary
   // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): additive top-level field on
   // RunWalletScanResult (src/pipeline/types.ts) — real at runtime for every scan (finalReportAssembler
   // always attaches it), only newly declared here so PnlStatusCard can read the real verified-lot-

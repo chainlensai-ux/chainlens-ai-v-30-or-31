@@ -71,6 +71,11 @@ function alchemyApiKey(chain: SupportedChain): string {
   return verified ? resolveEnvKey(verified.keyNames) : ''
 }
 
+/** The Alchemy RPC URL for a chain, or null when the chain is unsupported or has no key configured. */
+export function alchemyRpcUrlFor(chain: SupportedChain): string | null {
+  return alchemyApiKey(chain) ? alchemyBaseUrl(chain) : null
+}
+
 function alchemyBaseUrl(chain: SupportedChain): string | null {
   const verified = ALCHEMY_VERIFIED_CHAINS[chain]
   if (!verified) return null

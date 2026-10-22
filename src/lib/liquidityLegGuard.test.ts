@@ -100,3 +100,61 @@ describe('liquidity transactions handed to FIFO', () => {
     assert.deepEqual([...guard.liquidityTxKeys].sort(), ['base:0xadd', 'base:0xrm2'])
   })
 })
+
+describe('single-token zaps (production: 0xb847cd… sends 6,508 tokens to a zapper, 1.5e-12 comes back)', () => {
+  const ZAPPER = '0x3295f76956165dea7acbb6619d69d6dee57cf517'
+  const WALLET = '0xd40e93db1160cd9a6bef2f9fd8e81b9beddeb811'
+  const UNIVERSAL_ROUTER = '0x198ef79f1f515f02dfe9e3115ed9fc07183f02fc'
+  const leg = (txHash: string, contract: string, direction: 'inbound' | 'outbound', amount: number, counterparty: string): NormalizedEvent => ({
+    ...ev(txHash, contract, direction, amount),
+    fromAddress: direction === 'outbound' ? WALLET : counterparty,
+    toAddress: direction === 'outbound' ? counterparty : WALLET,
+  })
+
+  it('a zap deposit is a liquidity add, never a sell', () => {
+    const legs = [leg('0xzap', CHIP, 'outbound', 6508.38, ZAPPER), leg('0xzap', CHIP, 'inbound', 1.5e-12, ZAPPER)]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.zapDepositTxs, 1)
+    assert.ok(guard.liquidityTxKeys.has('base:0xzap'))
+    for (const l of legs) assert.equal(guard.lookup(l), null)
+  })
+
+  it('tokens coming back from the same zapper with nothing sent are the withdrawal', () => {
+    const legs = [
+      leg('0xzap', CHIP, 'outbound', 6508.38, ZAPPER), leg('0xzap', CHIP, 'inbound', 1.5e-12, ZAPPER),
+      leg('0xout', CHIP, 'inbound', 6400, ZAPPER),
+    ]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.zapWithdrawTxs, 1)
+    assert.ok(guard.liquidityTxKeys.has('base:0xout'))
+  })
+
+  it('not a zap: no refund (a plain send), a known router, a refund over 1%, or an output token', () => {
+    const legs = [
+      leg('0xsend', CHIP, 'outbound', 100, ZAPPER),
+      leg('0xur', CHIP, 'outbound', 100, UNIVERSAL_ROUTER), leg('0xur', CHIP, 'inbound', 1e-9, UNIVERSAL_ROUTER),
+      leg('0xbig', CHIP, 'outbound', 100, ZAPPER), leg('0xbig', CHIP, 'inbound', 5, ZAPPER),
+      leg('0xswap', CHIP, 'outbound', 100, ZAPPER), leg('0xswap', CHIP, 'inbound', 1e-9, ZAPPER), leg('0xswap', ZRO, 'inbound', 3, ZAPPER),
+    ]
+    const guard = guardLiquidityLegs(legs, priceEverything)
+    assert.equal(guard.zapDepositTxs, 0)
+    assert.equal(guard.liquidityTxKeys.size, 0)
+  })
+
+  it('an inbound-only transfer from an address the wallet never zapped into stays a buy candidate', () => {
+    const legs = [leg('0xgift', CHIP, 'inbound', 50, '0x1234567890123456789012345678901234567890')]
+    assert.equal(guardLiquidityLegs(legs, priceEverything).zapWithdrawTxs, 0)
+  })
+
+  it('flags an LP-strategy wallet only when liquidity is a large share of a busy history', () => {
+    const busy: NormalizedEvent[] = []
+    for (let i = 0; i < 30; i++) busy.push(leg(`0xz${i}`, CHIP, 'outbound', 100, ZAPPER), leg(`0xz${i}`, CHIP, 'inbound', 1e-9, ZAPPER))
+    for (let i = 0; i < 30; i++) busy.push(ev(`0xs${i}`, USDC, 'outbound', 5), ev(`0xs${i}`, CHIP, 'inbound', 100))
+    const lp = guardLiquidityLegs(busy, priceEverything)
+    assert.equal(lp.lpStrategyWallet, true)
+    assert.equal(lp.liquidityTxShare, 0.5)
+    assert.deepEqual(lp.liquidityTokens, [{ token: CHIP, txs: 30 }])
+    const trader = guardLiquidityLegs(busy.slice(40), priceEverything)
+    assert.equal(trader.lpStrategyWallet, false)
+  })
+})

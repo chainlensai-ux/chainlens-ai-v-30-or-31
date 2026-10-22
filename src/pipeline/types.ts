@@ -9,6 +9,8 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import type { NormalizationError } from '../modules/normalization/types'
 import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { WalletConditionSection } from './walletConditionMessages'
+import type { LiquidityActivitySummary } from '../lib/liquidityLegGuard'
+import type { WalletLpPositionsSummary } from '../lib/walletLpPositions'
 import type { PnlReconciliationSummary } from '../lib/pnlReconciliation'
 import type { ScanDeterminismAudit } from '../lib/scanDeterminismAudit'
 import type { CanonicalSampleManifestAudit } from '../lib/canonicalPnlSampleManifest'
@@ -47,6 +49,10 @@ export type RunWalletScanParams = {
 export type RunWalletScanResult = FinalReport & {
   normalizationErrors: NormalizationError[]
   walletConditionMessages: WalletConditionSection[]
+  // Liquidity adds/removes the scan kept out of trading PnL (src/lib/liquidityLegGuard.ts).
+  liquidityActivity?: LiquidityActivitySummary
+  // Open concentrated-liquidity positions this wallet created, valued now (src/lib/walletLpPositions.ts).
+  lpPositions?: WalletLpPositionsSummary
   // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): runWalletScan() has always
   // returned this at runtime (it spreads `...finalReport`, and finalReportAssembler.assemble()
   // already attaches `reconciliationSummary` — see FinalReportAssemblerOutput) — this type simply

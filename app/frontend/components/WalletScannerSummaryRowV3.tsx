@@ -17,6 +17,8 @@ import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { PnlStatusCard } from './PnlStatusCard'
 import { deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 import { buildWalletScannerViewModel } from '@/app/frontend/lib/buildWalletScannerViewModel'
+import { buildLiquidityProviderView } from '@/app/frontend/lib/liquidityProviderView'
+import { LiquidityProviderCard } from './LiquidityProviderCard'
 
 export type WalletScannerSummaryRowV3Props = {
   report: WalletV2Report
@@ -56,8 +58,10 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
   // displayed portfolio total is independent of realized PnL, and that unverified $0.00 PnL
   // figures were suppressed rather than painted green next to real holdings.
   console.log('[wallet-scanner] walletScannerViewAudit', scannerView.audit)
+  const liquidityView = buildLiquidityProviderView(report.liquidityActivity, report.lpPositions, scannerView.portfolioValueView.totalValueUsd)
 
   return (
+    <>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '16px' }}>
       {/* PortfolioIntelligenceCard already renders its OWN complete card chrome (padding/border/
           background — see that file's own JSX) — not wrapped in `cardStyle` here to avoid a
@@ -103,6 +107,8 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
         />
       </div>
     </div>
+    {liquidityView && <LiquidityProviderCard view={liquidityView} />}
+    </>
   )
 }
 

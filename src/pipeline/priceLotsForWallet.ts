@@ -108,6 +108,9 @@ import type { V4PoolKeyResolver } from '../lib/v4RouteQuote'
 import { classifyReceiptQuoteEvidence, raceCallerDeadline, RECOVERED_RECEIPT_CLASSIFICATIONS, type InternalTransferEvidence, type InternalTransferFetcher, type ReceiptQuoteClassification, type ReceiptQuoteForensics, type ReceiptQuoteResult, type ReceiptQuoteTx, type ReceiptQuoteTxFetcher, type TraceAttempt } from '../lib/receiptQuoteRecovery'
 import { resolveTokenDecimals } from '../modules/normalization/canonicalDecimals'
 
+
+// Smallest quote-leg value receipt quote recovery accepts as the other side of a trade.
+export const MIN_RECEIPT_QUOTE_VALUE_USD = 0.01
 export type PriceLotsCanonicalGapAudit = {
   structuralLots: number
   numericPricedLots: number
@@ -2768,6 +2771,12 @@ export async function priceLotsForWallet(params: {
       row.derivedPriceUsd = derivedPriceUsd
       if (derivedPriceUsd == null || !isSanePrice(derivedPriceUsd) || !(quoteValueUsd > 0)) {
         row.rejectionReason = 'derived_price_out_of_bounds'
+        continue
+      }
+      // A quote leg worth less than a cent is a refund/remainder (an LP zap returning 3e-13 cbBTC), not
+      // the trade's other side: it priced a real exit at ~$0 and recorded it as a near-total loss.
+      if (quoteValueUsd < MIN_RECEIPT_QUOTE_VALUE_USD) {
+        row.rejectionReason = 'quote_leg_below_min_value'
         continue
       }
       const dict = requirement.side === 'entry' ? atTradeTime.costUsd : atTradeTime.proceedsUsd

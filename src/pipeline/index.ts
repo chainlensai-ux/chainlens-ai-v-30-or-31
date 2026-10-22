@@ -62,7 +62,10 @@ import { createChainPoolValidator, createLiveBaseDexPoolValidator, createLiveEth
 import { planSellProofLane, proveSellsFromReceipts, SELL_PROOF_MIN_REMAINING_MS, waitForSnapshotBeforeCutoff, type SellProofCandidate } from '../modules/receiptSwapDecoder/sellReceiptProof'
 import { currentScanContext, traceCoreStageEnd, traceCoreStageStart } from '../lib/scanRunContext'
 import { guardPriceUsdLookup } from '../lib/lotPriceOutlierGuard'
-import { guardLiquidityLegs } from '../lib/liquidityLegGuard'
+import { guardLiquidityLegs, lpStrategyConditionText, summarizeLiquidityActivity } from '../lib/liquidityLegGuard'
+import { emptyLpPositionsSummary, resolveWalletLpPositions } from '../lib/walletLpPositions'
+import { alchemyRpcUrlFor } from '../modules/providerFetchWindow/utils'
+import { tryConsume as tryConsumeProviderCall } from '../modules/providerCost/walletProviderCostLedger'
 import { buildUnpricedLotAudit } from '../lib/unpricedLotAudit'
 import { buildUnmatchedSellAudit } from '../lib/unmatchedSellAudit'
 import { majorMarketUnitPriceUsd } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
@@ -2605,7 +2608,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const guardEvents = [...normalizedEvents, ...canonicalNormalizedEvents, ...recoveredNormalizedForPricing]
   const liquidityGuardedLookup = guardLiquidityLegs(guardEvents, walletPriceLookups.priceUsdLookup)
   // eslint-disable-next-line no-console
-  console.warn(`[pipeline] liquidity leg guard addTxs=${liquidityGuardedLookup.liquidityAddTxs} removeTxs=${liquidityGuardedLookup.liquidityRemoveTxs} rejectedEvents=${liquidityGuardedLookup.rejectedEvents}`)
+  console.warn(`[pipeline] liquidity leg guard addTxs=${liquidityGuardedLookup.liquidityAddTxs} removeTxs=${liquidityGuardedLookup.liquidityRemoveTxs} zapDeposits=${liquidityGuardedLookup.zapDepositTxs} zapWithdrawals=${liquidityGuardedLookup.zapWithdrawTxs} rejectedEvents=${liquidityGuardedLookup.rejectedEvents} liquidityShare=${liquidityGuardedLookup.liquidityTxShare.toFixed(3)} lpStrategyWallet=${liquidityGuardedLookup.lpStrategyWallet}`)
+  const liquidityActivity = summarizeLiquidityActivity(liquidityGuardedLookup)
+  // OPEN LIQUIDITY POSITIONS (src/lib/walletLpPositions.ts): position NFTs minted inside this wallet's own
+  // liquidity transactions and still holding liquidity, valued at current prices. Base only, bounded,
+  // and only for a wallet that actually provides liquidity.
+  const lpPositionsStart = Date.now()
+  const lpRpcUrl = alchemyRpcUrlFor('base')
+  const lpPositions = !lpRpcUrl || liquidityGuardedLookup.liquidityAddTxs < 3
+    ? emptyLpPositionsSummary('not_attempted', !lpRpcUrl ? 'base_rpc_not_configured' : 'too_few_liquidity_transactions')
+    : await resolveWalletLpPositions({
+      walletAddress: params.walletAddress,
+      liquidityTxKeys: liquidityGuardedLookup.liquidityTxKeys,
+      counterparties: liquidityGuardedLookup.liquidityCounterparties,
+      priceUsd: (token) => walletPriceLookups.currentPriceUsdLookup(token, 'base'),
+      consume: (method) => tryConsumeProviderCall({ provider: 'alchemy', endpoint: method, chain: 'base', stage: 'unknown' }),
+      rpc: async (body) => {
+        const res = await fetch(lpRpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5_000) })
+        return res.ok ? res.json() : null
+      },
+    })
+  // eslint-disable-next-line no-console
+  console.warn('[wallet-lp-positions]', { ...lpPositions, positions: lpPositions.positions.slice(0, 5), elapsedMs: Date.now() - lpPositionsStart })
   const guardedPriceLookup = guardPriceUsdLookup(guardEvents, liquidityGuardedLookup.lookup, {
     majorMarketValueUsd: (event) => {
       const unit = majorMarketUnitPriceUsd(event.chain, event.contract, Date.parse(event.timestamp))
@@ -4917,6 +4941,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // eslint-disable-next-line no-console
   console.warn('[walletCondition] inputs', walletConditionInputs)
   const walletConditionMessages = buildWalletConditionMessages(walletConditionInputs)
+  const lpStrategyText = lpStrategyConditionText(liquidityActivity)
+  if (lpStrategyText) walletConditionMessages.unshift({ id: 'lpStrategyWallet', text: lpStrategyText })
   // eslint-disable-next-line no-console
   console.warn('[walletCondition] output', walletConditionMessages)
 
@@ -5070,6 +5096,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     unmatchedSellForensics,
+    liquidityActivity,
+    lpPositions,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
     goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,
