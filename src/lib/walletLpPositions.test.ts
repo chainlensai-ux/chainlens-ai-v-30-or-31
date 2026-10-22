@@ -166,3 +166,39 @@ describe('resolveWalletLpPositions: read failures and older positions', () => {
     assert.equal(r.status, 'ok')
   })
 })
+
+describe('resolveWalletLpPositions: Aerodrome burned-position revert', () => {
+  it('"execution reverted: ID" (Slipstream) counts as burned, so older positions are checked', async () => {
+    const keys = new Set<string>()
+    const transfers = Array.from({ length: 35 }, (_, k) => {
+      const i = k + 1
+      const hash = `0x${i.toString(16).padStart(64, '0')}`
+      keys.add(`base:${hash}`)
+      return { hash, erc721TokenId: `0x${i.toString(16)}`, blockNum: `0x${i.toString(16)}` }
+    })
+    const tick = Math.round(Math.log(2500 * 1e-12) / Math.log(1.0001))
+    const rpc = async (body: unknown) => {
+      if (Array.isArray(body)) {
+        const reqs = body as Array<{ id: number; params: [{ to: string; data: string }] }>
+        return reqs.map((r) => {
+          if (r.params[0].data === '0x313ce567') return { id: r.id, result: `0x${w(r.params[0].to === WETH ? 18 : 6)}` }
+          const id = Number(BigInt(`0x${r.params[0].data.slice(10)}`))
+          return id === 2
+            ? { id: r.id, result: positionsHex({ token0: WETH, token1: USDC, tickLower: tick - 600, tickUpper: tick + 600, liquidity: BigInt(1e15) }) }
+            : { id: r.id, error: { code: 3, message: 'execution reverted: ID' } }
+        })
+      }
+      const req = body as { params: [{ toAddress: string; contractAddresses: string[] }] }
+      return { result: { transfers: req.params[0].toAddress === ZAPPER && req.params[0].contractAddresses[0] === SLIPSTREAM ? transfers : [] } }
+    }
+    const r = await resolveWalletLpPositions({
+      walletAddress: WALLET, liquidityTxKeys: keys, counterparties: [ZAPPER], rpc,
+      priceUsd: (t) => (t === WETH ? 2500 : t === USDC ? 1 : null),
+    })
+    assert.equal(r.positionReadErrors, 0)
+    assert.equal(r.burnedPositions, 34)
+    assert.equal(r.openPositions, 1)
+    assert.equal(r.positions[0].tokenId, '2')
+    assert.equal(r.status, 'ok')
+  })
+})

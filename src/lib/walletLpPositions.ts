@@ -129,6 +129,10 @@ export type ResolveWalletLpPositionsInput = {
 
 type RpcResponse = { id?: unknown; result?: unknown; error?: unknown }
 
+// How a position manager reverts positions() for a burned token: Uniswap V3 says "Invalid token ID",
+// Aerodrome Slipstream reverts with the bare reason "ID" (production: "execution reverted: ID").
+const BURNED_POSITION_ERROR = /invalid token id|(?:^|reverted:?\s*)ID\s*$/i
+
 function errorText(error: unknown): string | null {
   if (error == null) return null
   if (typeof error === 'string') return error.slice(0, 160)
@@ -204,7 +208,7 @@ export async function resolveWalletLpPositions(input: ResolveWalletLpPositionsIn
         summary.positionsChecked += 1
         const response = byId.get(i)
         const errorMessage = errorText(response?.error)
-        if (errorMessage != null && /invalid token id/i.test(errorMessage)) { summary.burnedPositions += 1; continue }
+        if (errorMessage != null && BURNED_POSITION_ERROR.test(errorMessage)) { summary.burnedPositions += 1; continue }
         if (!response || errorMessage != null) {
           summary.positionReadErrors += 1
           summary.sampleReadError ??= errorMessage ?? 'no_response_for_request'
