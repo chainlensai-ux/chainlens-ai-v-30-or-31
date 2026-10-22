@@ -2,9 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import Image from 'next/image'
 import { usePathname } from 'next/navigation'
-import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
+import { type UserPlan } from '@/lib/planFeatures'
 import { PLAN_TOOL_NAV as TIER_COLUMNS } from '@/lib/pricingPlans'
 import { useAccount } from '@/lib/usePlan'
 
@@ -22,8 +21,6 @@ const NAV_LINKS = [
   { href: '/about', label: 'About', prefetch: undefined },
   { href: '/contact', label: 'Contact', prefetch: true },
 ] as const
-
-const BRAND_GRADIENT = 'linear-gradient(94deg, #E053C2 3%, #B666F3 54%, #53F3C3 108%)'
 
 function isActivePath(pathname: string | null, href: string): boolean {
   return pathname === href || (pathname?.startsWith(`${href}/`) ?? false)
@@ -82,25 +79,25 @@ export default function Navbar() {
   return (
     <>
       <style>{`
-        .nav-shell { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 14px 36px rgba(0,0,0,0.36); overflow: hidden; }
+        .nav-shell { position: relative; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 44px rgba(0,0,0,0.42); overflow: hidden; }
         .nav-shell::before {
           content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
-          background: linear-gradient(120deg, rgba(255,255,255,0.10), rgba(182,102,243,0.10) 50%, rgba(255,255,255,0.04));
+          background: linear-gradient(90deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.30) 22%, rgba(255,255,255,0.10) 45%, rgba(255,255,255,0.08) 60%, rgba(255,255,255,0.26) 82%, rgba(255,255,255,0.10) 100%);
           -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
           -webkit-mask-composite: xor; mask-composite: exclude;
         }
 
         /* Left and right take equal shares of the free space so the link group sits centred. */
         .nav-left { flex: 1 1 0; min-width: 0; display: flex; align-items: center; }
-        .nav-links { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+        .nav-links { display: flex; align-items: center; gap: clamp(2px, 0.9vw, 14px); flex: 0 0 auto; }
 
         .nav-link, .tools-btn {
           display: inline-flex; align-items: center; gap: 5px;
-          height: 32px; padding: 0 13px; border-radius: 999px;
+          height: 38px; padding: 0 clamp(8px, 0.8vw, 14px); border-radius: 999px;
           background: transparent; border: 1px solid transparent;
-          color: rgba(255,255,255,0.62);
-          text-decoration: none; font-family: inherit;
-          font-size: 13px; font-weight: 500; letter-spacing: 0.01em;
+          color: rgba(255,255,255,0.90);
+          text-decoration: none; font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
+          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0;
           cursor: pointer; white-space: nowrap;
           transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
@@ -140,15 +137,16 @@ export default function Navbar() {
         }
 
         .btn-signin {
-          padding: 8px 16px;
-          border: 1px solid rgba(255,255,255,0.18);
+          display: inline-flex; align-items: center;
+          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px);
+          border: 1.5px solid rgba(255,255,255,0.20);
           border-radius: 999px;
           background: rgba(255,255,255,0.03);
-          color: rgba(255,255,255,0.88);
-          font-size: 11px; font-weight: 700;
+          color: rgba(255,255,255,0.90);
+          font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
+          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500;
           text-decoration: none;
-          letter-spacing: 0.07em;
-          text-transform: uppercase;
+          letter-spacing: 0;
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
           white-space: nowrap;
           min-width: 0;
@@ -161,23 +159,24 @@ export default function Navbar() {
         }
 
         .btn-access {
-          display: inline-flex; align-items: center; gap: 8px;
-          height: 38px; padding: 0 16px 0 18px; border-radius: 999px;
-          background: rgba(83,243,195,0.05);
-          border: 1px solid rgba(83,243,195,0.55);
-          color: #c9f7ea;
-          font-size: 11px; font-weight: 700;
+          display: inline-flex; align-items: center; gap: 10px;
+          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
+          background: rgba(31,216,200,0.04);
+          border: 1.5px solid rgba(31,216,200,0.85);
+          box-shadow: 0 0 14px rgba(31,216,200,0.18), inset 0 0 10px rgba(31,216,200,0.06);
+          color: #2fe3d2;
+          font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
+          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500;
           text-decoration: none;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
+          letter-spacing: 0;
           transition: border-color 0.18s, background 0.18s, color 0.18s;
           white-space: nowrap;
           flex-shrink: 0;
         }
         .btn-access:hover {
-          border-color: rgba(83,243,195,0.85);
-          background: rgba(83,243,195,0.10);
-          color: #53F3C3;
+          border-color: #3fe9d8;
+          background: rgba(31,216,200,0.09);
+          color: #5ef0e2;
         }
         .btn-access-go { display: inline-flex; transition: transform 0.2s ease; }
         .btn-access:hover .btn-access-go { transform: translateX(2px); }
@@ -220,28 +219,39 @@ export default function Navbar() {
         }
         .mob-tool-link:hover { background: rgba(182,102,243,0.08); border-color: rgba(182,102,243,0.16); color: #fff; }
 
-        /* Account menu chip — compact, avatar-led */
-        .nav-account-chip {
-          transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+        /* Brand monogram: the existing /cl-mark.png shape, filled mint to white. */
+        .nav-mark {
+          display: block; width: clamp(40px, 3.3vw, 54px); aspect-ratio: 300 / 192; flex-shrink: 0;
+          background: linear-gradient(100deg, #1fd8c8 0%, #5fe9da 42%, #ffffff 70%);
+          -webkit-mask: url('/cl-mark.png') center / contain no-repeat;
+          mask: url('/cl-mark.png') center / contain no-repeat;
         }
-        .nav-account-chip:hover {
-          background: rgba(255,255,255,0.06) !important;
-          border-color: rgba(182,102,243,0.42) !important;
+        .nav-wordmark {
+          font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif); font-weight: 500;
+          font-size: clamp(18px, 1.45vw, 24px); letter-spacing: -0.01em; color: #f4f6f7; white-space: nowrap;
         }
-        /* Elite account pill — subtle gold treatment, no animation (static glow only, per the
-           "avoid animating box-shadow/filter" constraint). Higher specificity than the teal
-           default above so it wins for Elite without touching Pro/Free. */
-        .nav-account-chip.nav-account-chip--elite:hover {
-          background: rgba(245,158,11,0.07) !important;
-          border-color: rgba(245,158,11,0.48) !important;
-          box-shadow: inset 0 0 0 1px rgba(245,158,11,0.14), 0 0 16px rgba(245,158,11,0.14) !important;
+
+        /* Plan badge — compact pill, gold edge for Elite (reference), purple for Pro, grey for Free. */
+        .nav-plan-badge {
+          display: inline-flex; align-items: center; justify-content: center;
+          height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.4vw, 24px); border-radius: 999px;
+          font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
+          font-size: clamp(14px, 1.08vw, 18px); font-weight: 500; letter-spacing: 0.01em;
+          text-decoration: none; white-space: nowrap; flex-shrink: 0;
+          background: rgba(10,10,8,0.6);
+          border: 1.5px solid rgba(148,163,184,0.30); color: rgba(226,232,240,0.85);
+          transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
         }
-        /* Pro account pill — purple treatment, same static-glow approach as Elite's gold. */
-        .nav-account-chip.nav-account-chip--pro:hover {
-          background: rgba(139,92,246,0.08) !important;
-          border-color: rgba(139,92,246,0.50) !important;
-          box-shadow: inset 0 0 0 1px rgba(139,92,246,0.14), 0 0 16px rgba(139,92,246,0.14) !important;
+        .nav-plan-badge--elite {
+          border-color: rgba(230,184,72,0.85); color: #f3c64a;
+          box-shadow: 0 0 12px rgba(230,184,72,0.16), inset 0 0 8px rgba(230,184,72,0.06);
         }
+        .nav-plan-badge--elite:hover { border-color: #f0c75a; box-shadow: 0 0 18px rgba(230,184,72,0.26), inset 0 0 10px rgba(230,184,72,0.08); }
+        .nav-plan-badge--pro { border-color: rgba(139,92,246,0.70); color: #c4b5fd; }
+        .nav-plan-badge--pro:hover { border-color: rgba(167,139,250,0.95); }
+        .nav-plan-badge--free:hover { border-color: rgba(203,213,225,0.5); }
+        .nav-plan-trial { font-size: 11px; color: #f3c64a; white-space: nowrap; }
+
         .nav-elite-badge, .nav-pro-badge, .nav-free-badge {
           display: inline-flex; align-items: center; gap: 3px;
           padding: 2px 7px 2px 5px; border-radius: 999px;
@@ -285,15 +295,21 @@ export default function Navbar() {
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
           .nav-outer { padding: 8px 12px !important; }
-          .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; overflow: visible !important; }
+          .nav-shell { height: 56px !important; border-radius: 999px !important; gap: 0 !important; padding: 0 8px 0 16px !important; animation: none !important; overflow: visible !important; }
+          .nav-plan-trial { display: none; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
-          .btn-access { padding: 8px 12px !important; font-size: 11px !important; min-height: 44px !important; }
+          .btn-access { padding: 0 14px !important; font-size: 14px !important; height: 40px !important; }
+          .nav-plan-badge { padding: 0 12px; font-size: 13px; height: 40px; }
           .mob-nav-overlay { top: 64px !important; }
+        }
+        @media (max-width: 420px) {
+          .nav-wordmark { display: none; }
+          .btn-access-go { display: none !important; }
         }
         @media (prefers-reduced-motion: reduce) {
           .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
           .mob-ham span { transition: none !important; }
-          .nav-link, .tools-btn, .btn-signin, .btn-access, .btn-access-go, .tools-item { transition: none !important; }
+          .nav-link, .tools-btn, .btn-signin, .btn-access, .btn-access-go, .tools-item, .nav-plan-badge { transition: none !important; }
         }
       `}</style>
 
@@ -305,7 +321,7 @@ export default function Navbar() {
           position: 'sticky',
           top: 0,
           zIndex: 100,
-          padding: '10px 20px',
+          padding: 'clamp(10px, 2.2vw, 36px) clamp(12px, 2.4vw, 40px) 10px',
           overflow: 'visible',
           pointerEvents: 'none',
         }}
@@ -314,14 +330,15 @@ export default function Navbar() {
         <div
           className="nav-shell"
           style={{
-            maxWidth: '1220px',
+            maxWidth: '1400px',
+            minHeight: 'clamp(60px, 4.7vw, 78px)',
             margin: '0 auto',
-            background: 'linear-gradient(180deg, rgba(10,13,26,0.78) 0%, rgba(6,8,18,0.72) 100%)',
-            backdropFilter: 'blur(24px)',
-            WebkitBackdropFilter: 'blur(24px)',
-            border: '1px solid rgba(255,255,255,0.09)',
+            background: 'linear-gradient(180deg, rgba(14,16,17,0.62) 0%, rgba(6,7,8,0.58) 100%)',
+            backdropFilter: 'blur(20px)',
+            WebkitBackdropFilter: 'blur(20px)',
+            border: '1px solid rgba(255,255,255,0.06)',
             borderRadius: '999px',
-            padding: '9px 10px 9px 20px',
+            padding: '8px clamp(10px, 1.2vw, 20px) 8px clamp(16px, 1.6vw, 26px)',
             display: 'flex',
             alignItems: 'center',
             gap: '16px',
@@ -333,12 +350,11 @@ export default function Navbar() {
 
           {/* Logo */}
           <div className="nav-left">
-            <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', flexShrink: 0 }}>
-              {/* /cl-mark.png is /cl-logo.png trimmed to the mark's own edges (transparent background). */}
-              <Image className="nav-logo" src="/cl-mark.png" alt="" width={28} height={18} priority style={{ display: 'block', width: 28, height: 'auto' }} />
-              <span style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 600, fontSize: '16px', letterSpacing: '-0.01em', color: '#f1f5f9', whiteSpace: 'nowrap' }}>
-                Chain<span style={{ background: BRAND_GRADIENT, WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Lens</span>
-              </span>
+            <Link href="/" aria-label="ChainLens home" style={{ display: 'flex', alignItems: 'center', gap: 'clamp(8px, 0.8vw, 13px)', textDecoration: 'none', flexShrink: 0 }}>
+              {/* /cl-mark.png (the logo trimmed to the mark's own edges) used as a mask, so the
+                  monogram keeps its exact geometry in the mint-to-white treatment. */}
+              <span className="nav-mark" aria-hidden="true" />
+              <span className="nav-wordmark">ChainLens</span>
             </Link>
           </div>
 
@@ -449,71 +465,25 @@ export default function Navbar() {
           {/* Right: account chip or sign-in, then Get Access */}
           <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px', flex: '1 1 0', minWidth: 0, marginLeft: 'auto' }}>
             {accountEmail ? (
-              <Link
-                href="/terminal/settings"
-                className={`btn-signin nav-account-chip${isEliteDisplay ? ' nav-account-chip--elite' : isProDisplay ? ' nav-account-chip--pro' : ''}`}
-                title={`${accountEmail} · ${planLabel}`}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  borderColor: isEliteDisplay ? 'rgba(245,158,11,0.30)' : isProDisplay ? 'rgba(139,92,246,0.32)' : 'rgba(255,255,255,0.14)',
-                  background: isEliteDisplay
-                    ? 'linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(255,255,255,0.025) 55%, rgba(245,158,11,0.05) 100%)'
-                    : isProDisplay
-                    ? 'linear-gradient(135deg, rgba(139,92,246,0.08) 0%, rgba(255,255,255,0.025) 55%, rgba(139,92,246,0.05) 100%)'
-                    : 'rgba(255,255,255,0.03)',
-                  boxShadow: isEliteDisplay
-                    ? 'inset 0 0 0 1px rgba(245,158,11,0.10)'
-                    : isProDisplay
-                    ? 'inset 0 0 0 1px rgba(139,92,246,0.10)'
-                    : undefined,
-                  padding: '5px 12px 5px 5px',
-                  textTransform: 'none',
-                  letterSpacing: 'normal',
-                  flexShrink: 0,
-                }}
-              >
-                <span style={{
-                  width: '24px', height: '24px', borderRadius: '50%',
-                  background: avatarUrl ? '#0f172a' : isEliteDisplay ? 'linear-gradient(140deg, #E053C2, #B666F3)' : AVATAR_COLORS[avatarColor],
-                  color: '#04101a', fontSize: '11px', fontWeight: 700,
-                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0, overflow: 'hidden',
-                  boxShadow: isEliteDisplay
-                    ? '0 0 0 1.5px rgba(245,158,11,0.70), 0 0 7px rgba(245,158,11,0.30)'
-                    : isProDisplay
-                    ? '0 0 0 1.5px rgba(139,92,246,0.70), 0 0 7px rgba(139,92,246,0.30)'
-                    : `0 0 0 1px ${PLAN_COLOR[displayPlan]}55`,
-                }}>
-                  {avatarUrl
-                    ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
-                    : initials}
-                </span>
-                {isEliteDisplay ? (
-                  <span className='nav-elite-badge'>
-                    <svg width='8' height='8' viewBox='0 0 24 24' fill='#fbbf24' aria-hidden='true'><path d='M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z'/></svg>
-                    <span className='nav-elite-badge-label'>{planLabel}</span>
-                  </span>
-                ) : isProDisplay ? (
-                  <span className='nav-pro-badge'>
-                    <span className='nav-pro-badge-label'>{planLabel}</span>
-                  </span>
-                ) : (
-                  <span className='nav-free-badge'>
-                    <span className='nav-free-badge-label'>{planLabel}</span>
-                  </span>
-                )}
-                {trialBadgeDesktop ? <span style={{ marginLeft: 2, fontSize: 9, color: '#fbbf24', whiteSpace: 'nowrap' }}>· {trialBadgeDesktop}</span> : null}
-              </Link>
+              <>
+                <Link
+                  href="/terminal/settings"
+                  className={`nav-plan-badge nav-plan-badge--${isEliteDisplay ? 'elite' : isProDisplay ? 'pro' : 'free'}`}
+                  title={`${accountEmail} · ${planLabel}${trialBadgeDesktop ? ` · ${trialBadgeDesktop}` : ''}`}
+                  aria-label={`Account settings (${accountEmail}, ${planLabel || 'plan'})`}
+                >
+                  {planLabel}
+                </Link>
+                {trialBadgeDesktop ? <span className="nav-plan-trial">{trialBadgeDesktop}</span> : null}
+              </>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
             )}
             <Link href="/pricing" className="btn-access" prefetch={true}>
               Get Access
               <span className="btn-access-go">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
               </span>
             </Link>
