@@ -162,9 +162,9 @@ export default function Navbar() {
           display: inline-flex; align-items: center; gap: 10px;
           height: clamp(40px, 2.9vw, 48px); padding: 0 clamp(16px, 1.6vw, 28px); border-radius: 999px;
           background: rgba(31,216,200,0.04);
-          border: 1.5px solid rgba(31,216,200,0.85);
-          box-shadow: 0 0 14px rgba(31,216,200,0.18), inset 0 0 10px rgba(31,216,200,0.06);
-          color: #2fe3d2;
+          border: 1.5px solid #22d3da;
+          box-shadow: 0 0 14px rgba(31,214,220,0.22), inset 0 0 10px rgba(31,214,220,0.06);
+          color: #2bdde3;
           font-family: var(--font-jakarta, 'Plus Jakarta Sans', sans-serif);
           font-size: clamp(14px, 1.08vw, 18px); font-weight: 500;
           text-decoration: none;
@@ -222,7 +222,7 @@ export default function Navbar() {
         /* Brand monogram: the existing /cl-mark.png shape, filled mint to white. */
         .nav-mark {
           display: block; width: clamp(40px, 3.3vw, 54px); aspect-ratio: 300 / 192; flex-shrink: 0;
-          background: linear-gradient(100deg, #1fd8c8 0%, #5fe9da 42%, #ffffff 70%);
+          background: linear-gradient(100deg, #1fd6dc 0%, #63ecec 42%, #ffffff 70%);
           -webkit-mask: url('/cl-mark.png') center / contain no-repeat;
           mask: url('/cl-mark.png') center / contain no-repeat;
         }
