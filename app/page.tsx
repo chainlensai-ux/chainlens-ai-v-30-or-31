@@ -9,6 +9,7 @@ import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
 import CapabilitiesSection, { type Capability } from '@/components/home/CapabilitiesSection'
 import HowItWorksSection from '@/components/home/HowItWorksSection'
+import ScanComparisonSection from '@/components/home/ScanComparisonSection'
 import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
@@ -914,109 +915,8 @@ export default function HomePage() {
         {/* ── Stats strip + How It Works ─────────────────────────────────────── */}
         <HowItWorksSection />
 
-        {/* ── Live Intelligence Preview ─────────────────────────────────────── */}
-        <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 96px', maxWidth: '1120px', margin: '0 auto', width: '100%' }}>
-          {/* Section header */}
-          <Reveal><div style={{ textAlign: 'center', marginBottom: '52px' }}>
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
-              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, transparent, #ec4899)' }} />
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.22em', color: '#ec4899', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Live Preview</span>
-              <div style={{ height: '1px', width: '28px', background: 'linear-gradient(90deg, #ec4899, transparent)' }} />
-            </div>
-            <h2 className="section-heading" style={{ fontSize: 'clamp(28px, 3.8vw, 42px)', fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.1, color: '#f8fafc', margin: '0 0 14px' }}>
-              Live Intelligence Preview
-            </h2>
-            <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.38)', maxWidth: '420px', margin: '0 auto', lineHeight: 1.65 }}>
-              A glimpse of the intelligence ChainLens surfaces: live, onchain, and AI-powered.
-            </p>
-          </div></Reveal>
-
-          {/* 2 × 2 grid */}
-          <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            {[
-              {
-                accent: '#2DD4BF',
-                title: 'Trending Tokens',
-                label: 'Preview interface',
-                rows: [
-                  ['VIRTUAL', 'Base', 'Momentum detected'],
-                  ['AERO', 'Base', 'Liquidity leader'],
-                  ['BRETT', 'Base', 'Watchlist activity'],
-                ],
-              },
-              {
-                accent: '#ec4899',
-                title: 'Smart Money Moves',
-                label: 'Example read',
-                rows: [
-                  ['Tracked wallet', 'Action', 'Bought VIRTUAL'],
-                  ['Whale swap', 'Flow', 'Into AERO'],
-                  ['Repeat wallet', 'Signal', 'Activity detected'],
-                ],
-              },
-              {
-                accent: '#8b5cf6',
-                title: 'Liquidity Scanner',
-                label: 'Preview interface',
-                rows: [
-                  ['LP control', 'Status', 'Unverified'],
-                  ['Pool depth', 'Status', 'Strong'],
-                  ['Slippage risk', 'Status', 'Medium'],
-                ],
-              },
-              {
-                accent: '#60a5fa',
-                title: 'Token Scan + Clark AI',
-                label: 'Example read',
-                rows: [
-                  ['Verdict', '', 'WATCH'],
-                  ['Confidence', '', 'Medium'],
-                  ['Next', '', 'Verify holders + LP control'],
-                ],
-              },
-            ].map((p, i) => (
-              <Reveal key={p.title} delayMs={i * 100}><div
-                className="feat-card mobile-static-card"
-                style={{
-                  background: 'linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)',
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: '20px', padding: '28px',
-                  backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
-                  boxShadow: '0 4px 24px rgba(0,0,0,0.28)',
-                  animationDelay: `${i * 0.10}s`,
-                  position: 'relative', overflow: 'hidden',
-                  transition: 'border-color 300ms ease, box-shadow 300ms ease',
-                }}
-                onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = `${p.accent}44`; el.style.boxShadow = `0 16px 48px ${p.accent}18, 0 4px 16px rgba(0,0,0,0.40)` }}
-                onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.07)'; el.style.boxShadow = '0 4px 24px rgba(0,0,0,0.28)' }}
-              >
-                {/* Top accent line — slides in on hover */}
-                <div className="feat-top-line" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: `linear-gradient(90deg, transparent, ${p.accent}88, transparent)` }} />
-
-                {/* Card header */}
-                <div style={{ marginBottom: '20px' }}>
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: p.accent, boxShadow: `0 0 8px ${p.accent}99` }} />
-                    <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: p.accent, textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Preview</span>
-                  </div>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#f1f5f9', margin: '0 0 8px', letterSpacing: '-0.01em' }}>{p.title}</h3>
-                  <p style={{ fontSize: '12px', lineHeight: 1.65, color: 'rgba(148,163,184,0.95)', margin: 0, letterSpacing: '0.04em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{p.label}</p>
-                </div>
-
-                {/* Preview rows */}
-                <div style={{ minHeight: '160px', borderRadius: '12px', background: 'linear-gradient(160deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)', border: '1px solid rgba(255,255,255,0.06)', display: 'grid', gap: '8px', padding: '12px', position: 'relative', overflow: 'hidden' }}>
-                  {p.rows.map((row) => (
-                    <div key={`${p.title}-${row[0]}-${row[2]}`} style={{ display: 'grid', gridTemplateColumns: '1.1fr .7fr 1.4fr', gap: '8px', alignItems: 'center', borderRadius: '8px', border: '1px solid rgba(148,163,184,0.18)', background: 'rgba(15,23,42,0.55)', padding: '8px 10px' }}>
-                      <span style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 600 }}>{row[0]}</span>
-                      <span style={{ fontSize: '10px', color: 'rgba(148,163,184,0.95)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row[1]}</span>
-                      <span style={{ fontSize: '11px', color: '#cbd5e1', textAlign: 'right' }}>{row[2]}</span>
-                    </div>
-                  ))}
-                </div>
-              </div></Reveal>
-            ))}
-          </div>
-        </section>
+        {/* ── See what others miss: before / after scan ─────────────────────── */}
+        <ScanComparisonSection />
 
         {/* ── CTA ─────────────────────────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '0 24px 0', overflow: 'hidden' }}>
