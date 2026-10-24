@@ -83,7 +83,7 @@ export type WalletV2Report = FinalReport & {
   // real rows the Holdings tab renders (via mergeRobinhoodIntoPricedHoldings), not a re-derived guess.
   pricedHoldings?: PricedHolding[]
   /** src/lib/liquidityLegGuard.ts — LP-strategy flag (absent on older reports). */
-  liquidityActivity?: (Pick<LiquidityActivitySummary, 'lpStrategyWallet'> & Partial<Pick<LiquidityActivitySummary, 'liquidityAddTxs' | 'liquidityRemoveTxs'>>) | null
+  liquidityActivity?: (Pick<LiquidityActivitySummary, 'lpStrategyWallet'> & Partial<Pick<LiquidityActivitySummary, 'liquidityAddTxs' | 'liquidityRemoveTxs' | 'totalTxs'>>) | null
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm', 4663: 'robinhood' }
@@ -237,6 +237,20 @@ function deriveRiskProfile(report: WalletV2Report): string {
   return [rotationPart, riskPart].filter(Boolean).join(' / ') || 'Not enough evidence yet'
 }
 
+/**
+ * A busy wallet's scan reads only its most recent days (page cap). Say so plainly, with its activity
+ * rate when known, so a short window reads as expected for a high-frequency wallet, not a failed scan.
+ */
+export function highActivityWindowNote(report: Pick<WalletV2Report, 'liquidityActivity' | 'windowCoverage' | 'scanMetadata'>): string | null {
+  const scanWindow = selectScanWindow(report)
+  if (!scanWindow.narrowed || scanWindow.windowDays == null) return null
+  const days = scanWindow.windowDays
+  const txs = report.liquidityActivity?.totalTxs
+  const perDay = typeof txs === 'number' && txs > 0 ? Math.round(txs / Math.max(1, days)) : null
+  const kind = report.liquidityActivity?.lpStrategyWallet ? 'High-frequency liquidity bot' : 'High-activity wallet'
+  return `${kind}${perDay != null ? ` · ~${perDay.toLocaleString('en-US')} transactions/day` : ''} — this scan covers the most recent ${days} day${days === 1 ? '' : 's'}. Rescans on later days extend it further back.`
+}
+
 // EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only `export` keyword — no logic
 // change — so the new compact V3 header (app/frontend/components/WalletScannerHeaderV3.tsx) can
 // reuse this exact, already-tested rendering instead of duplicating it.
@@ -265,6 +279,11 @@ export function WalletOverview({ report }: { report: WalletV2Report }) {
         <span>{firstSeenLabel} — {fmtTimestamp(firstSeenMs)}</span>
         <span>Last Active — {fmtTimestamp(lastActiveMs)}</span>
       </div>
+      {highActivityWindowNote(report) && (
+        <div style={{ marginTop: '10px', padding: '8px 12px', borderRadius: '10px', fontSize: '11.5px', lineHeight: 1.5, color: 'rgba(228,231,234,0.80)', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.18)', maxWidth: '640px' }}>
+          {highActivityWindowNote(report)}
+        </div>
+      )}
     </div>
   )
 }

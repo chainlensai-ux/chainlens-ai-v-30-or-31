@@ -11,6 +11,7 @@ import {
 } from '../lib/walletScan/canonicalWalletSelectors.ts'
 import { buildWalletPnlViewModel, CHAIN_PNL_NO_ACTIVITY_REASON } from '../app/frontend/lib/buildWalletPnlViewModel.ts'
 import { buildPnlLanes, buildKeySignals, buildEvidence, buildHeadline, fmtMedianGap } from '../app/frontend/lib/walletReadBuilder.ts'
+import { highActivityWindowNote } from '../app/frontend/components/WalletProfileHeader.tsx'
 import { SmartMoneyScoreCard } from '../app/frontend/components/SmartMoneyScoreCard.tsx'
 import { buildRobinhoodPnlVerificationAuditFromV1, robinhoodWalletPnlFromV1 } from '../lib/server/robinhoodWalletScanner.ts'
 import type { SmartMoneyScore } from '../lib/engine/modules/smartMoney/types.ts'
@@ -199,4 +200,14 @@ test('median sell gap: sub-hour gaps show minutes, never a rounded "0h"', () => 
   assert.equal(fmtMedianGap(5 * 3_600_000), '5h')
   assert.equal(fmtMedianGap(2 * 86_400_000), '2.0d')
   assert.equal(fmtMedianGap(null), null)
+})
+
+test('a page-capped scan of a busy wallet says so plainly, with its activity rate', () => {
+  const narrowed = { windowCoverage: { realDataDays: 7 }, scanMetadata: { provider_fetch_window_days: 90, scanMode: 'deep' } } as never
+  const lp = highActivityWindowNote({ ...(narrowed as object), liquidityActivity: { lpStrategyWallet: true, totalTxs: 7210 } } as never)
+  assert.equal(lp, 'High-frequency liquidity bot · ~1,030 transactions/day — this scan covers the most recent 7 days. Rescans on later days extend it further back.')
+  const plain = highActivityWindowNote({ ...(narrowed as object), liquidityActivity: null } as never)
+  assert.equal(plain, 'High-activity wallet — this scan covers the most recent 7 days. Rescans on later days extend it further back.')
+  // A wallet whose scan read its full window gets no note.
+  assert.equal(highActivityWindowNote({ windowCoverage: { realDataDays: 90 }, scanMetadata: { provider_fetch_window_days: 90 }, liquidityActivity: null } as never), null)
 })
