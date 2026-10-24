@@ -4704,41 +4704,174 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
 }
 
 // ─── Risk Gauge Circle ───────────────────────────────────────────────
+// 270° instrument dial: canonical risk bands on the outer ring (same 0-20/40/60/75/100
+// thresholds and colors as riskLabelFromCanonicalScore / riskColorFromCanonicalLabel), a
+// tick scale that lights up to the score, the filled score arc with a position marker, and a
+// count-up readout. Pure presentation — the score passed in is rendered as-is.
+
+const RISK_GAUGE_BANDS: Array<{ from: number; to: number; color: string; label: string }> = [
+  { from: 0,  to: 20,  color: '#34d399', label: 'Low' },
+  { from: 20, to: 40,  color: '#fbbf24', label: 'Moderate' },
+  { from: 40, to: 60,  color: '#f59e0b', label: 'Caution' },
+  { from: 60, to: 75,  color: '#f97316', label: 'High' },
+  { from: 75, to: 100, color: '#f87171', label: 'Extreme' },
+]
+
+function useCountUp(target: number | null, durationMs = 900): number | null {
+  // Progress is keyed to the target it was measured for, so a new target restarts from 0
+  // without a synchronous reset inside the effect.
+  const [progress, setProgress] = useState<{ target: number | null; k: number }>({ target: null, k: 0 })
+  useEffect(() => {
+    if (target == null) return
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    let raf = 0
+    const t0 = performance.now()
+    const tick = (now: number) => {
+      const k = reduce ? 1 : Math.min(1, (now - t0) / durationMs)
+      setProgress({ target, k })
+      if (k < 1) raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [target, durationMs])
+  if (target == null) return null
+  const k = progress.target === target ? progress.k : 0
+  return target * (1 - Math.pow(1 - k, 3))
+}
 
 function RiskGaugeCircle({ score, color, scoreType = 'safety' }: { score: number | null; color: string; scoreType?: 'risk' | 'safety' }) {
-  const size = 152
-  const sw = 9
-  const r = (size - sw) / 2
-  const circ = 2 * Math.PI * r
-  const pct = score != null ? (scoreType === 'risk' ? riskGaugeFillPercent(score) : Math.max(0, Math.min(100, score))) / 100 : 0
-  const offset = circ - pct * circ
+  const size = 188
+  const c = size / 2
+  const START = 135
+  const SWEEP = 270
+  const fillTarget = score != null ? (scoreType === 'risk' ? riskGaugeFillPercent(score) : Math.max(0, Math.min(100, score))) : null
+  const animated = useCountUp(fillTarget)
+  const pct = animated ?? 0
+  const displayValue = score == null ? null : animated == null ? score : Math.round((animated / (fillTarget || 1)) * score)
+  const angleFor = (v: number) => ((START + (SWEEP * v) / 100) * Math.PI) / 180
+  const pt = (r: number, v: number) => [c + r * Math.cos(angleFor(v)), c + r * Math.sin(angleFor(v))] as const
+  const arc = (r: number, from: number, to: number) => {
+    const [x1, y1] = pt(r, from)
+    const [x2, y2] = pt(r, to)
+    const large = (SWEEP * (to - from)) / 100 > 180 ? 1 : 0
+    return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`
+  }
+  const rBand = 86
+  const rTickOuter = 78
+  const rArc = 64
+  const activeBand = scoreType === 'risk' && score != null
+    ? RISK_GAUGE_BANDS.find((b, i) => score <= b.to || i === RISK_GAUGE_BANDS.length - 1) ?? null
+    : null
   const gradId = `riskGaugeGrad-${color.replace('#', '')}`
+  const [mx, my] = pt(rArc, pct)
   return (
-    <div style={{ position: 'relative', width: size, height: size }}>
-      <div style={{ position: 'absolute', inset: '10px', borderRadius: '50%', background: `radial-gradient(circle, ${color}14 0%, transparent 70%)` }} />
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)', position: 'relative' }}>
+    <div style={{ position: 'relative', width: size, height: size }} role="img" aria-label={score != null ? `${scoreType === 'risk' ? 'Risk' : 'Safety'} score ${score} out of 100` : 'Score unavailable'}>
+      <div style={{ position: 'absolute', inset: '26px', borderRadius: '50%', background: `radial-gradient(circle, ${color}1c 0%, ${color}06 45%, transparent 70%)` }} />
+      <div style={{ position: 'absolute', inset: '40px', borderRadius: '50%', background: 'radial-gradient(circle at 50% 35%, rgba(255,255,255,0.05), rgba(0,0,0,0.25) 70%)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), inset 0 0 0 1px rgba(255,255,255,0.04)' }} />
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ position: 'relative', overflow: 'visible' }}>
         <defs>
-          <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor={color} stopOpacity="0.55" />
+          <linearGradient id={gradId} x1="0%" y1="100%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor={color} stopOpacity="0.45" />
             <stop offset="100%" stopColor={color} stopOpacity="1" />
           </linearGradient>
         </defs>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.045)" strokeWidth={sw} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={`url(#${gradId})`} strokeWidth={sw}
-          strokeLinecap="round"
-          strokeDasharray={circ}
-          strokeDashoffset={score != null ? offset : circ}
-          style={{ transition: 'stroke-dashoffset 0.8s ease, stroke 0.4s ease', filter: `drop-shadow(0 0 10px ${color}70)` }}
-        />
+
+        {/* Band ring */}
+        {scoreType === 'risk'
+          ? RISK_GAUGE_BANDS.map((b) => (
+              <path key={b.label} d={arc(rBand, b.from + 0.6, b.to - 0.6)} fill="none" stroke={b.color} strokeWidth={activeBand === b ? 4 : 2.5}
+                strokeOpacity={activeBand === b ? 0.95 : 0.22} strokeLinecap="round"
+                style={{ filter: activeBand === b ? `drop-shadow(0 0 6px ${b.color}90)` : undefined }} />
+            ))
+          : <path d={arc(rBand, 0, 100)} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={2.5} strokeLinecap="round" />}
+
+        {/* Tick scale */}
+        {Array.from({ length: 51 }, (_, i) => {
+          const v = i * 2
+          const major = v % 10 === 0
+          const [x1, y1] = pt(rTickOuter, v)
+          const [x2, y2] = pt(rTickOuter - (major ? 7 : 4), v)
+          const lit = score != null && v <= pct
+          return <line key={v} x1={x1} y1={y1} x2={x2} y2={y2} stroke={lit ? color : 'rgba(255,255,255,0.16)'} strokeOpacity={lit ? (major ? 0.95 : 0.6) : major ? 1 : 0.55} strokeWidth={major ? 1.6 : 1} strokeLinecap="round" />
+        })}
+
+        {/* Track + score arc */}
+        <path d={arc(rArc, 0, 100)} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth={10} strokeLinecap="round" />
+        {score != null && pct > 0.3 && (
+          <path d={arc(rArc, 0, pct)} fill="none" stroke={`url(#${gradId})`} strokeWidth={10} strokeLinecap="round"
+            style={{ filter: `drop-shadow(0 0 8px ${color}66)` }} />
+        )}
+        {score != null && (
+          <g>
+            <circle cx={mx} cy={my} r={9} fill={color} fillOpacity={0.18} />
+            <circle cx={mx} cy={my} r={5.5} fill="#0b0d0f" stroke={color} strokeWidth={2.5} />
+          </g>
+        )}
+
+        {/* Scale ends */}
+        {(() => {
+          const [x0, y0] = pt(rTickOuter + 2, 0)
+          const [x1, y1] = pt(rTickOuter + 2, 100)
+          const st = { fontSize: 9, fill: '#5b5e61', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em' } as const
+          return (
+            <>
+              <text x={x0 - 2} y={y0 + 14} textAnchor="middle" style={st}>0</text>
+              <text x={x1 + 2} y={y1 + 14} textAnchor="middle" style={st}>100</text>
+            </>
+          )
+        })()}
       </svg>
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
-        <span style={{ fontSize: '34px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, letterSpacing: '-0.01em' }}>
-          {score != null ? score : '—'}
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', paddingTop: '4px' }}>
+        <span style={{ fontSize: '9px', color: '#6e7174', letterSpacing: '.2em', fontFamily: 'var(--font-plex-mono)' }}>{scoreType === 'risk' ? 'RISK' : 'SAFETY'}</span>
+        <span style={{ display: 'flex', alignItems: 'baseline', gap: '3px', lineHeight: 1 }}>
+          <span style={{ fontSize: '46px', fontWeight: 800, color: '#f4f6f7', fontFamily: 'var(--font-sora, Sora, sans-serif)', letterSpacing: '-0.04em', fontVariantNumeric: 'tabular-nums', textShadow: `0 0 24px ${color}55` }}>
+            {displayValue != null ? displayValue : '—'}
+          </span>
+          <span style={{ fontSize: '12px', color: '#5b5e61', fontFamily: 'var(--font-plex-mono)' }}>/100</span>
         </span>
-        <span style={{ fontSize: '8px', color: '#5b5e61', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 {scoreType === 'risk' ? 'RISK' : 'SAFETY'}</span>
+        <span style={{ marginTop: '2px', padding: '2px 8px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: activeBand?.color ?? color, background: `${activeBand?.color ?? color}14`, border: `1px solid ${activeBand?.color ?? color}38`, fontFamily: 'var(--font-plex-mono)' }}>
+          {activeBand ? activeBand.label : score != null ? 'Score' : 'Unavailable'}
+        </span>
       </div>
     </div>
   )
+}
+
+// ─── Risk Engine panel shell ─────────────────────────────────────────
+
+function RiskPanel({ title, accent, icon, count, countTone, children, style }: {
+  title: string
+  accent: string
+  icon: React.ReactNode
+  count?: string | number | null
+  countTone?: string
+  children: React.ReactNode
+  style?: React.CSSProperties
+}) {
+  return (
+    <div style={{ position: 'relative', padding: '16px 16px 15px', borderRadius: '16px', background: 'linear-gradient(180deg,rgba(20,22,24,.82) 0%,rgba(8,9,10,.92) 100%)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 34px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column', minWidth: 0, ...style }}>
+      <div aria-hidden="true" style={{ position: 'absolute', top: 0, left: '14%', right: '14%', height: '1px', background: `linear-gradient(90deg,transparent,${accent}66,transparent)` }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '13px' }}>
+        <span style={{ width: '24px', height: '24px', borderRadius: '7px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: accent, background: `${accent}12`, border: `1px solid ${accent}30`, flexShrink: 0 }}>{icon}</span>
+        <p style={{ margin: 0, flex: 1, minWidth: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: '#d9dcdf', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</p>
+        {count != null && (
+          <span style={{ flexShrink: 0, whiteSpace: 'nowrap', padding: '2px 8px', borderRadius: '999px', fontSize: '9.5px', fontWeight: 700, color: countTone ?? '#9ea1a4', background: `${countTone ?? '#9ea1a4'}12`, border: `1px solid ${countTone ?? '#9ea1a4'}30`, fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>
+        )}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+const RiskIcon = {
+  alert: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l9.5 17h-19L12 3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/><path d="M12 10v4.5M12 17.5v.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>,
+  drop:  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3s6.5 7 6.5 11.5a6.5 6.5 0 01-13 0C5.5 10 12 3 12 3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/></svg>,
+  key:   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="14" r="4" stroke="currentColor" strokeWidth="1.8"/><path d="M11 11l9-9M16 6l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>,
+  sim:   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7h11l-3-3M17 17H6l3 3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  code:  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  gap:   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.8" strokeDasharray="3 3"/><path d="M12 8v4.5M12 15.5v.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>,
+  check: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
+  arrow: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 }
 
 // ─── Contract Security ───────────────────────────────────────────────
@@ -9622,85 +9755,140 @@ export default function TerminalTokenScanner() {
                     const displayCortexConfidence = normalizedEngineRisk.confidence
                     const gaugeColor = riskColorFromCanonicalLabel(displayCortexVerdict)
                     const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#9ea1a4' : '#fbbf24'
-                    const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(9,12,15,.94),rgba(14,17,20,.84))', borderRadius:'14px' }
-                    const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
+                    const riskDriverList = engine?.riskDrivers?.length ? engine.riskDrivers : []
+                    const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
+                    const verifiedList = engine?.verifiedSignals ?? []
+                    const scf = result.security?.contractFlags
+                    type BoolFlag = boolean | null | undefined
+                    const flagRows: Array<[string, BoolFlag]> = [
+                      ['Mint Function', scf?.mint],
+                      ['Upgradeable / Proxy', scf?.proxy],
+                      ['Blacklist', scf?.blacklist],
+                      ['Pause Control', scf?.pause],
+                      ['Withdraw Control', scf?.withdraw],
+                    ]
+                    const flagsAnalyzed = flagRows.filter(([, v]) => v != null).length
+                    const flagsDetected = flagRows.filter(([, v]) => v === true).length
+                    const monoSm: React.CSSProperties = { fontFamily:'var(--font-plex-mono)' }
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        {/* Hero: gauge + verdict + CORTEX read. RISK-HERO-REDESIGN, DISCLOSED (Token
-                            Scanner CORTEX Risk Engine polish task, explicitly requested: "premium
-                            hero score card... left side gauge, right side concise summary stack"):
-                            gauge sits in its own left column, right column carries the section
-                            label, verdict/confidence pills, a static explanatory sentence about how
-                            the score is derived, and the CORTEX read note — all vertically centered
-                            against the gauge. Same displayCortexScore/Verdict/Confidence values. */}
-                        <div style={{ padding:'22px 24px', background:'linear-gradient(160deg,rgba(12,15,18,.98),rgba(5,8,11,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'20px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'28px', flexWrap:'wrap' }}>
-                            <div style={{ flexShrink:0 }}>
+                        {/* Hero: gauge + verdict + CORTEX read. Same displayCortexScore/Verdict/
+                            Confidence values as before; the scale strip and stat tiles below only
+                            count rows already rendered further down this tab. */}
+                        <div style={{ position:'relative', overflow:'hidden', padding:'24px 26px 20px', background:'linear-gradient(180deg,rgba(20,22,24,.86) 0%,rgba(6,7,8,.96) 100%)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:'20px', boxShadow:`inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 60px rgba(0,0,0,0.45), 0 0 60px ${gaugeColor}0a` }}>
+                          <div aria-hidden="true" style={{ position:'absolute', top:0, left:'10%', right:'10%', height:'1px', background:`linear-gradient(90deg,transparent,${gaugeColor}88,transparent)` }} />
+                          <div aria-hidden="true" style={{ position:'absolute', top:'-40%', left:'-10%', width:'50%', height:'140%', background:`radial-gradient(closest-side, ${gaugeColor}10, transparent)`, pointerEvents:'none' }} />
+                          <div style={{ position:'relative', display:'flex', alignItems:'center', gap:'30px', flexWrap:'wrap' }}>
+                            <div style={{ flexShrink:0, margin:'0 auto' }}>
                               <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} scoreType="risk" />
                             </div>
-                            <div style={{ flex:1, minWidth:'200px', display:'flex', flexDirection:'column', gap:'11px' }}>
-                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
-                              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                                <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
+                            <div style={{ flex:1, minWidth:'240px', display:'flex', flexDirection:'column', gap:'12px' }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                                <span style={{ fontSize:'9px',letterSpacing:'.2em',color:'#6e7174',...monoSm }}>CORTEX RISK ENGINE</span>
+                                <span style={{ width:'3px', height:'3px', borderRadius:'50%', background:'#3a3d40' }} />
+                                <span style={{ fontSize:'9px',letterSpacing:'.14em',color:'#4b4e51',...monoSm }}>HIGHER = RISKIER</span>
+                              </div>
+                              <div style={{ display:'flex', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+                                <span style={{ fontSize:'26px', fontWeight:800, letterSpacing:'-0.02em', lineHeight:1.1, color:gaugeColor, fontFamily:'var(--font-sora, Sora, sans-serif)' }}>
                                   {displayCortexVerdict ?? formatTokenScannerPublicStatus('unavailable', 'risk verdict was not returned')}
                                 </span>
-                                <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
+                                <span style={{ display:'inline-flex', alignItems:'center', gap:'6px', padding:'4px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.12em',color:confColor,background:`${confColor}10`,border:`1px solid ${confColor}38`,...monoSm }}>
+                                  <span style={{ display:'inline-flex', gap:'2px' }} aria-hidden="true">
+                                    {[0,1,2].map((n) => <span key={n} style={{ width:'3px', height:`${5 + n * 2}px`, borderRadius:'1px', alignSelf:'flex-end', background: n < (displayCortexConfidence === 'high' ? 3 : displayCortexConfidence === 'medium' ? 2 : 1) ? confColor : `${confColor}30` }} />)}
+                                  </span>
                                   {displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
                               {riskLabelCopy(displayCortexVerdict, scanEvidence) && (
-                                <p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>{riskLabelCopy(displayCortexVerdict, scanEvidence)}</p>
+                                <p style={{ margin:0,fontSize:'12px',color:'#e9dcc0',lineHeight:1.6,...monoSm }}>{riskLabelCopy(displayCortexVerdict, scanEvidence)}</p>
                               )}
-                              <p style={{ margin:0,fontSize:'10.5px',color:'#5b5e61',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
+
+                              {/* Canonical band scale — same thresholds as riskLabelFromCanonicalScore. */}
+                              <div style={{ marginTop:'2px' }}>
+                                <div style={{ position:'relative', display:'flex', gap:'3px', height:'6px' }}>
+                                  {RISK_GAUGE_BANDS.map((band) => {
+                                    const active = displayCortexScore != null && (displayCortexScore <= band.to && displayCortexScore >= band.from + (band.from === 0 ? 0 : 1))
+                                    return <span key={band.label} style={{ flex: band.to - band.from, borderRadius:'3px', background: band.color, opacity: active ? 1 : 0.18, boxShadow: active ? `0 0 10px ${band.color}80` : undefined }} />
+                                  })}
+                                  {displayCortexScore != null && (
+                                    <span aria-hidden="true" style={{ position:'absolute', top:'-5px', left:`calc(${Math.max(0, Math.min(100, displayCortexScore))}% - 1.5px)`, width:'3px', height:'16px', borderRadius:'2px', background:'#f4f6f7', boxShadow:'0 0 0 2px rgba(5,6,7,0.9)' }} />
+                                  )}
+                                </div>
+                                <div style={{ display:'flex', gap:'3px', marginTop:'7px' }}>
+                                  {RISK_GAUGE_BANDS.map((band) => (
+                                    <span key={band.label} style={{ flex: band.to - band.from, fontSize:'8.5px', letterSpacing:'.08em', textTransform:'uppercase', color: band.label === (displayCortexVerdict ?? '').replace(' Risk','') ? band.color : '#4b4e51', ...monoSm, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{band.label}</span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <p style={{ margin:0,fontSize:'10.5px',color:'#6e7174',lineHeight:1.55,...monoSm }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
                               {engine?.cortexRead ? (
-                                <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(31,214,220,0.05)',border:'1px solid rgba(31,214,220,0.18)' }}>
-                                  <p style={{ margin:0,fontSize:'11px',color:'#a8f3f3',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
+                                <div style={{ display:'flex', gap:'10px', alignItems:'flex-start', padding:'11px 13px',borderRadius:'12px',background:'linear-gradient(135deg,rgba(31,214,220,0.07),rgba(31,214,220,0.02))',border:'1px solid rgba(31,214,220,0.20)' }}>
+                                  <span style={{ flexShrink:0, marginTop:'1px', fontSize:'8.5px', fontWeight:700, letterSpacing:'.14em', color:'#1fd6dc', padding:'2px 6px', borderRadius:'5px', border:'1px solid rgba(31,214,220,0.35)', ...monoSm }}>READ</span>
+                                  <p style={{ margin:0,fontSize:'11.5px',color:'#a8f3f3',lineHeight:1.6,...monoSm }}>{engine.cortexRead}</p>
                                 </div>
                               ) : (
-                                <p style={{ margin:0,fontSize:'11px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Rug risk analysis available when upstream APIs respond.</p>
+                                <p style={{ margin:0,fontSize:'11px',color:'#4b4e51',lineHeight:1.5,...monoSm }}>Rug risk analysis available when upstream APIs respond.</p>
                               )}
                             </div>
+                          </div>
+
+                          {/* At-a-glance counts of the evidence rendered below. */}
+                          <div style={{ position:'relative', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:'1px', marginTop:'20px', borderRadius:'12px', overflow:'hidden', background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.06)' }}>
+                            {([
+                              ['Risk drivers', String(riskDriverList.length), riskDriverList.length > 0 ? '#f47c8f' : '#34d399'],
+                              ['Evidence gaps', String(openItems.length), openItems.length > 0 ? '#fbbf24' : '#34d399'],
+                              ['Verified signals', String(verifiedList.length), verifiedList.length > 0 ? '#34d399' : '#9ea1a4'],
+                              ['Flags detected', flagsAnalyzed > 0 ? `${flagsDetected}/${flagsAnalyzed}` : '—', flagsDetected > 0 ? '#f87171' : flagsAnalyzed > 0 ? '#34d399' : '#9ea1a4'],
+                            ] as Array<[string,string,string]>).map(([label, value, tone]) => (
+                              <div key={label} style={{ padding:'11px 14px', background:'rgba(8,9,10,0.92)' }}>
+                                <div style={{ fontSize:'8.5px', letterSpacing:'.16em', textTransform:'uppercase', color:'#5b5e61', marginBottom:'5px', ...monoSm }}>{label}</div>
+                                <div style={{ fontSize:'19px', fontWeight:800, color:tone, fontFamily:'var(--font-sora, Sora, sans-serif)', fontVariantNumeric:'tabular-nums', letterSpacing:'-0.01em' }}>{value}</div>
+                              </div>
+                            ))}
                           </div>
                         </div>
 
                         {/* Why this score */}
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'2px' }}>
-                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#6e7174',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Why this score</p>
-                          <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
+                        <div style={{ display:'flex', alignItems:'center', gap:'10px', marginTop:'4px' }}>
+                          <span style={{ width:'14px', height:'1px', background:'linear-gradient(90deg,transparent,#1fd6dc)' }} />
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.2em',color:'#9ea1a4',textTransform:'uppercase',...monoSm }}>Why this score</p>
+                          <div style={{ flex:1, height:'1px', background:'linear-gradient(90deg,rgba(255,255,255,0.08),transparent)' }} />
                         </div>
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'12px', alignItems:'start' }}>
-                          {/* Risk Drivers — chip/mini-row style instead of a plain text blob. */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.16)', display:'flex', flexDirection:'column' }}>
-                            <p style={{ ...cardTitle, color:'#f47c8f' }}>Risk Drivers</p>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))', gap:'12px', alignItems:'start' }}>
+                          {/* Risk Drivers */}
+                          <RiskPanel title="Risk Drivers" accent="#f47c8f" icon={RiskIcon.alert} count={riskDriverList.length} countTone={riskDriverList.length > 0 ? '#f47c8f' : '#34d399'}>
                             <div style={{ display:'flex', flexDirection:'column', gap:'7px' }}>
-                              {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
-                                <div key={i} style={{ display:'flex',gap:'8px',alignItems:'flex-start',padding:'8px 10px',borderRadius:'9px',background:'rgba(244,63,94,0.05)',border:'1px solid rgba(244,63,94,0.10)' }}>
-                                  <span style={{ color:'#f47c8f',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
-                                  <p style={{ margin:0,fontSize:'11px',color:'#e8b4bc',lineHeight:1.55,fontFamily:'var(--font-plex-mono)' }}>{d}</p>
+                              {riskDriverList.length > 0 ? riskDriverList.map((d, i) => (
+                                <div key={i} style={{ position:'relative', display:'flex',gap:'10px',alignItems:'flex-start',padding:'9px 11px 9px 13px',borderRadius:'10px',background:'rgba(244,63,94,0.045)',border:'1px solid rgba(244,63,94,0.12)' }}>
+                                  <span aria-hidden="true" style={{ position:'absolute', left:0, top:'9px', bottom:'9px', width:'2px', borderRadius:'2px', background:'#f47c8f' }} />
+                                  <span style={{ flexShrink:0, fontSize:'9.5px', fontWeight:700, color:'#f47c8f', lineHeight:'17px', fontVariantNumeric:'tabular-nums', ...monoSm }}>{String(i + 1).padStart(2, '0')}</span>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#ecc2c9',lineHeight:1.55,...monoSm }}>{d}</p>
                                 </div>
-                              ))}
+                              )) : (
+                                <div style={{ display:'flex', gap:'8px', alignItems:'center', padding:'9px 11px', borderRadius:'10px', background:'rgba(52,211,153,0.05)', border:'1px solid rgba(52,211,153,0.14)' }}>
+                                  <span style={{ color:'#34d399', display:'inline-flex' }}>{RiskIcon.check}</span>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#a7f3d0',lineHeight:1.55,...monoSm }}>No active risk drivers detected.</p>
+                                </div>
+                              )}
                             </div>
-                          </div>
+                          </RiskPanel>
 
-                          {/* LP Control — LP-CONTROL-COMPACTED, DISCLOSED (same polish task, "lower
-                              cards too tall/awkward, break long text into bullets or short rows"):
-                              the status header row is kept as-is; the key/value list below is now a
-                              tighter 2-column mini-grid with smaller gaps/line-height (no fields
-                              removed — same rows, same values, just denser presentation). */}
+                          {/* LP Control — same rows and values as before, re-presented. */}
                           {(() => {
                             const lpMode2 = deriveLpMode(result)
+                            const lpAccent = lpMode2==='protocol' ? '#c2c5c8' : '#34d399'
                             return (
-                              <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(194,197,200,0.22)':'rgba(52,211,153,0.18)'}` }}>
-                                <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#c2c5c8':'#34d399' }}>LP Control</p>
-                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
-                                  <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>
+                              <RiskPanel title="LP Control" accent={lpAccent} icon={RiskIcon.drop}>
+                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'12px',flexWrap:'wrap' }}>
+                                  <span style={{ fontSize:'14px',fontWeight:700,color:'#f4f6f7',lineHeight:1.3,fontFamily:'var(--font-sora, Sora, sans-serif)' }}>
                                     {lpMode2==='protocol' ? 'Concentrated Liquidity (v3/v4)' : (lpLabelMap[lpState] ?? lpState.replace(/_/g,' '))}
                                   </span>
                                   {(lpState==='locked'||lpState==='burned') && (
-                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.08em',color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',...monoSm }}>VERIFIED</span>
                                   )}
                                   {lpMode2==='protocol' && (
-                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#c2c5c8',background:'rgba(194,197,200,0.10)',border:'1px solid rgba(194,197,200,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.08em',color:'#c2c5c8',background:'rgba(194,197,200,0.10)',border:'1px solid rgba(194,197,200,0.30)',...monoSm }}>PROTOCOL</span>
                                   )}
                                 </div>
                                 {(() => {
@@ -9708,12 +9896,8 @@ export default function TerminalTokenScanner() {
                                   const proofType = lpMode2 === 'protocol' ? 'Position NFT / controller' : result.lpControl?.proofStatus === 'not_applicable' ? 'Not applicable' : 'LP token'
                                   const liquidityDepth = result.lpControllerIntel?.poolLiquidityUsd ?? result.lpHistoryTimeline?.liquidityUsd ?? result.liquidity ?? null
                                   const exitRisk = result.lpExitRiskReason ?? result.lpControllerIntel?.summary ?? (lpState === 'team_controlled' || lpState === 'wallet_controlled' ? 'Pull risk: dominant LP position sits with a normal wallet.' : lpMode2 === 'protocol' ? 'LP token proof may not apply; verify position ownership.' : result.lpControl?.lockBurnReason ?? 'Confirm lock, burn, or controller proof before relying on liquidity.')
-                                  // COPY-COMPRESSION, DISCLOSED (Token Scanner detail-polish task,
-                                  // explicitly requested: compress "Concentrated primary pool:
-                                  // ERC-20 LP token lock/burn proof may not apply." into a shorter
-                                  // trader-readable phrase without changing meaning). The fuller
-                                  // wording stays available via the `title` tooltip below — nothing
-                                  // is deleted, only the default-visible text is shorter.
+                                  // COPY-COMPRESSION, DISCLOSED: shorter default-visible reason, full
+                                  // wording kept in the title tooltip.
                                   const reasonFull = lpMode2 === 'protocol'
                                     ? 'Concentrated primary pool: ERC-20 LP token lock/burn proof may not apply.'
                                     : result.lpControl?.reason ?? result.lpControllerIntel?.summary ?? (result.lpControl?.poolAddressPresent ? 'LP controller evidence is incomplete from current providers.' : 'Pool not found from current providers.')
@@ -9728,165 +9912,151 @@ export default function TerminalTokenScanner() {
                                     ['Depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Unavailable: liquidity missing'],
                                   ]
                                   return (
-                                    <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px 10px' }}>
-                                        {compactRows.map(([label, value]) => (
-                                          <div key={label} style={{ minWidth:0 }}>
-                                            <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)',marginBottom:'2px' }}>{label}</div>
-                                            <div style={{ fontSize:'10.5px',color:'#d1d4d7',lineHeight:1.35,fontFamily:'var(--font-plex-mono)',overflowWrap:'anywhere' }} title={value}>{value}</div>
+                                    <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                                      <div style={{ display:'flex', flexDirection:'column', borderRadius:'10px', overflow:'hidden', border:'1px solid rgba(255,255,255,0.06)' }}>
+                                        {compactRows.map(([label, value], idx) => (
+                                          <div key={label} style={{ display:'flex', gap:'12px', alignItems:'baseline', padding:'8px 11px', background: idx % 2 === 0 ? 'rgba(255,255,255,0.025)' : 'transparent' }}>
+                                            <div style={{ flex:'0 0 78px', fontSize:'8.5px',letterSpacing:'.12em',textTransform:'uppercase',color:'#5b5e61',...monoSm }}>{label}</div>
+                                            <div style={{ flex:1, minWidth:0, fontSize:'11px',color:'#e4e7ea',lineHeight:1.4,...monoSm,overflowWrap:'anywhere',textAlign:'right' }} title={value}>{value}</div>
                                           </div>
                                         ))}
                                       </div>
-                                      <div style={{ paddingTop:'8px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', flexDirection:'column', gap:'4px' }}>
-                                        <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
-                                        <p style={{ margin:0,fontSize:'10.5px',color:'#9ea1a4',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
-                                        <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
-                                        {/* COPY-COMPRESSION, DISCLOSED (Token Scanner Holder Map + Risk
-                                            Engine polish task, explicitly requested: "compress visible
-                                            LP Control rows... use short text by default, move longer
-                                            explanation into tooltip/title"): exitRisk text is dynamic
-                                            (varies by provider/state), so instead of hardcoding a
-                                            compressed string per case, it's clamped to 2 lines
-                                            visually with the full text always available via title —
-                                            same approach as the Reason row above. */}
-                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#9ea1a4',lineHeight:1.45,fontFamily:'var(--font-plex-mono)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden' }} title={exitRisk}>{exitRisk}</p>
+                                      <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+                                        <div style={{ fontSize:'8.5px',letterSpacing:'.12em',textTransform:'uppercase',color:'#5b5e61',...monoSm }}>Reason</div>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:'#9ea1a4',lineHeight:1.5,...monoSm }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
+                                        <div style={{ fontSize:'8.5px',letterSpacing:'.12em',textTransform:'uppercase',color:'#5b5e61',...monoSm,marginTop:'5px' }}>Exit risk</div>
+                                        {/* exitRisk is dynamic, so it is clamped to 2 lines with the full text in title. */}
+                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#9ea1a4',lineHeight:1.5,...monoSm,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden' }} title={exitRisk}>{exitRisk}</p>
                                       </div>
                                     </div>
                                   )
                                 })()}
-                              </div>
+                              </RiskPanel>
                             )
                           })()}
 
                           {/* Ownership / Control */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(210,213,216,0.18)' }}>
-                            <p style={{ ...cardTitle, color:'#d2d5d8' }}>Ownership / Control</p>
-                            <div style={{ display:'grid',gap:'7px' }}>
+                          <RiskPanel title="Ownership / Control" accent="#d2d5d8" icon={RiskIcon.key}>
+                            <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
                               {[
-                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#9ea1a4'],
-                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e4e7ea'],
-                              ].map(([label, val, col]) => (
-                                <div key={String(label)} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
-                                  <span style={{ fontSize:'11px',color:'#6f7275',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                  <span style={{ fontSize:'11px',fontWeight:700,color:String(col),fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#9ea1a4', ownerState==='Renounced' ? 'Ownership renounced on-chain' : ownerState==='Held' ? 'Owner wallet can still act' : 'Owner status not confirmed'],
+                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e4e7ea', deriveLpMode(result)==='protocol' ? 'Position NFT / pool controller' : 'Primary pool liquidity'],
+                              ].map(([label, val, col, hint]) => (
+                                <div key={String(label)} style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(255,255,255,0.025)',border:'1px solid rgba(255,255,255,0.06)' }}>
+                                  <div style={{ display:'flex',alignItems:'center',gap:'9px' }}>
+                                    <span aria-hidden="true" style={{ width:'7px', height:'7px', borderRadius:'50%', background:String(col), boxShadow:`0 0 8px ${String(col)}80`, flexShrink:0 }} />
+                                    <span style={{ flex:'1 0 auto', fontSize:'10.5px',color:'#9ea1a4',...monoSm,whiteSpace:'nowrap' }}>{label}</span>
+                                    <span style={{ fontSize:'11.5px',fontWeight:700,color:String(col),...monoSm,textAlign:'right' }}>{val}</span>
+                                  </div>
+                                  <div style={{ fontSize:'9.5px',color:'#5b5e61',...monoSm,marginTop:'5px',paddingLeft:'16px' }}>{hint}</div>
                                 </div>
                               ))}
                             </div>
-                          </div>
+                          </RiskPanel>
                         </div>
 
                         {/* Supporting evidence */}
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px' }}>
-                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#6e7174',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Supporting evidence</p>
-                          <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
+                        <div style={{ display:'flex', alignItems:'center', gap:'10px', marginTop:'6px' }}>
+                          <span style={{ width:'14px', height:'1px', background:'linear-gradient(90deg,transparent,#1fd6dc)' }} />
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.2em',color:'#9ea1a4',textTransform:'uppercase',...monoSm }}>Supporting evidence</p>
+                          <div style={{ flex:1, height:'1px', background:'linear-gradient(90deg,rgba(255,255,255,0.08),transparent)' }} />
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px', alignItems:'stretch' }}>
                           {/* Trading Simulation */}
-                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(31,214,220,0.25)':simRisk?'rgba(248,113,113,0.28)':'rgba(158,161,164,0.18)'}` }}>
-                            <p style={{ ...cardTitle, color:'#62f1f1' }}>Trading Simulation</p>
+                          <RiskPanel title="Trading Simulation" accent="#62f1f1" icon={RiskIcon.sim}>
                             <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
-                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simRisk?'#f87171':'#9ea1a4',background:simVerified?'rgba(52,211,153,0.10)':simRisk?'rgba(248,113,113,0.10)':'rgba(158,161,164,0.08)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simRisk?'rgba(248,113,113,0.30)':'rgba(158,161,164,0.22)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.08em',color:simVerified?'#34d399':simRisk?'#f87171':'#9ea1a4',background:simVerified?'rgba(52,211,153,0.10)':simRisk?'rgba(248,113,113,0.10)':'rgba(158,161,164,0.08)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simRisk?'rgba(248,113,113,0.30)':'rgba(158,161,164,0.22)'}`,...monoSm }}>
                                 {simAuditUi.badge}
                               </span>
                               {sim?.isHoneypot === true && (
-                                <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
+                                <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',...monoSm }}>HONEYPOT</span>
                               )}
                             </div>
-                            <p style={{ margin:'0 0 10px', fontSize:'11px', color:'#d1d4d7', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.statusLabel}</p>
-                            <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.reason}</p>
+                            <p style={{ margin:'0 0 6px', fontSize:'11.5px', color:'#e4e7ea', ...monoSm, lineHeight:1.5 }}>{simAuditUi.statusLabel}</p>
+                            <p style={{ margin:'0 0 10px', fontSize:'10.5px', color:'#8a8d90', ...monoSm, lineHeight:1.5 }}>{simAuditUi.reason}</p>
                             {simAuditUi.impact && (
-                              <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.impact}</p>
+                              <p style={{ margin:'0 0 10px', fontSize:'10.5px', color:'#fde68a', ...monoSm, lineHeight:1.5 }}>{simAuditUi.impact}</p>
                             )}
                             {simAuditUi.showTaxRows ? (
-                            <div style={{ display:'grid',gap:'6px' }}>
+                            <div style={{ marginTop:'auto', display:'grid', borderRadius:'10px', overflow:'hidden', border:'1px solid rgba(255,255,255,0.06)' }}>
                               {([
                                 ['Honeypot', simAuditUi.honeypotValue, simAuditUi.honeypotValue === 'Blocked' || simAuditUi.honeypotValue === 'YES' ? '#f87171' : simAuditUi.honeypotValue === 'Sellable' || simAuditUi.honeypotValue === 'NO' ? '#34d399' : '#9ea1a4'],
                                 ['Buy Tax', simAuditUi.buyTaxValue, (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax) != null ? ((result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#9ea1a4'],
                                 ['Sell Tax', simAuditUi.sellTaxValue, (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax) != null ? ((result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#9ea1a4'],
                                 ...(sim?.transferTax != null && sim.transferTax > 0 ? [['Transfer Tax', `${sim.transferTax.toFixed(1)}%`, '#fbbf24'] as [string, string, string]] : []),
                                 ...(simAuditUi.source ? [['Source', simAuditUi.source, '#62f1f1'] as [string, string, string]] : []),
-                              ] as Array<[string,string,string]>).map(([label,val,col])=>(
-                                <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
-                                  <span style={{ fontSize:'11px',color:'#6f7275',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                  <span style={{ fontSize:'11px',fontWeight:700,color:col,fontFamily:'var(--font-plex-mono)' }}>{val}</span>
+                              ] as Array<[string,string,string]>).map(([label,val,col], idx)=>(
+                                <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',padding:'7px 11px',background: idx % 2 === 0 ? 'rgba(255,255,255,0.025)' : 'transparent' }}>
+                                  <span style={{ fontSize:'10.5px',color:'#7d8083',...monoSm }}>{label}</span>
+                                  <span style={{ fontSize:'11px',fontWeight:700,color:col,...monoSm,fontVariantNumeric:'tabular-nums' }}>{val}</span>
                                 </div>
                               ))}
                             </div>
                             ) : null}
-                          </div>
+                          </RiskPanel>
 
                           {/* Contract Flags */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.18)' }}>
-                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Contract Flags</p>
-                            <div style={{ display:'grid',gap:'7px' }}>
+                          <RiskPanel title="Contract Flags" accent="#fbbf24" icon={RiskIcon.code} count={flagsAnalyzed > 0 ? `${flagsDetected}/${flagsAnalyzed}` : '—'} countTone={flagsDetected > 0 ? '#f87171' : flagsAnalyzed > 0 ? '#34d399' : '#9ea1a4'}>
+                            <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
                               {(() => {
-                                const scf = result.security?.contractFlags
-                                type BoolFlag = boolean | null | undefined
-                                const flagRows: Array<[string, BoolFlag]> = [
-                                  ['Mint Function', scf?.mint],
-                                  ['Upgradeable / Proxy', scf?.proxy],
-                                  ['Blacklist', scf?.blacklist],
-                                  ['Pause Control', scf?.pause],
-                                  ['Withdraw Control', scf?.withdraw],
-                                ]
                                 const flagLabel = (v: BoolFlag) =>
                                   v === true ? 'Detected' : v === false ? 'Not detected' : 'Not analyzed'
                                 const flagColor = (v: BoolFlag) =>
                                   v === true ? '#f87171' : v === false ? '#34d399' : '#6f7275'
-                                const flagBg = (v: BoolFlag) =>
-                                  v === true ? 'rgba(248,113,113,0.10)' : v === false ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
-                                const flagBorder = (v: BoolFlag) =>
-                                  v === true ? 'rgba(248,113,113,0.30)' : v === false ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
                                 return flagRows.map(([label, val]) => (
-                                  <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
-                                    <span style={{ fontSize:'11px',color:'#9ea1a4',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(val),background:flagBg(val),border:`1px solid ${flagBorder(val)}` }}>
+                                  <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',padding:'8px 11px',borderRadius:'9px',background: val === true ? 'rgba(248,113,113,0.06)' : 'rgba(255,255,255,0.02)',border:`1px solid ${val === true ? 'rgba(248,113,113,0.22)' : 'rgba(255,255,255,0.05)'}` }}>
+                                    <span style={{ fontSize:'11px',color:'#c2c5c8',...monoSm,minWidth:0 }}>{label}</span>
+                                    <span style={{ flexShrink:0, whiteSpace:'nowrap', display:'inline-flex', alignItems:'center', gap:'6px', fontSize:'9.5px',fontWeight:700,letterSpacing:'.04em',...monoSm,color:flagColor(val) }}>
+                                      <span aria-hidden="true" style={{ width:'6px', height:'6px', borderRadius:'50%', background: val == null ? 'transparent' : flagColor(val), border:`1.5px solid ${flagColor(val)}` }} />
                                       {flagLabel(val)}
                                     </span>
                                   </div>
                                 ))
                               })()}
                             </div>
-                          </div>
+                          </RiskPanel>
 
                           {/* Evidence Gaps */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(251,191,36,0.16)' }}>
-                            <p style={{ ...cardTitle, color:'#fbbf24' }}>Evidence Gaps</p>
-                            {(() => {
-                              const openItems = (engine?.openChecks?.length ? engine.openChecks : missing2)
-                              return openItems.length > 0 ? (
-                                <div style={{ display:'flex',flexDirection:'column',gap:'5px' }}>
-                                  {openItems.map((m, i) => (
-                                    <div key={i} style={{ display:'flex',gap:'6px',alignItems:'flex-start' }}>
-                                      <span style={{ color:'#fbbf24',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>⚠</span>
-                                      <p style={{ margin:0,fontSize:'11px',color:'#fde68a',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{m}</p>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p style={{ margin:0,fontSize:'11px',color:'#34d399',fontFamily:'var(--font-plex-mono)' }}>All key checks passed.</p>
-                              )
-                            })()}
-                          </div>
+                          <RiskPanel title="Evidence Gaps" accent="#fbbf24" icon={RiskIcon.gap} count={openItems.length} countTone={openItems.length > 0 ? '#fbbf24' : '#34d399'}>
+                            {openItems.length > 0 ? (
+                              <div style={{ display:'flex',flexDirection:'column',gap:'6px' }}>
+                                {openItems.map((m, i) => (
+                                  <div key={i} style={{ display:'flex',gap:'9px',alignItems:'flex-start',padding:'8px 11px',borderRadius:'9px',background:'rgba(251,191,36,0.04)',border:'1px solid rgba(251,191,36,0.12)' }}>
+                                    <span aria-hidden="true" style={{ flexShrink:0, marginTop:'5px', width:'6px', height:'6px', borderRadius:'50%', border:'1.5px solid #fbbf24' }} />
+                                    <p style={{ margin:0,fontSize:'11px',color:'#f3e2b0',lineHeight:1.5,...monoSm }}>{m}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ display:'flex', gap:'8px', alignItems:'center', padding:'9px 11px', borderRadius:'10px', background:'rgba(52,211,153,0.05)', border:'1px solid rgba(52,211,153,0.14)' }}>
+                                <span style={{ color:'#34d399', display:'inline-flex' }}>{RiskIcon.check}</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#34d399',...monoSm }}>All key checks passed.</p>
+                              </div>
+                            )}
+                          </RiskPanel>
                         </div>
 
                         {/* Verified Signals */}
-                        {engine?.verifiedSignals && engine.verifiedSignals.length > 0 && (
-                          <div style={{ padding:'14px 16px',background:'rgba(52,211,153,0.04)',border:'1px solid rgba(52,211,153,0.18)',borderRadius:'12px' }}>
-                            <p style={{ margin:'0 0 10px',fontSize:'9px',fontWeight:700,letterSpacing:'.14em',color:'#34d399',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Verified Signals</p>
-                            {engine.verifiedSignals.map((s, i) => (
-                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'4px' }}>
-                                <span style={{ color:'#34d399',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>✓</span>
-                                <p style={{ margin:0,fontSize:'11px',color:'#86efac',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{s}</p>
-                              </div>
-                            ))}
-                          </div>
+                        {verifiedList.length > 0 && (
+                          <RiskPanel title="Verified Signals" accent="#34d399" icon={RiskIcon.check} count={verifiedList.length} countTone="#34d399">
+                            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'6px 14px' }}>
+                              {verifiedList.map((sig, i) => (
+                                <div key={i} style={{ display:'flex',gap:'8px',alignItems:'flex-start' }}>
+                                  <span style={{ color:'#34d399',flexShrink:0,display:'inline-flex',marginTop:'2px' }}>{RiskIcon.check}</span>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#a7f3d0',lineHeight:1.55,...monoSm }}>{sig}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </RiskPanel>
                         )}
 
                         {/* Next Action */}
-                        <div style={{ padding:'14px 16px',background:'rgba(31,214,220,0.05)',border:'1px solid rgba(31,214,220,0.22)',borderRadius:'12px' }}>
-                          <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1fd6dc',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Next Action</p>
-                          <p style={{ margin:0,fontSize:'12px',color:'#62f1f1',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next2}</p>
+                        <div style={{ position:'relative', display:'flex', gap:'14px', alignItems:'flex-start', padding:'16px 18px', background:'radial-gradient(120% 160% at 0% 0%,rgba(31,214,220,0.10) 0%,rgba(31,214,220,0.03) 45%,rgba(6,9,10,0.9) 100%)', border:'1px solid rgba(31,214,220,0.28)', borderRadius:'16px', boxShadow:'inset 0 1px 0 rgba(255,255,255,0.05), 0 0 30px rgba(31,214,220,0.05)' }}>
+                          <span style={{ flexShrink:0, width:'30px', height:'30px', borderRadius:'9px', display:'inline-flex', alignItems:'center', justifyContent:'center', color:'#5cf0f0', background:'rgba(31,214,220,0.10)', border:'1px solid rgba(31,214,220,0.35)' }}>{RiskIcon.arrow}</span>
+                          <div style={{ minWidth:0 }}>
+                            <p style={{ margin:'0 0 5px',fontSize:'9px',fontWeight:700,letterSpacing:'.2em',color:'#1fd6dc',textTransform:'uppercase',...monoSm }}>Next Action</p>
+                            <p style={{ margin:0,fontSize:'12.5px',color:'#c9f7f7',lineHeight:1.6,...monoSm }}>{next2}</p>
+                          </div>
                         </div>
                       </div>
                     )
