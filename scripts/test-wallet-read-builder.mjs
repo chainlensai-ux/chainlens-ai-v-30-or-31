@@ -197,7 +197,7 @@ function run() {
       historicalCoverage: 'Bounded sample (90-day)',
     })
     check('bullet 1: real top-chain percent, worded exactly as this task\'s own example', bullets.some((b) => b === '90% of supported value is on Robinhood Chain'))
-    check('bullet 2: real verified trade count', bullets.some((b) => b === '56 verified trades found'))
+    check('bullet 2: real matched closed-trade count (structural lots — "matched", never "verified")', bullets.some((b) => b === '56 closed trades matched'))
     check('bullet 3: real median sell gap', bullets.some((b) => b === 'Median gap between sells: 1.8d'))
     check('bullet 4: real concentration detail', bullets.some((b) => b === 'Top holding concentration: USDT · 68% of portfolio'))
     check('bullet 5: real historical coverage', bullets.some((b) => b === 'Closed-history coverage: Bounded sample (90-day)'))

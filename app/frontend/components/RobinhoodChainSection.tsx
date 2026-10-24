@@ -65,7 +65,8 @@ export function RobinhoodChainSection({
   // Swaps verified + priced but no closed lot is an open position, not missing evidence.
   const swapEvidence = selectRobinhoodSwapEvidence(result)
   const openPositionOnly = swapEvidence?.openPositionOnly === true
-  const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : openPositionOnly ? 'Robinhood PnL: Open position only' : 'Robinhood: Not verified'
+  const noActivity = swapEvidence?.noActivity === true
+  const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : openPositionOnly ? 'Robinhood PnL: Open position only' : noActivity ? 'Robinhood PnL: No activity' : 'Robinhood: Not verified'
   const pnlTone: StatusTone = robinhoodPnlVerified ? 'success' : 'neutral'
   const pnlAudit = result.robinhoodPnlVerificationAudit
   const pnlCard = robinhoodPnlCardView(result.robinhoodPnl)
@@ -125,7 +126,7 @@ export function RobinhoodChainSection({
             <PnLHeaderCard label="Priced Holdings" value={String(pricedCount)} tone="neutral" index={2} />
             <PnLHeaderCard label="Unpriced Holdings" value={String(unpricedCount)} tone={unpricedCount > 0 ? 'negative' : 'neutral'} index={3} />
             <PnLHeaderCard label="Pricing Coverage" value={`${pricingCoveragePercent}%`} tone={pricingCoveragePercent === 100 ? 'positive' : 'neutral'} index={4} />
-            <PnLHeaderCard label="PnL Status" value={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : 'Not verified'} tone={robinhoodPnlVerified ? 'positive' : 'neutral'} index={5} />
+            <PnLHeaderCard label="PnL Status" value={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : noActivity ? 'No activity' : 'Not verified'} tone={robinhoodPnlVerified ? 'positive' : 'neutral'} index={5} />
           </div>
 
           {/* HOLDINGS TABLE: Token / Balance / Price / Value / Pricing status / Source — a real table,
@@ -225,7 +226,7 @@ export function RobinhoodChainSection({
             background: robinhoodPnlVerified ? 'rgba(31,214,220,0.06)' : 'rgba(255,255,255,0.02)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-              <StatusBadge label={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : 'Not verified'} tone={pnlTone} />
+              <StatusBadge label={robinhoodPnlVerified ? 'Verified' : openPositionOnly ? 'Open position only' : noActivity ? 'No activity' : 'Not verified'} tone={pnlTone} />
               <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#1fd6dc' : '#e4e7ea' }}>{pnlLabel}</span>
             </div>
             {pnlCard?.kind === 'sample' ? (

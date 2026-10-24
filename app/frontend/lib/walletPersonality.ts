@@ -41,6 +41,7 @@ import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
 import { selectScanWindow, type ScanWindowSource } from '@/app/frontend/lib/scanWindow'
+import { selectLpCadence, fmtLpCadence } from '@/app/frontend/lib/liquidityProviderView'
 // CONCENTRATION WIRING FIX, DISCLOSED (this task's own root-cause trace: portfolio intelligence ->
 // API serialization -> page selector -> personality model): the ONLY real, live-populated
 // dominant-holding-share computation in this codebase is PortfolioIntelligenceCard.tsx's own
@@ -67,7 +68,7 @@ export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 
   portfolio?: PortfolioSummary | null
   portfolioV2?: EnginePortfolioV2 | null
   // LP-strategy flag (src/lib/liquidityLegGuard.ts) and how much history the scan read.
-  liquidityActivity?: Pick<LiquidityActivitySummary, 'lpStrategyWallet' | 'liquidityTxShare'> | null
+  liquidityActivity?: (Pick<LiquidityActivitySummary, 'lpStrategyWallet' | 'liquidityTxShare'> & Partial<Pick<LiquidityActivitySummary, 'liquidityAddTxs' | 'liquidityRemoveTxs'>>) | null
   windowCoverage?: ScanWindowSource['windowCoverage']
   scanMetadata?: ScanWindowSource['scanMetadata']
 }
@@ -75,7 +76,7 @@ export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 
 export type EvidenceBasis = 'behavior_verified' | 'behavior_only' | 'behavior_plus_pnl' | 'limited_evidence'
 
 export type TradingStyle = 'Manual trader' | 'Assisted trader' | 'Bot-like' | 'Highly automated' | 'Automation signals present'
-export type HoldingStyle = 'Long-term holder' | 'Swing trader' | 'Short-term rotator' | 'Hyperactive sniper' | 'Not enough data'
+export type HoldingStyle = 'Long-term holder' | 'Swing trader' | 'Short-term holder' | 'Hyperactive sniper' | 'Not enough data'
 // CONCENTRATION BANDS, DISCLOSED (this task's own exact required mapping, based on the dominant
 // holding's share of PRICED portfolio value — never raw token count): <25% Diversified,
 // 25-49% Moderately concentrated, 50-69% Concentrated, >=70% Highly concentrated.
@@ -197,6 +198,8 @@ export type WalletPersonalityData = {
   scope: { kind: 'evm_only'; label: string }
   /** The risk axis' categorical reading is withheld (raw signal kept) because the sample is too small. */
   riskLowSample: boolean
+  /** Set for an LP-strategy wallet: its liquidity transactions are excluded from the trading metrics and signal bars. */
+  lpActivity: { sharePercent: number; lpTxs: number; txsPerDay: number | null; automated: boolean } | null
 }
 
 export const PERSONALITY_SCOPE_LABEL = 'Behavior profile based on Base/ETH activity only'
@@ -276,7 +279,7 @@ function classifyHolding(averageHoldingDays: number | null): HoldingStyle {
   if (averageHoldingDays == null) return 'Not enough data'
   if (averageHoldingDays >= 30) return 'Long-term holder'
   if (averageHoldingDays >= 7) return 'Swing trader'
-  if (averageHoldingDays >= 1) return 'Short-term rotator'
+  if (averageHoldingDays >= 1) return 'Short-term holder'
   return 'Hyperactive sniper'
 }
 
@@ -380,7 +383,7 @@ export function composeTitle(params: {
   if (concentrationClass === 'Concentrated' && convictionValue === 'high') return 'Concentrated Conviction Holder'
   const elevatedRisk = riskClass === 'High risk behavior' || riskClass === 'Medium risk behavior'
   if (elevatedRisk && holdingClass === 'Swing trader') return 'Elevated-Risk Swing Operator'
-  if (rotationValue === 'rotator' && (holdingClass === 'Short-term rotator' || holdingClass === 'Hyperactive sniper') && totalTransactions >= 15) return 'High-Tempo Token Rotator'
+  if (rotationValue === 'rotator' && (holdingClass === 'Short-term holder' || holdingClass === 'Hyperactive sniper') && totalTransactions >= 15) return 'High-Tempo Token Rotator'
   // MULTI-CHAIN, DISCLOSED: 2+ active chains is real, meaningful multi-chain evidence for this
   // engine's own scope (Base + a small set of supported chains — see chainSelection's own header)
   // — lowered from the prior 3-chain bar so a genuinely active 2-chain wallet (this task's own
@@ -393,7 +396,7 @@ export function composeTitle(params: {
   if (rotationValue === 'distributor' && totalTransactions >= 100) return 'High-Activity Token Distributor'
   if (holdingClass === 'Long-term holder') return riskClass === 'Low risk behavior' ? 'Disciplined Long-Term Holder' : 'Conviction Long-Term Holder'
   if (holdingClass === 'Hyperactive sniper') return 'Hyperactive Token Sniper'
-  if (holdingClass === 'Short-term rotator') return 'Short-Term Token Rotator'
+  if (holdingClass === 'Short-term holder') return 'Short-Term Token Rotator'
   // Same word the CORTEX label uses for this classification ('Accumulator'), so the two never disagree.
   if (rotationValue === 'accumulator') return 'Accumulator'
   if (rotationValue === 'distributor') return 'Active Distributor'
@@ -492,7 +495,7 @@ function computeActivityAxis(params: { totalTransactions: number; walletAgeDays:
   const volume = totalTransactions > 0 ? clamp01(totalTransactions / 300) : null // 300+ tx saturates the volume signal
   return combineAxis([
     { key: 'density', label: 'Transaction density', detail: walletAgeDays != null ? `${(totalTransactions / Math.max(1, walletAgeDays)).toFixed(2)} tx/day` : 'Unknown', value: density, weight: 0.55 },
-    { key: 'volume', label: 'Transaction volume', detail: `${totalTransactions} total transactions`, value: volume, weight: 0.45 },
+    { key: 'volume', label: 'Transaction volume', detail: `${totalTransactions} trades (buys + sells)`, value: volume, weight: 0.45 },
   ])
 }
 
@@ -822,8 +825,22 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   // trading classification describes only its occasional swaps.
   const lpStrategy = report.liquidityActivity?.lpStrategyWallet === true
   const lpSharePct = lpStrategy ? Math.round((report.liquidityActivity?.liquidityTxShare ?? 0) * 100) : null
+  // Automation for an LP wallet is read from its liquidity cadence: the swap-only automation axis
+  // never sees those transactions, so on its own it would call a deposit/withdraw bot "manual".
+  const lpCadence = selectLpCadence(
+    report.liquidityActivity ? { liquidityAddTxs: 0, liquidityRemoveTxs: 0, ...report.liquidityActivity } : null,
+    selectScanWindow(report).windowDays ?? walletAgeDays,
+  )
+  const automationLabel = lpCadence?.automated && lpCadence.txsPerDay != null
+    ? `Automated LP cycling (${fmtLpCadence(lpCadence.txsPerDay)})`
+    : automationClass
+  const strategyLabel = lpStrategy ? 'Liquidity provision'
+    : rotationValue === 'rotator' ? 'Token rotation'
+    : rotationValue === 'accumulator' ? 'Accumulation'
+    : rotationValue === 'distributor' ? 'Distribution'
+    : 'Unclassified'
   const title = lpStrategy
-    ? 'Automated Liquidity Provider'
+    ? (lpCadence?.automated ? 'Automated Liquidity Provider' : 'Liquidity Provider')
     : insufficientEvidence
     ? 'General User'
     : (useArchetypeOverride ? archetypeOverride! : composeTitle({
@@ -831,13 +848,13 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
       }))
 
   const subtitle = lpStrategy
-    ? `${lpSharePct}% of transactions add or remove liquidity · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
+    ? `${lpSharePct}% of transactions add or remove liquidity${lpCadence?.txsPerDay != null ? ` · ${fmtLpCadence(lpCadence.txsPerDay)}` : ''} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
     : insufficientEvidence
     ? 'Insufficient evidence for a detailed personality'
     : `${automationClass} · ${holdingClass} · ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}`
 
   const summarySentence = lpStrategy
-    ? `This wallet runs a liquidity-provision strategy: ${lpSharePct}% of its transactions add or remove liquidity. Those are left out of the trading metrics below, which cover its swaps only.`
+    ? `This wallet runs a${lpCadence?.automated ? 'n automated' : ''} liquidity-provision strategy: ${lpSharePct}% of its transactions add or remove liquidity. Those are left out of the trading metrics below, which cover its swaps only.`
     : insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
     : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active EVM chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
@@ -876,7 +893,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     scope: { kind: 'evm_only', label: PERSONALITY_SCOPE_LABEL },
     riskLowSample,
     traits: {
-      tradingStyle: automationClass,
+      tradingStyle: strategyLabel,
       activityLevel,
       holdingStyle: holdingClass,
       rotationBehavior: lpStrategy ? 'Liquidity provision' : rotationValue === 'unknown' ? 'Unknown' : rotationValue.charAt(0).toUpperCase() + rotationValue.slice(1),
@@ -890,7 +907,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
       riskAppetite: riskLowSample
         ? `Insufficient evidence (raw signal ${radar.risk.signalStrength}%, low confidence)`
         : describeCalibratedRisk(radar.risk.signalStrength),
-      automationLikelihood: automationClass,
+      automationLikelihood: automationLabel,
       chainPreference: b?.multiChainParticipation?.primaryChain ?? 'Unknown',
       portfolioConcentration: concentrationClass,
     },
@@ -917,6 +934,9 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     watchouts: [...new Set(watchouts)],
     profitEvidence,
     insufficientEvidence,
+    lpActivity: lpStrategy && lpCadence
+      ? { sharePercent: lpSharePct ?? 0, lpTxs: lpCadence.lpTxs, txsPerDay: lpCadence.txsPerDay, automated: lpCadence.automated }
+      : null,
   }
 }
 

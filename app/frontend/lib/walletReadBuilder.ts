@@ -24,7 +24,7 @@ import { portfolioCoverage, portfolioValueText, PORTFOLIO_VALUE_UNAVAILABLE_TEXT
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
 import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
-import { robinhoodCoverageLabel, selectRobinhoodSwapEvidence, ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL, type RobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
+import { robinhoodCoverageLabel, selectRobinhoodSwapEvidence, ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL, ROBINHOOD_NO_ACTIVITY_LABEL, type RobinhoodSwapEvidence } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { ChainBreakdownRow } from '@/app/frontend/components/WalletProfileHeader'
 import type { PnlConfidenceStatus, EvmPnlLaneStatus, RobinhoodPnlLaneStatus } from '@/app/frontend/components/PnlStatusCard'
 import type { RobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
@@ -145,8 +145,11 @@ export function selectPersonalityLabel(behaviorIntel: BehaviorIntelResult | null
   return isMultiChain ? `Multi-chain ${base}` : base
 }
 
-function fmtMedianGap(medianMsBetweenSells: number | null | undefined): string | null {
-  if (medianMsBetweenSells == null) return null
+export function fmtMedianGap(medianMsBetweenSells: number | null | undefined): string | null {
+  if (medianMsBetweenSells == null || !Number.isFinite(medianMsBetweenSells) || medianMsBetweenSells < 0) return null
+  // Sub-hour gaps are shown in minutes: rounding them to hours printed a busy wallet's gap as "0h".
+  if (medianMsBetweenSells < 60_000) return 'under 1m'
+  if (medianMsBetweenSells < 3_600_000) return `${Math.round(medianMsBetweenSells / 60_000)}m`
   const days = medianMsBetweenSells / 86_400_000
   if (days < 1) return `${Math.round(medianMsBetweenSells / 3_600_000)}h`
   return `${days.toFixed(1)}d`
@@ -223,7 +226,7 @@ export function buildKeySignals(params: {
     signals.push({ label: 'Robinhood verified swaps', value: String(params.robinhoodVerifiedSwaps) })
   }
   if (params.rotationStyle && params.rotationStyle !== 'unknown') {
-    signals.push({ label: 'Rotation style', value: params.rotationStyle })
+    signals.push({ label: 'Rotation style', value: params.rotationStyle.charAt(0).toUpperCase() + params.rotationStyle.slice(1) })
   }
   return signals
 }
@@ -243,8 +246,9 @@ export function buildWhyThisLabel(params: {
   if (params.topChain && params.topChain.percent >= 50) {
     bullets.push(`${params.topChain.percent.toFixed(0)}% of supported value is on ${chainLabel(params.topChain.chain)}${params.topChain.chain === 'robinhood' ? ' Chain' : ''}`)
   }
+  // matchedLotsCount is every structurally matched closed lot, priced or not — "matched", never "verified".
   if (params.matchedLotsCount > 0) {
-    bullets.push(`${params.matchedLotsCount} verified trade${params.matchedLotsCount === 1 ? '' : 's'} found`)
+    bullets.push(`${params.matchedLotsCount} closed trade${params.matchedLotsCount === 1 ? '' : 's'} matched`)
   }
   if (params.medianSellGap) {
     bullets.push(`Median gap between sells: ${params.medianSellGap}`)
@@ -297,7 +301,7 @@ export function buildEvidence(params: {
   const sampleShownWhileLocked = params.pnlConfidence.realized === 'Locked' && params.verifiedSampleRealizedShown === true
   if (params.pnlConfidence.realized === 'Partial' || sampleShownWhileLocked) partial.push('Realized PnL (verified bounded sample)')
   if (params.pnlConfidence.unrealized === 'Partial') partial.push('Unrealized/open-position PnL')
-  if (params.robinhoodPnlLane === 'not_verified' && !rh?.openPositionOnly) partial.push('Robinhood PnL (real evidence, not fully verified)')
+  if (params.robinhoodPnlLane === 'not_verified' && !rh?.openPositionOnly && !rh?.noActivity) partial.push('Robinhood PnL (real evidence, not fully verified)')
   if (params.behaviorProfileAvailable) partial.push('Behavioral profile')
   const pe = params.portfolioEvidence
   // Same numerator/denominator as the Portfolio card's coverage line (portfolioCoverage, recent-verified included).
@@ -345,7 +349,7 @@ export function buildPnlLanes(params: {
     lanes.push({
       chainLabel: 'Robinhood',
       status: params.robinhoodPnlLane,
-      statusLabel: verified ? 'Verified' : params.robinhoodPnlLane === 'not_verified' ? (evidence?.openPositionOnly ? ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL : 'Not verified') : 'Unavailable',
+      statusLabel: verified ? 'Verified' : params.robinhoodPnlLane === 'not_verified' ? (evidence?.openPositionOnly ? ROBINHOOD_PNL_OPEN_POSITION_ONLY_LABEL : evidence?.noActivity ? ROBINHOOD_NO_ACTIVITY_LABEL : 'Not verified') : 'Unavailable',
       detail: verified
         ? `${evidence?.swapsVerified ?? 0} verified swap${evidence?.swapsVerified === 1 ? '' : 's'} — realized PnL is a real, gated figure.`
         : evidence?.reason ?? ROBINHOOD_PNL_NOT_VERIFIED_REASON,
@@ -375,7 +379,8 @@ export function buildNextAction(params: {
       : 'Deep scan done — the verified sample covers the history it could read.'
   }
   if (params.evmPnlLane === 'partial') return 'Run Deep Scan to improve verified history coverage.'
-  if (params.robinhoodResult && params.robinhoodPnlLane === 'not_verified' && !selectRobinhoodSwapEvidence(params.robinhoodResult)?.openPositionOnly) return 'Inspect the Robinhood tab for verified swap evidence.'
+  const rhEvidence = params.robinhoodResult ? selectRobinhoodSwapEvidence(params.robinhoodResult) : null
+  if (params.robinhoodResult && params.robinhoodPnlLane === 'not_verified' && !rhEvidence?.openPositionOnly && !rhEvidence?.noActivity) return 'Inspect the Robinhood tab for verified swap evidence.'
   if (params.concentrationLabel === 'high') return 'Review concentration risk in top holdings.'
   if (params.evmPnlLane === 'unavailable') {
     return deepScanDone
@@ -428,6 +433,8 @@ export function buildWalletReadV2(params: {
   const buyCount = params.behaviorIntel?.rotationStyle?.basis?.buyCount ?? null
   const sellCount = params.behaviorIntel?.rotationStyle?.basis?.sellCount ?? null
   const rotationStyle = params.behaviorIntel?.rotationStyle?.value ?? null
+  // An LP-strategy wallet's swap-only rotation value ("distributor") would contradict its own label.
+  const displayedRotationStyle = params.lpStrategyWallet ? 'liquidity provision' : rotationStyle
   const robinhoodVerifiedSwaps = selectRobinhoodSwapEvidence(params.robinhoodResult)?.swapsVerified ?? null
 
   return {
@@ -448,7 +455,7 @@ export function buildWalletReadV2(params: {
       lastActiveMs: params.lastActiveMs,
       buyCount,
       sellCount,
-      rotationStyle,
+      rotationStyle: displayedRotationStyle,
       robinhoodVerifiedSwaps,
     }),
     whyThisLabel: buildWhyThisLabel({

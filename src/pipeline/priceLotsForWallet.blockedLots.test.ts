@@ -108,6 +108,9 @@ describe('blocked 1clawAI lots — production-shaped 13-lot fixture', () => {
     assert.ok((byTx.get('0xclawbuy8:entry')?.deviationPct ?? 100) <= 5)
     // No uncorroborated daily sample ever completes a lot: lots 7–9 still lack a verified exit.
     for (const tx of ['0xclawsell6', '0xclawsell7', '0xclawsell8', '0xclawsell9']) assert.ok(!run.verifiedClawLotTxs.has(tx), tx)
+    // lotsCompleted counts lots the lane actually finished, not sides it priced.
+    assert.ok(run.lookups.coinPaprikaHistoricalAudit.pricesApplied >= 1)
+    assert.equal(run.lookups.coinPaprikaHistoricalAudit.lotsCompleted, 0, 'a corroborated entry on a lot with no verified exit completes nothing')
   })
 })
 

@@ -3013,6 +3013,11 @@ export async function priceLotsForWallet(params: {
   }
   if (corroboratedCompositeSideKeys.size > 0) canonicalClassification = classifyCanonicalLots()
   coinPaprikaHistoricalAudit.pricesApplied = coinPaprikaPartialAudit.corroboratedApplied
+  // Lots now canonically verified with at least one side priced by the corroborated CoinPaprika lane. Was never
+  // set after the audit's initial 0, so the log read "lotsCompleted: 0" even when corroboration closed lots.
+  coinPaprikaHistoricalAudit.lotsCompleted = corroboratedCompositeSideKeys.size === 0 ? 0 : canonicalClassification.filter((item) => item.canonicalVerified
+    && (corroboratedCompositeSideKeys.has(`${item.lot.chain}:${item.lot.openedTxHash.toLowerCase()}:entry`)
+      || corroboratedCompositeSideKeys.has(`${item.lot.chain}:${item.lot.closedTxHash.toLowerCase()}:exit`))).length
   coinPaprikaHistoricalAudit.partialLotsAffected = affectedLotKeys.size
   if (coinPaprikaHistoricalEvidence.length > 0 && !coinPaprikaHistoricalAudit.firstDropStage && coinPaprikaPartialAudit.corroboratedApplied === 0) {
     coinPaprikaHistoricalAudit.firstDropStage = 'canonical_application'

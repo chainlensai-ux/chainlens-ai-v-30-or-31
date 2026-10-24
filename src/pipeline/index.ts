@@ -3076,11 +3076,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       serializedLots: finalized.matchedLotsLength,
       verifiedLots: canonicalVerifiedCount,
       structuralClosedLots: finalized.structuralDenominator,
-      // Both figures are computed from the identical `fifoAndPnl`/`canonicalPricedFifo` object —
-      // this is what makes `countsMatch: true` a structural guarantee, not a coincidence.
-      pnlUiVerifiedCoverage: verifiedCoveragePercent,
-      smartMoneyVerifiedCoverage: verifiedCoveragePercent,
-      countsMatch: true,
+      // PRE-RECONCILIATION, DISCLOSED: these lots are the pipeline's FIFO before pnlReconciliation hydrates
+      // accepted evidence and recovers prices. The report (and so the PnL card and Smart Money) is served from
+      // `reconciledFifoAndPnl`; its counts are logged as `[smart-money-source-audit:served]` below.
+      stage: 'pre_reconciliation',
+      verifiedCoveragePercent,
     })
   }
 
@@ -4645,6 +4645,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
     unrealizedPnlUsd: reconciledPnlSummary.unrealizedPnlUsd,
     publicPnlStatus: reconciledPnlSummary.publicPnlStatus === 'available' ? 'ok' : reconciledPnlSummary.publicPnlStatus === 'partial' ? 'limited_verified_sample' : 'unavailable',
+  }
+
+  // SERVED COUNTS, DISCLOSED: the verified/structural figures the PnL card and Smart Money actually show (both
+  // read this reconciled FIFO through selectCanonicalPricedFifo), next to the pre-reconciliation count, so a
+  // log reader can see how many lots reconciliation recovered instead of mistaking the two for a drift.
+  {
+    const servedVerified = reconciledFifoAndPnl.matchedLots.filter(isCanonicalVerifiedPublishedLot).length
+    const preReconciliationVerified = fifoAndPnl.matchedLots.filter(isCanonicalVerifiedPublishedLot).length
+    const structural = reconciledFifoAndPnl.matchedLots.length
+    console.warn('[smart-money-source-audit:served]', {
+      stage: 'served',
+      verifiedLots: servedVerified,
+      structuralClosedLots: structural,
+      verifiedCoveragePercent: structural > 0 ? Math.round((servedVerified / structural) * 10000) / 100 : 0,
+      preReconciliationVerifiedLots: preReconciliationVerified,
+      recoveredByReconciliation: servedVerified - preReconciliationVerified,
+    })
   }
 
   // SCAN DETERMINISM AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real,

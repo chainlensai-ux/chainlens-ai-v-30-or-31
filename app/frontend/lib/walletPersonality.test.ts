@@ -538,7 +538,7 @@ test('composeTitle: never returns "General User" — that string is reserved for
   const combos: Array<Parameters<typeof composeTitle>[0]> = [
     { automationClass: 'Manual trader', holdingClass: 'Long-term holder', concentrationClass: 'Not enough data', riskClass: 'Not enough data', rotationValue: 'unknown', convictionValue: 'unknown', activeChains: 1, totalTransactions: 1, activityLevel: 'Light' },
     { automationClass: 'Bot-like', holdingClass: 'Hyperactive sniper', concentrationClass: 'Concentrated', riskClass: 'Medium risk behavior', rotationValue: 'rotator', convictionValue: 'high', activeChains: 2, totalTransactions: 40, activityLevel: 'Active' },
-    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately concentrated', riskClass: 'Low risk behavior', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100, activityLevel: 'Very active' },
+    { automationClass: 'Highly automated', holdingClass: 'Short-term holder', concentrationClass: 'Moderately concentrated', riskClass: 'Low risk behavior', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100, activityLevel: 'Very active' },
   ]
   for (const combo of combos) {
     assert.notEqual(composeTitle(combo), 'General User')
@@ -823,10 +823,42 @@ test('LP-strategy wallet: titled a liquidity provider, never a token rotator', (
   const data = deriveWalletPersonality(baseReport({
     liquidityActivity: { lpStrategyWallet: true, liquidityTxShare: 0.746 },
   }))
-  assert.equal(data.title, 'Automated Liquidity Provider')
+  // No deposit/withdraw counts: a liquidity provider, with no automation claim made from the LP side.
+  assert.equal(data.title, 'Liquidity Provider')
   assert.equal(data.traits.rotationBehavior, 'Liquidity provision')
+  assert.equal(data.traits.tradingStyle, 'Liquidity provision')
   assert.match(data.subtitle, /^75% of transactions add or remove liquidity/)
   assert.ok(!data.watchouts.includes('Rapid token rotation'))
+})
+
+test('LP-strategy wallet: high deposit/withdraw cadence reads as automated everywhere, not "Manual trader"', () => {
+  const data = deriveWalletPersonality(baseReport({
+    liquidityActivity: { lpStrategyWallet: true, liquidityTxShare: 0.662, liquidityAddTxs: 1918, liquidityRemoveTxs: 2094 },
+    windowCoverage: { realDataDays: 7 },
+    scanMetadata: { provider_fetch_window_days: 90, scanMode: 'deep' },
+  }))
+  assert.equal(data.title, 'Automated Liquidity Provider')
+  assert.match(data.traits.automationLikelihood, /^Automated LP cycling \(~573 LP tx\/day\)$/)
+  assert.notEqual(data.traits.tradingStyle, data.traits.automationLikelihood, 'Strategy and Automation are different traits')
+  assert.equal(data.lpActivity?.automated, true)
+  assert.equal(data.lpActivity?.lpTxs, 4012)
+})
+
+test('LP-strategy wallet: a slow deposit/withdraw cadence never claims automation', () => {
+  const data = deriveWalletPersonality(baseReport({
+    liquidityActivity: { lpStrategyWallet: true, liquidityTxShare: 0.4, liquidityAddTxs: 15, liquidityRemoveTxs: 10 },
+    windowCoverage: { realDataDays: 30 },
+    scanMetadata: { provider_fetch_window_days: 90, scanMode: 'deep' },
+  }))
+  assert.equal(data.title, 'Liquidity Provider')
+  assert.ok(!/Automated/.test(data.traits.automationLikelihood))
+  assert.equal(data.lpActivity?.automated, false)
+})
+
+test('non-LP wallet: Strategy trait comes from rotation, never a copy of the Automation trait', () => {
+  const data = deriveWalletPersonality(baseReport())
+  assert.notEqual(data.traits.tradingStyle, data.traits.automationLikelihood)
+  assert.equal(data.lpActivity, null)
 })
 
 test('wallet age is flagged as scan-limited when the scan read less than its configured window', () => {

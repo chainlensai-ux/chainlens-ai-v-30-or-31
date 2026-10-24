@@ -49,3 +49,31 @@ export function buildLiquidityProviderView(
     positionsNote,
   }
 }
+
+// LP cadence: deposits + withdrawals per day over the span the scan read. "Automated" is only claimed
+// when the cadence is beyond what a person does by hand; below that the wallet is a liquidity provider
+// with no automation claim either way.
+export const LP_AUTOMATED_TXS_PER_DAY = 20
+
+export type LpCadence = {
+  lpTxs: number
+  txsPerDay: number | null
+  automated: boolean
+}
+
+export function selectLpCadence(
+  activity: Pick<LiquidityActivitySummary, 'lpStrategyWallet' | 'liquidityAddTxs' | 'liquidityRemoveTxs'> | null | undefined,
+  spanDays: number | null | undefined,
+): LpCadence | null {
+  if (!activity?.lpStrategyWallet) return null
+  const lpTxs = (activity.liquidityAddTxs ?? 0) + (activity.liquidityRemoveTxs ?? 0)
+  const txsPerDay = lpTxs > 0 && typeof spanDays === 'number' && Number.isFinite(spanDays) && spanDays > 0
+    ? lpTxs / Math.max(1, spanDays)
+    : null
+  return { lpTxs, txsPerDay, automated: txsPerDay != null && txsPerDay >= LP_AUTOMATED_TXS_PER_DAY }
+}
+
+/** "~573 LP tx/day" — whole numbers above 10, one decimal below. */
+export function fmtLpCadence(txsPerDay: number): string {
+  return `~${txsPerDay >= 10 ? Math.round(txsPerDay).toLocaleString() : txsPerDay.toFixed(1)} LP tx/day`
+}

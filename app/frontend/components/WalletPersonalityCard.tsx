@@ -296,7 +296,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
         {data.insufficientEvidence ? (
           <div style={{ padding: '16px 18px', borderRadius: '14px', background: 'rgba(133,136,139,0.06)', border: '1px solid rgba(133,136,139,0.20)' }}>
             <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap' }}>
-              <Stat label="Total Transactions" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
+              <Stat label="Trades" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
               <Stat label="Active EVM Chains" value={fmtMetric(data.metrics.activeChains)} />
               <Stat label={data.metrics.walletAgeLimitedByScan ? 'Active in Scan' : 'Wallet Age'} value={data.metrics.walletAgeDays != null ? `${Math.floor(data.metrics.walletAgeDays)}d` : 'Unknown'} />
             </div>
@@ -321,6 +321,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
               </div>
               <div style={{ fontSize: '10.5px', color: 'rgba(158,161,164,0.65)', marginBottom: '12px' }}>
                 Percentages show signal intensity, not certainty.
+                {data.lpActivity && ' Bars cover swaps only — liquidity deposits and withdrawals are excluded.'}
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '11px', maxWidth: '720px' }}>
                 {RADAR_AXES.map(({ key, label, accent }) => (
@@ -335,7 +336,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 Core Traits
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
-                <TraitHighlight label="Trading Style" value={data.traits.tradingStyle} accent={TEAL} icon="◈" />
+                <TraitHighlight label="Strategy" value={data.traits.tradingStyle} accent={TEAL} icon="◈" />
                 <TraitHighlight label="Risk Profile" value={data.traits.riskAppetite} accent={PINK} icon="⚡" />
                 <TraitHighlight label="Automation" value={data.traits.automationLikelihood} accent={PURPLE} icon="⚙" />
                 <TraitHighlight label="Holding Pattern" value={data.traits.holdingStyle} accent={TEAL} icon="⏳" />
@@ -344,7 +345,6 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 <Chip label="Primary EVM chain" value={data.traits.chainPreference} />
                 <Chip label="Concentration" value={data.traits.portfolioConcentration} />
                 <Chip label="Activity" value={data.traits.activityLevel} />
-                <Chip label="Rotation" value={data.traits.rotationBehavior} />
               </div>
             </div>
 
@@ -354,7 +354,7 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
                 Behavior Metrics
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px 28px' }}>
-                <Stat label="Transactions" value={fmtMetric(data.metrics.totalTransactions)} emphasized />
+                <Stat label={data.lpActivity ? 'Trades (excl. LP)' : 'Trades'} value={fmtMetric(data.metrics.totalTransactions)} emphasized />
                 <Stat label="Unique Tokens" value={fmtMetric(data.metrics.uniqueTokensTraded)} emphasized />
                 <Stat label="Avg Holding Time" value={fmtHoldingDays(data.metrics.averageHoldingDays)} emphasized />
                 <Stat label="Repeated-Router %" value={fmtPercent(data.metrics.repeatedRouterPercent)} emphasized />

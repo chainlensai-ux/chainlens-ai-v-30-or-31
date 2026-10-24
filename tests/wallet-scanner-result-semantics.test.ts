@@ -6,11 +6,11 @@ import assert from 'node:assert/strict'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import {
-  selectRobinhoodSwapEvidence, robinhoodPnlCardView, selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON,
+  selectRobinhoodSwapEvidence, robinhoodPnlCardView, selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, ROBINHOOD_NO_ACTIVITY_REASON,
   type RobinhoodWalletScanResponse, type RobinhoodPnlSummary,
 } from '../lib/walletScan/canonicalWalletSelectors.ts'
-import { buildWalletPnlViewModel } from '../app/frontend/lib/buildWalletPnlViewModel.ts'
-import { buildPnlLanes, buildKeySignals, buildEvidence, buildHeadline } from '../app/frontend/lib/walletReadBuilder.ts'
+import { buildWalletPnlViewModel, CHAIN_PNL_NO_ACTIVITY_REASON } from '../app/frontend/lib/buildWalletPnlViewModel.ts'
+import { buildPnlLanes, buildKeySignals, buildEvidence, buildHeadline, fmtMedianGap } from '../app/frontend/lib/walletReadBuilder.ts'
 import { SmartMoneyScoreCard } from '../app/frontend/components/SmartMoneyScoreCard.tsx'
 import { buildRobinhoodPnlVerificationAuditFromV1, robinhoodWalletPnlFromV1 } from '../lib/server/robinhoodWalletScanner.ts'
 import type { SmartMoneyScore } from '../lib/engine/modules/smartMoney/types.ts'
@@ -156,4 +156,47 @@ test('"chains scanned" and the personality card\'s active EVM chains never share
   assert.ok(!signals.some((s) => /active/i.test(s.label) && /chain/i.test(s.label)))
   const headline = buildHeadline({ personalityLabel: 'Accumulator', activeChainCount: 3, topChain: null, evmPnlLane: 'unavailable' })
   assert.ok(headline.includes('across 3 scanned chains'), headline)
+})
+
+test('zero Robinhood swaps found reads as "No activity" on every surface, never as a verification failure', () => {
+  const r = rhResult({ swapsFound: 0, swapsVerified: 0, swapsBothLegsPriced: 0, exactReason: '0 swaps found / 0 proven as wallet V4 trades (most common: wallet_not_tx_sender).' })
+  assert.equal(selectRobinhoodPnlLaneStatus(r), 'not_verified', 'the lane gate is unchanged')
+  const ev = selectRobinhoodSwapEvidence(r)!
+  assert.deepEqual([ev.noActivity, ev.openPositionOnly, ev.reason], [true, false, ROBINHOOD_NO_ACTIVITY_REASON])
+
+  const vm = buildWalletPnlViewModel({ pnlV2: null, publicPnlStatus: 'unavailable', robinhoodResult: r, chainsScanned: ['base', 'eth'] })
+  assert.deepEqual([vm.robinhoodBox.status, vm.robinhoodBox.reason, vm.robinhoodBox.value], ['No activity', ROBINHOOD_NO_ACTIVITY_REASON, null])
+  const row = vm.chainRows.find((c) => c.chain === 'robinhood')!
+  assert.deepEqual([row.status, row.reason], ['No activity', CHAIN_PNL_NO_ACTIVITY_REASON])
+
+  const lanes = buildPnlLanes({ evmPnlLane: 'unavailable', robinhoodPnlLane: 'not_verified', robinhoodResult: r })
+  assert.deepEqual([lanes[1].statusLabel, lanes[1].detail], ['No activity', ROBINHOOD_NO_ACTIVITY_REASON])
+  const evidence = buildEvidence({
+    hasHoldingsData: true, pnlConfidence: { realized: 'Partial', unrealized: 'Partial', historicalCoverage: 'Full history' } as never,
+    robinhoodDisplayState: 'valued', robinhoodPnlLane: 'not_verified', matchedLotsCount: 10, robinhoodSwapEvidence: ev,
+  })
+  assert.ok(!evidence.partial.some((p) => p.startsWith('Robinhood PnL')), 'no "real evidence, not fully verified" claim without any swap')
+
+  // A wallet with real but unproven swaps keeps the not-verified copy.
+  assert.equal(selectRobinhoodSwapEvidence(rhResult({ swapsFound: 4, swapsVerified: 0, swapsBothLegsPriced: 0, exactReason: 'y' }))!.noActivity, false)
+})
+
+test('a scanned EVM chain with no trades or positions reads "No activity"; a chain with trades keeps the lane status', () => {
+  const pnlV2 = { realizedPnlUsd: -10, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [{ chainId: 8453, realizedPnlUsd: -10, unrealizedPnlUsd: 0 }] }
+  const vm = buildWalletPnlViewModel({ pnlV2, publicPnlStatus: 'unavailable', robinhoodResult: null, chainsScanned: ['base', 'eth'] })
+  const eth = vm.chainRows.find((c) => c.chain === 'eth')!
+  const base = vm.chainRows.find((c) => c.chain === 'base')!
+  assert.deepEqual([eth.status, eth.reason, eth.value], ['No activity', CHAIN_PNL_NO_ACTIVITY_REASON, null])
+  assert.notEqual(base.status, 'No activity')
+  // Without a breakdown there is no basis for "no activity": every row keeps the lane status.
+  const unknown = buildWalletPnlViewModel({ pnlV2: { ...pnlV2, chainBreakdown: [] }, publicPnlStatus: 'unavailable', robinhoodResult: null, chainsScanned: ['base', 'eth'] })
+  assert.ok(unknown.chainRows.every((c) => c.status !== 'No activity'))
+})
+
+test('median sell gap: sub-hour gaps show minutes, never a rounded "0h"', () => {
+  assert.equal(fmtMedianGap(20_000), 'under 1m')
+  assert.equal(fmtMedianGap(14 * 60_000), '14m')
+  assert.equal(fmtMedianGap(5 * 3_600_000), '5h')
+  assert.equal(fmtMedianGap(2 * 86_400_000), '2.0d')
+  assert.equal(fmtMedianGap(null), null)
 })

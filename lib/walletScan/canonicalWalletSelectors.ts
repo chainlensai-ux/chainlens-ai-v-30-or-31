@@ -229,6 +229,11 @@ export type RobinhoodSwapEvidence = {
   /** Sampled receipts that carried at least one canonical V4 Swap log — candidates, NOT verified swaps. Null when unknown. */
   decodedSwapCandidates: number | null
   openPositionOnly: boolean
+  /**
+   * The scan found no Robinhood swap by this wallet at all (zero decoded swaps, zero verified, zero lots). That is
+   * "no activity", not a verification failure — a rejected candidate the wallet did not send is not its swap.
+   */
+  noActivity: boolean
   /** The most specific honest reason realized PnL is not verified; null when it is verified. */
   reason: string | null
   /** Candidate coverage of this scan's verification; null when the payload predates it. */
@@ -257,8 +262,16 @@ export function selectRobinhoodSwapEvidence(robinhoodResult: RobinhoodWalletScan
       ? `${swapsVerified} swap${swapsVerified === 1 ? '' : 's'} verified · ${swapsBothLegsPriced}/${swapsVerified} priced on both legs · no verified buy→sell lot closed yet${coverageLabel ? ` · ${coverageLabel}` : ''}.`
       : v1 && historyLabel && !/coverage is (incomplete|unknown)/.test(exact) ? `${exact.replace(/\.\s*$/, '')} · ${historyLabel}.` : exact
   const decodedSwapCandidates = v1 ? v1.swapsFound : null
-  return { swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, reason, coverage, historyCoverage }
+  const noActivity = !verified && v1 != null && v1.swapsFound === 0 && swapsVerified === 0 && closedLots === 0
+  return {
+    swapsVerified, swapsBothLegsPriced, closedLots, decodedSwapCandidates, openPositionOnly, noActivity,
+    reason: noActivity ? ROBINHOOD_NO_ACTIVITY_REASON : reason,
+    coverage, historyCoverage,
+  }
 }
+
+export const ROBINHOOD_NO_ACTIVITY_LABEL = 'No activity'
+export const ROBINHOOD_NO_ACTIVITY_REASON = 'No Robinhood swaps by this wallet were found in this scan.'
 
 export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
 

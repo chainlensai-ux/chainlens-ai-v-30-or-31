@@ -34,6 +34,7 @@ import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, deriveEvmPortfolioEvidence, mergedTotalText, mergedCoverageText, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
 import type { PortfolioEvidence } from '@/lib/walletScan/portfolioEvidence'
 import { selectScanWindow } from '@/app/frontend/lib/scanWindow'
+import { selectLpCadence } from '@/app/frontend/lib/liquidityProviderView'
 import type { LiquidityActivitySummary } from '@/src/lib/liquidityLegGuard'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
@@ -82,7 +83,7 @@ export type WalletV2Report = FinalReport & {
   // real rows the Holdings tab renders (via mergeRobinhoodIntoPricedHoldings), not a re-derived guess.
   pricedHoldings?: PricedHolding[]
   /** src/lib/liquidityLegGuard.ts — LP-strategy flag (absent on older reports). */
-  liquidityActivity?: Pick<LiquidityActivitySummary, 'lpStrategyWallet'> | null
+  liquidityActivity?: (Pick<LiquidityActivitySummary, 'lpStrategyWallet'> & Partial<Pick<LiquidityActivitySummary, 'liquidityAddTxs' | 'liquidityRemoveTxs'>>) | null
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm', 4663: 'robinhood' }
@@ -220,8 +221,12 @@ function deriveBehaviorLabel(report: WalletV2Report): string {
 }
 
 function deriveRiskProfile(report: WalletV2Report): string {
-  // Deposit/withdraw cycles of an LP strategy are not token rotation or risk-on trading.
-  if (report.liquidityActivity?.lpStrategyWallet) return 'Automated LP Strategy'
+  // Deposit/withdraw cycles of an LP strategy are not token rotation or risk-on trading. "Automated"
+  // only when the deposit/withdraw cadence says so — the same rule as the personality card.
+  if (report.liquidityActivity?.lpStrategyWallet) {
+    const cadence = selectLpCadence({ liquidityAddTxs: 0, liquidityRemoveTxs: 0, ...report.liquidityActivity }, selectScanWindow(report).windowDays)
+    return cadence?.automated ? 'Automated LP Strategy' : 'LP Strategy'
+  }
   const rotationStyle = report.behaviorIntel?.rotationStyle?.value ?? 'unknown'
   const riskOnOff = report.behaviorIntel?.riskOnOff?.value ?? 'unknown'
   if (rotationStyle === 'unknown' && riskOnOff === 'unknown') return 'Not enough evidence yet'
@@ -314,6 +319,15 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
   const breakdown = selectChainBreakdown(report.chainValueUsd, totalValueUsd, report.portfolio?.chainValueBreakdown, report.portfolioTotalByChain)
   const chainsScanned = Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : []
   const chainsWithoutData = chainsScanned.filter((c) => !breakdown.some((b) => b.chain === c))
+  // Why a scanned chain has no row: the providers answered with nothing (no activity) or failed to answer.
+  const noDataCopy = (chain: string): string => {
+    const diag = Array.isArray(report.providerDiagnostics) ? report.providerDiagnostics.find((d) => d.chain === chain) : undefined
+    if (!diag) return 'Scanned — no priced holdings on this chain'
+    if (diag.providerStatus !== 'ok') return 'Provider unavailable for this chain on this scan'
+    return diag.alchemy.eventCount + diag.goldrush.eventCount === 0
+      ? 'Scanned — no activity or holdings on this chain'
+      : 'Scanned — no priced holdings on this chain'
+  }
 
   // WALLET PUBLIC UI DATA AUDIT, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix): logged
   // unconditionally (not gated to non-production, unlike the diagnostic above) — this is the literal,
@@ -397,7 +411,7 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
           {chainsWithoutData.map((chain) => (
             <div key={chain} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', opacity: 0.55 }}>
               <span style={{ width: '84px', textTransform: 'capitalize', color: '#6f7275', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>{chain}</span>
-              <span style={{ flex: 1, fontSize: '11px', color: '#6f7275' }}>No verified provider yet — scanned, no holdings data</span>
+              <span style={{ flex: 1, fontSize: '11px', color: '#6f7275' }}>{noDataCopy(chain)}</span>
             </div>
           ))}
         </div>
