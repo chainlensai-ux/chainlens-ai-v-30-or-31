@@ -68,18 +68,18 @@ import {
 
 const C = {
   panel: '#070d19',
-  border: 'rgba(148,163,184,0.10)',
-  grid: 'rgba(148,163,184,0.07)',
-  axisText: '#64748b',
-  text: '#cbd5e1',
-  textStrong: '#e2e8f0',
-  muted: '#475569',
-  bull: '#22b8a6',
+  border: 'rgba(158,161,164,0.10)',
+  grid: 'rgba(158,161,164,0.07)',
+  axisText: '#6f7275',
+  text: '#d1d4d7',
+  textStrong: '#e4e7ea',
+  muted: '#505356',
+  bull: '#17b8c0',
   bear: '#e0626c',
-  bullVol: 'rgba(34,184,166,0.38)',
+  bullVol: 'rgba(23,184,192,0.38)',
   bearVol: 'rgba(224,98,108,0.38)',
-  crosshair: 'rgba(148,163,184,0.45)',
-  tagBg: '#1e293b',
+  crosshair: 'rgba(158,161,164,0.45)',
+  tagBg: '#25282b',
 }
 const MONO = 'var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace'
 
@@ -649,9 +649,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
     : chipStates.some((c) => c.key === chipNotice.key && !c.available))
 
   const chips = (
-    <div role="group" aria-label="Candle interval" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '8px', background: 'rgba(15,23,42,0.9)', border: `1px solid ${C.border}` }}>
+    <div role="group" aria-label="Candle interval" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '8px', background: 'rgba(20,23,26,0.9)', border: `1px solid ${C.border}` }}>
       {!tfSet.nativeIsStandard && tfSet.nativeSec != null && (
-        <span title="Candles rebuilt from real recent swaps at this bucket width" style={{ padding: '4px 9px', borderRadius: '6px', fontSize: '10.5px', fontWeight: 700, fontFamily: MONO, color: C.textStrong, background: 'rgba(45,212,191,0.14)' }}>
+        <span title="Candles rebuilt from real recent swaps at this bucket width" style={{ padding: '4px 9px', borderRadius: '6px', fontSize: '10.5px', fontWeight: 700, fontFamily: MONO, color: C.textStrong, background: 'rgba(31,214,220,0.14)' }}>
           {formatIntervalLabel(tfSet.nativeSec)}
         </span>
       )}
@@ -697,10 +697,10 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
               fontFamily: MONO,
               letterSpacing: '0.04em',
               cursor: chip.available ? (loading ? 'progress' : 'pointer') : 'not-allowed',
-              color: active ? C.textStrong : chip.available ? (chip.sparse ? '#56657a' : '#94a3b8') : '#334155',
-              background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
+              color: active ? C.textStrong : chip.available ? (chip.sparse ? '#606366' : '#9ea1a4') : '#3c3f42',
+              background: active ? 'rgba(31,214,220,0.14)' : 'transparent',
               textDecoration: chip.available ? 'none' : 'line-through',
-              textDecorationColor: 'rgba(51,65,85,0.8)',
+              textDecorationColor: 'rgba(60,63,66,0.8)',
               opacity: loading ? 0.6 : 1,
             }}
           >
@@ -726,7 +726,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             {formatChartPct(windowChange)}
           </span>
           {windowSpan && <span title="Change across the visible candles (first open to last close)" style={{ fontSize: '10px', color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{windowSpan} view</span>}
-          <div role="group" aria-label="Chart value" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '7px', background: 'rgba(15,23,42,0.7)', border: `1px solid ${C.border}`, alignSelf: 'center' }}>
+          <div role="group" aria-label="Chart value" style={{ display: 'inline-flex', gap: '2px', padding: '2px', borderRadius: '7px', background: 'rgba(20,23,26,0.7)', border: `1px solid ${C.border}`, alignSelf: 'center' }}>
             {(['MCAP', 'PRICE'] as const).map((m) => {
               const disabled = m === 'MCAP' && !mcapAvailable
               const active = valueMode === m
@@ -741,8 +741,8 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
                   style={{
                     padding: '3px 8px', borderRadius: '5px', border: 'none', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.05em',
                     cursor: disabled ? 'not-allowed' : 'pointer',
-                    color: active ? C.textStrong : disabled ? '#334155' : '#94a3b8',
-                    background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
+                    color: active ? C.textStrong : disabled ? '#3c3f42' : '#9ea1a4',
+                    background: active ? 'rgba(31,214,220,0.14)' : 'transparent',
                   }}
                 >
                   {m}
@@ -759,14 +759,14 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         {chips}
       </div>
       {noticeVisible && chipNotice && (
-        <p role="status" style={{ margin: '-2px 0 6px', fontSize: '10.5px', color: '#94a3b8', fontFamily: MONO, textAlign: compact ? 'left' : 'right' }}>
+        <p role="status" style={{ margin: '-2px 0 6px', fontSize: '10.5px', color: '#9ea1a4', fontFamily: MONO, textAlign: compact ? 'left' : 'right' }}>
           {chipNotice.text}
         </p>
       )}
 
       {/* OHLCV readout — follows the crosshair, rests on the newest visible candle */}
       <div aria-live="polite" style={{ display: 'flex', flexWrap: 'wrap', gap: compact ? '2px 10px' : '2px 14px', minHeight: '18px', marginBottom: '6px', fontSize: '10.5px', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.axisText }}>
-        <span style={{ color: '#94a3b8' }}>{fmtTime(readout.t, intervalSec, 'readout')}</span>
+        <span style={{ color: '#9ea1a4' }}>{fmtTime(readout.t, intervalSec, 'readout')}</span>
         <span>O <span style={{ color: readoutColor }}>{fmtValue(readout.open)}</span></span>
         <span>H <span style={{ color: readoutColor }}>{fmtValue(readout.high)}</span></span>
         <span>L <span style={{ color: readoutColor }}>{fmtValue(readout.low)}</span></span>
@@ -945,7 +945,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
             onClick={resetView}
             aria-label="Reset chart view"
             title="Reset view (or double-click the chart)"
-            style={{ position: 'absolute', top: 6, left: 6, padding: '3px 8px', borderRadius: '6px', border: `1px solid ${C.border}`, background: 'rgba(15,23,42,0.92)', color: '#94a3b8', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.06em', cursor: 'pointer' }}
+            style={{ position: 'absolute', top: 6, left: 6, padding: '3px 8px', borderRadius: '6px', border: `1px solid ${C.border}`, background: 'rgba(20,23,26,0.92)', color: '#9ea1a4', fontSize: '10px', fontWeight: 700, fontFamily: MONO, letterSpacing: '0.06em', cursor: 'pointer' }}
           >
             RESET VIEW
           </button>
@@ -979,7 +979,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         <div role="status" data-history-end={hist.endReason ?? undefined} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginTop: '2px', fontSize: '10px', color: C.muted, fontFamily: MONO }}>
           {historySourceLabel ? <span>{loadedSpanLabel(series[0].t, latest.t, intervalSec ?? 0)}{busyCapped ? <span title="This pool is busy: the scan read its newest swaps up to the per-scan log limit. Older real history loads automatically for 1H / 4H / 1D."> · newest swaps (busy pool)</span> : null} · {historySourceLabel}</span> : <span />}
           {historyEnabled && (
-            <span style={{ color: hist.status === 'failed' ? '#94a3b8' : C.muted }}>
+            <span style={{ color: hist.status === 'failed' ? '#9ea1a4' : C.muted }}>
               {hist.status === 'loading'
                 ? 'Loading older candles…'
                 : hist.status === 'failed'
@@ -994,7 +994,7 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
         </div>
       )}
       {debug && (
-        <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(2,6,23,0.6)', color: '#94a3b8', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
+        <pre data-chart-quality-debug style={{ margin: '8px 0 0', padding: '8px', borderRadius: '8px', background: 'rgba(2,6,23,0.6)', color: '#9ea1a4', fontSize: '10px', fontFamily: MONO, whiteSpace: 'pre-wrap', overflowX: 'auto' }}>
           {JSON.stringify({
             selectedTimeframe: activeKey,
             selectedTimeframeReason: selectionReason,
@@ -1019,9 +1019,9 @@ export default function PriceChartPanel({ candles, declaredIntervalSec, badge, f
 function PanelHeader({ badge }: { badge?: ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
-      <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: MONO }}>PRICE CHART</span>
+      <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#9ea1a4', fontFamily: MONO }}>PRICE CHART</span>
       {badge ?? (
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#5eead4', fontFamily: MONO }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: '#62f1f1', fontFamily: MONO }}>
           <span aria-hidden style={{ width: '6px', height: '6px', borderRadius: '50%', background: C.bull }} />
           LIVE CANDLES
         </span>

@@ -236,7 +236,7 @@ function v4ControllerRows(a: NonNullable<NonNullable<ConcentratedLpPositionAudit
   const k = a.concentration ?? {}
   const statusLabel = a.status === 'verified' ? 'Verified' : a.status === 'partial' ? 'Partial' : 'Unavailable'
   return [
-    { label: 'Liquidity Controller', value: a.controllerSummary ?? 'Liquidity modifiers unresolved', color: '#c084fc', note: lines.join(' | ') || undefined },
+    { label: 'Liquidity Controller', value: a.controllerSummary ?? 'Liquidity modifiers unresolved', color: '#dfe5e8', note: lines.join(' | ') || undefined },
     { label: 'Controller Attribution', value: statusLabel, color: a.status === 'verified' ? '#34d399' : '#fbbf24', note: a.publicText },
     {
       label: 'Observed Activity',
@@ -1205,11 +1205,11 @@ function behaviorTitle(label: WalletBehaviorLabel): string {
 function behaviorBadgeMeta(label: WalletBehaviorLabel): { badge: string; color: string; bg: string } | null {
   switch (label) {
     case 'accumulator': return { badge: 'A', color: '#34d399', bg: 'rgba(52,211,153,.18)' }
-    case 'distributor': return { badge: 'D', color: '#60a5fa', bg: 'rgba(96,165,250,.18)' }
+    case 'distributor': return { badge: 'D', color: '#c4d2da', bg: 'rgba(196,210,218,.18)' }
     case 'wash-pattern': return { badge: 'W', color: '#fb7185', bg: 'rgba(251,113,133,.2)' }
     case 'funding-relay': return { badge: 'R', color: '#fbbf24', bg: 'rgba(251,191,36,.18)' }
-    case 'cluster-feeder': return { badge: 'F', color: '#c084fc', bg: 'rgba(192,132,252,.18)' }
-    case 'open-check': return { badge: '?', color: '#a78bfa', bg: 'rgba(167,139,250,.16)' }
+    case 'cluster-feeder': return { badge: 'F', color: '#dfe5e8', bg: 'rgba(223,229,232,.18)' }
+    case 'open-check': return { badge: '?', color: '#cfd6da', bg: 'rgba(207,214,218,.16)' }
     default: return null
   }
 }
@@ -1230,7 +1230,7 @@ function edgeSeverity(edge: GraphEdge): ClusterTimelineEvent['severity'] {
 }
 
 function eventSeverityColor(severity: ClusterTimelineEvent['severity']): string {
-  return severity === 'high' ? '#fb7185' : severity === 'medium' ? '#fbbf24' : severity === 'low' ? '#7dd3fc' : '#a78bfa'
+  return severity === 'high' ? '#fb7185' : severity === 'medium' ? '#fbbf24' : severity === 'low' ? '#a9e9ec' : '#cfd6da'
 }
 
 function uniqueById<T extends { id: string }>(items: T[]): T[] {
@@ -1481,8 +1481,8 @@ function fmtTokenAmt(raw: string | number | null, decimals: number): string {
 }
 
 function pctColor(v: number | null | undefined): string {
-  if (v == null) return '#94a3b8'
-  return v >= 0 ? '#2DD4BF' : '#f87171'
+  if (v == null) return '#9ea1a4'
+  return v >= 0 ? '#1fd6dc' : '#f87171'
 }
 
 function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUsd: number }> }) {
@@ -1533,44 +1533,44 @@ function MiniPriceChart({ points }: { points: Array<{ timestamp: string; priceUs
       <svg viewBox={`0 0 ${w} ${h}`} style={{ width: '100%', height: 'clamp(260px, 34vw, 360px)', display: 'block' }}>
         <defs>
           <linearGradient id="clLine" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#2dd4bf" />
-            <stop offset="100%" stopColor="#a78bfa" />
+            <stop offset="0%" stopColor="#1fd6dc" />
+            <stop offset="100%" stopColor="#cfd6da" />
           </linearGradient>
           <linearGradient id="clFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="rgba(45,212,191,0.42)" />
-            <stop offset="100%" stopColor="rgba(167,139,250,0.01)" />
+            <stop offset="0%" stopColor="rgba(31,214,220,0.42)" />
+            <stop offset="100%" stopColor="rgba(207,214,218,0.01)" />
           </linearGradient>
           <filter id="clGlow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="3.2" result="blur" />
             <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
           </filter>
         </defs>
-        {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(148,163,184,0.24)" strokeWidth="1" />)}
+        {guideRows.map((y) => <line key={y} x1={padX} y1={y} x2={w - padX} y2={y} stroke="rgba(158,161,164,0.24)" strokeWidth="1" />)}
         <path d={area} fill="url(#clFill)" />
         <path d={d} fill="none" stroke="url(#clLine)" strokeWidth="3.2" strokeLinejoin="round" strokeLinecap="round" filter="url(#clGlow)" />
-        <circle cx={lastX} cy={lastY} r="5.4" fill="#e2e8f0" />
-        <circle cx={lastX} cy={lastY} r="10" fill="rgba(226,232,240,0.16)" />
+        <circle cx={lastX} cy={lastY} r="5.4" fill="#e4e7ea" />
+        <circle cx={lastX} cy={lastY} r="10" fill="rgba(228,231,234,0.16)" />
         {hoverX != null && hoverY != null && hoverPoint && (
           <>
-            <line x1={hoverX} y1={padY} x2={hoverX} y2={h - padY} stroke="rgba(148,163,184,0.34)" strokeDasharray="4 4" />
-            <circle cx={hoverX} cy={hoverY} r="4.8" fill="#c4b5fd" />
+            <line x1={hoverX} y1={padY} x2={hoverX} y2={h - padY} stroke="rgba(158,161,164,0.34)" strokeDasharray="4 4" />
+            <circle cx={hoverX} cy={hoverY} r="4.8" fill="#d6dce0" />
           </>
         )}
-        <text x={padX} y={20} fill="#94a3b8" style={{ fontSize: 12 }}>Low {fmtPrice(min)}</text>
-        <text x={w - padX} y={20} textAnchor="end" fill="#94a3b8" style={{ fontSize: 12 }}>High {fmtPrice(max)}</text>
+        <text x={padX} y={20} fill="#9ea1a4" style={{ fontSize: 12 }}>Low {fmtPrice(min)}</text>
+        <text x={w - padX} y={20} textAnchor="end" fill="#9ea1a4" style={{ fontSize: 12 }}>High {fmtPrice(max)}</text>
       </svg>
-      <div style={{ position: 'absolute', top: '12px', right: '12px', border: '1px solid rgba(167,139,250,0.5)', background: 'rgba(15,23,42,0.82)', borderRadius: '999px', padding: '6px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700 }}>
+      <div style={{ position: 'absolute', top: '12px', right: '12px', border: '1px solid rgba(207,214,218,0.5)', background: 'rgba(20,23,26,0.82)', borderRadius: '999px', padding: '6px 10px', color: '#e4e7ea', fontSize: '11px', fontWeight: 700 }}>
         Latest {fmtPrice(last.priceUsd)}
       </div>
       {hoverPoint && (
-        <div style={{ position: 'absolute', left: '12px', bottom: '12px', border: '1px solid rgba(45,212,191,0.36)', background: 'rgba(2,6,23,0.88)', borderRadius: '10px', padding: '7px 10px', color: '#cbd5e1', fontSize: '11px' }}>
+        <div style={{ position: 'absolute', left: '12px', bottom: '12px', border: '1px solid rgba(31,214,220,0.36)', background: 'rgba(2,6,23,0.88)', borderRadius: '10px', padding: '7px 10px', color: '#d1d4d7', fontSize: '11px' }}>
           <div>{new Date(hoverPoint.timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
-          <div style={{ color: '#99f6e4', fontWeight: 700 }}>{fmtPrice(hoverPoint.priceUsd)}</div>
+          <div style={{ color: '#a8f3f3', fontWeight: 700 }}>{fmtPrice(hoverPoint.priceUsd)}</div>
         </div>
       )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '6px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#9ea1a4', marginTop: '6px' }}>
         <span>{startTs}</span>
-        <span style={{ color: priceDeltaPct == null ? '#94a3b8' : priceDeltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+        <span style={{ color: priceDeltaPct == null ? '#9ea1a4' : priceDeltaPct >= 0 ? '#1fd6dc' : '#f87171' }}>
           {priceDeltaPct == null ? '24h Δ N/A' : `24h Δ ${fmtPct(priceDeltaPct)}`}
         </span>
         <span>{endTs}</span>
@@ -1735,11 +1735,11 @@ function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNull
   const [v4Test, setV4Test] = useState<{ status: 'idle' | 'loading' | 'done'; view: V4ProbeView | null }>({ status: 'idle', view: null })
   const v4Probe = debug.v4Probe && chain && token ? debug.v4Probe : null
   return (
-    <div style={{ marginBottom: '16px', border: '1px dashed #64748b', borderRadius: '8px', padding: '8px 10px', background: '#0b0f1a', fontFamily: 'monospace', fontSize: '11px', color: '#94a3b8' }}>
+    <div style={{ marginBottom: '16px', border: '1px dashed #6f7275', borderRadius: '8px', padding: '8px 10px', background: '#0c0f12', fontFamily: 'monospace', fontSize: '11px', color: '#9ea1a4' }}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        style={{ background: 'none', border: 'none', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer', padding: 0 }}
+        style={{ background: 'none', border: 'none', color: '#e4e7ea', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, letterSpacing: '0.08em', cursor: 'pointer', padding: 0 }}
       >
         {open ? '▾' : '▸'} CANDLE DEBUG
       </button>
@@ -1779,7 +1779,7 @@ function ChartDebugPanel({ debug, chain, token, livePriceUsd }: { debug: NonNull
                   setV4Test({ status: 'loading', view: null })
                   setV4Test({ status: 'done', view: await runV4CandleTest(chain!, token!, v4Probe, livePriceUsd) })
                 }}
-                style={{ background: '#1e293b', border: '1px solid #64748b', borderRadius: '6px', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, padding: '4px 10px', cursor: v4Test.status === 'loading' ? 'wait' : 'pointer' }}
+                style={{ background: '#25282b', border: '1px solid #6f7275', borderRadius: '6px', color: '#e4e7ea', fontFamily: 'monospace', fontSize: '11px', fontWeight: 700, padding: '4px 10px', cursor: v4Test.status === 'loading' ? 'wait' : 'pointer' }}
               >
                 {v4Test.status === 'loading' ? 'TESTING…' : 'TEST V4 CANDLES'}
               </button>
@@ -1850,7 +1850,7 @@ function TrendChart({ snapshot, currentPrice }: { snapshot: _TrendSnap; currentP
   const areaPath = `${linePath} L${(W - padX).toFixed(1)},${(padTop + areaH).toFixed(1)} L${padX.toFixed(1)},${(padTop + areaH).toFixed(1)} Z`
 
   const isUp = pts[pts.length - 1].price >= pts[0].price
-  const lineClr = isUp ? 'rgba(45,212,191,0.88)' : 'rgba(248,113,113,0.88)'
+  const lineClr = isUp ? 'rgba(31,214,220,0.88)' : 'rgba(248,113,113,0.88)'
 
   const onMove = (clientX: number, rect: DOMRect) => {
     const svgX = (clientX - rect.left) * (W / rect.width)
@@ -1880,13 +1880,13 @@ function TrendChart({ snapshot, currentPrice }: { snapshot: _TrendSnap; currentP
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'clamp(160px, 22vw, 240px)', display: 'block' }}>
         <defs>
           <linearGradient id="tcFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={isUp ? 'rgba(45,212,191,0.20)' : 'rgba(248,113,113,0.20)'} />
-            <stop offset="100%" stopColor={isUp ? 'rgba(45,212,191,0.00)' : 'rgba(248,113,113,0.00)'} />
+            <stop offset="0%" stopColor={isUp ? 'rgba(31,214,220,0.20)' : 'rgba(248,113,113,0.20)'} />
+            <stop offset="100%" stopColor={isUp ? 'rgba(31,214,220,0.00)' : 'rgba(248,113,113,0.00)'} />
           </linearGradient>
         </defs>
 
         {guideYs.map((y, i) => (
-          <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(148,163,184,0.09)" strokeWidth="1" />
+          <line key={i} x1={padX} y1={y} x2={W - padX} y2={y} stroke="rgba(158,161,164,0.09)" strokeWidth="1" />
         ))}
 
         <path d={areaPath} fill="url(#tcFill)" />
@@ -1900,31 +1900,31 @@ function TrendChart({ snapshot, currentPrice }: { snapshot: _TrendSnap; currentP
 
         {hoverIdx != null && hoverPt && (
           <>
-            <line x1={xP(hoverIdx)} y1={padTop} x2={xP(hoverIdx)} y2={padTop + areaH} stroke="rgba(148,163,184,0.28)" strokeDasharray="3 3" strokeWidth="1" />
+            <line x1={xP(hoverIdx)} y1={padTop} x2={xP(hoverIdx)} y2={padTop + areaH} stroke="rgba(158,161,164,0.28)" strokeDasharray="3 3" strokeWidth="1" />
             <circle cx={xP(hoverIdx)} cy={yP(hoverPt.price)} r="4.5" fill={lineClr} stroke="rgba(2,6,23,0.7)" strokeWidth="1.5" />
           </>
         )}
 
-        <text x={padX + 2} y={padTop - 8} fill="#475569" style={{ fontSize: 11 }}>H {fmtPrice(priceMax)}</text>
-        <text x={W - padX - 2} y={padTop - 8} textAnchor="end" fill="#475569" style={{ fontSize: 11 }}>L {fmtPrice(priceMin)}</text>
-        <text x={W / 2} y={padTop + areaH - 10} textAnchor="middle" fill="rgba(148,163,184,0.12)" style={{ fontSize: 13, letterSpacing: '0.10em', fontFamily: 'sans-serif' }}>ESTIMATED TREND</text>
+        <text x={padX + 2} y={padTop - 8} fill="#505356" style={{ fontSize: 11 }}>H {fmtPrice(priceMax)}</text>
+        <text x={W - padX - 2} y={padTop - 8} textAnchor="end" fill="#505356" style={{ fontSize: 11 }}>L {fmtPrice(priceMin)}</text>
+        <text x={W / 2} y={padTop + areaH - 10} textAnchor="middle" fill="rgba(158,161,164,0.12)" style={{ fontSize: 13, letterSpacing: '0.10em', fontFamily: 'sans-serif' }}>ESTIMATED TREND</text>
       </svg>
 
-      <div style={{ position: 'absolute', top: '8px', right: '10px', border: '1px solid rgba(167,139,250,0.38)', background: 'rgba(15,23,42,0.84)', borderRadius: '999px', padding: '4px 10px', color: '#e2e8f0', fontSize: '11px', fontWeight: 700, pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', top: '8px', right: '10px', border: '1px solid rgba(207,214,218,0.38)', background: 'rgba(20,23,26,0.84)', borderRadius: '999px', padding: '4px 10px', color: '#e4e7ea', fontSize: '11px', fontWeight: 700, pointerEvents: 'none' }}>
         {fmtPrice(last.price)}
       </div>
 
       {hoverPt && (
-        <div style={{ position: 'absolute', left: '10px', bottom: '32px', border: '1px solid rgba(148,163,184,0.18)', background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '120px' }}>
-          <div style={{ color: '#64748b', fontSize: '10px', marginBottom: '4px' }}>{fmtTs2(hoverPt.ts)}</div>
+        <div style={{ position: 'absolute', left: '10px', bottom: '32px', border: '1px solid rgba(158,161,164,0.18)', background: 'rgba(2,6,23,0.92)', borderRadius: '10px', padding: '8px 11px', pointerEvents: 'none', zIndex: 2, minWidth: '120px' }}>
+          <div style={{ color: '#6f7275', fontSize: '10px', marginBottom: '4px' }}>{fmtTs2(hoverPt.ts)}</div>
           <div style={{ fontSize: '13px', color: lineClr, fontWeight: 700 }}>{fmtPrice(hoverPt.price)}</div>
-          <div style={{ fontSize: '9px', color: '#475569', marginTop: '3px', letterSpacing: '0.06em' }}>Estimated from % changes</div>
+          <div style={{ fontSize: '9px', color: '#505356', marginTop: '3px', letterSpacing: '0.06em' }}>Estimated from % changes</div>
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#94a3b8', marginTop: '5px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11px', color: '#9ea1a4', marginTop: '5px' }}>
         <span>{fmtTs2(first.ts)}</span>
-        <span style={{ color: deltaPct == null ? '#94a3b8' : deltaPct >= 0 ? '#2dd4bf' : '#f87171' }}>
+        <span style={{ color: deltaPct == null ? '#9ea1a4' : deltaPct >= 0 ? '#1fd6dc' : '#f87171' }}>
           Δ {deltaPct == null ? 'N/A' : fmtPct(deltaPct)}
         </span>
         <span>{fmtTs2(last.ts)}</span>
@@ -2155,7 +2155,7 @@ function StatCard({ label, value, accent, helper, dim }: { label: string; value:
       dim, so all other StatCard usages on this page render exactly as before. */}
   return (
     <div style={{
-      background: dim ? 'linear-gradient(160deg, rgba(9,15,28,.80), rgba(3,7,16,.78))' : 'linear-gradient(160deg, rgba(10,18,34,.93), rgba(3,8,19,.90))',
+      background: dim ? 'linear-gradient(160deg, rgba(12,15,18,.80), rgba(3,7,16,.78))' : 'linear-gradient(160deg, rgba(14,17,20,.93), rgba(3,8,19,.90))',
       border: `1px solid ${accent ? `${accent}${dim ? '14' : '1e'}` : 'rgba(255,255,255,0.05)'}`,
       borderRadius: '14px',
       padding: dim ? '14px 16px' : '18px 20px',
@@ -2163,19 +2163,19 @@ function StatCard({ label, value, accent, helper, dim }: { label: string; value:
     }}>
       <p style={{
         fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
-        color: '#3a5268', textTransform: 'uppercase', margin: 0,
+        color: '#4b4e51', textTransform: 'uppercase', margin: 0,
         fontFamily: 'var(--font-plex-mono)',
       }}>
         {label}
       </p>
       <p style={{
         fontSize: dim ? '16px' : '22px', fontWeight: dim ? 700 : 800, lineHeight: 1,
-        color: dim ? (accent ? `${accent}c0` : '#94a3b8') : (accent ?? '#e2e8f0'),
+        color: dim ? (accent ? `${accent}c0` : '#9ea1a4') : (accent ?? '#e4e7ea'),
         fontFamily: 'var(--font-plex-mono)', margin: 0,
       }}>
         {value}
       </p>
-      {helper && <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
+      {helper && <p style={{ margin: 0, fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{helper}</p>}
     </div>
   )
 }
@@ -2198,29 +2198,29 @@ type ProjectSocialsInput = {
 
 function ProjectSocialsCard({ socials }: { socials: ProjectSocialsInput }) {
   const links: SocialLink[] = [
-    socials?.twitter  ? { href: socials.twitter,  label: 'X',        abbr: 'X',   color: '#60a5fa' } : null,
-    socials?.telegram ? { href: socials.telegram, label: 'Telegram', abbr: 'TG',  color: '#38bdf8' } : null,
+    socials?.twitter  ? { href: socials.twitter,  label: 'X',        abbr: 'X',   color: '#c4d2da' } : null,
+    socials?.telegram ? { href: socials.telegram, label: 'Telegram', abbr: 'TG',  color: '#a9e9ec' } : null,
     socials?.discord  ? { href: socials.discord,  label: 'Discord',  abbr: 'DC',  color: '#818cf8' } : null,
     socials?.reddit   ? { href: socials.reddit,   label: 'Reddit',   abbr: 'RD',  color: '#fb923c' } : null,
-    socials?.website  ? { href: socials.website,  label: 'Website',  abbr: 'WEB', color: '#2DD4BF' } : null,
+    socials?.website  ? { href: socials.website,  label: 'Website',  abbr: 'WEB', color: '#1fd6dc' } : null,
   ].filter((l): l is SocialLink => l !== null)
 
   return (
     <div style={{
       marginBottom: '20px', padding: '14px 16px',
-      background: 'linear-gradient(135deg,rgba(10,18,34,.96),rgba(3,8,19,.92))',
-      border: '1px solid rgba(45,212,191,0.16)', borderRadius: '14px',
+      background: 'linear-gradient(135deg,rgba(14,17,20,.96),rgba(3,8,19,.92))',
+      border: '1px solid rgba(31,214,220,0.16)', borderRadius: '14px',
     }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
-        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+        <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
           Project Links
         </span>
-        <span style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+        <span style={{ fontSize: '9px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
           Indexed links from token metadata
         </span>
       </div>
       {links.length === 0 ? (
-        <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+        <span style={{ fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>
           No socials found for this token
         </span>
       ) : (
@@ -2262,9 +2262,9 @@ function getSummaryVerdict(result: ScanResult): { label: string; color: string; 
   const taxesHigh = (hp?.buyTax != null && hp.buyTax > 8) || (hp?.sellTax != null && hp.sellTax > 8)
   const holderState = deriveHolderState(result)
   if (hp?.isHoneypot === true || taxesHigh) return { label: 'AVOID',         color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
-  if (!result.price && !hp)                 return { label: 'UNKNOWN',       color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
+  if (!result.price && !hp)                 return { label: 'UNKNOWN',       color: '#9ea1a4', bg: 'rgba(158,161,164,0.08)', border: 'rgba(158,161,164,0.25)' }
   if (hp?.isHoneypot === false && liq > 120000 && holderState.kind === 'rowsWithPercent')
-                                            return { label: 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
+                                            return { label: 'CLEAN LOOKING', color: '#1fd6dc', bg: 'rgba(31,214,220,0.10)',  border: 'rgba(31,214,220,0.35)'  }
   if (holderState.kind === 'noRowsFallback' || liq < 40000)
                                             return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
   return                                           { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
@@ -2350,8 +2350,8 @@ function getNextAction(result: ScanResult): string {
 
 
 type CMapRisk = 'low' | 'medium' | 'high' | 'open_check' | 'neutral'
-const CMAP_RISK_COLOR: Record<CMapRisk, string> = { low:'#34d399', medium:'#facc15', high:'#fb7185', open_check:'#a855f7', neutral:'#64748b' }
-const CMAP_RISK_BG: Record<CMapRisk, string> = { low:'rgba(52,211,153,0.12)', medium:'rgba(250,204,21,0.12)', high:'rgba(251,113,133,0.14)', open_check:'rgba(168,85,247,0.11)', neutral:'rgba(100,116,139,0.10)' }
+const CMAP_RISK_COLOR: Record<CMapRisk, string> = { low:'#34d399', medium:'#facc15', high:'#fb7185', open_check:'#bec6cb', neutral:'#6f7275' }
+const CMAP_RISK_BG: Record<CMapRisk, string> = { low:'rgba(52,211,153,0.12)', medium:'rgba(250,204,21,0.12)', high:'rgba(251,113,133,0.14)', open_check:'rgba(190,198,203,0.11)', neutral:'rgba(111,114,117,0.10)' }
 function deriveClusterNodeRisk(node: ClusterNode, clusterRiskScore: number | null): CMapRisk {
   if (node.type === 'holder_wallet' && !node.isLinked && !node.isCluster) {
     // Confidence here means "confirmed linked to the deployer/cluster" — plain indexed holders are
@@ -2382,10 +2382,10 @@ function deriveClusterNodeRisk(node: ClusterNode, clusterRiskScore: number | nul
 function deriveClusterEdgeColor(edge: ClusterEdge): string {
   if ((edge.reason ?? '').toLowerCase().includes('suspicious') || (edge.reason ?? '').toLowerCase().includes('same-size') || (edge.reason ?? '').toLowerCase().includes('repeated')) return '#fb7185'
   if (edge.type === 'shared_pattern') return '#facc15'
-  if (edge.type === 'transfer_signal' || edge.type === 'deployer_to_linked') return '#38bdf8'
-  if (edge.type === 'linked_to_cluster' || edge.type === 'holder_overlap') return '#a855f7'
-  if (edge.type === 'weak_heuristic') return '#334155'
-  return edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
+  if (edge.type === 'transfer_signal' || edge.type === 'deployer_to_linked') return '#a9e9ec'
+  if (edge.type === 'linked_to_cluster' || edge.type === 'holder_overlap') return '#bec6cb'
+  if (edge.type === 'weak_heuristic') return '#3c3f42'
+  return edge.confidence === 'high' ? '#1fd6dc' : edge.confidence === 'medium' ? '#a9e9ec' : '#505356'
 }
 
 function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName, walletDetailMetadata, clusterAudit, holdersVerified }: { walletDetailMetadata?: ScanResult['walletDetailMetadata']; clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null; clusterAudit?: DevClusterDiagnosisAudit | null; holdersVerified?: boolean }) {
@@ -2459,10 +2459,10 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
     const lowerType = type.toLowerCase()
     const lowerReason = reason.toLowerCase()
     if (lowerType.includes('suspicious') || /suspicious|repeated|same-size|funding/i.test(lowerReason)) return '#fb7185'
-    if (type === 'transfer_signal' || type === 'deployer_to_linked') return '#38bdf8'
-    if (type === 'linked_to_cluster' || type === 'holder_overlap') return '#a855f7'
+    if (type === 'transfer_signal' || type === 'deployer_to_linked') return '#a9e9ec'
+    if (type === 'linked_to_cluster' || type === 'holder_overlap') return '#bec6cb'
     if (type === 'shared_pattern' || type === 'weak_heuristic') return '#facc15'
-    return '#64748b'
+    return '#6f7275'
   }
   const confidenceOpacity = (confidence: GraphEdge['confidence']) => confidence === 'high' ? 0.9 : confidence === 'medium' ? 0.65 : 0.38
   const edgeWidthFor = (weight: number) => clamp(1 + (weight / 100) * 3, 1, 4.5)
@@ -2558,16 +2558,16 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   const selectedEdgeNodeIds = new Set(relatedEdges.flatMap((edge) => [edge.source, edge.target]))
   const hoveredClusterEdge = graphEdges.find((edge) => edge.id === hoveredClusterEdgeId) ?? null
   const riskTint = summary?.clusterRiskScore == null
-    ? 'rgba(148,163,184,.12)'
+    ? 'rgba(158,161,164,.12)'
     : summary.clusterRiskScore <= 20 ? 'rgba(52,211,153,.12)'
-    : summary.clusterRiskScore <= 40 ? 'rgba(59,130,246,.12)'
+    : summary.clusterRiskScore <= 40 ? 'rgba(170,184,192,.12)'
     : summary.clusterRiskScore <= 60 ? 'rgba(251,191,36,.13)'
     : summary.clusterRiskScore <= 80 ? 'rgba(249,115,22,.14)'
     : 'rgba(248,113,113,.16)'
   const riskColor = summary?.clusterRiskScore == null
-    ? '#94a3b8'
+    ? '#9ea1a4'
     : summary.clusterRiskScore <= 20 ? '#34d399'
-    : summary.clusterRiskScore <= 40 ? '#60a5fa'
+    : summary.clusterRiskScore <= 40 ? '#c4d2da'
     : summary.clusterRiskScore <= 60 ? '#fbbf24'
     : summary.clusterRiskScore <= 80 ? '#fb923c'
     : '#f87171'
@@ -2580,14 +2580,14 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
       ? '#fbbf24'
       : riskContextLabel === 'low'
         ? '#34d399'
-        : '#94a3b8'
+        : '#9ea1a4'
 
   if (!map || map.status === 'unavailable_with_reason' || nodes.length === 0) {
     return (
       <div style={{ display:'grid', gap:'12px' }}>
-        <div style={{ padding:'16px', borderRadius:'14px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.18)' }}>
-          <p style={{ margin:'0 0 6px', fontSize:'10px', letterSpacing:'.14em', color:'#94a3b8', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CLUSTER MAP</p>
-          <p style={{ margin:0, fontSize:'12px', color:'#64748b', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>CORTEX needs more deployer, linked-wallet, or holder evidence before drawing a reliable cluster map.</p>
+        <div style={{ padding:'16px', borderRadius:'14px', background:'rgba(20,23,26,.72)', border:'1px solid rgba(158,161,164,.18)' }}>
+          <p style={{ margin:'0 0 6px', fontSize:'10px', letterSpacing:'.14em', color:'#9ea1a4', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CLUSTER MAP</p>
+          <p style={{ margin:0, fontSize:'12px', color:'#6f7275', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>CORTEX needs more deployer, linked-wallet, or holder evidence before drawing a reliable cluster map.</p>
         </div>
       </div>
     )
@@ -2607,10 +2607,10 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   }
   const staticPositions = new Map(ordered.map((node, index) => [node.id, positionFor(node, index)]))
   const positions = simPositions.size > 0 ? simPositions : staticPositions
-  const nodeColor = (node: ClusterNode) => node.type === 'deployer' ? '#fbbf24' : node.type === 'linked_wallet' ? '#2dd4bf' : node.type === 'cluster_wallet' ? '#e879f9' : '#64748b'
+  const nodeColor = (node: ClusterNode) => node.type === 'deployer' ? '#fbbf24' : node.type === 'linked_wallet' ? '#1fd6dc' : node.type === 'cluster_wallet' ? '#cfd6da' : '#6f7275'
   const nodeBg = (node: ClusterNode) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return CMAP_RISK_BG[risk] }
   const nodeSize = (node: ClusterNode) => Math.min(64, 24 + Math.max(0, node.supplyPercent ?? 0) * 1.1)
-  const nodeBorderColor = (node: ClusterNode, isSelected: boolean) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return node.confidence === 'open_check' ? '#64748b' : (isSelected ? CMAP_RISK_COLOR[risk] : nodeColor(node)) }
+  const nodeBorderColor = (node: ClusterNode, isSelected: boolean) => { const risk = deriveClusterNodeRisk(node, riskContextScore); return node.confidence === 'open_check' ? '#6f7275' : (isSelected ? CMAP_RISK_COLOR[risk] : nodeColor(node)) }
   const roleLabel = (node: ClusterNode | null) => !node ? 'Unknown wallet' : node.type === 'deployer' ? 'Deployer / origin wallet' : node.type === 'linked_wallet' ? 'Linked wallet' : node.type === 'cluster_wallet' ? 'Cluster wallet' : 'Indexed holder'
   const edgeLabel = (type: string) => type === 'deployer_to_linked' ? 'Deployer transfer link' : type === 'linked_to_cluster' ? 'Linked cluster path' : type === 'holder_overlap' ? 'Holder overlap' : type === 'transfer_signal' ? 'Transfer signal' : type === 'shared_pattern' ? 'Shared pattern' : type === 'weak_heuristic' ? 'Weak heuristic' : type.replace(/_/g, ' ')
   const confidenceCopy = (confidence?: ClusterNode['confidence']) => confidence === 'high'
@@ -2888,8 +2888,8 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
   return (
     <div style={{ display:'grid', gap:'12px' }}>
       <div>
-        <p style={{ margin:'0 0 5px', fontSize:'14px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>Cluster Map</p>
-        <p style={{ margin:'0 0 8px', fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
+        <p style={{ margin:'0 0 5px', fontSize:'14px', color:'#e4e7ea', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>Cluster Map</p>
+        <p style={{ margin:'0 0 8px', fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
         {/* DEV-GRAPH-TAKEAWAY, DISCLOSED (Token Scanner section-readability polish task, explicitly
             requested: "add a clearer one-line trader takeaway above or beside the graph, based on
             existing data only"): built entirely from counts already derived above (linked/cluster
@@ -2906,7 +2906,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
         </div>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:selectedClusterNodeId ? 'repeat(auto-fit,minmax(min(100%,280px),1fr))' : 'repeat(auto-fit,minmax(min(100%,280px),1fr))', gap:'12px', alignItems:'start' }}>
-        <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null); clearEdgeHover() }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
+        <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null); clearEdgeHover() }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(169,233,236,.16)' }}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ position:'absolute', inset:0, width:'100%', height:'100%', zIndex:1 }}>
             {graphEdges.map((edge) => {
               const source = positions.get(edge.source)
@@ -2943,7 +2943,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
             })}
           </svg>
           {(edges.length === 0 || graphEdges.length === 0) && (
-            <div style={{ position:'absolute', top:'12px', left:'12px', zIndex:4, maxWidth:'260px', padding:'8px 10px', borderRadius:'11px', background:'rgba(2,6,23,.78)', border:'1px solid rgba(148,163,184,.18)', color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>
+            <div style={{ position:'absolute', top:'12px', left:'12px', zIndex:4, maxWidth:'260px', padding:'8px 10px', borderRadius:'11px', background:'rgba(2,6,23,.78)', border:'1px solid rgba(158,161,164,.18)', color:'#9ea1a4', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>
               {edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}
             </div>
           )}
@@ -2955,18 +2955,18 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
             return (
               <div style={{ position:'absolute', left:Math.min(clusterTooltipPos.x+14,240), top:Math.max(clusterTooltipPos.y-96,8), pointerEvents:'none', zIndex:20, padding:'10px 13px', borderRadius:'10px', background:'rgba(6,11,22,0.97)', border:`1px solid ${nodeColor(hNode)}40`, minWidth:'162px', boxShadow:'0 4px 18px rgba(0,0,0,.55)' }}>
                 <div style={{ fontSize:'8px', letterSpacing:'.14em', fontWeight:700, color:nodeColor(hNode), fontFamily:'var(--font-plex-mono)', marginBottom:'8px' }}>{(roleLabel(hNode)).toUpperCase()}</div>
-                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Address</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{fmt(hNode.address)}</div></div>
-                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Supply</div><div style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hSupply!=null?`${hSupply.toFixed(1)}%`:'Not indexed in this pass'}</div></div>
+                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#505356', fontFamily:'var(--font-plex-mono)' }}>Address</div><div style={{ fontSize:'10px', color:'#e4e7ea', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{fmt(hNode.address)}</div></div>
+                <div style={{ marginBottom:'5px' }}><div style={{ fontSize:'8px', color:'#505356', fontFamily:'var(--font-plex-mono)' }}>Supply</div><div style={{ fontSize:'10px', color:'#e4e7ea', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hSupply!=null?`${hSupply.toFixed(1)}%`:'Not indexed in this pass'}</div></div>
                 <div style={{ display:'flex', gap:'12px' }}>
-                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Risk</div><div style={{ fontSize:'10px', color:CMAP_RISK_COLOR[risk], fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{risk==='open_check'?'Unavailable':risk.charAt(0).toUpperCase()+risk.slice(1)}</div></div>
-                  <div><div style={{ fontSize:'8px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>Confidence</div><div style={{ fontSize:'10px', color:hNode.confidence==='high'?'#34d399':hNode.confidence==='medium'?'#fbbf24':'#94a3b8', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hNode.confidence==='open_check'?'Unavailable':hNode.confidence.charAt(0).toUpperCase()+hNode.confidence.slice(1)}</div></div>
+                  <div><div style={{ fontSize:'8px', color:'#505356', fontFamily:'var(--font-plex-mono)' }}>Risk</div><div style={{ fontSize:'10px', color:CMAP_RISK_COLOR[risk], fontFamily:'var(--font-plex-mono)', fontWeight:700 }}>{risk==='open_check'?'Unavailable':risk.charAt(0).toUpperCase()+risk.slice(1)}</div></div>
+                  <div><div style={{ fontSize:'8px', color:'#505356', fontFamily:'var(--font-plex-mono)' }}>Confidence</div><div style={{ fontSize:'10px', color:hNode.confidence==='high'?'#34d399':hNode.confidence==='medium'?'#fbbf24':'#9ea1a4', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{hNode.confidence==='open_check'?'Unavailable':hNode.confidence.charAt(0).toUpperCase()+hNode.confidence.slice(1)}</div></div>
                 </div>
               </div>
             )
           })()}
           {hoveredClusterEdge && edgeTooltipPosition && (
             <div style={{ position:'absolute', left:edgeTooltipPosition.x, top:edgeTooltipPosition.y, zIndex:5, width:'min(280px, calc(100% - 24px))', padding:'10px 11px', borderRadius:'12px', background:'rgba(3,10,24,.96)', border:`1px solid ${hoveredClusterEdge.color}55`, boxShadow:'0 16px 38px rgba(0,0,0,.45)', pointerEvents:'none', fontFamily:'var(--font-plex-mono)' }}>
-              <p style={{ margin:'0 0 8px', color:'#e2e8f0', fontSize:'10px', fontWeight:900 }}>{fmt(nodes.find((node) => node.id === hoveredClusterEdge.source)?.address)} → {fmt(nodes.find((node) => node.id === hoveredClusterEdge.target)?.address)}</p>
+              <p style={{ margin:'0 0 8px', color:'#e4e7ea', fontSize:'10px', fontWeight:900 }}>{fmt(nodes.find((node) => node.id === hoveredClusterEdge.source)?.address)} → {fmt(nodes.find((node) => node.id === hoveredClusterEdge.target)?.address)}</p>
               {[
                 ['Relationship', relationshipLabel(hoveredClusterEdge)],
                 ['Reason', hoveredClusterEdge.reason],
@@ -2975,9 +2975,9 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 ['Source supply', supplyLabelForNodeId(hoveredClusterEdge.source)],
                 ['Target supply', supplyLabelForNodeId(hoveredClusterEdge.target)],
               ].map(([label, value]) => (
-                <div key={label} style={{ display:'grid', gridTemplateColumns:'88px 1fr', gap:'8px', padding:'3px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}>
-                  <span style={{ color:'#64748b', fontSize:'9px' }}>{label}</span>
-                  <span style={{ color:'#cbd5e1', fontSize:'9px', lineHeight:1.35 }}>{value}</span>
+                <div key={label} style={{ display:'grid', gridTemplateColumns:'88px 1fr', gap:'8px', padding:'3px 0', borderTop:'1px solid rgba(158,161,164,.08)' }}>
+                  <span style={{ color:'#6f7275', fontSize:'9px' }}>{label}</span>
+                  <span style={{ color:'#d1d4d7', fontSize:'9px', lineHeight:1.35 }}>{value}</span>
                 </div>
               ))}
             </div>
@@ -3002,17 +3002,17 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 style={{ position:'absolute', left:`${pos.x}%`, top:`${pos.y}%`, transform:'translate(-50%,-50%)', display:'grid', placeItems:'center', gap:'4px', zIndex:isHovered||isSelected?4:2, opacity:isDimmed ? 0.28 : 1, background:'transparent', border:0, padding:0, cursor:'pointer', textAlign:'center' }}>
                 <div style={{ width:size, height:size, borderRadius:'999px', background:nodeBg(node), border:`${isSelected?3:isHovered?2.5:2}px solid ${riskBorderColor}`, boxShadow:isSelected?`0 0 0 5px ${CMAP_RISK_COLOR[risk]}22, 0 0 26px ${CMAP_RISK_COLOR[risk]}aa`:isHovered?`0 0 0 3px ${CMAP_RISK_COLOR[risk]}22, 0 0 14px ${CMAP_RISK_COLOR[risk]}77`:risk==='high'?`0 0 14px ${CMAP_RISK_COLOR.high}66`:'none', display:'grid', placeItems:'center', color, fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{node.type === 'deployer' ? 'D' : node.type === 'linked_wallet' ? 'L' : node.type === 'cluster_wallet' ? 'C' : 'H'}</div>
                 {badge && <span title={behaviorTitle(behavior?.label ?? 'neutral')} style={{ position:'absolute', top:-5, right:-5, width:18, height:18, borderRadius:'999px', display:'grid', placeItems:'center', background:badge.bg, border:`1px solid ${badge.color}88`, color:badge.color, fontSize:'9px', fontWeight:900, fontFamily:'var(--font-plex-mono)', boxShadow:`0 0 12px ${badge.color}44` }}>{badge.badge}</span>}
-                <div style={{ padding:'2px 6px', borderRadius:'999px', background:'rgba(2,6,23,.86)', border:`1px solid ${CMAP_RISK_COLOR[risk]}44`, color:'#cbd5e1', fontSize:'9px', fontWeight:700, fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap' }}>{node.label === 'Deployer' ? 'Deployer' : fmt(node.address)}</div>
+                <div style={{ padding:'2px 6px', borderRadius:'999px', background:'rgba(2,6,23,.86)', border:`1px solid ${CMAP_RISK_COLOR[risk]}44`, color:'#d1d4d7', fontSize:'9px', fontWeight:700, fontFamily:'var(--font-plex-mono)', whiteSpace:'nowrap' }}>{node.label === 'Deployer' ? 'Deployer' : fmt(node.address)}</div>
                 {node.supplyPercent != null && <div style={{ color:CMAP_RISK_COLOR[risk], fontSize:'9px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{node.supplyPercent.toFixed(1)}%</div>}
               </button>
             )
           })}
           <div style={{ position:'absolute', left:'12px', bottom:'12px', display:'flex', flexWrap:'wrap', gap:'6px', zIndex:3 }}>
-            {([['#34d399','Low risk'],['#facc15','Med/pattern'],['#fb7185','High/susp'],['#a855f7','Unavailable'],['#fbbf24','Deployer'],['#2dd4bf','Linked'],['#e879f9','Cluster'],['#38bdf8','Transfer edge']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(148,163,184,.16)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
+            {([['#34d399','Low risk'],['#facc15','Med/pattern'],['#fb7185','High/susp'],['#bec6cb','Unavailable'],['#fbbf24','Deployer'],['#1fd6dc','Linked'],['#cfd6da','Cluster'],['#a9e9ec','Transfer edge']] as [string,string][]).map(([color,label]) => <span key={label} style={{ display:'inline-flex', alignItems:'center', gap:'5px', padding:'4px 7px', borderRadius:'999px', background:'rgba(2,6,23,.72)', border:'1px solid rgba(158,161,164,.16)', color:'#9ea1a4', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}><i style={{ width:7, height:7, borderRadius:'50%', background:color }} />{label}</span>)}
           </div>
         </div>
         <div style={{ display:'grid', gap:'10px', alignContent:'start' }}>
-          <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(9,15,29,.86)', border:`1px solid ${riskColor}55` }}>
+          <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(12,15,18,.86)', border:`1px solid ${riskColor}55` }}>
             <p style={{ margin:'0 0 8px', fontSize:'9px', letterSpacing:'.14em', color:riskColor, fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER SUMMARY</p>
             {[
               ['Cluster supply', summary?.clusterSupplyPercent != null ? `${summary.clusterSupplyPercent.toFixed(1)}%` : (holdersAreVerified ? 'Dev supply not checked — deployer not resolved' : 'Needs holder evidence')],
@@ -3020,58 +3020,58 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
               ['Risk score', summary?.clusterRiskScore != null ? `${summary.clusterRiskScore}/100` : 'Not verified'],
               ['Nodes / Edges', `${summary?.totalNodes ?? nodes.length} / ${graphEdges.length}`],
               ['Confidence', canonicalLabel(map.status)],
-            ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid rgba(148,163,184,.08)' }}><span style={{ fontSize:'10px', color:'#64748b', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ fontSize:'10px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:label === 'Dominance' ? 'uppercase' : undefined }}>{value}</span></div>)}
-            <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{summary?.reason}</p>
-            {(edges.length === 0 || graphEdges.length === 0) && <p style={{ margin:'8px 0 0', fontSize:'10px', color:'#7dd3fc', fontFamily:'var(--font-plex-mono)', lineHeight:1.45 }}>{edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}</p>}
+            ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid rgba(158,161,164,.08)' }}><span style={{ fontSize:'10px', color:'#6f7275', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ fontSize:'10px', color:'#e4e7ea', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:label === 'Dominance' ? 'uppercase' : undefined }}>{value}</span></div>)}
+            <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{summary?.reason}</p>
+            {(edges.length === 0 || graphEdges.length === 0) && <p style={{ margin:'8px 0 0', fontSize:'10px', color:'#a9e9ec', fontFamily:'var(--font-plex-mono)', lineHeight:1.45 }}>{edges.length === 0 ? 'No transfer edges confirmed in this pass.' : 'Cluster edge data could not be matched to visible nodes.'}</p>}
           </div>
-          <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(125,211,252,.14)' }}>
-            <p style={{ margin:'0 0 8px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SIGNALS</p>
-            {(map.signals.length > 0 ? map.signals : ['Holder evidence incomplete']).slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:'0 0 6px', color:'#cbd5e1', fontSize:'10px', fontFamily:'var(--font-plex-mono)', lineHeight:1.45 }}>› {signal}</p>)}
+          <div style={{ padding:'13px 14px', borderRadius:'13px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(169,233,236,.14)' }}>
+            <p style={{ margin:'0 0 8px', fontSize:'9px', letterSpacing:'.14em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SIGNALS</p>
+            {(map.signals.length > 0 ? map.signals : ['Holder evidence incomplete']).slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:'0 0 6px', color:'#d1d4d7', fontSize:'10px', fontFamily:'var(--font-plex-mono)', lineHeight:1.45 }}>› {signal}</p>)}
           </div>
         </div>
         {selectedClusterNodeId && (
-          <aside style={{ alignSelf:'stretch', maxHeight:'560px', overflowY:'auto', padding:'14px', borderRadius:'16px', background:'linear-gradient(145deg, rgba(2,8,23,.96), rgba(12,18,38,.94))', border:'1px solid rgba(125,211,252,.24)', boxShadow:'0 18px 52px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.04)' }}>
+          <aside style={{ alignSelf:'stretch', maxHeight:'560px', overflowY:'auto', padding:'14px', borderRadius:'16px', background:'linear-gradient(145deg, rgba(2,8,23,.96), rgba(15,18,21,.94))', border:'1px solid rgba(169,233,236,.24)', boxShadow:'0 18px 52px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.04)' }}>
             {!selectedClusterNode ? (
-              <p style={{ margin:0, color:'#94a3b8', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Wallet detail unavailable for this node.</p>
+              <p style={{ margin:0, color:'#9ea1a4', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Wallet detail unavailable for this node.</p>
             ) : (
               <div style={{ display:'grid', gap:'12px' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start' }}>
                   <div>
-                    <p style={{ margin:'0 0 7px', color:'#e2e8f0', fontSize:'14px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Wallet Detail</p>
+                    <p style={{ margin:'0 0 7px', color:'#e4e7ea', fontSize:'14px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Wallet Detail</p>
                     <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
                       <span style={{ padding:'4px 7px', borderRadius:'999px', background:nodeBg(selectedClusterNode), border:`1px solid ${nodeColor(selectedClusterNode)}66`, color:nodeColor(selectedClusterNode), fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{roleLabel(selectedClusterNode)}</span>
-                      <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(148,163,184,.08)', border:'1px solid rgba(148,163,184,.16)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{selectedClusterNode.confidence === 'open_check' && holdersAreVerified ? walletEvidence.labels.confidence : (selectedClusterNode.confidence ?? walletEvidence.labels.confidence)}</span>
+                      <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(158,161,164,.08)', border:'1px solid rgba(158,161,164,.16)', color:'#d1d4d7', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{selectedClusterNode.confidence === 'open_check' && holdersAreVerified ? walletEvidence.labels.confidence : (selectedClusterNode.confidence ?? walletEvidence.labels.confidence)}</span>
                     </div>
                   </div>
-                  <button type="button" onClick={() => setSelectedClusterNodeId(null)} aria-label="Close wallet detail" style={{ width:28, height:28, borderRadius:'999px', border:'1px solid rgba(148,163,184,.2)', background:'rgba(15,23,42,.78)', color:'#94a3b8', cursor:'pointer' }}>×</button>
+                  <button type="button" onClick={() => setSelectedClusterNodeId(null)} aria-label="Close wallet detail" style={{ width:28, height:28, borderRadius:'999px', border:'1px solid rgba(158,161,164,.2)', background:'rgba(20,23,26,.78)', color:'#9ea1a4', cursor:'pointer' }}>×</button>
                 </div>
-                <div style={{ padding:'10px 0', borderTop:'1px solid rgba(148,163,184,.12)', borderBottom:'1px solid rgba(148,163,184,.12)' }}>
-                  <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.13em', color:'#64748b', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>WALLET ADDRESS</p>
+                <div style={{ padding:'10px 0', borderTop:'1px solid rgba(158,161,164,.12)', borderBottom:'1px solid rgba(158,161,164,.12)' }}>
+                  <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.13em', color:'#6f7275', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>WALLET ADDRESS</p>
                   <div style={{ display:'flex', gap:'8px', alignItems:'center', justifyContent:'space-between' }}>
-                    <span title={selectedClusterNode.address} style={{ color:'#e2e8f0', fontSize:'12px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{fmt(selectedClusterNode.address)}</span>
-                    <button type="button" onClick={() => { void copyClusterAddress(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(45,212,191,.28)', background:'rgba(45,212,191,.08)', color:'#2dd4bf', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>{copiedClusterAddress === selectedClusterNode.address ? 'COPIED' : 'COPY ADDRESS'}</button>
+                    <span title={selectedClusterNode.address} style={{ color:'#e4e7ea', fontSize:'12px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{fmt(selectedClusterNode.address)}</span>
+                    <button type="button" onClick={() => { void copyClusterAddress(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(31,214,220,.28)', background:'rgba(31,214,220,.08)', color:'#1fd6dc', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>{copiedClusterAddress === selectedClusterNode.address ? 'COPIED' : 'COPY ADDRESS'}</button>
                   </div>
                 </div>
                 {isDeployerSelected && deployerIntel && (
                   <section style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,150px),1fr))', gap:'6px' }}>
                     <button type="button" onClick={() => { if (typeof window !== 'undefined') window.location.href = `/terminal/wallet-scanner?address=${selectedClusterNode.address}&chain=${chain ?? 'base'}` }} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(251,191,36,.32)', background:'rgba(251,191,36,.08)', color:'#fbbf24', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Run Deployer Wallet Scan</button>
-                    <button type="button" onClick={() => { if (typeof window !== 'undefined') window.location.href = `/terminal/wallet-scanner?address=${selectedClusterNode.address}&chain=${chain ?? 'base'}` }} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(125,211,252,.28)', background:'rgba(125,211,252,.08)', color:'#7dd3fc', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Open Wallet Scanner</button>
-                    <button type="button" onClick={() => setShowRelatedDeployments(v => !v)} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(148,163,184,.24)', background:'rgba(148,163,184,.06)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Check Related Deployments</button>
+                    <button type="button" onClick={() => { if (typeof window !== 'undefined') window.location.href = `/terminal/wallet-scanner?address=${selectedClusterNode.address}&chain=${chain ?? 'base'}` }} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(169,233,236,.28)', background:'rgba(169,233,236,.08)', color:'#a9e9ec', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Open Wallet Scanner</button>
+                    <button type="button" onClick={() => setShowRelatedDeployments(v => !v)} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(158,161,164,.24)', background:'rgba(158,161,164,.06)', color:'#d1d4d7', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Check Related Deployments</button>
                   </section>
                 )}
                 {isDeployerSelected && deployerIntel && showRelatedDeployments && (
-                  <section style={{ display:'grid', gap:'6px', padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.14)' }}>
-                    <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.relatedDeploymentsLabel}</p>
+                  <section style={{ display:'grid', gap:'6px', padding:'9px', borderRadius:'10px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(158,161,164,.14)' }}>
+                    <p style={{ margin:0, color:'#9ea1a4', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.relatedDeploymentsLabel}</p>
                     {deployerIntel.relatedDeployments.map((project) => (
-                      <div key={project.contractAddress} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}>
-                        <span style={{ color:'#e2e8f0', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.symbol ?? project.name ?? fmt(project.contractAddress)}</span>
-                        <span style={{ color: project.rugFlag ? '#fb7185' : '#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.rugFlag ? 'Rug flagged' : (project.createdAt ?? 'unknown date')}</span>
+                      <div key={project.contractAddress} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(158,161,164,.08)' }}>
+                        <span style={{ color:'#e4e7ea', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.symbol ?? project.name ?? fmt(project.contractAddress)}</span>
+                        <span style={{ color: project.rugFlag ? '#fb7185' : '#6f7275', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.rugFlag ? 'Rug flagged' : (project.createdAt ?? 'unknown date')}</span>
                       </div>
                     ))}
                   </section>
                 )}
                 <section style={{ display:'grid', gap:'7px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SUPPLY POSITION</p>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SUPPLY POSITION</p>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
                     {[
                       { title: 'Supply', value: selectedWalletDetail.supply, source: selectedWalletDetail.supplySource, verified: selectedWalletDetail.provenance.tokenBalance.status === 'verified', extra: selectedWalletDetail.indexedSupply },
@@ -3080,82 +3080,82 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                       { title: 'Native balance', value: selectedWalletDetail.nativeBalance, source: selectedWalletDetail.provenance.nativeBalance.status === 'verified' ? 'Direct on-chain balance' : selectedBalance ? 'RPC balance unavailable' : 'Direct on-chain check in progress', verified: selectedWalletDetail.provenance.nativeBalance.status === 'verified' },
                       { title: 'Received supply at launch?', value: selectedWalletDetail.launchReceipt, source: selectedWalletDetail.launchSource, verified: selectedWalletDetail.provenance.launchReceipt.status === 'verified' },
                     ].map(field => (
-                      <div key={field.title} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)', minWidth:0 }}>
-                        <p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{field.title}</p>
-                        <p style={{ margin:0, color:field.verified ? '#e2e8f0' : '#94a3b8', fontSize:'12px', fontWeight:800, overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.value}</p>
-                        <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.source}</p>
-                        {field.extra && <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px' }}>{field.extra}</p>}
+                      <div key={field.title} style={{ padding:'9px', borderRadius:'10px', background:'rgba(20,23,26,.62)', border:'1px solid rgba(158,161,164,.12)', minWidth:0 }}>
+                        <p style={{ margin:'0 0 4px', color:'#6f7275', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{field.title}</p>
+                        <p style={{ margin:0, color:field.verified ? '#e4e7ea' : '#9ea1a4', fontSize:'12px', fontWeight:800, overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.value}</p>
+                        <p style={{ margin:'4px 0 0', color:'#6f7275', fontSize:'9px', overflowWrap:'anywhere', fontFamily:'var(--font-plex-mono)' }}>{field.source}</p>
+                        {field.extra && <p style={{ margin:'4px 0 0', color:'#6f7275', fontSize:'9px' }}>{field.extra}</p>}
                       </div>
                     ))}
                   </div>
-                  {isDeployerSelected && deployerIntel && <p style={{ margin:0, color:'#94a3b8', fontSize:'10px' }}>Transferred/sold tokens? {deployerIntel.transferredOrSoldLabel}</p>}
+                  {isDeployerSelected && deployerIntel && <p style={{ margin:0, color:'#9ea1a4', fontSize:'10px' }}>Transferred/sold tokens? {deployerIntel.transferredOrSoldLabel}</p>}
                 </section>
                 <section style={{ display:'grid', gap:'7px', paddingTop:'2px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER ROLE</p>
-                  <p style={{ margin:0, color:'#cbd5e1', fontSize:'11px', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{roleLabel(selectedClusterNode)}</p>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER ROLE</p>
+                  <p style={{ margin:0, color:'#d1d4d7', fontSize:'11px', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{roleLabel(selectedClusterNode)}</p>
                   <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
                     {[
                       selectedClusterNode.isCreator ? 'Creator wallet' : null,
                       selectedClusterNode.isLinked ? 'Linked to deployer' : null,
                       selectedClusterNode.isCluster ? 'Part of detected cluster' : null,
-                    ].filter(Boolean).map((flag) => <span key={flag} style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(125,211,252,.08)', border:'1px solid rgba(125,211,252,.16)', color:'#bae6fd', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{flag}</span>)}
+                    ].filter(Boolean).map((flag) => <span key={flag} style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(169,233,236,.08)', border:'1px solid rgba(169,233,236,.16)', color:'#d2f0f2', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{flag}</span>)}
                   </div>
                 </section>
-                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>BEHAVIOR PATTERN</p>
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>BEHAVIOR PATTERN</p>
                   {selectedWalletBehavior ? (
-                    <div style={{ display:'grid', gap:'7px', padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#94a3b8')}44` }}>
+                    <div style={{ display:'grid', gap:'7px', padding:'9px', borderRadius:'10px', background:'rgba(20,23,26,.58)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#9ea1a4')}44` }}>
                       <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
-                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:behaviorBadgeMeta(selectedWalletBehavior.label)?.bg ?? 'rgba(148,163,184,.08)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#94a3b8')}66`, color:behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#cbd5e1', fontSize:'9px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{behaviorTitle(selectedWalletBehavior.label)}</span>
-                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(148,163,184,.08)', border:'1px solid rgba(148,163,184,.16)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{confidenceLabel(selectedWalletBehavior.confidence)}</span>
+                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:behaviorBadgeMeta(selectedWalletBehavior.label)?.bg ?? 'rgba(158,161,164,.08)', border:`1px solid ${(behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#9ea1a4')}66`, color:behaviorBadgeMeta(selectedWalletBehavior.label)?.color ?? '#d1d4d7', fontSize:'9px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{behaviorTitle(selectedWalletBehavior.label)}</span>
+                        <span style={{ padding:'4px 7px', borderRadius:'999px', background:'rgba(158,161,164,.08)', border:'1px solid rgba(158,161,164,.16)', color:'#d1d4d7', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{confidenceLabel(selectedWalletBehavior.confidence)}</span>
                       </div>
-                      {selectedWalletBehavior.reasons.slice(0, 3).map((reason, index) => <p key={reason + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {reason}</p>)}
+                      {selectedWalletBehavior.reasons.slice(0, 3).map((reason, index) => <p key={reason + index} style={{ margin:0, color:'#d1d4d7', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {reason}</p>)}
                     </div>
-                  ) : <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.behaviorPatternLabel : 'No wallet behavior pattern confirmed in this pass.'}</p>}
+                  ) : <p style={{ margin:0, color:'#6f7275', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.behaviorPatternLabel : 'No wallet behavior pattern confirmed in this pass.'}</p>}
                 </section>
-                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>TRANSFER LINKS</p>
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>TRANSFER LINKS</p>
                   {isDeployerSelected && deployerIntel ? (
                     deployerIntel.linkedWallets.length === 0 ? (
-                      <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.transferLinksLabel}</p>
+                      <p style={{ margin:0, color:'#6f7275', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.transferLinksLabel}</p>
                     ) : deployerIntel.linkedWallets.map((lw) => (
-                      <div key={lw.address} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.12)' }}>
+                      <div key={lw.address} style={{ padding:'9px', borderRadius:'10px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(158,161,164,.12)' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'5px' }}>
-                          <span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(lw.address)}</span>
-                          {lw.confidence && <span style={{ color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{lw.confidence}</span>}
+                          <span style={{ color:'#e4e7ea', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(lw.address)}</span>
+                          {lw.confidence && <span style={{ color:'#9ea1a4', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{lw.confidence}</span>}
                         </div>
-                        <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{lw.reason ?? 'linked wallet'}{lw.amountReceived != null ? ` · received ${lw.amountReceived}${lw.asset ? ` ${lw.asset}` : ''}` : ''}</p>
+                        <p style={{ margin:0, color:'#9ea1a4', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{lw.reason ?? 'linked wallet'}{lw.amountReceived != null ? ` · received ${lw.amountReceived}${lw.asset ? ` ${lw.asset}` : ''}` : ''}</p>
                       </div>
                     ))
-                  ) : relatedEdges.length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No transfer links found in current cluster map.</p> : relatedEdges.map((edge) => {
+                  ) : relatedEdges.length === 0 ? <p style={{ margin:0, color:'#6f7275', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No transfer links found in current cluster map.</p> : relatedEdges.map((edge) => {
                     const otherNodeId = edge.source === selectedClusterNode.id ? edge.target : edge.source
                     const otherNode = nodes.find((node) => node.id === otherNodeId)
-                    return <div key={edge.id} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.12)' }}><div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'5px' }}><span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(otherNode?.address)}</span><span style={{ color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{edge.confidence}</span></div><p style={{ margin:'0 0 4px', color:'#7dd3fc', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{edgeLabel(edge.type)} · weight {edge.weight}</p><p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{edge.reason}</p></div>
+                    return <div key={edge.id} style={{ padding:'9px', borderRadius:'10px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(158,161,164,.12)' }}><div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'5px' }}><span style={{ color:'#e4e7ea', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(otherNode?.address)}</span><span style={{ color:'#9ea1a4', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{edge.confidence}</span></div><p style={{ margin:'0 0 4px', color:'#a9e9ec', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{edgeLabel(edge.type)} · weight {edge.weight}</p><p style={{ margin:0, color:'#9ea1a4', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{edge.reason}</p></div>
                   })}
                 </section>
-                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>RISK SIGNALS</p>
-                  <div style={{ padding:'8px 9px', borderRadius:'10px', background:'rgba(15,23,42,.5)', border:`1px solid ${riskContextColor}33` }}><p style={{ margin:0, color:riskContextColor, fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{riskContextScore != null ? `Cluster risk ${riskContextScore}/100 · ${riskContextLabel}` : `Cluster risk · ${riskContextLabel}`}</p></div>
-                  {(isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet-specific signals.</p> : (isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {signal}</p>)}
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>RISK SIGNALS</p>
+                  <div style={{ padding:'8px 9px', borderRadius:'10px', background:'rgba(20,23,26,.5)', border:`1px solid ${riskContextColor}33` }}><p style={{ margin:0, color:riskContextColor, fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{riskContextScore != null ? `Cluster risk ${riskContextScore}/100 · ${riskContextLabel}` : `Cluster risk · ${riskContextLabel}`}</p></div>
+                  {(isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).length === 0 ? <p style={{ margin:0, color:'#6f7275', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet-specific signals.</p> : (isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:0, color:'#d1d4d7', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {signal}</p>)}
                 </section>
-                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>FUNDING SOURCE</p>
-                  <p style={{ margin:0, color:fundingSource ? '#cbd5e1' : '#64748b', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{fundingSource ?? 'No funding source identified.'}</p>
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>FUNDING SOURCE</p>
+                  <p style={{ margin:0, color:fundingSource ? '#d1d4d7' : '#6f7275', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{fundingSource ?? 'No funding source identified.'}</p>
                 </section>
-                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE</p>
-                  <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? confidenceCopy(deployerIntel.confidence) : confidenceCopy(selectedClusterNode.confidence)}</p>
+                <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                  <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE</p>
+                  <p style={{ margin:0, color:'#d1d4d7', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? confidenceCopy(deployerIntel.confidence) : confidenceCopy(selectedClusterNode.confidence)}</p>
                 {isDeployerSelected && deployerIntel && deployerIntel.evidenceSource.length > 0 && (
-                  <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Evidence: {deployerIntel.evidenceSource.join(', ')}</p>
+                  <p style={{ margin:'4px 0 0', color:'#6f7275', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Evidence: {deployerIntel.evidenceSource.join(', ')}</p>
                 )}
                 {isDeployerSelected && deployerIntel && (
-                  <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Next: {deployerIntel.nextActions.join(' ')}</p>
+                  <p style={{ margin:'4px 0 0', color:'#6f7275', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Next: {deployerIntel.nextActions.join(' ')}</p>
                 )}
                 </section>
                 {openChecks.length > 0 && (
-                  <section style={{ display:'grid', gap:'6px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
-                    <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#94a3b8', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE GAPS</p>
-                    {openChecks.map((check) => <p key={check} style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {check}</p>)}
+                  <section style={{ display:'grid', gap:'6px', borderTop:'1px solid rgba(158,161,164,.1)', paddingTop:'10px' }}>
+                    <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#9ea1a4', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE GAPS</p>
+                    {openChecks.map((check) => <p key={check} style={{ margin:0, color:'#9ea1a4', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {check}</p>)}
                   </section>
                 )}
               </div>
@@ -3163,13 +3163,13 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
           </aside>
         )}
       </div>
-      <section style={{ display:'grid', gap:'12px', padding:'14px', borderRadius:'16px', background:'rgba(8,14,28,.78)', border:'1px solid rgba(125,211,252,.14)' }}>
+      <section style={{ display:'grid', gap:'12px', padding:'14px', borderRadius:'16px', background:'rgba(8,14,28,.78)', border:'1px solid rgba(169,233,236,.14)' }}>
         <div>
-          <p style={{ margin:'0 0 5px', fontSize:'12px', color:'#e2e8f0', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Behavior Intelligence</p>
-          <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>Derived from the current cluster map only: no new backend calls, no invented timestamps, and no unrelated holder expansion.</p>
+          <p style={{ margin:'0 0 5px', fontSize:'12px', color:'#e4e7ea', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>Behavior Intelligence</p>
+          <p style={{ margin:0, color:'#9ea1a4', fontSize:'10px', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>Derived from the current cluster map only: no new backend calls, no invented timestamps, and no unrelated holder expansion.</p>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,260px),1fr))', gap:'10px', alignItems:'start' }}>
-          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(251,191,36,.18)' }}>
+          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(251,191,36,.18)' }}>
             <summary style={{ cursor:'pointer', color:'#fbbf24', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)', letterSpacing:'.1em' }}>DEPLOYER LINEAGE</summary>
             <div style={{ display:'grid', gap:'8px', marginTop:'10px' }}>
               {[
@@ -3179,21 +3179,21 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, toke
                 ['Suspicious links', String(deployerLineage.summary.suspiciousLinks)],
                 ['Linked supply', deployerLineage.summary.linkedSupplyPercent == null ? 'Holder data unavailable' : `${deployerLineage.summary.linkedSupplyPercent.toFixed(1)}%`],
                 ['Cluster supply', deployerLineage.summary.clusterSupplyPercent == null ? 'Holder data unavailable' : `${deployerLineage.summary.clusterSupplyPercent.toFixed(1)}%`],
-              ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}><span style={{ color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ color:'#e2e8f0', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{value}</span></div>)}
-              <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerLineage.summary.reason}</p>
-              <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>{lineageDeployerIntel?.relatedDeploymentsLabel ?? 'Related deployments unavailable in this pass.'}</p>
+              ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(158,161,164,.08)' }}><span style={{ color:'#6f7275', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ color:'#e4e7ea', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{value}</span></div>)}
+              <p style={{ margin:0, color:'#d1d4d7', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerLineage.summary.reason}</p>
+              <p style={{ margin:0, color:'#9ea1a4', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>{lineageDeployerIntel?.relatedDeploymentsLabel ?? 'Related deployments unavailable in this pass.'}</p>
             </div>
           </details>
-          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(125,211,252,.16)' }}>
-            <summary style={{ cursor:'pointer', color:'#7dd3fc', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)', letterSpacing:'.1em' }}>CLUSTER TIMELINE · {clusterTimeline.mode === 'timestamped' ? 'TIMESTAMPED' : clusterTimeline.mode === 'ordered' ? 'ORDERED' : 'OPEN CHECK'}</summary>
+          <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(20,23,26,.58)', border:'1px solid rgba(169,233,236,.16)' }}>
+            <summary style={{ cursor:'pointer', color:'#a9e9ec', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)', letterSpacing:'.1em' }}>CLUSTER TIMELINE · {clusterTimeline.mode === 'timestamped' ? 'TIMESTAMPED' : clusterTimeline.mode === 'ordered' ? 'ORDERED' : 'OPEN CHECK'}</summary>
             <div style={{ display:'grid', gap:'8px', marginTop:'10px' }}>
               {clusterTimeline.events.map((event) => {
                 const color = eventSeverityColor(event.severity)
                 return <div key={event.id} style={{ display:'grid', gridTemplateColumns:'12px 1fr', gap:'8px', alignItems:'start' }}>
                   <span style={{ width:9, height:9, marginTop:3, borderRadius:'999px', background:color, boxShadow:`0 0 12px ${color}66` }} />
                   <div style={{ padding:'8px 9px', borderRadius:'10px', background:'rgba(2,6,23,.4)', border:`1px solid ${color}33` }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'4px' }}><span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{event.label}</span><span style={{ color, fontSize:'8px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{event.timestamp ? new Date(event.timestamp).toLocaleString() : `Order ${event.order}`}</span></div>
-                    <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{event.description}</p>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'4px' }}><span style={{ color:'#e4e7ea', fontSize:'10px', fontWeight:900, fontFamily:'var(--font-plex-mono)' }}>{event.label}</span><span style={{ color, fontSize:'8px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{event.timestamp ? new Date(event.timestamp).toLocaleString() : `Order ${event.order}`}</span></div>
+                    <p style={{ margin:0, color:'#9ea1a4', fontSize:'9px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{event.description}</p>
                   </div>
                 </div>
               })}
@@ -3245,9 +3245,9 @@ const SOLANA_CNODE_ROLE_LABEL: Record<SolanaCNode['role'], string> = {
   top_holder: 'Top Holder', lp_vault: 'LP Vault', prior_mint: 'Prior Launch',
 }
 const SOLANA_CNODE_ROLE_COLOR: Record<SolanaCNode['role'], string> = {
-  mint: '#7dd3fc', creator_wallet: '#fbbf24', funding_wallet: '#a855f7',
-  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_pool: '#2dd4bf',
-  top_holder: '#60a5fa', lp_vault: '#14b8a6', prior_mint: '#f472b6',
+  mint: '#a9e9ec', creator_wallet: '#fbbf24', funding_wallet: '#bec6cb',
+  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_pool: '#1fd6dc',
+  top_holder: '#c4d2da', lp_vault: '#17b8c0', prior_mint: '#cfd6da',
 }
 // Fixed angle (degrees, screen convention: 0=east, 90=south) each role anchors to around the
 // always-centered mint — "position nodes by role" without any force-graph randomness. Multiple
@@ -3265,17 +3265,17 @@ const SOLANA_CNODE_ROLE_ANGLE: Record<SolanaCNode['role'], number> = {
 // unverifiable relationship AND its concrete reason — in the "Cannot be verified (and why)" panel
 // above the graph, rendered from clusterMap.unresolvedRelationships. One source of truth instead of
 // two that could silently drift apart.
-const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#94a3b8', unknown: '#64748b' }
-const SOLANA_CNODE_CONFIDENCE_COLOR: Record<SolanaCNode['confidence'], string> = { high: '#34d399', medium: '#fbbf24', low: '#94a3b8' }
+const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#9ea1a4', unknown: '#6f7275' }
+const SOLANA_CNODE_CONFIDENCE_COLOR: Record<SolanaCNode['confidence'], string> = { high: '#34d399', medium: '#fbbf24', low: '#9ea1a4' }
 const SOLANA_EDGE_LABEL: Record<SolanaCEdge['relationship'], string> = {
   funding_wallet: 'Funded', first_sol_sender: 'First SOL Sender', shared_fee_payer: 'Fee Payer',
   mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_creation: 'LP Provider', pumpfun_migration: 'Migration',
   holds_supply: 'Holds Supply', vault_of: 'Vault Of', prior_launch: 'Prior Launch',
 }
 const SOLANA_EDGE_COLOR: Record<SolanaCEdge['relationship'], string> = {
-  funding_wallet: '#a855f7', first_sol_sender: '#a855f7', shared_fee_payer: '#38bdf8',
-  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_creation: '#2dd4bf', pumpfun_migration: '#facc15',
-  holds_supply: '#60a5fa', vault_of: '#14b8a6', prior_launch: '#f472b6',
+  funding_wallet: '#bec6cb', first_sol_sender: '#bec6cb', shared_fee_payer: '#a9e9ec',
+  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_creation: '#1fd6dc', pumpfun_migration: '#facc15',
+  holds_supply: '#c4d2da', vault_of: '#17b8c0', prior_launch: '#cfd6da',
 }
 // BUBBLEMAP LAYOUT, DISCLOSED (requested: "make the dev map simpler, easier to read, like
 // bubblemaps, to make more sense from a user's perspective"). The graph previously drew every node
@@ -3354,10 +3354,10 @@ function SolanaTokenLogoPlaceholder({ symbol, name, size = 34 }: { symbol: strin
   return (
     <div style={{
       width: size, height: size, borderRadius: '50%', flexShrink: 0,
-      background: 'linear-gradient(145deg, rgba(45,212,191,0.35), rgba(56,189,248,0.25))',
-      border: '1px solid rgba(125,211,252,0.55)',
+      background: 'linear-gradient(145deg, rgba(31,214,220,0.35), rgba(169,233,236,0.25))',
+      border: '1px solid rgba(169,233,236,0.55)',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: size * 0.36, fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', letterSpacing: '-0.02em',
+      fontSize: size * 0.36, fontWeight: 800, color: '#f2fbfb', fontFamily: 'var(--font-plex-mono)', letterSpacing: '-0.02em',
     }}>
       {initials}
     </div>
@@ -3561,15 +3561,15 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
 
   if (nodes.length === 0) {
     return (
-      <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
-        <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No verified wallet relationships found.</p>
+      <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(158,161,164,.04)', border: '1px solid rgba(158,161,164,.14)' }}>
+        <p style={{ margin: 0, fontSize: '11px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No verified wallet relationships found.</p>
       </div>
     )
   }
 
-  const riskColor = clusterMap.riskLevel === 'elevated' ? '#f87171' : clusterMap.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
-  const confColor = clusterMap.clusterConfidence === 'high' ? '#34d399' : clusterMap.clusterConfidence === 'medium' ? '#a3e635' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'
-  const creatorConfColor = creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
+  const riskColor = clusterMap.riskLevel === 'elevated' ? '#f87171' : clusterMap.riskLevel === 'standard' ? '#34d399' : '#9ea1a4'
+  const confColor = clusterMap.clusterConfidence === 'high' ? '#34d399' : clusterMap.clusterConfidence === 'medium' ? '#a3e635' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#9ea1a4'
+  const creatorConfColor = creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#9ea1a4'
   // HEADER SIMPLIFIED, DISCLOSED (same "make it simpler / more sense to a user" request): this row
   // was six StatCards of engine vocabulary — Cluster Confidence, Cluster Risk, Evidence Count,
   // Funding Depth, Relationship Count, Creator Confidence — four of which were raw internal counts
@@ -3596,7 +3596,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
       </div>
 
       {/* One plain sentence telling a first-time reader how to read the picture below. */}
-      <p style={{ margin: 0, padding: '9px 12px', borderRadius: '10px', background: 'rgba(125,211,252,0.05)', border: '1px solid rgba(125,211,252,0.16)', fontSize: '11px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+      <p style={{ margin: 0, padding: '9px 12px', borderRadius: '10px', background: 'rgba(169,233,236,0.05)', border: '1px solid rgba(169,233,236,0.16)', fontSize: '11px', color: '#adb0b3', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
         Your token sits in the middle. Every bubble around it is a wallet or account this scan
         verified a real on-chain link to — click any bubble for its address, balance and the exact
         evidence.{sizedNodeCount > 0 ? ` ${sizedNodeCount} of them hold some of the supply, and those are sized by how much they hold.` : ''}
@@ -3609,19 +3609,19 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
         <div style={{ padding: '11px 13px', borderRadius: '11px', background: `${confColor}08`, border: `1px solid ${confColor}28` }}>
           <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: confColor, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why this confidence</p>
           {clusterMap.confidenceFactors.map((f, i) => (
-            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#adb0b3', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
           ))}
         </div>
         <div style={{ padding: '11px 13px', borderRadius: '11px', background: `${riskColor}08`, border: `1px solid ${riskColor}28` }}>
           <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: riskColor, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why this risk read</p>
           {(clusterMap.riskFactors.length > 0 ? clusterMap.riskFactors : [clusterMap.riskReason]).map((f, i) => (
-            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#adb0b3', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
           ))}
         </div>
-        <div style={{ padding: '11px 13px', borderRadius: '11px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.16)' }}>
-          <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#94a3b8', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Cannot be verified (and why)</p>
+        <div style={{ padding: '11px 13px', borderRadius: '11px', background: 'rgba(158,161,164,0.04)', border: '1px solid rgba(158,161,164,0.16)' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#9ea1a4', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Cannot be verified (and why)</p>
           {clusterMap.unresolvedRelationships.map((u, i) => (
-            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}><span style={{ color: '#a3b4c5', fontWeight: 700 }}>{u.label}:</span> {u.reason}</p>
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}><span style={{ color: '#afb2b5', fontWeight: 700 }}>{u.label}:</span> {u.reason}</p>
           ))}
         </div>
       </div>
@@ -3629,7 +3629,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
       <div className="sol-cluster-split" style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 280px' : '1fr', gap: '12px' }}>
         {/* Taller than the old 420px card canvas: bubbles carry their role name OUTSIDE the circle
             now, so the extra vertical room keeps those labels off each other. */}
-        <div style={{ position: 'relative', height: '470px', borderRadius: '14px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.07), rgba(6,10,20,0.94))', overflow: 'hidden' }}>
+        <div style={{ position: 'relative', height: '470px', borderRadius: '14px', border: '1px solid rgba(158,161,164,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(31,214,220,0.07), rgba(7,10,13,0.94))', overflow: 'hidden' }}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
             <defs>
               {/* One arrowhead per real relationship type, colored to match its edge — real
@@ -3694,7 +3694,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                 style={{
                   position: 'absolute', left: `${mx}%`, top: `${my}%`, transform: `translate(-50%,-50%) rotate(${angle}deg)`,
                   fontSize: '8px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.04em',
-                  color: SOLANA_EDGE_COLOR[e.relationship], background: 'rgba(6,10,20,0.88)', padding: '1.5px 5px', borderRadius: '5px',
+                  color: SOLANA_EDGE_COLOR[e.relationship], background: 'rgba(7,10,13,0.88)', padding: '1.5px 5px', borderRadius: '5px',
                   border: `1px solid ${SOLANA_EDGE_COLOR[e.relationship]}40`, whiteSpace: 'nowrap', pointerEvents: 'none',
                   opacity: entered ? (isFocusEdge ? 1 : 0) : 0, transition: 'opacity 300ms ease',
                 }}
@@ -3734,28 +3734,28 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                   width: `${size}px`, height: `${size}px`, borderRadius: '50%',
                   display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px',
                   background: isMint
-                    ? 'radial-gradient(circle at 35% 28%, rgba(45,212,191,.34), rgba(6,16,24,.98))'
+                    ? 'radial-gradient(circle at 35% 28%, rgba(31,214,220,.34), rgba(6,16,24,.98))'
                     : `radial-gradient(circle at 35% 28%, ${roleColor}2e, rgba(6,11,22,.96))`,
-                  border: isMint ? '1.5px solid #67e8f9' : `1.5px solid ${isSelected ? '#f8fafc' : `${roleColor}70`}`,
+                  border: isMint ? '1.5px solid #62f1f1' : `1.5px solid ${isSelected ? '#f8fafc' : `${roleColor}70`}`,
                   boxShadow: isMint
-                    ? (isDimmed ? '0 0 0 1px rgba(103,232,249,0.4), 0 8px 22px rgba(0,0,0,0.5)' : '0 0 0 1px rgba(103,232,249,0.55), 0 0 30px rgba(45,212,191,0.42), 0 10px 26px rgba(0,0,0,0.55)')
+                    ? (isDimmed ? '0 0 0 1px rgba(98,241,241,0.4), 0 8px 22px rgba(0,0,0,0.5)' : '0 0 0 1px rgba(98,241,241,0.55), 0 0 30px rgba(31,214,220,0.42), 0 10px 26px rgba(0,0,0,0.55)')
                     : isSelected ? `0 0 0 2px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : `0 0 14px ${roleColor}22, 0 4px 10px rgba(0,0,0,0.35)`,
                 }}
                 className={isMint && !isDimmed ? 'sol-cluster-mint-glow' : undefined}
               >
                 {isMint && (
-                  <div style={{ position: 'absolute', top: '-22px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '999px', background: 'rgba(45,212,191,0.16)', border: '1px solid rgba(45,212,191,0.5)', whiteSpace: 'nowrap' }}>
-                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2dd4bf' }} className="sol-cluster-balance-pulse" />
-                    <span style={{ fontSize: '7px', fontWeight: 800, letterSpacing: '.14em', color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>YOU ARE HERE</span>
+                  <div style={{ position: 'absolute', top: '-22px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '999px', background: 'rgba(31,214,220,0.16)', border: '1px solid rgba(31,214,220,0.5)', whiteSpace: 'nowrap' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#1fd6dc' }} className="sol-cluster-balance-pulse" />
+                    <span style={{ fontSize: '7px', fontWeight: 800, letterSpacing: '.14em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>YOU ARE HERE</span>
                   </div>
                 )}
                 {isMint ? (
                   <>
                     <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={38} />
-                    <p style={{ margin: '5px 6px 0', fontSize: '11px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', textAlign: 'center', lineHeight: 1.2, maxWidth: '108px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <p style={{ margin: '5px 6px 0', fontSize: '11px', fontWeight: 800, color: '#f2fbfb', fontFamily: 'var(--font-plex-mono)', textAlign: 'center', lineHeight: 1.2, maxWidth: '108px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {tokenSymbol ? (tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`) : (tokenName ?? 'This Token')}
                     </p>
-                    <p style={{ margin: 0, fontSize: '7.5px', fontWeight: 700, letterSpacing: '.1em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>This Token</p>
+                    <p style={{ margin: 0, fontSize: '7.5px', fontWeight: 700, letterSpacing: '.1em', color: '#a9e9ec', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>This Token</p>
                   </>
                 ) : (
                   <>
@@ -3763,7 +3763,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                     {/* A measured share is the headline when there is one; otherwise the bubble
                         stays clean rather than printing a stand-in number. */}
                     {pctLabel && (
-                      <span style={{ fontSize: size >= 62 ? '13px' : '11px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.1 }}>{pctLabel}</span>
+                      <span style={{ fontSize: size >= 62 ? '13px' : '11px', fontWeight: 800, color: '#f1f4f7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.1 }}>{pctLabel}</span>
                     )}
                     {/* Risk dot rides the rim so an elevated-risk wallet is visible at a glance
                         without adding a word of text. */}
@@ -3775,7 +3775,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                 {/* Role name sits OUTSIDE the bubble — the plain-English answer to "what is this?",
                     always legible regardless of how small the bubble's share made it. */}
                 {!isMint && (
-                  <span style={{ position: 'absolute', top: `${size + 3}px`, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap', fontSize: '8.5px', fontWeight: 700, color: isDimmed ? '#475569' : '#9db3c8', fontFamily: 'var(--font-plex-mono)', pointerEvents: 'none' }}>
+                  <span style={{ position: 'absolute', top: `${size + 3}px`, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap', fontSize: '8.5px', fontWeight: 700, color: isDimmed ? '#505356' : '#adb0b3', fontFamily: 'var(--font-plex-mono)', pointerEvents: 'none' }}>
                     {SOLANA_CNODE_ROLE_LABEL[node.role]}
                   </span>
                 )}
@@ -3787,7 +3787,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             <button
               type="button"
               onClick={() => setExpanded((e) => !e)}
-              style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 7, padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(96,165,250,0.45)', background: 'rgba(8,14,28,0.9)', color: '#93c5fd', fontSize: '9px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+              style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 7, padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(196,210,218,0.45)', background: 'rgba(8,14,28,0.9)', color: '#bee2e5', fontSize: '9px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
             >
               {expanded ? 'COLLAPSE GRAPH' : `SHOW ALL ${clusterMap.nodes.length} NODES →`}
             </button>
@@ -3797,7 +3797,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             {(Object.keys(SOLANA_CNODE_ROLE_LABEL) as SolanaCNode['role'][]).filter((role) => nodes.some((n) => n.role === role)).map((role) => (
               <div key={role} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: SOLANA_CNODE_ROLE_COLOR[role] }} />
-                <span style={{ fontSize: '8px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
+                <span style={{ fontSize: '8px', color: '#86898c', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
               </div>
             ))}
             {/* The greyed "reserved role" chips that used to sit here are gone — see the note on
@@ -3807,53 +3807,53 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             {sizedNodeCount > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#64748b' }} />
-                  <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#94a3b8' }} />
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#6f7275' }} />
+                  <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#9ea1a4' }} />
                 </span>
-                <span style={{ fontSize: '8px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>Bigger = holds more supply</span>
+                <span style={{ fontSize: '8px', color: '#86898c', fontFamily: 'var(--font-plex-mono)' }}>Bigger = holds more supply</span>
               </div>
             )}
           </div>
         </div>
 
         {selectedNode && (
-          <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '470px', overflowY: 'auto' }}>
+          <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(158,161,164,0.2)', background: 'rgba(12,15,18,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '470px', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <SolanaRoleGlyph role={selectedNode.role} size={13} color={SOLANA_CNODE_ROLE_COLOR[selectedNode.role]} />
                 <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.12em', color: SOLANA_CNODE_ROLE_COLOR[selectedNode.role], fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{SOLANA_CNODE_ROLE_LABEL[selectedNode.role]}</p>
               </div>
-              <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
+              <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#6f7275', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
             </div>
             {selectedNode.role === 'mint' && (tokenName || tokenSymbol) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={28} />
                 <div style={{ minWidth: 0 }}>
-                  <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tokenName ?? tokenSymbol}</p>
-                  {tokenSymbol && <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`}</p>}
+                  <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f2fbfb', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tokenName ?? tokenSymbol}</p>
+                  {tokenSymbol && <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>{tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`}</p>}
                 </div>
               </div>
             )}
-            <p title={selectedNode.address} style={{ margin: 0, fontSize: selectedNode.role === 'mint' ? '9px' : '10px', color: selectedNode.role === 'mint' ? '#5b7284' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
+            <p title={selectedNode.address} style={{ margin: 0, fontSize: selectedNode.role === 'mint' ? '9px' : '10px', color: selectedNode.role === 'mint' ? '#6b6e71' : '#e4e7ea', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence], border: `1px solid ${SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence]}55` }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
               {/* The number driving this bubble's size, stated exactly. Rendered only when it is a
                   measured fact — a null share is not shown as "0%", it is simply absent. */}
               {selectedNode.supplyPercent != null && (
-                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: '#7dd3fc', border: '1px solid #7dd3fc55' }}>HOLDS {selectedNode.supplyPercent.toFixed(2)}% OF SUPPLY</span>
+                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: '#a9e9ec', border: '1px solid #7dd3fc55' }}>HOLDS {selectedNode.supplyPercent.toFixed(2)}% OF SUPPLY</span>
               )}
             </div>
 
             {selectedNode.role !== 'mint' && (
               <div>
-                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Wallet Snapshot</p>
-                {selectedBalance === null && <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>}
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Wallet Snapshot</p>
+                {selectedBalance === null && <p style={{ margin: 0, fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>}
                 {selectedBalance === 'error' && <p style={{ margin: 0, fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono)' }}>Could not load wallet details.</p>}
                 {selectedBalance && selectedBalance !== 'error' && (
                   <>
-                    <p style={{ margin: 0, fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Balance: {selectedBalance.balanceResolved ? `${selectedBalance.balanceSol!.toFixed(4)} SOL` : 'Unavailable'}</p>
-                    <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Last activity: {selectedBalance.lastActivityResolved ? (selectedBalance.lastActivityTimestamp ?? selectedBalance.lastActivitySignature) : 'Unavailable'}</p>
+                    <p style={{ margin: 0, fontSize: '10px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)' }}>Balance: {selectedBalance.balanceResolved ? `${selectedBalance.balanceSol!.toFixed(4)} SOL` : 'Unavailable'}</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)' }}>Last activity: {selectedBalance.lastActivityResolved ? (selectedBalance.lastActivityTimestamp ?? selectedBalance.lastActivitySignature) : 'Unavailable'}</p>
                   </>
                 )}
               </div>
@@ -3861,28 +3861,28 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
 
             {fundingEdge && (
               <div>
-                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Funding Source</p>
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Funding Source</p>
                 <p title={fundingEdge.from} style={{ margin: 0, fontSize: '10px', color: SOLANA_EDGE_COLOR[fundingEdge.relationship], fontFamily: 'var(--font-plex-mono)' }}>{fmt(fundingEdge.from)} — {SOLANA_EDGE_LABEL[fundingEdge.relationship]}</p>
-                <p style={{ margin: '4px 0 0', fontSize: '9.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{fundingEdge.evidence}</p>
+                <p style={{ margin: '4px 0 0', fontSize: '9.5px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{fundingEdge.evidence}</p>
               </div>
             )}
 
             <div>
-              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence</p>
+              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence</p>
               {selectedNode.evidence.map((ev, i) => (
-                <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev}</p>
+                <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '10px', color: '#9b9ea1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev}</p>
               ))}
             </div>
 
             {connectedEdges.length > 0 && (
               <div>
-                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Connected Wallets</p>
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Connected Wallets</p>
                 {connectedEdges.map((e) => {
                   const otherId = e.from === selectedNode.id ? e.to : e.from
                   const other = nodesById.get(otherId)
                   return (
                     <div key={e.id} style={{ marginTop: '4px' }}>
-                      <p title={otherId} style={{ margin: 0, fontSize: '10px', color: SOLANA_CNODE_ROLE_COLOR[other?.role ?? 'mint'], fontFamily: 'var(--font-plex-mono)' }}>{fmt(otherId)} <span style={{ color: '#475569' }}>· {other ? SOLANA_CNODE_ROLE_LABEL[other.role] : 'Unknown'}</span></p>
+                      <p title={otherId} style={{ margin: 0, fontSize: '10px', color: SOLANA_CNODE_ROLE_COLOR[other?.role ?? 'mint'], fontFamily: 'var(--font-plex-mono)' }}>{fmt(otherId)} <span style={{ color: '#505356' }}>· {other ? SOLANA_CNODE_ROLE_LABEL[other.role] : 'Unknown'}</span></p>
                       <p style={{ margin: 0, fontSize: '9px', color: SOLANA_EDGE_COLOR[e.relationship], fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_EDGE_LABEL[e.relationship]}</p>
                     </div>
                   )
@@ -3899,8 +3899,8 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
         @keyframes solClusterPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
         .sol-cluster-mint-glow { animation: solClusterMintGlow 2.6s ease-in-out infinite; }
         @keyframes solClusterMintGlow {
-          0%, 100% { box-shadow: 0 0 0 1px rgba(103,232,249,0.55), 0 0 22px rgba(45,212,191,0.4), 0 10px 26px rgba(0,0,0,0.55); }
-          50% { box-shadow: 0 0 0 1px rgba(103,232,249,0.8), 0 0 36px rgba(45,212,191,0.65), 0 10px 26px rgba(0,0,0,0.55); }
+          0%, 100% { box-shadow: 0 0 0 1px rgba(98,241,241,0.55), 0 0 22px rgba(31,214,220,0.4), 0 10px 26px rgba(0,0,0,0.55); }
+          50% { box-shadow: 0 0 0 1px rgba(98,241,241,0.8), 0 0 36px rgba(31,214,220,0.65), 0 10px 26px rgba(0,0,0,0.55); }
         }
         @media (max-width: 720px) { .sol-cluster-metrics { grid-template-columns: repeat(2,minmax(0,1fr)) !important; } }
         @media (prefers-reduced-motion: reduce) { .sol-cluster-edge-flow, .sol-cluster-balance-pulse, .sol-cluster-mint-glow { animation: none; } }
@@ -4136,13 +4136,13 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
     const notApplicable = finalStatus.startsWith('Not applicable') || result.lpSafetyResolution.lockBurnStatus.startsWith('Not applicable')
     return {
       label: verified ? 'Verified' : notApplicable ? 'Not applicable' : finalStatus.startsWith('Partial') ? 'Partial' : 'Unavailable',
-      color: verified ? '#34d399' : notApplicable ? '#94a3b8' : '#fbbf24',
+      color: verified ? '#34d399' : notApplicable ? '#9ea1a4' : '#fbbf24',
       bg: verified ? 'rgba(52,211,153,0.07)' : 'rgba(251,191,36,0.06)',
       border: verified ? 'rgba(52,211,153,0.22)' : 'rgba(251,191,36,0.20)',
       description: result.lpSafetyResolution.lockBurnStatus,
     }
   }
-  if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
+  if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#9ea1a4', bg: 'rgba(158,161,164,0.07)', border: 'rgba(158,161,164,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
   // lpControl.status is the authoritative read — prioritize it over legacy lpLockStatus.
   if (status === 'team_controlled') {
     const label = lp?.lpControllerType === 'wallet' ? 'Wallet Controlled' : 'Team Controlled'
@@ -4154,10 +4154,10 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
     return { label: 'Locked', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: `${lp?.reason ?? `Active LP lock proof found${result.lpLockProvider ? ` via ${result.lpLockProvider}` : ''}.`}${unlockStr}` }
   }
   if (status === 'partial') return { label: 'Partial Proof', color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: lp?.reason ?? 'LP proof is partially confirmed — some evidence is still missing.' }
-  if (isUniswapV3ConcentratedPartial(result)) return { label: 'Protocol / Concentrated Liquidity', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'Primary pool uses Uniswap V3 concentrated liquidity. Standard ERC-20 LP lock/burn proof does not apply.' }
-  if (dm === 'concentrated_liquidity' || status === 'concentrated_liquidity') return { label: 'Protocol / Concentrated Liquidity', color: '#c084fc', bg: 'rgba(192,132,252,0.07)', border: 'rgba(192,132,252,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
-  if (dm === 'protocol_or_gauge' || status === 'protocol' || lpMode === 'protocol') return { label: 'Protocol Managed', color: '#a78bfa', bg: 'rgba(167,139,250,0.07)', border: 'rgba(167,139,250,0.22)', description: lp?.reason ?? 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
-  if (status === 'no_pool' && result.noActivePools) return { label: 'No Pool Found', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
+  if (isUniswapV3ConcentratedPartial(result)) return { label: 'Protocol / Concentrated Liquidity', color: '#dfe5e8', bg: 'rgba(223,229,232,0.07)', border: 'rgba(223,229,232,0.22)', description: 'Primary pool uses Uniswap V3 concentrated liquidity. Standard ERC-20 LP lock/burn proof does not apply.' }
+  if (dm === 'concentrated_liquidity' || status === 'concentrated_liquidity') return { label: 'Protocol / Concentrated Liquidity', color: '#dfe5e8', bg: 'rgba(223,229,232,0.07)', border: 'rgba(223,229,232,0.22)', description: 'V3/V4-style pool — standard ERC-20 LP lock/burn proof does not apply.' }
+  if (dm === 'protocol_or_gauge' || status === 'protocol' || lpMode === 'protocol') return { label: 'Protocol Managed', color: '#cfd6da', bg: 'rgba(207,214,218,0.07)', border: 'rgba(207,214,218,0.22)', description: lp?.reason ?? 'Protocol-managed liquidity pool. LP lock/burn proof does not apply in this model.' }
+  if (status === 'no_pool' && result.noActivePools) return { label: 'No Pool Found', color: '#9ea1a4', bg: 'rgba(158,161,164,0.07)', border: 'rgba(158,161,164,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
   if (status === 'open_check') return {
     label: formatTokenScannerPublicStatus('unavailable', lp?.reason ?? 'LP lock, burn, and controller evidence are not confirmed'),
     color: '#fbbf24',
@@ -4174,7 +4174,7 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   }
   if (lockStatus === 'burned') return { label: 'Burned', color: '#34d399', bg: 'rgba(52,211,153,0.07)', border: 'rgba(52,211,153,0.22)', description: 'On-chain data shows LP tokens sent to a burn address — exit liquidity is permanently locked.' }
   if (lockStatus === 'unlocked') return { label: 'Unlocked', color: '#f87171', bg: 'rgba(248,113,113,0.07)', border: 'rgba(248,113,113,0.22)', description: 'On-chain evidence shows the LP is held by a removable wallet with no lock or burn proof.' }
-  if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No usable liquidity pool found for this token.' }
+  if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#9ea1a4', bg: 'rgba(158,161,164,0.07)', border: 'rgba(158,161,164,0.20)', description: 'No usable liquidity pool found for this token.' }
   if (hasLiquidity) return { label: formatTokenScannerPublicStatus('unavailable', 'Pool detected, but lock or burn proof has not been confirmed'), color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'Pool detected, but lock or burn proof has not been confirmed.' }
   return { label: formatTokenScannerPublicStatus('unavailable', 'LP lock/burn proof not confirmed'), color: '#fbbf24', bg: 'rgba(251,191,36,0.06)', border: 'rgba(251,191,36,0.20)', description: 'LP lock/burn proof not confirmed. Treat exit liquidity as unprotected until verified.' }
 }
@@ -4208,7 +4208,7 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
   }
 
   if (isUniswapV3ConcentratedPartial(result)) {
-    return { label: 'Monitor', color: '#a78bfa', description: 'Pool depth is strong, but concentrated position ownership is still unverified.' }
+    return { label: 'Monitor', color: '#cfd6da', description: 'Pool depth is strong, but concentrated position ownership is still unverified.' }
   }
 
   if (dm === 'concentrated_liquidity' || dm === 'protocol_or_gauge' || lpMode === 'protocol') {
@@ -4216,18 +4216,18 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
     const baseDesc = isProtocol
       ? 'Protocol/gauge-managed — LP lock model does not apply.'
       : 'V3/V4 pool — LP lock/burn proof does not apply.'
-    if (liqDepth != null && liqDepth > 500_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Pool depth is strong — monitor liquidity concentration and position migration.` }
-    if (liqDepth != null && liqDepth > 50_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Monitor pool depth, volume, and holder concentration.` }
+    if (liqDepth != null && liqDepth > 500_000) return { label: 'Monitor', color: '#cfd6da', description: `${baseDesc} Pool depth is strong — monitor liquidity concentration and position migration.` }
+    if (liqDepth != null && liqDepth > 50_000) return { label: 'Monitor', color: '#cfd6da', description: `${baseDesc} Monitor pool depth, volume, and holder concentration.` }
     if (liqDepth != null && liqDepth > 0) return { label: 'Watch', color: '#fbbf24', description: `${baseDesc} Liquidity is thin — monitor closely before committing size.` }
     // Label wording, DISCLOSED (same reported "open check isn't a fact" issue): the description
     // below already states the real situation; the label now matches it instead of reading as a
     // rating of its own. The branch, color, and conditions are unchanged.
-    return { label: 'Unrated', color: '#c084fc', description: `${baseDesc} Pool depth data is insufficient to rate exit risk — verify on-chain before trading.` }
+    return { label: 'Unrated', color: '#dfe5e8', description: `${baseDesc} Pool depth data is insufficient to rate exit risk — verify on-chain before trading.` }
   }
 
   const lockStatus = result.lpLockStatus
-  if (lockStatus === 'burned' || status === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main remaining variable.' }
-  if (lockStatus === 'locked' || status === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#a78bfa' : '#34d399', description: 'LP locked with confirmed proof — protected for the lock duration. Pool depth is the main remaining variable.' }
+  if (lockStatus === 'burned' || status === 'burned') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#cfd6da' : '#34d399', description: 'LP burned — exit liquidity permanently locked. Pool depth is the main remaining variable.' }
+  if (lockStatus === 'locked' || status === 'locked') return { label: liqDepth != null && liqDepth < 50_000 ? 'Medium' : 'Low', color: liqDepth != null && liqDepth < 50_000 ? '#cfd6da' : '#34d399', description: 'LP locked with confirmed proof — protected for the lock duration. Pool depth is the main remaining variable.' }
   if (lockStatus === 'unlocked') return { label: 'High', color: '#fb923c', description: 'On-chain evidence shows the LP is held by a removable wallet — liquidity can be withdrawn without lock proof.' }
 
   // No proven lock/burn/wallet-control state — open check, not an inferred "High".
@@ -4355,28 +4355,28 @@ function getLpEliteSummary(result: ScanResult): { chips: LpEliteChip[]; verdict:
     ? clpView.lpControlValue
     : (result.lpSafetyResolution?.controlStatus ?? (isUniswapV3ConcentratedPartial(result) ? 'Position proof attempted — partial' : protocolPosition ? (ci?.controllerLabel ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : cleanStatusLabel(ci?.status)))
   const controllerColor = (ci?.status === 'locked' || ci?.status === 'burned' || ci?.status === 'protected') ? '#34d399'
-    : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#94a3b8'
+    : (ci?.status === 'protocol_controlled' || ci?.status === 'concentrated_liquidity' || ci?.status === 'no_pool') ? '#9ea1a4'
     : '#fbbf24'
 
   const lockBurnValue = protocolPosition ? CONCENTRATED_ERC20_LOCK_BURN_LABEL : (result.lpSafetyResolution?.lockBurnStatus ?? cleanStatusLabel(lb?.lockBurnProof))
-  const lockBurnColor = lb?.lockBurnProof === 'confirmed' ? '#34d399' : lb?.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24'
+  const lockBurnColor = lb?.lockBurnProof === 'confirmed' ? '#34d399' : lb?.lockBurnProof === 'not_applicable' ? '#9ea1a4' : '#fbbf24'
 
   const unlockValue = protocolPosition ? 'Protocol-specific' : cleanStatusLabel(ut?.unlockRisk)
   const unlockColor = (ut?.unlockRisk === 'high' || ut?.unlockRisk === 'expired') ? '#f87171'
     : (ut?.unlockRisk === 'low' || ut?.unlockRisk === 'none') ? '#34d399'
-    : (ut?.unlockRisk === 'not_applicable') ? '#94a3b8'
+    : (ut?.unlockRisk === 'not_applicable') ? '#9ea1a4'
     : '#fbbf24'
 
   const movementValue = protocolPosition ? 'Position movement required' : cleanStatusLabel(mv?.movementRisk ?? mv?.status)
   const movementColor = mv?.movementRisk === 'high' ? '#f87171'
     : (mv?.movementRisk === 'low' || mv?.movementRisk === 'protected') ? '#34d399'
-    : (mv?.status === 'not_applicable') ? '#94a3b8'
+    : (mv?.status === 'not_applicable') ? '#9ea1a4'
     : '#fbbf24'
 
   const migrationValue = cleanStatusLabel(ht?.migrationRisk)
   const migrationColor = ht?.migrationRisk === 'high' ? '#f87171'
     : ht?.migrationRisk === 'low' ? '#34d399'
-    : ht?.migrationRisk === 'unknown' ? '#94a3b8'
+    : ht?.migrationRisk === 'unknown' ? '#9ea1a4'
     : '#fbbf24'
 
   const chips: LpEliteChip[] = [
@@ -4470,14 +4470,14 @@ function getVerdictStyle(verdict: string): { label: string; color: string; bg: s
     case 'High Risk':
     case 'AVOID':        return { label: verdict === 'High Risk' ? 'HIGH RISK' : 'AVOID', color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.35)' }
     case 'Strong':
-    case 'CLEAN LOOKING':return { label: verdict === 'Strong' ? 'STRONG' : 'CLEAN LOOKING', color: '#2DD4BF', bg: 'rgba(45,212,191,0.10)',  border: 'rgba(45,212,191,0.35)'  }
+    case 'CLEAN LOOKING':return { label: verdict === 'Strong' ? 'STRONG' : 'CLEAN LOOKING', color: '#1fd6dc', bg: 'rgba(31,214,220,0.10)',  border: 'rgba(31,214,220,0.35)'  }
     case 'WATCH':        return { label: 'WATCH',         color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
     case 'CAUTION':      return { label: 'CAUTION',       color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.30)'  }
     case 'Open Check':
     case 'OPEN CHECK':
     case 'Unavailable':
     case 'UNAVAILABLE': return { label: 'UNAVAILABLE', color: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  border: 'rgba(251,191,36,0.35)'  }
-    default:             return { label: formatTokenScannerPublicStatus(String(verdict)), color: '#94a3b8', bg: 'rgba(148,163,184,0.08)', border: 'rgba(148,163,184,0.25)' }
+    default:             return { label: formatTokenScannerPublicStatus(String(verdict)), color: '#9ea1a4', bg: 'rgba(158,161,164,0.08)', border: 'rgba(158,161,164,0.25)' }
   }
 }
 
@@ -4627,9 +4627,9 @@ function custodyBadge(classification: { kind?: string; role?: string; label?: st
   const isProtocol = classification.role === 'v4_pool_manager' || classification.role === 'protocol_vault'
   return {
     text: isProtocol ? 'PROTOCOL CUSTODY' : 'LIQUIDITY CUSTODY',
-    color: isProtocol ? '#c4b5fd' : '#67e8f9',
-    border: isProtocol ? 'rgba(196,181,253,0.55)' : 'rgba(103,232,249,0.5)',
-    bg: isProtocol ? 'rgba(167,139,250,0.14)' : 'rgba(45,212,191,0.12)',
+    color: isProtocol ? '#d6dce0' : '#62f1f1',
+    border: isProtocol ? 'rgba(214,220,224,0.55)' : 'rgba(98,241,241,0.5)',
+    bg: isProtocol ? 'rgba(207,214,218,0.14)' : 'rgba(31,214,220,0.12)',
   }
 }
 
@@ -4652,7 +4652,7 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
   const missing = getMissingChecks(result)
   const next = getNextAction(result)
   const confidence = result.marketConfidence === 'high' ? 'HIGH' : result.marketConfidence === 'medium' ? 'MEDIUM' : 'LOW'
-  const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
+  const confColor = confidence === 'HIGH' ? '#34d399' : confidence === 'MEDIUM' ? '#fbbf24' : '#9ea1a4'
   return (
     <div style={{
       marginBottom: '22px',
@@ -4663,7 +4663,7 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
       boxShadow: `0 0 36px ${v.color}0e, 0 0 0 1px rgba(255,255,255,0.04) inset`,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+        <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: '#4b4e51', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
           CORTEX SCAN SUMMARY
         </span>
         <span style={{ padding: '3px 12px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '0.10em', color: v.color, background: v.bg, border: `1px solid ${v.border}`, fontFamily: 'var(--font-plex-mono)' }}>
@@ -4676,15 +4676,15 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '14px' }}>
         {reasons.map((r, i) => (
           <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-            <span style={{ color: '#2DD4BF', fontSize: '11px', flexShrink: 0, fontFamily: 'var(--font-plex-mono)' }}>•</span>
-            <p style={{ margin: 0, fontSize: '12px', color: '#b7c9da', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{r}</p>
+            <span style={{ color: '#1fd6dc', fontSize: '11px', flexShrink: 0, fontFamily: 'var(--font-plex-mono)' }}>•</span>
+            <p style={{ margin: 0, fontSize: '12px', color: '#c3c6c9', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{r}</p>
           </div>
         ))}
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-start' }}>
         {missing.length > 0 && (
           <div style={{ flex: '1 1 180px' }}>
-            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#3a5268', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing checks</p>
+            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#4b4e51', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Missing checks</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '5px' }}>
               {missing.slice(0, 4).map((m) => (
                 <span key={m} style={{ padding: '2px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#fbbf24', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.25)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
@@ -4695,8 +4695,8 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
           </div>
         )}
         <div style={{ flex: '2 1 220px' }}>
-          <p style={{ margin: '0 0 4px', fontSize: '9px', color: '#3a5268', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next action</p>
-          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{next}</p>
+          <p style={{ margin: '0 0 4px', fontSize: '9px', color: '#4b4e51', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next action</p>
+          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{next}</p>
         </div>
       </div>
     </div>
@@ -4735,7 +4735,7 @@ function RiskGaugeCircle({ score, color, scoreType = 'safety' }: { score: number
         <span style={{ fontSize: '34px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, letterSpacing: '-0.01em' }}>
           {score != null ? score : '—'}
         </span>
-        <span style={{ fontSize: '8px', color: '#4a6178', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 {scoreType === 'risk' ? 'RISK' : 'SAFETY'}</span>
+        <span style={{ fontSize: '8px', color: '#5b5e61', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 {scoreType === 'risk' ? 'RISK' : 'SAFETY'}</span>
       </div>
     </div>
   )
@@ -4748,7 +4748,7 @@ type PillStyle = { color: string; bg: string; border: string }
 function pillSafe():   PillStyle { return { color: '#34d399', bg: 'rgba(52,211,153,0.09)',   border: 'rgba(52,211,153,0.22)'   } }
 function pillDanger(): PillStyle { return { color: '#f87171', bg: 'rgba(248,113,113,0.09)', border: 'rgba(248,113,113,0.25)' } }
 function pillAmber():  PillStyle { return { color: '#fbbf24', bg: 'rgba(251,191,36,0.09)',  border: 'rgba(251,191,36,0.25)'  } }
-function pillMuted():  PillStyle { return { color: '#3a5268', bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)' } }
+function pillMuted():  PillStyle { return { color: '#4b4e51', bg: 'rgba(255,255,255,0.03)', border: 'rgba(255,255,255,0.07)' } }
 
 function RiskPill({ label, value }: { label: string; value: PillStyle & { label: string } }) {
   return (
@@ -4785,7 +4785,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
     <div style={{ marginTop: '28px' }}>
       <p style={{
         fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-        color: '#3a5268', textTransform: 'uppercase',
+        color: '#4b4e51', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
         Security Simulation
@@ -4795,7 +4795,7 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
         background: 'rgba(255,255,255,0.02)',
         border: '1px solid rgba(255,255,255,0.06)',
         borderRadius: '10px',
-        fontSize: '11px', color: '#3a5268',
+        fontSize: '11px', color: '#4b4e51',
         fontFamily: 'var(--font-plex-mono)',
       }}>
         No security simulation data surfaced — {hp ? 'provider result was empty.' : 'simulation did not run.'}
@@ -4886,11 +4886,11 @@ function ContractRiskSection({ gp, hp }: { gp: Record<string, unknown> | null; h
     <div style={{ marginTop: '28px' }}>
       <p style={{
         fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em',
-        color: '#3a5268', textTransform: 'uppercase',
+        color: '#4b4e51', textTransform: 'uppercase',
         marginBottom: '12px', fontFamily: 'var(--font-plex-mono)',
       }}>
         Security Simulation
-        {hp?.simulationSuccess && <span style={{ color: '#1e3a44', marginLeft: '6px' }}>· Simulation evidence</span>}
+        {hp?.simulationSuccess && <span style={{ color: '#323538', marginLeft: '6px' }}>· Simulation evidence</span>}
         
       </p>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px' }}>
@@ -5777,34 +5777,37 @@ export default function TerminalTokenScanner() {
         @keyframes liveDotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.35;transform:scale(.65)} }
         @keyframes radarRing { 0%{transform:scale(.4);opacity:.65} 100%{transform:scale(1.85);opacity:0} }
         @keyframes shimmer { 0%{background-position:-300% 0} 100%{background-position:300% 0} }
-        .cortex-score-hero{box-shadow:0 0 60px rgba(45,212,191,.09),0 0 24px rgba(45,212,191,.05);}
+        .cortex-score-hero{box-shadow:0 0 60px rgba(31,214,220,.09),0 0 24px rgba(31,214,220,.05);}
         .cortex-chip{transition:transform .18s ease,box-shadow .18s ease;cursor:default;}
         .cortex-chip:hover{transform:translateY(-2px);}
         .cortex-bdrow{border-radius:6px;transition:background .14s ease;}
         .cortex-bdrow:hover{background:rgba(255,255,255,.028) !important;}
-        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);min-height:100vh;align-items:start;overflow-x:hidden;color:#e2e8f0;font-family:var(--font-inter,Inter,sans-serif);background-color:#06060a;background-image:radial-gradient(circle at 0% 0%,rgba(45,212,191,.07),transparent 42%),radial-gradient(circle at 100% 100%,rgba(139,92,246,.06),transparent 44%);background-attachment:fixed,fixed;}
+        .token-shell{position:relative;display:grid;grid-template-columns:minmax(0,1fr);min-height:100vh;align-items:start;overflow-x:hidden;color:#e9edef;font-family:var(--font-inter,Inter,sans-serif);background-color:#020303;background-image:radial-gradient(circle at 0% 0%,rgba(31,214,220,.06),transparent 40%),radial-gradient(circle at 100% 100%,rgba(209,212,215,.035),transparent 46%);background-attachment:fixed,fixed;}
         @media (max-width:1279px){.token-shell{background-attachment:scroll !important;}}
         .token-main,.mob-verdict-panel,.glass-card,.metric-grid,.holders-grid,.activity-grid,.intel-grid{min-width:0;}
         .token-main{max-width:1100px;margin:0 auto;box-sizing:border-box;}
-        .glass-card{background:linear-gradient(180deg,rgba(10,18,34,.9),rgba(3,8,19,.88));border:1px solid rgba(148,163,184,.18);border-radius:16px;box-shadow:0 0 0 1px rgba(45,212,191,.05) inset,0 18px 45px rgba(2,6,23,.4),0 0 28px rgba(139,92,246,.12);}
+        .glass-card{background:linear-gradient(180deg,rgba(22,24,26,.86),rgba(8,9,10,.92));border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 18px 44px rgba(0,0,0,.42);}
         /* PREMIUM POLISH, DISCLOSED (Token Scanner UI polish task): the old search-card stacked
            five box-shadow layers (up to 140px blur) — replaced with a calmer, static two-layer
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
         /* CARD-SEPARATION, DISCLOSED (Token Scanner visual-contrast task, reported: "the scan card
            blends into the background" — the page shell sits on near-black rgba(2,6,23,1); the card
            was nearly the same navy-black, so its own border was the only thing separating it. Base
-           lightened a full step (rgba(9,16,32)->rgba(15,24,44) at the lightest point) and the border
+           lightened a full step (rgba(9,16,32)->rgba(21,24,27) at the lightest point) and the border
            strengthened + given a faint cyan tint so the card reads as its own surface at a glance,
            plus a tiny ambient cyan/violet glow just outside the border (very low alpha, static, no
            bloom) for depth without flashiness. */
-        .search-card{background:rgba(255,255,255,.03);border-radius:16px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 18px 48px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.04);}
-        .search-card::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(45,212,191,.42),rgba(139,92,246,.34));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2;}
-        .search-card-glow{position:absolute;inset:-28px -12px;border-radius:32px;background:radial-gradient(ellipse at 50% 45%,rgba(45,212,191,.13),transparent 68%);filter:blur(22px);pointer-events:none;z-index:0;}
-        .chain-seg{display:flex;max-width:100%;overflow-x:auto;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px;scrollbar-width:none;-ms-overflow-style:none;}
+        /* Graphite glass command card in the homepage hero's language: silver hairline border (brighter
+           at the top), a mint glint along the top edge, a faint mint ambience behind it. */
+        .search-card{background:linear-gradient(180deg,rgba(24,26,28,.86) 0%,rgba(9,10,11,.92) 100%);border-radius:16px;-webkit-backdrop-filter:blur(18px);backdrop-filter:blur(18px);box-shadow:0 22px 56px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.06);}
+        .search-card::before{content:'';position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(180deg,rgba(255,255,255,.18),rgba(255,255,255,.06) 40%,rgba(31,214,220,.16));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;pointer-events:none;z-index:2;}
+        .search-card::after{content:'';position:absolute;top:0;left:12%;right:12%;height:1px;background:linear-gradient(90deg,transparent,rgba(98,241,241,.6),transparent);pointer-events:none;z-index:3;}
+        .search-card-glow{position:absolute;inset:-28px -12px;border-radius:32px;background:radial-gradient(ellipse at 50% 45%,rgba(31,214,220,.08),transparent 68%);filter:blur(22px);pointer-events:none;z-index:0;}
+        .chain-seg{display:flex;max-width:100%;overflow-x:auto;padding:3px;border-radius:10px;background:#050606;border:1px solid rgba(255,255,255,.09);gap:2px;scrollbar-width:none;-ms-overflow-style:none;}
         .chain-seg::-webkit-scrollbar{display:none;}
         .token-shell .chain-seg{flex-wrap:nowrap !important;}
-        .chain-seg-btn{flex-shrink:0;padding:8px 16px;border-radius:7px;font-size:11px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#64748b;white-space:nowrap;}
-        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#cbd5e1;}
+        .chain-seg-btn{flex-shrink:0;padding:8px 16px;border-radius:7px;font-size:11px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#6f7275;white-space:nowrap;}
+        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#d1d4d7;}
         /* LOADING-AFFORDANCE FIX, DISCLOSED (audit: chain pills stayed fully clickable during a
            scan and silently no-opped via the re-entry guard, giving zero feedback that the click
            did nothing). */
@@ -5815,30 +5818,31 @@ export default function TerminalTokenScanner() {
            branded "selected" state than one generic indigo for both. Base's active contrast raised
            (explicitly requested, "active Base tab should have stronger contrast") since it's the
            default/most-used chain. */
-        .chain-seg-btn[class*="chain-seg-btn--active"]{background:rgba(45,212,191,.15);color:#2DD4BF;box-shadow:inset 0 -2px 0 #2DD4BF;}
-        .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
-        .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
-        .cmd-chip-glyph{color:#334155;font-size:10px;}
+        .chain-seg-btn[class*="chain-seg-btn--active"]{background:linear-gradient(180deg,rgba(31,214,220,.14),rgba(31,214,220,.05));color:#dff8f9;box-shadow:inset 0 0 0 1px rgba(31,214,220,.38),inset 0 -2px 0 #1fd6dc;}
+        .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#6b6e71;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
+        .cmd-chip:hover{color:#dff8f9;border-color:rgba(31,214,220,.36);background:rgba(31,214,220,.06);}
+        .cmd-chip-glyph{color:#3c3f42;font-size:10px;}
         /* Thinner, fading top accent per module card — DISCLOSED (explicitly requested: "card top
            accent line should be thinner and cleaner"): full-bleed solid bar replaced with a
            gradient that fades at both edges, same static (no animation) treatment. Background
            lightened one step (same reasoning as .search-card above) so these cards separate from
            the page background instead of blending in. */
-        .preview-module-card{display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
-        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.18);}
-        .preview-module-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;margin-bottom:14px;flex-shrink:0;}
+        .preview-module-card{position:relative;display:flex;flex-direction:column;height:100%;box-sizing:border-box;background:linear-gradient(180deg,rgba(22,24,26,.84),rgba(8,9,10,.92));border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:20px;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 14px 34px rgba(0,0,0,.38);transition:transform .22s cubic-bezier(.22,1,.36,1),border-color .22s ease,box-shadow .22s ease;cursor:default;}
+        .preview-module-card::before{content:'';position:absolute;top:0;left:12%;right:12%;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.34),transparent);transition:opacity .22s ease;pointer-events:none;}
+        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(31,214,220,.32);box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 18px 40px rgba(0,0,0,.45),0 0 20px rgba(31,214,220,.06);}
+        .preview-module-icon{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:10px;margin-bottom:14px;flex-shrink:0;background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.015));border:1px solid rgba(255,255,255,.10);box-shadow:inset 0 1px 0 rgba(255,255,255,.06);}
         /* AFTER-SCAN-CARDS, DISCLOSED (Token Scanner final-polish task, explicitly requested: "the
            plain full-width rows read as filler" — redesigned into a compact 3-card strip, same
            visual language/restraint as .preview-module-card above (subtle dark fill, static border,
            small dot instead of a numbered accent bar, no glow bloom) so the two sections read as one
            system. Static hover lift only, no color animation. */
-        .after-scan-card{display:flex;align-items:center;gap:10px;min-width:0;background:#080c14;border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:10px 14px;transition:border-color .18s ease;cursor:default;}
-        .after-scan-card:hover{border-color:rgba(255,255,255,.18);}
+        .after-scan-card{display:flex;align-items:center;gap:10px;min-width:0;background:linear-gradient(180deg,rgba(20,22,24,.8),rgba(8,9,10,.9));border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:11px 14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04);transition:border-color .2s ease;cursor:default;}
+        .after-scan-card:hover{border-color:rgba(31,214,220,.30);}
         .after-scan-dot{display:inline-block;width:6px;height:6px;border-radius:50%;}
-        .token-scan-input::placeholder{color:#64748b;}
+        .token-scan-input::placeholder{color:#6f7275;}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
         /* SCAN-BUTTON, DISCLOSED (Token Scanner active-state polish task — literal spec values this
-           round: border rgba(83,243,195,.65) at rest, brighter on hover; verified via a Playwright
+           round: border rgba(98,241,241,.65) at rest, brighter on hover; verified via a Playwright
            screenshot of both states side-by-side before/after this change, not guessed blind). Two
            explicit classes — .scan-btn-live (input has text, not loading/resolving) and .scan-btn-off
            (disabled) — same height/padding/radius/typography both states so layout never shifts on
@@ -5846,18 +5850,19 @@ export default function TerminalTokenScanner() {
            near-black or grey), soft permanent glow, brighter glow + border on hover, slight press on
            :active. Disabled: dim flat fill, faded border/text, no glow, not-allowed cursor. No
            purple gradient either state. */
-        .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:56px;padding:0 26px;border-radius:12px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;color:#04201c;border:1px solid rgba(45,212,191,.9);background:linear-gradient(135deg,#5eead4 0%,#2DD4BF 55%,#14b8a6 100%);}
-        .scan-btn-live{cursor:pointer;box-shadow:0 8px 24px rgba(45,212,191,.22),inset 0 1px 0 rgba(255,255,255,.35);transition:transform .15s ease,box-shadow .15s ease,filter .15s ease;}
-        .scan-btn-live:hover{transform:translateY(-1px);filter:brightness(1.06);box-shadow:0 10px 30px rgba(45,212,191,.32),inset 0 1px 0 rgba(255,255,255,.4);}
-        .scan-btn-live:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(45,212,191,.35),0 8px 24px rgba(45,212,191,.22);}
+        /* Mint glass, the homepage hero's Launch Terminal button. */
+        .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:56px;padding:0 26px;border-radius:12px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;color:#ffffff;border:1.5px solid #2ad8df;background:radial-gradient(120% 150% at 50% -10%,rgba(92,240,240,.26) 0%,rgba(31,214,220,.08) 48%,rgba(3,9,10,.92) 100%);}
+        .scan-btn-live{cursor:pointer;text-shadow:0 0 12px rgba(92,240,240,.45);box-shadow:0 0 0 3px rgba(31,214,220,.07),0 0 22px rgba(31,214,220,.30),0 10px 26px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.2);transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease;}
+        .scan-btn-live:hover{transform:translateY(-1px);border-color:#6ff3f3;box-shadow:0 0 0 3px rgba(31,214,220,.10),0 0 32px rgba(31,214,220,.45),0 12px 28px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.26);}
+        .scan-btn-live:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(31,214,220,.4),0 0 22px rgba(31,214,220,.30);}
         .scan-btn-live:active{transform:translateY(1px) scale(.99);}
         .scan-btn-off{cursor:not-allowed;opacity:.5;}
-        .tracked-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:#080c14;border:1px solid rgba(255,255,255,.08);min-width:0;}
-        .tracked-scan-btn{padding:6px 12px;border-radius:8px;background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.32);color:#2DD4BF;font-size:10.5px;font-weight:700;font-family:var(--font-plex-mono);letter-spacing:.08em;cursor:pointer;transition:background .14s,border-color .14s;}
-        .tracked-scan-btn:hover{background:rgba(45,212,191,.20);border-color:rgba(45,212,191,.55);}
-        .tracked-remove-btn{padding:4px 2px;background:none;border:none;color:#64748b;font-size:10.5px;font-family:var(--font-plex-mono);cursor:pointer;}
-        .tracked-remove-btn:hover{color:#cbd5e1;}
-        .tracked-view-all{background:none;border:none;padding:0;color:#2DD4BF;font-size:11px;font-weight:600;font-family:var(--font-plex-mono);cursor:pointer;}
+        .tracked-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:linear-gradient(180deg,rgba(20,22,24,.8),rgba(8,9,10,.9));border:1px solid rgba(255,255,255,.08);box-shadow:inset 0 1px 0 rgba(255,255,255,.04);min-width:0;}
+        .tracked-scan-btn{padding:6px 12px;border-radius:8px;background:rgba(31,214,220,.12);border:1px solid rgba(31,214,220,.32);color:#1fd6dc;font-size:10.5px;font-weight:700;font-family:var(--font-plex-mono);letter-spacing:.08em;cursor:pointer;transition:background .14s,border-color .14s;}
+        .tracked-scan-btn:hover{background:rgba(31,214,220,.20);border-color:rgba(31,214,220,.55);}
+        .tracked-remove-btn{padding:4px 2px;background:none;border:none;color:#6f7275;font-size:10.5px;font-family:var(--font-plex-mono);cursor:pointer;}
+        .tracked-remove-btn:hover{color:#d1d4d7;}
+        .tracked-view-all{background:none;border:none;padding:0;color:#1fd6dc;font-size:11px;font-weight:600;font-family:var(--font-plex-mono);cursor:pointer;}
         .tracked-view-all:hover{text-decoration:underline;}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
@@ -5866,7 +5871,7 @@ export default function TerminalTokenScanner() {
         .detail-chevron{transition:transform 0.15s ease;}
         details[open] > .detail-summary .detail-chevron{transform:rotate(90deg);}
         .result-tabs-scroll::-webkit-scrollbar{display:none;}
-        .result-tab-btn:focus-visible{outline:2px solid rgba(83,243,195,0.55);outline-offset:2px;}
+        .result-tab-btn:focus-visible{outline:2px solid rgba(98,241,241,0.55);outline-offset:2px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
@@ -5880,7 +5885,7 @@ export default function TerminalTokenScanner() {
         @media (max-width:768px){.token-main{padding:64px 16px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;min-height:44px;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{display:flex !important;padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;} .ts-hero-sub{white-space:normal !important;} .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .sol-cluster-split{grid-template-columns:1fr !important;}}
       `}</style>
 
-      <div className="token-shell" style={{ color: '#e2e8f0' }}>
+      <div className="token-shell" style={{ color: '#e4e7ea' }}>
 
         {/* ── Left: scrollable scan area ──────────────────────────── */}
         <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '40px clamp(16px, 2.2vw, 32px) 120px', width: '100%' }}>
@@ -5889,19 +5894,27 @@ export default function TerminalTokenScanner() {
           {/* HERO, PREMIUM-FOCUS REDESIGN: badge row carries the TOKEN SCANNER badge, the
               No Financial Advice pill and the weekly-quota pill inline; 40px heading; one-line
               14px subtitle. Same quota/plan data as before, layout only. */}
-          <div style={{ marginBottom: '24px' }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+          <div style={{ position: 'relative', marginBottom: '24px' }}>
+            {/* Faint silver / mint strands behind the header, as on the homepage hero (static). */}
+            <svg aria-hidden="true" width="100%" height="190" viewBox="0 0 900 190" preserveAspectRatio="none" style={{ position: 'absolute', left: 0, right: 0, top: '-40px', pointerEvents: 'none', opacity: 0.7 }}>
+              <path d="M520 150 C 640 60, 760 170, 920 70" stroke="rgba(31,214,220,0.30)" strokeWidth="1" fill="none" />
+              <path d="M520 162 C 640 76, 760 182, 920 84" stroke="rgba(209,212,215,0.10)" strokeWidth="1" fill="none" />
+              <path d="M520 174 C 640 92, 760 194, 920 98" stroke="rgba(209,212,215,0.08)" strokeWidth="1" fill="none" />
+              <path d="M520 186 C 640 108, 760 206, 920 112" stroke="rgba(209,212,215,0.06)" strokeWidth="1" fill="none" />
+            </svg>
+            <div style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
               <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '7px',
-                background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.26)',
+                display: 'inline-flex', alignItems: 'center', gap: '8px',
+                background: 'linear-gradient(180deg, rgba(22,24,26,0.7), rgba(8,9,10,0.8))', border: '1px solid rgba(255,255,255,0.10)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
                 borderRadius: '99px', padding: '5px 12px',
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.15em',
-                color: '#a78bfa', fontFamily: 'var(--font-plex-mono)',
+                color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)',
               }}>
-                <span className="live-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#8b5cf6', boxShadow: '0 0 8px rgba(139,92,246,.8)', flexShrink: 0 }} />
+                <span className="live-dot" style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 8px rgba(31,214,220,.7)', flexShrink: 0 }} />
                 TOKEN SCANNER
               </div>
-              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', padding: '5px 11px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', padding: '5px 11px', borderRadius: '99px', color: '#9ea1a4', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                 No Financial Advice
               </span>
               {!planLoading && tokenScanQuota && tokenScanQuota.limit != null ? (() => {
@@ -5909,9 +5922,9 @@ export default function TerminalTokenScanner() {
                 return (
                   <span style={{
                     fontSize: '10px', fontWeight: 700, letterSpacing: '0.09em', padding: '5px 11px', borderRadius: '99px',
-                    color: atLimit ? '#f87171' : '#2DD4BF',
-                    background: atLimit ? 'rgba(248,113,113,0.08)' : 'rgba(45,212,191,0.06)',
-                    border: `1px solid ${atLimit ? 'rgba(248,113,113,0.28)' : 'rgba(45,212,191,0.22)'}`,
+                    color: atLimit ? '#f87171' : '#1fd6dc',
+                    background: atLimit ? 'rgba(248,113,113,0.08)' : 'rgba(31,214,220,0.06)',
+                    border: `1px solid ${atLimit ? 'rgba(248,113,113,0.28)' : 'rgba(31,214,220,0.22)'}`,
                     fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
                   }}>
                     {tokenScanQuota.used} / {tokenScanQuota.limit} scans this week ({plan.toUpperCase()})
@@ -5919,14 +5932,14 @@ export default function TerminalTokenScanner() {
                 )
               })() : null}
               {planLoading && (
-                <span style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>Checking access…</span>
+                <span style={{ fontSize: '10px', color: '#505356', fontFamily: 'var(--font-plex-mono)' }}>Checking access…</span>
               )}
             </div>
 
-            <h1 style={{ fontSize: '40px', fontWeight: 800, color: '#f1f5f9', lineHeight: 1.1, margin: '0 0 8px', letterSpacing: '-0.02em' }}>
+            <h1 style={{ position: 'relative', fontSize: '42px', fontWeight: 800, color: '#eef1f2', lineHeight: 1.08, margin: '0 0 10px', letterSpacing: '-0.02em', fontFamily: "var(--font-sora, 'Sora', sans-serif)", background: 'linear-gradient(172deg, #ffffff 0%, #f1f3f4 45%, #c2c5c8 100%)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
               Token Scanner
             </h1>
-            <p className="ts-hero-sub" style={{ margin: 0, color: '#94a3b8', fontSize: '14px', lineHeight: 1.5, maxWidth: '640px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <p className="ts-hero-sub" style={{ position: 'relative', margin: 0, color: 'rgba(200,203,206,0.72)', fontSize: '14px', lineHeight: 1.5, maxWidth: '640px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               Market, liquidity, holder, LP-control and dev-risk checks for any token, in one scan.
             </p>
           </div>
@@ -5951,7 +5964,7 @@ export default function TerminalTokenScanner() {
                   small label, not a title/heading — "the old big 'Scan a token' heading/logo" stays
                   removed). Purely a label above the chain selector, same size class as other small
                   uppercase metadata already used elsewhere on this page (status pills). */}
-              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 12px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 12px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 Token Lookup
               </p>
 
@@ -6000,8 +6013,8 @@ export default function TerminalTokenScanner() {
               <div className="token-input-row" style={{ position: 'relative', zIndex: 1, display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
                   <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                    <circle cx="11" cy="11" r="7" stroke="#64748b" strokeWidth="1.8" />
-                    <path d="M20 20l-3.2-3.2" stroke="#64748b" strokeWidth="1.8" strokeLinecap="round" />
+                    <circle cx="11" cy="11" r="7" stroke="#6f7275" strokeWidth="1.8" />
+                    <path d="M20 20l-3.2-3.2" stroke="#6f7275" strokeWidth="1.8" strokeLinecap="round" />
                   </svg>
                   <input
                     value={input}
@@ -6024,8 +6037,8 @@ export default function TerminalTokenScanner() {
                       boxShadow: 'none',
                     }}
                     onFocus={e => {
-                      e.currentTarget.style.borderColor = 'rgba(45,212,191,0.85)'
-                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.20)'
+                      e.currentTarget.style.borderColor = 'rgba(31,214,220,0.85)'
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(31,214,220,0.20)'
                     }}
                     onBlur={e => {
                       e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
@@ -6050,7 +6063,7 @@ export default function TerminalTokenScanner() {
               {/* One muted hint under the input (replaces the old Enter line and helper row).
                   Enter still submits via the input's onKeyDown above. */}
               {!result && (
-                <p style={{ position: 'relative', zIndex: 1, margin: '10px 0 0', fontSize: '12px', color: '#64748b', lineHeight: 1.5 }}>
+                <p style={{ position: 'relative', zIndex: 1, margin: '10px 0 0', fontSize: '12px', color: '#6f7275', lineHeight: 1.5 }}>
                   Paste a contract address or search by ticker or name.
                 </p>
               )}
@@ -6059,8 +6072,8 @@ export default function TerminalTokenScanner() {
 
           {/* Resolver status */}
           {resolving && (
-            <div style={{ maxWidth:'680px', marginBottom:'12px', padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:'1px solid rgba(45,212,191,0.2)', display:'flex', alignItems:'center', gap:'10px', fontFamily:'var(--font-plex-mono)', fontSize:'11px', color:'#2dd4bf' }}>
-              <span style={{ display:'inline-block', width:10, height:10, borderRadius:'50%', border:'2px solid #2dd4bf', borderTopColor:'transparent', animation:'spin 0.7s linear infinite', flexShrink:0 }} />
+            <div style={{ maxWidth:'680px', marginBottom:'12px', padding:'10px 14px', borderRadius:'10px', background:'rgba(31,214,220,0.06)', border:'1px solid rgba(31,214,220,0.2)', display:'flex', alignItems:'center', gap:'10px', fontFamily:'var(--font-plex-mono)', fontSize:'11px', color:'#1fd6dc' }}>
+              <span style={{ display:'inline-block', width:10, height:10, borderRadius:'50%', border:'2px solid #1fd6dc', borderTopColor:'transparent', animation:'spin 0.7s linear infinite', flexShrink:0 }} />
               Resolving ticker…
             </div>
           )}
@@ -6068,29 +6081,29 @@ export default function TerminalTokenScanner() {
           {/* Resolver result banner */}
           {!resolving && resolverResult && resolverResult.status !== 'not_found' && resolverResult.bestCandidate && (
             <div style={{ maxWidth:'680px', marginBottom:'12px' }}>
-              <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(45,212,191,0.06)', border:`1px solid ${resolverResult.status === 'ambiguous' ? 'rgba(250,204,21,0.35)' : 'rgba(45,212,191,0.2)'}`, fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
+              <div style={{ padding:'10px 14px', borderRadius:'10px', background:'rgba(31,214,220,0.06)', border:`1px solid ${resolverResult.status === 'ambiguous' ? 'rgba(250,204,21,0.35)' : 'rgba(31,214,220,0.2)'}`, fontFamily:'var(--font-plex-mono)', fontSize:'11px' }}>
                 <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
-                  <span style={{ color: resolverResult.confidence === 'high' ? '#2dd4bf' : resolverResult.confidence === 'medium' ? '#facc15' : '#94a3b8', fontWeight:700 }}>
+                  <span style={{ color: resolverResult.confidence === 'high' ? '#1fd6dc' : resolverResult.confidence === 'medium' ? '#facc15' : '#9ea1a4', fontWeight:700 }}>
                     {resolverResult.status === 'ambiguous' ? '⚠ Multiple matches' : '✓ Resolved'}
                   </span>
-                  <span style={{ color:'#e2e8f0', fontWeight:700 }}>
+                  <span style={{ color:'#e4e7ea', fontWeight:700 }}>
                     {resolverResult.bestCandidate.symbol ?? resolverResult.bestCandidate.name ?? '—'}
                   </span>
                   {resolverResult.bestCandidate.name && resolverResult.bestCandidate.name !== resolverResult.bestCandidate.symbol && (
-                    <span style={{ color:'#64748b' }}>{resolverResult.bestCandidate.name}</span>
+                    <span style={{ color:'#6f7275' }}>{resolverResult.bestCandidate.name}</span>
                   )}
-                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(45,212,191,0.12)', color:'#2dd4bf', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainSlug.toUpperCase()}</span>
+                  <span style={{ padding:'2px 7px', borderRadius:'999px', background:'rgba(31,214,220,0.12)', color:'#1fd6dc', fontSize:'9px', fontWeight:700, letterSpacing:'.1em' }}>{resolverResult.bestCandidate.chainSlug.toUpperCase()}</span>
                   {resolverResult.bestCandidate.liquidityUsd != null && (
-                    <span style={{ color:'#475569', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
+                    <span style={{ color:'#505356', fontSize:'10px' }}>Liq {fmtLiquidity(resolverResult.bestCandidate.liquidityUsd)}</span>
                   )}
-                  <span style={{ color:'#64748b', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.bestCandidate.tokenAddress.slice(0,8)}…{resolverResult.bestCandidate.tokenAddress.slice(-4)}</span>
+                  <span style={{ color:'#6f7275', fontSize:'9px', fontFamily:'monospace' }}>{resolverResult.bestCandidate.tokenAddress.slice(0,8)}…{resolverResult.bestCandidate.tokenAddress.slice(-4)}</span>
                 </div>
               </div>
 
               {/* Alternates picker */}
               {resolverResult.needsUserChoice && resolverResult.matches.length > 0 && (
                 <div style={{ marginTop:'8px', display:'grid', gap:'7px' }}>
-                  <span style={{ color:'#94a3b8', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>Multiple tokens found for {resolverResult.normalizedQuery}. Choose one to scan.</span>
+                  <span style={{ color:'#9ea1a4', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>Multiple tokens found for {resolverResult.normalizedQuery}. Choose one to scan.</span>
                   {resolverResult.matches.slice(0, 6).map((alt: ResolverCandidate) => (
                     <button
                       key={alt.tokenAddress + alt.chainSlug}
@@ -6101,14 +6114,14 @@ export default function TerminalTokenScanner() {
                         setInput(alt.tokenAddress)
                         void handleScan(alt.tokenAddress, altChain)
                       }}
-                      style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(100,116,139,0.10)', border:'1px solid rgba(100,116,139,0.28)', color:'#cbd5e1', fontSize:'10px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'grid', gridTemplateColumns:'minmax(120px,1fr) auto auto auto', alignItems:'center', gap:'10px', textAlign:'left', overflow:'hidden' }}
+                      style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(111,114,117,0.10)', border:'1px solid rgba(111,114,117,0.28)', color:'#d1d4d7', fontSize:'10px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'grid', gridTemplateColumns:'minmax(120px,1fr) auto auto auto', alignItems:'center', gap:'10px', textAlign:'left', overflow:'hidden' }}
                     >
                       <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}><b>{alt.symbol ?? 'TOKEN'}</b> · {alt.name ?? alt.tokenAddress.slice(0,8)}</span>
                       <span>{alt.chainSlug.toUpperCase()}</span>
                       <span>Liq {fmtLiquidity(alt.liquidityUsd)}</span>
                       <span>MC {fmtResolverUsd(alt.marketCapUsd ?? alt.fdvUsd)}</span>
-                      <span style={{ gridColumn:'1 / 4', color:'#64748b' }}>{alt.tokenAddress.slice(0,10)}…{alt.tokenAddress.slice(-6)} · Vol {fmtResolverUsd(alt.volume24hUsd)}</span>
-                      <span style={{ color:'#53f3c3', fontWeight:800 }}>SCAN →</span>
+                      <span style={{ gridColumn:'1 / 4', color:'#6f7275' }}>{alt.tokenAddress.slice(0,10)}…{alt.tokenAddress.slice(-6)} · Vol {fmtResolverUsd(alt.volume24hUsd)}</span>
+                      <span style={{ color:'#62f1f1', fontWeight:800 }}>SCAN →</span>
                     </button>
                   ))}
                 </div>
@@ -6180,7 +6193,7 @@ export default function TerminalTokenScanner() {
             // The betaRisk verdict/color pair that used to live here is gone: its top label was the
             // literal string "Open Check", and every surface that showed it now reads the real
             // graded computeSolanaCortexRisk verdict instead (see the CORTEX RISK READ strip).
-            const confColor = sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
+            const confColor = sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#9ea1a4'
             const copySolanaAddress = async (address: string) => {
               try {
                 if (typeof window === 'undefined') return
@@ -6204,12 +6217,12 @@ export default function TerminalTokenScanner() {
             }
             const conc = sr.topAccountConcentration
             const concRisk: 'HIGH' | 'MEDIUM' | 'LOW' | null = conc?.top10Percent != null ? (conc.top10Percent > 50 ? 'HIGH' : conc.top10Percent > 30 ? 'MEDIUM' : 'LOW') : null
-            const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
-            const cardBase: React.CSSProperties = { padding: '14px 16px', background: 'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)' }
+            const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#9ea1a4'
+            const cardBase: React.CSSProperties = { padding: '14px 16px', background: 'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,17,20,.84))', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)' }
             const cardTitle: React.CSSProperties = { margin: '0 0 10px', fontSize: '10px', fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
             const gapLine = (text: string, key: string | number) => (
-              <p key={key} style={{ margin: '0 0 6px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6, paddingLeft: '13px', position: 'relative' }}>
-                <span style={{ position: 'absolute', left: 0, color: '#3a5268' }}>—</span>{text}
+              <p key={key} style={{ margin: '0 0 6px', fontSize: '11.5px', color: '#9b9ea1', lineHeight: 1.6, paddingLeft: '13px', position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 0, color: '#4b4e51' }}>—</span>{text}
               </p>
             )
 
@@ -6225,17 +6238,17 @@ export default function TerminalTokenScanner() {
                       {/* Symbol only shown as a separate badge when name is present — otherwise the
                           symbol IS the heading above and repeating it here would be a duplicate. */}
                       {sr.resolvedTokenName && sr.resolvedTokenSymbol && (
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>{sr.resolvedTokenSymbol}</span>
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#dfe5e8', fontFamily: 'var(--font-plex-mono)' }}>{sr.resolvedTokenSymbol}</span>
                       )}
                     </h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
+                      <span style={{ fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
                         {shorten(sr.mintAddress)}
                       </span>
-                      <span style={{ padding: '3px 10px', border: '1px solid rgba(153,69,255,.42)', borderRadius: '999px', color: '#ddd0ff', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(153,69,255,.10)' }}>
+                      <span style={{ padding: '3px 10px', border: '1px solid rgba(190,198,203,.42)', borderRadius: '999px', color: '#e9edef', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(190,198,203,.10)' }}>
                         SOLANA
                       </span>
-                      <span style={{ padding: '3px 10px', border: '1px solid rgba(94,234,212,.35)', borderRadius: '999px', color: '#5eead4', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,.07)' }}>
+                      <span style={{ padding: '3px 10px', border: '1px solid rgba(98,241,241,.35)', borderRadius: '999px', color: '#62f1f1', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(31,214,220,.07)' }}>
                         {sr.tokenProgram === 'spl-token-2022' ? 'TOKEN-2022' : sr.tokenProgram === 'spl-token' ? 'SPL TOKEN' : 'PROGRAM UNKNOWN'}
                       </span>
                       <span style={{ padding: '3px 10px', border: '1px solid rgba(251,191,36,.35)', borderRadius: '999px', color: '#fcd34d', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(251,191,36,.07)' }}>
@@ -6246,7 +6259,7 @@ export default function TerminalTokenScanner() {
                 </div>
 
                 {/* Same six-tab bar every other chain uses — same activeSection state, same order. */}
-                <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.09)' }}>
+                <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(172,175,178,.09)' }}>
                   <div className="result-tabs-scroll" style={{ display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap' }}>
                     {([
                       { id: 'cortex-read' as const, label: 'Overview' },
@@ -6264,11 +6277,11 @@ export default function TerminalTokenScanner() {
                             height: '38px', padding: '0 14px', borderRadius: '8px 8px 0 0', cursor: 'pointer',
                             whiteSpace: 'nowrap', flexShrink: 0, fontFamily: 'var(--font-plex-mono)', fontSize: '11px',
                             fontWeight: active ? 750 : 550, letterSpacing: '0.06em', transition: 'all 0.14s',
-                            background: active ? 'rgba(153,69,255,0.09)' : 'transparent', border: 'none',
-                            color: active ? '#ddd0ff' : '#7c93aa',
+                            background: active ? 'rgba(190,198,203,0.09)' : 'transparent', border: 'none',
+                            color: active ? '#e9edef' : '#8d9093',
                           }}>
                           {s.label}
-                          {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(153,69,255,0.85)', boxShadow: '0 0 8px rgba(153,69,255,0.45)' }} />}
+                          {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(190,198,203,0.85)', boxShadow: '0 0 8px rgba(190,198,203,0.45)' }} />}
                         </button>
                       )
                     })}
@@ -6301,7 +6314,7 @@ export default function TerminalTokenScanner() {
                         second threshold. Category evidence in the Score Breakdown card below is
                         untouched: only this single, final composite was converted. */}
                     <div style={{ marginBottom: '0', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${overviewCx.riskColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${overviewCx.riskColor}10, 0 0 0 1px ${overviewCx.riskColor}06 inset` }}>
-                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
                       <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
                           <span style={{ fontSize: '52px', fontWeight: 800, color: overviewCx.riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 24px ${overviewCx.riskColor}38` }}>{overviewCx.riskScore}</span>
@@ -6312,9 +6325,9 @@ export default function TerminalTokenScanner() {
                       <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
                         <div style={{ height: '100%', width: `${overviewCx.riskScore}%`, borderRadius: '999px', background: `linear-gradient(90deg,${overviewCx.riskColor},${overviewCx.riskColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${overviewCx.riskColor}55` }} />
                       </div>
-                      <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>
+                      <div style={{ fontSize: '10px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>
                         Computed from supported Solana evidence only — authority status, top-account concentration, market health, and track record (creator verification + pool age). Higher score means higher risk, matching every other chain in Token Scanner. Scaled down proportionally to this token&apos;s own real age, evidence coverage, and creator verification — never to a shared ceiling — so this can never read as a full safety verdict, and two different tokens are never forced to the same number.
-                        {overviewCx.scoreCapReasons.length > 0 && <span style={{ display: 'block', marginTop: '6px', color: '#8ea0b5' }}>{overviewCx.scoreCapReasons.join(' ')}</span>}
+                        {overviewCx.scoreCapReasons.length > 0 && <span style={{ display: 'block', marginTop: '6px', color: '#9b9ea1' }}>{overviewCx.scoreCapReasons.join(' ')}</span>}
                       </div>
                     </div>
 
@@ -6326,17 +6339,17 @@ export default function TerminalTokenScanner() {
                         read (Strong/Moderate/Weak on this module's own scoreEarned/scoreMax) — only
                         the single top-line composite above was converted to canonical risk direction,
                         never these per-category evidence values. */}
-                    <div style={{ padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
-                      <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
+                    <div style={{ padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(169,233,236,0.20)', background: 'rgba(8,14,28,0.72)' }}>
+                      <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#a9e9ec', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
                       <div style={{ display: 'grid', gap: '10px' }}>
                         {overviewCx.modules.map((mod, rIdx) => {
                           const pct = mod.scoreMax > 0 ? Math.max(0, Math.min(100, (mod.scoreEarned / mod.scoreMax) * 100)) : 0
-                          const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
+                          const barColor = pct >= 70 ? '#1fd6dc' : pct >= 40 ? '#fbbf24' : '#f87171'
                           const statusLabel = pct >= 70 ? 'Strong' : pct >= 40 ? 'Moderate' : 'Weak'
                           return (
                             <div key={mod.module} style={{ paddingBottom: '10px', borderBottom: rIdx < overviewCx.modules.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px', gap: '8px' }}>
-                                <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{mod.module}</span>
+                                <span style={{ fontSize: '11px', color: '#dadde0', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{mod.module}</span>
                                 <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '7px' }}>
                                   <span style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', color: barColor, background: `${barColor}14`, border: `1px solid ${barColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{statusLabel}</span>
                                   <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{mod.scoreEarned}/{mod.scoreMax}</span>
@@ -6346,7 +6359,7 @@ export default function TerminalTokenScanner() {
                                 <div style={{ height: '100%', width: `${pct}%`, borderRadius: '999px', background: `linear-gradient(90deg,${barColor},${barColor}80)`, transition: 'width 0.7s ease' }} />
                               </div>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                                <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#a3b4c5', background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{mod.reason}</span>
+                                <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#afb2b5', background: 'rgba(158,161,164,0.07)', border: '1px solid rgba(158,161,164,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{mod.reason}</span>
                               </div>
                             </div>
                           )
@@ -6363,17 +6376,17 @@ export default function TerminalTokenScanner() {
                         different answers, and the vaguer one led. It now reads the SAME
                         computeSolanaCortexRisk result the Risk Engine tab and the side receipt use,
                         so all three agree and every state is a real graded verdict. */}
-                    <div style={{ padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
+                    <div style={{ padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(158,161,164,0.16)', background: 'rgba(8,14,28,0.55)' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline' }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Verdict: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.verdict}</span></div>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
+                        <div style={{ fontSize: '11px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Verdict: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.verdict}</span></div>
                         {/* DIRECTION FIX, DISCLOSED (Solana risk-score-direction task): shows the
                             canonical overviewCx.riskScore (higher = riskier) instead of the raw
                             safety-style overviewCx.score, so this number now agrees with the
                             risk-severity verdict beside it and with the hero card above — same
                             engine, same canonical direction, everywhere on this tab. */}
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Score: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.riskScore}/{overviewCx.scoreMax}</span></div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Evidence: <span style={{ color: confColor, fontWeight: 700 }}>{overviewCx.overallConfidence}</span></div>
+                        <div style={{ fontSize: '11px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Score: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.riskScore}/{overviewCx.scoreMax}</span></div>
+                        <div style={{ fontSize: '11px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Evidence: <span style={{ color: confColor, fontWeight: 700 }}>{overviewCx.overallConfidence}</span></div>
                       </div>
                     </div>
 
@@ -6396,8 +6409,8 @@ export default function TerminalTokenScanner() {
                 {activeSection === 'market-pulse' && (
                   <>
                     <div style={{ marginBottom: '16px' }}>
-                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Price, liquidity, volume, and pool depth from indexed Solana pools.</p>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Price, liquidity, volume, and pool depth from indexed Solana pools.</p>
                     </div>
                     {/* Project Links, DISCLOSED (Solana provider-wiring follow-up: "make sure a
                         Sol coin scan shows its X/website/Reddit links"): reuses the exact same
@@ -6430,8 +6443,8 @@ export default function TerminalTokenScanner() {
                       />
                     ) : (
                       <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
-                        <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
+                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#d1d4d7', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#4b4e51', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
                           {solanaChartUnavailableText(sr)}
                         </p>
                       </div>
@@ -6449,16 +6462,16 @@ export default function TerminalTokenScanner() {
                           : sr.marketData?.priceEvidence?.status === 'unavailable_side_unknown' ? 'Pool side unverified' : undefined
                       return sr.marketData || price != null ? (
                         <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '10px' }}>
-                          <StatCard label="Price" value={price != null ? `$${price}` : 'Unavailable'} accent="#2DD4BF" helper={priceSource} />
-                          <StatCard label="Liquidity" value={sr.marketData?.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Unavailable'} accent="#22d3ee" />
-                          <StatCard label="24h Volume" value={sr.marketData?.volume24hUsd != null ? fmtLarge(sr.marketData.volume24hUsd) : 'Unavailable'} accent="#a78bfa" />
+                          <StatCard label="Price" value={price != null ? `$${price}` : 'Unavailable'} accent="#1fd6dc" helper={priceSource} />
+                          <StatCard label="Liquidity" value={sr.marketData?.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Unavailable'} accent="#1fd6dc" />
+                          <StatCard label="24h Volume" value={sr.marketData?.volume24hUsd != null ? fmtLarge(sr.marketData.volume24hUsd) : 'Unavailable'} accent="#cfd6da" />
                           <StatCard label={sr.marketData?.marketCapUsd != null ? 'Market Cap' : 'FDV'} value={sr.marketData?.marketCapUsd != null ? fmtLarge(sr.marketData.marketCapUsd) : sr.marketData?.fdvUsd != null ? fmtLarge(sr.marketData.fdvUsd) : 'Unavailable'} accent="#fb923c" dim />
-                          <StatCard label="Primary Pool / DEX" value={sr.marketData?.primaryDexLabel ?? 'Solana pool / AMM'} accent="#94a3b8" dim />
-                          <StatCard label="Pair Age" value={sr.marketData?.pairAgeLabel ?? 'Unavailable'} accent="#94a3b8" dim />
+                          <StatCard label="Primary Pool / DEX" value={sr.marketData?.primaryDexLabel ?? 'Solana pool / AMM'} accent="#9ea1a4" dim />
+                          <StatCard label="Pair Age" value={sr.marketData?.pairAgeLabel ?? 'Unavailable'} accent="#9ea1a4" dim />
                         </div>
                       ) : (
-                        <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)' }}>
-                          <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Market data unavailable for this Solana mint. No pool was found via the indexed Solana market provider — this is shown as an open check, never a fake price or liquidity figure.</p>
+                        <div style={{ padding: '20px', border: '1px dashed rgba(158,161,164,0.24)', borderRadius: '14px', background: 'rgba(158,161,164,0.03)' }}>
+                          <p style={{ margin: 0, fontSize: '12.5px', color: '#9b9ea1', lineHeight: 1.6 }}>Market data unavailable for this Solana mint. No pool was found via the indexed Solana market provider — this is shown as an open check, never a fake price or liquidity figure.</p>
                         </div>
                       )
                     })()}
@@ -6474,12 +6487,12 @@ export default function TerminalTokenScanner() {
                       const ratio = buys != null && sells != null && sells > 0 ? (buys / sells).toFixed(2) : null
                       return (
                         <div style={{ marginTop: '18px' }}>
-                          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
+                          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#4b4e51', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
                           <div className="activity-grid">
-                            <StatCard label="Transactions 24H" value={total != null ? String(total) : 'Not indexed in Beta'} accent={total != null ? '#67e8f9' : '#94a3b8'} dim={total == null} />
-                            <StatCard label="Buys / Sells" value={buys != null && sells != null ? `${buys} / ${sells}` : 'Not indexed in Beta'} accent={buys != null ? '#34d399' : '#94a3b8'} dim={buys == null} />
-                            <StatCard label="Buy / Sell Ratio" value={ratio ?? 'Not indexed in Beta'} accent={ratio != null ? '#a78bfa' : '#94a3b8'} dim={ratio == null} helper={ratio != null ? 'From DexScreener tx counts, not volume' : undefined} />
-                            <StatCard label="Pair Age" value={sr.marketData.pairAgeLabel ?? 'Not tracked in Beta'} accent="#94a3b8" dim />
+                            <StatCard label="Transactions 24H" value={total != null ? String(total) : 'Not indexed in Beta'} accent={total != null ? '#62f1f1' : '#9ea1a4'} dim={total == null} />
+                            <StatCard label="Buys / Sells" value={buys != null && sells != null ? `${buys} / ${sells}` : 'Not indexed in Beta'} accent={buys != null ? '#34d399' : '#9ea1a4'} dim={buys == null} />
+                            <StatCard label="Buy / Sell Ratio" value={ratio ?? 'Not indexed in Beta'} accent={ratio != null ? '#cfd6da' : '#9ea1a4'} dim={ratio == null} helper={ratio != null ? 'From DexScreener tx counts, not volume' : undefined} />
+                            <StatCard label="Pair Age" value={sr.marketData.pairAgeLabel ?? 'Not tracked in Beta'} accent="#9ea1a4" dim />
                           </div>
                         </div>
                       )
@@ -6491,8 +6504,8 @@ export default function TerminalTokenScanner() {
                 {activeSection === 'holder-map' && (
                   <>
                     <div style={{ marginBottom: '18px' }}>
-                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top-account distribution and supply concentration — see the note below on what this does and doesn&apos;t prove.</p>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#cfd6da', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Top-account distribution and supply concentration — see the note below on what this does and doesn&apos;t prove.</p>
                     </div>
                     {conc ? (
                       <>
@@ -6511,25 +6524,25 @@ export default function TerminalTokenScanner() {
                             return (
                               <div style={{ margin: '10px 0 10px' }}>
                                 <div className="sol-holder-stats">
-                                  <div data-stat="unique-owners" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(167,139,250,0.10)', border: '1px solid rgba(167,139,250,0.38)', minWidth: 0 }}>
+                                  <div data-stat="unique-owners" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(207,214,218,0.10)', border: '1px solid rgba(207,214,218,0.38)', minWidth: 0 }}>
                                     <p style={{ margin: 0, fontSize: '9.5px', fontWeight: 700, letterSpacing: '.14em', color: '#b9a6fb', fontFamily: 'var(--font-plex-mono)' }}>UNIQUE OWNERS</p>
-                                    <p style={{ margin: '3px 0 0', fontSize: ownersValue === 'Unavailable' ? '15px' : '22px', fontWeight: 800, lineHeight: 1.15, color: ownersValue === 'Unavailable' ? '#94a3b8' : '#f1f5f9', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{ownersValue}</p>
-                                    {custody > 0 && <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#8aa3b8', fontFamily: 'var(--font-plex-mono)' }}>Includes {custody.toLocaleString('en-US')} verified pool vault {custody === 1 ? 'authority' : 'authorities'}</p>}
+                                    <p style={{ margin: '3px 0 0', fontSize: ownersValue === 'Unavailable' ? '15px' : '22px', fontWeight: 800, lineHeight: 1.15, color: ownersValue === 'Unavailable' ? '#9ea1a4' : '#f1f4f7', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{ownersValue}</p>
+                                    {custody > 0 && <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#9c9fa2', fontFamily: 'var(--font-plex-mono)' }}>Includes {custody.toLocaleString('en-US')} verified pool vault {custody === 1 ? 'authority' : 'authorities'}</p>}
                                   </div>
-                                  <div data-stat="token-accounts" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.22)', minWidth: 0 }}>
-                                    <p style={{ margin: 0, fontSize: '9.5px', fontWeight: 700, letterSpacing: '.14em', color: '#8aa3b8', fontFamily: 'var(--font-plex-mono)' }}>TOKEN ACCOUNTS</p>
-                                    <p style={{ margin: '3px 0 0', fontSize: accountsValue === 'Unavailable' ? '14px' : '18px', fontWeight: 700, lineHeight: 1.15, color: accountsValue === 'Unavailable' ? '#94a3b8' : '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{accountsValue}</p>
+                                  <div data-stat="token-accounts" style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(158,161,164,0.06)', border: '1px solid rgba(158,161,164,0.22)', minWidth: 0 }}>
+                                    <p style={{ margin: 0, fontSize: '9.5px', fontWeight: 700, letterSpacing: '.14em', color: '#9c9fa2', fontFamily: 'var(--font-plex-mono)' }}>TOKEN ACCOUNTS</p>
+                                    <p style={{ margin: '3px 0 0', fontSize: accountsValue === 'Unavailable' ? '14px' : '18px', fontWeight: 700, lineHeight: 1.15, color: accountsValue === 'Unavailable' ? '#9ea1a4' : '#d1d4d7', fontFamily: 'var(--font-plex-mono)', fontVariantNumeric: 'tabular-nums' }}>{accountsValue}</p>
                                   </div>
                                 </div>
-                                <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>Some owners may control multiple token accounts.</p>
+                                <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#6c6f72', fontFamily: 'var(--font-plex-mono)' }}>Some owners may control multiple token accounts.</p>
                               </div>
                             )
                           })()}
-                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
                         </div>
-                        <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
+                        <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(207,214,218,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>TOP-ACCOUNT CONCENTRATION</span>
+                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#cfd6da', fontFamily: 'var(--font-plex-mono)' }}>TOP-ACCOUNT CONCENTRATION</span>
                             <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: concColor, background: `${concColor}12`, border: `1px solid ${concColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{concRisk ?? 'UNAVAILABLE'}</span>
                             {/* RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability
                                 task, UI state #4 — "if verified: show ... source badge"): the real
@@ -6538,7 +6551,7 @@ export default function TerminalTokenScanner() {
                                 Also flags a PARTIAL badge when the source itself reported partial
                                 (e.g. a lower-bound Helius sample), per UI state #4's own spec. */}
                             {sr.solanaHolderConcentrationResult && sr.solanaHolderConcentrationResult.source !== 'none' && (
-                              <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.1em', color: '#8aa3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>
+                              <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.1em', color: '#9c9fa2', background: 'rgba(158,161,164,0.08)', border: '1px solid rgba(158,161,164,0.22)', fontFamily: 'var(--font-plex-mono)' }}>
                                 {sr.solanaHolderConcentrationResult.status === 'partial' ? 'PARTIAL · ' : ''}SOURCE: {sr.solanaHolderConcentrationResult.source === 'rpc_largest_accounts' ? 'SOLANA RPC' : sr.solanaHolderConcentrationResult.source.toUpperCase()}
                               </span>
                             )}
@@ -6565,9 +6578,9 @@ export default function TerminalTokenScanner() {
                               ),
                               ['Accounts sampled', String(conc.accountsSampled)],
                             ].map(([label, val]) => (
-                              <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(167,139,250,0.16)' }}>
-                                <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#64748b', marginBottom: '3px', fontFamily: 'var(--font-plex-mono)' }}>{label}</div>
-                                <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{val}</div>
+                              <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(20,23,26,0.55)', border: '1px solid rgba(207,214,218,0.16)' }}>
+                                <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#6f7275', marginBottom: '3px', fontFamily: 'var(--font-plex-mono)' }}>{label}</div>
+                                <div style={{ fontSize: '12px', color: '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{val}</div>
                               </div>
                             ))}
                           </div>
@@ -6577,23 +6590,23 @@ export default function TerminalTokenScanner() {
                             ['Total Top 20', conc.top20Percent],
                           ].map(([label, pct]) => (
                             <div key={label as string} style={{ marginBottom: '6px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
                                 <span>{label}</span><span>{pct != null ? `${(pct as number).toFixed(1)}%` : 'N/A'}</span>
                               </div>
-                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', overflow: 'hidden' }}>
+                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(158,161,164,0.10)', overflow: 'hidden' }}>
                                 <div style={{ height: '100%', width: `${pct != null ? Math.min(100, pct as number) : 0}%`, background: concColor, borderRadius: '999px' }} />
                               </div>
                             </div>
                           ))}
                           {conc.ordinaryCoverage?.status === 'verified' && conc.ordinaryTop10Percent != null ? (
                             <div style={{ marginBottom: '6px' }}>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
                                 <span>Ordinary Top 10</span><span>{`${Number(conc.ordinaryTop10Percent).toFixed(1)}%`}</span>
                               </div>
-                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', overflow: 'hidden' }}>
-                                <div style={{ height: '100%', width: `${Math.min(100, Number(conc.ordinaryTop10Percent))}%`, background: '#22d3ee', borderRadius: '999px' }} />
+                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(158,161,164,0.10)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${Math.min(100, Number(conc.ordinaryTop10Percent))}%`, background: '#1fd6dc', borderRadius: '999px' }} />
                               </div>
-                              <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</p>
+                              <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</p>
                             </div>
                           ) : conc.ordinaryCoverage && conc.ordinaryCoverage.status !== 'not_computed' ? (
                             <p style={{ margin: '6px 0 0', fontSize: '10.5px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
@@ -6612,12 +6625,12 @@ export default function TerminalTokenScanner() {
                             these are token accounts, not resolved unique holders — see the note
                             below the table. */}
                         {sr.liquidityCustody && (sr.liquidityCustody.status === 'partial' || sr.liquidityCustody.status === 'verified') && (
-                          <div style={{ marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(103,232,249,0.28)' }}>
+                          <div style={{ marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(98,241,241,0.28)' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                              <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
-                              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.45)', background: 'rgba(45,212,191,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(sr.liquidityCustody.status).toUpperCase()}</span>
+                              <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
+                              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#62f1f1', border: '1px solid rgba(98,241,241,0.45)', background: 'rgba(31,214,220,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(sr.liquidityCustody.status).toUpperCase()}</span>
                             </div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#9fb4c7', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#aeb1b4', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
                               {sr.liquidityCustody.rows.length} verified AMM vault account{sr.liquidityCustody.rows.length === 1 ? '' : 's'} in this sample
                               {sr.liquidityCustody.custodyPercentOfSupply != null ? ` · ${sr.liquidityCustody.custodyPercentOfSupply.toFixed(1)}% of supply in labeled custody rows` : ''}
                               {sr.liquidityCustody.custodyCoverageComplete ? '' : ' · coverage incomplete (sample only)'}. Owner field alone is never treated as vault proof.
@@ -6625,13 +6638,13 @@ export default function TerminalTokenScanner() {
                           </div>
                         )}
                         <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden', marginBottom: '16px' }}>
-                          <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP ACCOUNTS</p>
-                          <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top {conc.accounts.length} token accounts by balance</p>
-                          <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>ACCOUNT</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
+                          <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#aaadb0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP ACCOUNTS</p>
+                          <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#9c9fa2' }}>Top {conc.accounts.length} token accounts by balance</p>
+                          <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#7b7e81', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>ACCOUNT</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
                             {conc.accounts.map((acc) => {
                               const pct = acc.percentOfSupply
-                              const pctColor = pct != null && pct >= 20 ? '#fb7185' : pct != null && pct >= 5 ? '#fbbf24' : '#67e8f9'
+                              const pctColor = pct != null && pct >= 20 ? '#fb7185' : pct != null && pct >= 5 ? '#fbbf24' : '#62f1f1'
                               // amountRaw is a base-unit string from getTokenLargestAccounts — the
                               // account address itself isn't in this row's evidence (the RPC returns
                               // amounts keyed by pubkey, not surfaced per-row here), so the copy
@@ -6640,9 +6653,9 @@ export default function TerminalTokenScanner() {
                               // never a guessed decimal count.
                               const rowKey = `${acc.rank}-${acc.amountRaw}`
                               return (
-                                <div className="top-holder-row" key={rowKey} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: 'rgba(15,23,42,.45)' }}>
-                                  <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: acc.rank <= 3 ? 'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))' : 'transparent', border: acc.rank <= 3 ? '1px solid rgba(167,139,250,.45)' : 'none' }}>{acc.rank}</span>
-                                  <span style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+                                <div className="top-holder-row" key={rowKey} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: '1px solid rgba(158,161,164,.18)', borderRadius: '10px', background: 'rgba(20,23,26,.45)' }}>
+                                  <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: acc.rank <= 3 ? 'linear-gradient(90deg,rgba(31,214,220,.28),rgba(190,198,203,.28))' : 'transparent', border: acc.rank <= 3 ? '1px solid rgba(207,214,218,.45)' : 'none' }}>{acc.rank}</span>
+                                  <span style={{ fontSize: '12px', color: '#d2d5d8', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
                                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{acc.address ? shorten(acc.address) : `Account #${acc.rank}`}</span>
                                     {(() => { const b = custodyBadge(acc.classification); return b ? <span title={acc.classification?.label ?? b.text} style={{ alignSelf: 'flex-start', padding: '1px 7px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', color: b.color, border: `1px solid ${b.border}`, background: b.bg }}>{b.text}</span> : null })()}
                                   </span>
@@ -6651,9 +6664,9 @@ export default function TerminalTokenScanner() {
                                   <button type="button" onClick={() => { void copySolanaAddress(sr.mintAddress) }}
                                     style={{
                                       justifySelf: 'end', padding: '4px 10px', borderRadius: '999px',
-                                      border: copiedSolanaAddress === sr.mintAddress ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
-                                      background: copiedSolanaAddress === sr.mintAddress ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))' : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
-                                      color: copiedSolanaAddress === sr.mintAddress ? '#67e8f9' : '#c4b5fd',
+                                      border: copiedSolanaAddress === sr.mintAddress ? '1px solid rgba(31,214,220,0.55)' : '1px solid rgba(207,214,218,0.48)',
+                                      background: copiedSolanaAddress === sr.mintAddress ? 'linear-gradient(135deg,rgba(31,214,220,0.18),rgba(31,214,220,0.1))' : 'linear-gradient(135deg,rgba(207,214,218,0.2),rgba(31,214,220,0.08))',
+                                      color: copiedSolanaAddress === sr.mintAddress ? '#62f1f1' : '#d6dce0',
                                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)',
                                       cursor: 'pointer', whiteSpace: 'nowrap', minHeight: '26px',
                                     }}
@@ -6667,23 +6680,23 @@ export default function TerminalTokenScanner() {
                         </div>
                       </>
                     ) : (
-                      <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)', marginBottom: '16px' }}>
+                      <div style={{ padding: '20px', border: '1px dashed rgba(158,161,164,0.24)', borderRadius: '14px', background: 'rgba(158,161,164,0.03)', marginBottom: '16px' }}>
                         {/* PUBLIC-SAFE WORDING, DISCLOSED (Solana holder-concentration reliability
                             task, UI state #4 — "if unavailable: show Holder concentration
                             unavailable / exact public reason / Not confirmed healthy"): always the
                             resolver's clean publicReason — never a raw provider/RPC error string
                             (technicalReason stays debug-only, never rendered here). Never a
                             fabricated 0% — the fields simply aren't shown in this branch. */}
-                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Holder concentration unavailable for this mint.</p>
-                        <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                        <p style={{ margin: 0, fontSize: '12.5px', color: '#9b9ea1', lineHeight: 1.6 }}>Holder concentration unavailable for this mint.</p>
+                        <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
                           {sr.solanaHolderConcentrationResult?.publicReason ?? 'Holder concentration unavailable — Solana provider did not return top token accounts.'}
                         </p>
                         <p style={{ margin: '8px 0 0', fontSize: '10px', fontWeight: 700, letterSpacing: '.08em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)' }}>NOT CONFIRMED HEALTHY</p>
                       </div>
                     )}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c93aa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.5 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(158,161,164,0.04)', border: '1px solid rgba(158,161,164,0.14)' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8d9093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#8d9093', lineHeight: 1.5 }}>
                         Top token account concentration, not full holder count. AMM pool vaults and exchange custody accounts may be included.
                       </p>
                     </div>
@@ -6717,13 +6730,13 @@ export default function TerminalTokenScanner() {
                     : 'Unverified'
                   const poolAuthorityColor = sr.poolProgram.verdict === 'verified_official_pool' ? '#34d399'
                     : sr.poolProgram.verdict === 'unrecognized_program' ? '#fb923c'
-                    : '#94a3b8'
+                    : '#9ea1a4'
 
                   // LP Status hero: Solana pools have no lock/burn proof to check, so the honest
                   // status is whether a real pool was even found — never "Locked"/"Burned". Now
                   // reflects the real pool-authority verdict instead of a flat "Open Check".
                   const lpStatusInfo = !hasPool
-                    ? { label: 'No Pool Found', color: '#94a3b8', description: 'No indexed Solana pool was found for this mint — liquidity evidence is unavailable.' }
+                    ? { label: 'No Pool Found', color: '#9ea1a4', description: 'No indexed Solana pool was found for this mint — liquidity evidence is unavailable.' }
                     : sr.poolProgram.verdict === 'verified_official_pool'
                       ? { label: `Pool Found — ${poolAuthorityLabel}`, color: poolAuthorityColor, description: `On-chain confirmed as ${sr.poolProgram.label}. This verifies pool program identity, not vault authority or withdrawal safety — ERC-20-style LP lock/burn proof still does not apply.` }
                       : { label: `Pool Found — ${poolAuthorityLabel}`, color: poolAuthorityColor, description: 'An indexed Solana pool exists, but its owning program could not be confirmed against known AMM programs — treat authority as unverified, not safe.' }
@@ -6735,9 +6748,9 @@ export default function TerminalTokenScanner() {
                   // or its depth did not resolve. They now SAY that specifically instead of
                   // labelling both with the same "Open Check" jargon, which read as a rating.
                   const exitRiskInfo = !hasPool
-                    ? { label: 'No Pool Data', color: '#94a3b8', description: 'No indexed pool was found, so exit risk cannot be rated from anything real.' }
+                    ? { label: 'No Pool Data', color: '#9ea1a4', description: 'No indexed pool was found, so exit risk cannot be rated from anything real.' }
                     : liq == null
-                      ? { label: 'Depth Unknown', color: '#94a3b8', description: 'A pool was found, but its liquidity depth did not resolve this scan — exit risk is unrated, not low.' }
+                      ? { label: 'Depth Unknown', color: '#9ea1a4', description: 'A pool was found, but its liquidity depth did not resolve this scan — exit risk is unrated, not low.' }
                       : liq < 5_000
                         ? { label: 'Elevated', color: '#f87171', description: `Thin liquidity (${fmtLarge(liq)}) — a small sell can move price sharply.` }
                         : liq < 50_000
@@ -6755,23 +6768,23 @@ export default function TerminalTokenScanner() {
                   const modelLabel = sr.poolProgram.label ?? dexLabel
                   const modelVerified = sr.poolProgram.label != null
                   const modelInfo = {
-                    label: modelLabel, color: '#c084fc',
+                    label: modelLabel, color: '#dfe5e8',
                     description: modelVerified
                       ? 'On-chain verified pool program — not a standard ERC-20 LP-token model, so lock/burn proof does not apply.'
                       : 'Solana AMM pool liquidity (unverified — from market-data metadata, not a confirmed program read). Not a standard ERC-20 LP-token model, so lock/burn proof does not apply.',
                   }
 
                   const quickRead: Array<{ label: string; value: string; color?: string }> = [
-                    { label: 'LP Model', value: modelLabel + (modelVerified ? ' ✓' : ''), color: '#c084fc' },
-                    { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#94a3b8' },
+                    { label: 'LP Model', value: modelLabel + (modelVerified ? ' ✓' : ''), color: '#dfe5e8' },
+                    { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#9ea1a4' },
                     { label: 'Pool Authority', value: poolAuthorityLabel, color: poolAuthorityColor },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color },
-                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Did not load', color: liq != null ? '#67e8f9' : '#94a3b8' },
+                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Did not load', color: liq != null ? '#62f1f1' : '#9ea1a4' },
                     { label: 'Primary Pool', value: sr.marketData?.primaryPoolAddress ? shorten(sr.marketData.primaryPoolAddress) : 'Did not load' },
                   ]
 
                   const detailRows: Array<{ label: string; value: string; color?: string; note?: string }> = [
-                    { label: 'Primary Liquidity', value: modelLabel, color: '#c084fc', note: modelInfo.description },
+                    { label: 'Primary Liquidity', value: modelLabel, color: '#dfe5e8', note: modelInfo.description },
                     {
                       label: 'Pool Program',
                       value: modelVerified ? 'On-Chain Verified' : sr.poolProgram.resolved ? 'Unrecognized Program' : 'Unverified',
@@ -6820,33 +6833,33 @@ export default function TerminalTokenScanner() {
                     <>
                       <div style={{ marginBottom: '18px' }}>
                         <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER · SOLANA</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
                       </div>
 
                       {/* ── 3-card hero: LP Status · Exit Risk · Primary Liquidity Model — SAME markup as EVM ── */}
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${lpStatusInfo.color}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${lpStatusInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: lpStatusInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lpStatusInfo.color}`, marginTop: '6px' }} />
                             <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: lpStatusInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{lpStatusInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lpStatusInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lpStatusInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${exitRiskInfo.color}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${exitRiskInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
                           <div style={{ marginBottom: '8px' }}>
                             <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitRiskInfo.color}14`, border: `1px solid ${exitRiskInfo.color}45`, color: exitRiskInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitRiskInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitRiskInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitRiskInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${modelInfo.color}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${modelInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${modelInfo.color}` }} />
                             <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{modelInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelInfo.description}</p>
                         </div>
                       </div>
 
@@ -6855,9 +6868,9 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>LP Quick Read</p>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '8px' }}>
                           {quickRead.map(({ label, value, color }) => (
-                            <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                              <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
-                              <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
+                            <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(14,17,20,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                              <div style={{ fontSize: '9px', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                              <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
                             </div>
                           ))}
                         </div>
@@ -6865,12 +6878,12 @@ export default function TerminalTokenScanner() {
 
                       {/* ── Detailed LP Evidence — collapsed by default, same <details> pattern ── */}
                       <details style={{ marginBottom: '14px' }}>
-                        <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
-                        <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                        <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
+                        <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(158,161,164,0.10)', borderRadius: '12px' }}>
                           {detailRows.map(({ label, value, color, note }, i) => (
-                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < detailRows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
-                              <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
-                              <span style={{ fontSize: '11.5px', color: color ?? '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < detailRows.length - 1 ? '1px solid rgba(158,161,164,.07)' : 'none' }}>
+                              <span style={{ fontSize: '10px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                              <span style={{ fontSize: '11.5px', color: color ?? '#e4e7ea', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#86898c', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
                             </div>
                           ))}
                         </div>
@@ -6878,7 +6891,7 @@ export default function TerminalTokenScanner() {
 
                       {/* ── Scan Mode / Evidence Confidence chips — same style as EVM ── */}
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
-                        <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                        <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>
                           SCAN MODE: SOLANA
                         </span>
                         <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf2440' : '#fb923c40'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
@@ -6923,9 +6936,9 @@ export default function TerminalTokenScanner() {
                       </div>
 
                       {/* ── Next Action ── */}
-                      <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>Review pool depth, authority status, top-account concentration, and liquidity movement before treating this pool as safe.</p>
+                      <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#62f1f1', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>Review pool depth, authority status, top-account concentration, and liquidity movement before treating this pool as safe.</p>
                       </div>
                     </>
                   )
@@ -6941,7 +6954,7 @@ export default function TerminalTokenScanner() {
                   // two disclosed deviations from the literal spec (Behaviour always scores 0,
                   // most "Deep Scan" items are marked unsupported, not available).
                   const cx = computeSolanaCortexRisk(sr)
-                  const confColor = (c: typeof cx.overallConfidence) => c === 'High' ? '#34d399' : c === 'Medium' ? '#fbbf24' : c === 'Low' ? '#fb923c' : '#64748b'
+                  const confColor = (c: typeof cx.overallConfidence) => c === 'High' ? '#34d399' : c === 'Medium' ? '#fbbf24' : c === 'Low' ? '#fb923c' : '#6f7275'
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                       {/* Hero — gauge + 5-tier verdict + overall (weighted-aggregate) confidence.
@@ -6957,7 +6970,7 @@ export default function TerminalTokenScanner() {
                             <RiskGaugeCircle score={cx.riskScore} color={cx.riskColor} scoreType="risk" />
                           </div>
                           <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
-                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE · INVESTMENT RISK</div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE · INVESTMENT RISK</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.riskColor, background: `${cx.riskColor}14`, border: `1px solid ${cx.riskColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.riskLabel}</span>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor(cx.overallConfidence), background: `${confColor(cx.overallConfidence)}14`, border: `1px solid ${confColor(cx.overallConfidence)}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.overallConfidence.toUpperCase()} OVERALL CONFIDENCE</span>
@@ -6965,7 +6978,7 @@ export default function TerminalTokenScanner() {
                             {/* REASONING ENGINE, DISCLOSED: composed from conditional branches over
                                 this scan's real evidence — see composeReasoning in
                                 lib/solanaCortexRisk.ts. Not an LLM call, not a fixed template. */}
-                            <p style={{ margin: 0, fontSize: '11.5px', color: '#9db3c8', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }}>{cx.reasoning}</p>
+                            <p style={{ margin: 0, fontSize: '11.5px', color: '#adb0b3', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }}>{cx.reasoning}</p>
                           </div>
                         </div>
                       </div>
@@ -6982,14 +6995,14 @@ export default function TerminalTokenScanner() {
                           so this strip's own number and risk-tier badge text always agree, matching
                           the hero above. The underlying Contract Security + Supply Control module
                           math is unchanged — only this presentation layer was converted. */}
-                      <div style={{ padding: '14px 18px', borderRadius: '14px', background: `linear-gradient(160deg, ${cx.securityRead.riskColor}10, rgba(6,10,20,0.7))`, border: `1px solid ${cx.securityRead.riskColor}30`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ padding: '14px 18px', borderRadius: '14px', background: `linear-gradient(160deg, ${cx.securityRead.riskColor}10, rgba(7,10,13,0.7))`, border: `1px solid ${cx.securityRead.riskColor}30`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                         <div>
-                          <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.16em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>CONTRACT SECURITY (Mint/Freeze Authority + Token-2022 Extensions Only)</p>
+                          <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.16em', color: '#6e7174', fontFamily: 'var(--font-plex-mono)' }}>CONTRACT SECURITY (Mint/Freeze Authority + Token-2022 Extensions Only)</p>
                           <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.08em', color: cx.securityRead.riskColor, background: `${cx.securityRead.riskColor}18`, border: `1px solid ${cx.securityRead.riskColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.riskLabel}</span>
-                          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.riskScore}/100</span>
+                          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#9b9ea1', fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.riskScore}/100</span>
                         </div>
                         {cx.riskLabel !== cx.securityRead.riskLabel && (
-                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5, flex: 1, minWidth: '220px' }}>Contract security and overall investment risk disagree here — the contract itself reads {cx.securityRead.riskLabel.toLowerCase()}, but the overall verdict is {cx.riskLabel.toLowerCase()} once token age, evidence depth, and creator verification are weighed in.</p>
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#86898c', lineHeight: 1.5, flex: 1, minWidth: '220px' }}>Contract security and overall investment risk disagree here — the contract itself reads {cx.securityRead.riskLabel.toLowerCase()}, but the overall verdict is {cx.riskLabel.toLowerCase()} once token age, evidence depth, and creator verification are weighed in.</p>
                         )}
                       </div>
 
@@ -6998,12 +7011,12 @@ export default function TerminalTokenScanner() {
                         {([
                           ['Verified Evidence', String(cx.summary.verifiedEvidence), '#34d399'],
                           ['Warning Signals', String(cx.summary.warningSignals), '#fbbf24'],
-                          ['Unknown Checks', String(cx.summary.unknownChecks), '#94a3b8'],
-                          ['Providers Used', String(cx.summary.providersUsed), '#67e8f9'],
-                          ['Evidence Confidence', `${cx.summary.evidenceConfidencePercent}%`, '#c4b5fd'],
+                          ['Unknown Checks', String(cx.summary.unknownChecks), '#9ea1a4'],
+                          ['Providers Used', String(cx.summary.providersUsed), '#62f1f1'],
+                          ['Evidence Confidence', `${cx.summary.evidenceConfidencePercent}%`, '#d6dce0'],
                         ] as const).map(([label, value, color]) => (
-                          <div key={label} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                            <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
+                          <div key={label} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(14,17,20,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                            <div style={{ fontSize: '9px', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
                             <div style={{ fontSize: '16px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
                           </div>
                         ))}
@@ -7011,36 +7024,36 @@ export default function TerminalTokenScanner() {
                       {cx.providerDisagreement.detected && (
                         <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.25)' }}>
                           <span style={{ fontSize: '11px', fontWeight: 800, color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>PROVIDER DISAGREEMENT DETECTED — CONFIDENCE REDUCED</span>
-                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#94a3b8', lineHeight: 1.5 }}>{cx.providerDisagreement.detail}</p>
+                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#9ea1a4', lineHeight: 1.5 }}>{cx.providerDisagreement.detail}</p>
                         </div>
                       )}
 
                       {/* Module Confidence — one row per subsystem: status/confidence/provider/reason. */}
                       <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: '#67e8f9' }}>Module Confidence</p>
+                        <p style={{ ...cardTitle, color: '#62f1f1' }}>Module Confidence</p>
                         <div style={{ display: 'grid', gap: '10px', marginTop: '4px' }}>
                           {cx.modules.map((m) => (
-                            <div key={m.module} style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr auto', alignItems: 'start', gap: '10px', paddingBottom: '8px', borderBottom: '1px solid rgba(148,163,184,.07)' }}>
-                              <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{m.module}</span>
+                            <div key={m.module} style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr auto', alignItems: 'start', gap: '10px', paddingBottom: '8px', borderBottom: '1px solid rgba(158,161,164,.07)' }}>
+                              <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{m.module}</span>
                               <span style={{ fontSize: '11px', fontWeight: 700, color: confColor(m.confidence), fontFamily: 'var(--font-plex-mono)' }}>{m.confidence}</span>
-                              <span style={{ fontSize: '11px', color: '#8ea0b5', lineHeight: 1.5 }}>{m.reason} <span style={{ color: '#5b7590' }}>({m.provider})</span></span>
-                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m.scoreEarned} / {m.scoreMax}</span>
+                              <span style={{ fontSize: '11px', color: '#9b9ea1', lineHeight: 1.5 }}>{m.reason} <span style={{ color: '#6e7174' }}>({m.provider})</span></span>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#d6dce0', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m.scoreEarned} / {m.scoreMax}</span>
                             </div>
                           ))}
                           <div style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr auto', alignItems: 'center', gap: '10px', paddingTop: '2px' }}>
-                            <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>Total</span>
+                            <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>Total</span>
                             <span />
                             <span />
-                            <span style={{ fontSize: '13px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.score} / {cx.scoreMax}</span>
+                            <span style={{ fontSize: '13px', fontWeight: 800, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>{cx.score} / {cx.scoreMax}</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Evidence Coverage — completed vs unavailable evidence MODULES, each with why. */}
-                      <div style={{ padding: '16px 18px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.16)', borderRadius: '14px' }}>
+                      <div style={{ padding: '16px 18px', background: 'rgba(98,241,241,0.04)', border: '1px solid rgba(98,241,241,0.16)', borderRadius: '14px' }}>
                         <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '10px' }}>
-                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>EVIDENCE COVERAGE</span>
-                          <span style={{ fontSize: '18px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoveragePercent}%</span>
+                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#6e7174', fontFamily: 'var(--font-plex-mono)' }}>EVIDENCE COVERAGE</span>
+                          <span style={{ fontSize: '18px', fontWeight: 800, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoveragePercent}%</span>
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '14px' }}>
                           <div>
@@ -7053,11 +7066,11 @@ export default function TerminalTokenScanner() {
                             ))}
                           </div>
                           <div>
-                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unavailable</p>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unavailable</p>
                             {cx.unavailableEvidence.map((u) => (
                               <div key={u.label} style={{ marginBottom: '6px' }}>
-                                <span style={{ fontSize: '11px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{u.label}</span>
-                                {u.reason && <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{u.reason}</p>}
+                                <span style={{ fontSize: '11px', color: '#d1d4d7', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{u.label}</span>
+                                {u.reason && <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#86898c', lineHeight: 1.5 }}>{u.reason}</p>}
                               </div>
                             ))}
                           </div>
@@ -7077,7 +7090,7 @@ export default function TerminalTokenScanner() {
                                 <span style={{ fontSize: '11px', color: '#86efac', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{f.label}</span>
                                 <span style={{ fontSize: '10px', color: '#34d399', fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>+{f.weight}</span>
                               </div>
-                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#4a627e' }}>· {f.confidence} · {f.source}</span></p>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#86898c', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#5c5f62' }}>· {f.confidence} · {f.source}</span></p>
                             </div>
                           ))}
                         </div>
@@ -7090,19 +7103,19 @@ export default function TerminalTokenScanner() {
                                 <span style={{ fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{f.label}</span>
                                 <span style={{ fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{f.weight}</span>
                               </div>
-                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#4a627e' }}>· {f.confidence} · {f.source}</span></p>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#86898c', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#5c5f62' }}>· {f.confidence} · {f.source}</span></p>
                             </div>
                           ))}
                         </div>
-                        <div style={{ padding: '12px 14px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '12px' }}>
-                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unknown</p>
+                        <div style={{ padding: '12px 14px', background: 'rgba(158,161,164,0.04)', border: '1px solid rgba(158,161,164,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unknown</p>
                           {cx.unknownFactors.map((u, i) => (
                             <div key={i} style={{ marginBottom: '7px' }}>
                               <div style={{ display: 'flex', gap: '7px' }}>
-                                <span style={{ color: '#64748b', flexShrink: 0, fontWeight: 800, fontSize: '11px' }}>?</span>
-                                <span style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{u.label}</span>
+                                <span style={{ color: '#6f7275', flexShrink: 0, fontWeight: 800, fontSize: '11px' }}>?</span>
+                                <span style={{ fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{u.label}</span>
                               </div>
-                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{u.reason}</p>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#86898c', lineHeight: 1.5 }}>{u.reason}</p>
                             </div>
                           ))}
                         </div>
@@ -7110,37 +7123,37 @@ export default function TerminalTokenScanner() {
 
                       {/* Deep Analysis — Already Completed / Available / Unsupported, honestly split. */}
                       <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Analysis</p>
+                        <p style={{ ...cardTitle, color: '#d6dce0' }}>Deep Analysis</p>
                         <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Already Completed</p>
                         <div style={{ marginBottom: '10px' }}>
                           {cx.deepAnalysisCompleted.map((label) => (
                             <div key={label} style={{ display: 'flex', gap: '7px', marginBottom: '3px' }}>
                               <span style={{ color: '#34d399', fontSize: '11px' }}>✓</span>
-                              <span style={{ fontSize: '11.5px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
+                              <span style={{ fontSize: '11.5px', color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
                             </div>
                           ))}
                         </div>
                         {cx.deepAnalysisAvailable.length > 0 && (
                           <>
-                            <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deep Scan Available</p>
+                            <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deep Scan Available</p>
                             <div style={{ marginBottom: '10px' }}>
                               {cx.deepAnalysisAvailable.map((d) => (
                                 <div key={d.label} style={{ marginBottom: '5px' }}>
-                                  <span style={{ fontSize: '11.5px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
-                                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#7c8aa0', lineHeight: 1.5 }}>{d.reason}</p>
+                                  <span style={{ fontSize: '11.5px', color: '#e4e7ea', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
+                                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#86898c', lineHeight: 1.5 }}>{d.reason}</p>
                                 </div>
                               ))}
                             </div>
                           </>
                         )}
-                        <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Not Yet Supported</p>
+                        <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Not Yet Supported</p>
                         <div style={{ display: 'grid', gap: '6px' }}>
                           {cx.deepAnalysisUnsupported.map((d) => (
                             <div key={d.label} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                              <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#4a627e' }}>—</span>
+                              <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#5c5f62' }}>—</span>
                               <div>
-                                <span style={{ fontSize: '11.5px', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
-                                <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#5b7590', lineHeight: 1.5 }}>{d.reason}</p>
+                                <span style={{ fontSize: '11.5px', color: '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
+                                <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#6e7174', lineHeight: 1.5 }}>{d.reason}</p>
                               </div>
                             </div>
                           ))}
@@ -7148,11 +7161,11 @@ export default function TerminalTokenScanner() {
                       </div>
 
                       {/* Next Action — generated from real gaps, never generic advice. */}
-                      <div style={{ padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                      <div style={{ padding: '14px 18px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
                         <div style={{ display: 'grid', gap: '5px' }}>
                           {cx.nextActions.map((a) => (
-                            <p key={a} style={{ margin: 0, fontSize: '11.5px', color: '#67e8f9', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>→ {a}</p>
+                            <p key={a} style={{ margin: 0, fontSize: '11.5px', color: '#62f1f1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>→ {a}</p>
                           ))}
                         </div>
                       </div>
@@ -7201,28 +7214,28 @@ export default function TerminalTokenScanner() {
                   const cxForDev = computeSolanaCortexRisk(sr)
                   const fmtAddr = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : null
                   const originAddr = dc?.resolved.likelyCreatorWallet ?? null
-                  const creatorTierColor = sr.creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : sr.creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : sr.creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
+                  const creatorTierColor = sr.creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : sr.creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : sr.creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#9ea1a4'
                   const originChip = { label: sr.creatorConfidence.tier === 'UNKNOWN' ? 'Not run' : `${sr.creatorConfidence.tier} (${sr.creatorConfidence.confidencePercent}%)`, color: creatorTierColor, bg: `${creatorTierColor}1a`, border: `${creatorTierColor}55` }
-                  const tabStyle = (active: boolean) => ({ padding: '8px 12px', borderRadius: '10px', border: active ? '1px solid rgba(125,211,252,0.45)' : '1px solid rgba(148,163,184,0.2)', background: active ? 'rgba(14,29,47,0.95)' : 'rgba(8,14,28,0.6)', color: active ? '#7dd3fc' : '#94a3b8', fontSize: '10px', letterSpacing: '.10em' as const, textTransform: 'uppercase' as const, fontWeight: 700, fontFamily: 'var(--font-plex-mono)' })
+                  const tabStyle = (active: boolean) => ({ padding: '8px 12px', borderRadius: '10px', border: active ? '1px solid rgba(169,233,236,0.45)' : '1px solid rgba(158,161,164,0.2)', background: active ? 'rgba(24,27,30,0.95)' : 'rgba(8,14,28,0.6)', color: active ? '#a9e9ec' : '#9ea1a4', fontSize: '10px', letterSpacing: '.10em' as const, textTransform: 'uppercase' as const, fontWeight: 700, fontFamily: 'var(--font-plex-mono)' })
                   return (
                     <>
                       {/* Hero — same shape as EVM's CORTEX Dev Control Read: score/100, verdict,
                           confidence, progress bar. Score is a dedicated Solana-native formula
                           (authority state + Deep Creator Check resolution), not the overall
                           Cortex Risk Engine score. */}
-                      <div style={{ marginBottom: '12px', padding: '18px', borderRadius: '14px', border: '1px solid rgba(125,211,252,0.22)', background: 'linear-gradient(165deg, rgba(14,24,43,0.95), rgba(8,14,26,0.95))', boxShadow: '0 10px 28px rgba(5,10,25,0.45)' }}>
+                      <div style={{ marginBottom: '12px', padding: '18px', borderRadius: '14px', border: '1px solid rgba(169,233,236,0.22)', background: 'linear-gradient(165deg, rgba(20,23,26,0.95), rgba(11,14,17,0.95))', boxShadow: '0 10px 28px rgba(5,10,25,0.45)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
                           <div>
-                            <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX Dev Control Read · Solana</p>
-                            <p style={{ margin: 0, fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Mint/freeze authority state and Deep Creator Check evidence — Solana-native dev intelligence, not an EVM deployer model.</p>
+                            <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.14em', color: '#a9e9ec', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX Dev Control Read · Solana</p>
+                            <p style={{ margin: 0, fontSize: '12px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)' }}>Mint/freeze authority state and Deep Creator Check evidence — Solana-native dev intelligence, not an EVM deployer model.</p>
                           </div>
-                          <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{devScore}<span style={{ fontSize: '12px', color: '#64748b' }}>/100</span></p>
+                          <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{devScore}<span style={{ fontSize: '12px', color: '#6f7275' }}>/100</span></p>
                         </div>
                         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
                           <span style={{ padding: '4px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, color: devVerdictColor, background: `${devVerdictColor}1a`, border: `1px solid ${devVerdictColor}55`, fontFamily: 'var(--font-plex-mono)' }}>{devVerdict}</span>
-                          <span style={{ padding: '4px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.26)', fontFamily: 'var(--font-plex-mono)' }}>CONFIDENCE {devConfidence}</span>
+                          <span style={{ padding: '4px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, color: '#a9e9ec', border: '1px solid rgba(169,233,236,0.26)', fontFamily: 'var(--font-plex-mono)' }}>CONFIDENCE {devConfidence}</span>
                         </div>
-                        <div style={{ height: '8px', borderRadius: '999px', background: 'rgba(15,23,42,0.9)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={{ width: `${devScore}%`, height: '100%', background: 'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
+                        <div style={{ height: '8px', borderRadius: '999px', background: 'rgba(20,23,26,0.9)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={{ width: `${devScore}%`, height: '100%', background: 'linear-gradient(90deg, #1fd6dc, #a9e9ec)' }} /></div>
                       </div>
 
                       {/* Stat row — Deployer/Linked Wallets/Supply Control/Patterns, matching EVM's
@@ -7235,9 +7248,9 @@ export default function TerminalTokenScanner() {
                           ['Supply Control', !sr.authorityReadSucceeded ? formatTokenScannerPublicStatus('unavailable', 'authority read did not succeed') : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
                           ['Patterns', `${sr.patternAnalysis.patterns.filter(p => p.detected !== null).length}/${sr.patternAnalysis.patterns.length} checkable`],
                         ]).map(([k, v]) => (
-                          <div key={k} style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.82)' }}>
-                            <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
-                            <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{v}</p>
+                          <div key={k} style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(158,161,164,0.2)', background: 'rgba(12,15,18,0.82)' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.12em', color: '#6f7275', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
+                            <p style={{ margin: 0, fontSize: '12px', color: '#e4e7ea', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{v}</p>
                           </div>
                         ))}
                       </div>
@@ -7249,43 +7262,43 @@ export default function TerminalTokenScanner() {
                           <button key={id} type="button" onClick={() => setDevControlTab(id)} style={tabStyle(devControlTab === id)}>{label}</button>
                         ))}
                       </div>
-                      <div style={{ border: '1px solid rgba(148,163,184,0.2)', borderRadius: '14px', padding: '14px', background: 'rgba(7,12,24,0.8)' }}>
+                      <div style={{ border: '1px solid rgba(158,161,164,0.2)', borderRadius: '14px', padding: '14px', background: 'rgba(9,12,15,0.8)' }}>
                         {devControlTab === 'dev-map' && (
                           <div style={{ display: 'grid', gap: '16px' }}>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr auto 1fr', alignItems: 'stretch', gap: '6px' }}>
-                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(14,24,43,.9),rgba(8,16,32,.85))', border: '1px solid rgba(125,211,252,.28)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(20,23,26,.9),rgba(8,16,32,.85))', border: '1px solid rgba(169,233,236,.28)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#7dd3fc', flexShrink: 0 }} />
-                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#a9e9ec', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#a9e9ec', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
                                 </div>
-                                <span title={sr.mintAddress} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(125,211,252,.08)', border: '1px solid rgba(125,211,252,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.mintAddress)}</span>
-                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>SOLANA mainnet</span>
+                                <span title={sr.mintAddress} style={{ fontSize: '10px', color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)', background: 'rgba(169,233,236,.08)', border: '1px solid rgba(169,233,236,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.mintAddress)}</span>
+                                <span style={{ fontSize: '9px', color: '#505356', fontFamily: 'var(--font-plex-mono)' }}>SOLANA mainnet</span>
                               </div>
-                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#2dd4bf', fontSize: '14px', lineHeight: 1 }}>→</span></div>
-                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border: `1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(148,163,184,.18)'}`, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#1fd6dc', fontSize: '14px', lineHeight: 1 }}>→</span></div>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border: `1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(158,161,164,.18)'}`, display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: originAddr ? '#fbbf24' : '#475569', flexShrink: 0 }} />
-                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: originAddr ? '#fbbf24' : '#505356', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
                                 </div>
                                 {originAddr ? (
-                                  <span title={originAddr} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(originAddr)}</span>
+                                  <span title={originAddr} style={{ fontSize: '10px', color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(originAddr)}</span>
                                 ) : (
-                                  <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{dc ? 'Not resolved' : 'Deep Creator Check not run'}</span>
+                                  <span style={{ fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>{dc ? 'Not resolved' : 'Deep Creator Check not run'}</span>
                                 )}
                                 <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: originChip.color, background: originChip.bg, border: `1px solid ${originChip.border}`, width: 'fit-content' }}>{originChip.label}</span>
                               </div>
-                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#2dd4bf', fontSize: '14px', lineHeight: 1 }}>→</span></div>
-                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(9,15,29,.9),rgba(6,10,20,.85))', border: '1px solid rgba(148,163,184,.18)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#1fd6dc', fontSize: '14px', lineHeight: 1 }}>→</span></div>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(12,15,18,.9),rgba(7,10,13,.85))', border: '1px solid rgba(158,161,164,.18)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#475569', flexShrink: 0 }} />
-                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LINKED WALLETS</span>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#505356', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LINKED WALLETS</span>
                                 </div>
                                 {sr.clusterMap && sr.clusterMap.fundingPath.length > 0 ? (
-                                  <span title={sr.clusterMap.fundingPath[0]} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.clusterMap.fundingPath[0])}</span>
+                                  <span title={sr.clusterMap.fundingPath[0]} style={{ fontSize: '10px', color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)', background: 'rgba(31,214,220,.08)', border: '1px solid rgba(31,214,220,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.clusterMap.fundingPath[0])}</span>
                                 ) : (
-                                  <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? 'No verified wallet relationships found' : 'Deep Cluster Check not run'}</span>
+                                  <span style={{ fontSize: '10px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? 'No verified wallet relationships found' : 'Deep Cluster Check not run'}</span>
                                 )}
-                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? `${sr.clusterMap.evidenceCount} verified relationship(s)` : 'Run Deep Cluster Check from the Cluster Map tab'}</span>
+                                <span style={{ fontSize: '9px', color: '#505356', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? `${sr.clusterMap.evidenceCount} verified relationship(s)` : 'Run Deep Cluster Check from the Cluster Map tab'}</span>
                               </div>
                             </div>
 
@@ -7294,7 +7307,7 @@ export default function TerminalTokenScanner() {
                                 entirely from the real Deep Creator Check result. */}
                             <div>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                                <span style={{ fontSize: '10px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LIKELY DEPLOYER</span>
+                                <span style={{ fontSize: '10px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LIKELY DEPLOYER</span>
                                 <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: originChip.color, background: originChip.bg, border: `1px solid ${originChip.border}` }}>{originChip.label}</span>
                               </div>
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px' }}>
@@ -7304,9 +7317,9 @@ export default function TerminalTokenScanner() {
                                   ['Evidence Source', sr.creatorConfidence.reason],
                                   ['Network', 'SOLANA'],
                                 ]).map(([k, v]) => (
-                                  <div key={k} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(9,15,29,0.7)' }}>
-                                    <p style={{ margin: '0 0 4px', fontSize: '9px', letterSpacing: '.10em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
-                                    <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{v}</p>
+                                  <div key={k} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.16)', background: 'rgba(12,15,18,0.7)' }}>
+                                    <p style={{ margin: '0 0 4px', fontSize: '9px', letterSpacing: '.10em', color: '#6f7275', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
+                                    <p style={{ margin: 0, fontSize: '11px', color: '#e4e7ea', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{v}</p>
                                   </div>
                                 ))}
                               </div>
@@ -7316,32 +7329,32 @@ export default function TerminalTokenScanner() {
                                 trigger for Helius Enhanced Transactions anywhere in this engine.
                                 Never runs on page load or on a normal scan — only on this click. */}
                             {!sr.deepCreator ? (
-                              <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(167,139,250,0.30)', background: 'rgba(167,139,250,0.03)' }}>
-                                <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8ea0b5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Resolves a likely creator wallet by tracing this mint&apos;s earliest transaction via Helius Enhanced Transactions — a paid, more expensive lookup, not run by default.</p>
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(207,214,218,0.30)', background: 'rgba(207,214,218,0.03)' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#9b9ea1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Resolves a likely creator wallet by tracing this mint&apos;s earliest transaction via Helius Enhanced Transactions — a paid, more expensive lookup, not run by default.</p>
                                 <button
                                   type="button"
                                   onClick={() => { void runSolanaDeepCreatorCheck() }}
                                   disabled={solanaDeepLoading}
-                                  style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(167,139,250,0.45)', background: solanaDeepLoading ? 'rgba(167,139,250,0.08)' : 'linear-gradient(135deg,rgba(167,139,250,0.20),rgba(96,165,250,0.14))', color: '#e9d5ff', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaDeepLoading ? 'default' : 'pointer' }}
+                                  style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(207,214,218,0.45)', background: solanaDeepLoading ? 'rgba(207,214,218,0.08)' : 'linear-gradient(135deg,rgba(207,214,218,0.20),rgba(196,210,218,0.14))', color: '#e9edef', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaDeepLoading ? 'default' : 'pointer' }}
                                 >
                                   {solanaDeepLoading ? 'RUNNING DEEP CHECK…' : 'RUN DEEP CREATOR CHECK →'}
                                 </button>
                                 {solanaDeepError && <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#f87171' }}>{solanaDeepError}</p>}
                               </div>
                             ) : dc && !dc.success && (
-                              <p style={{ margin: 0, fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>Deep Creator Check ran but did not resolve a likely creator wallet — open check.</p>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#9b9ea1', fontFamily: 'var(--font-plex-mono)' }}>Deep Creator Check ran but did not resolve a likely creator wallet — open check.</p>
                             )}
 
                             {sr.clusterMap ? (
-                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.16)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
-                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{sr.clusterMap.summary}</p>
-                                {sr.clusterMap.evidenceCount > 0 && <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>See the Cluster Map tab for the full relationship graph and risk read.</p>}
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(31,214,220,.04)', border: '1px solid rgba(31,214,220,.16)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#1fd6dc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{sr.clusterMap.summary}</p>
+                                {sr.clusterMap.evidenceCount > 0 && <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#86898c', fontFamily: 'var(--font-plex-mono)' }}>See the Cluster Map tab for the full relationship graph and risk read.</p>}
                               </div>
                             ) : (
-                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
-                                <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Not run yet — open the Cluster Map tab and run Deep Cluster Check to trace a real, evidence-backed funding path for this mint&apos;s likely creator wallet.</p>
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(158,161,164,.04)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Not run yet — open the Cluster Map tab and run Deep Cluster Check to trace a real, evidence-backed funding path for this mint&apos;s likely creator wallet.</p>
                               </div>
                             )}
                           </div>
@@ -7399,33 +7412,33 @@ export default function TerminalTokenScanner() {
                               detail: sc.supplyFixedReason,
                             },
                           ]
-                          const verdictColor = (v: Conclusion['verdict']) => v === 'safe' ? '#34d399' : v === 'risk' ? '#f87171' : '#94a3b8'
+                          const verdictColor = (v: Conclusion['verdict']) => v === 'safe' ? '#34d399' : v === 'risk' ? '#f87171' : '#9ea1a4'
                           return (
                             <div style={{ display: 'grid', gap: '14px' }}>
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '10px' }}>
                                 {conclusions.map((c) => (
-                                  <div key={c.question} style={{ padding: '14px 16px', borderRadius: '13px', background: `linear-gradient(160deg, ${verdictColor(c.verdict)}0e, rgba(6,10,20,0.75))`, border: `1px solid ${verdictColor(c.verdict)}35` }}>
-                                    <p style={{ margin: '0 0 7px', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{c.question}</p>
+                                  <div key={c.question} style={{ padding: '14px 16px', borderRadius: '13px', background: `linear-gradient(160deg, ${verdictColor(c.verdict)}0e, rgba(7,10,13,0.75))`, border: `1px solid ${verdictColor(c.verdict)}35` }}>
+                                    <p style={{ margin: '0 0 7px', fontSize: '10px', color: '#9b9ea1', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{c.question}</p>
                                     <p style={{ margin: '0 0 8px', fontSize: '15px', fontWeight: 800, color: verdictColor(c.verdict), fontFamily: 'var(--font-plex-mono)' }}>{c.answer}</p>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{c.detail}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#86898c', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{c.detail}</p>
                                   </div>
                                 ))}
                               </div>
 
-                              <p style={{ margin: '4px 0 0', fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Raw Evidence</p>
+                              <p style={{ margin: '4px 0 0', fontSize: '9px', letterSpacing: '.14em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Raw Evidence</p>
                               <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
-                                <StatCard label="Current Supply" value={sc.currentSupply != null ? sc.currentSupply.toLocaleString('en-US') : 'Unavailable'} accent="#5eead4" dim={sc.currentSupply == null} />
-                                <StatCard label="Max Supply" value={sc.maxSupply != null ? sc.maxSupply.toLocaleString('en-US') : 'No fixed cap'} accent={sc.maxSupply != null ? '#34d399' : '#94a3b8'} dim={sc.maxSupply == null} />
-                                <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
-                                <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
-                                <StatCard label="Token Program" value={sc.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sc.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
-                                <StatCard label="Future Inflation" value={sc.inflationPossible == null ? 'Unknown' : sc.inflationPossible ? 'Possible' : 'Not possible'} accent={sc.inflationPossible == null ? '#94a3b8' : sc.inflationPossible ? '#f87171' : '#34d399'} dim={sc.inflationPossible == null} />
-                                <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8'} dim={!(sr.helius.called && sr.helius.success)} />
+                                <StatCard label="Current Supply" value={sc.currentSupply != null ? sc.currentSupply.toLocaleString('en-US') : 'Unavailable'} accent="#62f1f1" dim={sc.currentSupply == null} />
+                                <StatCard label="Max Supply" value={sc.maxSupply != null ? sc.maxSupply.toLocaleString('en-US') : 'No fixed cap'} accent={sc.maxSupply != null ? '#34d399' : '#9ea1a4'} dim={sc.maxSupply == null} />
+                                <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#9ea1a4' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
+                                <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#9ea1a4' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
+                                <StatCard label="Token Program" value={sc.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sc.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#62f1f1" dim />
+                                <StatCard label="Future Inflation" value={sc.inflationPossible == null ? 'Unknown' : sc.inflationPossible ? 'Possible' : 'Not possible'} accent={sc.inflationPossible == null ? '#9ea1a4' : sc.inflationPossible ? '#f87171' : '#34d399'} dim={sc.inflationPossible == null} />
+                                <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#62f1f1' : '#9ea1a4'} dim={!(sr.helius.called && sr.helius.success)} />
                               </div>
-                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Token-2022 Extensions (Raw)</p>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Token-2022 Extensions (Raw)</p>
                                 {sc.extensionExplanations.map((line, i) => (
-                                  <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: sc.extensions.length > 0 ? '#fde68a' : '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{line}</p>
+                                  <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: sc.extensions.length > 0 ? '#fde68a' : '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{line}</p>
                                 ))}
                               </div>
                             </div>
@@ -7434,17 +7447,17 @@ export default function TerminalTokenScanner() {
 
                         {devControlTab === 'cluster-map' && (() => {
                           const cm = sr.clusterMap
-                          const riskColor = cm?.riskLevel === 'elevated' ? '#fb923c' : cm?.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
+                          const riskColor = cm?.riskLevel === 'elevated' ? '#fb923c' : cm?.riskLevel === 'standard' ? '#34d399' : '#9ea1a4'
                           return (
                             <div style={{ display: 'grid', gap: '12px' }}>
                               {!cm ? (
-                                <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.03)' }}>
-                                  <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8ea0b5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Traces the mint&apos;s likely creator wallet (resolving it first via Deep Creator Check if needed), then one further hop: who first funded that wallet with SOL. Real, verified relationships only — never a fabricated wallet graph.</p>
+                                <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(31,214,220,0.30)', background: 'rgba(31,214,220,0.03)' }}>
+                                  <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#9b9ea1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Traces the mint&apos;s likely creator wallet (resolving it first via Deep Creator Check if needed), then one further hop: who first funded that wallet with SOL. Real, verified relationships only — never a fabricated wallet graph.</p>
                                   <button
                                     type="button"
                                     onClick={() => { void runSolanaDeepClusterCheck() }}
                                     disabled={solanaClusterLoading}
-                                    style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.45)', background: solanaClusterLoading ? 'rgba(45,212,191,0.08)' : 'linear-gradient(135deg,rgba(45,212,191,0.20),rgba(96,165,250,0.14))', color: '#99f6e4', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaClusterLoading ? 'default' : 'pointer' }}
+                                    style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(31,214,220,0.45)', background: solanaClusterLoading ? 'rgba(31,214,220,0.08)' : 'linear-gradient(135deg,rgba(31,214,220,0.20),rgba(196,210,218,0.14))', color: '#a8f3f3', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaClusterLoading ? 'default' : 'pointer' }}
                                   >
                                     {solanaClusterLoading ? 'RUNNING DEEP CLUSTER CHECK…' : 'RUN DEEP CLUSTER CHECK →'}
                                   </button>
@@ -7452,13 +7465,13 @@ export default function TerminalTokenScanner() {
                                 </div>
                               ) : (
                                 <>
-                                  <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                    <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Summary</p>
-                                    <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
+                                  <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                    <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Summary</p>
+                                    <p style={{ margin: 0, fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
                                     {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
                                   </div>
                                   <SolanaClusterGraphPanel key={cm.nodes.map((n) => n.id).join(',')} clusterMap={cm} creatorConfidence={sr.creatorConfidence} tokenName={sr.resolvedTokenName} tokenSymbol={sr.resolvedTokenSymbol} />
-                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + two-hop funding trace and a bounded recent-launch sample (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), LP pool identity, and top-holder / LP-vault nodes with on-chain owner resolution (Solana RPC). A wallet appearing in multiple roles is merged into one node — that address-equality merge is the shared-authority discovery. Cross-mint shared-signer/shared-ATA-creation relationships, full launch history, treasury/exchange/market-maker labels, and Metaplex update authority are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history, a wallet-labeling provider, or a Metaplex metadata-PDA derivation this codebase does not perform. See the &quot;Cannot be verified&quot; card above for each reason.</p>
+                                  <p style={{ margin: 0, fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + two-hop funding trace and a bounded recent-launch sample (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), LP pool identity, and top-holder / LP-vault nodes with on-chain owner resolution (Solana RPC). A wallet appearing in multiple roles is merged into one node — that address-equality merge is the shared-authority discovery. Cross-mint shared-signer/shared-ATA-creation relationships, full launch history, treasury/exchange/market-maker labels, and Metaplex update authority are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history, a wallet-labeling provider, or a Metaplex metadata-PDA derivation this codebase does not perform. See the &quot;Cannot be verified&quot; card above for each reason.</p>
                                 </>
                               )}
                             </div>
@@ -7469,9 +7482,9 @@ export default function TerminalTokenScanner() {
                           const tl = sr.supplyTimeline
                           return (
                             <div style={{ display: 'grid', gap: '10px' }}>
-                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deployer identity</p>
-                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deployer identity</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
                                   {creatorResolved
                                     ? `Likely creator wallet identified from the mint's earliest found transaction (fee payer${dc?.resolved.transactionSource ? `, source: ${dc.resolved.transactionSource}` : ''}) — a strong signal, not a certainty.`
                                     : dc && !dc.success
@@ -7480,32 +7493,32 @@ export default function TerminalTokenScanner() {
                                 </p>
                               </div>
                               {tl.events.map((ev, i) => (
-                                <div key={i} style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <div key={i} style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
                                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{ev.label}</p>
-                                    <p style={{ margin: 0, fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{ev.timestamp ?? ev.approxAge ?? ''}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#a9e9ec', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{ev.label}</p>
+                                    <p style={{ margin: 0, fontSize: '9.5px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>{ev.timestamp ?? ev.approxAge ?? ''}</p>
                                   </div>
-                                  <p style={{ margin: '6px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev.detail}</p>
-                                  <p style={{ margin: '4px 0 0', fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>Source: {ev.source}</p>
+                                  <p style={{ margin: '6px 0 0', fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev.detail}</p>
+                                  <p style={{ margin: '4px 0 0', fontSize: '9px', color: '#505356', fontFamily: 'var(--font-plex-mono)' }}>Source: {ev.source}</p>
                                 </div>
                               ))}
                               {tl.reconstructionGaps.length > 0 && (
-                                <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                  <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What can&apos;t be reconstructed</p>
+                                <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(158,161,164,.04)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                  <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#6f7275', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What can&apos;t be reconstructed</p>
                                   {tl.reconstructionGaps.map((g, i) => (
-                                    <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{g}</p>
+                                    <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{g}</p>
                                   ))}
                                 </div>
                               )}
-                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 8px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Pattern Analysis</p>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '9px', letterSpacing: '.12em', color: '#505356', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Pattern Analysis</p>
                                 {sr.patternAnalysis.patterns.map((p) => (
                                   <div key={p.key} style={{ marginBottom: '8px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-                                      <p style={{ margin: 0, fontSize: '10.5px', color: p.detected === null ? '#64748b' : p.detected ? '#fb923c' : '#5eead4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{p.label}</p>
-                                      <p style={{ margin: 0, fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{p.detected === null ? 'UNAVAILABLE' : p.detected ? `DETECTED · ${p.confidence}` : `NOT DETECTED · ${p.confidence}`}</p>
+                                      <p style={{ margin: 0, fontSize: '10.5px', color: p.detected === null ? '#6f7275' : p.detected ? '#fb923c' : '#62f1f1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{p.label}</p>
+                                      <p style={{ margin: 0, fontSize: '9.5px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>{p.detected === null ? 'UNAVAILABLE' : p.detected ? `DETECTED · ${p.confidence}` : `NOT DETECTED · ${p.confidence}`}</p>
                                     </div>
-                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{p.evidence}</p>
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#9b9ea1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{p.evidence}</p>
                                   </div>
                                 ))}
                               </div>
@@ -7515,29 +7528,29 @@ export default function TerminalTokenScanner() {
 
                         {devControlTab === 'watch-plan' && (
                           <div style={{ display: 'grid', gap: '10px' }}>
-                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(125,211,252,.04)', border: '1px solid rgba(125,211,252,.2)' }}>
-                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
-                              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(169,233,236,.04)', border: '1px solid rgba(169,233,236,.2)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#a9e9ec', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
                                 {`Deployer ${sr.creatorConfidence.tier.toLowerCase()}${sr.creatorConfidence.tier !== 'UNKNOWN' ? ` (${sr.creatorConfidence.confidencePercent}%)` : ''}. Mint authority ${mintRevoked ? 'revoked' : 'active'}, freeze authority ${freezeRevoked ? 'revoked' : 'active'}. ${sr.clusterMap ? sr.clusterMap.summary : 'Wallet clustering not run — see Cluster Map tab.'}`}
                               </p>
                             </div>
-                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(12,15,18,.8)', border: '1px solid rgba(158,161,164,.14)' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
-                                <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.14em', color: '#475569', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Developer Score Breakdown</p>
-                                <p style={{ margin: 0, fontSize: '14px', color: '#f8fafc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{sr.developerScore.score}<span style={{ fontSize: '10px', color: '#64748b' }}>/{sr.developerScore.scaledMaxScore}</span></p>
+                                <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.14em', color: '#505356', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Developer Score Breakdown</p>
+                                <p style={{ margin: 0, fontSize: '14px', color: '#f8fafc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{sr.developerScore.score}<span style={{ fontSize: '10px', color: '#6f7275' }}>/{sr.developerScore.scaledMaxScore}</span></p>
                               </div>
                               {sr.developerScore.scaledMaxScore !== sr.developerScore.maxScore && (
-                                <p style={{ margin: '0 0 8px', fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '9.5px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
                                   Scored out of {sr.developerScore.scaledMaxScore} — checks not yet run for this scan are excluded, not counted against it.
                                 </p>
                               )}
                               {sr.developerScore.components.map((c, i) => (
                                 <div key={i} style={{ marginTop: i === 0 ? 0 : '8px', opacity: c.skipped ? 0.55 : 1 }}>
                                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{c.label}{c.skipped ? ' (not run)' : ''}</p>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: c.skipped ? '#64748b' : '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{c.skipped ? 'excluded' : `${c.points}/${c.maxPoints}`}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#d1d4d7', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{c.label}{c.skipped ? ' (not run)' : ''}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: c.skipped ? '#6f7275' : '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>{c.skipped ? 'excluded' : `${c.points}/${c.maxPoints}`}</p>
                                   </div>
-                                  <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{c.reason}</p>
+                                  <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#86898c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{c.reason}</p>
                                 </div>
                               ))}
                             </div>
@@ -7555,27 +7568,27 @@ export default function TerminalTokenScanner() {
                                 ))}
                               </div>
                             </div>
-                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.18)' }}>
-                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>NEXT ACTION</p>
+                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(31,214,220,.04)', border: '1px solid rgba(31,214,220,.18)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#1fd6dc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>NEXT ACTION</p>
                               {cxForDev.nextActions.map((a) => (
-                                <p key={a} style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{a}</p>
+                                <p key={a} style={{ margin: 0, fontSize: '11px', color: '#a8f3f3', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{a}</p>
                               ))}
                             </div>
-                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.18)' }}>
-                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>WATCH PLAN</p>
+                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(31,214,220,.04)', border: '1px solid rgba(31,214,220,.18)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#1fd6dc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>WATCH PLAN</p>
                               {sr.watchPlan.length > 0 ? sr.watchPlan.map((w, i) => (
                                 <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
-                                  <p style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{w.item}</p>
+                                  <p style={{ margin: 0, fontSize: '11px', color: '#a8f3f3', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{w.item}</p>
                                   <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#7ee0c9', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w.reason}</p>
                                 </div>
                               )) : (
-                                <p style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No active risk signals to monitor based on available evidence.</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#a8f3f3', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No active risk signals to monitor based on available evidence.</p>
                               )}
                             </div>
                           </div>
                         )}
                       </div>
-                      <p style={{ margin: '10px 2px 0', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Open verification items: Wallet cluster analysis · Transfer pattern analysis — neither is supported for Solana yet.</p>
+                      <p style={{ margin: '10px 2px 0', fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Open verification items: Wallet cluster analysis · Transfer pattern analysis — neither is supported for Solana yet.</p>
                     </>
                   )
                 })()}
@@ -7591,26 +7604,26 @@ export default function TerminalTokenScanner() {
             <div id="how-cortex-works" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               <div>
                 <div style={{ marginBottom: '16px' }}>
-                  <h2 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: 700, color: '#f1f5f9', lineHeight: 1.3, letterSpacing: '-0.01em' }}>
+                  <h2 style={{ margin: '0 0 4px', fontSize: '21px', fontWeight: 800, color: '#f4f6f7', lineHeight: 1.3, letterSpacing: '-0.01em', fontFamily: "var(--font-sora, 'Sora', sans-serif)" }}>
                     What this scan checks
                   </h2>
-                  <p style={{ margin: 0, fontSize: '13px', color: '#64748b', lineHeight: 1.5 }}>
+                  <p style={{ margin: 0, fontSize: '13px', color: '#6f7275', lineHeight: 1.5 }}>
                     A structured pre-trade pass with no fake values and no simulated certainty.
                   </p>
                 </div>
                 <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '16px', alignItems: 'stretch' }}>
                   {[
-                    { label: 'Market Pulse', color: '#2DD4BF', desc: 'Price, liquidity, volume, and pool depth.', icon: <path d="M3 17l5-6 4 4 8-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
-                    { label: 'Holder Map',   color: '#8b5cf6', desc: 'Top-holder concentration and supply distribution.', icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="2" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 4.5a3.2 3.2 0 010 6.4M21 20c0-2.6-1.6-4.8-4-5.6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
-                    { label: 'LP Safety',    color: '#ec4899', desc: 'Pool lock status, LP control, and exit risk.', icon: <><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" /><path d="M8 10V7a4 4 0 018 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
+                    { label: 'Market Pulse', color: '#1fd6dc', desc: 'Price, liquidity, volume, and pool depth.', icon: <path d="M3 17l5-6 4 4 8-9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
+                    { label: 'Holder Map',   color: '#d2d5d8', desc: 'Top-holder concentration and supply distribution.', icon: <><circle cx="9" cy="8" r="3.2" stroke="currentColor" strokeWidth="2" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M16 4.5a3.2 3.2 0 010 6.4M21 20c0-2.6-1.6-4.8-4-5.6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
+                    { label: 'LP Safety',    color: '#a9e9ec', desc: 'Pool lock status, LP control, and exit risk.', icon: <><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" strokeWidth="2" /><path d="M8 10V7a4 4 0 018 0v3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></> },
                     { label: 'Dev Activity', color: '#f59e0b', desc: 'Contract ownership, dev wallets, and recent activity.', icon: <path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /> },
                   ].map(mod => (
                     <div key={mod.label} className="preview-module-card">
-                      <span aria-hidden="true" className="preview-module-icon" style={{ color: mod.color, background: `${mod.color}1a`, border: `1px solid ${mod.color}33` }}>
+                      <span aria-hidden="true" className="preview-module-icon" style={{ color: mod.color }}>
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none">{mod.icon}</svg>
                       </span>
                       <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</p>
-                      <p style={{ margin: 0, fontSize: '14px', color: '#94a3b8', lineHeight: 1.55 }}>{mod.desc}</p>
+                      <p style={{ margin: 0, fontSize: '14px', color: '#9ea1a4', lineHeight: 1.55 }}>{mod.desc}</p>
                     </div>
                   ))}
                 </div>
@@ -7618,20 +7631,20 @@ export default function TerminalTokenScanner() {
 
               {/* ── After scan, CORTEX builds — compact single row ──── */}
               <div>
-                <p style={{ margin: '0 0 12px', fontSize: '11px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+                <p style={{ margin: '0 0 12px', fontSize: '11px', fontWeight: 700, color: '#6f7275', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
                   After scan, CORTEX builds
                 </p>
                 <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px' }}>
                   {[
-                    { label: 'Risk receipt', desc: 'Verdict, confidence, next action', color: '#2DD4BF' },
-                    { label: 'Holder + LP read', desc: 'Concentration, LP control, locks', color: '#8b5cf6' },
-                    { label: 'Dev control', desc: 'Deployer, ownership, activity', color: '#ec4899' },
+                    { label: 'Risk receipt', desc: 'Verdict, confidence, next action', color: '#1fd6dc' },
+                    { label: 'Holder + LP read', desc: 'Concentration, LP control, locks', color: '#d2d5d8' },
+                    { label: 'Dev control', desc: 'Deployer, ownership, activity', color: '#a9e9ec' },
                   ].map(row => (
                     <div key={row.label} className="after-scan-card">
                       <span aria-hidden="true" className="after-scan-dot" style={{ background: row.color, boxShadow: `0 0 6px ${row.color}66`, flexShrink: 0 }} />
                       <div style={{ minWidth: 0 }}>
-                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.label}</p>
-                        <p style={{ margin: 0, fontSize: '12px', color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.desc}</p>
+                        <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#e4e7ea', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.label}</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#6f7275', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.desc}</p>
                       </div>
                     </div>
                   ))}
@@ -7683,19 +7696,19 @@ export default function TerminalTokenScanner() {
                 <div style={{ minWidth: 0 }}>
                   <h2 style={{ fontSize: '21px', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
                     {result.name ?? 'Unknown'}
-                    {result.symbol && <span style={{ fontSize: '13px', fontWeight: 700, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
+                    {result.symbol && <span style={{ fontSize: '13px', fontWeight: 700, color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
                   </h2>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     {result.contract && (
-                      <span style={{ fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
+                      <span style={{ fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
                         {shorten(result.contract)}
                       </span>
                     )}
-                    <span style={{ padding: '3px 10px', border: '1px solid rgba(59,130,246,.38)', borderRadius: '999px', color: '#93c5fd', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(59,130,246,.07)' }}>
+                    <span style={{ padding: '3px 10px', border: '1px solid rgba(170,184,192,.38)', borderRadius: '999px', color: '#bee2e5', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(170,184,192,.07)' }}>
                       {String(result.chain ?? chain).toUpperCase()}
                     </span>
                     {result.resolvedInput && result.resolvedInput.type !== 'address' && (
-                      <span style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>Resolved from {result.resolvedInput.original.toUpperCase()}</span>
+                      <span style={{ fontSize: '10px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)' }}>Resolved from {result.resolvedInput.original.toUpperCase()}</span>
                     )}
                   </div>
                 </div>
@@ -7717,7 +7730,7 @@ export default function TerminalTokenScanner() {
                   { id: 'deployer-intel', label: 'Dev' },
                 ]
                 return (
-                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.09)' }}>
+                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(172,175,178,.09)' }}>
                     <div className="result-tabs-scroll" style={{
                       display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap',
                     }}>
@@ -7733,13 +7746,13 @@ export default function TerminalTokenScanner() {
                               fontFamily: 'var(--font-plex-mono)', fontSize: '11px',
                               fontWeight: active ? 750 : 550, letterSpacing: '0.06em',
                               transition: 'all 0.14s',
-                              background: active ? 'rgba(83,243,195,0.08)' : 'transparent',
+                              background: active ? 'rgba(98,241,241,0.08)' : 'transparent',
                               border: 'none',
-                              color: active ? '#EFFFFA' : '#7c93aa',
+                              color: active ? '#EFFFFA' : '#8d9093',
                             }}
                           >
                             {s.label}
-                            {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(83,243,195,0.85)', boxShadow: '0 0 8px rgba(83,243,195,0.45)' }} />}
+                            {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(98,241,241,0.85)', boxShadow: '0 0 8px rgba(98,241,241,0.45)' }} />}
                           </button>
                         )
                       })}
@@ -7792,7 +7805,7 @@ export default function TerminalTokenScanner() {
                   { label: 'Market',      chipOk: marketChipOk,    chipPartial: false,              chipColor: marketChipOk ? '#34d399' : '#f87171' },
                   { label: 'Holders',     chipOk: holdersChipOk,   chipPartial: holdersChipPartial, chipColor: holdersChipOk ? '#34d399' : holdersChipPartial ? '#fbbf24' : '#f87171' },
                   { label: 'LP Control',  chipOk: lpVerified || lpMode === 'protocol', chipPartial: lpMode === 'unknown', chipColor: lpVerified || lpMode === 'protocol' ? '#34d399' : lpMode === 'unknown' ? '#fbbf24' : '#f87171' },
-                  { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUiOverview.statusLabel === 'Risk detected',     chipColor: riskChipOk ? '#34d399' : simUiOverview.statusLabel === 'Risk detected' ? '#f87171' : '#94a3b8', chipLabel: simUiOverview.statusLabel },
+                  { label: 'Risk Checks', chipOk: riskChipOk,      chipPartial: simUiOverview.statusLabel === 'Risk detected',     chipColor: riskChipOk ? '#34d399' : simUiOverview.statusLabel === 'Risk detected' ? '#f87171' : '#9ea1a4', chipLabel: simUiOverview.statusLabel },
                 ]
                 const marketStrengthLabel = result.noActivePools ? formatTokenScannerPublicStatus('unavailable', 'no active pool') : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : formatTokenScannerPublicStatus('unavailable', 'liquidity was not returned')
                 const holderRiskLabel = holderState.kind !== 'rowsWithPercent' ? formatTokenScannerPublicStatus('unavailable', 'holder concentration was not confirmed') : (result.holderDistribution?.top10 ?? 0) > 50 ? 'High' : (result.holderDistribution?.top10 ?? 0) > 30 ? 'Medium' : 'Low'
@@ -7829,7 +7842,7 @@ export default function TerminalTokenScanner() {
                 const scoreForBar = riskGaugeFillPercent(riskScoreVal ?? 0)
                 const v = getVerdictStyle(riskLabelDisplay)
                 const confidence = normalizedRisk.confidence.toUpperCase()
-                const confColor = normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                const confColor = normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#9ea1a4'
                 const cx = {
                   scanQuality: (normalizedRisk.confidence === 'high' ? 'FULL' : normalizedRisk.confidence === 'medium' ? 'PARTIAL' : 'LIMITED') as 'FULL' | 'PARTIAL' | 'LIMITED',
                   confidence: confidence as 'HIGH' | 'MEDIUM' | 'LOW',
@@ -7870,7 +7883,7 @@ export default function TerminalTokenScanner() {
                       <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '12px', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.06)' }}>
                         <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em' }}>LIQUIDITY PARTIAL</p>
                         {liquidityWarnings.map((w, wi) => (
-                          <p key={wi} style={{ margin: '4px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w}</p>
+                          <p key={wi} style={{ margin: '4px 0 0', fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w}</p>
                         ))}
                       </div>
                     )}
@@ -7881,7 +7894,7 @@ export default function TerminalTokenScanner() {
                         progress bar, explanatory copy unchanged in wording but sized down slightly
                         so it reads as a caption, not body text. */}
                     <div className="risk-score-hero" style={{ marginBottom: '14px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${riskLabelColor}10, 0 0 0 1px ${riskLabelColor}06 inset` }}>
-                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
                       {riskScoreVal != null ? (
                         <>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
@@ -7890,7 +7903,7 @@ export default function TerminalTokenScanner() {
                               <span style={{ fontSize: '16px', color: `${riskLabelColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
                             </div>
                             <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
-                            <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
+                            <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#9ea1a4', background: 'rgba(158,161,164,0.08)', border: '1px solid rgba(158,161,164,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                           </div>
                           {riskLabelCopy(normalizedRisk.riskLabel, scanEvidence) && (
                             <div style={{ fontSize: '12px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', marginTop: '10px', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel, scanEvidence)}</div>
@@ -7898,10 +7911,10 @@ export default function TerminalTokenScanner() {
                           <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
                             <div style={{ height: '100%', width: `${riskGaugeFillPercent(riskScoreVal)}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
                           </div>
-                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</div>
+                          <div style={{ fontSize: '10px', color: '#6b6e71', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Score calculated from available evidence. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</div>
                         </>
                       ) : (
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
                           {result.scanAudit?.confidenceMissingReason
                             ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
                             : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
@@ -7915,15 +7928,15 @@ export default function TerminalTokenScanner() {
                         treatment (thinner track, consistent radius) so the four rows scan quickly
                         instead of feeling like a dense stack. */}
                     {result.riskBreakdown && (
-                      <div style={{ marginBottom: '16px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
-                        <p style={{ margin: '0 0 4px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SAFETY EVIDENCE BREAKDOWN</p>
-                        <p style={{ margin: '0 0 12px', fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>These section points are safety evidence: higher is safer. They are converted once into the Risk Score above.</p>
+                      <div style={{ marginBottom: '16px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(169,233,236,0.20)', background: 'rgba(8,14,28,0.72)' }}>
+                        <p style={{ margin: '0 0 4px', fontSize: '10px', letterSpacing: '.16em', color: '#a9e9ec', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SAFETY EVIDENCE BREAKDOWN</p>
+                        <p style={{ margin: '0 0 12px', fontSize: '9px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>These section points are safety evidence: higher is safer. They are converted once into the Risk Score above.</p>
                         <div style={{ display: 'grid', gap: '10px' }}>
                           {riskBreakdownRows.map(({ label, data }, rIdx) => {
                             const sc = data?.score ?? 0
                             const max = data?.max ?? 0
                             const pct = max > 0 ? Math.max(0, Math.min(100, (sc / max) * 100)) : 0
-                            const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
+                            const barColor = pct >= 70 ? '#1fd6dc' : pct >= 40 ? '#fbbf24' : '#f87171'
                             const reasons = (data?.reasons ?? []).slice(0, 3)
                             {/* TRADER-STATUS-LABEL, DISCLOSED (Token Scanner readability polish
                                 task, explicitly requested: "simple readable status labels beside
@@ -7937,7 +7950,7 @@ export default function TerminalTokenScanner() {
                             return (
                               <div key={label} style={{ paddingBottom: '10px', borderBottom: rIdx < riskBreakdownRows.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px', gap: '8px' }}>
-                                  <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{label}</span>
+                                  <span style={{ fontSize: '11px', color: '#dadde0', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{label}</span>
                                   <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '7px' }}>
                                     <span style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', color: barColor, background: `${barColor}14`, border: `1px solid ${barColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{statusLabel}</span>
                                     <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{sc}/{max}</span>
@@ -7949,7 +7962,7 @@ export default function TerminalTokenScanner() {
                                 {reasons.length > 0 && (
                                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {reasons.map((r, i) => (
-                                      <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#a3b4c5', background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{translateRiskReason(r)}</span>
+                                      <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#afb2b5', background: 'rgba(158,161,164,0.07)', border: '1px solid rgba(158,161,164,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{translateRiskReason(r)}</span>
                                     ))}
                                   </div>
                                 )}
@@ -7961,17 +7974,17 @@ export default function TerminalTokenScanner() {
                     )}
 
                     {/* Canonical CORTEX / Risk Score — same number as Overview, sidebar, Clark. */}
-                    <div style={{ marginBottom: '20px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
+                    <div style={{ marginBottom: '20px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(158,161,164,0.16)', background: 'rgba(8,14,28,0.55)' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
                         <div style={{ fontSize: '15px', fontWeight: 800, color: riskLabelColor, fontFamily: 'var(--font-plex-mono)' }}>{riskScoreVal != null ? `Risk Score: ${riskScoreVal}/100` : formatTokenScannerPublicStatus('unavailable', 'risk score was not returned')}</div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk label: <span style={{ color: riskLabelColor, fontWeight: 700 }}>{riskLabelDisplay}</span></div>
-                        <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
+                        <div style={{ fontSize: '11px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>Risk label: <span style={{ color: riskLabelColor, fontWeight: 700 }}>{riskLabelDisplay}</span></div>
+                        <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: normalizedRisk.confidence === 'high' ? '#34d399' : normalizedRisk.confidence === 'medium' ? '#fbbf24' : '#9ea1a4', background: 'rgba(158,161,164,0.08)', border: '1px solid rgba(158,161,164,0.22)', fontFamily: 'var(--font-plex-mono)' }}>{normalizedRisk.confidence.toUpperCase()} CONFIDENCE</span>
                       </div>
                       {riskLabelCopy(normalizedRisk.riskLabel, scanEvidence) && (
                         <p style={{ margin: '0 0 6px', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{riskLabelCopy(normalizedRisk.riskLabel, scanEvidence)}</p>
                       )}
-                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Same canonical Risk Score as Overview and the sidebar. Higher means higher risk. Missing evidence reduces confidence, not safety.</p>
+                      <p style={{ margin: 0, fontSize: '10px', color: '#505356', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Same canonical Risk Score as Overview and the sidebar. Higher means higher risk. Missing evidence reduces confidence, not safety.</p>
                     </div>
 
                     {/* Advanced CORTEX Details — collapsed by default. The old large CORTEX
@@ -7979,17 +7992,17 @@ export default function TerminalTokenScanner() {
                         the canonical Risk Score and compact CORTEX Safety Read strip above are
                         the only scores shown by default. */}
                     <details style={{ marginBottom: '20px' }}>
-                    <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>ADVANCED CORTEX DETAILS</summary>
+                    <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.16)', background: 'rgba(8,14,28,0.55)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>ADVANCED CORTEX DETAILS</summary>
                     <div style={{ marginTop: '14px' }}>
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
                         <div style={{ flexShrink: 0 }}>
-                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CANONICAL RISK SCORE</div>
+                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CANONICAL RISK SCORE</div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
                             <span style={{ fontSize: score == null ? '38px' : '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{scoreDisplay}</span>
                             {score != null && <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>}
                           </div>
-                          <div style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', marginTop: '6px', letterSpacing: '.06em' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
+                          <div style={{ fontSize: '10px', color: '#505356', fontFamily: 'var(--font-plex-mono)', marginTop: '6px', letterSpacing: '.06em' }}>{cx.scanQuality} · {cx.confidence} CONF</div>
                         </div>
                         <div style={{ flex: 1, minWidth: '140px', paddingTop: '6px' }}>
                           <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap', marginBottom: '14px' }}>
@@ -8007,7 +8020,7 @@ export default function TerminalTokenScanner() {
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: chipColor, flexShrink: 0, boxShadow: `0 0 7px ${chipColor}` }} />
                             <div>
                               <div style={{ fontSize: '9px', letterSpacing: '.12em', color: chipColor, fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{label}</div>
-                              <div style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{chipLabel ?? (chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Unavailable')}</div>
+                              <div style={{ fontSize: '9px', color: '#505356', fontFamily: 'var(--font-plex-mono)' }}>{chipLabel ?? (chipOk ? 'Verified' : chipPartial ? 'Partial' : 'Unavailable')}</div>
                             </div>
                           </div>
                         ))}
@@ -8015,9 +8028,9 @@ export default function TerminalTokenScanner() {
                     </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px', marginBottom: '12px' }}>
                       {[{label:'Market Strength',value:marketStrengthLabel},{label:'Holder Risk',value:holderRiskLabel},{label:'LP Proof',value:lpProofLabel},{label:'Security Confidence',value:securityConfidenceLabel}].map((item)=>(
-                        <div key={item.label} style={{ padding:'11px 12px', borderRadius:'11px', border:'1px solid rgba(148,163,184,0.18)', background:'rgba(8,14,28,0.62)' }}>
-                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'5px' }}>{item.label}</div>
-                          <div style={{ fontSize:'13px', fontWeight:700, color:'#e2e8f0', fontFamily:'var(--font-plex-mono)' }}>{item.value}</div>
+                        <div key={item.label} style={{ padding:'11px 12px', borderRadius:'11px', border:'1px solid rgba(158,161,164,0.18)', background:'rgba(8,14,28,0.62)' }}>
+                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#6f7275', fontFamily:'var(--font-plex-mono)', marginBottom:'5px' }}>{item.label}</div>
+                          <div style={{ fontSize:'13px', fontWeight:700, color:'#e4e7ea', fontFamily:'var(--font-plex-mono)' }}>{item.value}</div>
                         </div>
                       ))}
                     </div>
@@ -8028,18 +8041,18 @@ export default function TerminalTokenScanner() {
                         ))}
                       </div>
                     )}
-                    <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.20)', background:'rgba(8,14,28,0.72)' }}>
-                      <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SAFETY SCORE BREAKDOWN</p>
+                    <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(169,233,236,0.20)', background:'rgba(8,14,28,0.72)' }}>
+                      <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#a9e9ec', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SAFETY SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'0' }}>
                         {scoreBreakdown.map((b, bIdx)=>(
                           <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'150px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
-                            <span style={{ fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{b.label}</span>
+                            <span style={{ fontSize:'11px', color:'#d1d4d7', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{b.label}</span>
                             <span style={{ fontSize:'10px', color:b.ok ? '#34d399' : '#fbbf24', fontWeight:800, letterSpacing:'.08em', fontFamily:'var(--font-plex-mono)' }}>{b.ok ? b.value : 'Unavailable'}</span>
-                            <span style={{ fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
+                            <span style={{ fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)' }}>{b.reason}</span>
                           </div>
                         ))}
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'8px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(148,163,184,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(148,163,184,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
-                          <span style={{ fontSize:'10px', color: cx.capReason ? '#64748b' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'Weighted Cortex V2 score uses normalized non-inflating categories.'}</span>
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'8px', padding:'7px 10px', borderRadius:'8px', background: cx.capReason ? 'rgba(158,161,164,0.05)' : 'rgba(52,211,153,0.04)', border: cx.capReason ? '1px solid rgba(158,161,164,0.14)' : '1px solid rgba(52,211,153,0.14)' }}>
+                          <span style={{ fontSize:'10px', color: cx.capReason ? '#6f7275' : '#34d399', fontFamily:'var(--font-plex-mono)', fontStyle:'italic' }}>⚑ {cx.capReason ?? 'Weighted Cortex V2 score uses normalized non-inflating categories.'}</span>
                         </div>
                       </div>
                     </div>
@@ -8071,18 +8084,18 @@ export default function TerminalTokenScanner() {
                           </div>
                         ) : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key checks passed.</p>}
                       </div>
-                      <div style={{ padding: '16px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.26)', borderRadius: '12px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#2DD4BF', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
-                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
+                      <div style={{ padding: '16px 18px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.26)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '10px', fontWeight: 800, letterSpacing: '.16em', color: '#1fd6dc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#62f1f1', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{next2}</p>
                       </div>
                     </div>
                     {cx.confidence === 'LOW' && (
-                      <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.22)', background: 'rgba(148,163,184,0.06)' }}>
-                        <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>⚠ Limited confidence — important checks are missing. Do not assume safety.</span>
+                      <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.22)', background: 'rgba(158,161,164,0.06)' }}>
+                        <span style={{ fontSize: '10px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>⚠ Limited confidence — important checks are missing. Do not assume safety.</span>
                       </div>
                     )}
                     {result.sections && (
-                      <div style={{ marginBottom: '20px', fontSize: '12px', color: '#94a3b8' }}>
+                      <div style={{ marginBottom: '20px', fontSize: '12px', color: '#9ea1a4' }}>
                         {[result.sections.market, result.sections.security, result.sections.holders, result.sections.liquidity, result.sections.contractChecks]
                           .filter((s): s is { status?: string; reason?: string; source?: string } => Boolean(s && s.status && s.status !== 'ok'))
                           .map((s, i) => <div key={i}>- {humanizeSectionLine(s.source, s.status, s.reason)}</div>)}
@@ -8092,11 +8105,11 @@ export default function TerminalTokenScanner() {
                     </details>
 
                     {!planLoading && !isFullAccess && (
-                      <div style={{ marginTop: '24px', padding: '28px 24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
+                      <div style={{ marginTop: '24px', padding: '28px 24px', border: '1px solid rgba(190,198,203,0.28)', borderRadius: '16px', background: 'rgba(190,198,203,0.06)', textAlign: 'center' }}>
                         <div style={{ fontSize: '26px', marginBottom: '12px' }}>🔒</div>
                         <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 8px', fontSize: '15px' }}>Full Security Report</p>
-                        <p style={{ color: '#94a3b8', fontSize: '13px', margin: '0 0 20px', lineHeight: 1.5 }}>LP control, security simulation, and holder distribution are included in Pro and Elite plans.</p>
-                        <a href="/pricing" style={{ display: 'inline-block', padding: '10px 28px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '13px', textDecoration: 'none' }}>Get Access</a>
+                        <p style={{ color: '#9ea1a4', fontSize: '13px', margin: '0 0 20px', lineHeight: 1.5 }}>LP control, security simulation, and holder distribution are included in Pro and Elite plans.</p>
+                        <a href="/pricing" style={{ display: 'inline-block', padding: '10px 28px', borderRadius: '999px', background: 'linear-gradient(135deg,#9aa3a9,#bec6cb)', color: '#fff', fontWeight: 700, fontSize: '13px', textDecoration: 'none' }}>Get Access</a>
                       </div>
                     )}
                   </>
@@ -8107,8 +8120,8 @@ export default function TerminalTokenScanner() {
               {activeSection === 'market-pulse' && (
                 <>
                   <div style={{ marginBottom: '16px' }}>
-                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
+                    <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
                   </div>
                   {/* MARKET-PULSE-DEDUP, DISCLOSED (Token Scanner result-UI polish task, explicitly
                       reported: "repeats similar stats too many times"): the same Price/Liquidity/
@@ -8131,16 +8144,16 @@ export default function TerminalTokenScanner() {
                   ) : (
                     <>
                       {result.marketDataSource === 'fallback' && (
-                        <div style={{ padding: '8px 14px', marginBottom: '12px', background: 'rgba(139,92,246,0.06)', border: '1px solid rgba(139,92,246,0.2)', borderRadius: '8px', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#8b5cf6', flexShrink: 0 }} />
-                          <span style={{ fontSize: '10px', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.08em' }}>CORTEX MARKET READ</span>
-                          <span style={{ fontSize: '10px', color: '#475569' }}>Primary pool data unavailable — showing fallback market data. FDV is not market cap.</span>
+                        <div style={{ padding: '8px 14px', marginBottom: '12px', background: 'rgba(190,198,203,0.06)', border: '1px solid rgba(190,198,203,0.2)', borderRadius: '8px', fontFamily: 'var(--font-plex-mono)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#bec6cb', flexShrink: 0 }} />
+                          <span style={{ fontSize: '10px', color: '#cfd6da', fontWeight: 700, letterSpacing: '0.08em' }}>CORTEX MARKET READ</span>
+                          <span style={{ fontSize: '10px', color: '#505356' }}>Primary pool data unavailable — showing fallback market data. FDV is not market cap.</span>
                         </div>
                       )}
                       {/* Row 1 — key metrics only (explicitly specified order: Price, Liquidity,
                           Volume 24h, 24h Change). */}
                       <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '10px' }}>
-                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
+                        <StatCard label="Price" value={fmtPrice(result.price)} accent="#1fd6dc" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
                         <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} helper="Pool depth" />
                         <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} helper="24h trading activity" />
                         <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
@@ -8172,28 +8185,28 @@ export default function TerminalTokenScanner() {
                                 : fdvOnly ? 'Market cap not verified live'
                                 : 'Live valuation not verified'
                               }
-                              accent="#a78bfa"
+                              accent="#cfd6da"
                             />
                           )
                         })()}
-                        <StatCard dim label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#a78bfa" />
-                        <StatCard dim label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
-                        <StatCard dim label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Not indexed'} helper="Time since pool creation" accent="#a78bfa" />
+                        <StatCard dim label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#cfd6da" />
+                        <StatCard dim label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#62f1f1' : '#6f7275'} />
+                        <StatCard dim label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Not indexed'} helper="Time since pool creation" accent="#cfd6da" />
                       </div>
                       {/* Compact notes — MC not verified, MC vs FDV, Vol/Liq read. Same wording as
                           before, just consolidated into short notes under the grid instead of a
                           separate repeated-stat banner. */}
                       <div style={{ display: 'grid', gap: '8px', marginBottom: '18px' }}>
                         {result.marketCapStatus !== 'verified' && (
-                          <p style={{ margin: 0, color: '#7c93aa', fontSize: '11px', lineHeight: 1.55 }}>
+                          <p style={{ margin: 0, color: '#8d9093', fontSize: '11px', lineHeight: 1.55 }}>
                             {result.valuationContext?.primaryValuationStatus === 'estimated_mc'
                               ? 'Market cap not verified live — showing an estimate from on-chain supply. FDV is shown separately.'
                               : 'Market cap not confirmed. FDV is shown separately.'}
                           </p>
                         )}
                         {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
-                          <div style={{ padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
-                            <span style={{ color: '#a78bfa', fontWeight: 700 }}>MC vs FDV: </span>
+                          <div style={{ padding: '10px 14px', background: 'rgba(207,214,218,0.06)', border: '1px solid rgba(207,214,218,0.16)', borderRadius: '10px', fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+                            <span style={{ color: '#cfd6da', fontWeight: 700 }}>MC vs FDV: </span>
                             {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
                           </div>
                         )}
@@ -8209,9 +8222,9 @@ export default function TerminalTokenScanner() {
                               ? 'Volume is high relative to liquidity — expect volatility.'
                               : 'Healthy activity — volume is proportionate to liquidity depth.'
                           return (
-                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(98,241,241,0.04)', border: '1px solid rgba(98,241,241,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                               <span style={{ color: ratioColor, fontWeight: 700 }}>Vol/Liq {volLiqRatio.toFixed(2)}x: </span>
-                              <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
+                              <span style={{ fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
                             </div>
                           )
                         })()}
@@ -8232,7 +8245,7 @@ export default function TerminalTokenScanner() {
                     const _hasValidCandles = result.chartStatus === 'ok' && (result.priceChart?.points.length ?? 0) >= 2 && _REAL_SOURCES.has(result.chartSource ?? '')
                     const _hasMarketTrend = result.marketTrendSnapshot?.status === 'ok'
                     const mts = result.marketTrendSnapshot
-                    const pctColor = (v: number | null) => v == null ? '#94a3b8' : v >= 0 ? '#34d399' : '#f87171'
+                    const pctColor = (v: number | null) => v == null ? '#9ea1a4' : v >= 0 ? '#34d399' : '#f87171'
                     // CANDLES-UNAVAILABLE FALLBACK, DISCLOSED (requested: "Do not hide all failures behind
                     // 'Historical candles are not indexed yet'"): the server's structured candle-failure
                     // reason (lib/evmChartCandles.ts summarizeCandleFailure) is shown first; an estimated
@@ -8241,10 +8254,10 @@ export default function TerminalTokenScanner() {
                       ?? (result.noActivePools ? 'No active indexed trading pool was found for this token.' : 'The candle provider returned no price history for this pool.')
                     const _candlesUnavailableHead = (
                       <div>
-                        <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>PRICE CHART</p>
-                        <p style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#e2e8f0' }}>Historical candles unavailable</p>
-                        <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>
-                          <span style={{ color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: '10.5px', letterSpacing: '0.08em', marginRight: '6px' }}>REASON</span>
+                        <p style={{ margin: '0 0 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.14em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>PRICE CHART</p>
+                        <p style={{ margin: '0 0 4px', fontSize: '14px', fontWeight: 700, color: '#e4e7ea' }}>Historical candles unavailable</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#9ea1a4', lineHeight: 1.6 }}>
+                          <span style={{ color: '#6f7275', fontFamily: 'var(--font-plex-mono)', fontSize: '10.5px', letterSpacing: '0.08em', marginRight: '6px' }}>REASON</span>
                           {_candleReason}
                         </p>
                       </div>
@@ -8302,16 +8315,16 @@ export default function TerminalTokenScanner() {
                           {_candlesUnavailableHead}
 
                           {/* Secondary: estimated trend — dashed, dimmed, never labelled as candles */}
-                          <div style={{ marginTop: '16px', padding: '12px 12px 4px', border: '1px dashed rgba(148,163,184,0.20)', borderRadius: '12px', background: 'rgba(15,23,42,0.35)' }}>
+                          <div style={{ marginTop: '16px', padding: '12px 12px 4px', border: '1px dashed rgba(158,161,164,0.20)', borderRadius: '12px', background: 'rgba(20,23,26,0.35)' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
                             <div>
-                              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>ESTIMATED TREND</p>
-                              <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#64748b' }}>
+                              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#cfd6da', fontFamily: 'var(--font-plex-mono)' }}>ESTIMATED TREND</p>
+                              <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#6f7275' }}>
                                 {visibleChanges.length > 0 ? 'Inferred from indexed market changes — not OHLC candles.' : 'Live price only — not OHLC candles.'}
                               </p>
                             </div>
                             {result.marketDataSource === 'fallback' && (
-                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#a78bfa', background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
+                              <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#cfd6da', background: 'rgba(207,214,218,0.08)', border: '1px solid rgba(207,214,218,0.22)', textTransform: 'uppercase' }}>CORTEX MARKET READ</span>
                             )}
                           </div>
 
@@ -8321,14 +8334,14 @@ export default function TerminalTokenScanner() {
                           {/* Price + change chips */}
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'flex-end', marginTop: '14px', marginBottom: '14px' }}>
                             <div>
-                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px', textTransform: 'uppercase' }}>Live Price</div>
-                              <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
+                              <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px', textTransform: 'uppercase' }}>Live Price</div>
+                              <div style={{ fontSize: '22px', fontWeight: 800, color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(mts!.price)}</div>
                             </div>
                             {visibleChanges.length > 0 && (
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', alignItems: 'center', paddingBottom: '2px' }}>
                                 {visibleChanges.map(c => (
                                   <div key={c.label} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '5px 10px', borderRadius: '10px', background: `${pctColor(c.value)}10`, border: `1px solid ${pctColor(c.value)}28` }}>
-                                    <span style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{c.label}</span>
+                                    <span style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '2px' }}>{c.label}</span>
                                     <span style={{ fontSize: '12px', fontWeight: 800, color: pctColor(c.value), fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(c.value)}</span>
                                   </div>
                                 ))}
@@ -8340,31 +8353,31 @@ export default function TerminalTokenScanner() {
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '14px' }}>
                             {mts!.liquidity != null && (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Liquidity</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.liquidity)}</div>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Liquidity</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.liquidity)}</div>
                               </div>
                             )}
                             {mts!.volume24h != null && (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Volume 24H</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.volume24h)}</div>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Volume 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(mts!.volume24h)}</div>
                               </div>
                             )}
                             {(mts!.buys24h != null && mts!.sells24h != null) ? (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Buys / Sells</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.buys24h!.toLocaleString()} <span style={{ color: '#3a5268' }}>/</span> {mts!.sells24h!.toLocaleString()}</div>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Buys / Sells</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{mts!.buys24h!.toLocaleString()} <span style={{ color: '#4b4e51' }}>/</span> {mts!.sells24h!.toLocaleString()}</div>
                               </div>
                             ) : mts!.transactions24h != null ? (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Transactions 24H</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{mts!.transactions24h!.toLocaleString()}</div>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Transactions 24H</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>{mts!.transactions24h!.toLocaleString()}</div>
                               </div>
                             ) : null}
                             {mts!.pairAge != null && (
                               <div style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,0.55)' }}>
-                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Pair Age</div>
-                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{mts!.pairAge}</div>
+                                <div style={{ fontSize: '8px', letterSpacing: '.12em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '3px' }}>Pair Age</div>
+                                <div style={{ fontSize: '13px', fontWeight: 700, color: '#cfd6da', fontFamily: 'var(--font-plex-mono)' }}>{mts!.pairAge}</div>
                               </div>
                             )}
                           </div>
@@ -8384,7 +8397,7 @@ export default function TerminalTokenScanner() {
                   {result.chartDebug && <ChartDebugPanel debug={result.chartDebug} chain={result.chain} token={result.contract} livePriceUsd={result.price ?? null} />}
                   {!result.noActivePools && result.marketDataSource !== 'fallback' && (
                     <div style={{ marginBottom: '28px' }}>
-                      <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
+                      <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#4b4e51', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
                       <div className="activity-grid">
                         <StatCard label="Transactions 24H" value={result.poolActivity?.transactions24h != null ? result.poolActivity.transactions24h.toLocaleString() : 'Activity unavailable'} helper="Primary pool activity" />
                         <StatCard label="Buys / Sells" value={result.poolActivity?.buys24h != null && result.poolActivity?.sells24h != null ? `${result.poolActivity.buys24h.toLocaleString()} / ${result.poolActivity.sells24h.toLocaleString()}` : 'Buy/sell split unavailable'} helper="24h pool flow" />
@@ -8403,15 +8416,15 @@ export default function TerminalTokenScanner() {
                 return (
                   <>
                     <div style={{ marginBottom: '18px' }}>
-                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top-holder supply concentration and separate holder-count evidence for this exact chain and contract.</p>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#cfd6da', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Top-holder supply concentration and separate holder-count evidence for this exact chain and contract.</p>
                     </div>
                     {!planLoading && !isFullAccess && (
-                      <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center' }}>
+                      <div style={{ padding: '24px', border: '1px solid rgba(190,198,203,0.28)', borderRadius: '16px', background: 'rgba(190,198,203,0.06)', textAlign: 'center' }}>
                         <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
                         <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>Holder Distribution</p>
-                        <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>Holder analytics are included in Pro and Elite.</p>
-                        <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
+                        <p style={{ color: '#9ea1a4', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>Holder analytics are included in Pro and Elite.</p>
+                        <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#9aa3a9,#bec6cb)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
                       </div>
                     )}
                     {!planLoading && isFullAccess && result.debugHolderStatus && (() => {
@@ -8436,7 +8449,7 @@ export default function TerminalTokenScanner() {
                         const top20h = result.holderDistribution?.top20
                         const holderCount = result.holderDistribution?.holderCount
                         const concRisk = top10h != null ? (top10h > 50 ? 'HIGH' : top10h > 30 ? 'MEDIUM' : 'LOW') : null
-                        const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
+                        const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#9ea1a4'
                         const concRead = holderState.kind === 'rowsWithPercent' && concRisk != null
                           ? concRisk === 'HIGH' ? 'High concentration — top holders control majority supply.' : concRisk === 'MEDIUM' ? 'Moderate concentration — watch for coordinated movement.' : 'Spread looks reasonable — no extreme concentration flagged.'
                           : null
@@ -8468,13 +8481,13 @@ export default function TerminalTokenScanner() {
                           <>
                         <div style={{ padding: '14px 16px', borderRadius: '12px', background: `${concColor}0c`, border: `1px solid ${concColor}30`, marginBottom: '12px' }}>
                           <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 800, color: concColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{takeaway}</p>
-                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Whale pressure: {whalePressure.charAt(0) + whalePressure.slice(1).toLowerCase()}</p>
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)' }}>Whale pressure: {whalePressure.charAt(0) + whalePressure.slice(1).toLowerCase()}</p>
                         </div>
                         <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
                             {/* Summary card — merged Whale Pressure + the old duplicate grid */}
-                            <div style={{ gridColumn:'1 / -1', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${concColor}28` }}>
+                            <div style={{ gridColumn:'1 / -1', padding:'14px 16px', borderRadius:'12px', background:'rgba(207,214,218,0.05)', border:`1px solid ${concColor}28` }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
-                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>CONCENTRATION SUMMARY</span>
+                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#cfd6da', fontFamily:'var(--font-plex-mono)' }}>CONCENTRATION SUMMARY</span>
                                 <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:concColor, background:`${concColor}12`, border:`1px solid ${concColor}40`, fontFamily:'var(--font-plex-mono)' }}>{concRisk ?? 'UNAVAILABLE'} CONCENTRATION</span>
                               </div>
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px' }}>
@@ -8503,34 +8516,34 @@ export default function TerminalTokenScanner() {
                                     holderCountBasis: result.holderDistribution?.holderCountProvenance?.holderCountBasis,
                                   }).display],
                                 ].map(([label, val]) => (
-                                  <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,0.55)', border:'1px solid rgba(167,139,250,0.16)' }}>
-                                    <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
-                                    <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
+                                  <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(20,23,26,0.55)', border:'1px solid rgba(207,214,218,0.16)' }}>
+                                    <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#6f7275', marginBottom:'3px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
+                                    <div style={{ fontSize:'12px', color:'#e4e7ea', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
                                   </div>
                                 ))}
                               </div>
-                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#64748b', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{HOLDER_VS_CONCENTRATION_DISCLAIMER}</p>
+                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#6f7275', lineHeight:1.5, fontFamily:'var(--font-plex-mono)' }}>{HOLDER_VS_CONCENTRATION_DISCLAIMER}</p>
                             </div>
                             <div className="glass-card" style={{ padding: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>VISUAL CONCENTRATION</p>
-                                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
+                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#aaadb0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>VISUAL CONCENTRATION</p>
+                                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(31,214,220,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#1fd6dc' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(31,214,220,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
                               </div>
                               {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {([['Total Top 1',result.holderDistribution?.top1],['Total Top 5',result.holderDistribution?.top5],['Total Top 10',result.holderDistribution?.top10],['Total Top 20',result.holderDistribution?.top20]] as Array<[string, number | null | undefined]>).map(([l,v])=>(
                                   <div key={String(l)} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 64px', alignItems: 'center', gap: '10px' }}>
-                                    <span style={{ fontSize: '12px', color: '#d6e6f3', fontWeight: 700 }}>{l}</span>
-                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(148,163,184,.25)' }}><div style={{ height: '100%', width: `${v==null?0:Math.max(0,Math.min(100,Number(v)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#2dd4bf,#a855f7)', boxShadow: '0 0 14px rgba(45,212,191,.28)' }} /></div>
+                                    <span style={{ fontSize: '12px', color: '#e1e4e7', fontWeight: 700 }}>{l}</span>
+                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(37,40,43,.9),rgba(60,63,66,.5))', border: '1px solid rgba(158,161,164,.25)' }}><div style={{ height: '100%', width: `${v==null?0:Math.max(0,Math.min(100,Number(v)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#1fd6dc,#bec6cb)', boxShadow: '0 0 14px rgba(31,214,220,.28)' }} /></div>
                                     <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{v==null?'N/A':`${Number(v).toFixed(1)}%`}</span>
                                   </div>
                                 ))}
                                 {result.holderDistribution?.ordinaryCoverage?.status === 'verified' && result.holderDistribution?.ordinaryTop10 != null ? (
                                   <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr 64px', alignItems: 'center', gap: '10px' }}>
                                     <span style={{ fontSize: '12px', color: '#a5f3fc', fontWeight: 700 }}>Ordinary Top 10</span>
-                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(30,41,59,.9),rgba(51,65,85,.5))', border: '1px solid rgba(103,232,249,.35)' }}><div style={{ height: '100%', width: `${Math.max(0,Math.min(100,Number(result.holderDistribution.ordinaryTop10)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#22d3ee,#67e8f9)', boxShadow: '0 0 14px rgba(34,211,238,.28)' }} /></div>
+                                    <div style={{ height: '12px', borderRadius: '999px', background: 'linear-gradient(90deg,rgba(37,40,43,.9),rgba(60,63,66,.5))', border: '1px solid rgba(98,241,241,.35)' }}><div style={{ height: '100%', width: `${Math.max(0,Math.min(100,Number(result.holderDistribution.ordinaryTop10)))}%`, borderRadius: '999px', background: 'linear-gradient(90deg,#1fd6dc,#62f1f1)', boxShadow: '0 0 14px rgba(31,214,220,.28)' }} /></div>
                                     <span style={{ fontSize: '13px', fontWeight: 800, color: '#eef6ff', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{`${Number(result.holderDistribution.ordinaryTop10).toFixed(1)}%`}</span>
-                                    <span style={{ gridColumn: '1 / -1', fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</span>
+                                    <span style={{ gridColumn: '1 / -1', fontSize: '10.5px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)' }}>Checked for this Top 10 window only. Not a complete custody census.</span>
                                   </div>
                                 ) : result.holderDistribution?.ordinaryCoverage && result.holderDistribution.ordinaryCoverage.status !== 'not_computed' ? (
                                   <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
@@ -8550,15 +8563,15 @@ export default function TerminalTokenScanner() {
                                   Largest holder has meaningful supply control.
                                 </p>
                               ) : null}
-                              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
+                              <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#9c9fa2' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                             </div>
                             {result.liquidityCustody && (result.liquidityCustody.status === 'partial' || result.liquidityCustody.status === 'verified') && (
-                              <div style={{ gridColumn: '1 / -1', marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(103,232,249,0.28)' }}>
+                              <div style={{ gridColumn: '1 / -1', marginBottom: '12px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(31,214,220,0.06)', border: '1px solid rgba(98,241,241,0.28)' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                                  <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
-                                  <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#67e8f9', border: '1px solid rgba(103,232,249,0.45)', background: 'rgba(45,212,191,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(result.liquidityCustody.status).toUpperCase()}</span>
+                                  <span style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>LIQUIDITY CUSTODY</span>
+                                  <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', color: '#62f1f1', border: '1px solid rgba(98,241,241,0.45)', background: 'rgba(31,214,220,0.1)', fontFamily: 'var(--font-plex-mono)' }}>{String(result.liquidityCustody.status).toUpperCase()}</span>
                                 </div>
-                                <p style={{ margin: 0, fontSize: '11px', color: '#9fb4c7', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#aeb1b4', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
                                   {result.liquidityCustody.rows.length} verified pool/protocol custody address{result.liquidityCustody.rows.length === 1 ? '' : 'es'} in this holder sample
                                   {result.liquidityCustody.custodyPercentOfSupply != null ? ` · ${result.liquidityCustody.custodyPercentOfSupply.toFixed(1)}% of supply in labeled custody rows` : ''}
                                   {result.liquidityCustody.custodyCoverageComplete ? '' : ' · coverage incomplete (sample only — not a complete custody %)'}.
@@ -8567,19 +8580,19 @@ export default function TerminalTokenScanner() {
                               </div>
                             )}
                             <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
-                              <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
-                              <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#8aa3b8' }}>Top 10 holders</p>
-                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#6a8198', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
+                              <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#aaadb0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono)' }}>TOP HOLDERS</p>
+                              <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#9c9fa2' }}>Top 10 holders</p>
+                              <div className="top-holder-head" style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', fontSize: '10px', letterSpacing: '0.10em', color: '#7b7e81', marginBottom: '8px', fontFamily: 'var(--font-plex-mono)' }}><span>#</span><span>WALLET</span><span style={{ textAlign: 'right' }}>AMOUNT</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>COPY</span></div>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto', paddingRight: '3px' }}>
                                 {holderState.rows.slice(0,20).map((h)=>(
-                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? '1px solid rgba(103,232,249,.42)' : '1px solid rgba(148,163,184,.18)', borderRadius: '10px', background: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? 'rgba(45,212,191,.08)' : 'rgba(15,23,42,.45)' }}>
-                                    <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(45,212,191,.28),rgba(168,85,247,.28))':'transparent', border: h.rank<=3?'1px solid rgba(167,139,250,.45)':'none' }}>{h.rank}</span>
-                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#c5d8ea', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
-                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
+                                  <div className="top-holder-row" key={h.rank+h.address} style={{ display: 'grid', gridTemplateColumns: '36px minmax(0,1fr) 88px 62px 74px', gap: '10px', alignItems: 'center', padding: '10px', border: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? '1px solid rgba(98,241,241,.42)' : '1px solid rgba(158,161,164,.18)', borderRadius: '10px', background: (h as { classification?: { kind?: string } }).classification?.kind === 'liquidity_custody' ? 'rgba(31,214,220,.08)' : 'rgba(20,23,26,.45)' }}>
+                                    <span style={{ fontSize: '11px', color: '#dbeafe', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, display: 'inline-flex', justifyContent: 'center', padding: '2px 0', borderRadius: '999px', background: h.rank<=3?'linear-gradient(90deg,rgba(31,214,220,.28),rgba(190,198,203,.28))':'transparent', border: h.rank<=3?'1px solid rgba(207,214,218,.45)':'none' }}>{h.rank}</span>
+                                    <span className="top-holder-mobile-meta" style={{ fontSize: '12px', color: '#d2d5d8', fontFamily: 'var(--font-plex-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', flexDirection: 'column', gap: '3px', minWidth: 0 }}>
+                                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{shorten(h.address)}<span style={{ display: 'none', fontSize: '12px', fontWeight: 800, color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#62f1f1' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span></span>
                                       {(() => { const b = custodyBadge((h as { classification?: { kind?: string; role?: string; label?: string } }).classification); return b ? <span title={(h as { classification?: { label?: string } }).classification?.label ?? b.text} style={{ alignSelf: 'flex-start', padding: '1px 7px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', color: b.color, border: `1px solid ${b.border}`, background: b.bg }}>{b.text}</span> : null })()}
                                     </span>
                                     <span className="top-holder-mobile-amt" style={{ fontSize: '12px', color: '#e5eef9', textAlign: 'right', fontFamily: 'var(--font-plex-mono)' }}>{fmtTokenAmt(h.amount,result.decimals??18)}</span>
-                                    <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#67e8f9' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
+                                    <span style={{ fontSize: '12px', fontWeight: 800, textAlign: 'right', fontFamily: 'var(--font-plex-mono)', color: h.percent!=null&&h.percent>=10?'#fb7185':h.percent!=null&&h.percent>=5?'#fbbf24':'#62f1f1' }}>{h.percent==null?'—':`${h.percent.toFixed(2)}%`}</span>
                                     {isValidHolderAddress(h.address) && (
                                       <button
                                         type="button"
@@ -8588,18 +8601,18 @@ export default function TerminalTokenScanner() {
                                           justifySelf: 'end',
                                           padding: '4px 10px',
                                           borderRadius: '999px',
-                                          border: copiedHolderAddress === h.address ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
+                                          border: copiedHolderAddress === h.address ? '1px solid rgba(31,214,220,0.55)' : '1px solid rgba(207,214,218,0.48)',
                                           background: copiedHolderAddress === h.address
-                                            ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))'
-                                            : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
-                                          color: copiedHolderAddress === h.address ? '#67e8f9' : '#c4b5fd',
+                                            ? 'linear-gradient(135deg,rgba(31,214,220,0.18),rgba(31,214,220,0.1))'
+                                            : 'linear-gradient(135deg,rgba(207,214,218,0.2),rgba(31,214,220,0.08))',
+                                          color: copiedHolderAddress === h.address ? '#62f1f1' : '#d6dce0',
                                           fontSize: '10px',
                                           fontWeight: 700,
                                           letterSpacing: '0.08em',
                                           fontFamily: 'var(--font-plex-mono)',
                                           cursor: 'pointer',
                                           whiteSpace: 'nowrap',
-                                          boxShadow: copiedHolderAddress === h.address ? '0 0 10px rgba(45,212,191,0.25)' : '0 0 10px rgba(167,139,250,0.14)',
+                                          boxShadow: copiedHolderAddress === h.address ? '0 0 10px rgba(31,214,220,0.25)' : '0 0 10px rgba(207,214,218,0.14)',
                                           transition: 'all 0.14s ease',
                                           minHeight: '26px',
                                         }}
@@ -8645,23 +8658,23 @@ export default function TerminalTokenScanner() {
                       return (
                         <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))', border: '1px solid rgba(251,191,36,.22)', borderRadius: '14px', padding: '18px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                            <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                            <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#aaadb0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
                             <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(251,191,36,.4)', color: '#fbbf24', background: 'rgba(251,191,36,.08)' }}>UNVERIFIED</span>
                           </div>
                           <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>{holderMissingCopy}</p>
                           <div className="intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px', marginBottom: '14px' }}>
                             {evItems.map(({label,value,ok})=>(
-                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(15,23,42,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':/open check/i.test(value)?'rgba(251,191,36,.22)':/unsupported/i.test(value)?'rgba(125,211,252,.22)':'rgba(248,113,113,.22)'}` }}>
-                                <div style={{ fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
-                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':/open check/i.test(value)?'#fbbf24':/unsupported/i.test(value)?'#7dd3fc':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(20,23,26,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':/open check/i.test(value)?'rgba(251,191,36,.22)':/unsupported/i.test(value)?'rgba(169,233,236,.22)':'rgba(248,113,113,.22)'}` }}>
+                                <div style={{ fontSize: '9px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':/open check/i.test(value)?'#fbbf24':/unsupported/i.test(value)?'#a9e9ec':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
                               </div>
                             ))}
                           </div>
-                          <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(15,23,42,.5)', border: '1px solid rgba(125,211,252,.15)', marginBottom: '10px' }}>
-                            <div style={{ fontSize: '9px', letterSpacing: '.1em', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>CORTEX READ</div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#b7c9da', lineHeight: 1.6 }}>{fb.read}</p>
+                          <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(20,23,26,.5)', border: '1px solid rgba(169,233,236,.15)', marginBottom: '10px' }}>
+                            <div style={{ fontSize: '9px', letterSpacing: '.1em', color: '#a9e9ec', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>CORTEX READ</div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#c3c6c9', lineHeight: 1.6 }}>{fb.read}</p>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Rescan later and monitor holder distribution before trusting supply spread.</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>Rescan later and monitor holder distribution before trusting supply spread.</p>
                         </div>
                       )
                     })()}
@@ -8675,7 +8688,7 @@ export default function TerminalTokenScanner() {
                   {/* ── header ────────────────────────────────────────── */}
                   <div style={{ marginBottom: '18px' }}>
                     <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, exit risk, and LP model.</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)' }}>Liquidity pool lock status, exit risk, and LP model.</p>
                   </div>
 
                   {/* ── 3-card hero: LP Status · Exit Risk · LP Model ─── */}
@@ -8723,14 +8736,14 @@ export default function TerminalTokenScanner() {
                     // Robinhood model override: "Model Open Check" → "Robinhood LP Model Partial"
                     const rhModelLabel = _rhOverride?.model?.label
                     const finalModelLabel = rhModelLabel ?? modelLabel
-                    const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
-                      : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
-                      : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
-                      : effectiveDm === 'no_pool' ? '#94a3b8'
-                      : lpModeVal === 'protocol' ? '#c084fc'
-                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
+                    const modelColor = effectiveDm === 'concentrated_liquidity' ? '#dfe5e8'
+                      : effectiveDm === 'protocol_or_gauge' ? '#cfd6da'
+                      : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#c4d2da')
+                      : effectiveDm === 'no_pool' ? '#9ea1a4'
+                      : lpModeVal === 'protocol' ? '#dfe5e8'
+                      : lpModeVal === 'lp_token' ? (lpProofConfirmed ? '#34d399' : '#c4d2da')
                       : hasPool ? '#fbbf24'
-                      : '#94a3b8'
+                      : '#9ea1a4'
                     const modelDesc = isV3PartialPositionProof ? 'Position manager resolved. Pool active/liquidity confirmed.'
                       : isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved. Pool active/liquidity confirmed.'
                       : isProtocolPositionModel(result) ? protocolPositionSubtext('lock')
@@ -8742,28 +8755,28 @@ export default function TerminalTokenScanner() {
                     void lpStatus
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}`, marginTop: '6px' }} />
                             <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: lockInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{lockInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lockInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lockInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
                           <div style={{ marginBottom: '8px' }}>
                             <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitInfo.label}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(14,17,20,0.62)', border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
                             <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{finalModelLabel}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{_rhOverride?.model?.description ?? modelDesc}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{_rhOverride?.model?.description ?? modelDesc}</p>
                         </div>
                       </div>
                     )
@@ -8789,12 +8802,12 @@ export default function TerminalTokenScanner() {
                     const sections: Array<{ key: keyof typeof buckets; title: string; color: string; border: string }> = [
                       { key: 'verified', title: 'Verified evidence', color: '#34d399', border: 'rgba(52,211,153,.22)' },
                       { key: 'partial', title: 'Partial evidence', color: '#fbbf24', border: 'rgba(251,191,36,.22)' },
-                      { key: 'missing', title: 'Missing evidence', color: '#94a3b8', border: 'rgba(148,163,184,.22)' },
-                      { key: 'unsupported', title: 'Unsupported on Robinhood', color: '#7dd3fc', border: 'rgba(125,211,252,.22)' },
+                      { key: 'missing', title: 'Missing evidence', color: '#9ea1a4', border: 'rgba(158,161,164,.22)' },
+                      { key: 'unsupported', title: 'Unsupported on Robinhood', color: '#a9e9ec', border: 'rgba(169,233,236,.22)' },
                     ]
                     return (
-                      <div style={{ marginBottom: '16px', padding: '14px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(125,211,252,.16)', borderRadius: '14px' }}>
-                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Robinhood LP evidence</p>
+                      <div style={{ marginBottom: '16px', padding: '14px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(169,233,236,.16)', borderRadius: '14px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#a9e9ec', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Robinhood LP evidence</p>
                         {isFullAccess && result.debugHolderStatus && result.blockscoutFallbackDecisionAudit && (() => {
                           const decision = result.blockscoutFallbackDecisionAudit!
                           const label = decision.finalStatus === 'fallback_succeeded'
@@ -8806,16 +8819,16 @@ export default function TerminalTokenScanner() {
                                 : decision.finalStatus === 'fallback_unavailable' || decision.finalStatus === 'not_configured'
                                   ? `Blockscout unavailable${decision.blockscoutFailureReason ? `: ${decision.blockscoutFailureReason}` : ''}`
                                   : 'Blockscout not applicable for this LP model'
-                          return <div style={{ marginBottom: '9px', fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', overflowWrap: 'anywhere' }}>Provider Evidence: {label}</div>
+                          return <div style={{ marginBottom: '9px', fontSize: '10px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', overflowWrap: 'anywhere' }}>Provider Evidence: {label}</div>
                         })()}
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '8px' }}>
                           {sections.map(({ key, title, color, border }) => (
-                            <div key={key} style={{ padding: '10px 11px', borderRadius: '10px', background: 'rgba(10,18,32,0.55)', border: `1px solid ${border}` }}>
+                            <div key={key} style={{ padding: '10px 11px', borderRadius: '10px', background: 'rgba(14,17,20,0.55)', border: `1px solid ${border}` }}>
                               <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '.08em', color, fontFamily: 'var(--font-plex-mono)', marginBottom: '6px', textTransform: 'uppercase' }}>{title}</div>
                               {buckets[key].length === 0
-                                ? <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>None</div>
+                                ? <div style={{ fontSize: '11px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>None</div>
                                 : buckets[key].map((line) => (
-                                  <div key={line} style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.45, marginBottom: '4px', overflowWrap: 'anywhere' }}>{line}</div>
+                                  <div key={line} style={{ fontSize: '11px', color: '#d1d4d7', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.45, marginBottom: '4px', overflowWrap: 'anywhere' }}>{line}</div>
                                 ))}
                             </div>
                           ))}
@@ -8962,7 +8975,7 @@ export default function TerminalTokenScanner() {
                     function getV3PartialPositionRows(samplingReason: string | null | undefined, primaryPool: string): { label: string; value: string; color?: string; note?: string }[] {
                       const view = clpView
                       return [
-                        { label: 'Primary Liquidity', value: 'Uniswap V3 Concentrated', color: '#c084fc', note: 'Position manager resolved. Pool active/liquidity confirmed.' },
+                        { label: 'Primary Liquidity', value: 'Uniswap V3 Concentrated', color: '#dfe5e8', note: 'Position manager resolved. Pool active/liquidity confirmed.' },
                         { label: 'LP Control', value: view?.lpControlValue ?? 'Position proof attempted — partial', color: '#fbbf24', note: view?.ownershipNote ?? 'Uniswap V3 position manager resolved; owner verification is still pending.' },
                         { label: 'Control Proof', value: view?.controlProofValue ?? 'Owner verification pending', color: view?.ownershipColor ?? '#fbbf24', note: view?.ownershipNote ?? samplingReason ?? 'No bounded position-candidate source is available yet for this pool.' },
                         { label: 'Lock/Burn Proof', value: CONCENTRATED_ERC20_LOCK_BURN_LABEL, note: CONCENTRATED_ERC20_LOCK_BURN_LABEL },
@@ -8974,10 +8987,10 @@ export default function TerminalTokenScanner() {
                       ]
                     }
                     const rows: { label: string; value: string; color?: string; note?: string }[] = isV3PartialPositionProof && !result.concentratedLpPositionAudit ? getV3PartialPositionRows(concentratedPositionProof?.samplingReason, canonicalSelectedPool?.address ?? '') : [
-                      { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#c084fc' : undefined },
+                      { label: 'Primary Liquidity', value: primaryLiquidityModelLabel(result), color: protocolPosition ? '#dfe5e8' : undefined },
                       { label: 'LP Control', value: protocolPosition && clpView ? clpView.lpControlValue : isV3Partial ? 'Position proof attempted — partial' : protocolPosition ? (lpControlFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position proof attempted — partial' : 'Position check unavailable')) : lpControlDisplay, color: isV3Partial ? '#fbbf24' : lpControlDisplay === 'Wallet Controlled' ? '#fbbf24' : undefined, note: protocolPosition && clpView ? clpView.ownershipNote : isV3Partial ? 'Position manager resolved and pool liquidity confirmed.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved and pool active/liquidity confirmed. Full owner verification is still unavailable.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : isV3Partial ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition && clpView ? clpView.ownershipNote : isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
-                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : /^(Partial|Unavailable)/.test(lockBurnProof) ? '#fbbf24' : protocolPosition ? '#c084fc' : undefined, note: protocolPosition ? CONCENTRATED_ERC20_LOCK_BURN_LABEL : isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : undefined },
+                      { label: 'Control Proof', value: controlProof, color: controlProof === 'Confirmed' ? '#34d399' : isV3Partial ? '#fbbf24' : protocolPosition ? '#dfe5e8' : undefined, note: protocolPosition && clpView ? clpView.ownershipNote : isV3Partial ? 'Top liquidity owner, active position count, and position share are not verified yet.' : protocolPosition ? (hasResolvedConcentratedManager(result) ? 'The Uniswap V3 position manager was resolved and the pool is active, but ChainLens could not verify the largest liquidity owner from current evidence.' : protocolPositionSubtext('control')) : undefined },
+                      { label: 'Lock/Burn Proof', value: lockBurnProof, color: lockBurnProof === 'Confirmed' ? '#34d399' : isV3Partial ? undefined : /^(Partial|Unavailable)/.test(lockBurnProof) ? '#fbbf24' : protocolPosition ? '#dfe5e8' : undefined, note: protocolPosition ? CONCENTRATED_ERC20_LOCK_BURN_LABEL : isV3Partial ? 'This Uniswap V3 pool uses position-based liquidity, not standard LP tokens.' : undefined },
                       ...(protocolPosition ? [{
                         label: 'Position Ownership',
                         value: clpView?.ownershipValue ?? formatTokenScannerPublicStatus('unavailable', 'position ownership was not confirmed'),
@@ -9008,9 +9021,9 @@ export default function TerminalTokenScanner() {
                             <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>LP Quick Read</p>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '8px' }}>
                               {quickRead.map(({ label, value, color }) => (
-                                <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                                  <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label === 'Primary Liquidity' ? 'LP Model' : label}</div>
-                                  <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#cbd5e1'), fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
+                                <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(14,17,20,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                  <div style={{ fontSize: '9px', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label === 'Primary Liquidity' ? 'LP Model' : label}</div>
+                                  <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#d1d4d7'), fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
                                 </div>
                               ))}
                             </div>
@@ -9024,12 +9037,12 @@ export default function TerminalTokenScanner() {
                             stays fully visible; nothing here is removed, just tucked behind one
                             click since the quick read already answers the 3-second question. */}
                         <details style={{ marginBottom: '14px' }}>
-                          <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
-                          <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                          <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
+                          <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(158,161,164,0.10)', borderRadius: '12px' }}>
                             {rows.map(({ label, value, color, note }, i) => (
-                              <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
-                                <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
-                                <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                              <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(158,161,164,.07)' : 'none' }}>
+                                <span style={{ fontSize: '10px', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                                <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e4e7ea'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#86898c', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
                               </div>
                             ))}
                           </div>
@@ -9052,19 +9065,19 @@ export default function TerminalTokenScanner() {
                       Nothing here is removed or reworded — one click reveals the exact same content
                       as before. */}
                   <details style={{ marginBottom: '14px' }}>
-                  <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>PROTOCOL-SPECIFIC LP INTELLIGENCE</summary>
+                  <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#6e7174', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(158,161,164,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>PROTOCOL-SPECIFIC LP INTELLIGENCE</summary>
                   <div style={{ marginTop: '10px' }}>
                   {/* ══════════ LP ELITE INTELLIGENCE ══════════ */}
                   {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
                     const elite = getLpEliteSummary(result)
                     return (
-                      <div style={{ marginBottom: '14px', padding: '14px 16px', background: 'linear-gradient(160deg, rgba(34,211,238,0.05), rgba(8,12,28,0.6))', border: '1px solid rgba(148,163,184,0.14)', borderRadius: '16px' }}>
-                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 900, letterSpacing: '.20em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Elite Intelligence</p>
-                        <p style={{ margin: '8px 0 12px', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{elite.verdict}</p>
+                      <div style={{ marginBottom: '14px', padding: '14px 16px', background: 'linear-gradient(160deg, rgba(31,214,220,0.05), rgba(8,12,28,0.6))', border: '1px solid rgba(158,161,164,0.14)', borderRadius: '16px' }}>
+                        <p style={{ margin: 0, fontSize: '11px', fontWeight: 900, letterSpacing: '.20em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Elite Intelligence</p>
+                        <p style={{ margin: '8px 0 12px', fontSize: '11px', color: '#d1d4d7', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{elite.verdict}</p>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: '7px' }}>
                           {elite.chips.map((chip) => (
                             <div key={chip.label} style={{ padding: '8px 10px', borderRadius: '10px', background: 'rgba(2,6,23,0.5)', border: `1px solid ${chip.color}30` }}>
-                              <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.12em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{chip.label}</div>
+                              <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.12em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{chip.label}</div>
                               <div style={{ fontSize: '11px', color: chip.color, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize' }}>{chip.value}</div>
                             </div>
                           ))}
@@ -9075,10 +9088,10 @@ export default function TerminalTokenScanner() {
 
                   {/* ── LP Controller Intelligence ──────────────────────── */}
                   {result.lpControllerIntel && (
-                    <div style={{ marginBottom: '14px', padding: '13px 15px', background: 'linear-gradient(135deg, rgba(45,212,191,0.08), rgba(15,23,42,0.72))', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '14px', boxShadow: '0 18px 45px rgba(0,0,0,0.18)' }}>
+                    <div style={{ marginBottom: '14px', padding: '13px 15px', background: 'linear-gradient(135deg, rgba(31,214,220,0.08), rgba(20,23,26,0.72))', border: '1px solid rgba(31,214,220,0.20)', borderRadius: '14px', boxShadow: '0 18px 45px rgba(0,0,0,0.18)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Controller Intelligence</p>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Controller Intelligence</p>
                           {(result.lpSafetyResolution?.status || result.lpControllerIntel.summary) && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#a7f3d0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpSafetyResolution?.status ?? result.lpControllerIntel.summary}</p>}
                         </div>
                         <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpControllerIntel.confidence === 'high' ? '#34d399' : '#fbbf24', background: result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.10)' : 'rgba(251,191,36,0.10)', border: `1px solid ${result.lpControllerIntel.confidence === 'high' ? 'rgba(52,211,153,0.30)' : 'rgba(251,191,36,0.30)'}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
@@ -9096,9 +9109,9 @@ export default function TerminalTokenScanner() {
                           ['Liquidity Depth', cleanStatusLabel(result.lpControllerIntel.liquidityDepth)],
                           ['Migration Risk', migrationRiskFinalLabel(result.lpControllerIntel.migrationRisk)],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)' }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: value === 'Confirmed' || value === 'Deep' || value === 'Low' ? '#34d399' : value === 'Open Check' || value === 'Watch' ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)' }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: value === 'Confirmed' || value === 'Deep' || value === 'Low' ? '#34d399' : value === 'Open Check' || value === 'Watch' ? '#fbbf24' : '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -9106,14 +9119,14 @@ export default function TerminalTokenScanner() {
                         {[
                           ['Signals', result.lpControllerIntel.signals ?? [], '#34d399'],
                           ['Evidence Gaps', result.lpControllerIntel.evidenceGaps ?? [], '#fbbf24'],
-                          ['Next Actions', result.lpControllerIntel.nextActions ?? [], '#67e8f9'],
+                          ['Next Actions', result.lpControllerIntel.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 5).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9124,13 +9137,13 @@ export default function TerminalTokenScanner() {
 
                   {/* ── LP Lock/Burn Intelligence ─────────────────── */}
                   {result.lpLockBurnIntel && (
-                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(34,211,238,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(34,211,238,0.20)', borderRadius: '14px' }}>
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(31,214,220,0.07), rgba(20,23,26,0.72))', border: '1px solid rgba(31,214,220,0.20)', borderRadius: '14px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Lock/Burn Intelligence</p>
-                          {(result.lpSafetyResolution?.lockBurnStatus || result.lpLockBurnIntel.summary) && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bae6fd', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpSafetyResolution?.lockBurnStatus ?? result.lpLockBurnIntel.summary}</p>}
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#62f1f1', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Lock/Burn Intelligence</p>
+                          {(result.lpSafetyResolution?.lockBurnStatus || result.lpLockBurnIntel.summary) && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#d2f0f2', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpSafetyResolution?.lockBurnStatus ?? result.lpLockBurnIntel.summary}</p>}
                         </div>
-                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(34,211,238,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpLockBurnIntel.lockBurnProof === 'confirmed' ? '#34d399' : result.lpLockBurnIntel.lockBurnProof === 'not_applicable' ? '#9ea1a4' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(31,214,220,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpLockBurnIntel.status)}
                         </span>
                       </div>
@@ -9143,9 +9156,9 @@ export default function TerminalTokenScanner() {
                           ['Proof Source', isProtocolPositionModel(result) ? 'Pool model' : cleanStatusLabel(result.lpLockBurnIntel.proofSource)],
                           ['Confidence', cleanStatusLabel(result.lpLockBurnIntel.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /confirmed|locked|burned|high/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#9ea1a4' : /open|unknown|low/i.test(value) ? '#fbbf24' : '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -9153,14 +9166,14 @@ export default function TerminalTokenScanner() {
                         {[
                           ['Signals', result.lpLockBurnIntel.signals ?? [], '#34d399'],
                           ['Gaps', result.lpLockBurnIntel.evidenceGaps ?? [], '#fbbf24'],
-                          ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#67e8f9'],
+                          ['Actions', result.lpLockBurnIntel.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 4).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9171,13 +9184,13 @@ export default function TerminalTokenScanner() {
 
                   {/* ── LP History / Migration Timeline ─────────────── */}
                   {result.lpHistoryTimeline && (
-                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(96,165,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(96,165,250,0.20)', borderRadius: '14px' }}>
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(196,210,218,0.07), rgba(20,23,26,0.72))', border: '1px solid rgba(196,210,218,0.20)', borderRadius: '14px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#93c5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP History / Migration</p>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#bee2e5', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP History / Migration</p>
                           {result.lpHistoryTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#bfdbfe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpHistoryTimeline.summary}</p>}
                         </div>
-                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpHistoryTimeline.migrationRisk === 'high' ? '#f87171' : result.lpHistoryTimeline.migrationRisk === 'low' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(96,165,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpHistoryTimeline.migrationRisk === 'high' ? '#f87171' : result.lpHistoryTimeline.migrationRisk === 'low' ? '#34d399' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(196,210,218,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           {cleanStatusLabel(result.lpHistoryTimeline.status)}
                         </span>
                       </div>
@@ -9190,25 +9203,25 @@ export default function TerminalTokenScanner() {
                           ['Fragmentation', cleanStatusLabel(result.lpHistoryTimeline.fragmentation)],
                           ['Confidence', result.lpHistoryTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /high/i.test(value) ? '#f87171' : /low/i.test(value) ? '#34d399' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high/i.test(value) ? '#f87171' : /low/i.test(value) ? '#34d399' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '9px' }}>
                         {[
-                          ['Events', result.lpHistoryTimeline.events ?? [], '#60a5fa'],
+                          ['Events', result.lpHistoryTimeline.events ?? [], '#c4d2da'],
                           ['Signals', result.lpHistoryTimeline.signals ?? [], '#34d399'],
                           ['Gaps', result.lpHistoryTimeline.evidenceGaps ?? [], '#fbbf24'],
-                          ['Actions', result.lpHistoryTimeline.nextActions ?? [], '#67e8f9'],
+                          ['Actions', result.lpHistoryTimeline.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 4).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9219,13 +9232,13 @@ export default function TerminalTokenScanner() {
 
                   {/* ── LP Unlock Timeline ────────────────────────── */}
                   {result.lpUnlockTimeline && (
-                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(167,139,250,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(167,139,250,0.20)', borderRadius: '14px' }}>
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(207,214,218,0.07), rgba(20,23,26,0.72))', border: '1px solid rgba(207,214,218,0.20)', borderRadius: '14px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Unlock Timeline</p>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#d6dce0', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Unlock Timeline</p>
                           {result.lpUnlockTimeline.summary && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#ddd6fe', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.lpUnlockTimeline.summary}</p>}
                         </div>
-                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpUnlockTimeline.unlockRisk === 'high' || result.lpUnlockTimeline.unlockRisk === 'expired' ? '#f87171' : result.lpUnlockTimeline.unlockRisk === 'low' || result.lpUnlockTimeline.unlockRisk === 'none' ? '#34d399' : result.lpUnlockTimeline.unlockRisk === 'not_applicable' ? '#94a3b8' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(167,139,250,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: result.lpUnlockTimeline.unlockRisk === 'high' || result.lpUnlockTimeline.unlockRisk === 'expired' ? '#f87171' : result.lpUnlockTimeline.unlockRisk === 'low' || result.lpUnlockTimeline.unlockRisk === 'none' ? '#34d399' : result.lpUnlockTimeline.unlockRisk === 'not_applicable' ? '#9ea1a4' : '#fbbf24', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(207,214,218,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           {isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.status)}
                         </span>
                       </div>
@@ -9237,9 +9250,9 @@ export default function TerminalTokenScanner() {
                           ['Lock State', isProtocolPositionModel(result) ? 'Protocol-specific' : cleanStatusLabel(result.lpUnlockTimeline.lockState)],
                           ['Confidence', result.lpUnlockTimeline.confidence ?? 'low'],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#94a3b8' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high|expired/i.test(value) ? '#f87171' : /low|none/i.test(value) ? '#34d399' : /protocol-specific|position verification/i.test(value) ? '#9ea1a4' : /open|unknown|watch/i.test(value) ? '#fbbf24' : '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -9247,14 +9260,14 @@ export default function TerminalTokenScanner() {
                         {[
                           ['Signals', result.lpUnlockTimeline.signals ?? [], '#34d399'],
                           ['Gaps', result.lpUnlockTimeline.evidenceGaps ?? [], '#fbbf24'],
-                          ['Actions', result.lpUnlockTimeline.nextActions ?? [], '#67e8f9'],
+                          ['Actions', result.lpUnlockTimeline.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 4).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9266,7 +9279,7 @@ export default function TerminalTokenScanner() {
 
                   {/* ── LP Movement Watch ─────────────────────────── */}
                   {result.lpMovementWatch && (
-                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(251,191,36,0.07), rgba(15,23,42,0.72))', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '14px' }}>
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(251,191,36,0.07), rgba(20,23,26,0.72))', border: '1px solid rgba(251,191,36,0.20)', borderRadius: '14px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
                           <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>LP Movement Watch</p>
@@ -9284,9 +9297,9 @@ export default function TerminalTokenScanner() {
                           ['Last Movement', isProtocolPositionModel(result) ? 'Position movement required' : result.lpMovementWatch.lastMovementAt ? new Date(result.lpMovementWatch.lastMovementAt).toLocaleString() : 'Unavailable: transfer timestamp missing'],
                           ['Controller', isUniswapV3ConcentratedPartial(result) ? 'Position manager resolved — owner verification pending' : isProtocolPositionModel(result) ? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable') : result.lpMovementWatch.controller ?? cleanStatusLabel(result.lpMovementWatch.controllerType)],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: /high|detected/i.test(value) ? '#f87171' : /low|protected|not confirmed/i.test(value) ? '#34d399' : /open|watch|unknown/i.test(value) ? '#fbbf24' : '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: /high|detected/i.test(value) ? '#f87171' : /low|protected|not confirmed/i.test(value) ? '#34d399' : /open|watch|unknown/i.test(value) ? '#fbbf24' : '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: label === 'Controller' ? 'none' : 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -9294,14 +9307,14 @@ export default function TerminalTokenScanner() {
                         {[
                           ['Signals', result.lpMovementWatch.signals ?? [], '#34d399'],
                           ['Evidence Gaps', result.lpMovementWatch.evidenceGaps ?? [], '#fbbf24'],
-                          ['Next Actions', result.lpMovementWatch.nextActions ?? [], '#67e8f9'],
+                          ['Next Actions', result.lpMovementWatch.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 4).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9312,13 +9325,13 @@ export default function TerminalTokenScanner() {
 
                   {/* ── Secondary LP Exposure ─────────────────────────── */}
                   {result.secondaryLpExposure && (
-                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(148,163,184,0.06), rgba(15,23,42,0.72))', border: '1px solid rgba(148,163,184,0.18)', borderRadius: '14px' }}>
+                    <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'linear-gradient(135deg, rgba(158,161,164,0.06), rgba(20,23,26,0.72))', border: '1px solid rgba(158,161,164,0.18)', borderRadius: '14px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'flex-start', marginBottom: '10px' }}>
                         <div>
-                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Secondary LP Exposure</p>
-                          <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary ?? 'This is separate from the primary liquidity pool.'} This is separate from the primary liquidity pool.</p>
+                          <p style={{ margin: 0, fontSize: '10px', fontWeight: 900, letterSpacing: '.16em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Secondary LP Exposure</p>
+                          <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#d1d4d7', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{result.secondaryLpExposure.summary ?? 'This is separate from the primary liquidity pool.'} This is separate from the primary liquidity pool.</p>
                         </div>
-                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: '#94a3b8', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(148,163,184,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                        <span style={{ flexShrink: 0, padding: '4px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.10em', color: '#9ea1a4', background: 'rgba(2,6,23,0.48)', border: '1px solid rgba(158,161,164,0.25)', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                           secondary LP exposure detected
                         </span>
                       </div>
@@ -9331,9 +9344,9 @@ export default function TerminalTokenScanner() {
                           ['Lock/Burn Proof', reasonedProofLabel(result.secondaryLpExposure.lockBurnProof, result.secondaryLpExposure.summary)],
                           ['Confidence', cleanStatusLabel(result.secondaryLpExposure.confidence)],
                         ] as Array<[string, string]>).map(([label, value]) => (
-                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(148,163,184,0.10)', minWidth: 0 }}>
-                            <div style={{ fontSize: '9px', color: '#64748b', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
-                            <div style={{ fontSize: '11px', color: '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
+                          <div key={label} style={{ padding: '8px 9px', borderRadius: '10px', background: 'rgba(2,6,23,0.42)', border: '1px solid rgba(158,161,164,0.10)', minWidth: 0 }}>
+                            <div style={{ fontSize: '9px', color: '#6f7275', letterSpacing: '.10em', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '11px', color: '#e4e7ea', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'capitalize', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</div>
                           </div>
                         ))}
                       </div>
@@ -9341,14 +9354,14 @@ export default function TerminalTokenScanner() {
                         {[
                           ['Signals', result.secondaryLpExposure.signals ?? [], '#34d399'],
                           ['Evidence Gaps', result.secondaryLpExposure.evidenceGaps ?? [], '#fbbf24'],
-                          ['Next Actions', result.secondaryLpExposure.nextActions ?? [], '#67e8f9'],
+                          ['Next Actions', result.secondaryLpExposure.nextActions ?? [], '#62f1f1'],
                         ].map(([title, items, color]) => (
                           <div key={String(title)} style={{ minWidth: 0 }}>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: String(color), fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{String(title)}</p>
                             {(items as string[]).slice(0, 4).map((item) => (
                               <div key={item} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: String(color), fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{item}</p>
                               </div>
                             ))}
                           </div>
@@ -9362,25 +9375,25 @@ export default function TerminalTokenScanner() {
                     const elite = getLpEliteSummary(result)
                     if (elite.evidenceGaps.length === 0 && elite.monitor.length === 0) return null
                     return (
-                      <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'rgba(2,6,23,0.4)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '14px' }}>
+                      <div style={{ marginBottom: '14px', padding: '12px 14px', background: 'rgba(2,6,23,0.4)', border: '1px solid rgba(158,161,164,0.12)', borderRadius: '14px' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '12px' }}>
                           <div>
                             <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#fbbf24', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
                             {elite.evidenceGaps.length > 0 ? elite.evidenceGaps.slice(0, 6).map((gap) => (
                               <div key={gap} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
                                 <span style={{ color: '#fbbf24', fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{gap}</p>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{gap}</p>
                               </div>
-                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No unresolved evidence gaps.</p>}
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>No unresolved evidence gaps.</p>}
                           </div>
                           <div>
-                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#67e8f9', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What To Monitor Next</p>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#62f1f1', fontWeight: 900, letterSpacing: '.12em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What To Monitor Next</p>
                             {elite.monitor.length > 0 ? elite.monitor.map((action) => (
                               <div key={action} style={{ display: 'flex', gap: '6px', marginBottom: '4px', alignItems: 'flex-start' }}>
-                                <span style={{ color: '#67e8f9', fontSize: '10px', lineHeight: '15px' }}>•</span>
-                                <p style={{ margin: 0, fontSize: '10px', color: '#94a3b8', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{action}</p>
+                                <span style={{ color: '#62f1f1', fontSize: '10px', lineHeight: '15px' }}>•</span>
+                                <p style={{ margin: 0, fontSize: '10px', color: '#9ea1a4', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>{action}</p>
                               </div>
-                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>No further actions identified.</p>}
+                            )) : <p style={{ margin: 0, fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)' }}>No further actions identified.</p>}
                           </div>
                         </div>
                       </div>
@@ -9394,11 +9407,11 @@ export default function TerminalTokenScanner() {
                     <div style={{ marginBottom: '14px' }}>
                       {result.lpDataMode && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
-                          <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                          <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>
                             SCAN MODE: {result.lpDataMode.toUpperCase()}
                           </span>
                           {result.lpDataConfidence && (
-                            <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${result.lpDataConfidence === 'high' ? '#34d39940' : result.lpDataConfidence === 'medium' ? '#fbbf2440' : result.lpDataConfidence === 'low' ? '#fb923c40' : '#4a627240'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: result.lpDataConfidence === 'high' ? '#34d399' : result.lpDataConfidence === 'medium' ? '#fbbf24' : result.lpDataConfidence === 'low' ? '#fb923c' : '#4a6272', fontFamily: 'var(--font-plex-mono)' }}>
+                            <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${result.lpDataConfidence === 'high' ? '#34d39940' : result.lpDataConfidence === 'medium' ? '#fbbf2440' : result.lpDataConfidence === 'low' ? '#fb923c40' : '#4a627240'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: result.lpDataConfidence === 'high' ? '#34d399' : result.lpDataConfidence === 'medium' ? '#fbbf24' : result.lpDataConfidence === 'low' ? '#fb923c' : '#5b5e61', fontFamily: 'var(--font-plex-mono)' }}>
                               EVIDENCE CONFIDENCE: {result.lpDataConfidence.toUpperCase()}
                             </span>
                           )}
@@ -9461,7 +9474,7 @@ export default function TerminalTokenScanner() {
                             const lpModeInner = getLpMode(result)
                             const isNotApplicable = dmInner === 'concentrated_liquidity' || dmInner === 'protocol_or_gauge' || lpModeInner === 'protocol'
                             return isNotApplicable
-                              ? <p style={{ margin: 0, fontSize: '11px', color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>Standard lock/burn proof does not apply to this pool model.</p>
+                              ? <p style={{ margin: 0, fontSize: '11px', color: '#dfe5e8', fontFamily: 'var(--font-plex-mono)' }}>Standard lock/burn proof does not apply to this pool model.</p>
                               : <p style={{ margin: 0, fontSize: '11px', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>All key LP proofs passed.</p>
                           })()}
                         </div>
@@ -9470,14 +9483,14 @@ export default function TerminalTokenScanner() {
                   })()}
 
                   {/* ── Next Action ───────────────────────────────────── */}
-                  <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
-                    <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{getLpNextAction(result)}</p>
+                  <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(31,214,220,0.05)', border: '1px solid rgba(31,214,220,0.20)', borderRadius: '12px' }}>
+                    <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#62f1f1', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>{getLpNextAction(result)}</p>
                   </div>
                   {/* ── CORTEX LP Read ────────────────────────────────── */}
                   {result.cortexLpRead && (
                     <div style={{ marginBottom: '20px' }}>
-                      <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX LP Read</p>
+                      <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX LP Read</p>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         {[
                           { label: 'Risk Summary', text: result.cortexLpRead.riskSummary },
@@ -9486,8 +9499,8 @@ export default function TerminalTokenScanner() {
                           { label: 'Migration Analysis', text: result.cortexLpRead.migrationAnalysis },
                         ].map((sec) => (
                           <div key={sec.label} style={{ padding: '12px 14px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '10px' }}>
-                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</p>
-                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{sec.text}</p>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{sec.label}</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>{sec.text}</p>
                           </div>
                         ))}
                         {/* CRASH-FIX, DISCLOSED (found live-verifying this polish pass, pre-existing
@@ -9500,55 +9513,55 @@ export default function TerminalTokenScanner() {
                         {(result.cortexLpRead.evidenceGaps?.length ?? 0) > 0 && (
                           <div style={{ padding: '12px 14px', background: 'rgba(251,146,60,0.04)', border: '1px solid rgba(251,146,60,0.14)', borderRadius: '10px' }}>
                             <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
-                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps!.join(' · ')}</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps!.join(' · ')}</p>
                           </div>
                         )}
                         {(result.cortexLpRead.nextActions?.length ?? 0) > 0 && (
-                          <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
-                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
-                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions!.join(' ')}</p>
+                          <div style={{ padding: '12px 14px', background: 'rgba(31,214,220,0.04)', border: '1px solid rgba(31,214,220,0.14)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#62f1f1', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions!.join(' ')}</p>
                           </div>
                         )}
                       </div>
                     </div>
                   )}
                   {!planLoading && !isFullAccess && (
-                    <div style={{ padding: '24px', border: '1px solid rgba(139,92,246,0.28)', borderRadius: '16px', background: 'rgba(139,92,246,0.06)', textAlign: 'center', marginBottom: '18px' }}>
+                    <div style={{ padding: '24px', border: '1px solid rgba(190,198,203,0.28)', borderRadius: '16px', background: 'rgba(190,198,203,0.06)', textAlign: 'center', marginBottom: '18px' }}>
                       <div style={{ fontSize: '22px', marginBottom: '10px' }}>🔒</div>
                       <p style={{ fontWeight: 700, color: '#f8fafc', margin: '0 0 6px', fontSize: '14px' }}>LP Control Analysis</p>
-                      <p style={{ color: '#94a3b8', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>LP control checks are included in Pro and Elite.</p>
-                      <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#7c3aed,#a855f7)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
+                      <p style={{ color: '#9ea1a4', fontSize: '12px', margin: '0 0 16px', lineHeight: 1.5 }}>LP control checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '999px', background: 'linear-gradient(135deg,#9aa3a9,#bec6cb)', color: '#fff', fontWeight: 700, fontSize: '12px', textDecoration: 'none' }}>Get Access</a>
                     </div>
                   )}
                   {!planLoading && isFullAccess && !result.lpControl && (
-                    <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
+                    <div style={{ padding:'14px 18px',marginBottom:'18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>LP control data was not returned in this scan.</div>
                   )}
                   {!planLoading && isFullAccess && result.lpControl && result.lpControl.status === 'unavailable_with_reason' && (
-                    <div style={{ padding:'11px 14px',marginBottom:'12px',background:'rgba(100,116,139,0.06)',border:'1px solid rgba(100,116,139,0.18)',borderRadius:'10px',fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>
+                    <div style={{ padding:'11px 14px',marginBottom:'12px',background:'rgba(111,114,117,0.06)',border:'1px solid rgba(111,114,117,0.18)',borderRadius:'10px',fontSize:'11px',color:'#9ea1a4',fontFamily:'var(--font-plex-mono)' }}>
                       LP lock/burn status could not be verified this scan.
                     </div>
                   )}
                   {result.pools && result.pools.length > 0 && (
                     <>
                       <div style={{ display:'flex',alignItems:'baseline',gap:'10px',marginBottom:'10px',flexWrap:'wrap' }}>
-                        <p style={{ fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#3a5268',textTransform:'uppercase',margin:0,fontFamily:'var(--font-plex-mono)' }}>LIQUIDITY &amp; POOLS</p>
-                        <div style={{ display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(125,211,252,.3)',color:'#67e8f9',fontSize:'10px',fontFamily:'var(--font-plex-mono)' }}>{result.pools.length} {result.pools.length===1?'POOL':'POOLS'}</div>
-                        <span style={{ fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Primary pool selected by liquidity.</span>
+                        <p style={{ fontSize:'10px',fontWeight:700,letterSpacing:'0.14em',color:'#4b4e51',textTransform:'uppercase',margin:0,fontFamily:'var(--font-plex-mono)' }}>LIQUIDITY &amp; POOLS</p>
+                        <div style={{ display:'inline-flex',padding:'3px 9px',borderRadius:'999px',border:'1px solid rgba(169,233,236,.3)',color:'#62f1f1',fontSize:'10px',fontFamily:'var(--font-plex-mono)' }}>{result.pools.length} {result.pools.length===1?'POOL':'POOLS'}</div>
+                        <span style={{ fontSize:'11px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>Primary pool selected by liquidity.</span>
                       </div>
                       <div className="pools-scroll" style={{ overflowX:'auto',paddingBottom:'6px',maxWidth:'100%' }}>
                         <div className="pools-inner" style={{ display:'flex',flexDirection:'column',gap:'6px',minWidth:'940px' }}>
                           {[...result.pools].sort((a,b)=>(b.liquidity??0)-(a.liquidity??0)).slice(0,8).map((pool,i)=>(
-                            <div key={i} style={{ display:'grid',gridTemplateColumns:'minmax(220px,1.2fr) repeat(6,minmax(82px,auto))',alignItems:'center',gap:'20px',padding:'12px 18px',background:i===0?'linear-gradient(90deg,rgba(45,212,191,0.06),rgba(167,139,250,0.04))':'rgba(255,255,255,0.025)',border:i===0?'1px solid rgba(45,212,191,0.22)':'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',fontFamily:'var(--font-plex-mono)' }}>
-                              <span style={{ color:i===0?'#2DD4BF':'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:'7px' }}>
-                                {i===0&&<span style={{ fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2DD4BF',background:'rgba(45,212,191,.08)',flexShrink:0 }}>PRIMARY</span>}
+                            <div key={i} style={{ display:'grid',gridTemplateColumns:'minmax(220px,1.2fr) repeat(6,minmax(82px,auto))',alignItems:'center',gap:'20px',padding:'12px 18px',background:i===0?'linear-gradient(90deg,rgba(31,214,220,0.06),rgba(207,214,218,0.04))':'rgba(255,255,255,0.025)',border:i===0?'1px solid rgba(31,214,220,0.22)':'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',fontFamily:'var(--font-plex-mono)' }}>
+                              <span style={{ color:i===0?'#1fd6dc':'#9ea1a4',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:'7px' }}>
+                                {i===0&&<span style={{ fontSize:'9px',fontWeight:700,letterSpacing:'.10em',padding:'1px 6px',borderRadius:'999px',border:'1px solid rgba(31,214,220,.35)',color:'#1fd6dc',background:'rgba(31,214,220,.08)',flexShrink:0 }}>PRIMARY</span>}
                                 {pool.name??shorten(pool.address??'')}
                               </span>
-                              <span style={{ color:'#2DD4BF',whiteSpace:'nowrap' }}>{fmtPrice(pool.price)}</span>
-                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Liq {fmtLarge(pool.liquidity)}</span>
-                              <span style={{ color:'#4a6272',whiteSpace:'nowrap' }}>Vol {fmtLarge(pool.volume24h)}</span>
-                              <span style={{ color:'#64748b',whiteSpace:'nowrap' }}>APR N/A</span>
+                              <span style={{ color:'#1fd6dc',whiteSpace:'nowrap' }}>{fmtPrice(pool.price)}</span>
+                              <span style={{ color:'#5b5e61',whiteSpace:'nowrap' }}>Liq {fmtLarge(pool.liquidity)}</span>
+                              <span style={{ color:'#5b5e61',whiteSpace:'nowrap' }}>Vol {fmtLarge(pool.volume24h)}</span>
+                              <span style={{ color:'#6f7275',whiteSpace:'nowrap' }}>APR N/A</span>
                               <span style={{ color:pctColor(pool.priceChange24h),whiteSpace:'nowrap' }}>{fmtPct(pool.priceChange24h)}</span>
-                              <span style={{ whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#67e8f9':'#fbbf24' }}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
+                              <span style={{ whiteSpace:'nowrap',color:(pool.liquidity??0)>200000?'#34d399':(pool.liquidity??0)>50000?'#62f1f1':'#fbbf24' }}>{(pool.liquidity??0)>200000?'Excellent':(pool.liquidity??0)>50000?'Healthy':'Weak'}</span>
                             </div>
                           ))}
                         </div>
@@ -9556,7 +9569,7 @@ export default function TerminalTokenScanner() {
                     </>
                   )}
                   {(!result.pools||result.pools.length===0)&&(
-                    <div style={{ padding:'14px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>No pools found for this token.</div>
+                    <div style={{ padding:'14px 18px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:'10px',fontSize:'12px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>No pools found for this token.</div>
                   )}
                 </>
               )}
@@ -9566,14 +9579,14 @@ export default function TerminalTokenScanner() {
                 <>
                   <div style={{ marginBottom: '18px' }}>
                     <p style={{ margin:'0 0 3px',fontSize:'12px',fontWeight:800,letterSpacing:'0.10em',color:'#f43f5e',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</p>
-                    <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>Rug risk scores, contract flags, and simulation results.</p>
+                    <p style={{ margin:0,fontSize:'11px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>Rug risk scores, contract flags, and simulation results.</p>
                   </div>
                   {!planLoading && !isFullAccess && (
-                    <div style={{ padding:'24px',border:'1px solid rgba(139,92,246,0.28)',borderRadius:'16px',background:'rgba(139,92,246,0.06)',textAlign:'center' }}>
+                    <div style={{ padding:'24px',border:'1px solid rgba(190,198,203,0.28)',borderRadius:'16px',background:'rgba(190,198,203,0.06)',textAlign:'center' }}>
                       <div style={{ fontSize:'22px',marginBottom:'10px' }}>🔒</div>
                       <p style={{ fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'14px' }}>Full Risk Analysis</p>
-                      <p style={{ color:'#94a3b8',fontSize:'12px',margin:'0 0 16px',lineHeight:1.5 }}>Security checks are included in Pro and Elite.</p>
-                      <a href="/pricing" style={{ display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none' }}>Get Access</a>
+                      <p style={{ color:'#9ea1a4',fontSize:'12px',margin:'0 0 16px',lineHeight:1.5 }}>Security checks are included in Pro and Elite.</p>
+                      <a href="/pricing" style={{ display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#9aa3a9,#bec6cb)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none' }}>Get Access</a>
                     </div>
                   )}
                   {!planLoading && isFullAccess && (() => {
@@ -9608,8 +9621,8 @@ export default function TerminalTokenScanner() {
                     const displayCortexVerdict = normalizedEngineRisk.riskLabel
                     const displayCortexConfidence = normalizedEngineRisk.confidence
                     const gaugeColor = riskColorFromCanonicalLabel(displayCortexVerdict)
-                    const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#94a3b8' : '#fbbf24'
-                    const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius:'14px' }
+                    const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#9ea1a4' : '#fbbf24'
+                    const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,17,20,.84))', borderRadius:'14px' }
                     const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
@@ -9626,7 +9639,7 @@ export default function TerminalTokenScanner() {
                               <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} scoreType="risk" />
                             </div>
                             <div style={{ flex:1, minWidth:'200px', display:'flex', flexDirection:'column', gap:'11px' }}>
-                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
+                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#4b4e51',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
                               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
                                   {displayCortexVerdict ?? formatTokenScannerPublicStatus('unavailable', 'risk verdict was not returned')}
@@ -9638,13 +9651,13 @@ export default function TerminalTokenScanner() {
                               {riskLabelCopy(displayCortexVerdict, scanEvidence) && (
                                 <p style={{ margin:0,fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>{riskLabelCopy(displayCortexVerdict, scanEvidence)}</p>
                               )}
-                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
+                              <p style={{ margin:0,fontSize:'10.5px',color:'#5b5e61',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence or add caution, but do not automatically make it extreme.</p>
                               {engine?.cortexRead ? (
-                                <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
-                                  <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
+                                <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(31,214,220,0.05)',border:'1px solid rgba(31,214,220,0.18)' }}>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#a8f3f3',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
                                 </div>
                               ) : (
-                                <p style={{ margin:0,fontSize:'11px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Rug risk analysis available when upstream APIs respond.</p>
+                                <p style={{ margin:0,fontSize:'11px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Rug risk analysis available when upstream APIs respond.</p>
                               )}
                             </div>
                           </div>
@@ -9652,7 +9665,7 @@ export default function TerminalTokenScanner() {
 
                         {/* Why this score */}
                         <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'2px' }}>
-                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Why this score</p>
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#6e7174',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Why this score</p>
                           <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'12px', alignItems:'start' }}>
@@ -9677,8 +9690,8 @@ export default function TerminalTokenScanner() {
                           {(() => {
                             const lpMode2 = deriveLpMode(result)
                             return (
-                              <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(168,85,247,0.22)':'rgba(52,211,153,0.18)'}` }}>
-                                <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#a855f7':'#34d399' }}>LP Control</p>
+                              <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(190,198,203,0.22)':'rgba(52,211,153,0.18)'}` }}>
+                                <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#bec6cb':'#34d399' }}>LP Control</p>
                                 <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
                                   <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>
                                     {lpMode2==='protocol' ? 'Concentrated Liquidity (v3/v4)' : (lpLabelMap[lpState] ?? lpState.replace(/_/g,' '))}
@@ -9687,7 +9700,7 @@ export default function TerminalTokenScanner() {
                                     <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#34d399',background:'rgba(52,211,153,0.12)',border:'1px solid rgba(52,211,153,0.30)',fontFamily:'var(--font-plex-mono)' }}>VERIFIED</span>
                                   )}
                                   {lpMode2==='protocol' && (
-                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#a855f7',background:'rgba(168,85,247,0.10)',border:'1px solid rgba(168,85,247,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
+                                    <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#bec6cb',background:'rgba(190,198,203,0.10)',border:'1px solid rgba(190,198,203,0.30)',fontFamily:'var(--font-plex-mono)' }}>PROTOCOL</span>
                                   )}
                                 </div>
                                 {(() => {
@@ -9719,15 +9732,15 @@ export default function TerminalTokenScanner() {
                                       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px 10px' }}>
                                         {compactRows.map(([label, value]) => (
                                           <div key={label} style={{ minWidth:0 }}>
-                                            <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginBottom:'2px' }}>{label}</div>
-                                            <div style={{ fontSize:'10.5px',color:'#cbd5e1',lineHeight:1.35,fontFamily:'var(--font-plex-mono)',overflowWrap:'anywhere' }} title={value}>{value}</div>
+                                            <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)',marginBottom:'2px' }}>{label}</div>
+                                            <div style={{ fontSize:'10.5px',color:'#d1d4d7',lineHeight:1.35,fontFamily:'var(--font-plex-mono)',overflowWrap:'anywhere' }} title={value}>{value}</div>
                                           </div>
                                         ))}
                                       </div>
                                       <div style={{ paddingTop:'8px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', flexDirection:'column', gap:'4px' }}>
-                                        <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
-                                        <p style={{ margin:0,fontSize:'10.5px',color:'#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
-                                        <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
+                                        <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:'#9ea1a4',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
+                                        <div style={{ fontSize:'9px',color:'#6e7174',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
                                         {/* COPY-COMPRESSION, DISCLOSED (Token Scanner Holder Map + Risk
                                             Engine polish task, explicitly requested: "compress visible
                                             LP Control rows... use short text by default, move longer
@@ -9736,7 +9749,7 @@ export default function TerminalTokenScanner() {
                                             compressed string per case, it's clamped to 2 lines
                                             visually with the full text always available via title —
                                             same approach as the Reason row above. */}
-                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden' }} title={exitRisk}>{exitRisk}</p>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#9ea1a4',lineHeight:1.45,fontFamily:'var(--font-plex-mono)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden' }} title={exitRisk}>{exitRisk}</p>
                                       </div>
                                     </div>
                                   )
@@ -9746,15 +9759,15 @@ export default function TerminalTokenScanner() {
                           })()}
 
                           {/* Ownership / Control */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(167,139,250,0.18)' }}>
-                            <p style={{ ...cardTitle, color:'#a78bfa' }}>Ownership / Control</p>
+                          <div style={{ ...cardBase, border:'1px solid rgba(207,214,218,0.18)' }}>
+                            <p style={{ ...cardTitle, color:'#cfd6da' }}>Ownership / Control</p>
                             <div style={{ display:'grid',gap:'7px' }}>
                               {[
-                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#94a3b8'],
-                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e2e8f0'],
+                                ['Dev Control', ownerState, ownerState==='Renounced'?'#34d399':ownerState==='Held'?'#fbbf24':'#9ea1a4'],
+                                ['LP Control', deriveLpMode(result)==='protocol'?'Protocol-Managed':(lpLabelMap[lpState] ?? lpState.replace(/_/g,' ')), '#e4e7ea'],
                               ].map(([label, val, col]) => (
                                 <div key={String(label)} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
-                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',color:'#6f7275',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
                                   <span style={{ fontSize:'11px',fontWeight:700,color:String(col),fontFamily:'var(--font-plex-mono)' }}>{val}</span>
                                 </div>
                               ))}
@@ -9764,37 +9777,37 @@ export default function TerminalTokenScanner() {
 
                         {/* Supporting evidence */}
                         <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px' }}>
-                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Supporting evidence</p>
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#6e7174',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Supporting evidence</p>
                           <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
                         </div>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px', alignItems:'stretch' }}>
                           {/* Trading Simulation */}
-                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simRisk?'rgba(248,113,113,0.28)':'rgba(148,163,184,0.18)'}` }}>
-                            <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
+                          <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(31,214,220,0.25)':simRisk?'rgba(248,113,113,0.28)':'rgba(158,161,164,0.18)'}` }}>
+                            <p style={{ ...cardTitle, color:'#62f1f1' }}>Trading Simulation</p>
                             <div style={{ display:'flex',gap:'6px',marginBottom:'10px',flexWrap:'wrap' }}>
-                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simRisk?'#f87171':'#94a3b8',background:simVerified?'rgba(52,211,153,0.10)':simRisk?'rgba(248,113,113,0.10)':'rgba(148,163,184,0.08)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simRisk?'rgba(248,113,113,0.30)':'rgba(148,163,184,0.22)'}`,fontFamily:'var(--font-plex-mono)' }}>
+                              <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:simVerified?'#34d399':simRisk?'#f87171':'#9ea1a4',background:simVerified?'rgba(52,211,153,0.10)':simRisk?'rgba(248,113,113,0.10)':'rgba(158,161,164,0.08)',border:`1px solid ${simVerified?'rgba(52,211,153,0.30)':simRisk?'rgba(248,113,113,0.30)':'rgba(158,161,164,0.22)'}`,fontFamily:'var(--font-plex-mono)' }}>
                                 {simAuditUi.badge}
                               </span>
                               {sim?.isHoneypot === true && (
                                 <span style={{ padding:'3px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,color:'#f87171',background:'rgba(248,113,113,0.10)',border:'1px solid rgba(248,113,113,0.35)',fontFamily:'var(--font-plex-mono)' }}>HONEYPOT</span>
                               )}
                             </div>
-                            <p style={{ margin:'0 0 10px', fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.statusLabel}</p>
-                            <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.reason}</p>
+                            <p style={{ margin:'0 0 10px', fontSize:'11px', color:'#d1d4d7', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.statusLabel}</p>
+                            <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.reason}</p>
                             {simAuditUi.impact && (
                               <p style={{ margin:'0 0 10px', fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{simAuditUi.impact}</p>
                             )}
                             {simAuditUi.showTaxRows ? (
                             <div style={{ display:'grid',gap:'6px' }}>
                               {([
-                                ['Honeypot', simAuditUi.honeypotValue, simAuditUi.honeypotValue === 'Blocked' || simAuditUi.honeypotValue === 'YES' ? '#f87171' : simAuditUi.honeypotValue === 'Sellable' || simAuditUi.honeypotValue === 'NO' ? '#34d399' : '#94a3b8'],
-                                ['Buy Tax', simAuditUi.buyTaxValue, (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax) != null ? ((result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#94a3b8'],
-                                ['Sell Tax', simAuditUi.sellTaxValue, (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax) != null ? ((result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#94a3b8'],
+                                ['Honeypot', simAuditUi.honeypotValue, simAuditUi.honeypotValue === 'Blocked' || simAuditUi.honeypotValue === 'YES' ? '#f87171' : simAuditUi.honeypotValue === 'Sellable' || simAuditUi.honeypotValue === 'NO' ? '#34d399' : '#9ea1a4'],
+                                ['Buy Tax', simAuditUi.buyTaxValue, (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax) != null ? ((result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#9ea1a4'],
+                                ['Sell Tax', simAuditUi.sellTaxValue, (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax) != null ? ((result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#9ea1a4'],
                                 ...(sim?.transferTax != null && sim.transferTax > 0 ? [['Transfer Tax', `${sim.transferTax.toFixed(1)}%`, '#fbbf24'] as [string, string, string]] : []),
-                                ...(simAuditUi.source ? [['Source', simAuditUi.source, '#67e8f9'] as [string, string, string]] : []),
+                                ...(simAuditUi.source ? [['Source', simAuditUi.source, '#62f1f1'] as [string, string, string]] : []),
                               ] as Array<[string,string,string]>).map(([label,val,col])=>(
                                 <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
-                                  <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                  <span style={{ fontSize:'11px',color:'#6f7275',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
                                   <span style={{ fontSize:'11px',fontWeight:700,color:col,fontFamily:'var(--font-plex-mono)' }}>{val}</span>
                                 </div>
                               ))}
@@ -9819,14 +9832,14 @@ export default function TerminalTokenScanner() {
                                 const flagLabel = (v: BoolFlag) =>
                                   v === true ? 'Detected' : v === false ? 'Not detected' : 'Not analyzed'
                                 const flagColor = (v: BoolFlag) =>
-                                  v === true ? '#f87171' : v === false ? '#34d399' : '#64748b'
+                                  v === true ? '#f87171' : v === false ? '#34d399' : '#6f7275'
                                 const flagBg = (v: BoolFlag) =>
                                   v === true ? 'rgba(248,113,113,0.10)' : v === false ? 'rgba(52,211,153,0.08)' : 'rgba(255,255,255,0.04)'
                                 const flagBorder = (v: BoolFlag) =>
                                   v === true ? 'rgba(248,113,113,0.30)' : v === false ? 'rgba(52,211,153,0.22)' : 'rgba(255,255,255,0.08)'
                                 return flagRows.map(([label, val]) => (
                                   <div key={label} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px' }}>
-                                    <span style={{ fontSize:'11px',color:'#94a3b8',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                    <span style={{ fontSize:'11px',color:'#9ea1a4',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
                                     <span style={{ padding:'2px 8px',borderRadius:'999px',fontSize:'9px',fontWeight:700,fontFamily:'var(--font-plex-mono)',color:flagColor(val),background:flagBg(val),border:`1px solid ${flagBorder(val)}` }}>
                                       {flagLabel(val)}
                                     </span>
@@ -9871,9 +9884,9 @@ export default function TerminalTokenScanner() {
                         )}
 
                         {/* Next Action */}
-                        <div style={{ padding:'14px 16px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.22)',borderRadius:'12px' }}>
-                          <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#2DD4BF',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Next Action</p>
-                          <p style={{ margin:0,fontSize:'12px',color:'#67e8f9',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next2}</p>
+                        <div style={{ padding:'14px 16px',background:'rgba(31,214,220,0.05)',border:'1px solid rgba(31,214,220,0.22)',borderRadius:'12px' }}>
+                          <p style={{ margin:'0 0 6px',fontSize:'9px',fontWeight:700,letterSpacing:'.16em',color:'#1fd6dc',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Next Action</p>
+                          <p style={{ margin:0,fontSize:'12px',color:'#62f1f1',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{next2}</p>
                         </div>
                       </div>
                     )
@@ -9918,7 +9931,7 @@ export default function TerminalTokenScanner() {
                 const clusterRiskScore = clusterInfluence?.clusterRiskScore ?? null
                 const clusterRiskLabel = clusterInfluence?.clusterRiskLabel ?? (clusterSupplyPercent == null ? 'open_check' : 'low')
                 const clusterDominanceLabel = clusterUi?.dominanceLabel ?? (clusterDominance === 'unknown' ? (clusterUi?.dominanceLabel ?? 'Not verified') : clusterDominance === 'none' ? 'No dominance' : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)} dominance`)
-                const clusterRiskAccent = clusterRiskLabel === 'critical' || clusterRiskLabel === 'high' ? '#f87171' : clusterRiskLabel === 'elevated' || clusterRiskLabel === 'watch' ? '#fbbf24' : clusterRiskLabel === 'open_check' ? '#94a3b8' : '#34d399'
+                const clusterRiskAccent = clusterRiskLabel === 'critical' || clusterRiskLabel === 'high' ? '#f87171' : clusterRiskLabel === 'elevated' || clusterRiskLabel === 'watch' ? '#fbbf24' : clusterRiskLabel === 'open_check' ? '#9ea1a4' : '#34d399'
                 // ROBINHOOD-EVIDENCE FIX, DISCLOSED: dev-control/cluster-influence resolved here with
                 // this section's OWN real inputs (creatorAddress/holder rows/clusterSupplyPercent) —
                 // distinct from robinhoodEvidenceFor()'s conservative top-level defaults, since dev
@@ -9957,19 +9970,19 @@ export default function TerminalTokenScanner() {
                 const safeError = devIntelError ? 'Dev intelligence is temporarily unavailable. Retry the scan to refresh this module.' : null
 
                 return (<>
-                  <div style={{ marginBottom:'12px', padding:'18px', borderRadius:'14px', border:'1px solid rgba(125,211,252,0.22)', background:'linear-gradient(165deg, rgba(14,24,43,0.95), rgba(8,14,26,0.95))', boxShadow:'0 10px 28px rgba(5,10,25,0.45)' }}>
+                  <div style={{ marginBottom:'12px', padding:'18px', borderRadius:'14px', border:'1px solid rgba(169,233,236,0.22)', background:'linear-gradient(165deg, rgba(20,23,26,0.95), rgba(11,14,17,0.95))', boxShadow:'0 10px 28px rgba(5,10,25,0.45)' }}>
                     <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',marginBottom:'12px' }}>
                       <div>
-                        <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
-                        <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Deployer identity, wallet cluster connections, and on-chain supply influence — CORTEX dev intelligence layer.</p>
+                        <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#a9e9ec',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
+                        <p style={{ margin:0,fontSize:'12px',color:'#d1d4d7',fontFamily:'var(--font-plex-mono)' }}>Deployer identity, wallet cluster connections, and on-chain supply influence — CORTEX dev intelligence layer.</p>
                       </div>
-                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:devRiskColor,fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100 RISK</span></p>
+                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:devRiskColor,fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#6f7275' }}>/100 RISK</span></p>
                     </div>
                     <div style={{ display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px' }}>
                       <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:devRiskColor,background:`${devRiskColor}18`,border:`1px solid ${devRiskColor}55`,fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
-                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',border:'1px solid rgba(125,211,252,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#a9e9ec',border:'1px solid rgba(169,233,236,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
                     </div>
-                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${riskGaugeFillPercent(score)}%`,height:'100%',background:`linear-gradient(90deg, ${devRiskColor}99, ${devRiskColor})` }} /></div>
+                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(20,23,26,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${riskGaugeFillPercent(score)}%`,height:'100%',background:`linear-gradient(90deg, ${devRiskColor}99, ${devRiskColor})` }} /></div>
                   </div>
                   <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:'10px',marginBottom:'14px' }}>
                     {[
@@ -9977,12 +9990,12 @@ export default function TerminalTokenScanner() {
                       { k:'Linked Wallets', v: clusterUi?.linkedLabel ?? (graphRan ? (linkedWalletCount > 0 ? `${linkedWalletCount} mapped` : '0 confirmed') : scanEvidence.labels.linkedWallets) },
                       { k:'Supply Control', v: clusterUi?.supplyControlLabel ?? (clusterSupplyPercent != null ? `${clusterSupplyPercent.toFixed(1)}% cluster` : scanEvidence.labels.supplyControl) },
                       { k:'Patterns', v: suspiciousTransferPattern ? 'Suspicious transfers seen' : 'No major pattern flagged' },
-                    ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(148,163,184,0.2)',background:'rgba(9,15,29,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#64748b',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e2e8f0',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
+                    ].map((item)=><div key={item.k} style={{ padding:'12px',borderRadius:'12px',border:'1px solid rgba(158,161,164,0.2)',background:'rgba(12,15,18,0.82)' }}><p style={{ margin:'0 0 5px',fontSize:'9px',letterSpacing:'.12em',color:'#6f7275',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>{item.k}</p><p style={{ margin:0,fontSize:'12px',color:'#e4e7ea',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>{item.v}</p></div>)}
                   </div>
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
-                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(125,211,252,0.45)':'1px solid rgba(148,163,184,0.2)', background:devControlTab===id?'rgba(14,29,47,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#7dd3fc':'#94a3b8', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
+                    {([['dev-map','Dev Map'],['cluster-map','Cluster Map'],['supply-control','Supply Control'],['history','History'],['watch-plan','Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id,label]) => <button key={id} onClick={() => setDevControlTab(id)} style={{ padding:'8px 12px', borderRadius:'10px', border:devControlTab===id?'1px solid rgba(169,233,236,0.45)':'1px solid rgba(158,161,164,0.2)', background:devControlTab===id?'rgba(24,27,30,0.95)':'rgba(8,14,28,0.6)', color:devControlTab===id?'#a9e9ec':'#9ea1a4', fontSize:'10px', letterSpacing:'.10em', textTransform:'uppercase', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{label}</button>)}
                   </div>
-                  <div style={{ border:'1px solid rgba(148,163,184,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(7,12,24,0.8)' }}>
+                  <div style={{ border:'1px solid rgba(158,161,164,0.2)', borderRadius:'14px', padding:'14px', background:'rgba(9,12,15,0.8)' }}>
                     {devControlTab==='dev-map' && (() => {
                       const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0,6)}…${addr.slice(-4)}` : null
                       const contractAddr = result.contract ?? null
@@ -9992,7 +10005,7 @@ export default function TerminalTokenScanner() {
                         ? { label: 'Confirmed', color: '#34d399', bg: 'rgba(52,211,153,.12)', border: 'rgba(52,211,153,.3)' }
                         : creatorStatus === 'likely'
                           ? { label: clusterUi?.originChip ?? 'Partial', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' }
-                          : { label: clusterUi?.originChip ?? 'Origin wallet not verified', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
+                          : { label: clusterUi?.originChip ?? 'Origin wallet not verified', color: '#9ea1a4', bg: 'rgba(158,161,164,.08)', border: 'rgba(158,161,164,.25)' }
                       const confLabel = activeDevIntel?.confidence === 'high' ? 'High confidence' : activeDevIntel?.confidence === 'medium' ? 'Medium confidence' : activeDevIntel?.confidence === 'low' ? 'Low confidence' : 'Evidence-based inference'
                       const chainLabel = (result.chain ?? chain ?? 'unknown').toUpperCase()
                       return (
@@ -10000,68 +10013,68 @@ export default function TerminalTokenScanner() {
                           {/* Intelligence flow: three node cards */}
                           <div style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr auto 1fr', alignItems:'stretch', gap:'6px' }}>
                             {/* Token Contract node */}
-                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(14,24,43,.9),rgba(8,16,32,.85))', border:'1px solid rgba(125,211,252,.28)', display:'flex', flexDirection:'column', gap:'6px' }}>
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(20,23,26,.9),rgba(8,16,32,.85))', border:'1px solid rgba(169,233,236,.28)', display:'flex', flexDirection:'column', gap:'6px' }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
-                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#7dd3fc', flexShrink:0 }} />
-                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background:'#a9e9ec', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color:'#a9e9ec', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
                               </div>
                               {contractAddr ? (
-                                <span title={contractAddr} style={{ fontSize:'10px', color:'#e2e8f0', fontFamily:'var(--font-plex-mono)', background:'rgba(125,211,252,.08)', border:'1px solid rgba(125,211,252,.18)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(contractAddr)}</span>
+                                <span title={contractAddr} style={{ fontSize:'10px', color:'#e4e7ea', fontFamily:'var(--font-plex-mono)', background:'rgba(169,233,236,.08)', border:'1px solid rgba(169,233,236,.18)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(contractAddr)}</span>
                               ) : (
-                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>Address not resolved</span>
+                                <span style={{ fontSize:'10px', color:'#4b4e51', fontFamily:'var(--font-plex-mono)' }}>Address not resolved</span>
                               )}
-                              <span style={{ fontSize:'9px', color:'#475569', fontFamily:'var(--font-plex-mono)' }}>{chainLabel} mainnet</span>
+                              <span style={{ fontSize:'9px', color:'#505356', fontFamily:'var(--font-plex-mono)' }}>{chainLabel} mainnet</span>
                             </div>
                             {/* Arrow */}
                             <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
-                              <span style={{ color:'#2dd4bf', fontSize:'14px', lineHeight:1 }}>→</span>
+                              <span style={{ color:'#1fd6dc', fontSize:'14px', lineHeight:1 }}>→</span>
                             </div>
                             {/* Origin Wallet node */}
-                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border:`1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(148,163,184,.18)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border:`1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(158,161,164,.18)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
-                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: originAddr ? '#fbbf24' : '#475569', flexShrink:0 }} />
-                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: originAddr ? '#fbbf24' : '#505356', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: originAddr ? '#fbbf24' : '#6f7275', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
                               </div>
                               {originAddr ? (
                                 <span title={originAddr} style={{ fontSize:'10px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', background:'rgba(251,191,36,.08)', border:'1px solid rgba(251,191,36,.2)', borderRadius:'6px', padding:'3px 7px', cursor:'default' }}>{fmt(originAddr)}</span>
                               ) : (
-                                <span style={{ fontSize:'10px', color:'#3a5268', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.originPendingText || 'Origin wallet not verified'}</span>
+                                <span style={{ fontSize:'10px', color:'#4b4e51', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.originPendingText || 'Origin wallet not verified'}</span>
                               )}
                               <span style={{ display:'inline-flex', alignSelf:'flex-start', padding:'2px 7px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
                               {factoryAddress && (
-                                <span title={factoryAddress} style={{ fontSize:'9px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)' }}>Factory {fmt(factoryAddress)} · origin kept separate</span>
+                                <span title={factoryAddress} style={{ fontSize:'9px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)' }}>Factory {fmt(factoryAddress)} · origin kept separate</span>
                               )}
                             </div>
                             {/* Arrow */}
                             <div style={{ display:'flex', alignItems:'center', justifyContent:'center', paddingTop:'6px' }}>
-                              <span style={{ color:linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', fontSize:'14px', lineHeight:1 }}>→</span>
+                              <span style={{ color:linkedWallets.length > 0 ? '#1fd6dc' : '#323538', fontSize:'14px', lineHeight:1 }}>→</span>
                             </div>
                             {/* Linked Wallets node */}
-                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(6,20,18,.85),rgba(4,14,14,.9))', border:`1px solid ${linkedWallets.length > 0 ? 'rgba(45,212,191,.28)' : 'rgba(148,163,184,.14)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
+                            <div style={{ padding:'12px 14px', borderRadius:'12px', background:'linear-gradient(145deg,rgba(6,20,18,.85),rgba(4,14,14,.9))', border:`1px solid ${linkedWallets.length > 0 ? 'rgba(31,214,220,.28)' : 'rgba(158,161,164,.14)'}`, display:'flex', flexDirection:'column', gap:'6px' }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'2px' }}>
-                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: linkedWallets.length > 0 ? '#2dd4bf' : '#1e3a44', flexShrink:0 }} />
-                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: linkedWallets.length > 0 ? '#2dd4bf' : '#3a5268', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>LINKED WALLETS</span>
+                                <span style={{ width:'6px', height:'6px', borderRadius:'50%', background: linkedWallets.length > 0 ? '#1fd6dc' : '#323538', flexShrink:0 }} />
+                                <span style={{ fontSize:'9px', letterSpacing:'.14em', color: linkedWallets.length > 0 ? '#1fd6dc' : '#4b4e51', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>LINKED WALLETS</span>
                               </div>
-                              <span style={{ fontSize:'13px', fontWeight:800, color: linkedWallets.length > 0 ? '#99f6e4' : '#475569', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.linkedCountDisplay ?? (linkedWallets.length > 0 ? linkedWallets.length : '—')}</span>
-                              <span style={{ fontSize:'9px', color: linkedWallets.length > 0 ? '#2dd4bf80' : '#1e3a44', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.linkedLabel ?? (linkedWallets.length > 0 ? `${linkedWallets.length} wallet${linkedWallets.length !== 1 ? 's' : ''} mapped` : 'Cluster wallets not verified')}</span>
+                              <span style={{ fontSize:'13px', fontWeight:800, color: linkedWallets.length > 0 ? '#a8f3f3' : '#505356', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.linkedCountDisplay ?? (linkedWallets.length > 0 ? linkedWallets.length : '—')}</span>
+                              <span style={{ fontSize:'9px', color: linkedWallets.length > 0 ? '#2dd4bf80' : '#323538', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.linkedLabel ?? (linkedWallets.length > 0 ? `${linkedWallets.length} wallet${linkedWallets.length !== 1 ? 's' : ''} mapped` : 'Cluster wallets not verified')}</span>
                             </div>
                           </div>
 
                           {clusterAudit && (
-                            <div style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(15,23,42,.55)', border:'1px solid rgba(148,163,184,.12)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                            <div style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(20,23,26,.55)', border:'1px solid rgba(158,161,164,.12)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
                               {([
                                 clusterAudit.providerHealth.alchemyRpc.health === 'healthy' ? 'Alchemy: healthy' : clusterAudit.providerHealth.alchemyRpc.billingDisabled ? 'Alchemy: billing disabled' : clusterAudit.providerHealth.alchemyRpc.rateLimited ? 'Alchemy: rate limited' : clusterAudit.providerHealth.alchemyRpc.timeout ? 'Alchemy: timeout' : clusterAudit.providerHealth.alchemyRpc.health === 'not_attempted' ? 'Alchemy: not attempted' : `Alchemy: ${clusterAudit.providerHealth.alchemyRpc.skipReason ?? clusterAudit.providerHealth.alchemyRpc.health}`,
                                 clusterAudit.providerHealth.blockscout.health === 'healthy' ? 'Blockscout: healthy' : clusterAudit.providerHealth.blockscout.health === 'unsupported' ? 'Blockscout: unsupported' : clusterAudit.providerHealth.blockscout.attempted ? 'Blockscout: failed' : 'Blockscout: not attempted',
                                 clusterAudit.providerHealth.goldrush.health === 'healthy' ? 'GoldRush: healthy' : clusterAudit.providerHealth.goldrush.health === 'unsupported' ? 'GoldRush: unsupported' : clusterAudit.providerHealth.goldrush.attempted ? 'GoldRush: failed' : 'GoldRush: not attempted',
                               ] as string[]).map((label) => (
-                                <span key={label} style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#94a3b8', border:'1px solid rgba(148,163,184,.2)', fontFamily:'var(--font-plex-mono)' }}>{label}</span>
+                                <span key={label} style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#9ea1a4', border:'1px solid rgba(158,161,164,.2)', fontFamily:'var(--font-plex-mono)' }}>{label}</span>
                               ))}
-                              <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#7dd3fc', border:'1px solid rgba(125,211,252,.25)', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.statusLabel ?? clusterAudit.finalDevMapStatus}</span>
+                              <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#a9e9ec', border:'1px solid rgba(169,233,236,.25)', fontFamily:'var(--font-plex-mono)' }}>{clusterUi?.statusLabel ?? clusterAudit.finalDevMapStatus}</span>
                             </div>
                           )}
 
                           {/* Origin Wallet detail card */}
-                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(10,16,30,.7)', border:'1px solid rgba(251,191,36,.18)' }}>
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(13,16,19,.7)', border:'1px solid rgba(251,191,36,.18)' }}>
                             <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
                               <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#fbbf24', fontFamily:'var(--font-plex-mono)' }}>{originLabel.toUpperCase()}</p>
                               <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:originChip.color, background:originChip.bg, border:`1px solid ${originChip.border}`, fontFamily:'var(--font-plex-mono)' }}>{originChip.label}</span>
@@ -10073,63 +10086,63 @@ export default function TerminalTokenScanner() {
                                 { label: 'Evidence source', value: activeDevIntel?.reasons?.[0] ?? (originAddr ? 'Transfer trace' : 'No direct evidence') },
                                 { label: 'Network', value: chainLabel },
                               ].map(({ label, value, title }) => (
-                                <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(15,23,42,.5)', border:'1px solid rgba(148,163,184,.1)' }}>
-                                  <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label.toUpperCase()}</div>
-                                  <div title={title} style={{ fontSize:'11px', color:'#cbd5e1', fontWeight:600, fontFamily:'var(--font-plex-mono)', cursor: title ? 'default' : undefined }}>{value ?? '—'}</div>
+                                <div key={label} style={{ padding:'8px 10px', borderRadius:'8px', background:'rgba(20,23,26,.5)', border:'1px solid rgba(158,161,164,.1)' }}>
+                                  <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#505356', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label.toUpperCase()}</div>
+                                  <div title={title} style={{ fontSize:'11px', color:'#d1d4d7', fontWeight:600, fontFamily:'var(--font-plex-mono)', cursor: title ? 'default' : undefined }}>{value ?? '—'}</div>
                                 </div>
                               ))}
                             </div>
                             {!originAddr && (
-                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
+                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#505356', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
                                 {clusterUi?.originPendingText || 'Origin wallet not verified. Needs creator tx evidence.'}
                               </p>
                             )}
                             {factoryAddress && originAddr && (
-                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
+                              <p style={{ margin:'10px 0 0', fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>
                                 Factory {fmt(factoryAddress)} detected. Origin wallet is {fmt(originAddr)} — factory and origin are not mixed.
                               </p>
                             )}
                           </div>
 
                           {/* Linked Wallets list */}
-                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(6,14,22,.7)', border:'1px solid rgba(45,212,191,.18)' }}>
+                          <div style={{ padding:'14px 16px', borderRadius:'12px', background:'rgba(6,14,22,.7)', border:'1px solid rgba(31,214,220,.18)' }}>
                             <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px', flexWrap:'wrap' }}>
-                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>LINKED WALLET CLUSTER</p>
+                              <p style={{ margin:0, fontSize:'10px', letterSpacing:'.14em', fontWeight:700, color:'#1fd6dc', fontFamily:'var(--font-plex-mono)' }}>LINKED WALLET CLUSTER</p>
                               {linkedWallets.length > 0 && (
-                                <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#2dd4bf', background:'rgba(45,212,191,.1)', border:'1px solid rgba(45,212,191,.28)', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length} mapped</span>
+                                <span style={{ padding:'2px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:'#1fd6dc', background:'rgba(31,214,220,.1)', border:'1px solid rgba(31,214,220,.28)', fontFamily:'var(--font-plex-mono)' }}>{linkedWallets.length} mapped</span>
                               )}
                             </div>
                             {linkedWallets.length > 0 ? (
                               <div style={{ display:'grid', gap:'7px' }}>
                                 {linkedWallets.map((wallet, i) => {
-                                  const confColor = wallet.confidence === 'high' ? '#34d399' : wallet.confidence === 'medium' ? '#fbbf24' : '#94a3b8'
+                                  const confColor = wallet.confidence === 'high' ? '#34d399' : wallet.confidence === 'medium' ? '#fbbf24' : '#9ea1a4'
                                   return (
-                                    <div key={wallet.address + i} style={{ display:'flex', alignItems:'center', gap:'10px', padding:'9px 12px', borderRadius:'9px', background:'rgba(15,23,42,.55)', border:'1px solid rgba(45,212,191,.14)', flexWrap:'wrap' }}>
-                                      <span title={wallet.address} style={{ fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', fontWeight:600, cursor:'default', letterSpacing:'.04em' }}>{fmt(wallet.address)}</span>
+                                    <div key={wallet.address + i} style={{ display:'flex', alignItems:'center', gap:'10px', padding:'9px 12px', borderRadius:'9px', background:'rgba(20,23,26,.55)', border:'1px solid rgba(31,214,220,.14)', flexWrap:'wrap' }}>
+                                      <span title={wallet.address} style={{ fontSize:'11px', color:'#a8f3f3', fontFamily:'var(--font-plex-mono)', fontWeight:600, cursor:'default', letterSpacing:'.04em' }}>{fmt(wallet.address)}</span>
                                       {wallet.confidence && (
                                         <span style={{ padding:'1px 6px', borderRadius:'999px', fontSize:'9px', fontWeight:700, color:confColor, background:`${confColor}14`, border:`1px solid ${confColor}38`, fontFamily:'var(--font-plex-mono)' }}>{wallet.confidence}</span>
                                       )}
                                       {wallet.reason && (
-                                        <span style={{ fontSize:'10px', color:'#475569', fontFamily:'var(--font-plex-mono)', flex:1, minWidth:'120px' }}>{wallet.reason}</span>
+                                        <span style={{ fontSize:'10px', color:'#505356', fontFamily:'var(--font-plex-mono)', flex:1, minWidth:'120px' }}>{wallet.reason}</span>
                                       )}
                                     </div>
                                   )
                                 })}
                               </div>
                             ) : (
-                              <div style={{ padding:'14px', borderRadius:'10px', background:'rgba(15,23,42,.4)', border:'1px solid rgba(148,163,184,.1)', textAlign:'center' }}>
-                                <p style={{ margin:'0 0 4px', fontSize:'11px', color:'#475569', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{clusterUi?.linkedEmptyTitle ?? 'Cluster wallets not verified'}</p>
-                                <p style={{ margin:0, fontSize:'10px', color:'#2d3f50', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{clusterUi?.linkedEmptyBody ?? 'Graph not run — transfer evidence was not available in this pass.'}</p>
+                              <div style={{ padding:'14px', borderRadius:'10px', background:'rgba(20,23,26,.4)', border:'1px solid rgba(158,161,164,.1)', textAlign:'center' }}>
+                                <p style={{ margin:'0 0 4px', fontSize:'11px', color:'#505356', fontFamily:'var(--font-plex-mono)', fontWeight:600 }}>{clusterUi?.linkedEmptyTitle ?? 'Cluster wallets not verified'}</p>
+                                <p style={{ margin:0, fontSize:'10px', color:'#393c3f', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{clusterUi?.linkedEmptyBody ?? 'Graph not run — transfer evidence was not available in this pass.'}</p>
                               </div>
                             )}
                             {linkedWalletSupply != null && (
-                              <div style={{ marginTop:'10px', padding:'8px 12px', borderRadius:'8px', background:'rgba(45,212,191,.06)', border:'1px solid rgba(45,212,191,.15)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                              <div style={{ marginTop:'10px', padding:'8px 12px', borderRadius:'8px', background:'rgba(31,214,220,.06)', border:'1px solid rgba(31,214,220,.15)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                                 <span style={{ fontSize:'10px', color:'#2dd4bf80', fontFamily:'var(--font-plex-mono)' }}>Cluster supply influence</span>
-                                <span style={{ fontSize:'12px', fontWeight:700, color:'#2dd4bf', fontFamily:'var(--font-plex-mono)' }}>{linkedWalletSupply.toFixed(1)}%</span>
+                                <span style={{ fontSize:'12px', fontWeight:700, color:'#1fd6dc', fontFamily:'var(--font-plex-mono)' }}>{linkedWalletSupply.toFixed(1)}%</span>
                               </div>
                             )}
                             {linkedWalletSupply == null && linkedWallets.length === 0 && (
-                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#1e3a44', fontFamily:'var(--font-plex-mono)' }}>Supply influence still needs confirmation — rescan when holder data is available.</p>
+                              <p style={{ margin:'10px 0 0', fontSize:'10px', color:'#323538', fontFamily:'var(--font-plex-mono)' }}>Supply influence still needs confirmation — rescan when holder data is available.</p>
                             )}
                           </div>
                         </div>
@@ -10139,41 +10152,41 @@ export default function TerminalTokenScanner() {
                       <div style={{ display:'grid', gap:'10px' }}>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:'8px' }}>
                           {[
-                            { label:'Creator in top holders', value: clusterUi?.creatorInTopLabel ?? (creatorInTop==null ? scanEvidence.labels.creatorInTop : creatorInTop ? 'Yes' : 'No'), accent: creatorInTop==null ? '#64748b' : creatorInTop ? '#fbbf24' : '#34d399' },
-                            { label:'Top 1 concentration',   value: clusterUi?.top1Label ?? (top1!=null ? `${top1.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top1!=null && top1>20 ? '#f87171' : '#94a3b8' },
-                            { label:'Top 10 concentration',  value: clusterUi?.top10Label ?? (top10!=null ? `${top10.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#94a3b8' },
-                            { label:'Top 20 concentration',  value: clusterUi?.top20Label ?? (top20!=null ? `${top20.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#94a3b8' },
-                            { label:'Linked-wallet supply',  value: clusterUi?.linkedWalletSupplyLabel ?? (linkedWalletSupply!=null ? `${linkedWalletSupply.toFixed(1)}%` : 'Needs transfer evidence'), accent:'#2dd4bf' },
-                            { label:'Dev cluster supply',    value: clusterUi?.clusterSupplyLabel ?? (devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : scanEvidence.labels.clusterSupply), accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#64748b' },
+                            { label:'Creator in top holders', value: clusterUi?.creatorInTopLabel ?? (creatorInTop==null ? scanEvidence.labels.creatorInTop : creatorInTop ? 'Yes' : 'No'), accent: creatorInTop==null ? '#6f7275' : creatorInTop ? '#fbbf24' : '#34d399' },
+                            { label:'Top 1 concentration',   value: clusterUi?.top1Label ?? (top1!=null ? `${top1.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top1!=null && top1>20 ? '#f87171' : '#9ea1a4' },
+                            { label:'Top 10 concentration',  value: clusterUi?.top10Label ?? (top10!=null ? `${top10.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top10!=null ? (top10>50?'#f87171':top10>30?'#fbbf24':'#34d399') : '#9ea1a4' },
+                            { label:'Top 20 concentration',  value: clusterUi?.top20Label ?? (top20!=null ? `${top20.toFixed(1)}%` : scanEvidence.labels.supplyControl), accent: top20!=null ? (top20>60?'#f87171':top20>40?'#fbbf24':'#34d399') : '#9ea1a4' },
+                            { label:'Linked-wallet supply',  value: clusterUi?.linkedWalletSupplyLabel ?? (linkedWalletSupply!=null ? `${linkedWalletSupply.toFixed(1)}%` : 'Needs transfer evidence'), accent:'#1fd6dc' },
+                            { label:'Dev cluster supply',    value: clusterUi?.clusterSupplyLabel ?? (devClusterSupply!=null ? `${devClusterSupply.toFixed(1)}%` : scanEvidence.labels.clusterSupply), accent: devClusterSupply!=null ? (devClusterSupply>30?'#f87171':devClusterSupply>15?'#fbbf24':'#34d399') : '#6f7275' },
                           ].map(({ label, value, accent }) => (
-                            <div key={label} style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
-                              <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', marginBottom:'5px', textTransform:'uppercase' }}>{label}</div>
+                            <div key={label} style={{ padding:'10px 12px', borderRadius:'10px', background:'rgba(12,15,18,.8)', border:'1px solid rgba(158,161,164,.14)' }}>
+                              <div style={{ fontSize:'9px', letterSpacing:'.1em', color:'#505356', fontFamily:'var(--font-plex-mono)', marginBottom:'5px', textTransform:'uppercase' }}>{label}</div>
                               <div style={{ fontSize:'13px', fontWeight:700, color:accent, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
                             </div>
                           ))}
                         </div>
-                        <div style={{ padding:'14px 16px', borderRadius:'13px', background:'linear-gradient(145deg, rgba(13,27,43,.92), rgba(6,13,25,.94))', border:`1px solid ${clusterRiskLabel === 'open_check' ? 'rgba(148,163,184,.16)' : 'rgba(45,212,191,.22)'}`, boxShadow:'inset 0 1px 0 rgba(255,255,255,.03)' }}>
+                        <div style={{ padding:'14px 16px', borderRadius:'13px', background:'linear-gradient(145deg, rgba(22,25,28,.92), rgba(6,13,25,.94))', border:`1px solid ${clusterRiskLabel === 'open_check' ? 'rgba(158,161,164,.16)' : 'rgba(31,214,220,.22)'}`, boxShadow:'inset 0 1px 0 rgba(255,255,255,.03)' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', marginBottom:'12px' }}>
                             <div>
-                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
-                              <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                              <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#1fd6dc', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
+                              <p style={{ margin:0, fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
                                 {clusterSupplyPercent == null ? (clusterUi?.supplyControlLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.supplyControl) : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
                                 {' · '}
                                 {clusterSupplyPercent == null ? (clusterUi?.watchPlanSummary ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.supplyControl) : clusterInfluence?.reason ?? clusterDominanceLabel}
                               </p>
                             </div>
                             <div style={{ textAlign:'right', flexShrink:0 }}>
-                              <p style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800, color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)' }}>{clusterRiskScore != null ? clusterRiskScore : '—'}<span style={{ fontSize:'10px', color:'#64748b' }}>/100</span></p>
+                              <p style={{ margin:'0 0 4px', fontSize:'18px', fontWeight:800, color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)' }}>{clusterRiskScore != null ? clusterRiskScore : '—'}<span style={{ fontSize:'10px', color:'#6f7275' }}>/100</span></p>
                               <p style={{ margin:0, fontSize:'9px', letterSpacing:'.1em', color:clusterRiskAccent, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{clusterRiskScore != null ? `Risk score ${clusterRiskScore}/100` : (clusterUi?.clusterRiskScoreLabel ?? 'Not verified')}</p>
                             </div>
                           </div>
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
-                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
-                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
-                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? (clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.clusterSupply) : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(20,23,26,.72)', border:'1px solid rgba(158,161,164,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#505356', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#9ea1a4' : '#e4e7ea', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? (clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.clusterSupply) : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
                             </div>
-                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
-                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
+                            <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(20,23,26,.72)', border:'1px solid rgba(158,161,164,.12)' }}>
+                              <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#505356', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
                               <p style={{ margin:0, fontSize:'12px', color:clusterRiskAccent, fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterDominanceLabel}</p>
                             </div>
                           </div>
@@ -10181,7 +10194,7 @@ export default function TerminalTokenScanner() {
                             {(clusterSupplyPercent == null ? [clusterUi?.clusterSupplyLabel ?? robinhoodDevControl?.devControlLabel ?? scanEvidence.labels.clusterSupply] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
                               <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
                                 <span style={{ color:clusterRiskAccent, flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
-                                <p style={{ margin:0, fontSize:'10px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>
+                                <p style={{ margin:0, fontSize:'10px', color:'#d1d4d7', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>
                               </div>
                             ))}
                           </div>
@@ -10197,26 +10210,26 @@ export default function TerminalTokenScanner() {
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (
-                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.16)' }}>
-                            <p style={{ margin:'0 0 7px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE TRACES</p>
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(169,233,236,.04)', border:'1px solid rgba(169,233,236,.16)' }}>
+                            <p style={{ margin:'0 0 7px', fontSize:'9px', letterSpacing:'.14em', color:'#a9e9ec', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>EVIDENCE TRACES</p>
                             <div style={{ display:'grid', gap:'5px' }}>
                               {activeDevIntel.reasons.map((r, i) => (
                                 <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
-                                  <span style={{ color:'#2dd4bf', flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
-                                  <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{r}</p>
+                                  <span style={{ color:'#1fd6dc', flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
+                                  <p style={{ margin:0, fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{r}</p>
                                 </div>
                               ))}
                             </div>
                           </div>
                         ) : (
-                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(148,163,184,.04)', border:'1px solid rgba(148,163,184,.14)' }}>
-                            <p style={{ margin:0, fontSize:'11px', color:'#3a5268', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Evidence traces are still being built from available deployer activity. Rescan to refresh.</p>
+                          <div style={{ padding:'13px 15px', borderRadius:'11px', background:'rgba(158,161,164,.04)', border:'1px solid rgba(158,161,164,.14)' }}>
+                            <p style={{ margin:0, fontSize:'11px', color:'#4b4e51', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Evidence traces are still being built from available deployer activity. Rescan to refresh.</p>
                           </div>
                         )}
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'8px' }}>
-                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:'1px solid rgba(148,163,184,.14)' }}>
-                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Deployer identity</p>
-                            <p style={{ margin:0, fontSize:'11px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(12,15,18,.8)', border:'1px solid rgba(158,161,164,.14)' }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#505356', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Deployer identity</p>
+                            <p style={{ margin:0, fontSize:'11px', color:'#d1d4d7', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
                               {creatorStatus === 'confirmed'
                                 ? 'Deployer identity confirmed — wallet linked to this deployment.'
                                 : creatorStatus === 'likely'
@@ -10224,9 +10237,9 @@ export default function TerminalTokenScanner() {
                                   : (clusterUi?.originPendingText || 'Origin wallet not verified — needs creator tx evidence.')}
                             </p>
                           </div>
-                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(9,15,29,.8)', border:`1px solid ${suspiciousTransferPattern ? 'rgba(248,113,113,.22)' : 'rgba(148,163,184,.14)'}` }}>
-                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color: suspiciousTransferPattern ? '#f87171' : '#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Transfer patterns</p>
-                            <p style={{ margin:0, fontSize:'11px', color: suspiciousTransferPattern ? '#fca5a5' : '#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
+                          <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(12,15,18,.8)', border:`1px solid ${suspiciousTransferPattern ? 'rgba(248,113,113,.22)' : 'rgba(158,161,164,.14)'}` }}>
+                            <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color: suspiciousTransferPattern ? '#f87171' : '#505356', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Transfer patterns</p>
+                            <p style={{ margin:0, fontSize:'11px', color: suspiciousTransferPattern ? '#fca5a5' : '#d1d4d7', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
                               {suspiciousTransferPattern
                                 ? 'Suspicious transfer activity flagged — review linked wallet flows before sizing a position.'
                                 : 'No suspicious transfer patterns confirmed from current traces.'}
@@ -10237,9 +10250,9 @@ export default function TerminalTokenScanner() {
                     )}
                     {devControlTab==='watch-plan' && (
                       <div style={{ display:'grid', gap:'10px' }}>
-                        <div style={{ padding:'13px 16px', borderRadius:'12px', background:'rgba(125,211,252,.04)', border:'1px solid rgba(125,211,252,.2)' }}>
-                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.14em', color:'#7dd3fc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
-                          <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>
+                        <div style={{ padding:'13px 16px', borderRadius:'12px', background:'rgba(169,233,236,.04)', border:'1px solid rgba(169,233,236,.2)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.14em', color:'#a9e9ec', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#9ea1a4', fontFamily:'var(--font-plex-mono)', lineHeight:1.6 }}>
                             {`Deployer ${creatorStatus === 'confirmed' ? 'confirmed' : creatorStatus === 'likely' ? 'likely matched' : 'not verified'}. ${clusterUi?.linkedLabel ?? (linkedWalletCount > 0 ? `${linkedWalletCount} linked wallet${linkedWalletCount !== 1 ? 's' : ''} mapped.` : 'Cluster wallets not verified')}. Dev cluster supply ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}% of circulating.` : (clusterUi?.clusterSupplyLabel ?? scanEvidence.labels.clusterSupply)}`}
                           </p>
                         </div>
@@ -10251,7 +10264,7 @@ export default function TerminalTokenScanner() {
                             ) : creatorStatus ? (
                               <p style={{ margin:0, fontSize:'11px', color:'#86efac', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Deployer {creatorStatus === 'confirmed' ? 'identity confirmed' : 'likely matched'} from on-chain traces.</p>
                             ) : (
-                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No confirmed signals from available data this pass.</p>
+                              <p style={{ margin:0, fontSize:'11px', color:'#3d4043', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No confirmed signals from available data this pass.</p>
                             )}
                           </div>
                           <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(251,191,36,.04)', border:'1px solid rgba(251,191,36,.18)' }}>
@@ -10261,20 +10274,20 @@ export default function TerminalTokenScanner() {
                                 {openChecks.map((c, i) => <p key={i} style={{ margin:0, fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{c}</p>)}
                               </div>
                             ) : (
-                              <p style={{ margin:0, fontSize:'11px', color:'#374151', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No additional open checks.</p>
+                              <p style={{ margin:0, fontSize:'11px', color:'#3d4043', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>No additional open checks.</p>
                             )}
                           </div>
                         </div>
-                        <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(45,212,191,.04)', border:'1px solid rgba(45,212,191,.18)' }}>
-                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#2dd4bf', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>NEXT ACTION</p>
-                          <p style={{ margin:0, fontSize:'11px', color:'#99f6e4', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{next}</p>
+                        <div style={{ padding:'12px 14px', borderRadius:'11px', background:'rgba(31,214,220,.04)', border:'1px solid rgba(31,214,220,.18)' }}>
+                          <p style={{ margin:'0 0 6px', fontSize:'9px', letterSpacing:'.12em', color:'#1fd6dc', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>NEXT ACTION</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#a8f3f3', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>{next}</p>
                         </div>
                       </div>
                     )}
                   </div>
-                  {devIntelLoading && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(125,211,252,0.22)', borderRadius:'10px', color:'#7dd3fc', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>}
+                  {devIntelLoading && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(169,233,236,0.22)', borderRadius:'10px', color:'#a9e9ec', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>Loading dev intelligence…</div>}
                   {safeError && <div style={{ marginTop:'10px', padding:'10px 12px', border:'1px solid rgba(251,191,36,0.28)', borderRadius:'10px', color:'#fcd34d', fontSize:'11px', fontFamily:'var(--font-plex-mono)' }}>{safeError}</div>}
-                  {missingChecks.length > 0 && <p style={{ margin:'10px 2px 0',fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>Open verification items: {missingChecks.slice(0,2).join(' · ')}</p>}
+                  {missingChecks.length > 0 && <p style={{ margin:'10px 2px 0',fontSize:'10px',color:'#6f7275',fontFamily:'var(--font-plex-mono)' }}>Open verification items: {missingChecks.slice(0,2).join(' · ')}</p>}
                 </>)
               })()}
             </div>
@@ -10289,7 +10302,7 @@ export default function TerminalTokenScanner() {
           minWidth: 0,
           flexShrink: 0,
           borderLeft: '1px solid rgba(255,255,255,0.08)',
-          background: 'rgba(8,12,20,0.72)',
+          background: 'rgba(9,12,15,0.72)',
           overflowY: 'auto',
           padding: '24px 16px',
           display: 'flex',
@@ -10304,23 +10317,23 @@ export default function TerminalTokenScanner() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
               <span style={{
                 width: '7px', height: '7px', borderRadius: '50%',
-                background: clarkLoading ? '#22d3ee' : clarkVerdict ? '#22d3ee' : '#162230',
-                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(34,211,238,0.85)' : 'none',
+                background: clarkLoading ? '#1fd6dc' : clarkVerdict ? '#1fd6dc' : '#1d2023',
+                boxShadow: (clarkLoading || clarkVerdict) ? '0 0 10px rgba(31,214,220,0.85)' : 'none',
                 flexShrink: 0,
                 transition: 'all 0.3s',
                 ...((!clarkLoading && !clarkVerdict) ? {} : { animation: 'liveDotPulse 2.2s ease-in-out infinite' }),
               }} />
               <p style={{
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em',
-                color: '#22d3ee', fontFamily: 'var(--font-plex-mono)',
+                color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)',
                 textTransform: 'uppercase', margin: 0,
               }}>
                 CORTEX RECEIPT
               </p>
             </div>
             {(!clarkLoading && !clarkVerdict && !clarkError) && (
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: 'rgba(34,211,238,0.85)', fontFamily: 'var(--font-plex-mono)' }}>
-                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee', flexShrink: 0 }} />
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', padding: '3px 10px', borderRadius: '99px', background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', color: 'rgba(31,214,220,0.85)', fontFamily: 'var(--font-plex-mono)' }}>
+                <span className="live-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 6px #1fd6dc', flexShrink: 0 }} />
                 LIVE · Powered by CORTEX
               </div>
             )}
@@ -10331,8 +10344,8 @@ export default function TerminalTokenScanner() {
             <div style={{textAlign:'center',padding:'8px 0'}}>
               <div style={{fontSize:'22px',marginBottom:'10px'}}>🔒</div>
               <p style={{fontWeight:700,color:'#f8fafc',margin:'0 0 6px',fontSize:'13px',fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Full CORTEX Verdict</p>
-              <p style={{color:'#94a3b8',fontSize:'11px',margin:'0 0 16px',lineHeight:1.5,fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Security analysis and CORTEX verdicts are included in Pro and Elite.</p>
-              <a href="/pricing" style={{display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#7c3aed,#a855f7)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none'}}>Get Access</a>
+              <p style={{color:'#9ea1a4',fontSize:'11px',margin:'0 0 16px',lineHeight:1.5,fontFamily:'var(--font-inter,Inter,sans-serif)'}}>Security analysis and CORTEX verdicts are included in Pro and Elite.</p>
+              <a href="/pricing" style={{display:'inline-block',padding:'8px 20px',borderRadius:'999px',background:'linear-gradient(135deg,#9aa3a9,#bec6cb)',color:'#fff',fontWeight:700,fontSize:'12px',textDecoration:'none'}}>Get Access</a>
             </div>
           )}
 
@@ -10346,14 +10359,14 @@ export default function TerminalTokenScanner() {
                "the right receipt looks like a real waiting system, not faded/dead" — brighter
                checklist labels/separators and a more readable AWAITING SCAN badge, still honestly a
                preview: hollow pending dots, no fake completed state, no invented content). */
-            <div style={{ background: '#080c14', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
+            <div style={{ background: '#090c0f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '14px', padding: '16px' }}>
               {/* The panel heading above already says CORTEX RECEIPT; this card only carries the
                   status pill and the six pending sections (hollow circles, never shown as done). */}
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px', marginBottom: '4px' }}>
-                <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>
+                <p style={{ margin: 0, fontSize: '12px', color: '#9ea1a4', lineHeight: 1.5 }}>
                   Scan a token to generate a structured risk receipt.
                 </p>
-                <span style={{ flexShrink: 0, fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '3px 8px', borderRadius: '999px', color: '#2DD4BF', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.28)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
+                <span style={{ flexShrink: 0, fontSize: '9px', fontWeight: 700, letterSpacing: '.10em', padding: '3px 8px', borderRadius: '999px', color: '#1fd6dc', background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.28)', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
                   AWAITING SCAN
                 </span>
               </div>
@@ -10366,8 +10379,8 @@ export default function TerminalTokenScanner() {
                 { label: 'Next Action' },
               ].map((sec, idx) => (
                 <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: idx === 5 ? '12px 0 0' : '12px 0', borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
-                  <span aria-hidden="true" style={{ width: '10px', height: '10px', borderRadius: '50%', border: '1.5px solid rgba(148,163,184,0.45)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
+                  <span aria-hidden="true" style={{ width: '10px', height: '10px', borderRadius: '50%', border: '1.5px solid rgba(158,161,164,0.45)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '11px', fontWeight: 600, color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
@@ -10401,9 +10414,9 @@ export default function TerminalTokenScanner() {
               v == null || !Number.isFinite(v) ? null
               : v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M`
               : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : `$${v.toFixed(0)}`
-            const ss: React.CSSProperties = { padding: '10px 12px', border: '1px solid rgba(255,255,255,0.10)', borderRadius: '10px', background: 'rgba(10,17,32,.72)' }
-            const stitle: React.CSSProperties = { margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#5b7590', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
-            const sbody: React.CSSProperties = { margin: 0, fontSize: '11px', color: '#cbd5e1', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }
+            const ss: React.CSSProperties = { padding: '10px 12px', border: '1px solid rgba(255,255,255,0.10)', borderRadius: '10px', background: 'rgba(14,17,20,.72)' }
+            const stitle: React.CSSProperties = { margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#6e7174', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
+            const sbody: React.CSSProperties = { margin: 0, fontSize: '11px', color: '#d1d4d7', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }
 
             // One plain sentence per verdict tier — what this actually means for a person, in
             // words, mapped 1:1 off the engine's own five-tier vocabulary (no new judgement).
@@ -10446,8 +10459,8 @@ export default function TerminalTokenScanner() {
 
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-                <div style={{ padding: '16px', border: `1px solid ${cx.verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${cx.verdictColor}08` }}>
-                  <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA</div>
+                <div style={{ padding: '16px', border: `1px solid ${cx.verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(11,14,17,.90))', boxShadow: `0 0 18px ${cx.verdictColor}08` }}>
+                  <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#4b4e51', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA</div>
                   <div style={{ fontSize: '17px', fontWeight: 800, color: cx.verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</div>
                   {/* DIRECTION FIX, DISCLOSED (Solana risk-score consistency cleanup task): shows
                       the canonical cx.riskScore (higher = riskier) instead of the raw safety-style
@@ -10455,8 +10468,8 @@ export default function TerminalTokenScanner() {
                       with the hero/Risk Engine tab/Track Outcome gate elsewhere on this scan. The
                       verdict badge text/color are unchanged — that vocabulary is already
                       risk-oriented, only the number was inverted. */}
-                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.riskScore}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
-                  <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{verdictMeaning[cx.verdict]}</p>
+                  <div style={{ fontSize: '10px', color: '#8d9093', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.riskScore}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
+                  <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#d1d4d7', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{verdictMeaning[cx.verdict]}</p>
                 </div>
                 <div style={ss}><p style={stitle}>Can the owner touch your tokens?</p><p style={sbody}>{authorityLine}</p></div>
                 <div style={ss}><p style={stitle}>Is there a real market?</p><p style={sbody}>{marketLine}</p></div>
@@ -10473,7 +10486,7 @@ export default function TerminalTokenScanner() {
               {[0, 1, 2].map(i => (
                 <span key={i} style={{
                   width: '5px', height: '5px', borderRadius: '50%',
-                  background: '#2DD4BF', display: 'inline-block',
+                  background: '#1fd6dc', display: 'inline-block',
                   animation: `clarkDot 1.2s ease-in-out ${i * 0.2}s infinite`,
                 }} />
               ))}
@@ -10551,25 +10564,25 @@ export default function TerminalTokenScanner() {
                 explicitly requested: "summary cards slightly more readable"): same card
                 shapes/content, brighter section-title and card-border tones so each summary card
                 reads as a distinct block while scrolling instead of blurring into the background. */}
-            const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.10)',borderRadius:'10px',background:'rgba(10,17,32,.72)'}
-            const stitle = {margin:'0 0 6px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
-            const sbody = {margin:0,fontSize:'11px',color:'#a3b4c5',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
+            const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.10)',borderRadius:'10px',background:'rgba(14,17,20,.72)'}
+            const stitle = {margin:'0 0 6px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#6e7174',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+            const sbody = {margin:0,fontSize:'11px',color:'#afb2b5',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
             return (
               <div style={{display:'flex',flexDirection:'column',gap:'9px'}}>
                 {/* CORTEX Receipt header — RIGHT-RAIL-CALM, DISCLOSED (Token Scanner
                     section-readability polish task, explicitly requested: "slightly reduce visual
                     competition while scrolling... avoid overly bright borders"): border alpha and
                     glow shadow both toned down; same verdict color/score/content. */}
-                <div style={{padding:'16px',border:`1px solid ${verdictColor}22`,borderRadius:'14px',background:'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))',boxShadow:`0 0 18px ${verdictColor}08`}}>
-                  <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX RECEIPT</div>
+                <div style={{padding:'16px',border:`1px solid ${verdictColor}22`,borderRadius:'14px',background:'linear-gradient(135deg,rgba(8,20,38,.92),rgba(11,14,17,.90))',boxShadow:`0 0 18px ${verdictColor}08`}}>
+                  <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#4b4e51',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX RECEIPT</div>
                   <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
                     <div style={{flexShrink:0}}>
-                      <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>RISK SCORE</div>
+                      <div style={{fontSize:'9px',color:'#4b4e51',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>RISK SCORE</div>
                       <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore ?? '—'}{sidebarScore != null && <span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span>}</div>
                     </div>
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
-                      <div style={{display:'inline-flex',marginLeft:'6px',padding:'4px 9px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:sidebarRisk.confidence === 'high' ? '#34d399' : sidebarRisk.confidence === 'medium' ? '#fbbf24' : '#94a3b8',background:'rgba(148,163,184,0.08)',border:'1px solid rgba(148,163,184,0.22)',fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{sidebarRisk.confidence.toUpperCase()} CONFIDENCE</div>
+                      <div style={{display:'inline-flex',marginLeft:'6px',padding:'4px 9px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:sidebarRisk.confidence === 'high' ? '#34d399' : sidebarRisk.confidence === 'medium' ? '#fbbf24' : '#9ea1a4',background:'rgba(158,161,164,0.08)',border:'1px solid rgba(158,161,164,0.22)',fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{sidebarRisk.confidence.toUpperCase()} CONFIDENCE</div>
                       {riskLabelCopy(sidebarRisk.riskLabel, scanEvidence) && (
                         <div style={{fontSize:'11px',color:'#fde68a',fontFamily:'var(--font-plex-mono)',lineHeight:1.5,marginBottom:'6px'}}>{riskLabelCopy(sidebarRisk.riskLabel, scanEvidence)}</div>
                       )}
@@ -10595,7 +10608,7 @@ export default function TerminalTokenScanner() {
                 )}
                 <div style={ss}>
                   <p style={stitle}>Trading Simulation</p>
-                  <p style={{...sbody,margin:0,color:'#e2e8f0',fontWeight:700}}>{simUi.statusLabel}</p>
+                  <p style={{...sbody,margin:0,color:'#e4e7ea',fontWeight:700}}>{simUi.statusLabel}</p>
                   <p style={{...sbody,margin:'4px 0 0'}}>{simUi.reason}</p>
                   {simUi.showTaxRows && (
                     <div style={{display:'grid',gap:'4px',marginTop:'8px'}}>
@@ -10615,7 +10628,7 @@ export default function TerminalTokenScanner() {
                 <div style={ss}>
                   <p style={stitle}>Holder Read</p>
                   {d.holderState.kind === 'rowsWithPercent' && (
-                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(45,212,191,.35)',color:'#2dd4bf',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.07)'}}>CONCENTRATION VERIFIED</div>
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(31,214,220,.35)',color:'#1fd6dc',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(31,214,220,.07)'}}>CONCENTRATION VERIFIED</div>
                   )}
                   {d.holderState.kind === 'rowsWithoutPercent' && (
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION INCOMPLETE</div>
@@ -10624,7 +10637,7 @@ export default function TerminalTokenScanner() {
                     <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 8px',borderRadius:'999px',border:'1px solid rgba(251,191,36,.35)',color:'#fbbf24',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',fontFamily:'var(--font-plex-mono)',background:'rgba(251,191,36,.07)'}}>CONCENTRATION UNVERIFIED</div>
                   )}
                   {result.holderDistribution?.holderCount != null && (
-                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 9px',border:'1px solid rgba(45,212,191,.28)',borderRadius:'999px',fontSize:'11px',color:'#2DD4BF',fontFamily:'var(--font-plex-mono)',background:'rgba(45,212,191,.06)'}}>
+                    <div style={{display:'inline-flex',marginBottom:'7px',padding:'2px 9px',border:'1px solid rgba(31,214,220,.28)',borderRadius:'999px',fontSize:'11px',color:'#1fd6dc',fontFamily:'var(--font-plex-mono)',background:'rgba(31,214,220,.06)'}}>
                       {formatHolderCountDisplay({
                         holderCount: result.holderDistribution.holderCount,
                         holderCountReason: result.holderDistribution.holderCountReason,
@@ -10637,15 +10650,15 @@ export default function TerminalTokenScanner() {
                   {(top10 != null || top20 != null) && (
                     <div style={{display:'flex',gap:'5px',flexWrap:'wrap',marginBottom:'7px'}}>
                       {top10 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:top10>50?'#f87171':top10>30?'#fbbf24':'#34d399',background:top10>50?'rgba(248,113,113,.08)':top10>30?'rgba(251,191,36,.08)':'rgba(52,211,153,.08)',border:top10>50?'1px solid rgba(248,113,113,.28)':top10>30?'1px solid rgba(251,191,36,.28)':'1px solid rgba(52,211,153,.28)',fontFamily:'var(--font-plex-mono)'}}>Top 10: {top10.toFixed(1)}%</span>}
-                      {top20 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#94a3b8',border:'1px solid rgba(148,163,184,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
+                      {top20 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#9ea1a4',border:'1px solid rgba(158,161,164,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
                     </div>
                   )}
                   <p style={{...sbody, display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' as const, overflow:'hidden'}} title={getHolderRead(result)}>{getHolderRead(result)}</p>
                 </div>
                 {/* Next Action */}
-                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.22)',borderRadius:'12px',background:'rgba(45,212,191,.04)'}}>
-                  <p style={{...stitle,color:'#2DD4BF',marginBottom:'5px'}}>Next Action</p>
-                  <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
+                <div style={{padding:'11px 14px',border:'1px solid rgba(31,214,220,.22)',borderRadius:'12px',background:'rgba(31,214,220,.04)'}}>
+                  <p style={{...stitle,color:'#1fd6dc',marginBottom:'5px'}}>Next Action</p>
+                  <p style={{...sbody,color:'#62f1f1'}}>{getNextAction(result)}</p>
                 </div>
                 {/* Save button */}
                 {(() => {
@@ -10655,7 +10668,7 @@ export default function TerminalTokenScanner() {
                     <button
                       onClick={saveTrackedToken}
                       disabled={trackedSaving || isTracked}
-                      style={{ width:'100%', padding:'10px 0', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.35)', background:'rgba(167,139,250,0.07)', color: (trackedSaving || isTracked) ? '#64748b' : '#a78bfa', fontSize:'11px', fontWeight:700, fontFamily:'var(--font-plex-mono)', letterSpacing:'.10em', cursor: (trackedSaving || isTracked) ? 'not-allowed' : 'pointer', transition:'all .15s' }}
+                      style={{ width:'100%', padding:'10px 0', borderRadius:'10px', border:'1px solid rgba(207,214,218,0.35)', background:'rgba(207,214,218,0.07)', color: (trackedSaving || isTracked) ? '#6f7275' : '#cfd6da', fontSize:'11px', fontWeight:700, fontFamily:'var(--font-plex-mono)', letterSpacing:'.10em', cursor: (trackedSaving || isTracked) ? 'not-allowed' : 'pointer', transition:'all .15s' }}
                     >
                       {trackedSaving ? 'SAVING…' : isTracked ? '✓ TRACKED' : '+ TRACK THIS TOKEN'}
                     </button>
@@ -10680,7 +10693,7 @@ export default function TerminalTokenScanner() {
               expands the rest. Same Scan/Remove handlers as before. */}
           <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.16em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.16em', color: '#9ea1a4', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 Tracked Tokens
               </p>
               {trackedTokens.length > 3 && (
@@ -10698,12 +10711,12 @@ export default function TerminalTokenScanner() {
 
             {!trackedLoggedOut && !trackedUnavailable && trackedLoading && (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center', paddingTop: '4px' }}>
-                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#2DD4BF', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
+                {[0,1,2].map(i => <span key={i} style={{ width:'4px', height:'4px', borderRadius:'50%', background:'#1fd6dc', display:'inline-block', animation:`clarkDot 1.2s ease-in-out ${i*.2}s infinite` }} />)}
               </div>
             )}
 
             {!trackedLoggedOut && !trackedUnavailable && !trackedLoading && trackedTokens.length === 0 && (
-              <p style={{ margin: 0, fontSize: '12px', color: '#64748b', lineHeight: 1.6 }}>
+              <p style={{ margin: 0, fontSize: '12px', color: '#6f7275', lineHeight: 1.6 }}>
                 No tracked tokens yet. Scan a token and press Track This Token.
               </p>
             )}
@@ -10717,15 +10730,15 @@ export default function TerminalTokenScanner() {
                   const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }) : null
                   return (
                     <div key={t.id ?? t.address} className="tracked-card">
-                      <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(45,212,191,0.20),rgba(139,92,246,0.22))', border: '1px solid rgba(255,255,255,0.10)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '10px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+                      <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(31,214,220,0.20),rgba(190,198,203,0.22))', border: '1px solid rgba(255,255,255,0.10)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '10px', fontWeight: 800, color: '#e4e7ea', fontFamily: 'var(--font-plex-mono)' }}>
                         {initials}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.symbol ?? 'Tracked Token'}</span>
-                          <span style={{ flexShrink: 0, fontSize: '8px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
+                          <span style={{ fontSize: '13px', fontWeight: 700, color: '#f1f4f7', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.symbol ?? 'Tracked Token'}</span>
+                          <span style={{ flexShrink: 0, fontSize: '8px', padding: '1px 6px', borderRadius: '999px', background: 'rgba(31,214,220,0.10)', border: '1px solid rgba(31,214,220,0.28)', color: '#1fd6dc', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
                         </div>
-                        <div style={{ marginTop: '2px', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ marginTop: '2px', fontSize: '10px', color: '#6f7275', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {short}{savedDate ? ` · ${savedDate}` : ''}
                         </div>
                       </div>
