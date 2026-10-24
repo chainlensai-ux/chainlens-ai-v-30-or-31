@@ -134,7 +134,7 @@ export default function CapabilitiesSection({ features }: { features: Capability
 
       <style>{`
         .cap-section{--mint:#1fd6dc;position:relative;z-index:1;width:100%;overflow:hidden;isolation:isolate;
-          background:linear-gradient(180deg,#05050c 0,#020303 140px,#020303 calc(100% - 140px),#05050b 100%);
+          background:linear-gradient(180deg,#020303 0,#020303 calc(100% - 140px),#05050b 100%);
           font-family:var(--font-jakarta,'Plus Jakarta Sans',sans-serif)}
         /* Silver hairline at the top edge, like the navbar's glints. */
         .cap-section::before{content:"";position:absolute;top:0;left:8%;right:8%;height:1px;z-index:1;

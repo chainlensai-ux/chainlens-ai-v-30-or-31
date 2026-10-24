@@ -436,10 +436,6 @@ html, body {
     background-color: rgba(8, 12, 24, 0.92) !important;
     box-shadow: 0 8px 30px rgba(3, 8, 20, 0.5) !important;
   }
-  .home-page .home-ticker-track {
-    animation: none !important;
-    transform: translateX(0) !important;
-  }
   .home-page main,
   .home-page section {
     position: relative;
@@ -494,11 +490,6 @@ html, body {
   display: none !important;
 }
 
-/* Freeze the ticker track — show it static at position 0 */
-.android-safe-mode .home-ticker-track {
-  animation: none !important;
-  transform: none !important;
-}
 
 /* Stop every CSS animation and transition on the page */
 .android-safe-mode *,

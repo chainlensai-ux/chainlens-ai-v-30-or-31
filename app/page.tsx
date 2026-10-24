@@ -27,27 +27,6 @@ type Testimonial = {
   quote: string
 }
 
-// ─── Bottom ticker tokens ──────────────────────────────────────────────────
-
-// Base-native tokens only — static fallback (live feed via /api/trending when available)
-const TICKER = [
-  { sym: 'WETH',    price: '$2,481',      pct: '+1.44%' },
-  { sym: 'cbBTC',   price: '$103,510',    pct: '+2.06%' },
-  { sym: 'USDC',    price: '$1.000',      pct: '+0.02%' },
-  { sym: 'VIRTUAL', price: '$1.92',       pct: '+4.87%' },
-  { sym: 'AERO',    price: '$0.8140',     pct: '+3.22%' },
-  { sym: 'BRETT',   price: '$0.0708',     pct: '+6.91%' },
-  { sym: 'DEGEN',   price: '$0.003780',   pct: '+3.55%' },
-  { sym: 'TOSHI',   price: '$0.0001241',  pct: '+5.18%' },
-  { sym: 'NORMIE',  price: '$0.002140',   pct: '+7.32%' },
-  { sym: 'CLANKER', price: '$8.14',       pct: '+11.6%' },
-  { sym: 'MOCHI',   price: '$0.006210',   pct: '+4.28%' },
-  { sym: 'KEYCAT',  price: '$0.004380',   pct: '+5.44%' },
-  { sym: 'SERAPH',  price: '$0.508',      pct: '+2.91%' },
-  { sym: 'HIGHER',  price: '$0.0312',     pct: '+9.15%' },
-  { sym: 'BASED',   price: '$0.0004170',  pct: '+8.74%' },
-]
-
 // ─── Feature cards ────────────────────────────────────────────────────────────
 
 const FEATURES: Capability[] = [
@@ -575,10 +554,6 @@ export default function HomePage() {
     <>
             {/* Keyframes */}
       <style>{`
-        @keyframes ticker-scroll {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
         ::placeholder { color: rgba(255,255,255,0.3); }
 
         @keyframes orb-teal {
@@ -650,14 +625,13 @@ export default function HomePage() {
         .hero-horizon { animation: horizon-breathe 8s ease-in-out infinite; }
 
         @media (prefers-reduced-motion: reduce) {
-          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card, .home-ticker-track {
+          .hero-premium-bg *, .home-ambient *, .home-particles *, .pricing-card, .feat-card {
             animation: none !important;
             transition: none !important;
             transform: none !important;
           }
           .card-pro::after, .card-elite::after { animation: none !important; opacity: 0.7 !important; }
           .home-particles, .home-heavy-visual { display: none !important; }
-          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
         }
 
         @media (max-width: 1200px), (pointer: coarse) {
@@ -680,7 +654,6 @@ export default function HomePage() {
           .home-heavy-visual { display: none !important; }
           .home-reveal-anim, .feat-card { animation: none !important; transform: none !important; }
           .home-reveal-anim:hover, .feat-card:hover { transform: none !important; }
-          .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
           .mob-hero-main { padding: 80px 16px 60px !important; }
           .feat-grid { grid-template-columns: 1fr !important; }
           .feat-section { padding: 56px 16px 64px !important; }
@@ -788,34 +761,6 @@ export default function HomePage() {
         {/* ── Full-page edge energy — left cyan, right purple ── */}
         {USE_REFERENCE_HERO ? <ReferenceHero /> : (USE_INTELLIGENCE_HERO ? <IntelligenceHero /> : <LegacyHomeHero />)}
 
-
-        {/* Base momentum ticker */}
-        <div style={{
-          position: 'relative', zIndex: 1,
-          borderTop: '1px solid rgba(45,212,191,0.12)',
-          borderBottom: '1px solid rgba(255,255,255,0.05)',
-          background: 'linear-gradient(180deg, #04040b 0%, #05050c 100%)',
-          height: '44px', overflow: 'hidden',
-          display: 'flex', alignItems: 'center',
-        }}>
-          {/* BASE MOVERS label — pinned left */}
-          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px', padding: '0 14px 0 16px', borderRight: '1px solid rgba(45,212,191,0.18)', height: '100%', background: 'linear-gradient(90deg, #04040b 60%, transparent 100%)', zIndex: 3, position: 'relative' }}>
-            <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 6px rgba(45,212,191,0.8)', flexShrink: 0 }} />
-            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.16em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', whiteSpace: 'nowrap' }}>BASE MOVERS</span>
-          </div>
-          <div style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '80px', background: 'linear-gradient(270deg, #05050c 0%, transparent 100%)', zIndex: 2, pointerEvents: 'none' }} />
-          <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
-            <div className="home-ticker-track" style={{ display: 'flex', gap: '0', whiteSpace: 'nowrap', animation: 'ticker-scroll 52s linear infinite', willChange: 'transform' }}>
-              {[...TICKER, ...TICKER].map((t, i) => (
-                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '0 28px', fontSize: '11.5px', color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', borderRight: '1px solid rgba(255,255,255,0.05)' }}>
-                  <span style={{ fontWeight: 700, color: 'rgba(255,255,255,0.75)', letterSpacing: '0.04em' }}>{t.sym}</span>
-                  <span style={{ color: 'rgba(255,255,255,0.38)' }}>{t.price}</span>
-                  <span style={{ color: '#4ade80', fontWeight: 600 }}>{t.pct}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
 
         {/* ── What ChainLens Does ──────────────────────────────────────────── */}
         <CapabilitiesSection features={FEATURES} />

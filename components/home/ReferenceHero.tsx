@@ -32,7 +32,9 @@ export default function ReferenceHero() {
       </section>
       <style>{`
         body:has(.ref-home-shell){margin:0}
-        body:has(.ref-home-shell) .nav-outer{position:fixed!important;left:0;right:0}
+        /* Homepage only: the shared navbar (sticky elsewhere) sits over the top of the hero and
+           scrolls away with the page instead of staying pinned. */
+        body:has(.ref-home-shell) .nav-outer{position:absolute!important;top:0;left:0;right:0}
         @media(min-width:1024px){body:has(.ref-home-shell) .nav-outer{padding-top:clamp(36px,4.2vw,70px)!important}}
         .ref-home-shell{--mint:#1fd6dc;position:relative;min-height:max(600px,56.28vw);padding-top:3.3vw;display:flex;align-items:center;justify-content:center;background:#020303;overflow:hidden;color:#fff;isolation:isolate}
         .ref-bg{position:absolute;inset:0;z-index:-1;background:#020303 url('/home/hero-bg.webp') center top/cover no-repeat}
