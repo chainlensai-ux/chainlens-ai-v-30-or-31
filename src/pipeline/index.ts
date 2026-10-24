@@ -25,7 +25,8 @@ import {
   sortLotsByCanonicalIdentity, sumQuantizedUsd,
 } from '../lib/scanDeterminismAudit'
 import { buildSameTxMultiEventAudit } from '../lib/txSideEventAllocation'
-import { stabilizeChainHistory, type HistoricalEventKv } from '../lib/historicalEventSnapshot'
+import { stabilizeChainHistory, historicalEventIdentityKey, type HistoricalEventKv } from '../lib/historicalEventSnapshot'
+import { stitchHistoryDayChunks, stitchMaxTotalEvents, historyStitchEnabled, type DayChunkKv } from '../lib/historicalEventDayChunks'
 import { auditAndRecordRepeatScan, buildRepeatScanSnapshot, repeatScanScope, type RepeatScanKv } from '../lib/pnlRepeatScanDeterminism'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
@@ -1684,9 +1685,43 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const configuredBoundaryAudit = buildWindowBoundaryProviderAudit(providerResults, configuredWindowStart, Date.parse(scanTimestamp))
   const coveredWindowStart = resolveCoveredWindowStart(configuredBoundaryAudit, providerResults, configuredWindowStart)
   const windowNarrowed = (coveredWindowStart ?? configuredWindowStart) > configuredWindowStart
-  const requestedWindowStart = windowNarrowed
+  // What THIS scan's providers proved; the boundary audit below is always about this range.
+  const freshWindowStart = windowNarrowed
     ? snapNarrowedWindowStart(coveredWindowStart!, Date.parse(scanTimestamp))
     : configuredWindowStart
+
+  // HISTORY STITCHING (src/lib/historicalEventDayChunks.ts): a page-capped chain stores each whole UTC day
+  // it read, and extends its window back through days earlier scans read completely — one contiguous run,
+  // bounded by the configured window and an event budget. Every chain must be covered from the final start,
+  // so it is the latest of the per-chain starts (a chain that was not capped covers the configured window).
+  let requestedWindowStart = freshWindowStart
+  let stitchedOlderEvents: RawProviderEvent[] = []
+  if (windowNarrowed && historyStitchEnabled()) {
+    const scanMs = Date.parse(scanTimestamp)
+    const narrowedChains = providerResults.flatMap((r, i) => {
+      const chainCovered = resolveCoveredWindowStart(configuredBoundaryAudit, [r], configuredWindowStart)
+      if (chainCovered === null || chainCovered <= configuredWindowStart) return []
+      const chainStart = snapNarrowedWindowStart(chainCovered, scanMs)
+      return [{ chain: r.chain, freshEvents: filterEventsToCoveredWindow(historicalStability[i].canonicalEvents, chainStart), freshStartMs: chainStart, providerOk: r.providerStatus === 'ok' }]
+    })
+    if (narrowedChains.length > 0) {
+      const stitch = await stitchHistoryDayChunks(acceptedEvidenceRealKv as unknown as DayChunkKv, {
+        wallet: params.walletAddress, chains: narrowedChains, scanMs, configuredStartMs: configuredWindowStart,
+        maxTotalEvents: stitchMaxTotalEvents(), ttlSeconds: (PROVIDER_FETCH_WINDOW_DAYS_USED + 30) * 24 * 60 * 60,
+      })
+      const stitchedStart = Math.max(configuredWindowStart, ...narrowedChains.map((c) => stitch.startByChain.get(c.chain) ?? c.freshStartMs))
+      if (stitchedStart < freshWindowStart) {
+        requestedWindowStart = stitchedStart
+        stitchedOlderEvents = stitch.olderEvents
+      }
+      console.warn('[history-stitch-audit]', {
+        freshWindowStart: new Date(freshWindowStart).toISOString(),
+        stitchedWindowStart: new Date(requestedWindowStart).toISOString(),
+        stitchedOlderEvents: stitchedOlderEvents.length,
+        chains: stitch.audit,
+      })
+    }
+  }
   const scanWindowDaysUsed = windowNarrowed
     ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
     : PROVIDER_FETCH_WINDOW_DAYS_USED
@@ -1695,7 +1730,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // A narrowed window keeps only events from its proven start onward: older rows (a provider that
   // read further back, or events restored from earlier scans) come from history this scan did not
   // read completely, so they must not form trades inside a sample labelled as the covered window.
-  const stabilizedRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)
+  // Stitched days are older than every fresh range; a fresh copy of the same transfer (a provider or the
+  // persisted snapshot reaching further back) wins, so nothing is counted twice.
+  const freshStabilizedEvents = historicalStability.flatMap((s) => s.canonicalEvents)
+  const freshEventKeys = new Set(freshStabilizedEvents.map(historicalEventIdentityKey))
+  const stabilizedRawEvents = [...freshStabilizedEvents, ...stitchedOlderEvents.filter((e) => !freshEventKeys.has(historicalEventIdentityKey(e)))]
   const allRawEvents = windowNarrowed ? filterEventsToCoveredWindow(stabilizedRawEvents, requestedWindowStart) : stabilizedRawEvents
   if (allRawEvents.length !== stabilizedRawEvents.length) {
     // eslint-disable-next-line no-console
@@ -3673,7 +3712,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const windowBoundaryProviderAudit = windowNarrowed
     // No tolerance: the narrowed start is an exact event time, and a 3-day slack would let a
     // provider that read only the last hours claim the whole (often shorter) window.
-    ? buildWindowBoundaryProviderAudit(providerResults, requestedWindowStart, Date.parse(scanTimestamp), 0)
+    // Proven against this scan's fresh range; stitched days before it were proven complete by earlier scans.
+    ? buildWindowBoundaryProviderAudit(providerResults, freshWindowStart, Date.parse(scanTimestamp), 0)
     : configuredBoundaryAudit
   const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
   // Chain-level: one successful provider reaching the start covers the chain; a cap only matters

@@ -40,8 +40,8 @@ describe('providerFetchWindow KV write overlaps with unrelated CPU work (perf-sp
     const writeDeclIndex = src.indexOf('const providerFetchWindowKvWriteSettled = Promise.all(')
     // Normalization's input is now the stabilized canonical event set (fresh provider events ∪ persisted
     // provider-verified history — src/lib/historicalEventSnapshot.ts, then cut to the covered window),
-    // still never the KV write's result.
-    const allRawEventsIndex = src.indexOf('const stabilizedRawEvents = historicalStability.flatMap((s) => s.canonicalEvents)')
+    // still never the KV write's result. (Stitched older days are appended to it — see historicalEventDayChunks.ts.)
+    const allRawEventsIndex = src.indexOf('const freshStabilizedEvents = historicalStability.flatMap((s) => s.canonicalEvents)')
     assert.notEqual(allRawEventsIndex, -1)
     assert.ok(writeDeclIndex < allRawEventsIndex, 'the write must be kicked off before normalization starts, so they run concurrently')
   })
