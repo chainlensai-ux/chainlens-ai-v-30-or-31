@@ -58,7 +58,7 @@ export default function TerminalLayout({ children }: { children: React.ReactNode
   return (
     <div
       className={`flex min-h-dvh overflow-hidden text-white${sidebarOpen ? ' mob-sidebar-open' : ''}`}
-      style={{ background: '#050816' }}
+      style={{ background: '#020303' }}
     >
       {/* Mobile backdrop — closes sidebar on tap */}
       {sidebarOpen && (

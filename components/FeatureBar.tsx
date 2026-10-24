@@ -1,6 +1,5 @@
 'use client'
 
-import Image from 'next/image'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
@@ -253,8 +252,8 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         height: '100dvh',
         position: 'sticky',
         top: 0,
-        background: '#07090e',
-        borderRight: '1px solid rgba(148,163,184,0.09)',
+        background: '#060707',
+        borderRight: '1px solid rgba(196,204,210,0.09)',
       }}
     >
       <style>{`
@@ -262,38 +261,38 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         .fb-section-label {
           margin: 0; padding: 0 10px 6px;
           font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
-          color: #56687b; font-family: var(--font-plex-mono, monospace);
+          color: #5f676c; font-family: var(--font-plex-mono, monospace);
         }
         .fb-nav-group + .fb-nav-group { margin-top: 18px; }
         .fb-nav-list { display: flex; flex-direction: column; gap: 2px; }
         .fb-nav-item {
           position: relative; display: flex; align-items: center; gap: 10px;
           height: 38px; padding: 0 10px; border-radius: 8px; box-sizing: border-box; width: 100%;
-          color: #8a9bae; font-size: 13px; font-weight: 500; font-family: var(--font-inter);
+          color: #9aa3a9; font-size: 13px; font-weight: 500; font-family: var(--font-inter);
           text-decoration: none; outline: none;
           transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
         }
-        .fb-nav-icon { display: flex; align-items: center; flex-shrink: 0; color: #5f7287; transition: color 150ms ease; }
+        .fb-nav-icon { display: flex; align-items: center; flex-shrink: 0; color: #687076; transition: color 150ms ease; }
         .fb-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .fb-nav-item:hover { background: rgba(255,255,255,0.04); color: #dfe6ee; }
-        .fb-nav-item:hover .fb-nav-icon { color: #b4c0cc; }
-        .fb-nav-item[aria-current="page"] { background: rgba(45,212,191,0.08); color: #f1f5f9; font-weight: 600; }
-        .fb-nav-item[aria-current="page"]:hover { background: rgba(45,212,191,0.11); }
-        .fb-nav-item[aria-current="page"] .fb-nav-icon { color: #2DD4BF; }
+        .fb-nav-item:hover { background: rgba(255,255,255,0.04); color: #e3e8ea; }
+        .fb-nav-item:hover .fb-nav-icon { color: #bcc4c9; }
+        .fb-nav-item[aria-current="page"] { background: rgba(31,214,220,0.08); color: #f4f6f7; font-weight: 600; }
+        .fb-nav-item[aria-current="page"]:hover { background: rgba(31,214,220,0.11); }
+        .fb-nav-item[aria-current="page"] .fb-nav-icon { color: #1fd6dc; }
         .fb-nav-item[aria-current="page"]::before {
           content: ''; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px;
-          border-radius: 2px; background: #2DD4BF;
+          border-radius: 2px; background: #1fd6dc;
         }
-        .fb-nav-item:focus-visible { box-shadow: 0 0 0 2px #07090e, 0 0 0 3.5px rgba(45,212,191,0.75); }
-        .fb-nav-item--locked:not([aria-current="page"]) { color: #6b7c8f; }
-        .fb-nav-item--locked:not([aria-current="page"]) .fb-nav-icon { color: #48586a; }
+        .fb-nav-item:focus-visible { box-shadow: 0 0 0 2px #060707, 0 0 0 3.5px rgba(31,214,220,0.75); }
+        .fb-nav-item--locked:not([aria-current="page"]) { color: #737c82; }
+        .fb-nav-item--locked:not([aria-current="page"]) .fb-nav-icon { color: #535a5f; }
         .fb-nav-pro {
           flex-shrink: 0; padding: 1px 5px; border-radius: 4px;
           font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
-          color: #a594d8; background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.24);
+          color: #cfd6da; background: rgba(205,213,218,0.10); border: 1px solid rgba(205,213,218,0.24);
         }
         .fb-utility { margin-top: auto; padding-top: 14px; }
-        .fb-utility-divider { height: 1px; background: rgba(148,163,184,0.09); margin: 0 4px 10px; }
+        .fb-utility-divider { height: 1px; background: rgba(196,204,210,0.09); margin: 0 4px 10px; }
 
         /* ── Wallet chip ───────────────────────────────────────────────────────
            ConnectWallet puts this className on its own root element per state — a <button> for
@@ -311,13 +310,13 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           font-size: 11.5px !important; font-weight: 600 !important;
           letter-spacing: 0.02em !important; border-radius: 8px !important;
           box-shadow: none !important; background: rgba(255,255,255,0.03) !important;
-          color: #cbd5e1 !important; border: 1px solid rgba(148,163,184,0.16) !important;
+          color: #d6dcdf !important; border: 1px solid rgba(196,204,210,0.16) !important;
           transition: background .15s, border-color .15s !important;
         }
         button.fb-wallet-chip:hover,
-        .fb-wallet-chip > button:first-child:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.28) !important; }
+        .fb-wallet-chip > button:first-child:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(196,204,210,0.28) !important; }
         button.fb-wallet-chip:focus-visible,
-        .fb-wallet-chip > button:first-child:focus-visible { outline: 2px solid rgba(45,212,191,0.7) !important; outline-offset: 2px !important; }
+        .fb-wallet-chip > button:first-child:focus-visible { outline: 2px solid rgba(31,214,220,0.7) !important; outline-offset: 2px !important; }
         /* Reconnect state always renders exactly 3 children (button, address, helper sentence):
            shown as one row — address first, a small "Reconnect" pill beside it, helper dropped. */
         .fb-wallet-chip { gap: 8px !important; }
@@ -327,13 +326,13 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           font-size: 9.5px !important; font-weight: 700 !important;
           letter-spacing: 0.04em !important; border-radius: 6px !important;
           box-shadow: none !important; background: transparent !important;
-          color: #5eead4 !important; border: 1px solid rgba(45,212,191,0.28) !important;
+          color: #62f1f1 !important; border: 1px solid rgba(31,214,220,0.28) !important;
           transition: background .15s, border-color .15s !important;
         }
-        .fb-wallet-chip > button:nth-child(1):nth-last-child(3):hover { background: rgba(45,212,191,0.10) !important; }
+        .fb-wallet-chip > button:nth-child(1):nth-last-child(3):hover { background: rgba(31,214,220,0.10) !important; }
         .fb-wallet-chip > div:nth-child(2):nth-last-child(2) {
           order: 1; flex: 1 1 auto; min-width: 0;
-          font-size: 11.5px !important; color: #93a2b7 !important;
+          font-size: 11.5px !important; color: #9aa3a9 !important;
           font-family: var(--font-plex-mono, monospace) !important;
           overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
           text-align: left !important;
@@ -344,16 +343,16 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         .fb-account-row {
           display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box;
           height: 40px; padding: 0 8px; border-radius: 8px; text-decoration: none; outline: none;
-          border: 1px solid transparent; color: #cbd5e1; font-size: 12px; font-weight: 500;
+          border: 1px solid transparent; color: #d6dcdf; font-size: 12px; font-weight: 500;
           font-family: var(--font-inter); transition: background-color 150ms ease, border-color 150ms ease;
         }
-        .fb-account-row:hover { background: rgba(255,255,255,0.04); border-color: rgba(148,163,184,0.12); }
-        .fb-account-row:focus-visible { box-shadow: 0 0 0 2px rgba(45,212,191,0.6); }
+        .fb-account-row:hover { background: rgba(255,255,255,0.04); border-color: rgba(196,204,210,0.12); }
+        .fb-account-row:focus-visible { box-shadow: 0 0 0 2px rgba(31,214,220,0.6); }
         .fb-account-avatar {
           width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
           display: inline-flex; align-items: center; justify-content: center;
-          font-size: 11px; font-weight: 700; color: #2DD4BF;
-          background: rgba(45,212,191,0.10); border: 1px solid rgba(45,212,191,0.28);
+          font-size: 11px; font-weight: 700; color: #1fd6dc;
+          background: rgba(31,214,220,0.10); border: 1px solid rgba(31,214,220,0.28);
         }
         .fb-account-avatar--elite { border-color: rgba(245,158,11,0.55); }
         .fb-account-avatar--pro { border-color: rgba(139,92,246,0.55); }
@@ -367,13 +366,13 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         }
         .fb-plan-badge--elite { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.34); }
         .fb-plan-badge--pro { background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.34); }
-        .fb-plan-badge--beta { background: rgba(45,212,191,0.09); border: 1px solid rgba(45,212,191,0.32); }
-        .fb-plan-badge--free { background: rgba(148,163,184,0.07); border: 1px solid rgba(148,163,184,0.18); }
+        .fb-plan-badge--beta { background: rgba(31,214,220,0.09); border: 1px solid rgba(31,214,220,0.32); }
+        .fb-plan-badge--free { background: rgba(196,204,210,0.07); border: 1px solid rgba(196,204,210,0.18); }
         .fb-plan-badge-label { font-size: 9px; font-weight: 700; letter-spacing: 0.10em; white-space: nowrap; }
         .fb-plan-badge--elite .fb-plan-badge-label { color: #fcd34d; }
         .fb-plan-badge--pro .fb-plan-badge-label { color: #c4b5fd; }
-        .fb-plan-badge--beta .fb-plan-badge-label { color: #5eead4; }
-        .fb-plan-badge--free .fb-plan-badge-label { color: rgba(148,163,184,0.85); }
+        .fb-plan-badge--beta .fb-plan-badge-label { color: #62f1f1; }
+        .fb-plan-badge--free .fb-plan-badge-label { color: rgba(196,204,210,0.85); }
 
         /* ── Signed-out actions ────────────────────────────────────────────── */
         .fb-auth-link {
@@ -381,11 +380,11 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           font-size: 12px; font-family: var(--font-inter); text-decoration: none; outline: none;
           transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
         }
-        .fb-auth-link:focus-visible { box-shadow: 0 0 0 2px rgba(45,212,191,0.6); }
-        .fb-auth-link--secondary { font-weight: 500; color: #8a9bae; background: rgba(255,255,255,0.03); border: 1px solid rgba(148,163,184,0.14); }
-        .fb-auth-link--secondary:hover { color: #dfe6ee; border-color: rgba(148,163,184,0.26); }
-        .fb-auth-link--primary { font-weight: 600; color: #04120f; background: #2DD4BF; border: 1px solid #2DD4BF; }
-        .fb-auth-link--primary:hover { background: #5eead4; border-color: #5eead4; }
+        .fb-auth-link:focus-visible { box-shadow: 0 0 0 2px rgba(31,214,220,0.6); }
+        .fb-auth-link--secondary { font-weight: 500; color: #9aa3a9; background: rgba(255,255,255,0.03); border: 1px solid rgba(196,204,210,0.14); }
+        .fb-auth-link--secondary:hover { color: #e3e8ea; border-color: rgba(196,204,210,0.26); }
+        .fb-auth-link--primary { font-weight: 600; color: #040606; background: #1fd6dc; border: 1px solid #1fd6dc; }
+        .fb-auth-link--primary:hover { background: #62f1f1; border-color: #62f1f1; }
       `}</style>
 
       {/* ── Mobile close button ───────────────────────────────── */}
@@ -414,13 +413,19 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
           cursor: 'pointer',
         }}
       >
-        {/* Logo — unboxed, large, clean */}
-        <Image
-          src="/cl-logo.png"
-          alt="ChainLens"
-          width={48}
-          height={48}
-          style={{ display: 'block', flexShrink: 0 }}
+        {/* Logo mark in the homepage navbar's mint-to-white treatment (same mask as Navbar .nav-mark). */}
+        <span
+          role="img"
+          aria-label="ChainLens"
+          style={{
+            display: 'block',
+            flexShrink: 0,
+            width: '34px',
+            aspectRatio: '300 / 192',
+            background: 'linear-gradient(100deg, #1fd6dc 0%, #63ecec 42%, #ffffff 70%)',
+            WebkitMask: "url('/cl-mark.png') center / contain no-repeat",
+            mask: "url('/cl-mark.png') center / contain no-repeat",
+          }}
         />
 
         {/* Wordmark */}
@@ -429,14 +434,14 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
             fontSize: '17px',
             fontWeight: 800,
             letterSpacing: '-0.03em',
-            color: '#f1f5f9',
+            color: '#f4f6f7',
             fontFamily: 'var(--font-inter)',
           }}
         >
           Chain
           <span
             style={{
-              background: 'linear-gradient(105deg, #2DD4BF 0%, #8b5cf6 55%, #ec4899 100%)',
+              background: 'linear-gradient(172deg, #ffffff 0%, #d9dee1 55%, #b9c1c6 100%)',
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent',
               backgroundClip: 'text',
@@ -478,7 +483,7 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
         className="shrink-0 flex flex-col"
         style={{
           padding: '12px',
-          borderTop: '1px solid rgba(148,163,184,0.09)',
+          borderTop: '1px solid rgba(196,204,210,0.09)',
           gap: '6px',
         }}
       >
@@ -524,11 +529,11 @@ export default function FeatureBar({ active = 'dashboard', onWalletOpen, onClose
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '0 9px', fontSize: '10.5px', fontFamily: 'var(--font-plex-mono, monospace)',
-              color: '#6b7c8f',
+              color: '#737c82',
             }}
           >
             <span>Clark AI today</span>
-            <span style={{ color: clarkUsed >= clarkLimit ? '#f87171' : '#cbd5e1', fontWeight: 600 }}>
+            <span style={{ color: clarkUsed >= clarkLimit ? '#f87171' : '#d6dcdf', fontWeight: 600 }}>
               {clarkUsed} / {clarkLimit}
             </span>
           </div>

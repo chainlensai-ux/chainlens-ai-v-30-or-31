@@ -57,26 +57,17 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
     <>
       <style>{`
         @keyframes liveBlink {
-          0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(45,212,191,0.90); }
-          50%       { opacity: 0.35; box-shadow: 0 0 3px rgba(45,212,191,0.25); }
+          0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(31,214,220,0.90); }
+          50%       { opacity: 0.35; box-shadow: 0 0 3px rgba(31,214,220,0.25); }
         }
         @keyframes heroBlobMint {
           0%, 100% { transform: translate(0px, 0px) scale(1); }
           30%       { transform: translate(28px, -18px) scale(1.06); }
           65%       { transform: translate(-18px, 22px) scale(0.96); }
         }
-        @keyframes heroBlobPink {
-          0%, 100% { transform: translate(0px, 0px) scale(1); }
-          40%       { transform: translate(-24px, 16px) scale(1.04); }
-          75%       { transform: translate(20px, -14px) scale(0.97); }
-        }
-        @keyframes heroBlobPurple {
-          0%, 100% { transform: translate(0px, 0px) scale(1); }
-          50%       { transform: translate(16px, 24px) scale(1.05); }
-        }
         @keyframes sendGlowPulse {
-          0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.40), 0 0 6px rgba(139,92,246,0.28); }
-          50%       { box-shadow: 0 0 22px rgba(236,72,153,0.70), 0 0 16px rgba(139,92,246,0.50), 0 0 32px rgba(236,72,153,0.22); }
+          0%, 100% { box-shadow: 0 0 0 3px rgba(31,214,220,0.06), 0 0 12px rgba(31,214,220,0.22); }
+          50%       { box-shadow: 0 0 0 3px rgba(31,214,220,0.08), 0 0 20px rgba(31,214,220,0.36); }
         }
         @keyframes arrowPulse {
           0%, 100% { opacity: 1; transform: translateX(0); }
@@ -87,8 +78,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           transition: transform 0.15s, box-shadow 0.15s;
         }
         .clark-send-btn:hover {
-          transform: scale(1.12);
-          box-shadow: 0 0 30px rgba(236,72,153,0.80), 0 0 20px rgba(139,92,246,0.60) !important;
+          transform: translateY(-1px);
+          border-color: #6ff3f3 !important;
+          box-shadow: 0 0 0 3px rgba(31,214,220,0.10), 0 0 26px rgba(31,214,220,0.45) !important;
           animation: none;
         }
         .clark-send-arrow { animation: arrowPulse 2.5s ease-in-out infinite; display: inline-block; }
@@ -102,11 +94,11 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
         }
         .clark-tagline:hover { opacity: 0.85; }
         .clark-chip {
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.08);
-          border-radius: 6px;
+          background: rgba(255,255,255,0.025);
+          border: 1px solid rgba(255,255,255,0.10);
+          border-radius: 8px;
           padding: 6px 20px;
-          color: rgba(255,255,255,0.65);
+          color: rgba(220,226,230,0.86);
           font-size: 11px;
           cursor: pointer;
           text-align: center;
@@ -116,10 +108,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.12s;
         }
         .clark-chip:hover {
-          border-color: rgba(139,92,246,0.32);
-          color: #a78bfa;
-          background: rgba(139,92,246,0.08);
-          box-shadow: 0 0 8px rgba(139,92,246,0.14), 0 0 5px rgba(236,72,153,0.07);
+          border-color: rgba(31,214,220,0.36);
+          color: #dff8f9;
+          background: rgba(31,214,220,0.06);
           transform: translateY(-1px);
         }
         .clark-box-input::placeholder { color: rgba(255,255,255,0.40); }
@@ -158,35 +149,21 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
             width: '420px',
             height: '320px',
             borderRadius: '50%',
-            background: 'rgba(45,212,191,0.10)',
+            background: 'rgba(31,214,220,0.06)',
             filter: 'blur(110px)',
             animation: 'heroBlobMint 26s ease-in-out infinite',
           }} />
-          {/* Pink blob — bottom-right */}
-          <div className="hero-blob" style={{
-            position: 'absolute',
-            bottom: '-30px',
-            right: '-50px',
-            width: '360px',
-            height: '280px',
-            borderRadius: '50%',
-            background: 'rgba(236,72,153,0.08)',
-            filter: 'blur(100px)',
-            animation: 'heroBlobPink 32s ease-in-out infinite',
-          }} />
-          {/* Purple blob — center */}
-          <div className="hero-blob" style={{
-            position: 'absolute',
-            top: '30%',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            width: '400px',
-            height: '260px',
-            borderRadius: '50%',
-            background: 'rgba(139,92,246,0.07)',
-            filter: 'blur(120px)',
-            animation: 'heroBlobPurple 22s ease-in-out infinite',
-          }} />
+          {/* Thin silver / mint wave strands at the edges (static), echoing the homepage hero. */}
+          <svg className="hero-blob" width="100%" height="100%" viewBox="0 0 900 520" preserveAspectRatio="none" aria-hidden="true" style={{ position: 'absolute', inset: 0, opacity: 0.6 }}>
+            <path d="M-20 300 C 140 230, 220 380, 380 330" stroke="rgba(31,214,220,0.32)" strokeWidth="1" fill="none" />
+            <path d="M-20 312 C 140 246, 220 392, 380 344" stroke="rgba(205,213,218,0.10)" strokeWidth="1" fill="none" />
+            <path d="M-20 324 C 140 262, 220 404, 380 358" stroke="rgba(205,213,218,0.08)" strokeWidth="1" fill="none" />
+            <path d="M-20 336 C 140 278, 220 416, 380 372" stroke="rgba(205,213,218,0.06)" strokeWidth="1" fill="none" />
+            <path d="M920 150 C 780 110, 700 240, 540 190" stroke="rgba(31,214,220,0.28)" strokeWidth="1" fill="none" />
+            <path d="M920 162 C 780 126, 700 254, 540 204" stroke="rgba(205,213,218,0.09)" strokeWidth="1" fill="none" />
+            <path d="M920 174 C 780 142, 700 268, 540 218" stroke="rgba(205,213,218,0.07)" strokeWidth="1" fill="none" />
+            <path d="M920 186 C 780 158, 700 282, 540 232" stroke="rgba(205,213,218,0.05)" strokeWidth="1" fill="none" />
+          </svg>
         </div>
 
         {/* ── Content (above blobs) ── */}
@@ -198,12 +175,12 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
             display: 'inline-flex',
             alignItems: 'center',
             gap: '7px',
-            background: 'rgba(45,212,191,0.07)',
-            border: '1px solid rgba(45,212,191,0.18)',
+            background: 'linear-gradient(180deg, rgba(22,24,26,0.7), rgba(8,9,10,0.8))',
+            border: '1px solid rgba(255,255,255,0.10)',
             borderRadius: '100px',
             padding: '5px 12px',
             marginBottom: '16px',
-            boxShadow: '0 0 16px rgba(45,212,191,0.14), inset 0 0 10px rgba(139,92,246,0.06)',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
           }}
         >
           <div
@@ -211,14 +188,14 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
               width: '6px',
               height: '6px',
               borderRadius: '50%',
-              background: '#2DD4BF',
+              background: '#1fd6dc',
               animation: 'liveBlink 2.5s ease-in-out infinite',
             }}
           />
-          <span style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.14em', color: '#2DD4BF', textShadow: '0 0 8px rgba(45,212,191,0.80)' }}>
+          <span style={{ fontSize: '10px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.14em', color: '#1fd6dc' }}>
             LIVE
           </span>
-          <span style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.28)' }}>
+          <span style={{ fontSize: '9px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.1em', color: 'rgba(196,204,210,0.55)' }}>
             • POWERED BY CORTEX ENGINE
           </span>
         </div>
@@ -226,20 +203,19 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
         {/* Headline */}
         <h1
           style={{
-            fontSize: 'clamp(25px, 3.5vw, 44px)',
-            fontWeight: 600,
-            lineHeight: 1.04,
-            letterSpacing: '-0.015em',
+            fontSize: 'clamp(26px, 3.6vw, 46px)',
+            fontWeight: 800,
+            lineHeight: 1.06,
+            letterSpacing: '-0.02em',
             marginBottom: '14px',
             maxWidth: '720px',
-            fontFamily: 'var(--font-inter)',
-            filter: 'drop-shadow(0 2px 20px rgba(139,92,246,0.24))',
+            fontFamily: "var(--font-sora, 'Sora', sans-serif)",
+            filter: 'drop-shadow(0 2px 14px rgba(0,0,0,0.6))',
           }}
         >
-          <span style={{ color: '#ffffff' }}>See the </span>
-          <span style={{ color: '#2DD4BF' }}>Market</span>
+          <span style={{ color: '#f4f6f7' }}>See the Market</span>
           <br />
-          <span style={{ background: 'linear-gradient(95deg, #a274f8 0%, #e968b0 55%, #f472b6 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' }}>
+          <span style={{ color: '#1fd6dc' }}>
             Before It Moves
           </span>
         </h1>
@@ -249,7 +225,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           style={{
             fontSize: '14px',
             lineHeight: 1.6,
-            color: 'rgba(255,255,255,0.38)',
+            color: 'rgba(196,204,210,0.72)',
             maxWidth: '460px',
             marginBottom: '10px',
             fontFamily: 'var(--font-inter)',
@@ -265,7 +241,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           className="clark-tagline"
           style={{
             fontSize: '12px',
-            color: 'rgba(255,255,255,0.28)',
+            color: 'rgba(196,204,210,0.5)',
             fontFamily: 'var(--font-inter)',
             fontWeight: 400,
             letterSpacing: '0.01em',
@@ -283,32 +259,28 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
             style={{
               position: 'absolute',
               inset: '-48px',
-              background: 'radial-gradient(ellipse 62% 52% at 50% 58%, rgba(236,72,153,0.07) 0%, rgba(139,92,246,0.07) 45%, transparent 100%)',
+              background: 'radial-gradient(ellipse 62% 52% at 50% 58%, rgba(31,214,220,0.05) 0%, transparent 100%)',
               pointerEvents: 'none',
               zIndex: 0,
             }}
           />
 
-          {/* Gradient border wrapper — pink → purple → mint */}
+          {/* Hairline silver border */}
           <div
             style={{
               position: 'relative',
               zIndex: 1,
               padding: '1.5px',
               borderRadius: '17px',
-              background: 'linear-gradient(135deg, rgba(236,72,153,0.38) 0%, rgba(139,92,246,0.38) 50%, rgba(45,212,191,0.28) 100%)',
-              boxShadow: [
-                '0 0 18px rgba(236,72,153,0.10)',
-                '0 0 14px rgba(139,92,246,0.10)',
-                '0 20px 60px rgba(0,0,0,0.60)',
-              ].join(', '),
+              background: 'linear-gradient(180deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.06) 100%)',
+              boxShadow: '0 24px 60px rgba(0,0,0,0.55), 0 0 0 1px rgba(31,214,220,0.04)',
             }}
           >
             {/* Card */}
             <div
               className="hero-card-blur"
               style={{
-                background: 'linear-gradient(160deg, #0c1828 0%, #080f1c 50%, #060b16 100%)',
+                background: 'linear-gradient(180deg, #141618 0%, #0a0b0c 100%)',
                 borderRadius: '16px',
                 backdropFilter: 'blur(16px)',
                 WebkitBackdropFilter: 'blur(16px)',
@@ -317,7 +289,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
               }}
             >
               {/* Top gradient accent line */}
-              <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(236,72,153,0.45), rgba(139,92,246,0.45), rgba(45,212,191,0.35), transparent)' }} />
+              <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent 12%, rgba(98,241,241,0.55) 50%, transparent 88%)' }} />
 
               <div style={{ padding: '18px' }}>
                 {/* Input row */}
@@ -327,17 +299,17 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     display: 'flex',
                     alignItems: 'center',
                     gap: '10px',
-                    background: 'linear-gradient(135deg, rgba(5,8,22,0.65) 0%, rgba(45,212,191,0.04) 55%, rgba(139,92,246,0.03) 100%)',
+                    background: '#050606',
                     border: '1px solid rgba(255,255,255,0.10)',
                     borderRadius: '11px',
                     padding: '8px 8px 8px 12px',
                     marginBottom: '10px',
                     backdropFilter: 'blur(24px)',
                     WebkitBackdropFilter: 'blur(24px)',
-                    boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
                   }}
                 >
-                  <ClarkOrb size={30} className="clark-orb" style={{ flexShrink: 0, boxShadow: '0 0 10px rgba(139,92,246,0.18)' }} />
+                  <ClarkOrb size={30} className="clark-orb" style={{ flexShrink: 0 }} />
 
                   {/* Input */}
                   <input
@@ -362,13 +334,14 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     className="clark-box-input"
                     style={{
                       flex: 1,
+                      minWidth: 0,
                       background: 'transparent',
                       border: 'none',
                       outline: 'none',
-                      color: '#e2e8f0',
+                      color: '#e9edef',
                       fontSize: '16px',
                       fontFamily: 'var(--font-inter)',
-                      caretColor: '#a78bfa',
+                      caretColor: '#1fd6dc',
                     }}
                   />
 
@@ -383,9 +356,9 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                       flexShrink: 0,
                       width: '34px',
                       height: '34px',
-                      borderRadius: '50%',
-                      background: 'linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%)',
-                      border: '1px solid rgba(236,72,153,0.50)',
+                      borderRadius: '10px',
+                      background: 'radial-gradient(120% 150% at 50% -10%, rgba(92,240,240,0.30) 0%, rgba(31,214,220,0.08) 50%, rgba(3,9,10,0.92) 100%)',
+                      border: '1.5px solid #2ad8df',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -398,12 +371,12 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
 
 
                 {debugClark() && (
-                  <div style={{ marginBottom: '10px', border: '1px solid rgba(45,212,191,0.35)', borderRadius: '10px', padding: '10px', background: 'rgba(2,6,23,0.9)', textAlign: 'left' }}>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>inputValue: <span style={{ color: '#e2e8f0' }}>{query || '∅'}</span></div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>sendClicks: <span style={{ color: '#e2e8f0' }}>{sendClicks}</span></div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>lastAction: <span style={{ color: '#e2e8f0' }}>{lastAction}</span></div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>isMobile: <span style={{ color: '#e2e8f0' }}>{String(isMobile())}</span></div>
-                    <div style={{ fontSize: '11px', color: '#94a3b8' }}>mobileRedirectArmed: <span style={{ color: '#e2e8f0' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
+                  <div style={{ marginBottom: '10px', border: '1px solid rgba(31,214,220,0.35)', borderRadius: '10px', padding: '10px', background: 'rgba(3,4,4,0.9)', textAlign: 'left' }}>
+                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>inputValue: <span style={{ color: '#e9edef' }}>{query || '∅'}</span></div>
+                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>sendClicks: <span style={{ color: '#e9edef' }}>{sendClicks}</span></div>
+                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>lastAction: <span style={{ color: '#e9edef' }}>{lastAction}</span></div>
+                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>isMobile: <span style={{ color: '#e9edef' }}>{String(isMobile())}</span></div>
+                    <div style={{ fontSize: '11px', color: '#a9b2b8' }}>mobileRedirectArmed: <span style={{ color: '#e9edef' }}>{mobileRedirectArmed ? 'yes' : 'no'}</span></div>
                   </div>
                 )}
 
@@ -441,8 +414,8 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
                     borderTop: '1px solid rgba(255,255,255,0.05)',
                   }}
                 >
-                  <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 5px rgba(45,212,191,0.55)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.30)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
+                  <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(31,214,220,0.80)', boxShadow: '0 0 5px rgba(31,214,220,0.55)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '10px', color: 'rgba(196,204,210,0.48)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
                     POWERED BY CORTEX ENGINE&nbsp;&nbsp;•&nbsp;&nbsp;LIVE BASE DATA
                   </span>
                 </div>
@@ -460,7 +433,7 @@ export default function HeroSection({ onTyping, onSend }: HeroSectionProps) {
           left: '10%',
           right: '10%',
           height: '1px',
-          background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.10), rgba(139,92,246,0.10), transparent)',
+          background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.10), rgba(31,214,220,0.14), rgba(255,255,255,0.10), transparent)',
           pointerEvents: 'none',
           zIndex: 1,
         }} />

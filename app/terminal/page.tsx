@@ -9,7 +9,7 @@ import HeroSection from '@/components/HeroSection'
 // Below the fold on mobile — defer parse + execution until after first paint
 const HomeTokenScreener = dynamic(() => import('@/components/HomeTokenScreener'), {
   ssr: false,
-  loading: () => <div style={{ flex: 1, background: 'linear-gradient(160deg, #080d1c 0%, #060a14 100%)', minHeight: '120px' }} />,
+  loading: () => <div style={{ flex: 1, background: 'linear-gradient(160deg, #0b0c0d 0%, #060707 100%)', minHeight: '120px' }} />,
 })
 
 function TerminalPageContent() {
@@ -41,7 +41,7 @@ function TerminalPageContent() {
             width: 100% !important;
             max-height: 42vh;
             border-left: none !important;
-            border-top: 1px solid rgba(123,92,255,0.18);
+            border-top: 1px solid rgba(205,213,218,0.18);
           }
         }
         /* SLIGHTLY WIDER ON LARGE DESKTOP ONLY, DISCLOSED (Clark right-panel layout fix task): the
@@ -74,7 +74,7 @@ function TerminalPageContent() {
             height: '420px',
             borderRadius: '50%',
             background:
-              'radial-gradient(ellipse, rgba(123,92,255,0.08) 0%, rgba(255,75,154,0.05) 45%, transparent 72%)',
+              'radial-gradient(ellipse, rgba(205,213,218,0.08) 0%, rgba(31,214,220,0.05) 45%, transparent 72%)',
             zIndex: 0,
           }}
         />
@@ -102,8 +102,8 @@ function TerminalPageContent() {
           style={{
             width: isTyping ? 'min(750px, 42vw)' : 'min(500px, 36vw)',
             transition: 'width 300ms ease',
-            borderLeft: '1px solid rgba(123,92,255,0.18)',
-            background: '#050816',
+            borderLeft: '1px solid rgba(205,213,218,0.18)',
+            background: '#020303',
             position: 'relative',
             zIndex: 1,
             height: '100dvh',
@@ -118,7 +118,7 @@ function TerminalPageContent() {
 
 export default function TerminalPage() {
   return (
-    <Suspense fallback={<div style={{ height: '100%', minHeight: '100dvh', background: 'linear-gradient(160deg, #080d1c 0%, #060a14 100%)' }} aria-hidden />}>
+    <Suspense fallback={<div style={{ height: '100%', minHeight: '100dvh', background: 'linear-gradient(160deg, #0b0c0d 0%, #060707 100%)' }} aria-hidden />}>
       <TerminalPageContent />
     </Suspense>
   )

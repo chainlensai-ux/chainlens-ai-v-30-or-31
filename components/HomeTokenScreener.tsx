@@ -58,7 +58,7 @@ const TokenCard = memo(function TokenCard({
   volumeH24,
 }: TokenCardProps) {
   const change = parseNumeric(priceChangeH24) ?? 0
-  const changeColor = change > 0 ? '#2DD4BF' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
+  const changeColor = change > 0 ? '#1fd6dc' : change < 0 ? '#f87171' : 'rgba(255,255,255,0.40)'
   const priceNumeric = parseNumeric(priceUsd)
   const price = isFiniteNumber(priceNumeric) ? `$${priceNumeric.toFixed(6)}` : '—'
   const vol = formatUsd(volumeH24)
@@ -75,13 +75,13 @@ const TokenCard = memo(function TokenCard({
         alignItems: 'center',
       }}
     >
-      <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: '12px', fontWeight: 600, color: '#f4f6f7', fontFamily: 'var(--font-inter)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {symbol ?? pairAddress.slice(0, 8)}
       </span>
       <span className="hts-col-chain" style={{ fontSize: '10px', color: 'rgba(255,255,255,0.40)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.06em' }}>
         {chainId}
       </span>
-      <span style={{ fontSize: '11px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>
+      <span style={{ fontSize: '11px', color: '#e9edef', fontFamily: 'var(--font-plex-mono)' }}>
         {price}
       </span>
       <span style={{ fontSize: '11px', color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
@@ -140,13 +140,13 @@ export default function HomeTokenScreener() {
         .screener-scroll::-webkit-scrollbar { width: 4px; }
         .screener-scroll::-webkit-scrollbar-track { background: transparent; }
         .screener-scroll::-webkit-scrollbar-thumb {
-          background: rgba(45,212,191,0.18);
+          background: rgba(31,214,220,0.18);
           border-radius: 4px;
         }
         .screener-scroll::-webkit-scrollbar-thumb:hover {
-          background: rgba(45,212,191,0.32);
+          background: rgba(31,214,220,0.32);
         }
-        .screener-scroll { scrollbar-width: thin; scrollbar-color: rgba(45,212,191,0.18) transparent; }
+        .screener-scroll { scrollbar-width: thin; scrollbar-color: rgba(31,214,220,0.18) transparent; }
       `}</style>
 
       <section style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: 0, minHeight: 0, width: '100%', maxWidth: '100%', overflowX: 'hidden' }}>
@@ -157,43 +157,42 @@ export default function HomeTokenScreener() {
             flexDirection: 'column',
             width: '100%',
             minHeight: 0,
-            background: 'linear-gradient(160deg, #080d1c 0%, #060a14 100%)',
+            background: 'linear-gradient(160deg, #0b0c0d 0%, #060707 100%)',
             border: '1px solid rgba(255,255,255,0.06)',
             backdropFilter: 'blur(12px)',
             WebkitBackdropFilter: 'blur(12px)',
             overflow: 'hidden',
             height: '100%',
             boxShadow: [
-              '0 0 20px rgba(45,212,191,0.05)',
-              '0 0 12px rgba(139,92,246,0.04)',
+              '0 0 20px rgba(31,214,220,0.05)',
+              '0 0 12px rgba(205,213,218,0.04)',
               '0 20px 56px rgba(0,0,0,0.50)',
             ].join(', '),
           }}
         >
           {/* Top accent line */}
-          <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.28), rgba(139,92,246,0.28), transparent)', flexShrink: 0 }} />
+          <div style={{ height: '1px', background: 'linear-gradient(90deg, transparent, rgba(31,214,220,0.28), rgba(205,213,218,0.28), transparent)', flexShrink: 0 }} />
 
           {/* Header row */}
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <span style={{ fontSize: '12px', fontWeight: 600, color: '#f1f5f9', fontFamily: 'var(--font-inter)', textShadow: '0 0 14px rgba(45,212,191,0.10)' }}>
+            <span style={{ fontSize: '12px', fontWeight: 600, color: '#f4f6f7', fontFamily: 'var(--font-inter)', textShadow: '0 0 14px rgba(31,214,220,0.10)' }}>
               Token Screener
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
               <span style={{
-                fontSize: '9px', fontWeight: 700, color: '#ffffff',
-                background: '#0052FF', borderRadius: '4px',
-                padding: '2px 7px', fontFamily: 'var(--font-inter)',
-                letterSpacing: '0.05em',
-                boxShadow: '0 0 8px rgba(0,82,255,0.30)',
+                fontSize: '9px', fontWeight: 700, color: '#e9edef',
+                background: 'transparent', border: '1px solid rgba(255,255,255,0.16)', borderRadius: '4px',
+                padding: '1px 7px', fontFamily: 'var(--font-inter)',
+                letterSpacing: '0.08em',
               }}>
                 BASE
               </span>
               <div style={{
                 padding: '3px 10px', borderRadius: '6px',
                 fontSize: '11px', fontFamily: 'var(--font-inter)', fontWeight: 600,
-                background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)',
-                color: '#2DD4BF',
-                boxShadow: '0 0 8px rgba(45,212,191,0.10)',
+                background: 'rgba(31,214,220,0.08)', border: '1px solid rgba(31,214,220,0.22)',
+                color: '#1fd6dc',
+                boxShadow: '0 0 8px rgba(31,214,220,0.10)',
                 transition: 'box-shadow 0.15s, border-color 0.15s',
               }}>
                 Trending
@@ -204,7 +203,7 @@ export default function HomeTokenScreener() {
           {/* Column headers */}
           <div className="hts-row" style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', padding: '8px 16px', borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '34px', alignItems: 'center' }}>
             {COLS.map(col => (
-              <span key={col} className={col === 'CHAIN' ? 'hts-col-chain' : col === 'VOLUME' ? 'hts-col-vol' : undefined} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#3e5c78', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <span key={col} className={col === 'CHAIN' ? 'hts-col-chain' : col === 'VOLUME' ? 'hts-col-vol' : undefined} style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', color: '#5b646a', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 {col}
               </span>
             ))}
@@ -222,7 +221,7 @@ export default function HomeTokenScreener() {
               maxHeight: '100%',
             }}
           >
-            <div style={{ padding: '4px 16px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em', color: lastUpdate ? '#2DD4BF' : 'rgba(255,255,255,0.22)', flexShrink: 0 }}>
+            <div style={{ padding: '4px 16px', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em', color: lastUpdate ? '#1fd6dc' : 'rgba(255,255,255,0.22)', flexShrink: 0 }}>
               {lastUpdate
                 ? `LIVE — Updated at ${new Date(lastUpdate).toLocaleTimeString()}`
                 : 'Waiting for live data…'}
@@ -254,7 +253,7 @@ export default function HomeTokenScreener() {
 
           {/* Footer */}
           <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-            <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2DD4BF', boxShadow: '0 0 5px rgba(45,212,191,0.65)', flexShrink: 0 }} />
+            <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#1fd6dc', boxShadow: '0 0 5px rgba(31,214,220,0.65)', flexShrink: 0 }} />
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.25)', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.07em' }}>
               LIVE BASE DATA
             </span>
