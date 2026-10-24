@@ -614,6 +614,12 @@ export type ManifestFastPathAudit = {
   manifestEvidenceBatchReads: number
   manifestEvidenceReadMs: number
   manifestCoveredPricingRequirements: number
+  /**
+   * Distinct tx sides with ANY persisted record, of manifestEvidenceKeysRequested. Compared across two scans of
+   * one wallet, a drop here (with the same sides requested) means records were lost from the store — expiry or
+   * eviction — not that this scan rejected them.
+   */
+  manifestRecordsFound: number
   goldrushCallsPrevented: number
   dexCallsPrevented: number
   alchemyCallsPrevented: number
@@ -668,7 +674,7 @@ function emptyManifestFastPathAudit(): ManifestFastPathAudit {
     unmatchedSellRequirementsSuppressed: 0, openPositionRequirementsRetained: 0,
     lostCoverageSides: [],
     manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
-    manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, goldrushCallsPrevented: 0,
+    manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, manifestRecordsFound: 0, goldrushCallsPrevented: 0,
     dexCallsPrevented: 0, alchemyCallsPrevented: 0, recoveryLookupsPrevented: 0, candidateDiscoveryCalls: 0,
     fastPathApplied: false, fastPathFailureReason: null,
   }
@@ -966,6 +972,7 @@ export async function priceLotsForWallet(params: {
         }
       }
     }
+    manifestFastPathAudit.manifestRecordsFound = acceptedEvidenceRecordFoundKeys.size
     // Classified only after every group's read is known, so the opposite side's presence is real.
     const oppositeSideKey = (lot: MatchedLot, side: 'entry' | 'exit') => side === 'entry'
       ? `${lot.chain}:${lot.closedTxHash.toLowerCase()}:exit`

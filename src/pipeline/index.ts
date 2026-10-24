@@ -994,6 +994,16 @@ export function buildWindowBoundaryProviderAudit(
   }))
 }
 
+// PURE. A narrowed window's start is wherever the page cap happened to stop — a few minutes later on every
+// rescan of a busy wallet, so each scan matched a slightly different set of trades. Snapping it UP to the
+// next UTC midnight gives every scan on the same day the same start (the dropped sliver was read, so the
+// remaining window stays fully covered). Left unsnapped when that would leave under a day of history.
+const DAY_MS = 24 * 60 * 60 * 1000
+export function snapNarrowedWindowStart(windowStartMs: number, scanMs: number): number {
+  const snapped = Math.ceil(windowStartMs / DAY_MS) * DAY_MS
+  return scanMs - snapped >= DAY_MS ? snapped : windowStartMs
+}
+
 // PURE. Drops events dated before the covered window start. Events without a parseable timestamp
 // are kept: normalization already decides what to do with them.
 export function filterEventsToCoveredWindow<T extends { timestamp: string | null }>(events: readonly T[], windowStartMs: number): T[] {
@@ -1673,8 +1683,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const configuredWindowStart = Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000
   const configuredBoundaryAudit = buildWindowBoundaryProviderAudit(providerResults, configuredWindowStart, Date.parse(scanTimestamp))
   const coveredWindowStart = resolveCoveredWindowStart(configuredBoundaryAudit, providerResults, configuredWindowStart)
-  const requestedWindowStart = coveredWindowStart ?? configuredWindowStart
-  const windowNarrowed = requestedWindowStart > configuredWindowStart
+  const windowNarrowed = (coveredWindowStart ?? configuredWindowStart) > configuredWindowStart
+  const requestedWindowStart = windowNarrowed
+    ? snapNarrowedWindowStart(coveredWindowStart!, Date.parse(scanTimestamp))
+    : configuredWindowStart
   const scanWindowDaysUsed = windowNarrowed
     ? Math.max(1, Math.round((Date.parse(scanTimestamp) - requestedWindowStart) / (24 * 60 * 60 * 1000)))
     : PROVIDER_FETCH_WINDOW_DAYS_USED

@@ -17,6 +17,7 @@ import {
   buildProviderFetchWindowDiagnostics,
   buildWindowBoundaryProviderAudit,
   resolveCoveredWindowStart,
+  snapNarrowedWindowStart,
   filterEventsToCoveredWindow,
   computeSlowProviderFlag,
   computeJitterFlag,
@@ -630,5 +631,27 @@ describe('filterEventsToCoveredWindow', () => {
       { id: 'undated', timestamp: null },
     ]
     assert.deepEqual(filterEventsToCoveredWindow(events, start).map((e) => e.id), ['at-start', 'inside', 'undated'])
+  })
+})
+
+describe('snapNarrowedWindowStart', () => {
+  it('two rescans of a busy wallet on the same day get the same window start', () => {
+    const scanA = Date.UTC(2026, 9, 24, 8, 15)
+    const scanB = Date.UTC(2026, 9, 24, 9, 27)
+    // Page caps stopped at 15:45 and 16:29 on Oct 17 — 44 minutes apart.
+    const a = snapNarrowedWindowStart(Date.UTC(2026, 9, 17, 15, 45), scanA)
+    const b = snapNarrowedWindowStart(Date.UTC(2026, 9, 17, 16, 29), scanB)
+    assert.equal(a, Date.UTC(2026, 9, 18))
+    assert.equal(a, b)
+  })
+  it('never moves a start backwards, and an exact midnight stays put', () => {
+    const scan = Date.UTC(2026, 9, 24, 12)
+    assert.equal(snapNarrowedWindowStart(Date.UTC(2026, 9, 20), scan), Date.UTC(2026, 9, 20))
+    assert.ok(snapNarrowedWindowStart(Date.UTC(2026, 9, 20, 0, 0, 1), scan) > Date.UTC(2026, 9, 20))
+  })
+  it('keeps the unsnapped start when snapping would leave under a day of history', () => {
+    const scan = Date.UTC(2026, 9, 24, 6)
+    const start = Date.UTC(2026, 9, 23, 2)
+    assert.equal(snapNarrowedWindowStart(start, scan), start)
   })
 })
